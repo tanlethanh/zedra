@@ -1,0 +1,3 @@
+[submodule "vendor/zed"]
+	path = vendor/zed
+	url = https://github.com/tanlethanh/zed.git
