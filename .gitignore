@@ -1,0 +1,10 @@
+.DS_Store
+
+/target
+
+# Android
+.idea
+.gradle
+android/app/libs
+android/build
+local.properties
