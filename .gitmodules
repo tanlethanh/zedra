@@ -1,3 +1,7 @@
 [submodule "vendor/zed"]
 	path = vendor/zed
 	url = https://github.com/tanlethanh/zed.git
+[submodule "vendor/blade"]
+	path = vendor/blade
+	url = https://github.com/tanlethanh/blade.git
+	branch = vulkan-1.1-compat
