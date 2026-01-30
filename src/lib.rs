@@ -1,48 +1,26 @@
-use android_logger::Config;
-use jni::JNIEnv;
-use jni::objects::{JClass, JString};
-use jni::sys::jstring;
-use log::info;
+// Shared Zedra app (used by both Android and iOS)
+pub mod zedra_app;
 
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_zedra_app_MainActivity_initRust(_env: JNIEnv, _class: JClass) {
-    // Initialize Android logger
-    android_logger::init_once(
-        Config::default()
-            .with_max_level(log::LevelFilter::Debug)
-            .with_tag("RustApp"),
-    );
+// GPUI Android JNI bridge
+#[cfg(target_os = "android")]
+pub mod android_jni;
 
-    info!("Rust library initialized!");
-}
+// Android app bridge
+#[cfg(target_os = "android")]
+pub mod android_app;
 
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_zedra_app_MainActivity_rustGreeting(
-    mut env: JNIEnv,
-    _class: JClass,
-    input: JString,
-) -> jstring {
-    let input: String = env
-        .get_string(&input)
-        .expect("Couldn't get java string!")
-        .into();
+// Android command queue for threading
+#[cfg(target_os = "android")]
+pub mod android_command_queue;
 
-    let output = format!("Hello from Rust, {}!", input);
+// Legacy JNI stubs (called by Java but no longer used)
+#[cfg(target_os = "android")]
+mod legacy_jni {
+    use jni::{JNIEnv, objects::JClass};
 
-    let output = env
-        .new_string(output)
-        .expect("Couldn't create java string!");
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_dev_zedra_app_MainActivity_rustOnResume(_: JNIEnv, _: JClass) {}
 
-    output.into_raw()
-}
-
-// Android lifecycle hooks
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_zedra_app_MainActivity_rustOnResume(_env: JNIEnv, _class: JClass) {
-    info!("App resumed");
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_zedra_app_MainActivity_rustOnPause(_env: JNIEnv, _class: JClass) {
-    info!("App paused");
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_dev_zedra_app_MainActivity_rustOnPause(_: JNIEnv, _: JClass) {}
 }

@@ -11,3 +11,18 @@ crate-type = ["cdylib"]
 android_logger = "0.15.1"
 jni = "0.21.1"
 log = "0.4.29"
+ndk = "0.9"
+ndk-context = "0.1"
+anyhow = "1.0"
+crossbeam-channel = "0.5"
+once_cell = "1.19"
+
+# GPUI - using local path to the vendored zed
+gpui = { path = "vendor/zed/crates/gpui", features = ["android"] }
+http_client = { path = "vendor/zed/crates/http_client" }
+
+# Patch blade-graphics to use local version with Android fixes
+[patch.'https://github.com/kvark/blade']
+blade-graphics = { path = "vendor/blade/blade-graphics" }
+blade-macros = { path = "vendor/blade/blade-macros" }
+blade-util = { path = "vendor/blade/blade-util" }
