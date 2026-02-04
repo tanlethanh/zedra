@@ -1,19 +1,25 @@
 package dev.zedra.app;
 
 import android.content.Context;
+import android.text.InputType;
 import android.util.AttributeSet;
 import android.util.Log;
-import android.view.MotionEvent;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.inputmethod.BaseInputConnection;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputMethodManager;
 
 /**
  * Custom SurfaceView for GPUI rendering.
  *
  * This view manages the native surface lifecycle and forwards
  * input events to the Rust GPUI implementation.
+ * Includes IME (soft keyboard) support for terminal input.
  */
 public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callback {
     private static final String TAG = "GpuiSurfaceView";
@@ -26,6 +32,12 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
     private static final int ACTION_UP = 1;
     private static final int ACTION_MOVE = 2;
     private static final int ACTION_CANCEL = 3;
+
+    // Touch tracking for tap vs scroll detection
+    private float touchDownX = 0;
+    private float touchDownY = 0;
+    private boolean touchMoved = false;
+    private static final float TAP_SLOP = 20f; // px threshold to distinguish tap from scroll
 
     // Key action constants
     private static final int KEY_ACTION_DOWN = 0;
@@ -73,6 +85,88 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
      */
     public boolean isSurfaceCreated() {
         return surfaceCreated;
+    }
+
+    // IME (Soft Keyboard) Support
+
+    private boolean keyboardRequested = false;
+
+    @Override
+    public boolean onCheckIsTextEditor() {
+        return keyboardRequested;
+    }
+
+    /**
+     * Request the soft keyboard to appear (call from Rust via JNI when a text input is focused)
+     */
+    public void requestKeyboard() {
+        keyboardRequested = true;
+        showSoftKeyboard();
+    }
+
+    /**
+     * Dismiss the soft keyboard
+     */
+    public void dismissKeyboard() {
+        keyboardRequested = false;
+        hideSoftKeyboard();
+    }
+
+    @Override
+    public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
+        outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
+        outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI | EditorInfo.IME_ACTION_NONE;
+
+        return new BaseInputConnection(this, false) {
+            @Override
+            public boolean commitText(CharSequence text, int newCursorPosition) {
+                if (nativeHandle != 0 && text != null && text.length() > 0) {
+                    nativeImeInput(nativeHandle, text.toString());
+                }
+                return true;
+            }
+
+            @Override
+            public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+                // Send backspace for each deleted character
+                for (int i = 0; i < beforeLength; i++) {
+                    nativeKeyEvent(nativeHandle, KEY_ACTION_DOWN, 67, 0); // KEYCODE_DEL
+                }
+                return true;
+            }
+
+            @Override
+            public boolean sendKeyEvent(KeyEvent event) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    nativeKeyEvent(nativeHandle, KEY_ACTION_DOWN,
+                            event.getKeyCode(), event.getUnicodeChar());
+                }
+                return true;
+            }
+        };
+    }
+
+    /**
+     * Show the soft keyboard
+     */
+    public void showSoftKeyboard() {
+        requestFocus();
+        InputMethodManager imm = (InputMethodManager) getContext()
+                .getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) {
+            imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT);
+        }
+    }
+
+    /**
+     * Hide the soft keyboard
+     */
+    public void hideSoftKeyboard() {
+        InputMethodManager imm = (InputMethodManager) getContext()
+                .getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) {
+            imm.hideSoftInputFromWindow(getWindowToken(), 0);
+        }
     }
 
     // SurfaceHolder.Callback implementation
@@ -129,15 +223,24 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 action = ACTION_DOWN;
+                touchDownX = event.getX();
+                touchDownY = event.getY();
+                touchMoved = false;
                 break;
             case MotionEvent.ACTION_UP:
                 action = ACTION_UP;
                 break;
             case MotionEvent.ACTION_MOVE:
                 action = ACTION_MOVE;
+                float dx = event.getX() - touchDownX;
+                float dy = event.getY() - touchDownY;
+                if (dx * dx + dy * dy > TAP_SLOP * TAP_SLOP) {
+                    touchMoved = true;
+                }
                 break;
             case MotionEvent.ACTION_CANCEL:
                 action = ACTION_CANCEL;
+                touchMoved = false;
                 break;
             default:
                 return super.onTouchEvent(event);
@@ -181,54 +284,11 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
 
     // Native method declarations
 
-    /**
-     * Called when the native surface is created
-     *
-     * @param handle The native platform handle
-     * @param surface The Android Surface object
-     */
     private static native void nativeSurfaceCreated(long handle, Surface surface);
-
-    /**
-     * Process surface commands immediately (don't wait for choreographer)
-     */
     private static native void nativeProcessSurfaceCommands();
-
-    /**
-     * Called when the native surface changes size or format
-     *
-     * @param handle The native platform handle
-     * @param format The surface format
-     * @param width The new width
-     * @param height The new height
-     */
     private static native void nativeSurfaceChanged(long handle, int format, int width, int height);
-
-    /**
-     * Called when the native surface is destroyed
-     *
-     * @param handle The native platform handle
-     */
     private static native void nativeSurfaceDestroyed(long handle);
-
-    /**
-     * Forward touch event to native code
-     *
-     * @param handle The native platform handle
-     * @param action The touch action (DOWN, UP, MOVE, CANCEL)
-     * @param x The X coordinate
-     * @param y The Y coordinate
-     * @param pointerId The pointer ID for multi-touch
-     */
     private static native void nativeTouchEvent(long handle, int action, float x, float y, int pointerId);
-
-    /**
-     * Forward key event to native code
-     *
-     * @param handle The native platform handle
-     * @param action The key action (DOWN or UP)
-     * @param keyCode The Android KeyCode
-     * @param unicode The unicode character (0 if none)
-     */
     private static native void nativeKeyEvent(long handle, int action, int keyCode, int unicode);
+    private static native void nativeImeInput(long handle, String text);
 }
