@@ -14,6 +14,14 @@ static INIT: Once = Once::new();
 // Global storage for the NativeWindow (only accessed from main thread)
 static NATIVE_WINDOW: Mutex<Option<NativeWindow>> = Mutex::new(None);
 
+// Global storage for display density (set from Java, read by Rust)
+static DISPLAY_DENSITY: Mutex<f32> = Mutex::new(3.0);
+
+/// Get the stored display density
+pub fn get_density() -> f32 {
+    *DISPLAY_DENSITY.lock().unwrap()
+}
+
 /// Get the stored NativeWindow (must be called from main thread)
 pub fn take_native_window() -> Option<NativeWindow> {
     NATIVE_WINDOW.lock().unwrap().take()
@@ -28,30 +36,27 @@ struct AndroidPlatformHandle {
 /// Initialize logging and panic hook for Android
 fn init_logging() {
     INIT.call_once(|| {
-        #[cfg(target_os = "android")]
-        {
-            android_logger::init_once(
-                android_logger::Config::default()
-                    .with_max_level(log::LevelFilter::Info)
-                    .with_tag("zedra"),
-            );
+        android_logger::init_once(
+            android_logger::Config::default()
+                .with_max_level(log::LevelFilter::Info)
+                .with_tag("zedra"),
+        );
 
-            std::panic::set_hook(Box::new(|info| {
-                let payload = info
-                    .payload()
-                    .downcast_ref::<&str>()
-                    .map(|s| s.to_string())
-                    .or_else(|| info.payload().downcast_ref::<String>().cloned())
-                    .unwrap_or_else(|| "Unknown panic".to_string());
+        std::panic::set_hook(Box::new(|info| {
+            let payload = info
+                .payload()
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| info.payload().downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "Unknown panic".to_string());
 
-                let location = info
-                    .location()
-                    .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
-                    .unwrap_or_else(|| "unknown".to_string());
+            let location = info
+                .location()
+                .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                .unwrap_or_else(|| "unknown".to_string());
 
-                log::error!("PANIC at {}: {}", location, payload);
-            }));
-        }
+            log::error!("PANIC at {}: {}", location, payload);
+        }));
     });
 }
 
@@ -488,13 +493,93 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_getDisplayDensity(
 
     match result {
         Ok(density) => {
-            log::debug!("Display density: {}", density);
+            log::info!("Display density: {}", density);
+            *DISPLAY_DENSITY.lock().unwrap() = density;
             density
         }
         Err(e) => {
             log::error!("Failed to get display density: {:?}", e);
             1.0 // Default density
         }
+    }
+}
+
+/// QR code scanned callback from QRScannerActivity
+///
+/// Called when a zedra:// QR code is successfully scanned
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_QRScannerActivity_nativeOnQrCodeScanned(
+    mut env: JNIEnv,
+    _class: JClass,
+    data: jni::objects::JString,
+) {
+    let qr_data: String = match env.get_string(&data) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            log::error!("Failed to get QR data string: {:?}", e);
+            return;
+        }
+    };
+
+    log::info!("QR code scanned: {}", &qr_data[..qr_data.len().min(50)]);
+
+    // Send pairing command to queue
+    let sender = get_command_sender();
+    let _ = sender.send(AndroidCommand::PairViaQr { qr_data });
+}
+
+/// Show soft keyboard
+///
+/// Called to show the Android soft keyboard for terminal input
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeRequestShowKeyboard(
+    _env: JNIEnv,
+    _class: JClass,
+    _handle: jlong,
+) {
+    log::debug!("Keyboard show requested");
+    // The Java side handles actually showing the keyboard via InputMethodManager
+}
+
+/// Hide soft keyboard
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeRequestHideKeyboard(
+    _env: JNIEnv,
+    _class: JClass,
+    _handle: jlong,
+) {
+    log::debug!("Keyboard hide requested");
+}
+
+/// IME text input callback
+///
+/// Called when text is entered via the soft keyboard IME
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeImeInput(
+    mut env: JNIEnv,
+    _class: JClass,
+    _handle: jlong,
+    text: jni::objects::JString,
+) {
+    let input: String = match env.get_string(&text) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            log::error!("Failed to get IME text: {:?}", e);
+            return;
+        }
+    };
+
+    log::debug!("IME input: {}", input);
+
+    // Convert each character to a key event
+    let sender = get_command_sender();
+    for ch in input.chars() {
+        let unicode = ch as i32;
+        let _ = sender.send(AndroidCommand::Key {
+            action: 0, // DOWN
+            key_code: 0,
+            unicode,
+        });
     }
 }
 

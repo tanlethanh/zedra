@@ -1,0 +1,11 @@
+[package]
+name = "zedra-terminal"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gpui = { path = "../../vendor/zed/crates/gpui", features = ["android"] }
+alacritty_terminal.workspace = true
+log.workspace = true
+
+zedra-ssh = { path = "../zedra-ssh" }

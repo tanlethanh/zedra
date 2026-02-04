@@ -1,0 +1,62 @@
+[package]
+name = "zedra-host"
+version = "0.1.0"
+edition = "2021"
+description = "Desktop companion daemon for Zedra terminal"
+
+[[bin]]
+name = "zedra-host"
+path = "src/main.rs"
+
+[dependencies]
+# SSH server
+russh = "0.49"
+russh-keys = "0.49"
+ssh-key = { version = "0.6", features = ["ed25519", "rand_core"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# PTY spawning
+portable-pty = "0.8"
+
+# QR code generation
+qrcode = "0.14"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Password hashing
+argon2 = "0.5"
+
+# Random/crypto
+rand = "0.8"
+hex = "0.4"
+base64-url = "3"
+
+# Filesystem
+directories = "5"
+
+# Async trait (required by russh Handler/Server traits)
+async-trait = "0.1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# System info
+hostname = "0.4"
+
+# Error handling
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
