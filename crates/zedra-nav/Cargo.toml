@@ -1,0 +1,8 @@
+[package]
+name = "zedra-nav"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gpui = { path = "../../vendor/zed/crates/gpui", features = ["android"] }
+log.workspace = true
