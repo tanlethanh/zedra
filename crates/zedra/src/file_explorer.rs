@@ -7,14 +7,14 @@ pub struct FileSelected {
 }
 
 pub struct FileEntry {
-    name: String,
-    is_dir: bool,
-    expanded: bool,
-    children: Vec<FileEntry>,
+    pub name: String,
+    pub is_dir: bool,
+    pub expanded: bool,
+    pub children: Vec<FileEntry>,
 }
 
 impl FileEntry {
-    fn dir(name: &str, children: Vec<FileEntry>) -> Self {
+    pub fn dir(name: &str, children: Vec<FileEntry>) -> Self {
         Self {
             name: name.to_string(),
             is_dir: true,
@@ -23,7 +23,7 @@ impl FileEntry {
         }
     }
 
-    fn file(name: &str) -> Self {
+    pub fn file(name: &str) -> Self {
         Self {
             name: name.to_string(),
             is_dir: false,
@@ -54,6 +54,34 @@ impl FileExplorer {
             entries: demo_entries(),
             focus_handle: cx.focus_handle(),
         }
+    }
+
+    /// Create a file explorer with custom entries (for remote filesystem).
+    pub fn with_entries(entries: Vec<FileEntry>, cx: &mut Context<Self>) -> Self {
+        Self {
+            entries,
+            focus_handle: cx.focus_handle(),
+        }
+    }
+
+    /// Replace the file tree (e.g., after fetching from remote).
+    pub fn set_entries(&mut self, entries: Vec<FileEntry>, cx: &mut Context<Self>) {
+        self.entries = entries;
+        cx.notify();
+    }
+
+    /// Build a `FileEntry` tree from flat (name, is_dir) pairs — convenience for RPC results.
+    pub fn entries_from_flat(items: &[(String, bool)]) -> Vec<FileEntry> {
+        items
+            .iter()
+            .map(|(name, is_dir)| {
+                if *is_dir {
+                    FileEntry::dir(name, vec![])
+                } else {
+                    FileEntry::file(name)
+                }
+            })
+            .collect()
     }
 
     fn flatten(&self) -> Vec<FlatEntry> {

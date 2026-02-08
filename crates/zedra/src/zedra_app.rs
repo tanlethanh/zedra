@@ -3,11 +3,15 @@
 
 use gpui::*;
 
+use crate::ai_chat::{AiChatView, AiPromptSubmitted};
 use crate::file_explorer::{FileExplorer, FileSelected};
 use crate::file_preview_list::{FilePreviewList, PreviewSelected, SAMPLE_FILES};
+use crate::git_view::{GitCommitRequested, GitView};
+use crate::session_list::{NewSessionRequested, SessionList, SessionSelected};
 use zedra_editor::EditorView;
 use zedra_nav::{DrawerHost, HeaderConfig, StackNavigator, TabBarConfig, TabNavigator};
 use zedra_ssh::connection::{AuthMethod, ConnectionManager, ConnectionParams};
+use zedra_ssh::pairing::PairingPayload;
 use zedra_terminal::view::TerminalView;
 
 // ---------------------------------------------------------------------------
@@ -41,7 +45,12 @@ pub struct ConnectRequested {
     pub password: String,
 }
 
+/// Event emitted when the user taps "Scan QR Code".
+#[derive(Clone, Debug)]
+pub struct ScanQrRequested;
+
 impl EventEmitter<ConnectRequested> for ConnectView {}
+impl EventEmitter<ScanQrRequested> for ConnectView {}
 
 impl Render for ConnectView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -74,6 +83,31 @@ impl Render for ConnectView {
                             .text_color(rgb(0x5c6370))
                             .text_sm()
                             .child("Connect to a remote host"),
+                    )
+                    // "Scan QR Code" button
+                    .child(
+                        div()
+                            .mt_2()
+                            .px_4()
+                            .py_2()
+                            .bg(rgb(0x98c379))
+                            .rounded(px(6.0))
+                            .text_color(rgb(0x282c34))
+                            .cursor_pointer()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|_this, _event, _window, cx| {
+                                    cx.emit(ScanQrRequested);
+                                }),
+                            )
+                            .child(div().flex().justify_center().child("Scan QR Code")),
+                    )
+                    .child(
+                        div()
+                            .text_color(rgb(0x5c6370))
+                            .text_sm()
+                            .mt_2()
+                            .child("— or connect manually —"),
                     )
                     .child(
                         div()
@@ -167,6 +201,8 @@ pub struct ZedraApp {
     _tab_nav: Entity<TabNavigator>,
     _terminal_stack: Entity<StackNavigator>,
     editor_stack: Entity<StackNavigator>,
+    _git_stack: Entity<StackNavigator>,
+    _ai_stack: Entity<StackNavigator>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -194,9 +230,27 @@ impl ZedraApp {
             stack
         });
 
+        // Create the git tab's stack navigator
+        let git_stack = cx.new(|cx| {
+            let mut stack = StackNavigator::new(Default::default(), cx);
+            let git_view = cx.new(|cx| GitView::new(cx));
+            stack.push(git_view.into(), "Git", cx);
+            stack
+        });
+
+        // Create the AI tab's stack navigator
+        let ai_stack = cx.new(|cx| {
+            let mut stack = StackNavigator::new(Default::default(), cx);
+            let ai_chat = cx.new(|cx| AiChatView::new(cx));
+            stack.push(ai_chat.into(), "Claude Code", cx);
+            stack
+        });
+
         // Create tab navigator
         let terminal_stack_clone = terminal_stack.clone();
         let editor_stack_clone = editor_stack.clone();
+        let git_stack_clone = git_stack.clone();
+        let ai_stack_clone = ai_stack.clone();
 
         let tab_nav = cx.new(|cx| {
             let mut tabs = TabNavigator::new(TabBarConfig::default(), cx);
@@ -204,13 +258,75 @@ impl ZedraApp {
             tabs.add_tab("Terminal", ">_", move |_window, _cx| ts.clone().into());
             let es = editor_stack_clone.clone();
             tabs.add_tab("Editor", "{}", move |_window, _cx| es.clone().into());
+            let gs = git_stack_clone.clone();
+            tabs.add_tab("Git", "⎇", move |_window, _cx| gs.clone().into());
+            let ai = ai_stack_clone.clone();
+            tabs.add_tab("AI", "◆", move |_window, _cx| ai.clone().into());
             tabs.ensure_active_view(window, cx);
             tabs
         });
 
         let mut subscriptions = Vec::new();
 
-        // --- ConnectView subscription ---
+        // --- SessionList subscriptions ---
+        let session_list = cx.new(|cx| SessionList::new(cx));
+
+        // SessionSelected → push connect view pre-filled with session info
+        let terminal_stack_for_session = terminal_stack.clone();
+        let sub = cx.subscribe_in(
+            &session_list,
+            window,
+            move |_this: &mut ZedraApp,
+                  _emitter: &Entity<SessionList>,
+                  event: &SessionSelected,
+                  _window: &mut Window,
+                  cx: &mut Context<ZedraApp>| {
+                let session = &event.0;
+                let cell_width = px(9.0);
+                let line_height = px(18.0);
+                let terminal_view =
+                    cx.new(|_cx| TerminalView::new(80, 24, cell_width, line_height));
+                terminal_stack_for_session.update(cx, |stack, cx| {
+                    stack.push(terminal_view.clone().into(), "Terminal", cx);
+                });
+                let params = ConnectionParams {
+                    addrs: vec![session.host.clone()],
+                    port: session.port,
+                    auth: AuthMethod::Password {
+                        username: "zedra".into(),
+                        password: String::new(),
+                    },
+                    expected_fingerprint: None,
+                };
+                ConnectionManager::connect(terminal_view.downgrade(), params, cx);
+            },
+        );
+        subscriptions.push(sub);
+
+        // NewSessionRequested → push ConnectView for manual entry
+        let terminal_stack_for_new = terminal_stack.clone();
+        let sub = cx.subscribe_in(
+            &session_list,
+            window,
+            move |_this: &mut ZedraApp,
+                  _emitter: &Entity<SessionList>,
+                  _event: &NewSessionRequested,
+                  _window: &mut Window,
+                  cx: &mut Context<ZedraApp>| {
+                let connect_view = cx.new(|_cx| ConnectView::new());
+                terminal_stack_for_new.update(cx, |stack, cx| {
+                    stack.push(connect_view.into(), "New Connection", cx);
+                });
+            },
+        );
+        subscriptions.push(sub);
+
+        // Replace terminal stack root with SessionList
+        terminal_stack.update(cx, |stack, cx| {
+            stack.replace(session_list.into(), "Sessions", cx);
+        });
+
+        // --- ConnectView subscription (for manual connect from within stack) ---
         let connect_view = cx.new(|_cx| ConnectView::new());
         let terminal_stack_for_connect = terminal_stack.clone();
         let sub = cx.subscribe_in(
@@ -223,18 +339,13 @@ impl ZedraApp {
                   cx: &mut Context<ZedraApp>| {
                 let cell_width = px(9.0);
                 let line_height = px(18.0);
-                let columns = 80;
-                let rows = 24;
-
                 let terminal_view =
-                    cx.new(|_cx| TerminalView::new(columns, rows, cell_width, line_height));
-
+                    cx.new(|_cx| TerminalView::new(80, 24, cell_width, line_height));
                 terminal_stack_for_connect.update(cx, |stack, cx| {
                     stack.push(terminal_view.clone().into(), "Terminal", cx);
                 });
-
                 let params = ConnectionParams {
-                    host: event.host.clone(),
+                    addrs: vec![event.host.clone()],
                     port: event.port,
                     auth: AuthMethod::Password {
                         username: event.username.clone(),
@@ -247,9 +358,91 @@ impl ZedraApp {
         );
         subscriptions.push(sub);
 
-        // Replace terminal stack root with the subscribed connect_view
-        terminal_stack.update(cx, |stack, cx| {
-            stack.replace(connect_view.into(), "Zedra Terminal", cx);
+        // --- ScanQrRequested subscription ---
+        let sub = cx.subscribe_in(
+            &connect_view,
+            window,
+            |_this: &mut ZedraApp,
+             _emitter: &Entity<ConnectView>,
+             _event: &ScanQrRequested,
+             _window: &mut Window,
+             _cx: &mut Context<ZedraApp>| {
+                log::info!("Scan QR requested — launching scanner");
+                let sender = crate::android_command_queue::get_command_sender();
+                if let Err(e) = sender.send(
+                    crate::android_command_queue::AndroidCommand::LaunchQrScanner,
+                ) {
+                    log::error!("Failed to send LaunchQrScanner command: {:?}", e);
+                }
+            },
+        );
+        subscriptions.push(sub);
+
+        // --- AiChatView subscription ---
+        let ai_chat = cx.new(|cx| AiChatView::new(cx));
+        let ai_chat_entity = ai_chat.clone();
+        let sub = cx.subscribe_in(
+            &ai_chat,
+            window,
+            move |_this: &mut ZedraApp,
+                  _emitter: &Entity<AiChatView>,
+                  event: &AiPromptSubmitted,
+                  _window: &mut Window,
+                  cx: &mut Context<ZedraApp>| {
+                // For now, provide a local echo response.
+                // In production, this sends via RPC to the host daemon's ai/prompt handler.
+                let prompt = event.prompt.clone();
+                let entity = ai_chat_entity.clone();
+                cx.spawn(|_, mut cx| async move {
+                    // Simulate a brief delay
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(500))
+                        .await;
+                    let _ = cx.update(|_, cx| {
+                        entity.update(cx, |view, cx| {
+                            view.push_assistant_message(
+                                format!(
+                                    "[Connected to host for AI response]\n\nYour prompt: {}",
+                                    prompt
+                                ),
+                                cx,
+                            );
+                        });
+                    });
+                })
+                .detach();
+            },
+        );
+        subscriptions.push(sub);
+
+        // Replace AI stack root with the subscribed ai_chat
+        ai_stack.update(cx, |stack, cx| {
+            stack.replace(ai_chat.into(), "Claude Code", cx);
+        });
+
+        // --- GitView subscriptions ---
+        let git_view = cx.new(|cx| GitView::new(cx));
+        let sub = cx.subscribe_in(
+            &git_view,
+            window,
+            |_this: &mut ZedraApp,
+             _emitter: &Entity<GitView>,
+             event: &GitCommitRequested,
+             _window: &mut Window,
+             _cx: &mut Context<ZedraApp>| {
+                log::info!(
+                    "Git commit requested: {} ({} files)",
+                    event.message,
+                    event.paths.len()
+                );
+                // In production, this calls RPC: git/commit
+            },
+        );
+        subscriptions.push(sub);
+
+        // Replace git stack root with the subscribed git_view
+        git_stack.update(cx, |stack, cx| {
+            stack.replace(git_view.into(), "Git", cx);
         });
 
         // --- PreviewSelected subscription ---
@@ -291,8 +484,60 @@ impl ZedraApp {
             _tab_nav: tab_nav,
             _terminal_stack: terminal_stack,
             editor_stack,
+            _git_stack: git_stack,
+            _ai_stack: ai_stack,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Handle a scanned QR pairing payload: switch to Terminal tab, create a
+    /// TerminalView, push it onto the terminal stack, and auto-connect.
+    pub fn handle_qr_scanned(
+        &mut self,
+        payload: PairingPayload,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        log::info!(
+            "QR scanned — connecting to {} ({}:{})",
+            payload.name,
+            payload.host,
+            payload.port
+        );
+
+        // Switch to Terminal tab (index 0)
+        self._tab_nav.update(cx, |tabs, cx| {
+            // Terminal tab at index 0 is always pre-created, so we can
+            // use set_active_index which doesn't require &mut Window.
+            if tabs.active_index() != 0 {
+                tabs.set_active_index(0, cx);
+            }
+        });
+
+        // Create terminal view
+        let cell_width = px(9.0);
+        let line_height = px(18.0);
+        let columns = 80;
+        let rows = 24;
+        let terminal_view =
+            cx.new(|_cx| TerminalView::new(columns, rows, cell_width, line_height));
+
+        // Push onto the terminal stack
+        self._terminal_stack.update(cx, |stack, cx| {
+            stack.push(terminal_view.clone().into(), "Terminal", cx);
+        });
+
+        // Build connection params from the pairing payload
+        let params = ConnectionParams {
+            addrs: payload.addresses(),
+            port: payload.port,
+            auth: AuthMethod::PairingToken {
+                token: payload.token,
+            },
+            expected_fingerprint: Some(payload.fingerprint),
+        };
+
+        ConnectionManager::connect(terminal_view.downgrade(), params, cx);
     }
 
     fn open_file_drawer(&mut self, cx: &mut Context<Self>) {
