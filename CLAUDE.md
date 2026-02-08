@@ -4,7 +4,7 @@
 
 Zedra is a port of Zed's GPUI UI framework to Android using Blade graphics with Vulkan 1.1 support. This is the first successful port of GPUI to a mobile platform.
 
-**Current Status**: Interactive UI with navigation, editor, and touch input working at 60 FPS on Android with Vulkan 1.1
+**Current Status**: Phase 2 Complete - Core rendering + text rendering working at 60 FPS on Android with Vulkan 1.1
 
 **Test Device**: Mali-G68 MC4 (Vulkan 1.1.0, 1080x2400 @ 3x DPI)
 
@@ -122,91 +122,41 @@ JNI Thread → Command Queue → Main Thread → GPUI → Blade → Vulkan
 ## Project Structure
 
 ```
-Cargo.toml                      # Workspace root (no package)
-crates/
-  ├── zedra-ssh/                # SSH client (generic over TerminalSink trait)
-  │   └── src/
-  │       ├── lib.rs            # TerminalSink trait + re-exports
-  │       ├── client.rs         # russh SSH session
-  │       ├── connection.rs     # Connection state machine
-  │       ├── bridge.rs         # Async SSH ↔ terminal I/O
-  │       └── pairing.rs        # QR code pairing protocol
-  ├── zedra-terminal/           # Terminal emulation (alacritty + GPUI rendering)
-  │   └── src/
-  │       ├── lib.rs            # TerminalState + types
-  │       ├── element.rs        # GPUI Element for terminal grid
-  │       ├── keys.rs           # Keystroke → escape sequence mapping
-  │       └── view.rs           # TerminalView + TerminalSink impl
-  ├── zedra-editor/             # Code editor with syntax highlighting
-  │   └── src/
-  │       ├── lib.rs            # Re-exports
-  │       ├── buffer.rs         # Text buffer with line indexing
-  │       ├── highlighter.rs    # Tree-sitter parsing + highlight queries
-  │       ├── theme.rs          # Capture name → HighlightStyle mapping
-  │       └── editor_view.rs    # GPUI view: UniformList + StyledText + cursor
-  ├── zedra-nav/                # Mobile navigation primitives (gpui only)
-  │   └── src/
-  │       ├── lib.rs            # Re-exports + NavigationEvent types
-  │       ├── stack.rs          # StackNavigator: push/pop with header bar
-  │       ├── tab.rs            # TabNavigator: bottom tab bar with lazy views
-  │       ├── modal.rs          # ModalHost: deferred overlay with backdrop
-  │       └── drawer.rs         # DrawerHost: slide-from-left drawer overlay
-  ├── zedra/                    # Android cdylib (final binary crate)
-  │   ├── build.rs
-  │   └── src/
-  │       ├── lib.rs            # JNI exports + module declarations
-  │       ├── android_app.rs    # Main thread GPUI app + touch/scroll/key handling
-  │       ├── android_command_queue.rs # Thread-safe queue
-  │       ├── android_jni.rs    # JNI bridge
-  │       ├── zedra_app.rs      # DrawerHost + TabNavigator + StackNavigator wiring
-  │       ├── file_explorer.rs  # FileExplorer tree view (demo data)
-  │       └── file_preview_list.rs # Preview card grid for code samples
-  └── zedra-host/               # Desktop SSH server daemon
-      └── src/
+src/
+  ├── android_jni.rs           # JNI bridge
+  ├── android_command_queue.rs # Thread-safe queue
+  ├── android_app.rs           # Main thread GPUI app
+  └── zedra_app.rs             # Demo UI with text rendering
 
 android/app/src/main/java/dev/zedra/app/
-  ├── MainActivity.java         # Activity + frame loop
-  ├── GpuiSurfaceView.java     # Surface management + IME + touch/scroll detection
-  └── QRScannerActivity.java   # QR code scanner for pairing
+  ├── MainActivity.java        # Activity + frame loop
+  └── GpuiSurfaceView.java    # Surface management
 
 vendor/zed/crates/gpui/src/platform/android/
-  ├── platform.rs               # AndroidPlatform
-  ├── window.rs                 # AndroidWindow (CRITICAL: surface sizing)
-  ├── text_system.rs            # CosmicTextSystem for Android
-  ├── dispatcher.rs             # Task queue
-  └── keyboard.rs               # Input (stub)
+  ├── platform.rs              # AndroidPlatform
+  ├── window.rs                # AndroidWindow (CRITICAL: surface sizing)
+  ├── text_system.rs           # CosmicTextSystem for Android
+  ├── dispatcher.rs            # Task queue
+  └── keyboard.rs              # Input (stub)
 
 vendor/zed/crates/gpui/src/platform/blade/
-  └── blade_renderer.rs         # Vulkan 1.1 compatibility
+  └── blade_renderer.rs        # Vulkan 1.1 compatibility
 
 vendor/blade/ (git submodule - vulkan-1.1-compat branch)
   └── blade-graphics/src/vulkan/
-      ├── init.rs               # Vulkan 1.1 extension detection
-      ├── surface.rs            # Traditional renderpass creation
-      ├── command.rs            # Compatible rendering commands
-      └── pipeline.rs           # Pipeline for traditional renderpass
+      ├── init.rs              # Vulkan 1.1 extension detection
+      ├── surface.rs           # Traditional renderpass creation
+      ├── command.rs           # Compatible rendering commands
+      └── pipeline.rs          # Pipeline for traditional renderpass
 
 docs/
-  ├── README.md                 # Project overview
-  ├── ARCHITECTURE.md           # Design decisions
-  ├── TECHNICAL_DEBT.md         # Known issues with solutions
-  └── DEBUGGING.md              # Debug workflow and tools
+  ├── README.md                # Project overview
+  ├── ARCHITECTURE.md          # Design decisions
+  ├── TECHNICAL_DEBT.md        # Known issues with solutions
+  └── DEBUGGING.md             # Debug workflow and tools
 ```
 
-### Dependency Graph
-
-```
-zedra-ssh (defines TerminalSink trait, no terminal dependency)
-    ↑
-zedra-terminal (depends on zedra-ssh for trait, implements TerminalSink)
-    ↑
-zedra (Android cdylib, depends on all crates below)
-    ↑
-zedra-editor (standalone: gpui + tree-sitter, no SSH/terminal dependency)
-zedra-nav (standalone: gpui only — StackNavigator, TabNavigator, ModalHost)
-```
-
-## What Works
+## What Works (Phase 2)
 
 - Core rendering: Colored shapes, borders, shadows
 - Text rendering: CosmicTextSystem with Android fonts
@@ -216,32 +166,20 @@ zedra-nav (standalone: gpui only — StackNavigator, TabNavigator, ModalHost)
 - Thread-safe command queue
 - Correct pixel density handling
 - Optimized font loading (82% faster startup)
-- Touch input: tap for clicks, drag for scrolling (touch-to-scroll conversion)
-- Soft keyboard: programmatic show/hide via `requestKeyboard()`/`dismissKeyboard()`
-- Navigation: TabNavigator (bottom tabs), StackNavigator (push/pop with back button)
-- DrawerHost: slide-from-left file explorer drawer
-- Code editor: syntax-highlighted Rust code with tree-sitter, cursor, and virtual scrolling
-- File preview grid: card-based file browser that opens editor views
-- SSH terminal: connection form with SSH client (zedra-ssh + zedra-terminal)
 
 ## Known Limitations (Technical Debt)
 
 See `docs/TECHNICAL_DEBT.md` for detailed solutions.
 
-1. **Keyboard Integration** (Medium Priority)
-   - Soft keyboard can be shown/hidden programmatically but no GPUI text input fields trigger it yet
-   - `GpuiSurfaceView.requestKeyboard()` / `dismissKeyboard()` are wired but not called from Rust
-   - Solution: Add JNI calls from Rust when GPUI text inputs gain focus
+1. **Hardcoded Dimensions** (High Priority - Phase 3)
+   - Only works on 1080x2400 @ 3x DPI
+   - Location: `src/android_app.rs:151-157`
+   - Solution: Get DisplayMetrics via JNI
 
-2. **Touch Gesture Refinement** (Medium Priority)
-   - Tap vs scroll detection uses a simple distance threshold (TAP_SLOP = 20px)
-   - No fling/momentum scrolling, pinch-to-zoom, or multi-touch gestures
-   - Solution: Implement velocity tracking and `TouchPhase::Ended` fling events
-
-3. **Sample Data Only** (Low Priority)
-   - Editor shows 4 hardcoded Rust sample files, file explorer shows demo tree
-   - No filesystem access on Android yet
-   - Solution: Use Android Storage Access Framework or SSH file browsing
+2. **Input Not Forwarded** (High Priority - Phase 4)
+   - Touch/keyboard captured but not sent to GPUI
+   - Location: `src/android_app.rs:247, 262`
+   - Solution: Convert to PlatformInput and dispatch to window
 
 ## Critical Code Locations
 
@@ -274,32 +212,29 @@ pub fn handle_surface_created(&mut self, native_window: NativeWindow, context: &
 
 ### Window Creation with Actual Dimensions
 
-**File**: `crates/zedra/src/android_app.rs:handle_surface_created()`
+**File**: `src/android_app.rs:151-167`
 
-Window dimensions are now derived from the native surface size and display density (via JNI `get_density()`), not hardcoded. The surface `width`/`height` come from `surfaceChanged` and are divided by the scale factor to get logical pixels.
+```rust
+// Hardcoded for MVP - TODO: get from DisplayMetrics (Phase 3)
+let screen_width_px = 1080.0;
+let screen_height_px = 2400.0;
+let scale = 3.0;
+
+let window_bounds = WindowBounds::Windowed(Bounds {
+    origin: point(px(0.0), px(0.0)),
+    size: size(px(screen_width_px / scale), px(screen_height_px / scale)),
+});
+
+let window_options = WindowOptions {
+    window_bounds: Some(window_bounds),
+    focus: true,
+    show: true,
+    window_background: WindowBackgroundAppearance::Transparent,
+    ..Default::default()
+};
+```
 
 **Why Critical**: Using DEFAULT_WINDOW_SIZE here caused the original black screen issue. Must use actual screen dimensions.
-
-### Touch-to-Scroll Conversion
-
-**File**: `crates/zedra/src/android_app.rs:handle_touch()`
-
-GPUI scrollable elements (`uniform_list`, `overflow_y_scroll`) respond to `ScrollWheel` events, not mouse drags. The touch handler converts:
-- `ACTION_DOWN` → `MouseDown` (records position for delta tracking)
-- `ACTION_MOVE` → `ScrollWheel` with `ScrollDelta::Pixels` (delta from last position)
-- `ACTION_UP` → `MouseUp` (clears tracking)
-
-### Descriptor Pool Fix
-
-**File**: `vendor/blade/blade-graphics/src/vulkan/descriptor.rs`
-
-Blade's descriptor pools grow exponentially (`16^(growth_iter+1)` sets). The `growth_iter` counter is now reset to 0 in `reset_descriptor_pool()` to prevent unbounded growth across frames, and pool size is capped at 65536 sets.
-
-### Tree-sitter Highlight Deduplication
-
-**File**: `crates/zedra-editor/src/editor_view.rs:line_highlights()`
-
-Tree-sitter can return overlapping capture ranges. GPUI's `compute_runs()` requires non-overlapping, sorted ranges. The `line_highlights()` method sorts by start position and deduplicates overlapping spans before passing to `StyledText::with_default_highlights()`.
 
 ## Common Issues and Solutions
 
@@ -341,10 +276,9 @@ See `docs/DEBUGGING.md` for complete workflow.
 
 - **Phase 1**: Foundation ✅ Complete
 - **Phase 2**: Text Rendering ✅ Complete
-- **Phase 3**: Dynamic Configuration ✅ Complete (DisplayMetrics via JNI)
-- **Phase 4**: Input Integration ✅ Complete (touch→scroll, keyboard, tap detection)
-- **Phase 5**: Navigation + Editor ✅ Complete (tabs, stacks, drawer, syntax editor)
-- **Phase 6**: Production Hardening - Next (momentum scrolling, real file access, multi-touch)
+- **Phase 3**: Dynamic Configuration (DisplayMetrics) - Next
+- **Phase 4**: Input Integration (touch/keyboard forwarding)
+- **Phase 5**: Production Hardening
 
 ## Performance Characteristics
 
@@ -370,20 +304,6 @@ See `docs/DEBUGGING.md` for complete workflow.
 - Known issues with solutions: `docs/TECHNICAL_DEBT.md`
 - Debug workflow and tools: `docs/DEBUGGING.md`
 
-## Performance Testing
-
-Run the performance testing script after deployment to measure frame times, memory, and descriptor pool health:
-
-```bash
-./scripts/perf-test.sh
-```
-
-This captures ~10 seconds of logcat, then reports:
-- Frame timing statistics (min/max/avg/p95)
-- Memory usage (RSS from `dumpsys meminfo`)
-- Descriptor pool allocation counts
-- Any warnings or errors
-
 ## Achievement
 
 First successful port of GPUI to Android with:
@@ -393,10 +313,7 @@ First successful port of GPUI to Android with:
 - Proper surface lifecycle management
 - Optimized font loading (82% faster startup)
 - 60 FPS rendering
-- Full touch input (tap + scroll) with IME keyboard support
-- Mobile navigation (tabs, stacks, drawer)
-- Syntax-highlighted code editor with tree-sitter
 
 ---
 
-**Last Updated**: 2026-02-04
+**Last Updated**: 2026-01-30
