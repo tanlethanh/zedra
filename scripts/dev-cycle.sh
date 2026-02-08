@@ -29,6 +29,25 @@ if ! adb devices | grep -q "device$"; then
   exit 1
 fi
 
+# Handle multiple devices - prefer physical device over emulator
+DEVICE_COUNT=$(adb devices | grep -c "device$" || true)
+if [ "$DEVICE_COUNT" -gt 1 ]; then
+  echo -e "${YELLOW}  Multiple devices detected ($DEVICE_COUNT), selecting physical device...${NC}"
+
+  # Get list of devices, prefer physical (non-emulator) devices
+  PHYSICAL_DEVICE=$(adb devices | grep "device$" | grep -v "emulator" | head -1 | awk '{print $1}')
+
+  if [ -n "$PHYSICAL_DEVICE" ]; then
+    export ANDROID_SERIAL="$PHYSICAL_DEVICE"
+    echo -e "${GREEN}  → Selected physical device: $PHYSICAL_DEVICE${NC}"
+  else
+    # Fall back to first device if no physical device found
+    FIRST_DEVICE=$(adb devices | grep "device$" | head -1 | awk '{print $1}')
+    export ANDROID_SERIAL="$FIRST_DEVICE"
+    echo -e "${YELLOW}  → No physical device, using: $FIRST_DEVICE${NC}"
+  fi
+fi
+
 DEVICE_MODEL=$(adb shell getprop ro.product.model | tr -d '\r')
 echo -e "${GREEN}✓ Device connected: $DEVICE_MODEL${NC}"
 
