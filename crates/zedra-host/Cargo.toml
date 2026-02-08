@@ -4,6 +4,10 @@ version.workspace = true
 edition = "2021"
 description = "Desktop companion daemon for Zedra terminal"
 
+[lib]
+name = "zedra_host"
+path = "src/lib.rs"
+
 [[bin]]
 name = "zedra-host"
 path = "src/main.rs"
@@ -51,12 +55,29 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # System info
 hostname = "0.4"
 
+# Network interface discovery
+if-addrs.workspace = true
+
 # Error handling
 anyhow.workspace = true
 
+# Workspace crates
+zedra-rpc = { path = "../zedra-rpc" }
+zedra-fs = { path = "../zedra-fs" }
+zedra-git = { path = "../zedra-git" }
+
+# Async utilities
+futures.workspace = true
+log.workspace = true
+
 [dev-dependencies]
 tempfile = "3"
+base64-url.workspace = true
 
 [[test]]
 name = "integration"
 path = "tests/integration.rs"
+
+[[test]]
+name = "e2e_rpc"
+path = "tests/e2e_rpc.rs"
