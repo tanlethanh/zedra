@@ -7975,8 +7975,6 @@ dependencies = [
  "ndk",
  "ndk-context",
  "once_cell",
- "zedra-editor",
- "zedra-nav",
  "zedra-ssh",
  "zedra-terminal",
 ]
@@ -8023,6 +8021,18 @@ version = "0.1.0"
 dependencies = [
  "gpui",
  "log",
+]
+
+[[package]]
+name = "zedra-rpc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "log",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
