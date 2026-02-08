@@ -7985,6 +7985,8 @@ dependencies = [
  "ndk",
  "ndk-context",
  "once_cell",
+ "zedra-editor",
+ "zedra-nav",
  "zedra-ssh",
  "zedra-terminal",
 ]
