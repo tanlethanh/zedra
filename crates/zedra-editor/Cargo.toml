@@ -1,0 +1,10 @@
+[package]
+name = "zedra-editor"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gpui = { path = "../../vendor/zed/crates/gpui", features = ["android"] }
+tree-sitter = "0.26"
+tree-sitter-rust = "0.24"
+log.workspace = true
