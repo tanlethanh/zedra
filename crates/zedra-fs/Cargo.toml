@@ -1,0 +1,12 @@
+[package]
+name = "zedra-fs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+anyhow.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
