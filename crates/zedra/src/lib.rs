@@ -9,6 +9,15 @@ pub mod file_explorer;
 // File preview card grid
 pub mod file_preview_list;
 
+// Session list (saved connections)
+pub mod session_list;
+
+// Git status/diff/log view
+pub mod git_view;
+
+// AI chat (Claude Code integration)
+pub mod ai_chat;
+
 // GPUI Android JNI bridge
 pub mod android_jni;
 
