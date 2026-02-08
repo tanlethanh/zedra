@@ -44,6 +44,10 @@ pub enum AndroidCommand {
     Destroy,
     /// Request a frame render
     RequestFrame,
+    /// QR code scanned - initiate pairing
+    PairViaQr { qr_data: String },
+    /// Connect to a saved host
+    ConnectToHost { host_id: String },
 }
 
 /// Thread-safe command queue for Android

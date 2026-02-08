@@ -1,0 +1,17 @@
+[package]
+name = "zedra-ssh"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gpui = { path = "../../vendor/zed/crates/gpui", features = ["android"] }
+async-trait = "0.1"
+russh.workspace = true
+russh-keys.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+base64-url.workspace = true
+futures.workspace = true
