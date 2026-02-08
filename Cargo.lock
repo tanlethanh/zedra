@@ -7975,8 +7975,6 @@ dependencies = [
  "ndk",
  "ndk-context",
  "once_cell",
- "zedra-editor",
- "zedra-nav",
  "zedra-ssh",
  "zedra-terminal",
 ]
@@ -7989,6 +7987,27 @@ dependencies = [
  "log",
  "tree-sitter",
  "tree-sitter-rust",
+]
+
+[[package]]
+name = "zedra-fs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "serde",
+ "tempfile",
+]
+
+[[package]]
+name = "zedra-git"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -8023,6 +8042,18 @@ version = "0.1.0"
 dependencies = [
  "gpui",
  "log",
+]
+
+[[package]]
+name = "zedra-rpc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "log",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

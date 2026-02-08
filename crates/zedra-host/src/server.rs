@@ -83,6 +83,7 @@ impl server::Server for ZedraServer {
         ZedraHandler {
             username: None,
             shells: Arc::new(Mutex::new(HashMap::new())),
+            pending_readers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -91,10 +92,12 @@ impl server::Server for ZedraServer {
 struct ZedraHandler {
     username: Option<String>,
     shells: Arc<Mutex<HashMap<ChannelId, ShellState>>>,
+    /// Readers are stored separately and moved to the read task on shell_request.
+    /// This avoids holding a lock during blocking PTY reads.
+    pending_readers: Arc<Mutex<HashMap<ChannelId, Box<dyn Read + Send>>>>,
 }
 
 struct ShellState {
-    reader: Box<dyn Read + Send>,
     writer: Box<dyn Write + Send>,
     master: Box<dyn portable_pty::MasterPty + Send>,
 }
@@ -162,14 +165,18 @@ impl Handler for ZedraHandler {
         let shell = ShellSession::spawn(col_width as u16, row_height as u16)?;
         let (reader, writer, master) = shell.take_reader();
 
+        // Store reader separately for the read task (will be taken in shell_request)
+        // Store writer + master in shared map for data() and resize operations
         self.shells.lock().await.insert(
             channel_id,
             ShellState {
-                reader,
                 writer,
                 master,
             },
         );
+
+        // Store reader in a separate map for the spawned read task
+        self.pending_readers.lock().await.insert(channel_id, reader);
 
         Ok(())
     }
@@ -181,26 +188,31 @@ impl Handler for ZedraHandler {
     ) -> Result<(), Self::Error> {
         tracing::info!("Shell request on channel {}", channel_id);
 
+        // Take the reader out - it's only used by the read task, no lock contention
+        let reader = self.pending_readers.lock().await.remove(&channel_id);
+        let mut reader = match reader {
+            Some(r) => r,
+            None => {
+                tracing::error!("No reader for channel {}", channel_id);
+                return Ok(());
+            }
+        };
+
         let shells = self.shells.clone();
         let handle = session.handle();
 
         // Spawn a task to read from PTY and send to SSH channel
+        // Reader is moved here - no lock needed during blocking read
         tokio::spawn(async move {
             let mut buf = [0u8; 4096];
             loop {
-                let n = {
-                    let mut shells = shells.lock().await;
-                    let shell = match shells.get_mut(&channel_id) {
-                        Some(s) => s,
-                        None => break,
-                    };
-                    match shell.reader.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => n,
-                        Err(e) => {
-                            tracing::debug!("PTY read error: {:?}", e);
-                            break;
-                        }
+                // Blocking read without holding any lock
+                let n = match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(e) => {
+                        tracing::debug!("PTY read error: {:?}", e);
+                        break;
                     }
                 };
 
@@ -210,7 +222,8 @@ impl Handler for ZedraHandler {
                 }
             }
 
-            // Shell exited - close channel
+            // Shell exited - clean up and close channel
+            shells.lock().await.remove(&channel_id);
             let _ = handle.close(channel_id).await;
             tracing::info!("Shell exited on channel {}", channel_id);
         });
