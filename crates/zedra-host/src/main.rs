@@ -3,14 +3,10 @@
 // Provides an SSH server that Zedra (Android) connects to for remote terminal access.
 // Supports QR code pairing for easy setup and password fallback authentication.
 
-mod auth;
-mod pty;
-mod qr;
-mod server;
-mod store;
-
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+
+use zedra_host::{auth, qr, rpc_daemon, server, store};
 
 #[derive(Parser)]
 #[command(name = "zedra-host", about = "Desktop companion daemon for Zedra terminal")]
@@ -39,6 +35,20 @@ enum Commands {
     Revoke {
         /// Device ID to revoke
         device_id: String,
+    },
+    /// Start the RPC daemon (filesystem, git, terminal over JSON-RPC)
+    Daemon {
+        /// Port to listen on
+        #[arg(short, long, default_value = "2223")]
+        port: u16,
+
+        /// Bind address
+        #[arg(short, long, default_value = "0.0.0.0")]
+        bind: String,
+
+        /// Working directory to serve
+        #[arg(short, long, default_value = ".")]
+        workdir: String,
     },
     /// Set or update the fallback password
     SetPassword,
@@ -82,6 +92,17 @@ async fn main() -> Result<()> {
         Commands::Revoke { device_id } => {
             store::revoke_device(&device_id)?;
             println!("Device {} revoked.", device_id);
+        }
+        Commands::Daemon {
+            port,
+            bind,
+            workdir,
+        } => {
+            let workdir = std::path::PathBuf::from(workdir)
+                .canonicalize()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            tracing::info!("Starting RPC daemon on {}:{} serving {}", bind, port, workdir.display());
+            rpc_daemon::run_daemon(&bind, port, workdir).await?;
         }
         Commands::SetPassword => {
             let password = rpassword_prompt("Enter new password: ")?;
