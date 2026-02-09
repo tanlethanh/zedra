@@ -226,37 +226,65 @@ fn flatten_entry(entry: &FileEntry, depth: usize, path: &mut Vec<usize>, out: &m
     }
 }
 
-/// Demo file tree data (no filesystem access on Android yet).
+/// Demo file tree data with sample files for all supported languages.
 fn demo_entries() -> Vec<FileEntry> {
     vec![
+        FileEntry::dir(
+            "samples",
+            vec![
+                // Rust
+                FileEntry::file("cache.rs"),
+                // Python
+                FileEntry::file("task_queue.py"),
+                // Go
+                FileEntry::file("worker.go"),
+                // JavaScript
+                FileEntry::file("emitter.js"),
+                // TypeScript
+                FileEntry::file("repository.ts"),
+                // TSX
+                FileEntry::file("TodoList.tsx"),
+                // C
+                FileEntry::file("linked_list.c"),
+                // C++
+                FileEntry::file("observer.cpp"),
+                // CSS
+                FileEntry::file("theme.css"),
+                // JSON
+                FileEntry::file("package.json"),
+                // YAML
+                FileEntry::file("ci.yml"),
+                // Bash
+                FileEntry::file("build.sh"),
+                // Markdown
+                FileEntry::file("ARCHITECTURE.md"),
+            ],
+        ),
         FileEntry::dir(
             "src",
             vec![
                 FileEntry::dir(
                     "components",
                     vec![
-                        FileEntry::file("App.tsx"),
+                        FileEntry::file("TodoList.tsx"),
                         FileEntry::file("Header.tsx"),
-                        FileEntry::file("Sidebar.tsx"),
                     ],
                 ),
                 FileEntry::dir(
                     "utils",
-                    vec![FileEntry::file("helpers.ts"), FileEntry::file("api.ts")],
+                    vec![
+                        FileEntry::file("emitter.js"),
+                        FileEntry::file("repository.ts"),
+                    ],
                 ),
-                FileEntry::file("main.ts"),
-                FileEntry::file("index.html"),
+                FileEntry::file("theme.css"),
             ],
         ),
         FileEntry::dir(
-            "tests",
-            vec![
-                FileEntry::file("app.test.ts"),
-                FileEntry::file("helpers.test.ts"),
-            ],
+            "scripts",
+            vec![FileEntry::file("build.sh"), FileEntry::file("ci.yml")],
         ),
-        FileEntry::file("Cargo.toml"),
-        FileEntry::file("README.md"),
-        FileEntry::file(".gitignore"),
+        FileEntry::file("package.json"),
+        FileEntry::file("ARCHITECTURE.md"),
     ]
 }

@@ -267,10 +267,11 @@ impl ZedraApp {
                   _window: &mut Window,
                   cx: &mut Context<ZedraApp>| {
                 if let Some(sample) = SAMPLE_FILES.get(event.index) {
+                    let filename = sample.filename;
                     let editor_view =
-                        cx.new(|cx| EditorView::new(sample.content.to_string(), cx));
+                        cx.new(|cx| EditorView::new(sample.content.to_string(), filename, cx));
                     editor_stack_for_preview.update(cx, |stack, cx| {
-                        stack.push(editor_view.into(), sample.filename, cx);
+                        stack.push(editor_view.into(), filename, cx);
                     });
                 }
             },
@@ -314,10 +315,11 @@ impl ZedraApp {
                     // Try to match the filename to a sample file
                     let filename = event.path.rsplit('/').next().unwrap_or(&event.path);
                     if let Some(sample) = SAMPLE_FILES.iter().find(|s| s.filename == filename) {
+                        let sample_filename = sample.filename;
                         let editor_view =
-                            cx.new(|cx| EditorView::new(sample.content.to_string(), cx));
+                            cx.new(|cx| EditorView::new(sample.content.to_string(), sample_filename, cx));
                         editor_stack.update(cx, |stack, cx| {
-                            stack.push(editor_view.into(), sample.filename, cx);
+                            stack.push(editor_view.into(), sample_filename, cx);
                         });
                     }
                 }

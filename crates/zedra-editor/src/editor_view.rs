@@ -4,7 +4,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::buffer::Buffer;
-use crate::highlighter::Highlighter;
+use crate::highlighter::{Highlighter, Language};
 use crate::theme::SyntaxTheme;
 
 const LINE_HEIGHT: f32 = 20.0;
@@ -22,8 +22,24 @@ pub struct EditorView {
 }
 
 impl EditorView {
-    pub fn new(content: String, cx: &mut App) -> Self {
-        let mut highlighter = Highlighter::rust();
+    /// Create a new editor view with content and filename for language detection.
+    pub fn new(content: String, filename: &str, cx: &mut App) -> Self {
+        let mut highlighter = Highlighter::from_filename(filename);
+        highlighter.parse(&content);
+
+        Self {
+            buffer: Buffer::new(content),
+            highlighter,
+            theme: SyntaxTheme::default_dark(),
+            cursor_offset: 0,
+            scroll_handle: UniformListScrollHandle::new(),
+            focus_handle: cx.focus_handle(),
+        }
+    }
+
+    /// Create a new editor view with explicit language.
+    pub fn with_language(content: String, language: Language, cx: &mut App) -> Self {
+        let mut highlighter = Highlighter::new(language);
         highlighter.parse(&content);
 
         Self {
@@ -160,7 +176,6 @@ impl EditorView {
         }
         merged
     }
-
 }
 
 impl Focusable for EditorView {
@@ -174,17 +189,22 @@ impl Render for EditorView {
         let line_count = self.buffer.line_count();
 
         // Capture data needed by the uniform_list closure
-        let line_highlights: Vec<(String, String, Vec<(Range<usize>, HighlightStyle)>, bool, usize)> =
-            (0..line_count)
-                .map(|line| {
-                    let line_text = self.buffer.line_text(line).to_string();
-                    let line_number = format!("{:>4}", line + 1);
-                    let highlights = self.line_highlights(line);
-                    let (cursor_row, cursor_col) = self.buffer.offset_to_point(self.cursor_offset);
-                    let show_cursor = cursor_row == line;
-                    (line_text, line_number, highlights, show_cursor, cursor_col)
-                })
-                .collect();
+        let line_highlights: Vec<(
+            String,
+            String,
+            Vec<(Range<usize>, HighlightStyle)>,
+            bool,
+            usize,
+        )> = (0..line_count)
+            .map(|line| {
+                let line_text = self.buffer.line_text(line).to_string();
+                let line_number = format!("{:>4}", line + 1);
+                let highlights = self.line_highlights(line);
+                let (cursor_row, cursor_col) = self.buffer.offset_to_point(self.cursor_offset);
+                let show_cursor = cursor_row == line;
+                (line_text, line_number, highlights, show_cursor, cursor_col)
+            })
+            .collect();
 
         let text_style = {
             let mut style = window.text_style();
@@ -250,8 +270,13 @@ impl Render for EditorView {
                     move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
                         range
                             .map(|line| {
-                                let (ref line_text, ref line_number, ref highlights, show_cursor, cursor_col) =
-                                    line_highlights[line];
+                                let (
+                                    ref line_text,
+                                    ref line_number,
+                                    ref highlights,
+                                    show_cursor,
+                                    cursor_col,
+                                ) = line_highlights[line];
 
                                 let styled_text = if line_text.is_empty() {
                                     StyledText::new(" ")
