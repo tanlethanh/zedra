@@ -1,0 +1,12 @@
+[package]
+name = "zedra-preview"
+version = "0.1.0"
+edition = "2021"
+description = "Component preview system for GPUI Mobile"
+license = "MIT"
+
+[dependencies]
+gpui = { path = "../../vendor/zed/crates/gpui" }
+log = "0.4"
+
+[dev-dependencies]
