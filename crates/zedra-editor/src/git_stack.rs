@@ -1,16 +1,18 @@
 //! GitStack - A fullscreen git source control component
 //!
 //! This component provides a VS Code/Zed-like git interface with:
-//! - Left sidebar showing changed files organized by status
+//! - Left sidebar showing changed files organized by status (swipe-to-open drawer)
 //! - Git actions panel with stage/unstage/commit controls
 //! - Main content area showing the diff for the selected file
 //!
 //! Designed to be reusable for any git project.
 
 use std::ops::Range;
+use std::sync::{Arc, Mutex};
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use zedra_gesture::{pan_gesture, GestureState, PanGestureEvent};
 
 use crate::diff_view::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 use crate::highlighter::Highlighter;
@@ -155,6 +157,27 @@ pub enum GitAction {
     Pull,
 }
 
+/// Drawer state for gesture-based opening/closing
+#[derive(Clone)]
+struct DrawerState {
+    /// Current drawer offset (0 = closed, SIDEBAR_WIDTH = fully open)
+    offset: f32,
+    /// Whether a drag gesture is in progress
+    is_dragging: bool,
+    /// Starting offset when drag began
+    start_offset: f32,
+}
+
+impl Default for DrawerState {
+    fn default() -> Self {
+        Self {
+            offset: SIDEBAR_WIDTH, // Start open
+            is_dragging: false,
+            start_offset: 0.0,
+        }
+    }
+}
+
 /// Main GitStack component
 pub struct GitStack {
     repo_state: GitRepoState,
@@ -167,6 +190,8 @@ pub struct GitStack {
     theme: SyntaxTheme,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
+    /// Shared drawer state for gesture handling
+    drawer_state: Arc<Mutex<DrawerState>>,
 }
 
 impl GitStack {
@@ -186,6 +211,7 @@ impl GitStack {
             theme: SyntaxTheme::default_dark(),
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
+            drawer_state: Arc::new(Mutex::new(DrawerState::default())),
         }
     }
 
@@ -395,7 +421,50 @@ impl GitStack {
 
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar_visible = !self.sidebar_visible;
+        if let Ok(mut state) = self.drawer_state.lock() {
+            state.offset = if self.sidebar_visible { SIDEBAR_WIDTH } else { 0.0 };
+        }
         cx.notify();
+    }
+
+    fn handle_drawer_gesture(&mut self, event: &PanGestureEvent, cx: &mut Context<Self>) {
+        match event.state {
+            GestureState::Began => {
+                if let Ok(mut state) = self.drawer_state.lock() {
+                    state.is_dragging = true;
+                    state.start_offset = state.offset;
+                }
+            }
+            GestureState::Changed => {
+                if let Ok(mut state) = self.drawer_state.lock() {
+                    // Horizontal drag: positive translation.x means swipe right (open)
+                    let new_offset = (state.start_offset + event.translation.x).clamp(0.0, SIDEBAR_WIDTH);
+                    state.offset = new_offset;
+                }
+                cx.notify();
+            }
+            GestureState::Ended | GestureState::Cancelled => {
+                if let Ok(mut state) = self.drawer_state.lock() {
+                    state.is_dragging = false;
+                    // Snap to open or closed based on velocity and position
+                    let should_open = if event.velocity.x.abs() > 100.0 {
+                        // Use velocity direction if fast enough
+                        event.velocity.x > 0.0
+                    } else {
+                        // Otherwise use position threshold
+                        state.offset > SIDEBAR_WIDTH / 2.0
+                    };
+                    state.offset = if should_open { SIDEBAR_WIDTH } else { 0.0 };
+                    self.sidebar_visible = should_open;
+                }
+                cx.notify();
+            }
+            _ => {}
+        }
+    }
+
+    fn get_drawer_offset(&self) -> f32 {
+        self.drawer_state.lock().map(|s| s.offset).unwrap_or(0.0)
     }
 
     fn toggle_section(&mut self, section: usize, cx: &mut Context<Self>) {
@@ -1060,6 +1129,63 @@ impl Render for GitStack {
             || !self.repo_state.unstaged_files.is_empty()
             || !self.repo_state.untracked_files.is_empty();
 
+        let drawer_offset = self.get_drawer_offset();
+
+        // Main content area wrapped with pan gesture for drawer control
+        let main_content = div()
+            .flex()
+            .flex_row()
+            .flex_1()
+            .overflow_hidden()
+            // Sidebar - always rendered, positioned based on offset
+            .child(
+                div()
+                    .absolute()
+                    .left(px(drawer_offset - SIDEBAR_WIDTH))
+                    .top_0()
+                    .bottom_0()
+                    .child(self.render_sidebar(cx)),
+            )
+            // Backdrop overlay when drawer is partially or fully open
+            .when(drawer_offset > 0.0, |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .left(px(drawer_offset))
+                        .top_0()
+                        .right_0()
+                        .bottom_0()
+                        .bg(rgba(0x000000, (drawer_offset / SIDEBAR_WIDTH * 0.5) as f32))
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                            // Tap on backdrop closes the drawer
+                            if let Ok(mut state) = this.drawer_state.lock() {
+                                state.offset = 0.0;
+                            }
+                            this.sidebar_visible = false;
+                            cx.notify();
+                        })),
+                )
+            })
+            // Diff content or empty state - offset by drawer
+            .child(
+                div()
+                    .ml(px(drawer_offset))
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .bg(rgb(0x282c34))
+                    .when(has_changes, |el| el.child(self.render_diff_content(window, cx)))
+                    .when(!has_changes, |el| el.child(self.render_empty_state())),
+            );
+
+        // Wrap content with pan gesture for drawer control
+        let gesture_content = pan_gesture()
+            .min_distance(10.0)
+            .on_pan(cx.listener(|this, event: &PanGestureEvent, _, cx| {
+                this.handle_drawer_gesture(event, cx);
+            }))
+            .child(main_content);
+
         div()
             .flex()
             .flex_col()
@@ -1074,25 +1200,7 @@ impl Render for GitStack {
             }))
             // Header bar
             .child(self.render_header(cx))
-            // Main content area
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .flex_1()
-                    .overflow_hidden()
-                    // Sidebar
-                    .when(self.sidebar_visible, |el| el.child(self.render_sidebar(cx)))
-                    // Diff content or empty state
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .flex_col()
-                            .bg(rgb(0x282c34))
-                            .when(has_changes, |el| el.child(self.render_diff_content(window, cx)))
-                            .when(!has_changes, |el| el.child(self.render_empty_state())),
-                    ),
-            )
+            // Main content area with gesture handling
+            .child(gesture_content)
     }
 }
