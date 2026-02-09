@@ -2,9 +2,10 @@
 //!
 //! Provides a fluent API for adding gesture recognition to GPUI elements:
 //! ```ignore
-//! pan_gesture(my_view)
+//! pan_gesture()
+//!     .min_distance(10.0)
 //!     .on_pan(|event, cx| { ... })
-//!     .on_end(|event, cx| { ... })
+//!     .child(my_view)
 //! ```
 
 use std::sync::{Arc, Mutex};
@@ -36,17 +37,17 @@ pub type PinchHandler = Arc<dyn Fn(&PinchGestureEvent, &mut App) + Send + Sync>;
 
 /// Wraps an element with pan gesture recognition
 pub struct PanGestureElement {
-    child: AnyElement,
+    child: Option<AnyElement>,
     recognizer: Arc<Mutex<PanGesture>>,
     on_begin: Option<PanHandler>,
     on_change: Option<PanHandler>,
     on_end: Option<PanHandler>,
 }
 
-/// Create a pan gesture wrapper for an element
-pub fn pan_gesture(child: impl IntoElement) -> PanGestureElement {
+/// Create a pan gesture wrapper
+pub fn pan_gesture() -> PanGestureElement {
     PanGestureElement {
-        child: child.into_any_element(),
+        child: None,
         recognizer: Arc::new(Mutex::new(PanGesture::new())),
         on_begin: None,
         on_change: None,
@@ -55,6 +56,12 @@ pub fn pan_gesture(child: impl IntoElement) -> PanGestureElement {
 }
 
 impl PanGestureElement {
+    /// Set the child element to wrap with gesture recognition
+    pub fn child(mut self, child: impl IntoElement) -> Self {
+        self.child = Some(child.into_any_element());
+        self
+    }
+
     /// Set minimum distance to start recognizing
     pub fn min_distance(self, distance: f32) -> Self {
         if let Ok(mut recognizer) = self.recognizer.lock() {
@@ -148,7 +155,7 @@ impl IntoElement for PanGestureElement {
 }
 
 impl Element for PanGestureElement {
-    type RequestLayoutState = AnyElement;
+    type RequestLayoutState = Option<AnyElement>;
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
@@ -160,9 +167,13 @@ impl Element for PanGestureElement {
         _id: Option<&GlobalElementId>,
         cx: &mut WindowContext,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut child = std::mem::replace(&mut self.child, gpui::Empty.into_any_element());
-        let layout_id = child.request_layout(cx);
-        (layout_id, child)
+        if let Some(mut child) = self.child.take() {
+            let layout_id = child.request_layout(cx);
+            (layout_id, Some(child))
+        } else {
+            let layout_id = cx.request_layout(gpui::Style::default(), []);
+            (layout_id, None)
+        }
     }
 
     fn prepaint(
@@ -172,7 +183,9 @@ impl Element for PanGestureElement {
         child: &mut Self::RequestLayoutState,
         cx: &mut WindowContext,
     ) -> Self::PrepaintState {
-        child.prepaint(cx);
+        if let Some(child) = child {
+            child.prepaint(cx);
+        }
     }
 
     fn paint(
@@ -183,7 +196,9 @@ impl Element for PanGestureElement {
         _prepaint: &mut Self::PrepaintState,
         cx: &mut WindowContext,
     ) {
-        child.paint(cx);
+        if let Some(child) = child {
+            child.paint(cx);
+        }
 
         // Register mouse event handlers for gesture recognition
         let recognizer = self.recognizer.clone();
@@ -277,21 +292,27 @@ impl Element for PanGestureElement {
 
 /// Wraps an element with tap gesture recognition
 pub struct TapGestureElement {
-    child: AnyElement,
+    child: Option<AnyElement>,
     recognizer: Arc<Mutex<TapGesture>>,
     on_tap: Option<TapHandler>,
 }
 
-/// Create a tap gesture wrapper for an element
-pub fn tap_gesture(child: impl IntoElement) -> TapGestureElement {
+/// Create a tap gesture wrapper
+pub fn tap_gesture() -> TapGestureElement {
     TapGestureElement {
-        child: child.into_any_element(),
+        child: None,
         recognizer: Arc::new(Mutex::new(TapGesture::new())),
         on_tap: None,
     }
 }
 
 impl TapGestureElement {
+    /// Set the child element to wrap with gesture recognition
+    pub fn child(mut self, child: impl IntoElement) -> Self {
+        self.child = Some(child.into_any_element());
+        self
+    }
+
     /// Set number of taps required
     pub fn number_of_taps(self, count: u8) -> Self {
         if let Ok(mut recognizer) = self.recognizer.lock() {
@@ -319,7 +340,7 @@ impl IntoElement for TapGestureElement {
 }
 
 impl Element for TapGestureElement {
-    type RequestLayoutState = AnyElement;
+    type RequestLayoutState = Option<AnyElement>;
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
@@ -331,9 +352,13 @@ impl Element for TapGestureElement {
         _id: Option<&GlobalElementId>,
         cx: &mut WindowContext,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut child = std::mem::replace(&mut self.child, gpui::Empty.into_any_element());
-        let layout_id = child.request_layout(cx);
-        (layout_id, child)
+        if let Some(mut child) = self.child.take() {
+            let layout_id = child.request_layout(cx);
+            (layout_id, Some(child))
+        } else {
+            let layout_id = cx.request_layout(gpui::Style::default(), []);
+            (layout_id, None)
+        }
     }
 
     fn prepaint(
@@ -343,7 +368,9 @@ impl Element for TapGestureElement {
         child: &mut Self::RequestLayoutState,
         cx: &mut WindowContext,
     ) -> Self::PrepaintState {
-        child.prepaint(cx);
+        if let Some(child) = child {
+            child.prepaint(cx);
+        }
     }
 
     fn paint(
@@ -354,7 +381,9 @@ impl Element for TapGestureElement {
         _prepaint: &mut Self::PrepaintState,
         cx: &mut WindowContext,
     ) {
-        child.paint(cx);
+        if let Some(child) = child {
+            child.paint(cx);
+        }
 
         let recognizer = self.recognizer.clone();
 
@@ -408,17 +437,17 @@ impl Element for TapGestureElement {
 
 /// Wraps an element with pinch gesture recognition
 pub struct PinchGestureElement {
-    child: AnyElement,
+    child: Option<AnyElement>,
     recognizer: Arc<Mutex<PinchGesture>>,
     on_begin: Option<PinchHandler>,
     on_change: Option<PinchHandler>,
     on_end: Option<PinchHandler>,
 }
 
-/// Create a pinch gesture wrapper for an element
-pub fn pinch_gesture(child: impl IntoElement) -> PinchGestureElement {
+/// Create a pinch gesture wrapper
+pub fn pinch_gesture() -> PinchGestureElement {
     PinchGestureElement {
-        child: child.into_any_element(),
+        child: None,
         recognizer: Arc::new(Mutex::new(PinchGesture::new())),
         on_begin: None,
         on_change: None,
@@ -427,6 +456,12 @@ pub fn pinch_gesture(child: impl IntoElement) -> PinchGestureElement {
 }
 
 impl PinchGestureElement {
+    /// Set the child element to wrap with gesture recognition
+    pub fn child(mut self, child: impl IntoElement) -> Self {
+        self.child = Some(child.into_any_element());
+        self
+    }
+
     /// Set handler for when pinch begins
     pub fn on_begin<F>(mut self, handler: F) -> Self
     where
@@ -478,7 +513,7 @@ impl IntoElement for PinchGestureElement {
 }
 
 impl Element for PinchGestureElement {
-    type RequestLayoutState = AnyElement;
+    type RequestLayoutState = Option<AnyElement>;
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
@@ -490,9 +525,13 @@ impl Element for PinchGestureElement {
         _id: Option<&GlobalElementId>,
         cx: &mut WindowContext,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut child = std::mem::replace(&mut self.child, gpui::Empty.into_any_element());
-        let layout_id = child.request_layout(cx);
-        (layout_id, child)
+        if let Some(mut child) = self.child.take() {
+            let layout_id = child.request_layout(cx);
+            (layout_id, Some(child))
+        } else {
+            let layout_id = cx.request_layout(gpui::Style::default(), []);
+            (layout_id, None)
+        }
     }
 
     fn prepaint(
@@ -502,7 +541,9 @@ impl Element for PinchGestureElement {
         child: &mut Self::RequestLayoutState,
         cx: &mut WindowContext,
     ) -> Self::PrepaintState {
-        child.prepaint(cx);
+        if let Some(child) = child {
+            child.prepaint(cx);
+        }
     }
 
     fn paint(
@@ -513,7 +554,9 @@ impl Element for PinchGestureElement {
         _prepaint: &mut Self::PrepaintState,
         cx: &mut WindowContext,
     ) {
-        child.paint(cx);
+        if let Some(child) = child {
+            child.paint(cx);
+        }
 
         // Note: Pinch gestures require multi-touch which isn't available via mouse events
         // This will need JNI integration to receive actual multi-touch events

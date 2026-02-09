@@ -12,15 +12,17 @@
 //! use zedra_gesture::{pan_gesture, PanGestureEvent};
 //!
 //! fn my_view(cx: &mut Context<Self>) -> impl IntoElement {
-//!     pan_gesture(
-//!         div()
-//!             .size_full()
-//!             .bg(rgb(0x282c34))
-//!             .child("Drag me!")
-//!     )
-//!     .on_pan(|event, cx| {
-//!         println!("Pan: {:?}", event.translation);
-//!     })
+//!     pan_gesture()
+//!         .min_distance(10.0)
+//!         .on_pan(|event, cx| {
+//!             println!("Pan: {:?}", event.translation);
+//!         })
+//!         .child(
+//!             div()
+//!                 .size_full()
+//!                 .bg(rgb(0x282c34))
+//!                 .child("Drag me!")
+//!         )
 //! }
 //! ```
 //!
