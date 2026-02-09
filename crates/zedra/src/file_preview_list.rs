@@ -3,6 +3,7 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use zedra_theme::Theme;
 
 /// Metadata for a sample file shown in the preview grid.
 pub struct SampleFile {
@@ -995,13 +996,28 @@ pub struct PreviewSelected {
 
 pub struct FilePreviewList {
     focus_handle: FocusHandle,
+    theme: Theme,
 }
 
 impl FilePreviewList {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
+            theme: Theme::default(),
         }
+    }
+
+    /// Create with a custom theme.
+    pub fn with_theme(theme: Theme, cx: &mut Context<Self>) -> Self {
+        Self {
+            focus_handle: cx.focus_handle(),
+            theme,
+        }
+    }
+
+    /// Set the theme.
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
     }
 }
 
@@ -1015,17 +1031,26 @@ impl Focusable for FilePreviewList {
 
 impl Render for FilePreviewList {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut grid = div().flex().flex_row().flex_wrap().gap_3().p_4();
+        let colors = &self.theme.colors;
+        let lang_colors = &self.theme.language_colors;
+        let config = &self.theme.file_preview;
+
+        let mut grid = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap(px(config.gap))
+            .p_4();
 
         for (idx, sample) in SAMPLE_FILES.iter().enumerate() {
-            // First 6 lines of code, truncated to ~24 chars each
+            // First N lines of code, truncated
             let preview_lines: Vec<String> = sample
                 .content
                 .lines()
-                .take(6)
+                .take(config.preview_lines)
                 .map(|l| {
-                    if l.len() > 24 {
-                        format!("{}...", &l[..24])
+                    if l.len() > config.max_line_chars {
+                        format!("{}...", &l[..config.max_line_chars])
                     } else {
                         l.to_string()
                     }
@@ -1036,38 +1061,30 @@ impl Render for FilePreviewList {
             let filename: SharedString = sample.filename.into();
             let language: SharedString = sample.language.into();
 
-            // Color-code language badges
-            let badge_color = match sample.language {
-                "Rust" => rgb(0xdea584),
-                "Python" => rgb(0x3572a5),
-                "Go" => rgb(0x00add8),
-                "JavaScript" => rgb(0xf1e05a),
-                "TypeScript" => rgb(0x3178c6),
-                "TSX" => rgb(0x3178c6),
-                "C" => rgb(0x555555),
-                "C++" => rgb(0xf34b7d),
-                "CSS" => rgb(0x563d7c),
-                "JSON" => rgb(0x292929),
-                "YAML" => rgb(0xcb171e),
-                "Bash" => rgb(0x89e051),
-                "Markdown" => rgb(0x083fa1),
-                _ => rgb(0x3e4451),
-            };
+            // Get language badge color from theme
+            let badge_color = lang_colors.for_language(sample.language).to_hsla();
+
+            let bg_card = colors.bg_editor.to_hsla();
+            let border_color = colors.border_subtle.to_hsla();
+            let border_focused = colors.border_focused.to_hsla();
+            let text_primary = colors.text_primary.to_hsla();
+            let text_secondary = colors.text_secondary.to_hsla();
+            let text_muted = colors.text_muted.to_hsla();
 
             grid = grid.child(
                 div()
-                    .w(px(155.0))
-                    .h(px(180.0))
-                    .bg(rgb(0x282c34))
-                    .rounded(px(8.0))
+                    .w(px(config.card_width))
+                    .h(px(config.card_height))
+                    .bg(bg_card)
+                    .rounded(px(config.border_radius))
                     .border_1()
-                    .border_color(rgb(0x3e4451))
+                    .border_color(border_color)
                     .p_3()
                     .flex()
                     .flex_col()
                     .gap_2()
                     .cursor_pointer()
-                    .hover(|s| s.border_color(rgb(0x61afef)))
+                    .hover(|s| s.border_color(border_focused))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |_this, _event, _window, cx| {
@@ -1075,7 +1092,7 @@ impl Render for FilePreviewList {
                         }),
                     )
                     // Filename
-                    .child(div().text_sm().text_color(rgb(0xabb2bf)).child(filename))
+                    .child(div().text_sm().text_color(text_primary).child(filename))
                     // Language badge
                     .child(
                         div()
@@ -1093,18 +1110,22 @@ impl Render for FilePreviewList {
                             .flex_1()
                             .overflow_hidden()
                             .text_xs()
-                            .text_color(rgb(0x5c6370))
+                            .text_color(text_secondary)
                             .child(preview_text),
                     )
                     // Line count
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(0x4b5263))
+                            .text_color(text_muted)
                             .child(line_count_label),
                     ),
             );
         }
+
+        let bg_primary = colors.bg_primary.to_hsla();
+        let accent = colors.accent_primary.to_hsla();
+        let text_secondary = colors.text_secondary.to_hsla();
 
         div()
             .id("file-preview-list")
@@ -1112,20 +1133,15 @@ impl Render for FilePreviewList {
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0x1e1e1e))
+            .bg(bg_primary)
             .overflow_y_scroll()
             .child(
                 div()
                     .p_4()
+                    .child(div().text_color(accent).text_lg().child("Code Samples"))
                     .child(
                         div()
-                            .text_color(rgb(0x61afef))
-                            .text_lg()
-                            .child("Code Samples"),
-                    )
-                    .child(
-                        div()
-                            .text_color(rgb(0x5c6370))
+                            .text_color(text_secondary)
                             .text_sm()
                             .mt_1()
                             .child("Tap a file to open in editor"),

@@ -1,0 +1,10 @@
+[package]
+name = "zedra-theme"
+version.workspace = true
+edition.workspace = true
+description = "Theme and configuration system for Zedra"
+
+[dependencies]
+gpui = { path = "../../vendor/zed/crates/gpui", features = ["android"] }
+serde.workspace = true
+serde_json.workspace = true

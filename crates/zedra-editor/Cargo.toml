@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 gpui = { path = "../../vendor/zed/crates/gpui", features = ["android"] }
+zedra-theme = { path = "../zedra-theme" }
 tree-sitter = "0.26"
 log.workspace = true
 

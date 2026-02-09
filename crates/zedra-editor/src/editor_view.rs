@@ -2,36 +2,17 @@ use std::ops::Range;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use zedra_theme::{EditorConfig, LanguageColors, SyntaxTheme, Theme};
 
 use crate::buffer::Buffer;
 use crate::highlighter::{Highlighter, Language};
-use crate::theme::SyntaxTheme;
-
-// Editor styling constants
-const LINE_HEIGHT: f32 = 22.0;
-const GUTTER_WIDTH: f32 = 52.0;
-const FONT_SIZE: f32 = 13.0;
-const HORIZONTAL_PADDING: f32 = 12.0;
-
-// Colors (One Dark inspired)
-const BG_PRIMARY: u32 = 0x1e2127;
-const BG_EDITOR: u32 = 0x282c34;
-const BG_GUTTER: u32 = 0x21252b;
-const BG_CURRENT_LINE: u32 = 0x2c313c;
-const BG_STATUS_BAR: u32 = 0x21252b;
-const BORDER_SUBTLE: u32 = 0x3e4451;
-const TEXT_PRIMARY: u32 = 0xabb2bf;
-const TEXT_SECONDARY: u32 = 0x5c6370;
-const TEXT_GUTTER: u32 = 0x4b5263;
-const TEXT_GUTTER_ACTIVE: u32 = 0x737984;
-const CURSOR_COLOR: u32 = 0x528bff;
-const ACCENT_COLOR: u32 = 0x61afef;
 
 /// A code editor view with syntax highlighting and virtual scrolling.
 pub struct EditorView {
     buffer: Buffer,
     highlighter: Highlighter,
-    theme: SyntaxTheme,
+    syntax_theme: SyntaxTheme,
+    theme: Theme,
     cursor_offset: usize,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
@@ -42,11 +23,13 @@ impl EditorView {
     pub fn new(content: String, filename: &str, cx: &mut App) -> Self {
         let mut highlighter = Highlighter::from_filename(filename);
         highlighter.parse(&content);
+        let theme = Theme::default();
 
         Self {
             buffer: Buffer::new(content),
             highlighter,
-            theme: SyntaxTheme::default_dark(),
+            syntax_theme: theme.syntax_theme(),
+            theme,
             cursor_offset: 0,
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
@@ -57,27 +40,56 @@ impl EditorView {
     pub fn with_language(content: String, language: Language, cx: &mut App) -> Self {
         let mut highlighter = Highlighter::new(language);
         highlighter.parse(&content);
+        let theme = Theme::default();
 
         Self {
             buffer: Buffer::new(content),
             highlighter,
-            theme: SyntaxTheme::default_dark(),
+            syntax_theme: theme.syntax_theme(),
+            theme,
             cursor_offset: 0,
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
         }
     }
 
-    /// Replace the entire buffer content (e.g. when loading a remote file).
+    /// Create a new editor view with a custom theme.
+    pub fn with_theme(content: String, filename: &str, theme: Theme, cx: &mut App) -> Self {
+        let mut highlighter = Highlighter::from_filename(filename);
+        highlighter.parse(&content);
+
+        Self {
+            buffer: Buffer::new(content),
+            highlighter,
+            syntax_theme: theme.syntax_theme(),
+            theme,
+            cursor_offset: 0,
+            scroll_handle: UniformListScrollHandle::new(),
+            focus_handle: cx.focus_handle(),
+        }
+    }
+
+    /// Replace the entire buffer content.
     pub fn set_content(&mut self, content: String) {
         self.buffer.set_text(content);
         self.highlighter.parse(self.buffer.text());
         self.cursor_offset = 0;
     }
 
+    /// Set a new theme.
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.syntax_theme = theme.syntax_theme();
+        self.theme = theme;
+    }
+
     /// Get the current language.
     pub fn language(&self) -> Language {
         self.highlighter.language()
+    }
+
+    /// Get a reference to the current theme.
+    pub fn theme(&self) -> &Theme {
+        &self.theme
     }
 
     fn move_cursor_left(&mut self) {
@@ -166,7 +178,7 @@ impl EditorView {
 
         let mut result: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
         for (span_range, capture_name) in &raw_highlights {
-            if let Some(style) = self.theme.get(capture_name) {
+            if let Some(style) = self.syntax_theme.get(capture_name) {
                 let start = span_range.start.max(line_start) - line_start;
                 let end = span_range.end.min(line_end) - line_start;
                 if start < end {
@@ -192,7 +204,7 @@ impl EditorView {
     }
 
     /// Render the status bar at the bottom.
-    fn render_status_bar(&self, cx: &Context<Self>) -> impl IntoElement {
+    fn render_status_bar(&self) -> impl IntoElement {
         let language = self.highlighter.language();
         let language_name: SharedString = language.display_name().into();
         let (cursor_row, cursor_col) = self.buffer.offset_to_point(self.cursor_offset);
@@ -200,29 +212,19 @@ impl EditorView {
             format!("Ln {}, Col {}", cursor_row + 1, cursor_col + 1).into();
         let line_count_text: SharedString = format!("{} lines", self.buffer.line_count()).into();
 
-        // Language badge color
-        let badge_color = match language {
-            Language::Rust => rgb(0xdea584),
-            Language::Python => rgb(0x3572a5),
-            Language::Go => rgb(0x00add8),
-            Language::JavaScript => rgb(0xf1e05a),
-            Language::TypeScript | Language::Tsx => rgb(0x3178c6),
-            Language::C => rgb(0x555555),
-            Language::Cpp => rgb(0xf34b7d),
-            Language::Css => rgb(0x563d7c),
-            Language::Json => rgb(0x292929),
-            Language::Yaml => rgb(0xcb171e),
-            Language::Bash => rgb(0x89e051),
-            Language::Markdown => rgb(0x083fa1),
-            Language::PlainText => rgb(0x5c6370),
-        };
+        let colors = &self.theme.colors;
+        let lang_colors = &self.theme.language_colors;
+        let status_bar = &self.theme.status_bar;
+
+        // Get language badge color
+        let badge_color = lang_colors.for_language(language.display_name());
 
         div()
-            .h(px(28.0))
+            .h(px(status_bar.height))
             .w_full()
-            .bg(rgb(BG_STATUS_BAR))
+            .bg(colors.bg_status_bar.to_hsla())
             .border_t_1()
-            .border_color(rgb(BORDER_SUBTLE))
+            .border_color(colors.border_subtle.to_hsla())
             .flex()
             .flex_row()
             .items_center()
@@ -240,7 +242,7 @@ impl EditorView {
                             .px(px(8.0))
                             .py(px(2.0))
                             .rounded(px(3.0))
-                            .bg(badge_color)
+                            .bg(badge_color.to_hsla())
                             .text_xs()
                             .text_color(rgb(0xffffff))
                             .child(language_name),
@@ -248,7 +250,7 @@ impl EditorView {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(TEXT_SECONDARY))
+                            .text_color(colors.text_secondary.to_hsla())
                             .child(line_count_text),
                     ),
             )
@@ -256,7 +258,7 @@ impl EditorView {
                 // Right side: cursor position
                 div()
                     .text_xs()
-                    .text_color(rgb(TEXT_SECONDARY))
+                    .text_color(colors.text_secondary.to_hsla())
                     .child(position_text),
             )
     }
@@ -272,6 +274,9 @@ impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let line_count = self.buffer.line_count();
         let (cursor_row, _) = self.buffer.offset_to_point(self.cursor_offset);
+
+        let colors = &self.theme.colors;
+        let config = &self.theme.editor;
 
         // Pre-compute line data
         let line_highlights: Vec<(
@@ -293,16 +298,32 @@ impl Render for EditorView {
 
         let text_style = {
             let mut style = window.text_style();
-            style.color = rgb(TEXT_PRIMARY).into();
-            style.font_size = px(FONT_SIZE).into();
+            style.color = colors.text_primary.to_hsla();
+            style.font_size = px(config.font_size).into();
             style
         };
+
+        // Clone values needed in closures
+        let line_height = config.line_height;
+        let gutter_width = config.gutter_width;
+        let horizontal_padding = config.horizontal_padding;
+        let font_size = config.font_size;
+        let cursor_width = config.cursor_width;
+
+        let bg_primary = colors.bg_primary.to_hsla();
+        let bg_editor = colors.bg_editor.to_hsla();
+        let bg_gutter = colors.bg_gutter.to_hsla();
+        let bg_current_line = colors.bg_current_line.to_hsla();
+        let border_subtle = colors.border_subtle.to_hsla();
+        let text_gutter = colors.text_gutter.to_hsla();
+        let text_gutter_active = colors.text_gutter_active.to_hsla();
+        let cursor_color = colors.cursor.to_hsla();
 
         div()
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(BG_PRIMARY))
+            .bg(bg_primary)
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 let keystroke = &event.keystroke;
@@ -359,15 +380,15 @@ impl Render for EditorView {
                     // Gutter
                     .child(
                         div()
-                            .w(px(GUTTER_WIDTH))
+                            .w(px(gutter_width))
                             .h_full()
-                            .bg(rgb(BG_GUTTER))
+                            .bg(bg_gutter)
                             .border_r_1()
-                            .border_color(rgb(BORDER_SUBTLE)),
+                            .border_color(border_subtle),
                     )
                     // Code area with uniform list
                     .child(
-                        div().flex_1().bg(rgb(BG_EDITOR)).child(
+                        div().flex_1().bg(bg_editor).child(
                             uniform_list("editor-lines", line_count, {
                                 let text_style = text_style.clone();
                                 move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
@@ -399,54 +420,52 @@ impl Render for EditorView {
                                             // Line container
                                             div()
                                                 .w_full()
-                                                .h(px(LINE_HEIGHT))
+                                                .h(px(line_height))
                                                 .flex()
                                                 .flex_row()
                                                 // Current line highlight
-                                                .when(is_current_line, |el| {
-                                                    el.bg(rgb(BG_CURRENT_LINE))
-                                                })
-                                                // Gutter (line numbers) - positioned absolutely over the gutter column
+                                                .when(is_current_line, |el| el.bg(bg_current_line))
+                                                // Gutter (line numbers)
                                                 .child(
                                                     div()
-                                                        .w(px(GUTTER_WIDTH))
-                                                        .h(px(LINE_HEIGHT))
+                                                        .w(px(gutter_width))
+                                                        .h(px(line_height))
                                                         .flex()
                                                         .items_center()
                                                         .justify_end()
                                                         .pr(px(12.0))
                                                         .text_color(if is_current_line {
-                                                            rgb(TEXT_GUTTER_ACTIVE)
+                                                            text_gutter_active
                                                         } else {
-                                                            rgb(TEXT_GUTTER)
+                                                            text_gutter
                                                         })
-                                                        .text_size(px(FONT_SIZE - 1.0))
+                                                        .text_size(px(font_size - 1.0))
                                                         .child(line_number.clone()),
                                                 )
                                                 // Code content
                                                 .child(
                                                     div()
                                                         .flex_1()
-                                                        .h(px(LINE_HEIGHT))
-                                                        .pl(px(HORIZONTAL_PADDING))
+                                                        .h(px(line_height))
+                                                        .pl(px(horizontal_padding))
                                                         .flex()
                                                         .items_center()
                                                         .relative()
                                                         // Cursor
                                                         .when(show_cursor, |el| {
-                                                            let char_width = FONT_SIZE * 0.602;
+                                                            let char_width = font_size * 0.602;
                                                             let cursor_x =
                                                                 cursor_col as f32 * char_width;
                                                             el.child(
                                                                 div()
                                                                     .absolute()
-                                                                    .left(px(HORIZONTAL_PADDING
+                                                                    .left(px(horizontal_padding
                                                                         + cursor_x))
                                                                     .top(px(2.0))
-                                                                    .w(px(2.0))
-                                                                    .h(px(LINE_HEIGHT - 4.0))
+                                                                    .w(px(cursor_width))
+                                                                    .h(px(line_height - 4.0))
                                                                     .rounded(px(1.0))
-                                                                    .bg(rgb(CURSOR_COLOR)),
+                                                                    .bg(cursor_color),
                                                             )
                                                         })
                                                         .child(styled_text),
@@ -461,6 +480,6 @@ impl Render for EditorView {
                     ),
             )
             // Status bar
-            .child(self.render_status_bar(cx))
+            .child(self.render_status_bar())
     }
 }

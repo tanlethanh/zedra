@@ -26,3 +26,4 @@ zedra-ssh = { path = "../zedra-ssh" }
 zedra-terminal = { path = "../zedra-terminal" }
 zedra-editor = { path = "../zedra-editor" }
 zedra-nav = { path = "../zedra-nav" }
+zedra-theme = { path = "../zedra-theme" }
