@@ -13,7 +13,8 @@ use std::sync::{Arc, Mutex};
 use gpui::*;
 
 use crate::recognizers::{
-    PanGesture, PanGestureEvent, PinchGesture, PinchGestureEvent, TapGesture, TapGestureEvent,
+    GestureRecognizer, PanGesture, PanGestureEvent, PinchGesture, PinchGestureEvent, TapGesture,
+    TapGestureEvent,
 };
 use crate::state::GestureState;
 use crate::types::{Point, TouchAction, TouchEvent, TouchPointer};
@@ -23,13 +24,13 @@ use crate::types::{Point, TouchAction, TouchEvent, TouchPointer};
 // ============================================================================
 
 /// Handler for pan gesture events
-pub type PanHandler = Arc<dyn Fn(&PanGestureEvent, &mut App) + Send + Sync>;
+pub type PanHandler = Arc<dyn Fn(&PanGestureEvent, &mut Window, &mut App) + Send + Sync>;
 
 /// Handler for tap gesture events
-pub type TapHandler = Arc<dyn Fn(&TapGestureEvent, &mut App) + Send + Sync>;
+pub type TapHandler = Arc<dyn Fn(&TapGestureEvent, &mut Window, &mut App) + Send + Sync>;
 
 /// Handler for pinch gesture events
-pub type PinchHandler = Arc<dyn Fn(&PinchGestureEvent, &mut App) + Send + Sync>;
+pub type PinchHandler = Arc<dyn Fn(&PinchGestureEvent, &mut Window, &mut App) + Send + Sync>;
 
 // ============================================================================
 // Pan Gesture Element
@@ -73,7 +74,7 @@ impl PanGestureElement {
     /// Set handler for when pan begins
     pub fn on_begin<F>(mut self, handler: F) -> Self
     where
-        F: Fn(&PanGestureEvent, &mut App) + Send + Sync + 'static,
+        F: Fn(&PanGestureEvent, &mut Window, &mut App) + Send + Sync + 'static,
     {
         self.on_begin = Some(Arc::new(handler));
         self
@@ -82,7 +83,7 @@ impl PanGestureElement {
     /// Set handler for pan changes (movement)
     pub fn on_change<F>(mut self, handler: F) -> Self
     where
-        F: Fn(&PanGestureEvent, &mut App) + Send + Sync + 'static,
+        F: Fn(&PanGestureEvent, &mut Window, &mut App) + Send + Sync + 'static,
     {
         self.on_change = Some(Arc::new(handler));
         self
@@ -91,7 +92,7 @@ impl PanGestureElement {
     /// Set handler for when pan ends
     pub fn on_end<F>(mut self, handler: F) -> Self
     where
-        F: Fn(&PanGestureEvent, &mut App) + Send + Sync + 'static,
+        F: Fn(&PanGestureEvent, &mut Window, &mut App) + Send + Sync + 'static,
     {
         self.on_end = Some(Arc::new(handler));
         self
@@ -100,49 +101,16 @@ impl PanGestureElement {
     /// Set handler for all pan events
     pub fn on_pan<F>(mut self, handler: F) -> Self
     where
-        F: Fn(&PanGestureEvent, &mut App) + Send + Sync + Clone + 'static,
+        F: Fn(&PanGestureEvent, &mut Window, &mut App) + Send + Sync + 'static,
     {
+        let handler = Arc::new(handler);
         let h1 = handler.clone();
         let h2 = handler.clone();
         let h3 = handler;
-        self.on_begin = Some(Arc::new(move |e, cx| h1(e, cx)));
-        self.on_change = Some(Arc::new(move |e, cx| h2(e, cx)));
-        self.on_end = Some(Arc::new(move |e, cx| h3(e, cx)));
+        self.on_begin = Some(Arc::new(move |e, w, cx| h1(e, w, cx)));
+        self.on_change = Some(Arc::new(move |e, w, cx| h2(e, w, cx)));
+        self.on_end = Some(Arc::new(move |e, w, cx| h3(e, w, cx)));
         self
-    }
-
-    fn handle_mouse_event(&self, position: Point, action: TouchAction, cx: &mut App) {
-        let event = TouchEvent::new(action, vec![TouchPointer::new(0, position.x, position.y)]);
-
-        if let Ok(mut recognizer) = self.recognizer.lock() {
-            recognizer.on_touch(&event);
-
-            if let Some(gesture_event) = recognizer.take_event() {
-                match gesture_event.state {
-                    GestureState::Began => {
-                        if let Some(handler) = &self.on_begin {
-                            handler(&gesture_event, cx);
-                        }
-                    }
-                    GestureState::Changed => {
-                        if let Some(handler) = &self.on_change {
-                            handler(&gesture_event, cx);
-                        }
-                    }
-                    GestureState::Ended => {
-                        if let Some(handler) = &self.on_end {
-                            handler(&gesture_event, cx);
-                        }
-                    }
-                    GestureState::Cancelled => {
-                        if let Some(handler) = &self.on_end {
-                            handler(&gesture_event, cx);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
     }
 }
 
@@ -162,16 +130,22 @@ impl Element for PanGestureElement {
         None
     }
 
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
     fn request_layout(
         &mut self,
         _id: Option<&GlobalElementId>,
-        cx: &mut WindowContext,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         if let Some(mut child) = self.child.take() {
-            let layout_id = child.request_layout(cx);
+            let layout_id = child.request_layout(window, cx);
             (layout_id, Some(child))
         } else {
-            let layout_id = cx.request_layout(gpui::Style::default(), []);
+            let layout_id = window.request_layout(gpui::Style::default(), [], cx);
             (layout_id, None)
         }
     }
@@ -179,25 +153,29 @@ impl Element for PanGestureElement {
     fn prepaint(
         &mut self,
         _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
         child: &mut Self::RequestLayoutState,
-        cx: &mut WindowContext,
+        window: &mut Window,
+        cx: &mut App,
     ) -> Self::PrepaintState {
         if let Some(child) = child {
-            child.prepaint(cx);
+            child.prepaint(window, cx);
         }
     }
 
     fn paint(
         &mut self,
         _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         child: &mut Self::RequestLayoutState,
         _prepaint: &mut Self::PrepaintState,
-        cx: &mut WindowContext,
+        window: &mut Window,
+        cx: &mut App,
     ) {
         if let Some(child) = child {
-            child.paint(cx);
+            child.paint(window, cx);
         }
 
         // Register mouse event handlers for gesture recognition
@@ -206,7 +184,23 @@ impl Element for PanGestureElement {
         let on_change = self.on_change.clone();
         let on_end = self.on_end.clone();
 
-        cx.on_mouse_event(move |event: &MouseDownEvent, phase, cx| {
+        log::info!(
+            "PanGesture: paint() registering handlers, bounds=({:.1},{:.1})-({:.1},{:.1})",
+            bounds.origin.x,
+            bounds.origin.y,
+            bounds.origin.x + bounds.size.width,
+            bounds.origin.y + bounds.size.height
+        );
+
+        window.on_mouse_event(move |event: &MouseDownEvent, phase, _window, _cx| {
+            log::info!(
+                "PanGesture: MouseDown phase={:?}, pos=({:.1}, {:.1}), contains={}",
+                phase,
+                event.position.x,
+                event.position.y,
+                bounds.contains(&event.position)
+            );
+
             if phase != DispatchPhase::Bubble {
                 return;
             }
@@ -214,41 +208,107 @@ impl Element for PanGestureElement {
                 return;
             }
 
-            let position = Point::new(event.position.x.0, event.position.y.0);
-            let touch_event =
-                TouchEvent::new(TouchAction::Down, vec![TouchPointer::new(0, position.x, position.y)]);
+            let position = Point::new(event.position.x.into(), event.position.y.into());
+            let touch_event = TouchEvent::new(
+                TouchAction::Down,
+                vec![TouchPointer::new(0, position.x, position.y)],
+            );
 
             if let Ok(mut rec) = recognizer.lock() {
                 rec.on_touch(&touch_event);
+                log::info!("PanGesture: Touch down processed");
             }
         });
 
         let recognizer = self.recognizer.clone();
-        let on_begin = self.on_begin.clone();
-        let on_change = self.on_change.clone();
+        let on_begin = on_begin.clone();
+        let on_change = on_change.clone();
 
-        cx.on_mouse_event(move |event: &MouseMoveEvent, phase, cx| {
+        // Note: On Android, GPUI converts touch drag to ScrollWheel events, not MouseMove
+        // So we need to listen to both MouseMove (for desktop) and ScrollWheel (for Android)
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble {
                 return;
             }
 
-            let position = Point::new(event.position.x.0, event.position.y.0);
-            let touch_event =
-                TouchEvent::new(TouchAction::Move, vec![TouchPointer::new(0, position.x, position.y)]);
+            let position = Point::new(event.position.x.into(), event.position.y.into());
+            let touch_event = TouchEvent::new(
+                TouchAction::Move,
+                vec![TouchPointer::new(0, position.x, position.y)],
+            );
 
             if let Ok(mut rec) = recognizer.lock() {
                 rec.on_touch(&touch_event);
 
                 if let Some(gesture_event) = rec.take_event() {
+                    log::info!(
+                        "PanGesture: Gesture event state={:?}, translation=({:.1}, {:.1})",
+                        gesture_event.state,
+                        gesture_event.translation.x,
+                        gesture_event.translation.y
+                    );
                     match gesture_event.state {
                         GestureState::Began => {
+                            log::info!("PanGesture: Calling on_begin handler");
                             if let Some(handler) = &on_begin {
-                                handler(&gesture_event, cx);
+                                handler(&gesture_event, window, cx);
                             }
                         }
                         GestureState::Changed => {
                             if let Some(handler) = &on_change {
-                                handler(&gesture_event, cx);
+                                handler(&gesture_event, window, cx);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
+
+        // Handle ScrollWheel events for Android touch drag (GPUI converts touch drag to ScrollWheel)
+        let recognizer = self.recognizer.clone();
+        let on_begin_scroll = self.on_begin.clone();
+        let on_change_scroll = self.on_change.clone();
+
+        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+
+            // Get the scroll delta as movement
+            let (dx, dy) = match event.delta {
+                ScrollDelta::Pixels(p) => (p.x.into(), p.y.into()),
+                ScrollDelta::Lines(l) => (l.x as f32 * 20.0, l.y as f32 * 20.0),
+            };
+
+            log::info!(
+                "PanGesture: ScrollWheel delta=({:.1}, {:.1}), pos=({:.1}, {:.1})",
+                dx, dy,
+                event.position.x,
+                event.position.y
+            );
+
+            if let Ok(mut rec) = recognizer.lock() {
+                // Update the recognizer with scroll delta as movement
+                rec.on_scroll(dx, dy, event.position.x.into(), event.position.y.into());
+
+                if let Some(gesture_event) = rec.take_event() {
+                    log::info!(
+                        "PanGesture: ScrollWheel gesture event state={:?}, translation=({:.1}, {:.1})",
+                        gesture_event.state,
+                        gesture_event.translation.x,
+                        gesture_event.translation.y
+                    );
+                    match gesture_event.state {
+                        GestureState::Began => {
+                            log::info!("PanGesture: ScrollWheel calling on_begin handler");
+                            if let Some(handler) = &on_begin_scroll {
+                                handler(&gesture_event, window, cx);
+                            }
+                        }
+                        GestureState::Changed => {
+                            if let Some(handler) = &on_change_scroll {
+                                handler(&gesture_event, window, cx);
                             }
                         }
                         _ => {}
@@ -258,26 +318,39 @@ impl Element for PanGestureElement {
         });
 
         let recognizer = self.recognizer.clone();
-        let on_end = self.on_end.clone();
 
-        cx.on_mouse_event(move |event: &MouseUpEvent, phase, cx| {
+        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+            log::info!(
+                "PanGesture: MouseUp phase={:?}, pos=({:.1}, {:.1})",
+                phase,
+                event.position.x,
+                event.position.y
+            );
+
             if phase != DispatchPhase::Bubble {
                 return;
             }
 
-            let position = Point::new(event.position.x.0, event.position.y.0);
-            let touch_event =
-                TouchEvent::new(TouchAction::Up, vec![TouchPointer::new(0, position.x, position.y)]);
+            let position = Point::new(event.position.x.into(), event.position.y.into());
+            let touch_event = TouchEvent::new(
+                TouchAction::Up,
+                vec![TouchPointer::new(0, position.x, position.y)],
+            );
 
             if let Ok(mut rec) = recognizer.lock() {
                 rec.on_touch(&touch_event);
 
                 if let Some(gesture_event) = rec.take_event() {
+                    log::info!(
+                        "PanGesture: MouseUp gesture event state={:?}",
+                        gesture_event.state
+                    );
                     if gesture_event.state == GestureState::Ended
                         || gesture_event.state == GestureState::Cancelled
                     {
+                        log::info!("PanGesture: Calling on_end handler");
                         if let Some(handler) = &on_end {
-                            handler(&gesture_event, cx);
+                            handler(&gesture_event, window, cx);
                         }
                     }
                 }
@@ -324,7 +397,7 @@ impl TapGestureElement {
     /// Set handler for tap events
     pub fn on_tap<F>(mut self, handler: F) -> Self
     where
-        F: Fn(&TapGestureEvent, &mut App) + Send + Sync + 'static,
+        F: Fn(&TapGestureEvent, &mut Window, &mut App) + Send + Sync + 'static,
     {
         self.on_tap = Some(Arc::new(handler));
         self
@@ -347,16 +420,22 @@ impl Element for TapGestureElement {
         None
     }
 
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
     fn request_layout(
         &mut self,
         _id: Option<&GlobalElementId>,
-        cx: &mut WindowContext,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         if let Some(mut child) = self.child.take() {
-            let layout_id = child.request_layout(cx);
+            let layout_id = child.request_layout(window, cx);
             (layout_id, Some(child))
         } else {
-            let layout_id = cx.request_layout(gpui::Style::default(), []);
+            let layout_id = window.request_layout(gpui::Style::default(), [], cx);
             (layout_id, None)
         }
     }
@@ -364,30 +443,34 @@ impl Element for TapGestureElement {
     fn prepaint(
         &mut self,
         _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
         child: &mut Self::RequestLayoutState,
-        cx: &mut WindowContext,
+        window: &mut Window,
+        cx: &mut App,
     ) -> Self::PrepaintState {
         if let Some(child) = child {
-            child.prepaint(cx);
+            child.prepaint(window, cx);
         }
     }
 
     fn paint(
         &mut self,
         _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         child: &mut Self::RequestLayoutState,
         _prepaint: &mut Self::PrepaintState,
-        cx: &mut WindowContext,
+        window: &mut Window,
+        cx: &mut App,
     ) {
         if let Some(child) = child {
-            child.paint(cx);
+            child.paint(window, cx);
         }
 
         let recognizer = self.recognizer.clone();
 
-        cx.on_mouse_event(move |event: &MouseDownEvent, phase, _cx| {
+        window.on_mouse_event(move |event: &MouseDownEvent, phase, _window, _cx| {
             if phase != DispatchPhase::Bubble {
                 return;
             }
@@ -395,9 +478,11 @@ impl Element for TapGestureElement {
                 return;
             }
 
-            let position = Point::new(event.position.x.0, event.position.y.0);
-            let touch_event =
-                TouchEvent::new(TouchAction::Down, vec![TouchPointer::new(0, position.x, position.y)]);
+            let position = Point::new(event.position.x.into(), event.position.y.into());
+            let touch_event = TouchEvent::new(
+                TouchAction::Down,
+                vec![TouchPointer::new(0, position.x, position.y)],
+            );
 
             if let Ok(mut rec) = recognizer.lock() {
                 rec.on_touch(&touch_event);
@@ -407,14 +492,16 @@ impl Element for TapGestureElement {
         let recognizer = self.recognizer.clone();
         let on_tap = self.on_tap.clone();
 
-        cx.on_mouse_event(move |event: &MouseUpEvent, phase, cx| {
+        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble {
                 return;
             }
 
-            let position = Point::new(event.position.x.0, event.position.y.0);
-            let touch_event =
-                TouchEvent::new(TouchAction::Up, vec![TouchPointer::new(0, position.x, position.y)]);
+            let position = Point::new(event.position.x.into(), event.position.y.into());
+            let touch_event = TouchEvent::new(
+                TouchAction::Up,
+                vec![TouchPointer::new(0, position.x, position.y)],
+            );
 
             if let Ok(mut rec) = recognizer.lock() {
                 rec.on_touch(&touch_event);
@@ -422,7 +509,7 @@ impl Element for TapGestureElement {
                 if let Some(gesture_event) = rec.take_event() {
                     if gesture_event.state == GestureState::Ended {
                         if let Some(handler) = &on_tap {
-                            handler(&gesture_event, cx);
+                            handler(&gesture_event, window, cx);
                         }
                     }
                 }
@@ -465,7 +552,7 @@ impl PinchGestureElement {
     /// Set handler for when pinch begins
     pub fn on_begin<F>(mut self, handler: F) -> Self
     where
-        F: Fn(&PinchGestureEvent, &mut App) + Send + Sync + 'static,
+        F: Fn(&PinchGestureEvent, &mut Window, &mut App) + Send + Sync + 'static,
     {
         self.on_begin = Some(Arc::new(handler));
         self
@@ -474,7 +561,7 @@ impl PinchGestureElement {
     /// Set handler for pinch changes
     pub fn on_change<F>(mut self, handler: F) -> Self
     where
-        F: Fn(&PinchGestureEvent, &mut App) + Send + Sync + 'static,
+        F: Fn(&PinchGestureEvent, &mut Window, &mut App) + Send + Sync + 'static,
     {
         self.on_change = Some(Arc::new(handler));
         self
@@ -483,7 +570,7 @@ impl PinchGestureElement {
     /// Set handler for when pinch ends
     pub fn on_end<F>(mut self, handler: F) -> Self
     where
-        F: Fn(&PinchGestureEvent, &mut App) + Send + Sync + 'static,
+        F: Fn(&PinchGestureEvent, &mut Window, &mut App) + Send + Sync + 'static,
     {
         self.on_end = Some(Arc::new(handler));
         self
@@ -492,14 +579,15 @@ impl PinchGestureElement {
     /// Set handler for all pinch events
     pub fn on_pinch<F>(mut self, handler: F) -> Self
     where
-        F: Fn(&PinchGestureEvent, &mut App) + Send + Sync + Clone + 'static,
+        F: Fn(&PinchGestureEvent, &mut Window, &mut App) + Send + Sync + 'static,
     {
+        let handler = Arc::new(handler);
         let h1 = handler.clone();
         let h2 = handler.clone();
         let h3 = handler;
-        self.on_begin = Some(Arc::new(move |e, cx| h1(e, cx)));
-        self.on_change = Some(Arc::new(move |e, cx| h2(e, cx)));
-        self.on_end = Some(Arc::new(move |e, cx| h3(e, cx)));
+        self.on_begin = Some(Arc::new(move |e, w, cx| h1(e, w, cx)));
+        self.on_change = Some(Arc::new(move |e, w, cx| h2(e, w, cx)));
+        self.on_end = Some(Arc::new(move |e, w, cx| h3(e, w, cx)));
         self
     }
 }
@@ -520,16 +608,22 @@ impl Element for PinchGestureElement {
         None
     }
 
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
     fn request_layout(
         &mut self,
         _id: Option<&GlobalElementId>,
-        cx: &mut WindowContext,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         if let Some(mut child) = self.child.take() {
-            let layout_id = child.request_layout(cx);
+            let layout_id = child.request_layout(window, cx);
             (layout_id, Some(child))
         } else {
-            let layout_id = cx.request_layout(gpui::Style::default(), []);
+            let layout_id = window.request_layout(gpui::Style::default(), [], cx);
             (layout_id, None)
         }
     }
@@ -537,25 +631,29 @@ impl Element for PinchGestureElement {
     fn prepaint(
         &mut self,
         _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
         child: &mut Self::RequestLayoutState,
-        cx: &mut WindowContext,
+        window: &mut Window,
+        cx: &mut App,
     ) -> Self::PrepaintState {
         if let Some(child) = child {
-            child.prepaint(cx);
+            child.prepaint(window, cx);
         }
     }
 
     fn paint(
         &mut self,
         _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
         child: &mut Self::RequestLayoutState,
         _prepaint: &mut Self::PrepaintState,
-        cx: &mut WindowContext,
+        window: &mut Window,
+        cx: &mut App,
     ) {
         if let Some(child) = child {
-            child.paint(cx);
+            child.paint(window, cx);
         }
 
         // Note: Pinch gestures require multi-touch which isn't available via mouse events

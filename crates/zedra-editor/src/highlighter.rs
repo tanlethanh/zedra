@@ -35,8 +35,12 @@ impl Highlighter {
     }
 
     /// Parse the full source text, storing the resulting tree for queries.
+    /// When parsing different source texts (like individual diff lines), we
+    /// don't reuse the old tree to avoid stale node references.
     pub fn parse(&mut self, source: &str) {
-        self.tree = self.parser.parse(source, self.tree.as_ref());
+        // Always create a fresh parse to avoid issues with stale tree references
+        // when parsing unrelated snippets (like individual diff lines)
+        self.tree = self.parser.parse(source, None);
     }
 
     /// Return highlight spans for the given byte range of the source.
@@ -49,8 +53,15 @@ impl Highlighter {
             None => return Vec::new(),
         };
 
+        let source_len = source.len();
+        // Clamp the requested range to source bounds
+        let safe_range = range.start.min(source_len)..range.end.min(source_len);
+        if safe_range.is_empty() {
+            return Vec::new();
+        }
+
         let mut cursor = QueryCursor::new();
-        cursor.set_byte_range(range.clone());
+        cursor.set_byte_range(safe_range.clone());
 
         let mut result = Vec::new();
         let mut matches = cursor.matches(&self.query, tree.root_node(), source.as_bytes());
@@ -58,9 +69,15 @@ impl Highlighter {
             for capture in query_match.captures {
                 let capture_name = &self.query.capture_names()[capture.index as usize];
                 let node_range = capture.node.byte_range();
-                // Only include captures that overlap our requested range
-                if node_range.start < range.end && node_range.end > range.start {
-                    result.push((node_range, &**capture_name));
+                // Clamp node range to source bounds to prevent out-of-bounds access
+                let clamped_start = node_range.start.min(source_len);
+                let clamped_end = node_range.end.min(source_len);
+                // Only include captures that overlap our requested range and have valid bounds
+                if clamped_start < clamped_end
+                    && clamped_start < safe_range.end
+                    && clamped_end > safe_range.start
+                {
+                    result.push((clamped_start..clamped_end, &**capture_name));
                 }
             }
         }

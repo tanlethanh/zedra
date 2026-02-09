@@ -342,22 +342,27 @@ impl DiffView {
     }
 
     /// Compute syntax highlights for a line
-    fn line_highlights(&self, content: &str) -> Vec<(Range<usize>, HighlightStyle)> {
+    fn line_highlights(&mut self, content: &str) -> Vec<(Range<usize>, HighlightStyle)> {
         if content.is_empty() {
             return Vec::new();
         }
 
+        let content_len = content.len();
+
         // Parse content for syntax highlighting
         self.highlighter.parse(content);
 
-        let raw_highlights = self.highlighter.highlights(content, 0..content.len());
+        // Get highlights with bounds checking in highlighter
+        let raw_highlights = self.highlighter.highlights(content, 0..content_len);
+
         let mut result: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
 
         for (span_range, capture_name) in &raw_highlights {
-            if let Some(style) = self.theme.get(capture_name) {
-                let start = span_range.start.min(content.len());
-                let end = span_range.end.min(content.len());
-                if start < end {
+            // Clamp ranges to content bounds to prevent out-of-bounds access
+            let start = span_range.start.min(content_len);
+            let end = span_range.end.min(content_len);
+            if start < end {
+                if let Some(style) = self.theme.get(capture_name) {
                     result.push((start..end, style));
                 }
             }

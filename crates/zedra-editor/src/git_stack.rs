@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex};
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use zedra_gesture::{pan_gesture, GestureState, PanGestureEvent};
 
 use crate::diff_view::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 use crate::highlighter::Highlighter;
@@ -164,8 +163,6 @@ struct DrawerState {
     offset: f32,
     /// Whether a drag gesture is in progress
     is_dragging: bool,
-    /// Starting offset when drag began
-    start_offset: f32,
 }
 
 impl Default for DrawerState {
@@ -173,7 +170,6 @@ impl Default for DrawerState {
         Self {
             offset: SIDEBAR_WIDTH, // Start open
             is_dragging: false,
-            start_offset: 0.0,
         }
     }
 }
@@ -184,6 +180,7 @@ pub struct GitStack {
     selected_file: Option<String>,
     sidebar_visible: bool,
     sidebar_section_expanded: [bool; 3], // [staged, unstaged, untracked]
+    #[allow(dead_code)] // Will be used for commit functionality
     commit_message: String,
     diffs: Vec<FileDiff>,
     highlighter: Highlighter,
@@ -427,42 +424,6 @@ impl GitStack {
         cx.notify();
     }
 
-    fn handle_drawer_gesture(&mut self, event: &PanGestureEvent, cx: &mut Context<Self>) {
-        match event.state {
-            GestureState::Began => {
-                if let Ok(mut state) = self.drawer_state.lock() {
-                    state.is_dragging = true;
-                    state.start_offset = state.offset;
-                }
-            }
-            GestureState::Changed => {
-                if let Ok(mut state) = self.drawer_state.lock() {
-                    // Horizontal drag: positive translation.x means swipe right (open)
-                    let new_offset = (state.start_offset + event.translation.x).clamp(0.0, SIDEBAR_WIDTH);
-                    state.offset = new_offset;
-                }
-                cx.notify();
-            }
-            GestureState::Ended | GestureState::Cancelled => {
-                if let Ok(mut state) = self.drawer_state.lock() {
-                    state.is_dragging = false;
-                    // Snap to open or closed based on velocity and position
-                    let should_open = if event.velocity.x.abs() > 100.0 {
-                        // Use velocity direction if fast enough
-                        event.velocity.x > 0.0
-                    } else {
-                        // Otherwise use position threshold
-                        state.offset > SIDEBAR_WIDTH / 2.0
-                    };
-                    state.offset = if should_open { SIDEBAR_WIDTH } else { 0.0 };
-                    self.sidebar_visible = should_open;
-                }
-                cx.notify();
-            }
-            _ => {}
-        }
-    }
-
     fn get_drawer_offset(&self) -> f32 {
         self.drawer_state.lock().map(|s| s.offset).unwrap_or(0.0)
     }
@@ -531,19 +492,20 @@ impl GitStack {
         None
     }
 
-    fn line_highlights(&self, content: &str) -> Vec<(Range<usize>, HighlightStyle)> {
+    fn line_highlights(&mut self, content: &str) -> Vec<(Range<usize>, HighlightStyle)> {
         if content.is_empty() {
             return Vec::new();
         }
 
+        let content_len = content.len();
         self.highlighter.parse(content);
-        let raw_highlights = self.highlighter.highlights(content, 0..content.len());
+        let raw_highlights = self.highlighter.highlights(content, 0..content_len);
         let mut result: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
 
         for (span_range, capture_name) in &raw_highlights {
             if let Some(style) = self.theme.get(capture_name) {
-                let start = span_range.start.min(content.len());
-                let end = span_range.end.min(content.len());
+                let start = span_range.start.min(content_len);
+                let end = span_range.end.min(content_len);
                 if start < end {
                     result.push((start..end, style));
                 }
@@ -819,6 +781,52 @@ impl GitStack {
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self.selected_file.clone();
 
+        // Pre-compute file entry elements with into_any_element() to break lifetime connection
+        let staged_entries: Vec<AnyElement> = self
+            .repo_state
+            .staged_files
+            .iter()
+            .map(|f| {
+                let is_selected = selected.as_ref() == Some(&f.path);
+                self.render_file_entry(f, is_selected, cx).into_any_element()
+            })
+            .collect();
+
+        let unstaged_entries: Vec<AnyElement> = self
+            .repo_state
+            .unstaged_files
+            .iter()
+            .map(|f| {
+                let is_selected = selected.as_ref() == Some(&f.path);
+                self.render_file_entry(f, is_selected, cx).into_any_element()
+            })
+            .collect();
+
+        let untracked_entries: Vec<AnyElement> = self
+            .repo_state
+            .untracked_files
+            .iter()
+            .map(|f| {
+                let is_selected = selected.as_ref() == Some(&f.path);
+                self.render_file_entry(f, is_selected, cx).into_any_element()
+            })
+            .collect();
+
+        let commit_section = self.render_commit_section().into_any_element();
+        let staged_header = self
+            .render_section_header("STAGED CHANGES", self.repo_state.total_staged(), 0, Some("-"), cx)
+            .into_any_element();
+        let unstaged_header = self
+            .render_section_header("CHANGES", self.repo_state.total_unstaged(), 1, Some("+"), cx)
+            .into_any_element();
+        let untracked_header = self
+            .render_section_header("UNTRACKED", self.repo_state.total_untracked(), 2, Some("+"), cx)
+            .into_any_element();
+
+        let show_staged = self.sidebar_section_expanded[0];
+        let show_unstaged = self.sidebar_section_expanded[1];
+        let show_untracked = self.sidebar_section_expanded[2];
+
         div()
             .flex()
             .flex_col()
@@ -828,58 +836,24 @@ impl GitStack {
             .border_r_1()
             .border_color(rgb(0x181a1f))
             // Commit section
-            .child(self.render_commit_section(cx))
+            .child(commit_section)
             // File sections
             .child(
                 div()
                     .flex_1()
-                    .overflow_y_scroll()
                     // Staged section
-                    .child(self.render_section_header(
-                        "STAGED CHANGES",
-                        self.repo_state.total_staged(),
-                        0,
-                        Some("-"),
-                        cx,
-                    ))
-                    .when(self.sidebar_section_expanded[0], |el| {
-                        el.children(self.repo_state.staged_files.iter().map(|f| {
-                            let is_selected = selected.as_ref() == Some(&f.path);
-                            self.render_file_entry(f, is_selected, cx)
-                        }))
-                    })
+                    .child(staged_header)
+                    .when(show_staged, |el| el.children(staged_entries))
                     // Unstaged section
-                    .child(self.render_section_header(
-                        "CHANGES",
-                        self.repo_state.total_unstaged(),
-                        1,
-                        Some("+"),
-                        cx,
-                    ))
-                    .when(self.sidebar_section_expanded[1], |el| {
-                        el.children(self.repo_state.unstaged_files.iter().map(|f| {
-                            let is_selected = selected.as_ref() == Some(&f.path);
-                            self.render_file_entry(f, is_selected, cx)
-                        }))
-                    })
+                    .child(unstaged_header)
+                    .when(show_unstaged, |el| el.children(unstaged_entries))
                     // Untracked section
-                    .child(self.render_section_header(
-                        "UNTRACKED",
-                        self.repo_state.total_untracked(),
-                        2,
-                        Some("+"),
-                        cx,
-                    ))
-                    .when(self.sidebar_section_expanded[2], |el| {
-                        el.children(self.repo_state.untracked_files.iter().map(|f| {
-                            let is_selected = selected.as_ref() == Some(&f.path);
-                            self.render_file_entry(f, is_selected, cx)
-                        }))
-                    }),
+                    .child(untracked_header)
+                    .when(show_untracked, |el| el.children(untracked_entries)),
             )
     }
 
-    fn render_commit_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_commit_section(&self) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
@@ -942,8 +916,8 @@ impl GitStack {
             )
     }
 
-    fn render_diff_content(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(diff) = self.get_selected_diff() else {
+    fn render_diff_content(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(diff) = self.get_selected_diff().cloned() else {
             return div()
                 .flex_1()
                 .flex()
@@ -954,12 +928,11 @@ impl GitStack {
                 .into_any_element();
         };
 
-        let line_count = Self::total_lines_for_diff(diff);
-        let diff_clone = diff.clone();
+        let line_count = Self::total_lines_for_diff(&diff);
 
         // Pre-compute line data
         let line_data: Vec<Option<DiffLine>> = (0..line_count)
-            .map(|i| self.get_diff_line(&diff_clone, i))
+            .map(|i| self.get_diff_line(&diff, i))
             .collect();
 
         let text_style = {
@@ -969,7 +942,7 @@ impl GitStack {
             style
         };
 
-        // Pre-compute highlights
+        // Pre-compute highlights (need &mut self for highlighter)
         let highlights: Vec<Vec<(Range<usize>, HighlightStyle)>> = line_data
             .iter()
             .map(|line| {
@@ -1131,6 +1104,17 @@ impl Render for GitStack {
 
         let drawer_offset = self.get_drawer_offset();
 
+        // Pre-compute content elements to avoid borrow issues
+        // Use into_any_element() to avoid lifetime capture issues
+        let diff_content = if has_changes {
+            self.render_diff_content(window, cx).into_any_element()
+        } else {
+            self.render_empty_state().into_any_element()
+        };
+
+        let header = self.render_header(cx).into_any_element();
+        let sidebar = self.render_sidebar(cx).into_any_element();
+
         // Main content area wrapped with pan gesture for drawer control
         let main_content = div()
             .flex()
@@ -1144,9 +1128,11 @@ impl Render for GitStack {
                     .left(px(drawer_offset - SIDEBAR_WIDTH))
                     .top_0()
                     .bottom_0()
-                    .child(self.render_sidebar(cx)),
+                    .child(sidebar),
             )
             // Backdrop overlay when drawer is partially or fully open
+            // Note: Don't use on_mouse_down here as it interferes with pan gesture
+            // Tap-to-close is handled in handle_drawer_gesture when gesture ends with minimal movement
             .when(drawer_offset > 0.0, |el| {
                 el.child(
                     div()
@@ -1155,15 +1141,7 @@ impl Render for GitStack {
                         .top_0()
                         .right_0()
                         .bottom_0()
-                        .bg(rgba(0x000000, (drawer_offset / SIDEBAR_WIDTH * 0.5) as f32))
-                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                            // Tap on backdrop closes the drawer
-                            if let Ok(mut state) = this.drawer_state.lock() {
-                                state.offset = 0.0;
-                            }
-                            this.sidebar_visible = false;
-                            cx.notify();
-                        })),
+                        .bg(hsla(0.0, 0.0, 0.0, drawer_offset / SIDEBAR_WIDTH * 0.5)),
                 )
             })
             // Diff content or empty state - offset by drawer
@@ -1174,17 +1152,8 @@ impl Render for GitStack {
                     .flex()
                     .flex_col()
                     .bg(rgb(0x282c34))
-                    .when(has_changes, |el| el.child(self.render_diff_content(window, cx)))
-                    .when(!has_changes, |el| el.child(self.render_empty_state())),
+                    .child(diff_content),
             );
-
-        // Wrap content with pan gesture for drawer control
-        let gesture_content = pan_gesture()
-            .min_distance(10.0)
-            .on_pan(cx.listener(|this, event: &PanGestureEvent, _, cx| {
-                this.handle_drawer_gesture(event, cx);
-            }))
-            .child(main_content);
 
         div()
             .flex()
@@ -1198,9 +1167,48 @@ impl Render for GitStack {
                     _ => {}
                 }
             }))
+            // Handle scroll wheel events for drawer gesture (Android sends touch drag as scroll)
+            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
+                let (dx, _dy): (f32, f32) = match event.delta {
+                    ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y)),
+                    ScrollDelta::Lines(l) => (l.x * 20.0, l.y * 20.0),
+                };
+
+                log::info!("GitStack: scroll_wheel dx={:.1}, current_offset={:.1}", dx,
+                    this.drawer_state.lock().map(|s| s.offset).unwrap_or(0.0));
+
+                // Only handle horizontal scroll for drawer
+                if dx.abs() > 1.0 {
+                    if let Ok(mut state) = this.drawer_state.lock() {
+                        // Mark as dragging
+                        state.is_dragging = true;
+
+                        // GPUI scroll delta: positive dx = content moves right = finger swipes left
+                        // We want: swipe right = open (increase offset), swipe left = close (decrease offset)
+                        // So we ADD dx (which is inverted from finger direction)
+                        let new_offset = (state.offset + dx).clamp(0.0, SIDEBAR_WIDTH);
+                        state.offset = new_offset;
+                        log::info!("GitStack: new_offset={:.1}", new_offset);
+                    }
+                    cx.notify();
+                }
+            }))
+            // Handle mouse up to end drawer gesture - snap to open or closed
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                if let Ok(mut state) = this.drawer_state.lock() {
+                    if state.is_dragging {
+                        state.is_dragging = false;
+                        // Snap based on position threshold
+                        let should_open = state.offset > SIDEBAR_WIDTH / 2.0;
+                        state.offset = if should_open { SIDEBAR_WIDTH } else { 0.0 };
+                        this.sidebar_visible = should_open;
+                    }
+                }
+                cx.notify();
+            }))
             // Header bar
-            .child(self.render_header(cx))
-            // Main content area with gesture handling
-            .child(gesture_content)
+            .child(header)
+            // Main content area
+            .child(main_content)
     }
 }

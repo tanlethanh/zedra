@@ -7999,6 +7999,7 @@ dependencies = [
  "log",
  "tree-sitter",
  "tree-sitter-rust",
+ "zedra-gesture",
 ]
 
 [[package]]
@@ -8009,6 +8010,14 @@ dependencies = [
  "log",
  "serde",
  "tempfile",
+]
+
+[[package]]
+name = "zedra-gesture"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "log",
 ]
 
 [[package]]

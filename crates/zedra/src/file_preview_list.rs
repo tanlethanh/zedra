@@ -1,7 +1,6 @@
 // FilePreviewList — grid of preview cards for sample code files.
 // Tapping a card emits PreviewSelected so the parent can push an EditorView.
 
-use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 /// Metadata for a sample file shown in the preview grid.

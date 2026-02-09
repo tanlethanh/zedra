@@ -132,6 +132,52 @@ impl PanGesture {
             number_of_fingers: fingers,
         });
     }
+
+    /// Handle scroll delta (for Android where touch drag is converted to scroll events)
+    /// This updates the gesture state based on cumulative scroll movement
+    pub fn on_scroll(&mut self, dx: f32, dy: f32, position_x: f32, position_y: f32) {
+        if !self.enabled {
+            return;
+        }
+
+        self.current_event = None;
+        let position = Point::new(position_x, position_y);
+        let delta = Vector2::new(dx, dy);
+
+        // If we don't have a start position, we can't track scroll
+        // (need mouse down first)
+        let Some(start) = self.start_position else {
+            return;
+        };
+
+        // Update translation with scroll delta
+        self.translation.x += dx;
+        self.translation.y += dy;
+
+        // Update last position for velocity tracking
+        let current = Point::new(
+            position_x,
+            position_y,
+        );
+
+        if self.config.track_velocity {
+            self.velocity_tracker.add_sample(current);
+        }
+
+        // Check if we should start the gesture
+        if self.state == GestureState::Possible {
+            let distance = (self.translation.x.powi(2) + self.translation.y.powi(2)).sqrt();
+            if distance >= self.config.min_distance {
+                self.state = GestureState::Began;
+                self.emit_event(GestureState::Began, position, delta, 1);
+            }
+        } else if self.state == GestureState::Began || self.state == GestureState::Changed {
+            self.state = GestureState::Changed;
+            self.emit_event(GestureState::Changed, position, delta, 1);
+        }
+
+        self.last_position = Some(current);
+    }
 }
 
 impl Default for PanGesture {

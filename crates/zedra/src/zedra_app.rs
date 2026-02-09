@@ -5,7 +5,7 @@ use gpui::*;
 
 use crate::file_explorer::{FileExplorer, FileSelected};
 use crate::file_preview_list::{FilePreviewList, PreviewSelected, SAMPLE_FILES};
-use zedra_editor::{DiffView, EditorView, GitStack};
+use zedra_editor::{EditorView, GitStack};
 use zedra_nav::{DrawerHost, HeaderConfig, StackNavigator, TabBarConfig, TabNavigator};
 use zedra_ssh::connection::{AuthMethod, ConnectionManager, ConnectionParams};
 use zedra_terminal::view::TerminalView;
@@ -194,10 +194,7 @@ impl ZedraApp {
             stack
         });
 
-        // Create the diff tab's view
-        let diff_view = cx.new(|cx| DiffView::new(cx));
-
-        // Create the git stack view
+        // Create the git tab's view with gesture-based drawer
         let git_stack = cx.new(|cx| GitStack::new(cx));
 
         // Create tab navigator
@@ -210,8 +207,6 @@ impl ZedraApp {
             tabs.add_tab("Terminal", ">_", move |_window, _cx| ts.clone().into());
             let es = editor_stack_clone.clone();
             tabs.add_tab("Editor", "{}", move |_window, _cx| es.clone().into());
-            let dv = diff_view.clone();
-            tabs.add_tab("Diff", "+-", move |_window, _cx| dv.clone().into());
             let gs = git_stack.clone();
             tabs.add_tab("Git", "*", move |_window, _cx| gs.clone().into());
             tabs.ensure_active_view(window, cx);
