@@ -5,7 +5,7 @@ use gpui::*;
 
 use crate::file_explorer::{FileExplorer, FileSelected};
 use crate::file_preview_list::{FilePreviewList, PreviewSelected, SAMPLE_FILES};
-use zedra_editor::EditorView;
+use zedra_editor::{DiffView, EditorView};
 use zedra_nav::{DrawerHost, HeaderConfig, StackNavigator, TabBarConfig, TabNavigator};
 use zedra_ssh::connection::{AuthMethod, ConnectionManager, ConnectionParams};
 use zedra_terminal::view::TerminalView;
@@ -194,6 +194,9 @@ impl ZedraApp {
             stack
         });
 
+        // Create the diff tab's view
+        let diff_view = cx.new(|cx| DiffView::new(cx));
+
         // Create tab navigator
         let terminal_stack_clone = terminal_stack.clone();
         let editor_stack_clone = editor_stack.clone();
@@ -204,6 +207,8 @@ impl ZedraApp {
             tabs.add_tab("Terminal", ">_", move |_window, _cx| ts.clone().into());
             let es = editor_stack_clone.clone();
             tabs.add_tab("Editor", "{}", move |_window, _cx| es.clone().into());
+            let dv = diff_view.clone();
+            tabs.add_tab("Diff", "+-", move |_window, _cx| dv.clone().into());
             tabs.ensure_active_view(window, cx);
             tabs
         });
