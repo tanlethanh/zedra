@@ -56,7 +56,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 hostname = "0.4"
 
 # Network interface discovery
-if-addrs.workspace = true
+if-addrs = "0.15.0"
 
 # Error handling
 anyhow.workspace = true

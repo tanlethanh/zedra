@@ -1,11 +1,9 @@
 [package]
-name = "zedra-editor"
+name = "zedra-gesture"
 version.workspace = true
 edition.workspace = true
+description = "Gesture recognition library for GPUI on Android, inspired by react-native-gesture-handler"
 
 [dependencies]
 gpui = { path = "../../vendor/zed/crates/gpui", features = ["android"] }
-zedra-gesture = { path = "../zedra-gesture" }
-tree-sitter = "0.26"
-tree-sitter-rust = "0.24"
 log.workspace = true

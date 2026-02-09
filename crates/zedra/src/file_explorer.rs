@@ -1,4 +1,3 @@
-use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 #[derive(Clone, Debug)]
