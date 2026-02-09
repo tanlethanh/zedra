@@ -48,6 +48,7 @@
 //! let delta = animator.update();
 //! ```
 
+pub mod compose;
 pub mod compositor;
 pub mod element;
 pub mod recognizers;
@@ -56,6 +57,9 @@ pub mod types;
 pub mod velocity;
 
 // Re-export main types
+pub use compose::{
+    exclusive, race, simultaneous, GestureExclusive, GestureRace, GestureSimultaneous,
+};
 pub use compositor::GestureCompositor;
 pub use element::{pan_gesture, pinch_gesture, tap_gesture};
 pub use element::{PanGestureElement, PinchGestureElement, TapGestureElement};
@@ -64,5 +68,5 @@ pub use recognizers::{
     PinchGesture, PinchGestureEvent, TapGesture, TapGestureEvent,
 };
 pub use state::{GestureConfig, GestureState};
-pub use types::{FlingDirection, Point, TouchAction, TouchEvent, TouchPointer, Vector2};
+pub use types::{FlingDirection, GestureId, Point, TouchAction, TouchEvent, TouchPointer, Vector2};
 pub use velocity::{DecelerationCurve, MomentumAnimator, MomentumBounds, VelocityTracker};

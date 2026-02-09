@@ -192,13 +192,13 @@ impl GestureRecognizer for PinchGesture {
                     let scale_change = (new_scale - 1.0).abs();
                     let rotation_change = rotation_delta.abs();
 
-                    if scale_change >= self.config.min_scale_threshold
-                        || rotation_change >= 0.05
+                    if scale_change >= self.config.min_scale_threshold || rotation_change >= 0.05
                     // ~3 degrees
                     {
                         self.state = GestureState::Began;
                         self.current_scale = new_scale;
-                        self.current_rotation = Self::normalize_angle(rotation - self.initial_rotation);
+                        self.current_rotation =
+                            Self::normalize_angle(rotation - self.initial_rotation);
 
                         let scale_delta = new_scale - self.current_scale;
                         self.emit_event(GestureState::Began, scale_delta, rotation_delta);

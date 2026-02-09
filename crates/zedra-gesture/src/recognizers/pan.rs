@@ -155,10 +155,7 @@ impl PanGesture {
         self.translation.y += dy;
 
         // Update last position for velocity tracking
-        let current = Point::new(
-            position_x,
-            position_y,
-        );
+        let current = Point::new(position_x, position_y);
 
         if self.config.track_velocity {
             self.velocity_tracker.add_sample(current);
@@ -282,7 +279,12 @@ impl GestureRecognizer for PanGesture {
                         // Not enough fingers remaining
                         self.state = GestureState::Cancelled;
                         let position = self.last_position.unwrap_or(event.center());
-                        self.emit_event(GestureState::Cancelled, position, Vector2::zero(), remaining);
+                        self.emit_event(
+                            GestureState::Cancelled,
+                            position,
+                            Vector2::zero(),
+                            remaining,
+                        );
                         self.reset();
                     }
                     // Otherwise continue with remaining fingers

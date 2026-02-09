@@ -17,7 +17,7 @@ use crate::recognizers::{
     TapGestureEvent,
 };
 use crate::state::GestureState;
-use crate::types::{Point, TouchAction, TouchEvent, TouchPointer};
+use crate::types::{GestureId, Point, TouchAction, TouchEvent, TouchPointer};
 
 // ============================================================================
 // Gesture Handler Types
@@ -38,21 +38,30 @@ pub type PinchHandler = Arc<dyn Fn(&PinchGestureEvent, &mut Window, &mut App) + 
 
 /// Wraps an element with pan gesture recognition
 pub struct PanGestureElement {
+    /// Unique identifier for this gesture
+    gesture_id: GestureId,
     child: Option<AnyElement>,
     recognizer: Arc<Mutex<PanGesture>>,
     on_begin: Option<PanHandler>,
     on_change: Option<PanHandler>,
     on_end: Option<PanHandler>,
+    /// Gestures that must fail before this one can begin
+    requires_failure: Vec<GestureId>,
+    /// Gestures that can run simultaneously with this one
+    simultaneous: Vec<GestureId>,
 }
 
 /// Create a pan gesture wrapper
 pub fn pan_gesture() -> PanGestureElement {
     PanGestureElement {
+        gesture_id: GestureId::new(),
         child: None,
         recognizer: Arc::new(Mutex::new(PanGesture::new())),
         on_begin: None,
         on_change: None,
         on_end: None,
+        requires_failure: Vec::new(),
+        simultaneous: Vec::new(),
     }
 }
 
@@ -111,6 +120,42 @@ impl PanGestureElement {
         self.on_change = Some(Arc::new(move |e, w, cx| h2(e, w, cx)));
         self.on_end = Some(Arc::new(move |e, w, cx| h3(e, w, cx)));
         self
+    }
+
+    /// Get the unique ID of this gesture for establishing relationships
+    pub fn id(&self) -> GestureId {
+        self.gesture_id
+    }
+
+    /// This gesture waits for `other` to fail before activating
+    ///
+    /// Useful when a gesture like double-tap should not interfere with single-tap
+    pub fn requires_failure_of(mut self, other: GestureId) -> Self {
+        if !self.requires_failure.contains(&other) {
+            self.requires_failure.push(other);
+        }
+        self
+    }
+
+    /// This gesture can run simultaneously with `other`
+    ///
+    /// By default, only one gesture can be active at a time.
+    /// Use this to allow multiple gestures to recognize together.
+    pub fn simultaneous_with(mut self, other: GestureId) -> Self {
+        if !self.simultaneous.contains(&other) {
+            self.simultaneous.push(other);
+        }
+        self
+    }
+
+    /// Get the list of gestures this one requires to fail
+    pub fn requires_failure_ids(&self) -> &[GestureId] {
+        &self.requires_failure
+    }
+
+    /// Get the list of gestures this one can run simultaneously with
+    pub fn simultaneous_ids(&self) -> &[GestureId] {
+        &self.simultaneous
     }
 }
 
@@ -365,17 +410,26 @@ impl Element for PanGestureElement {
 
 /// Wraps an element with tap gesture recognition
 pub struct TapGestureElement {
+    /// Unique identifier for this gesture
+    gesture_id: GestureId,
     child: Option<AnyElement>,
     recognizer: Arc<Mutex<TapGesture>>,
     on_tap: Option<TapHandler>,
+    /// Gestures that must fail before this one can begin
+    requires_failure: Vec<GestureId>,
+    /// Gestures that can run simultaneously with this one
+    simultaneous: Vec<GestureId>,
 }
 
 /// Create a tap gesture wrapper
 pub fn tap_gesture() -> TapGestureElement {
     TapGestureElement {
+        gesture_id: GestureId::new(),
         child: None,
         recognizer: Arc::new(Mutex::new(TapGesture::new())),
         on_tap: None,
+        requires_failure: Vec::new(),
+        simultaneous: Vec::new(),
     }
 }
 
@@ -401,6 +455,42 @@ impl TapGestureElement {
     {
         self.on_tap = Some(Arc::new(handler));
         self
+    }
+
+    /// Get the unique ID of this gesture for establishing relationships
+    pub fn id(&self) -> GestureId {
+        self.gesture_id
+    }
+
+    /// This gesture waits for `other` to fail before activating
+    ///
+    /// Useful when a gesture like double-tap should not interfere with single-tap
+    pub fn requires_failure_of(mut self, other: GestureId) -> Self {
+        if !self.requires_failure.contains(&other) {
+            self.requires_failure.push(other);
+        }
+        self
+    }
+
+    /// This gesture can run simultaneously with `other`
+    ///
+    /// By default, only one gesture can be active at a time.
+    /// Use this to allow multiple gestures to recognize together.
+    pub fn simultaneous_with(mut self, other: GestureId) -> Self {
+        if !self.simultaneous.contains(&other) {
+            self.simultaneous.push(other);
+        }
+        self
+    }
+
+    /// Get the list of gestures this one requires to fail
+    pub fn requires_failure_ids(&self) -> &[GestureId] {
+        &self.requires_failure
+    }
+
+    /// Get the list of gestures this one can run simultaneously with
+    pub fn simultaneous_ids(&self) -> &[GestureId] {
+        &self.simultaneous
     }
 }
 
@@ -524,21 +614,30 @@ impl Element for TapGestureElement {
 
 /// Wraps an element with pinch gesture recognition
 pub struct PinchGestureElement {
+    /// Unique identifier for this gesture
+    gesture_id: GestureId,
     child: Option<AnyElement>,
     recognizer: Arc<Mutex<PinchGesture>>,
     on_begin: Option<PinchHandler>,
     on_change: Option<PinchHandler>,
     on_end: Option<PinchHandler>,
+    /// Gestures that must fail before this one can begin
+    requires_failure: Vec<GestureId>,
+    /// Gestures that can run simultaneously with this one
+    simultaneous: Vec<GestureId>,
 }
 
 /// Create a pinch gesture wrapper
 pub fn pinch_gesture() -> PinchGestureElement {
     PinchGestureElement {
+        gesture_id: GestureId::new(),
         child: None,
         recognizer: Arc::new(Mutex::new(PinchGesture::new())),
         on_begin: None,
         on_change: None,
         on_end: None,
+        requires_failure: Vec::new(),
+        simultaneous: Vec::new(),
     }
 }
 
@@ -589,6 +688,42 @@ impl PinchGestureElement {
         self.on_change = Some(Arc::new(move |e, w, cx| h2(e, w, cx)));
         self.on_end = Some(Arc::new(move |e, w, cx| h3(e, w, cx)));
         self
+    }
+
+    /// Get the unique ID of this gesture for establishing relationships
+    pub fn id(&self) -> GestureId {
+        self.gesture_id
+    }
+
+    /// This gesture waits for `other` to fail before activating
+    ///
+    /// Useful when a gesture like double-tap should not interfere with single-tap
+    pub fn requires_failure_of(mut self, other: GestureId) -> Self {
+        if !self.requires_failure.contains(&other) {
+            self.requires_failure.push(other);
+        }
+        self
+    }
+
+    /// This gesture can run simultaneously with `other`
+    ///
+    /// By default, only one gesture can be active at a time.
+    /// Use this to allow multiple gestures to recognize together.
+    pub fn simultaneous_with(mut self, other: GestureId) -> Self {
+        if !self.simultaneous.contains(&other) {
+            self.simultaneous.push(other);
+        }
+        self
+    }
+
+    /// Get the list of gestures this one requires to fail
+    pub fn requires_failure_ids(&self) -> &[GestureId] {
+        &self.requires_failure
+    }
+
+    /// Get the list of gestures this one can run simultaneously with
+    pub fn simultaneous_ids(&self) -> &[GestureId] {
+        &self.simultaneous
     }
 }
 

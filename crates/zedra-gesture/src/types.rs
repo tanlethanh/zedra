@@ -1,7 +1,33 @@
 //! Core types for gesture recognition
 
 use gpui::Pixels;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
+
+/// Unique identifier for a gesture recognizer
+///
+/// Used for establishing relationships between gestures (e.g., requires_failure_of, simultaneous_with)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct GestureId(usize);
+
+impl GestureId {
+    /// Generate a new unique gesture ID
+    pub fn new() -> Self {
+        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+        Self(NEXT_ID.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Get the raw ID value
+    pub fn raw(&self) -> usize {
+        self.0
+    }
+}
+
+impl Default for GestureId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// A 2D point in logical pixels
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -173,7 +199,9 @@ impl TouchEvent {
         if self.pointers.len() < 2 {
             return 0.0;
         }
-        self.pointers[0].position.distance_to(self.pointers[1].position)
+        self.pointers[0]
+            .position
+            .distance_to(self.pointers[1].position)
     }
 
     /// Calculate angle between two pointers (for rotation)
