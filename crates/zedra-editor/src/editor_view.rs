@@ -7,9 +7,25 @@ use crate::buffer::Buffer;
 use crate::highlighter::{Highlighter, Language};
 use crate::theme::SyntaxTheme;
 
-const LINE_HEIGHT: f32 = 20.0;
-const GUTTER_WIDTH: f32 = 48.0;
-const FONT_SIZE: f32 = 14.0;
+// Editor styling constants
+const LINE_HEIGHT: f32 = 22.0;
+const GUTTER_WIDTH: f32 = 52.0;
+const FONT_SIZE: f32 = 13.0;
+const HORIZONTAL_PADDING: f32 = 12.0;
+
+// Colors (One Dark inspired)
+const BG_PRIMARY: u32 = 0x1e2127;
+const BG_EDITOR: u32 = 0x282c34;
+const BG_GUTTER: u32 = 0x21252b;
+const BG_CURRENT_LINE: u32 = 0x2c313c;
+const BG_STATUS_BAR: u32 = 0x21252b;
+const BORDER_SUBTLE: u32 = 0x3e4451;
+const TEXT_PRIMARY: u32 = 0xabb2bf;
+const TEXT_SECONDARY: u32 = 0x5c6370;
+const TEXT_GUTTER: u32 = 0x4b5263;
+const TEXT_GUTTER_ACTIVE: u32 = 0x737984;
+const CURSOR_COLOR: u32 = 0x528bff;
+const ACCENT_COLOR: u32 = 0x61afef;
 
 /// A code editor view with syntax highlighting and virtual scrolling.
 pub struct EditorView {
@@ -59,9 +75,13 @@ impl EditorView {
         self.cursor_offset = 0;
     }
 
+    /// Get the current language.
+    pub fn language(&self) -> Language {
+        self.highlighter.language()
+    }
+
     fn move_cursor_left(&mut self) {
         if self.cursor_offset > 0 {
-            // Move back one character (handle UTF-8 properly)
             let text = self.buffer.text();
             self.cursor_offset = text[..self.cursor_offset]
                 .char_indices()
@@ -134,9 +154,7 @@ impl EditorView {
         }
     }
 
-    /// Compute syntax highlights for a single line, with byte ranges relative
-    /// to the start of that line's text (stripping trailing newline).
-    /// Ranges are sorted and non-overlapping (required by GPUI's compute_runs).
+    /// Compute syntax highlights for a single line.
     fn line_highlights(&self, line: usize) -> Vec<(Range<usize>, HighlightStyle)> {
         let byte_range = self.buffer.line_byte_range(line);
         let source = self.buffer.text();
@@ -157,10 +175,8 @@ impl EditorView {
             }
         }
 
-        // Sort by start position, then by shorter range (more specific captures win)
         result.sort_by(|a, b| a.0.start.cmp(&b.0.start).then(a.0.len().cmp(&b.0.len())));
 
-        // Remove overlaps: for each byte position, keep only the first (most specific) highlight
         let mut merged: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
         let mut cursor = 0usize;
         for (range, style) in result {
@@ -168,13 +184,81 @@ impl EditorView {
                 merged.push((range.clone(), style));
                 cursor = range.end;
             } else if range.start < cursor && range.end > cursor {
-                // Partially overlapping: trim the start
                 merged.push((cursor..range.end, style));
                 cursor = range.end;
             }
-            // Fully overlapping ranges are skipped
         }
         merged
+    }
+
+    /// Render the status bar at the bottom.
+    fn render_status_bar(&self, cx: &Context<Self>) -> impl IntoElement {
+        let language = self.highlighter.language();
+        let language_name: SharedString = language.display_name().into();
+        let (cursor_row, cursor_col) = self.buffer.offset_to_point(self.cursor_offset);
+        let position_text: SharedString =
+            format!("Ln {}, Col {}", cursor_row + 1, cursor_col + 1).into();
+        let line_count_text: SharedString = format!("{} lines", self.buffer.line_count()).into();
+
+        // Language badge color
+        let badge_color = match language {
+            Language::Rust => rgb(0xdea584),
+            Language::Python => rgb(0x3572a5),
+            Language::Go => rgb(0x00add8),
+            Language::JavaScript => rgb(0xf1e05a),
+            Language::TypeScript | Language::Tsx => rgb(0x3178c6),
+            Language::C => rgb(0x555555),
+            Language::Cpp => rgb(0xf34b7d),
+            Language::Css => rgb(0x563d7c),
+            Language::Json => rgb(0x292929),
+            Language::Yaml => rgb(0xcb171e),
+            Language::Bash => rgb(0x89e051),
+            Language::Markdown => rgb(0x083fa1),
+            Language::PlainText => rgb(0x5c6370),
+        };
+
+        div()
+            .h(px(28.0))
+            .w_full()
+            .bg(rgb(BG_STATUS_BAR))
+            .border_t_1()
+            .border_color(rgb(BORDER_SUBTLE))
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .px(px(12.0))
+            .child(
+                // Left side: language badge
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .px(px(8.0))
+                            .py(px(2.0))
+                            .rounded(px(3.0))
+                            .bg(badge_color)
+                            .text_xs()
+                            .text_color(rgb(0xffffff))
+                            .child(language_name),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(TEXT_SECONDARY))
+                            .child(line_count_text),
+                    ),
+            )
+            .child(
+                // Right side: cursor position
+                div()
+                    .text_xs()
+                    .text_color(rgb(TEXT_SECONDARY))
+                    .child(position_text),
+            )
     }
 }
 
@@ -187,8 +271,9 @@ impl Focusable for EditorView {
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let line_count = self.buffer.line_count();
+        let (cursor_row, _) = self.buffer.offset_to_point(self.cursor_offset);
 
-        // Capture data needed by the uniform_list closure
+        // Pre-compute line data
         let line_highlights: Vec<(
             String,
             String,
@@ -198,17 +283,17 @@ impl Render for EditorView {
         )> = (0..line_count)
             .map(|line| {
                 let line_text = self.buffer.line_text(line).to_string();
-                let line_number = format!("{:>4}", line + 1);
+                let line_number = format!("{}", line + 1);
                 let highlights = self.line_highlights(line);
-                let (cursor_row, cursor_col) = self.buffer.offset_to_point(self.cursor_offset);
-                let show_cursor = cursor_row == line;
+                let (crow, cursor_col) = self.buffer.offset_to_point(self.cursor_offset);
+                let show_cursor = crow == line;
                 (line_text, line_number, highlights, show_cursor, cursor_col)
             })
             .collect();
 
         let text_style = {
             let mut style = window.text_style();
-            style.color = rgb(0xabb2bf).into();
+            style.color = rgb(TEXT_PRIMARY).into();
             style.font_size = px(FONT_SIZE).into();
             style
         };
@@ -217,7 +302,7 @@ impl Render for EditorView {
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0x282c34))
+            .bg(rgb(BG_PRIMARY))
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 let keystroke = &event.keystroke;
@@ -264,72 +349,118 @@ impl Render for EditorView {
                 }
                 cx.notify();
             }))
+            // Editor content area
             .child(
-                uniform_list("editor-lines", line_count, {
-                    let text_style = text_style.clone();
-                    move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
-                        range
-                            .map(|line| {
-                                let (
-                                    ref line_text,
-                                    ref line_number,
-                                    ref highlights,
-                                    show_cursor,
-                                    cursor_col,
-                                ) = line_highlights[line];
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_row()
+                    .overflow_hidden()
+                    // Gutter
+                    .child(
+                        div()
+                            .w(px(GUTTER_WIDTH))
+                            .h_full()
+                            .bg(rgb(BG_GUTTER))
+                            .border_r_1()
+                            .border_color(rgb(BORDER_SUBTLE)),
+                    )
+                    // Code area with uniform list
+                    .child(
+                        div().flex_1().bg(rgb(BG_EDITOR)).child(
+                            uniform_list("editor-lines", line_count, {
+                                let text_style = text_style.clone();
+                                move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
+                                    range
+                                        .map(|line| {
+                                            let (
+                                                ref line_text,
+                                                ref line_number,
+                                                ref highlights,
+                                                show_cursor,
+                                                cursor_col,
+                                            ) = line_highlights[line];
 
-                                let styled_text = if line_text.is_empty() {
-                                    StyledText::new(" ")
-                                        .with_default_highlights(&text_style, Vec::new())
-                                } else {
-                                    StyledText::new(line_text.clone())
-                                        .with_default_highlights(&text_style, highlights.clone())
-                                };
+                                            let is_current_line = line == cursor_row;
 
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .h(px(LINE_HEIGHT))
-                                    .child(
-                                        div()
-                                            .w(px(GUTTER_WIDTH))
-                                            .h(px(LINE_HEIGHT))
-                                            .flex()
-                                            .items_center()
-                                            .justify_end()
-                                            .pr_2()
-                                            .text_color(rgb(0x495162))
-                                            .text_size(px(FONT_SIZE))
-                                            .child(line_number.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .h(px(LINE_HEIGHT))
-                                            .flex()
-                                            .items_center()
-                                            .relative()
-                                            .when(show_cursor, |this| {
-                                                let char_width = FONT_SIZE * 0.6;
-                                                let cursor_x = cursor_col as f32 * char_width;
-                                                this.child(
-                                                    div()
-                                                        .absolute()
-                                                        .left(px(cursor_x))
-                                                        .top(px(0.0))
-                                                        .w(px(2.0))
-                                                        .h(px(LINE_HEIGHT))
-                                                        .bg(rgb(0x528bff)),
+                                            let styled_text = if line_text.is_empty() {
+                                                StyledText::new(" ").with_default_highlights(
+                                                    &text_style,
+                                                    Vec::new(),
                                                 )
-                                            })
-                                            .child(styled_text),
-                                    )
+                                            } else {
+                                                StyledText::new(line_text.clone())
+                                                    .with_default_highlights(
+                                                        &text_style,
+                                                        highlights.clone(),
+                                                    )
+                                            };
+
+                                            // Line container
+                                            div()
+                                                .w_full()
+                                                .h(px(LINE_HEIGHT))
+                                                .flex()
+                                                .flex_row()
+                                                // Current line highlight
+                                                .when(is_current_line, |el| {
+                                                    el.bg(rgb(BG_CURRENT_LINE))
+                                                })
+                                                // Gutter (line numbers) - positioned absolutely over the gutter column
+                                                .child(
+                                                    div()
+                                                        .w(px(GUTTER_WIDTH))
+                                                        .h(px(LINE_HEIGHT))
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_end()
+                                                        .pr(px(12.0))
+                                                        .text_color(if is_current_line {
+                                                            rgb(TEXT_GUTTER_ACTIVE)
+                                                        } else {
+                                                            rgb(TEXT_GUTTER)
+                                                        })
+                                                        .text_size(px(FONT_SIZE - 1.0))
+                                                        .child(line_number.clone()),
+                                                )
+                                                // Code content
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .h(px(LINE_HEIGHT))
+                                                        .pl(px(HORIZONTAL_PADDING))
+                                                        .flex()
+                                                        .items_center()
+                                                        .relative()
+                                                        // Cursor
+                                                        .when(show_cursor, |el| {
+                                                            let char_width = FONT_SIZE * 0.602;
+                                                            let cursor_x =
+                                                                cursor_col as f32 * char_width;
+                                                            el.child(
+                                                                div()
+                                                                    .absolute()
+                                                                    .left(px(HORIZONTAL_PADDING
+                                                                        + cursor_x))
+                                                                    .top(px(2.0))
+                                                                    .w(px(2.0))
+                                                                    .h(px(LINE_HEIGHT - 4.0))
+                                                                    .rounded(px(1.0))
+                                                                    .bg(rgb(CURSOR_COLOR)),
+                                                            )
+                                                        })
+                                                        .child(styled_text),
+                                                )
+                                        })
+                                        .collect()
+                                }
                             })
-                            .collect()
-                    }
-                })
-                .track_scroll(&self.scroll_handle)
-                .flex_1(),
+                            .track_scroll(&self.scroll_handle)
+                            .size_full(),
+                        ),
+                    ),
             )
+            // Status bar
+            .child(self.render_status_bar(cx))
     }
 }
