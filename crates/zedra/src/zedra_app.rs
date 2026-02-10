@@ -9,7 +9,7 @@ use crate::input::{Input, InputChanged};
 use zedra_editor::{EditorView, GitStack};
 use zedra_nav::{DrawerHost, HeaderConfig, StackNavigator, TabBarConfig, TabNavigator};
 use zedra_ssh::connection::{AuthMethod, ConnectionManager, ConnectionParams};
-use zedra_terminal::view::TerminalView;
+use zedra_terminal::view::{DisconnectRequested, TerminalView};
 
 // ---------------------------------------------------------------------------
 // ConnectView — extracted connection form with Input components
@@ -236,9 +236,15 @@ pub struct ZedraApp {
 
 impl ZedraApp {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // Create the terminal tab's stack navigator
+        // Create the terminal tab's stack navigator with header enabled (for back button)
         let terminal_stack = cx.new(|cx| {
-            let mut stack = StackNavigator::new(Default::default(), cx);
+            let mut stack = StackNavigator::new(
+                HeaderConfig {
+                    show_header: true,
+                    ..Default::default()
+                },
+                cx,
+            );
             let connect_view = cx.new(|cx| ConnectView::new(cx));
             stack.push(connect_view.into(), "Zedra Terminal", cx);
             stack
@@ -345,6 +351,15 @@ impl ZedraApp {
                         }
                     }));
                 });
+
+                // Subscribe to disconnect event to pop back to connect screen
+                let stack_for_disconnect = terminal_stack_for_connect.clone();
+                cx.subscribe(&terminal_view, move |_this, _terminal, _event: &DisconnectRequested, cx| {
+                    log::info!("DisconnectRequested received, popping terminal view");
+                    stack_for_disconnect.update(cx, |stack, cx| {
+                        stack.pop(cx);
+                    });
+                }).detach();
 
                 log::info!("Pushing terminal view onto stack");
                 terminal_stack_for_connect.update(cx, |stack, cx| {

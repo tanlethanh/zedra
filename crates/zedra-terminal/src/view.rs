@@ -4,6 +4,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::element::TerminalElement;
@@ -17,6 +18,9 @@ pub type OutputBuffer = Arc<Mutex<VecDeque<Vec<u8>>>>;
 
 /// Callback for requesting keyboard show/hide
 pub type KeyboardRequestFn = Box<dyn Fn(bool) + Send + 'static>;
+
+/// Event emitted when user requests disconnect
+pub struct DisconnectRequested;
 
 /// Terminal view that implements GPUI's Render trait
 pub struct TerminalView {
@@ -197,6 +201,8 @@ impl Focusable for TerminalView {
     }
 }
 
+impl gpui::EventEmitter<DisconnectRequested> for TerminalView {}
+
 impl Render for TerminalView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Process any pending SSH output before rendering
@@ -225,6 +231,7 @@ impl Render for TerminalView {
                     .flex()
                     .flex_row()
                     .items_center()
+                    .justify_between()
                     .px_2()
                     .py_1()
                     .bg(rgb(0x282c34))
@@ -237,7 +244,31 @@ impl Render for TerminalView {
                             })
                             .text_sm()
                             .child(status),
-                    ),
+                    )
+                    .when(connected, |el| {
+                        el.child(
+                            div()
+                                .px_2()
+                                .py_1()
+                                .bg(rgb(0xe06c75))
+                                .rounded_sm()
+                                .cursor_pointer()
+                                .text_color(rgb(0xffffff))
+                                .text_sm()
+                                .child("Disconnect")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _event, _window, cx| {
+                                        log::info!("Disconnect requested");
+                                        zedra_ssh::clear_input_sender();
+                                        this.connected = false;
+                                        this.status_text = "Disconnected".to_string();
+                                        cx.emit(DisconnectRequested);
+                                        cx.notify();
+                                    }),
+                                ),
+                        )
+                    }),
             )
             .child(
                 // Terminal grid - focusable for keyboard input
