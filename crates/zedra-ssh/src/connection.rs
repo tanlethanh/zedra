@@ -8,7 +8,6 @@ use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
 use crate::TerminalSink;
-use crate::bridge::SSHBridge;
 use crate::client::SSHSession;
 
 /// Global tokio runtime for SSH operations
@@ -113,6 +112,9 @@ impl ConnectionManager {
             match result {
                 Ok((sender, mut receiver)) => {
                     log::info!("SSH connection established, setting up terminal");
+
+                    // Store the input sender globally so terminal view can use it
+                    crate::set_input_sender(sender);
                     log::info!("SSH connected! Input channel ready.");
 
                     // Read loop for SSH output - write to the shared buffer
@@ -126,6 +128,9 @@ impl ConnectionManager {
                         crate::signal_terminal_data();
                     }
                     log::info!("SSH receiver closed");
+
+                    // Clear the input sender when connection closes
+                    crate::clear_input_sender();
                 }
                 Err(e) => {
                     log::error!("SSH connection failed: {:?}", e);
@@ -180,7 +185,6 @@ impl ConnectionManager {
 
         // Spawn tokio task to handle SSH I/O
         tokio::spawn(async move {
-            use futures::StreamExt;
             use russh::ChannelMsg;
 
             let mut channel = channel;

@@ -7,5 +7,6 @@ edition.workspace = true
 gpui = { path = "../../vendor/zed/crates/gpui", features = ["android"] }
 alacritty_terminal.workspace = true
 log.workspace = true
+itertools.workspace = true
 
 zedra-ssh = { path = "../zedra-ssh" }

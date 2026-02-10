@@ -15,6 +15,9 @@ pub type SendBytesFn = Box<dyn Fn(Vec<u8>) + Send + 'static>;
 /// Thread-safe buffer for receiving SSH output
 pub type OutputBuffer = Arc<Mutex<VecDeque<Vec<u8>>>>;
 
+/// Callback for requesting keyboard show/hide
+pub type KeyboardRequestFn = Box<dyn Fn(bool) + Send + 'static>;
+
 /// Terminal view that implements GPUI's Render trait
 pub struct TerminalView {
     terminal: TerminalState,
@@ -22,16 +25,32 @@ pub struct TerminalView {
     output_buffer: OutputBuffer,
     connected: bool,
     status_text: String,
+    focus_handle: FocusHandle,
+    keyboard_request: Option<KeyboardRequestFn>,
 }
 
 impl TerminalView {
-    pub fn new(columns: usize, rows: usize, cell_width: Pixels, line_height: Pixels) -> Self {
+    pub fn new(columns: usize, rows: usize, cell_width: Pixels, line_height: Pixels, cx: &mut Context<Self>) -> Self {
         Self {
             terminal: TerminalState::new(columns, rows, cell_width, line_height),
             send_bytes: None,
             output_buffer: Arc::new(Mutex::new(VecDeque::new())),
             connected: false,
             status_text: "Disconnected".to_string(),
+            focus_handle: cx.focus_handle(),
+            keyboard_request: None,
+        }
+    }
+
+    /// Set callback to request keyboard show/hide
+    pub fn set_keyboard_request(&mut self, callback: KeyboardRequestFn) {
+        self.keyboard_request = Some(callback);
+    }
+
+    /// Request keyboard to show
+    fn request_keyboard(&self, show: bool) {
+        if let Some(ref request) = self.keyboard_request {
+            request(show);
         }
     }
 
@@ -99,10 +118,16 @@ impl TerminalView {
 
     /// Handle a keystroke, converting to escape sequence and sending via SSH
     fn handle_keystroke(&mut self, keystroke: &Keystroke) {
+        log::info!("Terminal keystroke: {:?}", keystroke);
+
         // Try to convert keystroke to terminal escape sequence
         if let Some(bytes) = self.terminal.try_keystroke(keystroke) {
-            if let Some(ref send) = self.send_bytes {
-                send(bytes);
+            log::info!("Sending escape sequence: {:?}", bytes);
+            if !zedra_ssh::send_to_ssh(bytes.clone()) {
+                // Fall back to callback if global sender not available
+                if let Some(ref send) = self.send_bytes {
+                    send(bytes);
+                }
             }
         } else if let Some(ref key_char) = keystroke.key_char {
             // For plain characters, send the character directly
@@ -110,9 +135,24 @@ impl TerminalView {
                 && !keystroke.modifiers.alt
                 && !keystroke.modifiers.platform
             {
-                if let Some(ref send) = self.send_bytes {
-                    send(key_char.as_bytes().to_vec());
+                let bytes = key_char.as_bytes().to_vec();
+                log::info!("Sending character: {:?}", bytes);
+                if !zedra_ssh::send_to_ssh(bytes.clone()) {
+                    if let Some(ref send) = self.send_bytes {
+                        send(bytes);
+                    }
                 }
+            }
+        }
+    }
+
+    /// Handle IME text input
+    pub fn handle_ime_text(&mut self, text: &str) {
+        log::info!("Terminal IME text: {}", text);
+        let bytes = text.as_bytes().to_vec();
+        if !zedra_ssh::send_to_ssh(bytes.clone()) {
+            if let Some(ref send) = self.send_bytes {
+                send(bytes);
             }
         }
     }
@@ -151,6 +191,12 @@ impl zedra_ssh::TerminalSink for TerminalView {
     }
 }
 
+impl Focusable for TerminalView {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
 impl Render for TerminalView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Process any pending SSH output before rendering
@@ -166,6 +212,7 @@ impl Render for TerminalView {
         let size = self.terminal.size();
         let status = self.status_text.clone();
         let connected = self.connected;
+        let focus_handle = self.focus_handle.clone();
 
         div()
             .flex()
@@ -193,10 +240,21 @@ impl Render for TerminalView {
                     ),
             )
             .child(
-                // Terminal grid
+                // Terminal grid - focusable for keyboard input
                 div()
                     .flex_1()
                     .overflow_hidden()
+                    .track_focus(&focus_handle)
+                    .key_context("Terminal")
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _event, window, cx| {
+                            // Focus the terminal and request keyboard on tap
+                            this.focus_handle.focus(window, cx);
+                            this.request_keyboard(true);
+                            log::info!("Terminal tapped, requesting focus and keyboard");
+                        }),
+                    )
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, _cx| {
                         this.handle_keystroke(&event.keystroke);
                     }))

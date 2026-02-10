@@ -8106,6 +8106,7 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "gpui",
+ "itertools 0.14.0",
  "log",
  "zedra-ssh",
 ]

@@ -288,17 +288,63 @@ impl ZedraApp {
             move |_this: &mut ZedraApp,
                   _emitter: &Entity<ConnectView>,
                   event: &ConnectRequested,
-                  _window: &mut Window,
+                  window: &mut Window,
                   cx: &mut Context<ZedraApp>| {
                 log::info!("ConnectRequested event received: {}:{}", event.host, event.port);
 
-                let cell_width = px(9.0);
-                let line_height = px(18.0);
-                let columns = 80;
-                let rows = 24;
+                // Calculate terminal dimensions based on actual screen size
+                let viewport = window.viewport_size();
+                let line_height = px(16.0); // Balanced font size
+
+                // Ensure terminal font is loaded
+                zedra_terminal::load_terminal_font(window);
+
+                // Measure actual cell width from font metrics
+                let font = gpui::Font {
+                    family: zedra_terminal::TERMINAL_FONT_FAMILY.into(),
+                    features: gpui::FontFeatures::default(),
+                    fallbacks: None,
+                    weight: gpui::FontWeight::NORMAL,
+                    style: gpui::FontStyle::Normal,
+                };
+                let font_size = line_height * 0.75;
+                let text_system = window.text_system();
+                let font_id = text_system.resolve_font(&font);
+                let cell_width = text_system
+                    .advance(font_id, font_size, 'm')
+                    .map(|size| size.width)
+                    .unwrap_or(px(9.0));
+
+                // Calculate available space for terminal
+                // Subtract: tab bar (~50px), header bar (~44px), terminal status bar (~30px)
+                let available_width = viewport.width - px(16.0); // Some padding
+                let available_height = viewport.height - px(50.0 + 44.0 + 30.0);
+
+                let columns = (available_width / cell_width).floor() as usize;
+                let rows = (available_height / line_height).floor() as usize;
+
+                // Clamp to reasonable values
+                let columns = columns.clamp(20, 200);
+                let rows = rows.clamp(5, 100);
+
+                log::info!(
+                    "Terminal sizing: viewport={:?}, cell_width={:?}, columns={}, rows={}",
+                    viewport, cell_width, columns, rows
+                );
 
                 let terminal_view =
-                    cx.new(|_cx| TerminalView::new(columns, rows, cell_width, line_height));
+                    cx.new(|cx| TerminalView::new(columns, rows, cell_width, line_height, cx));
+
+                // Set keyboard request callback to show/hide soft keyboard
+                terminal_view.update(cx, |view, _cx| {
+                    view.set_keyboard_request(Box::new(|show| {
+                        if show {
+                            crate::android_jni::show_keyboard();
+                        } else {
+                            crate::android_jni::hide_keyboard();
+                        }
+                    }));
+                });
 
                 log::info!("Pushing terminal view onto stack");
                 terminal_stack_for_connect.update(cx, |stack, cx| {
