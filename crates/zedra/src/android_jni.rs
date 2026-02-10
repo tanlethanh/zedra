@@ -8,6 +8,9 @@ use std::sync::{Arc, Mutex, Once};
 
 use crate::android_command_queue::{AndroidCommand, get_command_sender};
 
+// Global storage for JavaVM to enable Rust→Java callbacks
+static JVM: Mutex<Option<Arc<JavaVM>>> = Mutex::new(None);
+
 // Static initialization for logging
 static INIT: Once = Once::new();
 
@@ -87,6 +90,9 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_gpuiInit(
             return 0;
         }
     };
+
+    // Store JVM globally for Rust→Java callbacks (keyboard, etc.)
+    *JVM.lock().unwrap() = Some(jvm.clone());
 
     // Create a global reference to the activity
     let activity_ref = match env.new_global_ref(activity) {
@@ -571,15 +577,156 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeImeInput(
 
     log::debug!("IME input: {}", input);
 
-    // Convert each character to a key event
+    // Send entire text as a single ImeText command to avoid reentrancy issues
     let sender = get_command_sender();
-    for ch in input.chars() {
-        let unicode = ch as i32;
-        let _ = sender.send(AndroidCommand::Key {
-            action: 0, // DOWN
-            key_code: 0,
-            unicode,
-        });
+    let _ = sender.send(AndroidCommand::ImeText { text: input });
+}
+
+// =============================================================================
+// Public Rust API for keyboard control (Rust → Java callbacks)
+// =============================================================================
+
+/// Show the Android soft keyboard
+///
+/// Call this when a text input gains focus
+pub fn show_keyboard() {
+    log::info!("show_keyboard() called");
+
+    // Wrap in catch_unwind to prevent panics from crossing JNI boundary
+    let result = std::panic::catch_unwind(|| {
+        show_keyboard_inner();
+    });
+
+    if let Err(e) = result {
+        log::error!("Panic in show_keyboard: {:?}", e);
+    }
+}
+
+fn show_keyboard_inner() {
+    let jvm = match JVM.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(jvm) => jvm.clone(),
+            None => {
+                log::error!("JVM not available for keyboard call");
+                return;
+            }
+        },
+        Err(e) => {
+            log::error!("Failed to lock JVM mutex: {:?}", e);
+            return;
+        }
+    };
+
+    // Use get_env for the main thread which should already be attached
+    let mut env = match jvm.get_env() {
+        Ok(env) => env,
+        Err(_) => {
+            // Fall back to attach if not already attached
+            match jvm.attach_current_thread_as_daemon() {
+                Ok(env) => env,
+                Err(e) => {
+                    log::error!("Failed to attach thread for keyboard: {:?}", e);
+                    return;
+                }
+            }
+        }
+    };
+
+    // Call MainActivity.showKeyboard() static method
+    let class = match env.find_class("dev/zedra/app/MainActivity") {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Failed to find MainActivity class: {:?}", e);
+            // Check for pending exception
+            if env.exception_check().unwrap_or(false) {
+                env.exception_describe().ok();
+                env.exception_clear().ok();
+            }
+            return;
+        }
+    };
+
+    if let Err(e) = env.call_static_method(&class, "showKeyboard", "()V", &[]) {
+        log::error!("Failed to call showKeyboard: {:?}", e);
+        // Check for pending exception
+        if env.exception_check().unwrap_or(false) {
+            env.exception_describe().ok();
+            env.exception_clear().ok();
+        }
+    } else {
+        log::info!("showKeyboard JNI call succeeded");
+    }
+}
+
+/// Hide the Android soft keyboard
+///
+/// Call this when a text input loses focus
+pub fn hide_keyboard() {
+    log::info!("hide_keyboard() called");
+
+    // Wrap in catch_unwind to prevent panics from crossing JNI boundary
+    let result = std::panic::catch_unwind(|| {
+        hide_keyboard_inner();
+    });
+
+    if let Err(e) = result {
+        log::error!("Panic in hide_keyboard: {:?}", e);
+    }
+}
+
+fn hide_keyboard_inner() {
+    let jvm = match JVM.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(jvm) => jvm.clone(),
+            None => {
+                log::error!("JVM not available for keyboard call");
+                return;
+            }
+        },
+        Err(e) => {
+            log::error!("Failed to lock JVM mutex: {:?}", e);
+            return;
+        }
+    };
+
+    // Use get_env for the main thread which should already be attached
+    let mut env = match jvm.get_env() {
+        Ok(env) => env,
+        Err(_) => {
+            // Fall back to attach if not already attached
+            match jvm.attach_current_thread_as_daemon() {
+                Ok(env) => env,
+                Err(e) => {
+                    log::error!("Failed to attach thread for keyboard: {:?}", e);
+                    return;
+                }
+            }
+        }
+    };
+
+    // Call MainActivity.hideKeyboard() static method
+    let class = match env.find_class("dev/zedra/app/MainActivity") {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Failed to find MainActivity class: {:?}", e);
+            // Check for pending exception
+            if env.exception_check().unwrap_or(false) {
+                env.exception_describe().ok();
+                env.exception_clear().ok();
+            }
+            return;
+        }
+    };
+
+    if let Err(e) = env.call_static_method(&class, "hideKeyboard", "()V", &[]) {
+        log::error!("Failed to call hideKeyboard: {:?}", e);
+        // Check for pending exception
+        if env.exception_check().unwrap_or(false) {
+            env.exception_describe().ok();
+            env.exception_clear().ok();
+        }
+    } else {
+        log::info!("hideKeyboard JNI call succeeded");
     }
 }
 

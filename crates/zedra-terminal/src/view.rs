@@ -1,6 +1,9 @@
 // Terminal view - GPUI Render implementation for the terminal
 // Manages terminal state, handles keyboard input, and renders the terminal grid
 
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
 use gpui::*;
 
 use crate::element::TerminalElement;
@@ -9,10 +12,14 @@ use crate::{TerminalSize, TerminalState};
 /// Callback for sending bytes to the SSH channel
 pub type SendBytesFn = Box<dyn Fn(Vec<u8>) + Send + 'static>;
 
+/// Thread-safe buffer for receiving SSH output
+pub type OutputBuffer = Arc<Mutex<VecDeque<Vec<u8>>>>;
+
 /// Terminal view that implements GPUI's Render trait
 pub struct TerminalView {
     terminal: TerminalState,
     send_bytes: Option<SendBytesFn>,
+    output_buffer: OutputBuffer,
     connected: bool,
     status_text: String,
 }
@@ -22,9 +29,37 @@ impl TerminalView {
         Self {
             terminal: TerminalState::new(columns, rows, cell_width, line_height),
             send_bytes: None,
+            output_buffer: Arc::new(Mutex::new(VecDeque::new())),
             connected: false,
             status_text: "Disconnected".to_string(),
         }
+    }
+
+    /// Get a clone of the output buffer for SSH to write to
+    pub fn output_buffer(&self) -> OutputBuffer {
+        self.output_buffer.clone()
+    }
+
+    /// Process any pending output from SSH
+    /// Returns true if any data was processed
+    fn process_output(&mut self) -> bool {
+        if let Ok(mut buffer) = self.output_buffer.try_lock() {
+            let count = buffer.len();
+            if count > 0 {
+                log::info!("Processing {} buffered SSH outputs", count);
+                while let Some(data) = buffer.pop_front() {
+                    log::info!("Advancing {} bytes to terminal", data.len());
+                    self.terminal.advance_bytes(&data);
+                }
+                // Mark as connected if we received data
+                if !self.connected {
+                    self.connected = true;
+                    self.status_text = "Connected".to_string();
+                }
+                return true;
+            }
+        }
+        false
     }
 
     /// Set the callback for sending bytes to the SSH channel
@@ -110,10 +145,23 @@ impl zedra_ssh::TerminalSink for TerminalView {
         let s = self.terminal_size();
         (s.columns as u32, s.rows as u32)
     }
+
+    fn output_buffer(&self) -> zedra_ssh::OutputBuffer {
+        self.output_buffer()
+    }
 }
 
 impl Render for TerminalView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Process any pending SSH output before rendering
+        let had_data = self.process_output();
+
+        // If we processed data, schedule another render to check for more
+        // This creates a polling loop while data is coming in
+        if had_data {
+            cx.notify();
+        }
+
         let content = self.terminal.content();
         let size = self.terminal.size();
         let status = self.status_text.clone();

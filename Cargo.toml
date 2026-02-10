@@ -16,7 +16,7 @@ russh = { version = "0.49", default-features = false }
 russh-keys = "0.49"
 
 # Async runtime
-tokio = { version = "1", features = ["rt", "net", "io-util", "time", "sync"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "io-util", "time", "sync"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

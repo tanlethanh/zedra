@@ -61,6 +61,7 @@ impl AndroidApp {
                 key_code,
                 unicode,
             } => self.handle_key(action, key_code, unicode),
+            AndroidCommand::ImeText { text } => self.handle_ime_text(&text),
             AndroidCommand::Resume => self.handle_resume(),
             AndroidCommand::Pause => self.handle_pause(),
             AndroidCommand::Destroy => self.handle_destroy(),
@@ -317,9 +318,12 @@ impl AndroidApp {
         let logical_y = y / scale;
         let position = point(px(logical_x), px(logical_y));
 
+        log::info!("handle_touch: action={}, pos=({:.1}, {:.1})", action, logical_x, logical_y);
+
         match action {
             0 => {
                 // ACTION_DOWN — record position for scroll delta, send mouse down
+                log::info!("Dispatching MouseDown at ({:.1}, {:.1})", logical_x, logical_y);
                 self.last_touch_position = Some((logical_x, logical_y));
                 platform.dispatch_input(PlatformInput::MouseDown(MouseDownEvent {
                     button: MouseButton::Left,
@@ -385,6 +389,34 @@ impl AndroidApp {
         Ok(())
     }
 
+    /// Handle IME text input - dispatches text as individual key events
+    /// but defers to next frame to avoid reentrancy issues
+    fn handle_ime_text(&mut self, text: &str) -> Result<()> {
+        let platform = match &self.platform {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        log::debug!("IME text: {}", text);
+
+        // Dispatch each character as a key event
+        for ch in text.chars() {
+            let keystroke = Keystroke {
+                modifiers: Modifiers::default(),
+                key: ch.to_lowercase().to_string(),
+                key_char: Some(ch.to_string()),
+            };
+            let input = PlatformInput::KeyDown(KeyDownEvent {
+                keystroke,
+                is_held: false,
+                prefer_character_input: true, // Prefer character input for IME
+            });
+            platform.dispatch_input(input);
+        }
+
+        Ok(())
+    }
+
     /// Handle app resume
     fn handle_resume(&mut self) -> Result<()> {
         log::info!("App resumed");
@@ -410,10 +442,18 @@ impl AndroidApp {
 
     /// Handle frame request (called at ~60 FPS)
     fn handle_frame_request(&mut self) -> Result<()> {
+        // Check if terminal has pending SSH data
+        let terminal_data_pending = zedra_ssh::check_and_clear_terminal_data();
+
         // Request frames on all windows via the AndroidPlatform
         // This triggers GPUI's rendering pipeline
         if let Some(ref platform) = self.platform {
-            platform.request_frame_for_all_windows();
+            if terminal_data_pending {
+                // Force render when terminal data is pending to ensure it gets processed
+                platform.request_frame_forced();
+            } else {
+                platform.request_frame_for_all_windows();
+            }
         }
         Ok(())
     }

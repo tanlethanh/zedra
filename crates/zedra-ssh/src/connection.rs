@@ -1,12 +1,30 @@
 // Connection state machine for SSH sessions
 
+use std::sync::OnceLock;
+
 use anyhow::Result;
 use gpui::*;
+use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
 use crate::TerminalSink;
 use crate::bridge::SSHBridge;
 use crate::client::SSHSession;
+
+/// Global tokio runtime for SSH operations
+fn ssh_runtime() -> &'static Runtime {
+    static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        log::info!("Creating tokio runtime for SSH");
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("Failed to create tokio runtime for SSH");
+        log::info!("Tokio runtime created successfully");
+        rt
+    })
+}
 
 /// Connection state
 #[derive(Clone, Debug, PartialEq)]
@@ -66,51 +84,71 @@ impl ConnectionManager {
             cx.notify();
         });
 
-        // Spawn the connection on tokio
-        cx.spawn(async move |cx| {
-            let result = Self::do_connect(terminal_view.clone(), params, cx).await;
+        // Get terminal size before spawning
+        let (cols, rows) = match terminal_view.update(cx, |this, _cx| this.terminal_size_cells()) {
+            Ok(size) => size,
+            Err(e) => {
+                log::error!("Failed to get terminal size: {:?}", e);
+                return;
+            }
+        };
+
+        // Get the output buffer before spawning (this is on main thread)
+        let output_buffer = match terminal_view.update(cx, |this, _cx| this.output_buffer()) {
+            Ok(buf) => buf,
+            Err(e) => {
+                log::error!("Failed to get output buffer: {:?}", e);
+                return;
+            }
+        };
+
+        // Run connection on tokio runtime directly (GPUI spawn doesn't work on Android)
+        log::info!("Spawning SSH connection task on tokio runtime");
+
+        ssh_runtime().spawn(async move {
+            log::info!("Tokio task started: connecting to {}:{}", params.host, params.port);
+
+            let result = Self::do_connect_tokio(params, cols, rows).await;
 
             match result {
-                Ok(sender) => {
-                    let _ = terminal_view.update(cx, |this, cx| {
-                        this.set_connected(true);
-                        this.set_status("Connected".to_string());
+                Ok((sender, mut receiver)) => {
+                    log::info!("SSH connection established, setting up terminal");
+                    log::info!("SSH connected! Input channel ready.");
 
-                        // Set up the send callback
-                        let sender_clone = sender.clone();
-                        this.set_send_bytes(Box::new(move |bytes| {
-                            let _ = sender_clone.send(bytes);
-                        }));
-
-                        cx.notify();
-                    });
+                    // Read loop for SSH output - write to the shared buffer
+                    while let Some(data) = receiver.recv().await {
+                        log::info!("Received {} bytes from SSH", data.len());
+                        if let Ok(mut buffer) = output_buffer.lock() {
+                            buffer.push_back(data);
+                            log::info!("Buffer now has {} items", buffer.len());
+                        }
+                        // Signal main thread that data is available
+                        crate::signal_terminal_data();
+                    }
+                    log::info!("SSH receiver closed");
                 }
                 Err(e) => {
-                    log::error!("Connection failed: {:?}", e);
-                    let _ = terminal_view.update(cx, |this, cx| {
-                        this.set_connected(false);
-                        this.set_status(format!("Error: {}", e));
-                        cx.notify();
-                    });
+                    log::error!("SSH connection failed: {:?}", e);
                 }
             }
+        });
 
-            Ok::<(), anyhow::Error>(())
-        })
-        .detach();
+        log::info!("SSH connection task spawned");
     }
 
-    async fn do_connect<T: TerminalSink>(
-        terminal_view: WeakEntity<T>,
+    /// Connect to SSH on tokio runtime, returning channels for I/O
+    async fn do_connect_tokio(
         params: ConnectionParams,
-        cx: &mut AsyncApp,
-    ) -> Result<mpsc::UnboundedSender<Vec<u8>>> {
-        // Get terminal size
-        let (cols, rows) = terminal_view.update(cx, |this, _cx| this.terminal_size_cells())?;
+        cols: u32,
+        rows: u32,
+    ) -> Result<(mpsc::UnboundedSender<Vec<u8>>, mpsc::UnboundedReceiver<Vec<u8>>)> {
+        log::info!("Connecting to {}:{}", params.host, params.port);
 
         // Connect via SSH
         let mut session =
             SSHSession::connect(&params.host, params.port, params.expected_fingerprint).await?;
+
+        log::info!("TCP connected, authenticating...");
 
         // Authenticate
         let authenticated = match params.auth {
@@ -127,15 +165,78 @@ impl ConnectionManager {
             return Err(anyhow::anyhow!("Authentication failed"));
         }
 
+        log::info!("Authenticated, opening shell...");
+
         // Open shell with PTY
         let channel = session
             .open_shell(cols, rows)
             .await?;
 
-        // Start the I/O bridge
-        let bridge = SSHBridge::start(channel, terminal_view.clone(), cx)?;
+        log::info!("Shell opened, starting I/O bridge");
 
-        Ok(bridge.sender())
+        // Create channels for terminal I/O
+        let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (output_tx, output_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+
+        // Spawn tokio task to handle SSH I/O
+        tokio::spawn(async move {
+            use futures::StreamExt;
+            use russh::ChannelMsg;
+
+            let mut channel = channel;
+            log::info!("SSH I/O task started, waiting for channel messages");
+
+            loop {
+                tokio::select! {
+                    // Handle input from terminal (user typing)
+                    Some(data) = input_rx.recv() => {
+                        log::info!("Sending {} bytes to SSH channel", data.len());
+                        if let Err(e) = channel.data(&data[..]).await {
+                            log::error!("Failed to send data to SSH: {:?}", e);
+                            break;
+                        }
+                    }
+                    // Handle output from SSH (server responses)
+                    msg = channel.wait() => {
+                        match msg {
+                            Some(ChannelMsg::Data { data }) => {
+                                log::info!("SSH channel received {} bytes of data", data.len());
+                                if output_tx.send(data.to_vec()).is_err() {
+                                    log::info!("Output channel closed");
+                                    break;
+                                }
+                            }
+                            Some(ChannelMsg::ExtendedData { data, ext }) => {
+                                log::info!("SSH channel received {} bytes of extended data (ext={})", data.len(), ext);
+                                if output_tx.send(data.to_vec()).is_err() {
+                                    log::info!("Output channel closed");
+                                    break;
+                                }
+                            }
+                            Some(ChannelMsg::Eof) => {
+                                log::info!("SSH channel EOF");
+                                break;
+                            }
+                            Some(ChannelMsg::Close) => {
+                                log::info!("SSH channel closed");
+                                break;
+                            }
+                            None => {
+                                log::info!("SSH channel ended");
+                                break;
+                            }
+                            other => {
+                                log::debug!("SSH channel received other message: {:?}", other);
+                            }
+                        }
+                    }
+                }
+            }
+
+            log::info!("SSH I/O task finished");
+        });
+
+        Ok((input_tx, output_rx))
     }
 }
 

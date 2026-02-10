@@ -67,12 +67,18 @@ pub fn set_password(password: &str) -> Result<()> {
     Ok(())
 }
 
+/// Default password for development (when no password is set)
+const DEFAULT_PASSWORD: &str = "zedra";
+
 /// Verify a password against the stored hash
 pub fn verify_password(password: &str) -> Result<bool> {
     let store_data = store::load_store()?;
     let hash_str = match store_data.password_hash {
         Some(h) => h,
-        None => return Ok(false), // No password set
+        None => {
+            // No password set - accept default password for development
+            return Ok(password == DEFAULT_PASSWORD);
+        }
     };
 
     let parsed_hash =

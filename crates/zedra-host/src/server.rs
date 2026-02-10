@@ -202,22 +202,43 @@ impl Handler for ZedraHandler {
         let handle = session.handle();
 
         // Spawn a task to read from PTY and send to SSH channel
-        // Reader is moved here - no lock needed during blocking read
-        tokio::spawn(async move {
+        // Use a channel to bridge blocking reads with async I/O
+        let (pty_tx, mut pty_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+
+        // Spawn a blocking task for PTY reads (reader is moved here)
+        std::thread::spawn(move || {
+            tracing::info!("PTY read thread started for channel");
             let mut buf = [0u8; 4096];
             loop {
-                // Blocking read without holding any lock
-                let n = match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => n,
+                match reader.read(&mut buf) {
+                    Ok(0) => {
+                        tracing::info!("PTY read: EOF");
+                        break;
+                    }
+                    Ok(n) => {
+                        tracing::debug!("PTY read: {} bytes", n);
+                        if pty_tx.send(buf[..n].to_vec()).is_err() {
+                            tracing::info!("PTY channel closed");
+                            break;
+                        }
+                    }
                     Err(e) => {
                         tracing::debug!("PTY read error: {:?}", e);
                         break;
                     }
-                };
+                }
+            }
+            tracing::info!("PTY read thread exiting");
+        });
 
-                let data = CryptoVec::from_slice(&buf[..n]);
-                if handle.data(channel_id, data).await.is_err() {
+        // Async task to forward PTY output to SSH channel
+        tokio::spawn(async move {
+            tracing::info!("SSH forward task started");
+            while let Some(data) = pty_rx.recv().await {
+                tracing::debug!("Forwarding {} bytes to SSH channel", data.len());
+                let crypto_data = CryptoVec::from_slice(&data);
+                if handle.data(channel_id, crypto_data).await.is_err() {
+                    tracing::info!("SSH channel write failed");
                     break;
                 }
             }

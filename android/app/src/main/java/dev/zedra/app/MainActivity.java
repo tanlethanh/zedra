@@ -24,6 +24,29 @@ public class MainActivity extends AppCompatActivity {
     private Choreographer choreographer;
     private boolean isRunning = false;
 
+    // Static reference for JNI keyboard callbacks
+    private static GpuiSurfaceView sSurfaceView;
+
+    /**
+     * Show the soft keyboard (called from Rust via JNI)
+     */
+    public static void showKeyboard() {
+        Log.d(TAG, "showKeyboard called from native");
+        if (sSurfaceView != null) {
+            sSurfaceView.post(() -> sSurfaceView.requestKeyboard());
+        }
+    }
+
+    /**
+     * Hide the soft keyboard (called from Rust via JNI)
+     */
+    public static void hideKeyboard() {
+        Log.d(TAG, "hideKeyboard called from native");
+        if (sSurfaceView != null) {
+            sSurfaceView.post(() -> sSurfaceView.dismissKeyboard());
+        }
+    }
+
     // Choreographer frame callback for command processing
     private final Choreographer.FrameCallback frameCallback = new Choreographer.FrameCallback() {
         @Override
@@ -103,6 +126,7 @@ public class MainActivity extends AppCompatActivity {
         // Create the GPUI surface view
         surfaceView = new GpuiSurfaceView(this);
         surfaceView.setNativeHandle(gpuiHandle);
+        sSurfaceView = surfaceView; // Store for JNI keyboard callbacks
 
         // Set the surface view as the content view
         setContentView(surfaceView);

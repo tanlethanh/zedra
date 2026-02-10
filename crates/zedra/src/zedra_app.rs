@@ -5,30 +5,89 @@ use gpui::*;
 
 use crate::file_explorer::{FileExplorer, FileSelected};
 use crate::file_preview_list::{FilePreviewList, PreviewSelected, SAMPLE_FILES};
+use crate::input::{Input, InputChanged};
 use zedra_editor::{EditorView, GitStack};
 use zedra_nav::{DrawerHost, HeaderConfig, StackNavigator, TabBarConfig, TabNavigator};
 use zedra_ssh::connection::{AuthMethod, ConnectionManager, ConnectionParams};
 use zedra_terminal::view::TerminalView;
 
 // ---------------------------------------------------------------------------
-// ConnectView — extracted connection form
+// ConnectView — extracted connection form with Input components
 // ---------------------------------------------------------------------------
 
 pub struct ConnectView {
-    host: String,
-    port: String,
-    username: String,
-    password: String,
+    host_input: Entity<Input>,
+    port_input: Entity<Input>,
+    username_input: Entity<Input>,
+    password_input: Entity<Input>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl ConnectView {
-    pub fn new() -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        // Create input entities
+        let host_input = cx.new(|cx| Input::new(cx).placeholder("192.168.1.12").value("192.168.1.12"));
+        let port_input = cx.new(|cx| Input::new(cx).placeholder("2222").value("2222"));
+        let username_input = cx.new(|cx| Input::new(cx).placeholder("username").value("zedra"));
+        let password_input = cx.new(|cx| Input::new(cx).placeholder("password").value("zedra").secure(true));
+
+        let mut subscriptions = Vec::new();
+
+        // Subscribe to input changes for logging/debugging
+        let sub = cx.subscribe(&host_input, |_this: &mut Self, _input, event: &InputChanged, cx| {
+            log::debug!("Host changed: {}", event.value);
+            cx.notify();
+        });
+        subscriptions.push(sub);
+
+        let sub = cx.subscribe(&port_input, |_this: &mut Self, _input, event: &InputChanged, cx| {
+            log::debug!("Port changed: {}", event.value);
+            cx.notify();
+        });
+        subscriptions.push(sub);
+
+        let sub = cx.subscribe(&username_input, |_this: &mut Self, _input, event: &InputChanged, cx| {
+            log::debug!("Username changed: {}", event.value);
+            cx.notify();
+        });
+        subscriptions.push(sub);
+
+        let sub = cx.subscribe(&password_input, |_this: &mut Self, _input, _event: &InputChanged, cx| {
+            log::debug!("Password changed");
+            cx.notify();
+        });
+        subscriptions.push(sub);
+
         Self {
-            host: String::new(),
-            port: "2222".to_string(),
-            username: "zedra".to_string(),
-            password: String::new(),
+            host_input,
+            port_input,
+            username_input,
+            password_input,
+            _subscriptions: subscriptions,
         }
+    }
+
+    fn get_connection_params(&self, cx: &App) -> (String, u16, String, String) {
+        let host = self.host_input.read(cx).get_value().to_string();
+        let host = if host.is_empty() {
+            "192.168.1.12".to_string()
+        } else {
+            host
+        };
+
+        let port_str = self.port_input.read(cx).get_value();
+        let port: u16 = port_str.parse().unwrap_or(2222);
+
+        let username = self.username_input.read(cx).get_value().to_string();
+        let username = if username.is_empty() {
+            "zedra".to_string()
+        } else {
+            username
+        };
+
+        let password = self.password_input.read(cx).get_value().to_string();
+
+        (host, port, username, password)
     }
 }
 
@@ -63,6 +122,7 @@ impl Render for ConnectView {
                     .rounded(px(12.0))
                     .border_1()
                     .border_color(rgb(0x3e4451))
+                    // Title
                     .child(
                         div()
                             .text_color(rgb(0x61afef))
@@ -75,6 +135,7 @@ impl Render for ConnectView {
                             .text_sm()
                             .child("Connect to a remote host"),
                     )
+                    // Host input
                     .child(
                         div()
                             .flex()
@@ -86,20 +147,9 @@ impl Render for ConnectView {
                                     .text_sm()
                                     .child("Host"),
                             )
-                            .child(
-                                div()
-                                    .px_2()
-                                    .py_1()
-                                    .bg(rgb(0x1e1e1e))
-                                    .rounded(px(4.0))
-                                    .text_color(rgb(0x5c6370))
-                                    .child(if self.host.is_empty() {
-                                        "192.168.1.100".to_string()
-                                    } else {
-                                        self.host.clone()
-                                    }),
-                            ),
+                            .child(self.host_input.clone()),
                     )
+                    // Port input
                     .child(
                         div()
                             .flex()
@@ -111,16 +161,37 @@ impl Render for ConnectView {
                                     .text_sm()
                                     .child("Port"),
                             )
+                            .child(self.port_input.clone()),
+                    )
+                    // Username input
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
                             .child(
                                 div()
-                                    .px_2()
-                                    .py_1()
-                                    .bg(rgb(0x1e1e1e))
-                                    .rounded(px(4.0))
                                     .text_color(rgb(0xabb2bf))
-                                    .child(self.port.clone()),
-                            ),
+                                    .text_sm()
+                                    .child("Username"),
+                            )
+                            .child(self.username_input.clone()),
                     )
+                    // Password input
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_color(rgb(0xabb2bf))
+                                    .text_sm()
+                                    .child("Password"),
+                            )
+                            .child(self.password_input.clone()),
+                    )
+                    // Connect button
                     .child(
                         div()
                             .mt_2()
@@ -133,22 +204,15 @@ impl Render for ConnectView {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _event, _window, cx| {
-                                    let host = if this.host.is_empty() {
-                                        "192.168.1.100".to_string()
-                                    } else {
-                                        this.host.clone()
-                                    };
-                                    let port: u16 = this.port.parse().unwrap_or(2222);
-                                    let username = if this.username.is_empty() {
-                                        "zedra".to_string()
-                                    } else {
-                                        this.username.clone()
-                                    };
+                                    log::info!("Connect button pressed!");
+                                    let (host, port, username, password) =
+                                        this.get_connection_params(cx);
+                                    log::info!("Connecting to {}:{} as {}", host, port, username);
                                     cx.emit(ConnectRequested {
                                         host,
                                         port,
                                         username,
-                                        password: this.password.clone(),
+                                        password,
                                     });
                                 }),
                             )
@@ -175,7 +239,7 @@ impl ZedraApp {
         // Create the terminal tab's stack navigator
         let terminal_stack = cx.new(|cx| {
             let mut stack = StackNavigator::new(Default::default(), cx);
-            let connect_view = cx.new(|_cx| ConnectView::new());
+            let connect_view = cx.new(|cx| ConnectView::new(cx));
             stack.push(connect_view.into(), "Zedra Terminal", cx);
             stack
         });
@@ -216,7 +280,7 @@ impl ZedraApp {
         let mut subscriptions = Vec::new();
 
         // --- ConnectView subscription ---
-        let connect_view = cx.new(|_cx| ConnectView::new());
+        let connect_view = cx.new(|cx| ConnectView::new(cx));
         let terminal_stack_for_connect = terminal_stack.clone();
         let sub = cx.subscribe_in(
             &connect_view,
@@ -226,6 +290,8 @@ impl ZedraApp {
                   event: &ConnectRequested,
                   _window: &mut Window,
                   cx: &mut Context<ZedraApp>| {
+                log::info!("ConnectRequested event received: {}:{}", event.host, event.port);
+
                 let cell_width = px(9.0);
                 let line_height = px(18.0);
                 let columns = 80;
@@ -234,6 +300,7 @@ impl ZedraApp {
                 let terminal_view =
                     cx.new(|_cx| TerminalView::new(columns, rows, cell_width, line_height));
 
+                log::info!("Pushing terminal view onto stack");
                 terminal_stack_for_connect.update(cx, |stack, cx| {
                     stack.push(terminal_view.clone().into(), "Terminal", cx);
                 });
@@ -247,6 +314,7 @@ impl ZedraApp {
                     },
                     expected_fingerprint: None,
                 };
+                log::info!("Starting SSH connection...");
                 ConnectionManager::connect(terminal_view.downgrade(), params, cx);
             },
         );

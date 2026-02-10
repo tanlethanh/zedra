@@ -112,14 +112,34 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
         hideSoftKeyboard();
     }
 
+    // Track the current text content for proper IME handling
+    private StringBuilder currentText = new StringBuilder();
+
     @Override
     public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
-        outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
+        outAttrs.inputType = InputType.TYPE_CLASS_TEXT;
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI | EditorInfo.IME_ACTION_NONE;
+
+        final GpuiSurfaceView view = this;
 
         return new BaseInputConnection(this, false) {
             @Override
+            public boolean setComposingText(CharSequence text, int newCursorPosition) {
+                // For composing text, we don't send anything yet - wait for commit
+                Log.d(TAG, "setComposingText: " + text + " (ignored, waiting for commit)");
+                return true;
+            }
+
+            @Override
+            public boolean finishComposingText() {
+                Log.d(TAG, "finishComposingText");
+                return true;
+            }
+
+            @Override
             public boolean commitText(CharSequence text, int newCursorPosition) {
+                Log.d(TAG, "commitText: " + text);
+                // Only send the final committed text to native
                 if (nativeHandle != 0 && text != null && text.length() > 0) {
                     nativeImeInput(nativeHandle, text.toString());
                 }
@@ -128,9 +148,12 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
 
             @Override
             public boolean deleteSurroundingText(int beforeLength, int afterLength) {
-                // Send backspace for each deleted character
-                for (int i = 0; i < beforeLength; i++) {
-                    nativeKeyEvent(nativeHandle, KEY_ACTION_DOWN, 67, 0); // KEYCODE_DEL
+                Log.d(TAG, "deleteSurroundingText: before=" + beforeLength + ", after=" + afterLength);
+                // Send backspace for deletion requests
+                if (nativeHandle != 0) {
+                    for (int i = 0; i < beforeLength; i++) {
+                        nativeKeyEvent(nativeHandle, KEY_ACTION_DOWN, 67, 0); // KEYCODE_DEL
+                    }
                 }
                 return true;
             }
@@ -138,6 +161,7 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
             @Override
             public boolean sendKeyEvent(KeyEvent event) {
                 if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    Log.d(TAG, "sendKeyEvent: keyCode=" + event.getKeyCode());
                     nativeKeyEvent(nativeHandle, KEY_ACTION_DOWN,
                             event.getKeyCode(), event.getUnicodeChar());
                 }
@@ -215,7 +239,9 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
+        Log.d(TAG, "onTouchEvent: action=" + event.getActionMasked() + ", nativeHandle=" + nativeHandle);
         if (nativeHandle == 0) {
+            Log.w(TAG, "Touch event ignored - nativeHandle is 0");
             return super.onTouchEvent(event);
         }
 

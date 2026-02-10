@@ -36,6 +36,8 @@ pub enum AndroidCommand {
         key_code: i32,
         unicode: i32,
     },
+    /// IME text input (handles composed text like Vietnamese 'ê' from 'ee')
+    ImeText { text: String },
     /// App resumed
     Resume,
     /// App paused

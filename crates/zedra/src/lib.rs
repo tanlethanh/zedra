@@ -1,5 +1,8 @@
 // Zedra Android application - GPUI on Android via Blade/Vulkan
 
+// Text input component with keyboard support
+pub mod input;
+
 // Shared Zedra app (connection UI + terminal)
 pub mod zedra_app;
 
