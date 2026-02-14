@@ -3,8 +3,8 @@
 
 use anyhow::Result;
 use argon2::{
+    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 use std::sync::Mutex;
 
@@ -67,17 +67,21 @@ pub fn set_password(password: &str) -> Result<()> {
     Ok(())
 }
 
-/// Default password for development (when no password is set)
-const DEFAULT_PASSWORD: &str = "zedra";
-
 /// Verify a password against the stored hash
 pub fn verify_password(password: &str) -> Result<bool> {
     let store_data = store::load_store()?;
     let hash_str = match store_data.password_hash {
         Some(h) => h,
         None => {
-            // No password set - accept default password for development
-            return Ok(password == DEFAULT_PASSWORD);
+            // No password set — only accept a hardcoded default in debug builds
+            #[cfg(debug_assertions)]
+            {
+                return Ok(password == "zedra");
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                return Ok(false);
+            }
         }
     };
 
