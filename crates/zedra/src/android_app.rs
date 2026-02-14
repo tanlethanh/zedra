@@ -90,6 +90,9 @@ impl AndroidApp {
                 velocity_x,
                 velocity_y,
             } => self.handle_fling(velocity_x, velocity_y),
+            AndroidCommand::KeyboardHeightChanged { height } => {
+                self.handle_keyboard_height(height)
+            }
         }
     }
 
@@ -538,6 +541,15 @@ impl AndroidApp {
             modifiers: Modifiers::default(),
             touch_phase: TouchPhase::Moved,
         }));
+    }
+
+    /// Handle keyboard height change — trigger a re-render so TerminalView picks up the new height
+    fn handle_keyboard_height(&mut self, height: u32) -> Result<()> {
+        log::info!("Keyboard height changed: {}px", height);
+        if let Some(ref platform) = self.platform {
+            platform.request_frame_forced();
+        }
+        Ok(())
     }
 
     /// Handle app resume

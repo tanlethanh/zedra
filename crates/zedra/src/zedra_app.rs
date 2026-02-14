@@ -237,7 +237,7 @@ impl ZedraApp {
 
                 // Calculate terminal dimensions based on actual screen size
                 let viewport = window.viewport_size();
-                let line_height = px(14.0);
+                let line_height = px(16.0);
 
                 zedra_terminal::load_terminal_font(window);
 

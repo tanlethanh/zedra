@@ -4,6 +4,7 @@ use jni::{
     sys::{jfloat, jint, jlong},
 };
 use ndk::native_window::NativeWindow;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Once};
 
 use crate::android_command_queue::{AndroidCommand, get_command_sender};
@@ -20,9 +21,17 @@ static NATIVE_WINDOW: Mutex<Option<NativeWindow>> = Mutex::new(None);
 // Global storage for display density (set from Java, read by Rust)
 static DISPLAY_DENSITY: Mutex<f32> = Mutex::new(3.0);
 
+// Global storage for soft keyboard height in physical pixels (0 = hidden)
+static KEYBOARD_HEIGHT: AtomicU32 = AtomicU32::new(0);
+
 /// Get the stored display density
 pub fn get_density() -> f32 {
     *DISPLAY_DENSITY.lock().unwrap()
+}
+
+/// Get the current soft keyboard height in physical pixels (0 = hidden)
+pub fn get_keyboard_height() -> u32 {
+    KEYBOARD_HEIGHT.load(Ordering::Relaxed)
 }
 
 /// Get the stored NativeWindow (must be called from main thread)
@@ -501,6 +510,8 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_getDisplayDensity(
         Ok(density) => {
             log::info!("Display density: {}", density);
             *DISPLAY_DENSITY.lock().unwrap() = density;
+            // Also update the terminal crate's global for keyboard resize calculations
+            zedra_terminal::set_display_density(density);
             density
         }
         Err(e) => {
@@ -556,6 +567,26 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeFlingEvent(
         velocity_x,
         velocity_y,
     });
+}
+
+/// Keyboard height changed callback
+///
+/// Called when the soft keyboard appears, resizes, or disappears.
+/// Height is in physical pixels (0 = keyboard hidden).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeKeyboardHeightChanged(
+    _env: JNIEnv,
+    _class: JClass,
+    height: jint,
+) {
+    let h = height.max(0) as u32;
+    KEYBOARD_HEIGHT.store(h, Ordering::Relaxed);
+    // Also update the terminal crate's global so TerminalView can read it
+    zedra_terminal::set_keyboard_height(h);
+    log::info!("Keyboard height changed: {}px", h);
+
+    let sender = get_command_sender();
+    let _ = sender.send(AndroidCommand::KeyboardHeightChanged { height: h });
 }
 
 /// Show soft keyboard

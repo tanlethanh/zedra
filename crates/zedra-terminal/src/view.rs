@@ -33,6 +33,10 @@ pub struct TerminalView {
     keyboard_request: Option<KeyboardRequestFn>,
     /// Accumulated scroll pixels that haven't yet formed a full line
     scroll_pixel_remainder: f32,
+    /// Row count without keyboard (the "full" terminal height)
+    base_rows: usize,
+    /// Last keyboard-adjusted row count to avoid redundant resizes
+    last_keyboard_rows: usize,
 }
 
 impl TerminalView {
@@ -52,6 +56,8 @@ impl TerminalView {
             focus_handle: cx.focus_handle(),
             keyboard_request: None,
             scroll_pixel_remainder: 0.0,
+            base_rows: rows,
+            last_keyboard_rows: rows,
         }
     }
 
@@ -143,6 +149,8 @@ impl TerminalView {
 
     /// Resize the terminal
     pub fn resize(&mut self, columns: usize, rows: usize, cell_width: Pixels, line_height: Pixels) {
+        self.base_rows = rows;
+        self.last_keyboard_rows = rows;
         self.terminal.resize(columns, rows, cell_width, line_height);
     }
 
@@ -247,6 +255,48 @@ impl Render for TerminalView {
         // Re-renders are driven by the frame loop (request_frame_forced) when
         // TERMINAL_DATA_PENDING is set, so no cx.notify() loop is needed here.
         self.process_output();
+
+        // Adjust terminal rows based on soft keyboard height.
+        // The keyboard height is reported in physical pixels by Android WindowInsets.
+        {
+            let kb_px = crate::get_keyboard_height();
+            if kb_px > 0 || self.last_keyboard_rows != self.base_rows {
+                let scale = crate::get_display_density();
+                let kb_logical = kb_px as f32 / scale;
+                let lh: f32 = (self.terminal.size().line_height / px(1.0)) as f32;
+                let kb_rows = if lh > 0.0 {
+                    (kb_logical / lh).ceil() as usize
+                } else {
+                    0
+                };
+                let effective_rows = self.base_rows.saturating_sub(kb_rows).max(2);
+                if effective_rows != self.last_keyboard_rows {
+                    log::info!(
+                        "Keyboard resize: kb={}px logical={:.0} kb_rows={} base={} effective={}",
+                        kb_px, kb_logical, kb_rows, self.base_rows, effective_rows
+                    );
+                    let size = self.terminal.size();
+                    self.terminal
+                        .resize(size.columns, effective_rows, size.cell_width, size.line_height);
+                    self.last_keyboard_rows = effective_rows;
+
+                    // Fire-and-forget remote PTY resize
+                    let cols = size.columns as u16;
+                    let rows = effective_rows as u16;
+                    if let Some(session) = zedra_session::active_session() {
+                        if let Some(term_id) = session.terminal_id() {
+                            zedra_session::session_runtime().spawn(async move {
+                                if let Err(e) =
+                                    session.terminal_resize(&term_id, cols, rows).await
+                                {
+                                    log::warn!("Remote PTY resize failed: {}", e);
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+        }
 
         let content = self.terminal.content();
         let size = self.terminal.size();

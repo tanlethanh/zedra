@@ -14,6 +14,8 @@ import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 
 /**
  * Custom SurfaceView for GPUI rendering.
@@ -72,6 +74,13 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
         // Enable focus for keyboard events
         setFocusable(true);
         setFocusableInTouchMode(true);
+
+        // Detect soft keyboard height changes via WindowInsets
+        ViewCompat.setOnApplyWindowInsetsListener(this, (v, insets) -> {
+            int imeHeight = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom;
+            nativeKeyboardHeightChanged(imeHeight);
+            return insets;
+        });
 
         Log.d(TAG, "GpuiSurfaceView initialized");
     }
@@ -348,4 +357,5 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
     private static native void nativeKeyEvent(long handle, int action, int keyCode, int unicode);
     private static native void nativeImeInput(long handle, String text);
     private static native void nativeFlingEvent(long handle, float velocityX, float velocityY);
+    private static native void nativeKeyboardHeightChanged(int height);
 }

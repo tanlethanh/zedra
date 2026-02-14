@@ -382,11 +382,10 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let width = self.size.cell_width * self.size.columns as f32;
         let height = self.size.line_height * self.size.rows as f32;
         let style = Style {
             size: gpui::Size {
-                width: width.into(),
+                width: relative(1.).into(), // fill parent, center grid in paint
                 height: height.into(),
             },
             ..Default::default()
@@ -448,9 +447,13 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let origin = bounds.origin;
         let cell_width = layout.cell_width;
         let line_height = layout.line_height;
+
+        // Center the grid horizontally when it's narrower than the allocated bounds
+        let grid_width = cell_width * layout.content.grid_cols as f32;
+        let x_offset = ((bounds.size.width - grid_width) * 0.5).max(px(0.0));
+        let origin = point(bounds.origin.x + x_offset, bounds.origin.y);
 
         // Draw terminal background
         window.paint_quad(fill(bounds, rgb(TermColors::BACKGROUND)));
