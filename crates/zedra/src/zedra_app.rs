@@ -13,6 +13,7 @@ use zedra_editor::{EditorView, GitStack};
 use zedra_nav::{DrawerHost, HeaderConfig, StackNavigator, TabBarConfig, TabNavigator};
 use zedra_session::RemoteSession;
 use zedra_terminal::view::{DisconnectRequested, TerminalView};
+use zedra_transport::{PeerInfo, TransportState};
 
 // ---------------------------------------------------------------------------
 // ConnectView — extracted connection form with Input components
@@ -146,6 +147,37 @@ impl Render for ConnectView {
                                 }),
                             )
                             .child(div().flex().justify_center().child("Connect")),
+                    )
+                    // Divider
+                    .child(
+                        div()
+                            .mt_2()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_color(rgb(0x5c6370))
+                            .text_sm()
+                            .child("— or —"),
+                    )
+                    // Scan QR Code button
+                    .child(
+                        div()
+                            .mt_2()
+                            .px_4()
+                            .py_2()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(rgb(0x61afef))
+                            .text_color(rgb(0x61afef))
+                            .cursor_pointer()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                |_event, _window, _cx| {
+                                    log::info!("Scan QR Code button pressed!");
+                                    crate::android_jni::launch_qr_scanner();
+                                },
+                            )
+                            .child(div().flex().justify_center().child("Scan QR Code")),
                     ),
             )
     }
@@ -465,10 +497,122 @@ impl ZedraApp {
             host.open(file_explorer.into(), cx);
         });
     }
+
+    /// Initiate a connection via TransportManager using PeerInfo from QR scan.
+    fn connect_with_peer_info(
+        &mut self,
+        peer_info: PeerInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let hostname = peer_info.hostname.clone();
+        log::info!("QR connect: starting connection to {}", hostname);
+
+        // Calculate terminal dimensions
+        let viewport = window.viewport_size();
+        let line_height = px(16.0);
+
+        zedra_terminal::load_terminal_font(window);
+
+        let font = gpui::Font {
+            family: zedra_terminal::TERMINAL_FONT_FAMILY.into(),
+            features: gpui::FontFeatures::default(),
+            fallbacks: None,
+            weight: gpui::FontWeight::NORMAL,
+            style: gpui::FontStyle::Normal,
+        };
+        let font_size = line_height * 0.75;
+        let text_system = window.text_system();
+        let font_id = text_system.resolve_font(&font);
+        let cell_width = text_system
+            .advance(font_id, font_size, 'm')
+            .map(|size| size.width)
+            .unwrap_or(px(9.0));
+
+        let available_width = viewport.width;
+        let available_height = viewport.height - px(124.0);
+
+        let columns = ((available_width / cell_width).floor() as usize).saturating_sub(1);
+        let rows = (available_height / line_height).floor() as usize;
+        let columns = columns.clamp(20, 200);
+        let rows = rows.clamp(5, 100);
+
+        let terminal_view =
+            cx.new(|cx| TerminalView::new(columns, rows, cell_width, line_height, cx));
+
+        terminal_view.update(cx, |view, _cx| {
+            view.set_keyboard_request(Box::new(|show| {
+                if show {
+                    crate::android_jni::show_keyboard();
+                } else {
+                    crate::android_jni::hide_keyboard();
+                }
+            }));
+        });
+
+        // Subscribe to disconnect event
+        let terminal_stack = self._terminal_stack.clone();
+        let editor_stack = self.editor_stack.clone();
+        let disconnect_sub = cx.subscribe(
+            &terminal_view,
+            move |this, _terminal, _event: &DisconnectRequested, cx| {
+                log::info!("DisconnectRequested received (QR), popping terminal view");
+                zedra_session::clear_active_session();
+                this.session = None;
+                terminal_stack.update(cx, |stack, cx| {
+                    stack.pop(cx);
+                });
+                if this.editor_showing_project {
+                    let preview = cx.new(|cx| FilePreviewList::new(cx));
+                    editor_stack.update(cx, |stack, cx| {
+                        stack.replace(preview.into(), "Code Samples", cx);
+                    });
+                    this.editor_showing_project = false;
+                }
+            },
+        );
+        self._subscriptions.push(disconnect_sub);
+
+        // Push terminal view onto the stack
+        let terminal_stack = self._terminal_stack.clone();
+        terminal_stack.update(cx, |stack, cx| {
+            stack.push(terminal_view.clone().into(), "Terminal", cx);
+        });
+
+        terminal_view.update(cx, |view, _cx| {
+            view.set_status(format!("Connecting to {}...", hostname));
+        });
+
+        // Spawn async connection via TransportManager
+        let cols = columns as u16;
+        let term_rows = rows as u16;
+
+        zedra_session::session_runtime().spawn(async move {
+            log::info!("RemoteSession: connecting via QR to {}...", hostname);
+            match RemoteSession::connect_with_peer_info(peer_info).await {
+                Ok(session) => {
+                    log::info!("RemoteSession: connected via QR!");
+                    match session.terminal_create(cols, term_rows).await {
+                        Ok(term_id) => {
+                            log::info!("Remote terminal created: {}", term_id);
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create remote terminal: {}", e);
+                        }
+                    }
+                    zedra_session::set_active_session(session);
+                    zedra_session::signal_terminal_data();
+                }
+                Err(e) => {
+                    log::error!("RemoteSession QR connect failed: {}", e);
+                }
+            }
+        });
+    }
 }
 
 impl Render for ZedraApp {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.render_count += 1;
         if self.render_count % 60 == 1 {
             log::warn!(
@@ -499,7 +643,19 @@ impl Render for ZedraApp {
             }
         }
 
-        div()
+        // Check for QR-scanned PeerInfo and initiate connection
+        if let Some(peer_info) = take_pending_qr_peer_info() {
+            self.connect_with_peer_info(peer_info, window, cx);
+        }
+
+        // Compute transport badge info (label + color) with latency
+        let transport_badge = zedra_session::active_session().and_then(|s| {
+            let latency = s.latency_ms();
+            s.transport_state()
+                .map(|ts| transport_badge_info(&ts, latency))
+        });
+
+        let mut root = div()
             .size_full()
             .child(self.drawer_host.clone())
             // Hamburger menu button (top-left, floating)
@@ -533,7 +689,45 @@ impl Render for ZedraApp {
                         .child("☰"),
                 )
                 .with_priority(100),
-            )
+            );
+
+        // Show transport state badge (top-right) with colored dot + latency
+        if let Some((label, dot_color)) = transport_badge {
+            root = root.child(
+                deferred(
+                    div()
+                        .absolute()
+                        .top(px(10.0))
+                        .right(px(8.0))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(4.0))
+                        .px_2()
+                        .py(px(2.0))
+                        .rounded(px(4.0))
+                        .bg(hsla(220.0 / 360.0, 0.13, 0.14, 0.8))
+                        // Colored dot
+                        .child(
+                            div()
+                                .w(px(6.0))
+                                .h(px(6.0))
+                                .rounded(px(3.0))
+                                .bg(rgb(dot_color)),
+                        )
+                        // Label text
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(dot_color))
+                                .child(label),
+                        ),
+                )
+                .with_priority(100),
+            );
+        }
+
+        root
     }
 }
 
@@ -544,6 +738,27 @@ impl Render for ZedraApp {
 use std::sync::Mutex;
 
 static PENDING_FILE_CONTENT: Mutex<Option<(String, String)>> = Mutex::new(None);
+
+// ---------------------------------------------------------------------------
+// Global pending state for QR-scanned PeerInfo → main thread
+// ---------------------------------------------------------------------------
+
+static PENDING_QR_PEER_INFO: Mutex<Option<PeerInfo>> = Mutex::new(None);
+
+/// Store a PeerInfo parsed from a QR code for the main thread to pick up.
+pub fn set_pending_qr_peer_info(info: PeerInfo) {
+    if let Ok(mut slot) = PENDING_QR_PEER_INFO.lock() {
+        *slot = Some(info);
+    }
+}
+
+fn take_pending_qr_peer_info() -> Option<PeerInfo> {
+    if let Ok(mut slot) = PENDING_QR_PEER_INFO.lock() {
+        slot.take()
+    } else {
+        None
+    }
+}
 
 fn set_pending_file_content(filename: String, content: String) {
     if let Ok(mut slot) = PENDING_FILE_CONTENT.lock() {
@@ -557,4 +772,32 @@ fn take_pending_file_content() -> Option<(String, String)> {
     } else {
         None
     }
+}
+
+/// Return (label, dot_color) for a transport state + latency.
+fn transport_badge_info(state: &TransportState, latency_ms: u64) -> (String, u32) {
+    let (base_label, color) = match state {
+        TransportState::Connected { transport_name } => {
+            if transport_name.contains("lan") || transport_name.contains("tcp") {
+                ("LAN".to_string(), 0x98c379u32) // green
+            } else if transport_name.contains("tailscale") {
+                ("Tailscale".to_string(), 0x61afefu32) // blue
+            } else if transport_name.contains("relay") {
+                ("Relay".to_string(), 0xe5c07bu32) // yellow
+            } else {
+                (transport_name.clone(), 0x98c379u32)
+            }
+        }
+        TransportState::Discovering => ("Discovering...".to_string(), 0x5c6370u32), // gray
+        TransportState::Switching { .. } => ("Switching...".to_string(), 0xe5c07bu32), // yellow
+        TransportState::Disconnected => ("Disconnected".to_string(), 0xe06c75u32), // red
+    };
+
+    let label = if latency_ms > 0 {
+        format!("{} \u{00b7} {}ms", base_label, latency_ms)
+    } else {
+        base_label
+    };
+
+    (label, color)
 }
