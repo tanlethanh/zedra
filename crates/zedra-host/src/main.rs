@@ -1,15 +1,15 @@
-// zedra-host: Desktop companion daemon for Zedra terminal
+// zedra-host: Desktop companion daemon for Zedra
 //
-// Provides an SSH server that Zedra (Android) connects to for remote terminal access.
-// Supports QR code pairing for easy setup and password fallback authentication.
+// Provides an RPC daemon that Zedra (Android) connects to for remote terminal,
+// filesystem, git, and AI operations over JSON-RPC.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use zedra_host::{auth, qr, rpc_daemon, server, store};
+use zedra_host::{qr, rpc_daemon, store};
 
 #[derive(Parser)]
-#[command(name = "zedra-host", about = "Desktop companion daemon for Zedra terminal")]
+#[command(name = "zedra-host", about = "Desktop companion daemon for Zedra")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -17,29 +17,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the SSH server daemon (foreground)
+    /// Start the RPC daemon (foreground)
     Start {
         /// Port to listen on
-        #[arg(short, long, default_value = "2222")]
-        port: u16,
-
-        /// Bind address
-        #[arg(short, long, default_value = "0.0.0.0")]
-        bind: String,
-    },
-    /// Generate a QR code for pairing with a mobile device
-    Pair,
-    /// List paired devices
-    Devices,
-    /// Revoke a paired device
-    Revoke {
-        /// Device ID to revoke
-        device_id: String,
-    },
-    /// Start the RPC daemon (filesystem, git, terminal over JSON-RPC)
-    Daemon {
-        /// Port to listen on
-        #[arg(short, long, default_value = "2223")]
+        #[arg(short, long, default_value = "2123")]
         port: u16,
 
         /// Bind address
@@ -50,8 +31,13 @@ enum Commands {
         #[arg(short, long, default_value = ".")]
         workdir: String,
     },
-    /// Set or update the fallback password
-    SetPassword,
+    /// List paired devices
+    Devices,
+    /// Revoke a paired device
+    Revoke {
+        /// Device ID to revoke
+        device_id: String,
+    },
 }
 
 #[tokio::main]
@@ -67,12 +53,19 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Start { port, bind } => {
+        Commands::Start {
+            port,
+            bind,
+            workdir,
+        } => {
+            let workdir = std::path::PathBuf::from(workdir)
+                .canonicalize()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let local_ip = qr::get_local_ip().unwrap_or_else(|| "unknown".to_string());
             tracing::info!("Starting zedra-host on {}:{}", bind, port);
-            server::run_server(&bind, port).await?;
-        }
-        Commands::Pair => {
-            qr::generate_pairing_qr().await?;
+            tracing::info!("Local IP: {} (use this to connect from Zedra)", local_ip);
+            tracing::info!("Serving workdir: {}", workdir.display());
+            rpc_daemon::run_daemon(&bind, port, workdir).await?;
         }
         Commands::Devices => {
             let devices = store::list_devices()?;
@@ -93,36 +86,7 @@ async fn main() -> Result<()> {
             store::revoke_device(&device_id)?;
             println!("Device {} revoked.", device_id);
         }
-        Commands::Daemon {
-            port,
-            bind,
-            workdir,
-        } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
-            tracing::info!("Starting RPC daemon on {}:{} serving {}", bind, port, workdir.display());
-            rpc_daemon::run_daemon(&bind, port, workdir).await?;
-        }
-        Commands::SetPassword => {
-            let password = rpassword_prompt("Enter new password: ")?;
-            let confirm = rpassword_prompt("Confirm password: ")?;
-            if password != confirm {
-                anyhow::bail!("Passwords do not match");
-            }
-            auth::set_password(&password)?;
-            println!("Password updated.");
-        }
     }
 
     Ok(())
-}
-
-fn rpassword_prompt(prompt: &str) -> Result<String> {
-    use std::io::{self, Write};
-    print!("{}", prompt);
-    io::stdout().flush()?;
-    let mut password = String::new();
-    io::stdin().read_line(&mut password)?;
-    Ok(password.trim().to_string())
 }
