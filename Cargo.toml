@@ -28,8 +28,15 @@ anyhow = "1"
 # Logging
 log = "0.4.29"
 
+# Async utilities
+async-trait = "0.1"
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "json"] }
+
 # Utilities
 futures = "0.3"
+base64 = "0.22"
 base64-url = "3"
 hex = "0.4"
 itertools = "0.14"
