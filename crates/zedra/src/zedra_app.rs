@@ -237,7 +237,7 @@ impl ZedraApp {
 
                 // Calculate terminal dimensions based on actual screen size
                 let viewport = window.viewport_size();
-                let line_height = px(16.0);
+                let line_height = px(14.0);
 
                 zedra_terminal::load_terminal_font(window);
 
@@ -256,10 +256,12 @@ impl ZedraApp {
                     .map(|size| size.width)
                     .unwrap_or(px(9.0));
 
-                let available_width = viewport.width - px(16.0);
-                let available_height = viewport.height - px(50.0 + 44.0 + 30.0);
+                let available_width = viewport.width;
+                // Vertical overhead: tab bar (56px) + stack header (44px) + terminal status bar (~24px)
+                let available_height = viewport.height - px(124.0);
 
-                let columns = (available_width / cell_width).floor() as usize;
+                // Subtract 1 column to account for subpixel rounding at non-integer scale factors
+                let columns = ((available_width / cell_width).floor() as usize).saturating_sub(1);
                 let rows = (available_height / line_height).floor() as usize;
                 let columns = columns.clamp(20, 200);
                 let rows = rows.clamp(5, 100);

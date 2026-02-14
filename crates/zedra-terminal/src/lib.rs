@@ -104,6 +104,9 @@ impl Dimensions for SimpleDimensions {
 /// Minimal terminal state wrapping alacritty_terminal::Term
 pub struct TerminalState {
     term: Term<ZedraListener>,
+    /// VTE processor — persisted across advance_bytes calls so that
+    /// escape sequences split across network packets are parsed correctly.
+    processor: Processor,
     mode: TermMode,
     size: TerminalSize,
 }
@@ -117,6 +120,7 @@ impl TerminalState {
 
         Self {
             term,
+            processor: Processor::new(),
             mode: TermMode::empty(),
             size: TerminalSize {
                 cell_width,
@@ -129,8 +133,7 @@ impl TerminalState {
 
     /// Feed bytes from SSH output into the terminal emulator
     pub fn advance_bytes(&mut self, bytes: &[u8]) {
-        let mut processor: Processor = Processor::new();
-        processor.advance(&mut self.term, bytes);
+        self.processor.advance(&mut self.term, bytes);
         self.mode = *self.term.mode();
     }
 

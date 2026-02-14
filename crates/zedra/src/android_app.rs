@@ -34,6 +34,10 @@ pub struct AndroidApp {
     surface_available: bool,
     /// Last touch position for scroll delta calculation (logical pixels)
     last_touch_position: Option<(f32, f32)>,
+    /// Touch-down origin for tap detection (logical pixels)
+    touch_down_position: Option<(f32, f32)>,
+    /// Whether the current touch gesture has moved beyond tap threshold
+    touch_is_drag: bool,
     /// Active fling for momentum scrolling
     fling_state: Option<FlingState>,
 }
@@ -47,6 +51,8 @@ impl AndroidApp {
             window: None,
             surface_available: false,
             last_touch_position: None,
+            touch_down_position: None,
+            touch_is_drag: false,
             fling_state: None,
         }
     }
@@ -147,6 +153,12 @@ impl AndroidApp {
 
         // Wrap in Rc - no need to specify dyn Platform since we're passing it directly
         let platform = Rc::new(android_platform);
+
+        // Set the actual display scale from Android DisplayMetrics before opening any windows.
+        // The platform defaults to 3.0 but the actual device density may differ (e.g. 2.75).
+        let density = crate::android_jni::get_density();
+        platform.set_display_scale(density);
+        log::info!("Set platform display_scale to {}", density);
 
         // Store a reference to the platform for frame requests
         self.platform = Some(platform.clone());
@@ -337,48 +349,70 @@ impl AndroidApp {
             logical_y
         );
 
+        // Tap slop threshold in logical pixels — movement beyond this means a drag, not a tap
+        const TAP_SLOP: f32 = 10.0;
+
         match action {
             0 => {
-                // ACTION_DOWN — cancel any active fling, record position, send mouse down
+                // ACTION_DOWN — cancel any active fling, record origin for tap detection
                 self.fling_state = None;
-                log::trace!(
-                    "Dispatching MouseDown at ({:.1}, {:.1})",
-                    logical_x,
-                    logical_y
-                );
                 self.last_touch_position = Some((logical_x, logical_y));
-                platform.dispatch_input(PlatformInput::MouseDown(MouseDownEvent {
-                    button: MouseButton::Left,
-                    position,
-                    modifiers: Modifiers::default(),
-                    click_count: 1,
-                    first_mouse: false,
-                }));
+                self.touch_down_position = Some((logical_x, logical_y));
+                self.touch_is_drag = false;
             }
-            1 | 3 => {
-                // ACTION_UP or ACTION_CANCEL
-                self.last_touch_position = None;
-                platform.dispatch_input(PlatformInput::MouseUp(MouseUpEvent {
-                    button: MouseButton::Left,
-                    position,
-                    modifiers: Modifiers::default(),
-                    click_count: 1,
-                }));
-            }
-            2 => {
-                // ACTION_MOVE — send scroll wheel event for touch dragging
-                if let Some((last_x, last_y)) = self.last_touch_position {
-                    let delta_x = logical_x - last_x;
-                    let delta_y = logical_y - last_y;
-                    self.last_touch_position = Some((logical_x, logical_y));
-
-                    platform.dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
+            1 => {
+                // ACTION_UP — if the finger didn't move beyond TAP_SLOP, treat as tap
+                if !self.touch_is_drag {
+                    platform.dispatch_input(PlatformInput::MouseDown(MouseDownEvent {
+                        button: MouseButton::Left,
                         position,
-                        delta: ScrollDelta::Pixels(point(px(delta_x), px(delta_y))),
                         modifiers: Modifiers::default(),
-                        touch_phase: TouchPhase::Moved,
+                        click_count: 1,
+                        first_mouse: false,
+                    }));
+                    platform.dispatch_input(PlatformInput::MouseUp(MouseUpEvent {
+                        button: MouseButton::Left,
+                        position,
+                        modifiers: Modifiers::default(),
+                        click_count: 1,
                     }));
                 }
+                self.last_touch_position = None;
+                self.touch_down_position = None;
+                self.touch_is_drag = false;
+            }
+            3 => {
+                // ACTION_CANCEL — clean up, no tap
+                self.last_touch_position = None;
+                self.touch_down_position = None;
+                self.touch_is_drag = false;
+            }
+            2 => {
+                // ACTION_MOVE — check if we've exceeded tap slop, then scroll
+                if !self.touch_is_drag {
+                    if let Some((down_x, down_y)) = self.touch_down_position {
+                        let dx = logical_x - down_x;
+                        let dy = logical_y - down_y;
+                        if (dx * dx + dy * dy).sqrt() > TAP_SLOP {
+                            self.touch_is_drag = true;
+                        }
+                    }
+                }
+
+                if self.touch_is_drag {
+                    if let Some((last_x, last_y)) = self.last_touch_position {
+                        let delta_x = logical_x - last_x;
+                        let delta_y = logical_y - last_y;
+
+                        platform.dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
+                            position,
+                            delta: ScrollDelta::Pixels(point(px(delta_x), px(delta_y))),
+                            modifiers: Modifiers::default(),
+                            touch_phase: TouchPhase::Moved,
+                        }));
+                    }
+                }
+                self.last_touch_position = Some((logical_x, logical_y));
             }
             _ => {}
         }

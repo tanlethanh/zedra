@@ -31,6 +31,8 @@ pub struct TerminalView {
     status_text: String,
     focus_handle: FocusHandle,
     keyboard_request: Option<KeyboardRequestFn>,
+    /// Accumulated scroll pixels that haven't yet formed a full line
+    scroll_pixel_remainder: f32,
 }
 
 impl TerminalView {
@@ -49,6 +51,7 @@ impl TerminalView {
             status_text: "Disconnected".to_string(),
             focus_handle: cx.focus_handle(),
             keyboard_request: None,
+            scroll_pixel_remainder: 0.0,
         }
     }
 
@@ -78,10 +81,12 @@ impl TerminalView {
     /// Returns true if any data was processed
     fn process_output(&mut self) -> bool {
         let mut had_data = false;
+        let mut total_bytes = 0usize;
 
         // Check local buffer (SSH path)
         if let Ok(mut buffer) = self.output_buffer.try_lock() {
             while let Some(data) = buffer.pop_front() {
+                total_bytes += data.len();
                 self.terminal.advance_bytes(&data);
                 had_data = true;
             }
@@ -92,10 +97,15 @@ impl TerminalView {
             let session_buf = session.output_buffer();
             if let Ok(mut buffer) = session_buf.try_lock() {
                 while let Some(data) = buffer.pop_front() {
+                    total_bytes += data.len();
                     self.terminal.advance_bytes(&data);
                     had_data = true;
                 }
             }
+        }
+
+        if had_data {
+            log::debug!("[TERM DATA] processed {} bytes from PTY", total_bytes);
         }
 
         if had_data && !self.connected {
@@ -240,6 +250,7 @@ impl Render for TerminalView {
 
         let content = self.terminal.content();
         let size = self.terminal.size();
+
         let status = self.status_text.clone();
         let connected = self.connected;
         let focus_handle = self.focus_handle.clone();
@@ -314,15 +325,28 @@ impl Render for TerminalView {
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, _cx| {
                         this.handle_keystroke(&event.keystroke);
                     }))
-                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, _cx| {
-                        let delta = match event.delta {
-                            ScrollDelta::Lines(lines) => lines.y as i32,
+                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
+                        let lines = match event.delta {
+                            ScrollDelta::Lines(l) => {
+                                this.scroll_pixel_remainder = 0.0;
+                                l.y as i32
+                            }
                             ScrollDelta::Pixels(pixels) => {
-                                (pixels.y / this.terminal.size().line_height) as i32
+                                // Accumulate sub-line pixel deltas so small
+                                // touch movements aren't truncated to zero.
+                                let lh: f32 = (this.terminal.size().line_height / px(1.0)) as f32;
+                                let py: f32 = (pixels.y / px(1.0)) as f32;
+                                this.scroll_pixel_remainder += py;
+                                let whole = (this.scroll_pixel_remainder / lh) as i32;
+                                this.scroll_pixel_remainder -= whole as f32 * lh;
+                                whole
                             }
                         };
-                        if delta != 0 {
-                            this.scroll(-delta);
+                        if lines != 0 {
+                            // Natural scrolling: positive pixel delta (finger
+                            // drags down) → scroll up to show history.
+                            this.scroll(lines);
+                            cx.notify();
                         }
                     }))
                     .child(TerminalElement::new(content, size)),

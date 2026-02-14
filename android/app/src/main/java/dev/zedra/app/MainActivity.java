@@ -115,13 +115,14 @@ public class MainActivity extends AppCompatActivity {
         }
         Log.d(TAG, "GPUI initialized with handle: " + gpuiHandle);
 
+        // Get display density before processing init commands so Rust has the
+        // correct scale factor when creating the GPUI platform.
+        float density = getDisplayDensity(this);
+        Log.d(TAG, "Display density: " + density);
+
         // Process Initialize command immediately (don't wait for choreographer)
         Log.d(TAG, "Processing initialization commands");
         gpuiProcessCriticalCommands();
-
-        // Get display density
-        float density = getDisplayDensity(this);
-        Log.d(TAG, "Display density: " + density);
 
         // Create the GPUI surface view
         surfaceView = new GpuiSurfaceView(this);
