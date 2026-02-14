@@ -713,6 +713,70 @@ fn show_keyboard_inner() {
     }
 }
 
+/// Launch the QR scanner activity
+///
+/// Call this to open the camera for QR code scanning
+pub fn launch_qr_scanner() {
+    log::info!("launch_qr_scanner() called");
+
+    let result = std::panic::catch_unwind(|| {
+        launch_qr_scanner_inner();
+    });
+
+    if let Err(e) = result {
+        log::error!("Panic in launch_qr_scanner: {:?}", e);
+    }
+}
+
+fn launch_qr_scanner_inner() {
+    let jvm = match JVM.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(jvm) => jvm.clone(),
+            None => {
+                log::error!("JVM not available for QR scanner");
+                return;
+            }
+        },
+        Err(e) => {
+            log::error!("Failed to lock JVM mutex: {:?}", e);
+            return;
+        }
+    };
+
+    let mut env = match jvm.get_env() {
+        Ok(env) => env,
+        Err(_) => match jvm.attach_current_thread_as_daemon() {
+            Ok(env) => env,
+            Err(e) => {
+                log::error!("Failed to attach thread for QR scanner: {:?}", e);
+                return;
+            }
+        },
+    };
+
+    let class = match env.find_class("dev/zedra/app/MainActivity") {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Failed to find MainActivity class: {:?}", e);
+            if env.exception_check().unwrap_or(false) {
+                env.exception_describe().ok();
+                env.exception_clear().ok();
+            }
+            return;
+        }
+    };
+
+    if let Err(e) = env.call_static_method(&class, "launchQrScanner", "()V", &[]) {
+        log::error!("Failed to call launchQrScanner: {:?}", e);
+        if env.exception_check().unwrap_or(false) {
+            env.exception_describe().ok();
+            env.exception_clear().ok();
+        }
+    } else {
+        log::info!("launchQrScanner JNI call succeeded");
+    }
+}
+
 /// Hide the Android soft keyboard
 ///
 /// Call this when a text input loses focus

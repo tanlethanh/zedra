@@ -609,7 +609,25 @@ impl AndroidApp {
             "QR pairing requested: {}",
             &qr_data[..qr_data.len().min(50)]
         );
-        // Pairing is handled by the ZedraApp view
+
+        // Parse the QR URI into a PairingPayload, then convert to PeerInfo
+        match zedra_ssh::pairing::parse_pairing_uri(&qr_data) {
+            Ok(payload) => {
+                let peer_info = payload.to_peer_info();
+                log::info!(
+                    "QR parsed: hostname={}, addrs={:?}, relay={}",
+                    peer_info.hostname,
+                    peer_info.host_addrs,
+                    peer_info.relay_room
+                );
+                crate::zedra_app::set_pending_qr_peer_info(peer_info);
+                // Signal re-render so ZedraApp picks up the pending PeerInfo
+                zedra_session::signal_terminal_data();
+            }
+            Err(e) => {
+                log::error!("Failed to parse QR pairing URI: {}", e);
+            }
+        }
         Ok(())
     }
 

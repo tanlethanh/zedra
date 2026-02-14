@@ -2,6 +2,8 @@ package dev.zedra.app;
 
 import androidx.appcompat.app.AppCompatActivity;
 
+import android.app.Activity;
+import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
@@ -27,6 +29,9 @@ public class MainActivity extends AppCompatActivity {
     // Static reference for JNI keyboard callbacks
     private static GpuiSurfaceView sSurfaceView;
 
+    // Static reference to current activity for launching intents from JNI
+    private static Activity sActivity;
+
     /**
      * Show the soft keyboard (called from Rust via JNI)
      */
@@ -34,6 +39,19 @@ public class MainActivity extends AppCompatActivity {
         Log.d(TAG, "showKeyboard called from native");
         if (sSurfaceView != null) {
             sSurfaceView.post(() -> sSurfaceView.requestKeyboard());
+        }
+    }
+
+    /**
+     * Launch the QR scanner activity (called from Rust via JNI)
+     */
+    public static void launchQrScanner() {
+        Log.d(TAG, "launchQrScanner called from native");
+        if (sActivity != null) {
+            sActivity.runOnUiThread(() -> {
+                Intent intent = new Intent(sActivity, QRScannerActivity.class);
+                sActivity.startActivity(intent);
+            });
         }
     }
 
@@ -128,6 +146,7 @@ public class MainActivity extends AppCompatActivity {
         surfaceView = new GpuiSurfaceView(this);
         surfaceView.setNativeHandle(gpuiHandle);
         sSurfaceView = surfaceView; // Store for JNI keyboard callbacks
+        sActivity = this; // Store for JNI intent launching
 
         // Set the surface view as the content view
         setContentView(surfaceView);
@@ -193,6 +212,8 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         Log.d(TAG, "onDestroy");
+
+        sActivity = null;
 
         // Destroy GPUI
         if (gpuiHandle != 0) {
