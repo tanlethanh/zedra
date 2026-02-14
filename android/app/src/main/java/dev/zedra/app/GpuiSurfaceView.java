@@ -9,6 +9,7 @@ import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.VelocityTracker;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
@@ -38,6 +39,9 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
     private float touchDownY = 0;
     private boolean touchMoved = false;
     private static final float TAP_SLOP = 20f; // px threshold to distinguish tap from scroll
+
+    // Velocity tracking for fling gestures
+    private VelocityTracker velocityTracker = null;
 
     // Key action constants
     private static final int KEY_ACTION_DOWN = 0;
@@ -252,9 +256,28 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
                 touchDownX = event.getX();
                 touchDownY = event.getY();
                 touchMoved = false;
+                // Obtain velocity tracker for fling detection
+                if (velocityTracker == null) {
+                    velocityTracker = VelocityTracker.obtain();
+                } else {
+                    velocityTracker.clear();
+                }
+                velocityTracker.addMovement(event);
                 break;
             case MotionEvent.ACTION_UP:
                 action = ACTION_UP;
+                // Compute fling velocity on touch release
+                if (velocityTracker != null && touchMoved) {
+                    velocityTracker.addMovement(event);
+                    velocityTracker.computeCurrentVelocity(1000); // pixels per second
+                    float velX = velocityTracker.getXVelocity();
+                    float velY = velocityTracker.getYVelocity();
+                    if (Math.abs(velX) > 150 || Math.abs(velY) > 150) {
+                        nativeFlingEvent(nativeHandle, velX, velY);
+                    }
+                    velocityTracker.recycle();
+                    velocityTracker = null;
+                }
                 break;
             case MotionEvent.ACTION_MOVE:
                 action = ACTION_MOVE;
@@ -263,10 +286,17 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
                 if (dx * dx + dy * dy > TAP_SLOP * TAP_SLOP) {
                     touchMoved = true;
                 }
+                if (velocityTracker != null) {
+                    velocityTracker.addMovement(event);
+                }
                 break;
             case MotionEvent.ACTION_CANCEL:
                 action = ACTION_CANCEL;
                 touchMoved = false;
+                if (velocityTracker != null) {
+                    velocityTracker.recycle();
+                    velocityTracker = null;
+                }
                 break;
             default:
                 return super.onTouchEvent(event);
@@ -317,4 +347,5 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
     private static native void nativeTouchEvent(long handle, int action, float x, float y, int pointerId);
     private static native void nativeKeyEvent(long handle, int action, int keyCode, int unicode);
     private static native void nativeImeInput(long handle, String text);
+    private static native void nativeFlingEvent(long handle, float velocityX, float velocityY);
 }

@@ -50,6 +50,8 @@ pub enum AndroidCommand {
     PairViaQr { qr_data: String },
     /// Connect to a saved host
     ConnectToHost { host_id: String },
+    /// Fling gesture (velocity from Android VelocityTracker)
+    Fling { velocity_x: f32, velocity_y: f32 },
 }
 
 /// Thread-safe command queue for Android

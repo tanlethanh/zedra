@@ -105,7 +105,11 @@ impl ConnectionManager {
         log::info!("Spawning SSH connection task on tokio runtime");
 
         ssh_runtime().spawn(async move {
-            log::info!("Tokio task started: connecting to {}:{}", params.host, params.port);
+            log::info!(
+                "Tokio task started: connecting to {}:{}",
+                params.host,
+                params.port
+            );
 
             let result = Self::do_connect_tokio(params, cols, rows).await;
 
@@ -119,10 +123,9 @@ impl ConnectionManager {
 
                     // Read loop for SSH output - write to the shared buffer
                     while let Some(data) = receiver.recv().await {
-                        log::info!("Received {} bytes from SSH", data.len());
+                        log::trace!("Received {} bytes from SSH", data.len());
                         if let Ok(mut buffer) = output_buffer.lock() {
                             buffer.push_back(data);
-                            log::info!("Buffer now has {} items", buffer.len());
                         }
                         // Signal main thread that data is available
                         crate::signal_terminal_data();
@@ -146,7 +149,10 @@ impl ConnectionManager {
         params: ConnectionParams,
         cols: u32,
         rows: u32,
-    ) -> Result<(mpsc::UnboundedSender<Vec<u8>>, mpsc::UnboundedReceiver<Vec<u8>>)> {
+    ) -> Result<(
+        mpsc::UnboundedSender<Vec<u8>>,
+        mpsc::UnboundedReceiver<Vec<u8>>,
+    )> {
         log::info!("Connecting to {}:{}", params.host, params.port);
 
         // Connect via SSH
@@ -173,9 +179,7 @@ impl ConnectionManager {
         log::info!("Authenticated, opening shell...");
 
         // Open shell with PTY
-        let channel = session
-            .open_shell(cols, rows)
-            .await?;
+        let channel = session.open_shell(cols, rows).await?;
 
         log::info!("Shell opened, starting I/O bridge");
 
@@ -194,7 +198,7 @@ impl ConnectionManager {
                 tokio::select! {
                     // Handle input from terminal (user typing)
                     Some(data) = input_rx.recv() => {
-                        log::info!("Sending {} bytes to SSH channel", data.len());
+                        log::trace!("Sending {} bytes to SSH channel", data.len());
                         if let Err(e) = channel.data(&data[..]).await {
                             log::error!("Failed to send data to SSH: {:?}", e);
                             break;
@@ -204,14 +208,14 @@ impl ConnectionManager {
                     msg = channel.wait() => {
                         match msg {
                             Some(ChannelMsg::Data { data }) => {
-                                log::info!("SSH channel received {} bytes of data", data.len());
+                                log::trace!("SSH channel received {} bytes of data", data.len());
                                 if output_tx.send(data.to_vec()).is_err() {
                                     log::info!("Output channel closed");
                                     break;
                                 }
                             }
                             Some(ChannelMsg::ExtendedData { data, ext }) => {
-                                log::info!("SSH channel received {} bytes of extended data (ext={})", data.len(), ext);
+                                log::trace!("SSH channel received {} bytes of extended data (ext={})", data.len(), ext);
                                 if output_tx.send(data.to_vec()).is_err() {
                                     log::info!("Output channel closed");
                                     break;

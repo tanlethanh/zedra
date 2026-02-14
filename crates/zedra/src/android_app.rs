@@ -4,12 +4,21 @@
 /// It processes commands from the thread-safe queue and manages the GPUI App lifecycle.
 use anyhow::Result;
 use gpui::{AndroidPlatform, *};
-use jni::{objects::GlobalRef, JavaVM};
+use jni::{JavaVM, objects::GlobalRef};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use crate::android_command_queue::AndroidCommand;
 use crate::zedra_app::ZedraApp;
+
+/// Active fling state for momentum scrolling
+struct FlingState {
+    velocity_x: f32,
+    velocity_y: f32,
+    last_time: std::time::Instant,
+    /// Last touch position (logical pixels) for dispatching scroll events
+    position: Point<Pixels>,
+}
 
 /// Android app state - must only be accessed from the main UI thread
 pub struct AndroidApp {
@@ -25,6 +34,8 @@ pub struct AndroidApp {
     surface_available: bool,
     /// Last touch position for scroll delta calculation (logical pixels)
     last_touch_position: Option<(f32, f32)>,
+    /// Active fling for momentum scrolling
+    fling_state: Option<FlingState>,
 }
 
 impl AndroidApp {
@@ -36,6 +47,7 @@ impl AndroidApp {
             window: None,
             surface_available: false,
             last_touch_position: None,
+            fling_state: None,
         }
     }
 
@@ -66,15 +78,12 @@ impl AndroidApp {
             AndroidCommand::Pause => self.handle_pause(),
             AndroidCommand::Destroy => self.handle_destroy(),
             AndroidCommand::RequestFrame => self.handle_frame_request(),
-            AndroidCommand::PairViaQr { qr_data } => {
-                log::info!("QR pairing requested: {}", &qr_data[..qr_data.len().min(50)]);
-                // Pairing is handled by the ZedraApp view
-                Ok(())
-            }
-            AndroidCommand::ConnectToHost { host_id } => {
-                log::info!("Connect to host requested: {}", host_id);
-                Ok(())
-            }
+            AndroidCommand::PairViaQr { qr_data } => self.handle_scan_via_qr(qr_data),
+            AndroidCommand::ConnectToHost { host_id } => self.handle_connect_to_host(host_id),
+            AndroidCommand::Fling {
+                velocity_x,
+                velocity_y,
+            } => self.handle_fling(velocity_x, velocity_y),
         }
     }
 
@@ -189,8 +198,11 @@ impl AndroidApp {
                 let scale = crate::android_jni::get_density();
                 log::info!(
                     "Window dimensions: {}x{} physical, scale={}, logical={}x{}",
-                    screen_width_px, screen_height_px, scale,
-                    screen_width_px / scale, screen_height_px / scale
+                    screen_width_px,
+                    screen_height_px,
+                    scale,
+                    screen_width_px / scale,
+                    screen_height_px / scale
                 );
 
                 let window_bounds = WindowBounds::Windowed(Bounds {
@@ -318,12 +330,22 @@ impl AndroidApp {
         let logical_y = y / scale;
         let position = point(px(logical_x), px(logical_y));
 
-        log::info!("handle_touch: action={}, pos=({:.1}, {:.1})", action, logical_x, logical_y);
+        log::trace!(
+            "handle_touch: action={}, pos=({:.1}, {:.1})",
+            action,
+            logical_x,
+            logical_y
+        );
 
         match action {
             0 => {
-                // ACTION_DOWN — record position for scroll delta, send mouse down
-                log::info!("Dispatching MouseDown at ({:.1}, {:.1})", logical_x, logical_y);
+                // ACTION_DOWN — cancel any active fling, record position, send mouse down
+                self.fling_state = None;
+                log::trace!(
+                    "Dispatching MouseDown at ({:.1}, {:.1})",
+                    logical_x,
+                    logical_y
+                );
                 self.last_touch_position = Some((logical_x, logical_y));
                 platform.dispatch_input(PlatformInput::MouseDown(MouseDownEvent {
                     button: MouseButton::Left,
@@ -417,6 +439,73 @@ impl AndroidApp {
         Ok(())
     }
 
+    /// Handle fling gesture — start momentum scrolling
+    fn handle_fling(&mut self, velocity_x: f32, velocity_y: f32) -> Result<()> {
+        // Convert physical velocity to logical pixels/second
+        let scale = crate::android_jni::get_density();
+        let vx = velocity_x / scale;
+        let vy = velocity_y / scale;
+
+        // Use last known touch position for dispatching fling scroll events
+        let pos = self
+            .last_touch_position
+            .map(|(x, y)| point(px(x), px(y)))
+            .unwrap_or_else(|| point(px(0.0), px(0.0)));
+
+        // Only start fling if velocity is significant
+        if vx.abs() > 50.0 || vy.abs() > 50.0 {
+            self.fling_state = Some(FlingState {
+                velocity_x: vx,
+                velocity_y: vy,
+                last_time: std::time::Instant::now(),
+                position: pos,
+            });
+        }
+        Ok(())
+    }
+
+    /// Process active fling — apply friction and dispatch scroll events
+    fn process_fling(&mut self) {
+        let platform = match &self.platform {
+            Some(p) => p,
+            None => return,
+        };
+
+        let fling = match &mut self.fling_state {
+            Some(f) => f,
+            None => return,
+        };
+
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(fling.last_time).as_secs_f32();
+        fling.last_time = now;
+
+        // Apply frame-rate independent friction: velocity *= 0.95^(dt * 60)
+        let friction = 0.95_f32.powf(dt * 60.0);
+        fling.velocity_x *= friction;
+        fling.velocity_y *= friction;
+
+        let vx = fling.velocity_x;
+        let vy = fling.velocity_y;
+
+        // Stop fling when velocity is below threshold
+        if vx.abs() < 50.0 && vy.abs() < 50.0 {
+            self.fling_state = None;
+            return;
+        }
+
+        // Dispatch scroll event with velocity-based delta at original touch position
+        let delta_x = vx * dt;
+        let delta_y = vy * dt;
+
+        platform.dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position: fling.position,
+            delta: ScrollDelta::Pixels(point(px(delta_x), px(delta_y))),
+            modifiers: Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+        }));
+    }
+
     /// Handle app resume
     fn handle_resume(&mut self) -> Result<()> {
         log::info!("App resumed");
@@ -442,19 +531,44 @@ impl AndroidApp {
 
     /// Handle frame request (called at ~60 FPS)
     fn handle_frame_request(&mut self) -> Result<()> {
-        // Check if terminal has pending SSH data
-        let terminal_data_pending = zedra_ssh::check_and_clear_terminal_data();
+        // Process active fling momentum scrolling
+        self.process_fling();
+
+        // Check if terminal has pending data from SSH or RPC session
+        let ssh_data_pending = zedra_ssh::check_and_clear_terminal_data();
+        let session_data_pending = zedra_session::check_and_clear_terminal_data();
+        let fling_active = self.fling_state.is_some();
+        let terminal_data_pending = ssh_data_pending || session_data_pending;
+
+        // Drain and execute any main-thread callbacks from the session runtime
+        for cb in zedra_session::drain_callbacks() {
+            cb();
+        }
 
         // Request frames on all windows via the AndroidPlatform
         // This triggers GPUI's rendering pipeline
         if let Some(ref platform) = self.platform {
-            if terminal_data_pending {
-                // Force render when terminal data is pending to ensure it gets processed
+            if terminal_data_pending || fling_active {
+                // Force render when terminal data is pending or fling is active
                 platform.request_frame_forced();
             } else {
                 platform.request_frame_for_all_windows();
             }
         }
+        Ok(())
+    }
+
+    fn handle_scan_via_qr(&mut self, qr_data: String) -> Result<()> {
+        log::info!(
+            "QR pairing requested: {}",
+            &qr_data[..qr_data.len().min(50)]
+        );
+        // Pairing is handled by the ZedraApp view
+        Ok(())
+    }
+
+    fn handle_connect_to_host(&mut self, host_id: String) -> Result<()> {
+        log::info!("Connect to host requested: {}", host_id);
         Ok(())
     }
 }

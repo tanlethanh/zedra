@@ -534,6 +534,30 @@ pub extern "system" fn Java_dev_zedra_app_QRScannerActivity_nativeOnQrCodeScanne
     let _ = sender.send(AndroidCommand::PairViaQr { qr_data });
 }
 
+/// Fling event callback
+///
+/// Called when a fling gesture is detected (velocity from Android VelocityTracker)
+///
+/// # Arguments
+/// * `velocity_x` - Horizontal velocity in pixels/second
+/// * `velocity_y` - Vertical velocity in pixels/second
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeFlingEvent(
+    _env: JNIEnv,
+    _class: JClass,
+    _handle: jlong,
+    velocity_x: jfloat,
+    velocity_y: jfloat,
+) {
+    log::debug!("nativeFlingEvent: vx={}, vy={}", velocity_x, velocity_y);
+
+    let sender = get_command_sender();
+    let _ = sender.send(AndroidCommand::Fling {
+        velocity_x,
+        velocity_y,
+    });
+}
+
 /// Show soft keyboard
 ///
 /// Called to show the Android soft keyboard for terminal input

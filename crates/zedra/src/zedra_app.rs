@@ -1,14 +1,17 @@
 // Root application view for Zedra
 // Uses zedra-nav TabNavigator + StackNavigator for mobile navigation
 
+use std::sync::Arc;
+
 use gpui::*;
 
 use crate::file_explorer::{FileExplorer, FileSelected};
 use crate::file_preview_list::{FilePreviewList, PreviewSelected, SAMPLE_FILES};
 use crate::input::{Input, InputChanged};
+use crate::project_editor::ProjectEditor;
 use zedra_editor::{EditorView, GitStack};
 use zedra_nav::{DrawerHost, HeaderConfig, StackNavigator, TabBarConfig, TabNavigator};
-use zedra_ssh::connection::{AuthMethod, ConnectionManager, ConnectionParams};
+use zedra_session::RemoteSession;
 use zedra_terminal::view::{DisconnectRequested, TerminalView};
 
 // ---------------------------------------------------------------------------
@@ -18,76 +21,53 @@ use zedra_terminal::view::{DisconnectRequested, TerminalView};
 pub struct ConnectView {
     host_input: Entity<Input>,
     port_input: Entity<Input>,
-    username_input: Entity<Input>,
-    password_input: Entity<Input>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl ConnectView {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        // Create input entities
-        let host_input = cx.new(|cx| Input::new(cx).placeholder("192.168.1.12").value("192.168.1.12"));
-        let port_input = cx.new(|cx| Input::new(cx).placeholder("2222").value("2222"));
-        let username_input = cx.new(|cx| Input::new(cx).placeholder("username").value("zedra"));
-        let password_input = cx.new(|cx| Input::new(cx).placeholder("password").value("zedra").secure(true));
+        let host_input = cx.new(|cx| Input::new(cx).placeholder("127.0.0.1"));
+        let port_input = cx.new(|cx| Input::new(cx).placeholder("2123"));
 
         let mut subscriptions = Vec::new();
 
-        // Subscribe to input changes for logging/debugging
-        let sub = cx.subscribe(&host_input, |_this: &mut Self, _input, event: &InputChanged, cx| {
-            log::debug!("Host changed: {}", event.value);
-            cx.notify();
-        });
+        let sub = cx.subscribe(
+            &host_input,
+            |_this: &mut Self, _input, event: &InputChanged, cx| {
+                log::debug!("Host changed: {}", event.value);
+                cx.notify();
+            },
+        );
         subscriptions.push(sub);
 
-        let sub = cx.subscribe(&port_input, |_this: &mut Self, _input, event: &InputChanged, cx| {
-            log::debug!("Port changed: {}", event.value);
-            cx.notify();
-        });
-        subscriptions.push(sub);
-
-        let sub = cx.subscribe(&username_input, |_this: &mut Self, _input, event: &InputChanged, cx| {
-            log::debug!("Username changed: {}", event.value);
-            cx.notify();
-        });
-        subscriptions.push(sub);
-
-        let sub = cx.subscribe(&password_input, |_this: &mut Self, _input, _event: &InputChanged, cx| {
-            log::debug!("Password changed");
-            cx.notify();
-        });
+        let sub = cx.subscribe(
+            &port_input,
+            |_this: &mut Self, _input, event: &InputChanged, cx| {
+                log::debug!("Port changed: {}", event.value);
+                cx.notify();
+            },
+        );
         subscriptions.push(sub);
 
         Self {
             host_input,
             port_input,
-            username_input,
-            password_input,
             _subscriptions: subscriptions,
         }
     }
 
-    fn get_connection_params(&self, cx: &App) -> (String, u16, String, String) {
+    fn get_connection_params(&self, cx: &App) -> (String, u16) {
         let host = self.host_input.read(cx).get_value().to_string();
         let host = if host.is_empty() {
-            "192.168.1.12".to_string()
+            "127.0.0.1".to_string()
         } else {
             host
         };
 
         let port_str = self.port_input.read(cx).get_value();
-        let port: u16 = port_str.parse().unwrap_or(2222);
+        let port: u16 = port_str.parse().unwrap_or(2123);
 
-        let username = self.username_input.read(cx).get_value().to_string();
-        let username = if username.is_empty() {
-            "zedra".to_string()
-        } else {
-            username
-        };
-
-        let password = self.password_input.read(cx).get_value().to_string();
-
-        (host, port, username, password)
+        (host, port)
     }
 }
 
@@ -96,8 +76,6 @@ impl ConnectView {
 pub struct ConnectRequested {
     pub host: String,
     pub port: u16,
-    pub username: String,
-    pub password: String,
 }
 
 impl EventEmitter<ConnectRequested> for ConnectView {}
@@ -123,17 +101,12 @@ impl Render for ConnectView {
                     .border_1()
                     .border_color(rgb(0x3e4451))
                     // Title
-                    .child(
-                        div()
-                            .text_color(rgb(0x61afef))
-                            .text_xl()
-                            .child("Zedra Terminal"),
-                    )
+                    .child(div().text_color(rgb(0x61afef)).text_xl().child("Zedra"))
                     .child(
                         div()
                             .text_color(rgb(0x5c6370))
                             .text_sm()
-                            .child("Connect to a remote host"),
+                            .child("Connect to zedra-host daemon"),
                     )
                     // Host input
                     .child(
@@ -141,12 +114,7 @@ impl Render for ConnectView {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(
-                                div()
-                                    .text_color(rgb(0xabb2bf))
-                                    .text_sm()
-                                    .child("Host"),
-                            )
+                            .child(div().text_color(rgb(0xabb2bf)).text_sm().child("Host"))
                             .child(self.host_input.clone()),
                     )
                     // Port input
@@ -155,41 +123,8 @@ impl Render for ConnectView {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(
-                                div()
-                                    .text_color(rgb(0xabb2bf))
-                                    .text_sm()
-                                    .child("Port"),
-                            )
+                            .child(div().text_color(rgb(0xabb2bf)).text_sm().child("Port"))
                             .child(self.port_input.clone()),
-                    )
-                    // Username input
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_color(rgb(0xabb2bf))
-                                    .text_sm()
-                                    .child("Username"),
-                            )
-                            .child(self.username_input.clone()),
-                    )
-                    // Password input
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_color(rgb(0xabb2bf))
-                                    .text_sm()
-                                    .child("Password"),
-                            )
-                            .child(self.password_input.clone()),
                     )
                     // Connect button
                     .child(
@@ -205,15 +140,9 @@ impl Render for ConnectView {
                                 MouseButton::Left,
                                 cx.listener(|this, _event, _window, cx| {
                                     log::info!("Connect button pressed!");
-                                    let (host, port, username, password) =
-                                        this.get_connection_params(cx);
-                                    log::info!("Connecting to {}:{} as {}", host, port, username);
-                                    cx.emit(ConnectRequested {
-                                        host,
-                                        port,
-                                        username,
-                                        password,
-                                    });
+                                    let (host, port) = this.get_connection_params(cx);
+                                    log::info!("Connecting to {}:{}", host, port);
+                                    cx.emit(ConnectRequested { host, port });
                                 }),
                             )
                             .child(div().flex().justify_center().child("Connect")),
@@ -231,6 +160,10 @@ pub struct ZedraApp {
     _tab_nav: Entity<TabNavigator>,
     _terminal_stack: Entity<StackNavigator>,
     editor_stack: Entity<StackNavigator>,
+    session: Option<Arc<RemoteSession>>,
+    /// Whether the editor stack is currently showing ProjectEditor (session active)
+    editor_showing_project: bool,
+    render_count: u64,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -296,16 +229,18 @@ impl ZedraApp {
                   event: &ConnectRequested,
                   window: &mut Window,
                   cx: &mut Context<ZedraApp>| {
-                log::info!("ConnectRequested event received: {}:{}", event.host, event.port);
+                log::info!(
+                    "ConnectRequested event received: {}:{}",
+                    event.host,
+                    event.port
+                );
 
                 // Calculate terminal dimensions based on actual screen size
                 let viewport = window.viewport_size();
-                let line_height = px(16.0); // Balanced font size
+                let line_height = px(16.0);
 
-                // Ensure terminal font is loaded
                 zedra_terminal::load_terminal_font(window);
 
-                // Measure actual cell width from font metrics
                 let font = gpui::Font {
                     family: zedra_terminal::TERMINAL_FONT_FAMILY.into(),
                     features: gpui::FontFeatures::default(),
@@ -321,27 +256,25 @@ impl ZedraApp {
                     .map(|size| size.width)
                     .unwrap_or(px(9.0));
 
-                // Calculate available space for terminal
-                // Subtract: tab bar (~50px), header bar (~44px), terminal status bar (~30px)
-                let available_width = viewport.width - px(16.0); // Some padding
+                let available_width = viewport.width - px(16.0);
                 let available_height = viewport.height - px(50.0 + 44.0 + 30.0);
 
                 let columns = (available_width / cell_width).floor() as usize;
                 let rows = (available_height / line_height).floor() as usize;
-
-                // Clamp to reasonable values
                 let columns = columns.clamp(20, 200);
                 let rows = rows.clamp(5, 100);
 
                 log::info!(
                     "Terminal sizing: viewport={:?}, cell_width={:?}, columns={}, rows={}",
-                    viewport, cell_width, columns, rows
+                    viewport,
+                    cell_width,
+                    columns,
+                    rows
                 );
 
                 let terminal_view =
                     cx.new(|cx| TerminalView::new(columns, rows, cell_width, line_height, cx));
 
-                // Set keyboard request callback to show/hide soft keyboard
                 terminal_view.update(cx, |view, _cx| {
                     view.set_keyboard_request(Box::new(|show| {
                         if show {
@@ -352,31 +285,76 @@ impl ZedraApp {
                     }));
                 });
 
-                // Subscribe to disconnect event to pop back to connect screen
+                // Subscribe to disconnect event (stored to tie lifetime to ZedraApp)
                 let stack_for_disconnect = terminal_stack_for_connect.clone();
-                cx.subscribe(&terminal_view, move |_this, _terminal, _event: &DisconnectRequested, cx| {
-                    log::info!("DisconnectRequested received, popping terminal view");
-                    stack_for_disconnect.update(cx, |stack, cx| {
-                        stack.pop(cx);
-                    });
-                }).detach();
+                let editor_stack_for_disconnect = _this.editor_stack.clone();
+                let disconnect_sub = cx.subscribe(
+                    &terminal_view,
+                    move |this, _terminal, _event: &DisconnectRequested, cx| {
+                        log::info!("DisconnectRequested received, popping terminal view");
+                        zedra_session::clear_active_session();
+                        this.session = None;
+                        stack_for_disconnect.update(cx, |stack, cx| {
+                            stack.pop(cx);
+                        });
+                        // Swap editor stack back to FilePreviewList
+                        if this.editor_showing_project {
+                            let preview = cx.new(|cx| FilePreviewList::new(cx));
+                            editor_stack_for_disconnect.update(cx, |stack, cx| {
+                                stack.replace(preview.into(), "Code Samples", cx);
+                            });
+                            this.editor_showing_project = false;
+                        }
+                    },
+                );
+                _this._subscriptions.push(disconnect_sub);
 
                 log::info!("Pushing terminal view onto stack");
                 terminal_stack_for_connect.update(cx, |stack, cx| {
                     stack.push(terminal_view.clone().into(), "Terminal", cx);
                 });
 
-                let params = ConnectionParams {
-                    host: event.host.clone(),
-                    port: event.port,
-                    auth: AuthMethod::Password {
-                        username: event.username.clone(),
-                        password: event.password.clone(),
-                    },
-                    expected_fingerprint: None,
-                };
-                log::info!("Starting SSH connection...");
-                ConnectionManager::connect(terminal_view.downgrade(), params, cx);
+                // Set initial status
+                terminal_view.update(cx, |view, _cx| {
+                    view.set_status(format!("Connecting to {}:{}...", event.host, event.port));
+                });
+
+                // Connect via RPC session (async on the session runtime)
+                // Terminal view will automatically pick up output data from the
+                // active session's buffer in process_output(), and update its
+                // connected status when data arrives.
+                let host = event.host.clone();
+                let port = event.port;
+                let cols = columns as u16;
+                let term_rows = rows as u16;
+
+                zedra_session::session_runtime().spawn(async move {
+                    log::info!("RemoteSession: connecting to {}:{}...", host, port);
+                    match RemoteSession::connect(&host, port).await {
+                        Ok(session) => {
+                            log::info!("RemoteSession: connected!");
+
+                            // Create terminal on the remote host
+                            match session.terminal_create(cols, term_rows).await {
+                                Ok(term_id) => {
+                                    log::info!("Remote terminal created: {}", term_id);
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to create remote terminal: {}", e);
+                                }
+                            }
+
+                            // Store as active session — terminal view will pick up
+                            // output via zedra_session::active_session().output_buffer()
+                            zedra_session::set_active_session(session);
+                            // Trigger re-render so ProjectEditor swap is picked up
+                            zedra_session::signal_terminal_data();
+                        }
+                        Err(e) => {
+                            log::error!("RemoteSession connect failed: {}", e);
+                        }
+                    }
+                });
             },
         );
         subscriptions.push(sub);
@@ -401,8 +379,7 @@ impl ZedraApp {
                   _window: &mut Window,
                   cx: &mut Context<ZedraApp>| {
                 if let Some(sample) = SAMPLE_FILES.get(event.index) {
-                    let editor_view =
-                        cx.new(|cx| EditorView::new(sample.content.to_string(), cx));
+                    let editor_view = cx.new(|cx| EditorView::new(sample.content.to_string(), cx));
                     editor_stack_for_preview.update(cx, |stack, cx| {
                         stack.push(editor_view.into(), sample.filename, cx);
                     });
@@ -425,6 +402,9 @@ impl ZedraApp {
             _tab_nav: tab_nav,
             _terminal_stack: terminal_stack,
             editor_stack,
+            session: None,
+            editor_showing_project: false,
+            render_count: 0,
             _subscriptions: subscriptions,
         }
     }
@@ -445,14 +425,34 @@ impl ZedraApp {
                 });
                 if !event.path.is_empty() {
                     log::info!("File selected from drawer: {}", event.path);
-                    // Try to match the filename to a sample file
-                    let filename = event.path.rsplit('/').next().unwrap_or(&event.path);
-                    if let Some(sample) = SAMPLE_FILES.iter().find(|s| s.filename == filename) {
-                        let editor_view =
-                            cx.new(|cx| EditorView::new(sample.content.to_string(), cx));
-                        editor_stack.update(cx, |stack, cx| {
-                            stack.push(editor_view.into(), sample.filename, cx);
+                    let path = event.path.clone();
+                    let filename = path.rsplit('/').next().unwrap_or(&path).to_string();
+
+                    // Try remote fs/read first, fall back to sample files
+                    if let Some(session) = zedra_session::active_session() {
+                        let _editor_stack = editor_stack.clone();
+                        let filename_clone = filename.clone();
+                        zedra_session::session_runtime().spawn(async move {
+                            match session.fs_read(&path).await {
+                                Ok(content) => {
+                                    // Store content for main thread to pick up
+                                    set_pending_file_content(filename_clone, content);
+                                    zedra_session::signal_terminal_data();
+                                }
+                                Err(e) => {
+                                    log::error!("fs/read failed for {}: {}", path, e);
+                                }
+                            }
                         });
+                    } else {
+                        // Fallback to sample files
+                        if let Some(sample) = SAMPLE_FILES.iter().find(|s| s.filename == filename) {
+                            let editor_view =
+                                cx.new(|cx| EditorView::new(sample.content.to_string(), cx));
+                            editor_stack.update(cx, |stack, cx| {
+                                stack.push(editor_view.into(), sample.filename, cx);
+                            });
+                        }
                     }
                 }
             },
@@ -467,6 +467,36 @@ impl ZedraApp {
 
 impl Render for ZedraApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.render_count += 1;
+        if self.render_count % 60 == 1 {
+            log::warn!(
+                "ZedraApp::render #{}, editor_project={}",
+                self.render_count,
+                self.editor_showing_project
+            );
+        }
+
+        // Swap editor stack to ProjectEditor when session becomes active
+        if zedra_session::active_session().is_some() && !self.editor_showing_project {
+            let project_editor = cx.new(|cx| ProjectEditor::new(cx));
+            self.editor_stack.update(cx, |stack, cx| {
+                stack.replace(project_editor.into(), "Project", cx);
+            });
+            self.editor_showing_project = true;
+        }
+
+        // Check for pending remote file content and open in editor
+        // (only when not showing ProjectEditor — it handles its own file loading)
+        if !self.editor_showing_project {
+            if let Some((filename, content)) = take_pending_file_content() {
+                let editor_view = cx.new(|cx| EditorView::new(content, cx));
+                let fname = filename.clone();
+                self.editor_stack.update(cx, |stack, cx| {
+                    stack.push(editor_view.into(), &fname, cx);
+                });
+            }
+        }
+
         div()
             .size_full()
             .child(self.drawer_host.clone())
@@ -502,5 +532,27 @@ impl Render for ZedraApp {
                 )
                 .with_priority(100),
             )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Global pending state for async file content → main thread
+// ---------------------------------------------------------------------------
+
+use std::sync::Mutex;
+
+static PENDING_FILE_CONTENT: Mutex<Option<(String, String)>> = Mutex::new(None);
+
+fn set_pending_file_content(filename: String, content: String) {
+    if let Ok(mut slot) = PENDING_FILE_CONTENT.lock() {
+        *slot = Some((filename, content));
+    }
+}
+
+fn take_pending_file_content() -> Option<(String, String)> {
+    if let Ok(mut slot) = PENDING_FILE_CONTENT.lock() {
+        slot.take()
+    } else {
+        None
     }
 }

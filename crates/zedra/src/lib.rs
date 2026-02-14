@@ -12,6 +12,9 @@ pub mod file_explorer;
 // File preview card grid
 pub mod file_preview_list;
 
+// Project editor: split-pane file explorer + code editor
+pub mod project_editor;
+
 // GPUI Android JNI bridge
 pub mod android_jni;
 

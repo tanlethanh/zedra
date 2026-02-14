@@ -4931,7 +4931,6 @@ dependencies = [
  "des",
  "digest",
  "elliptic-curve",
- "flate2",
  "futures",
  "generic-array",
  "hex-literal",
@@ -7987,6 +7986,7 @@ dependencies = [
  "once_cell",
  "zedra-editor",
  "zedra-nav",
+ "zedra-session",
  "zedra-ssh",
  "zedra-terminal",
 ]
@@ -8037,7 +8037,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "argon2",
- "async-trait",
  "base64-url",
  "clap",
  "directories",
@@ -8049,7 +8048,6 @@ dependencies = [
  "portable-pty",
  "qrcode",
  "rand 0.8.5",
- "russh",
  "russh-keys",
  "serde",
  "serde_json",
@@ -8084,6 +8082,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "zedra-session"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64-url",
+ "log",
+ "serde",
+ "serde_json",
+ "tokio",
+ "zedra-rpc",
+]
+
+[[package]]
 name = "zedra-ssh"
 version = "0.1.0"
 dependencies = [
@@ -8108,6 +8119,7 @@ dependencies = [
  "gpui",
  "itertools 0.14.0",
  "log",
+ "zedra-session",
  "zedra-ssh",
 ]
 

@@ -8,7 +8,7 @@ use alacritty_terminal::vte::ansi::{Color as AlacColor, CursorShape, NamedColor}
 use gpui::*;
 use itertools::Itertools;
 
-use crate::{CursorState, IndexedCell, TerminalContent, TerminalSize, TERMINAL_FONT_FAMILY, load_terminal_font};
+use crate::{CursorState, IndexedCell, TERMINAL_FONT_FAMILY, TerminalContent, TerminalSize};
 
 /// Colors for the terminal (One Dark theme)
 struct TermColors;
@@ -177,21 +177,9 @@ impl BatchedTextRun {
         let shared_text: SharedString = self.text.clone().into();
 
         // Use force_width to ensure monospace grid alignment
-        let shaped = text_system.shape_line(
-            shared_text,
-            font_size,
-            &runs,
-            Some(cell_width),
-        );
+        let shaped = text_system.shape_line(shared_text, font_size, &runs, Some(cell_width));
 
-        let _ = shaped.paint(
-            pos,
-            line_height,
-            TextAlign::Left,
-            None,
-            window,
-            cx,
-        );
+        let _ = shaped.paint(pos, line_height, TextAlign::Left, None, window, cx);
     }
 }
 
@@ -206,10 +194,21 @@ struct LayoutRect {
 
 impl LayoutRect {
     fn new(line: i32, col: i32, num_cells: usize, color: Hsla) -> Self {
-        LayoutRect { line, col, num_cells, color }
+        LayoutRect {
+            line,
+            col,
+            num_cells,
+            color,
+        }
     }
 
-    fn paint(&self, origin: Point<Pixels>, cell_width: Pixels, line_height: Pixels, window: &mut Window) {
+    fn paint(
+        &self,
+        origin: Point<Pixels>,
+        cell_width: Pixels,
+        line_height: Pixels,
+        window: &mut Window,
+    ) {
         // Background rects use floor for position and ceil for width to prevent gaps
         let position = point(
             (origin.x + self.col as f32 * cell_width).floor(),
@@ -231,9 +230,11 @@ fn is_blank(cell: &IndexedCell) -> bool {
     if !matches!(cell.cell.bg, AlacColor::Named(NamedColor::Background)) {
         return false;
     }
-    if cell.cell.flags.intersects(
-        CellFlags::ALL_UNDERLINES | CellFlags::INVERSE | CellFlags::STRIKEOUT
-    ) {
+    if cell
+        .cell
+        .flags
+        .intersects(CellFlags::ALL_UNDERLINES | CellFlags::INVERSE | CellFlags::STRIKEOUT)
+    {
         return false;
     }
     true
@@ -396,10 +397,7 @@ impl Element for TerminalElement {
         window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
-        // Ensure the embedded JetBrains Mono font is loaded
-        load_terminal_font(window);
-
-        // Use JetBrains Mono NL - embedded monospace font designed for terminals
+        // Use JetBrains Mono NL - embedded monospace font (loaded once at app init)
         let font = Font {
             family: TERMINAL_FONT_FAMILY.into(),
             features: FontFeatures::default(),
@@ -451,10 +449,8 @@ impl Element for TerminalElement {
         window.paint_quad(fill(bounds, rgb(TermColors::BACKGROUND)));
 
         // Layout the grid (batch text runs, collect background rects)
-        let (rects, batched_runs) = Self::layout_grid(
-            &layout.content.cells,
-            layout.content.display_offset as i32,
-        );
+        let (rects, batched_runs) =
+            Self::layout_grid(&layout.content.cells, layout.content.display_offset as i32);
 
         // Paint background rectangles first
         for rect in &rects {

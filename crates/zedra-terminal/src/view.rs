@@ -34,7 +34,13 @@ pub struct TerminalView {
 }
 
 impl TerminalView {
-    pub fn new(columns: usize, rows: usize, cell_width: Pixels, line_height: Pixels, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        columns: usize,
+        rows: usize,
+        cell_width: Pixels,
+        line_height: Pixels,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self {
             terminal: TerminalState::new(columns, rows, cell_width, line_height),
             send_bytes: None,
@@ -63,26 +69,41 @@ impl TerminalView {
         self.output_buffer.clone()
     }
 
-    /// Process any pending output from SSH
+    /// Replace the output buffer (used to wire in the session's buffer)
+    pub fn set_output_buffer(&mut self, buffer: OutputBuffer) {
+        self.output_buffer = buffer;
+    }
+
+    /// Process any pending output from SSH or RPC session
     /// Returns true if any data was processed
     fn process_output(&mut self) -> bool {
+        let mut had_data = false;
+
+        // Check local buffer (SSH path)
         if let Ok(mut buffer) = self.output_buffer.try_lock() {
-            let count = buffer.len();
-            if count > 0 {
-                log::info!("Processing {} buffered SSH outputs", count);
-                while let Some(data) = buffer.pop_front() {
-                    log::info!("Advancing {} bytes to terminal", data.len());
-                    self.terminal.advance_bytes(&data);
-                }
-                // Mark as connected if we received data
-                if !self.connected {
-                    self.connected = true;
-                    self.status_text = "Connected".to_string();
-                }
-                return true;
+            while let Some(data) = buffer.pop_front() {
+                self.terminal.advance_bytes(&data);
+                had_data = true;
             }
         }
-        false
+
+        // Check active RPC session buffer
+        if let Some(session) = zedra_session::active_session() {
+            let session_buf = session.output_buffer();
+            if let Ok(mut buffer) = session_buf.try_lock() {
+                while let Some(data) = buffer.pop_front() {
+                    self.terminal.advance_bytes(&data);
+                    had_data = true;
+                }
+            }
+        }
+
+        if had_data && !self.connected {
+            self.connected = true;
+            self.status_text = "Connected".to_string();
+        }
+
+        had_data
     }
 
     /// Set the callback for sending bytes to the SSH channel
@@ -120,19 +141,14 @@ impl TerminalView {
         self.terminal.size()
     }
 
-    /// Handle a keystroke, converting to escape sequence and sending via SSH
+    /// Handle a keystroke, converting to escape sequence and sending via SSH or RPC session
     fn handle_keystroke(&mut self, keystroke: &Keystroke) {
-        log::info!("Terminal keystroke: {:?}", keystroke);
+        log::debug!("Terminal keystroke: {:?}", keystroke);
 
         // Try to convert keystroke to terminal escape sequence
         if let Some(bytes) = self.terminal.try_keystroke(keystroke) {
-            log::info!("Sending escape sequence: {:?}", bytes);
-            if !zedra_ssh::send_to_ssh(bytes.clone()) {
-                // Fall back to callback if global sender not available
-                if let Some(ref send) = self.send_bytes {
-                    send(bytes);
-                }
-            }
+            log::debug!("Sending escape sequence: {:?}", bytes);
+            self.send_bytes_to_remote(bytes);
         } else if let Some(ref key_char) = keystroke.key_char {
             // For plain characters, send the character directly
             if !keystroke.modifiers.control
@@ -140,24 +156,36 @@ impl TerminalView {
                 && !keystroke.modifiers.platform
             {
                 let bytes = key_char.as_bytes().to_vec();
-                log::info!("Sending character: {:?}", bytes);
-                if !zedra_ssh::send_to_ssh(bytes.clone()) {
-                    if let Some(ref send) = self.send_bytes {
-                        send(bytes);
-                    }
-                }
+                log::debug!("Sending character: {:?}", bytes);
+                self.send_bytes_to_remote(bytes);
             }
         }
     }
 
     /// Handle IME text input
     pub fn handle_ime_text(&mut self, text: &str) {
-        log::info!("Terminal IME text: {}", text);
+        log::debug!("Terminal IME text: {}", text);
         let bytes = text.as_bytes().to_vec();
-        if !zedra_ssh::send_to_ssh(bytes.clone()) {
+        self.send_bytes_to_remote(bytes);
+    }
+
+    /// Send bytes to the remote host via RPC session, SSH, or callback fallback.
+    /// Clones are only made when a fallback path is needed.
+    fn send_bytes_to_remote(&self, bytes: Vec<u8>) {
+        // Try RPC session first
+        if zedra_session::send_terminal_input(bytes.clone()) {
+            return;
+        }
+        // Try SSH — needs clone only if callback fallback exists
+        if self.send_bytes.is_some() {
+            if zedra_ssh::send_to_ssh(bytes.clone()) {
+                return;
+            }
             if let Some(ref send) = self.send_bytes {
                 send(bytes);
             }
+        } else {
+            let _ = zedra_ssh::send_to_ssh(bytes);
         }
     }
 
@@ -205,14 +233,10 @@ impl gpui::EventEmitter<DisconnectRequested> for TerminalView {}
 
 impl Render for TerminalView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Process any pending SSH output before rendering
-        let had_data = self.process_output();
-
-        // If we processed data, schedule another render to check for more
-        // This creates a polling loop while data is coming in
-        if had_data {
-            cx.notify();
-        }
+        // Process any pending SSH/RPC output before rendering.
+        // Re-renders are driven by the frame loop (request_frame_forced) when
+        // TERMINAL_DATA_PENDING is set, so no cx.notify() loop is needed here.
+        self.process_output();
 
         let content = self.terminal.content();
         let size = self.terminal.size();
@@ -261,6 +285,7 @@ impl Render for TerminalView {
                                     cx.listener(|this, _event, _window, cx| {
                                         log::info!("Disconnect requested");
                                         zedra_ssh::clear_input_sender();
+                                        zedra_session::clear_active_session();
                                         this.connected = false;
                                         this.status_text = "Disconnected".to_string();
                                         cx.emit(DisconnectRequested);
@@ -283,25 +308,23 @@ impl Render for TerminalView {
                             // Focus the terminal and request keyboard on tap
                             this.focus_handle.focus(window, cx);
                             this.request_keyboard(true);
-                            log::info!("Terminal tapped, requesting focus and keyboard");
+                            log::debug!("Terminal tapped, requesting focus and keyboard");
                         }),
                     )
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, _cx| {
                         this.handle_keystroke(&event.keystroke);
                     }))
-                    .on_scroll_wheel(cx.listener(
-                        |this, event: &ScrollWheelEvent, _window, _cx| {
-                            let delta = match event.delta {
-                                ScrollDelta::Lines(lines) => lines.y as i32,
-                                ScrollDelta::Pixels(pixels) => {
-                                    (pixels.y / this.terminal.size().line_height) as i32
-                                }
-                            };
-                            if delta != 0 {
-                                this.scroll(-delta);
+                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, _cx| {
+                        let delta = match event.delta {
+                            ScrollDelta::Lines(lines) => lines.y as i32,
+                            ScrollDelta::Pixels(pixels) => {
+                                (pixels.y / this.terminal.size().line_height) as i32
                             }
-                        },
-                    ))
+                        };
+                        if delta != 0 {
+                            this.scroll(-delta);
+                        }
+                    }))
                     .child(TerminalElement::new(content, size)),
             )
     }

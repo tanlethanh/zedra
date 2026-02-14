@@ -23,6 +23,7 @@ once_cell = "1.19"
 
 # Workspace crates
 zedra-ssh = { path = "../zedra-ssh" }
+zedra-session = { path = "../zedra-session" }
 zedra-terminal = { path = "../zedra-terminal" }
 zedra-editor = { path = "../zedra-editor" }
 zedra-nav = { path = "../zedra-nav" }

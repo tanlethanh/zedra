@@ -149,6 +149,9 @@ pub mod methods {
     pub const LSP_DIAGNOSTICS: &str = "lsp/diagnostics";
     pub const LSP_HOVER: &str = "lsp/hover";
 
+    // Session
+    pub const SESSION_INFO: &str = "session/info";
+
     // Notifications (server → client)
     pub const TERM_OUTPUT: &str = "terminal/output";
     pub const AI_STREAM: &str = "ai/stream";
@@ -282,6 +285,19 @@ pub struct AiPromptParams {
 pub struct AiStreamChunk {
     pub text: String,
     pub done: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionInfoResult {
+    pub hostname: String,
+    pub workdir: String,
+    pub username: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TermOutputNotification {
+    pub id: String,
+    pub data: String, // base64-encoded
 }
 
 #[cfg(test)]
