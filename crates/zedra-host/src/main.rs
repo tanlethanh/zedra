@@ -6,7 +6,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use zedra_host::{qr, rpc_daemon, store};
+use zedra_host::{qr, relay_bridge, rpc_daemon, session_registry, store};
 
 #[derive(Parser)]
 #[command(name = "zedra-host", about = "Desktop companion daemon for Zedra")]
@@ -30,6 +30,15 @@ enum Commands {
         /// Working directory to serve
         #[arg(short, long, default_value = ".")]
         workdir: String,
+    },
+    /// Start in relay mode (connect through cloud relay)
+    Relay {
+        /// Working directory to serve
+        #[arg(short, long, default_value = ".")]
+        workdir: String,
+        /// Relay server URL
+        #[arg(long, default_value = "https://relay.zedra.dev")]
+        relay_url: String,
     },
     /// List paired devices
     Devices,
@@ -66,6 +75,19 @@ async fn main() -> Result<()> {
             tracing::info!("Local IP: {} (use this to connect from Zedra)", local_ip);
             tracing::info!("Serving workdir: {}", workdir.display());
             rpc_daemon::run_daemon(&bind, port, workdir).await?;
+        }
+        Commands::Relay { workdir, relay_url } => {
+            let workdir = std::path::PathBuf::from(workdir)
+                .canonicalize()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            tracing::info!("Starting zedra-host in relay mode");
+            tracing::info!("Serving workdir: {}", workdir.display());
+
+            let registry = std::sync::Arc::new(session_registry::SessionRegistry::new());
+            let daemon_state =
+                std::sync::Arc::new(rpc_daemon::DaemonState::new(workdir.clone()));
+
+            relay_bridge::run_relay_mode(workdir, &relay_url, registry, daemon_state).await?;
         }
         Commands::Devices => {
             let devices = store::list_devices()?;

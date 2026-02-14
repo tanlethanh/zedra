@@ -15,3 +15,4 @@ serde_json.workspace = true
 log.workspace = true
 base64-url.workspace = true
 futures.workspace = true
+zedra-transport = { path = "../zedra-transport" }

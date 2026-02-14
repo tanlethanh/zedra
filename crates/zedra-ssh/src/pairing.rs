@@ -2,14 +2,14 @@
 // Parses zedra://pair URIs and performs the pairing handshake
 
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-/// Pairing payload from QR code
-#[derive(Debug, Clone, Deserialize)]
+/// Pairing payload from QR code (supports v1 and v2)
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PairingPayload {
-    /// Protocol version
+    /// Protocol version (1 or 2)
     pub v: u32,
-    /// Host address
+    /// Host address (primary LAN IP for backward compat)
     pub host: String,
     /// SSH port
     pub port: u16,
@@ -19,6 +19,42 @@ pub struct PairingPayload {
     pub fingerprint: String,
     /// Friendly name for the host
     pub name: String,
+    // v2 fields — optional with serde defaults for backward compat with v1
+    /// All LAN IPs discovered on the host
+    #[serde(default)]
+    pub host_addrs: Vec<String>,
+    /// Tailscale 100.x.x.x address, if available
+    #[serde(default)]
+    pub tailscale_addr: Option<String>,
+    /// Cloudflare Worker relay URL
+    #[serde(default)]
+    pub relay_url: Option<String>,
+    /// Relay room code
+    #[serde(default)]
+    pub relay_room: Option<String>,
+    /// Relay room secret
+    #[serde(default)]
+    pub relay_secret: Option<String>,
+}
+
+impl PairingPayload {
+    /// Convert this pairing payload into a PeerInfo for TransportManager.
+    pub fn to_peer_info(&self) -> zedra_transport::PeerInfo {
+        let mut host_addrs = self.host_addrs.clone();
+        if host_addrs.is_empty() {
+            host_addrs.push(self.host.clone());
+        }
+        zedra_transport::PeerInfo {
+            host_addrs,
+            tailscale_addr: self.tailscale_addr.clone(),
+            port: self.port,
+            relay_url: self.relay_url.clone().unwrap_or_default(),
+            relay_room: self.relay_room.clone().unwrap_or_default(),
+            relay_secret: self.relay_secret.clone().unwrap_or_default(),
+            fingerprint: self.fingerprint.clone(),
+            hostname: self.name.clone(),
+        }
+    }
 }
 
 /// Parse a zedra://pair?d=<payload> URI
@@ -34,7 +70,7 @@ pub fn parse_pairing_uri(uri: &str) -> Result<PairingPayload> {
     let json_str = String::from_utf8(json_bytes)?;
     let payload: PairingPayload = serde_json::from_str(&json_str)?;
 
-    if payload.v != 1 {
+    if payload.v != 1 && payload.v != 2 {
         anyhow::bail!("Unsupported pairing protocol version: {}", payload.v);
     }
 

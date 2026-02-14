@@ -151,6 +151,9 @@ pub mod methods {
 
     // Session
     pub const SESSION_INFO: &str = "session/info";
+    pub const SESSION_RESUME_OR_CREATE: &str = "session/resume_or_create";
+    pub const SESSION_HEARTBEAT: &str = "session/heartbeat";
+    pub const SESSION_PING: &str = "session/ping";
 
     // Notifications (server → client)
     pub const TERM_OUTPUT: &str = "terminal/output";
@@ -288,16 +291,45 @@ pub struct AiStreamChunk {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PingResult {
+    pub pong: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfoResult {
     pub hostname: String,
     pub workdir: String,
     pub username: String,
+    /// Session ID for resume support (v2+, optional for backward compat).
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TermOutputNotification {
     pub id: String,
     pub data: String, // base64-encoded
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionResumeParams {
+    pub session_id: Option<String>,
+    pub auth_token: String,
+    #[serde(default)]
+    pub last_notif_seq: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionResumeResult {
+    pub session_id: String,
+    pub resumed: bool,
+    pub backlog: Vec<SessionBacklogEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionBacklogEntry {
+    pub seq: u64,
+    pub payload: String, // base64-encoded notification JSON
 }
 
 #[cfg(test)]

@@ -78,6 +78,101 @@ pub async fn generate_pairing_qr() -> Result<()> {
     Ok(())
 }
 
+/// v2 pairing payload with relay and multi-address support
+#[derive(Serialize)]
+struct PairingPayloadV2 {
+    v: u32,
+    host: String,
+    port: u16,
+    token: String,
+    fingerprint: String,
+    name: String,
+    host_addrs: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tailscale_addr: Option<String>,
+    relay_url: String,
+    relay_room: String,
+    relay_secret: String,
+}
+
+/// Generate and display a v2 pairing QR code with relay info.
+///
+/// Includes all LAN IPs and relay room credentials so the client can
+/// attempt LAN, Tailscale, and relay transports in priority order.
+pub async fn generate_relay_pairing_qr(
+    relay_url: &str,
+    relay_room: &str,
+    relay_secret: &str,
+) -> Result<()> {
+    let hostname = gethostname();
+    let primary_ip = get_local_ip().unwrap_or_else(|| "localhost".to_string());
+    let port = 2123u16;
+    let fingerprint = get_host_fingerprint()?;
+    let token = auth::create_pairing_token();
+
+    // Collect all non-loopback IPv4 addresses
+    let host_addrs: Vec<String> = if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|iface| !iface.is_loopback())
+        .filter_map(|iface| match iface.ip() {
+            std::net::IpAddr::V4(v4) => Some(v4.to_string()),
+            _ => None,
+        })
+        .collect();
+
+    let payload = PairingPayloadV2 {
+        v: 2,
+        host: primary_ip.clone(),
+        port,
+        token,
+        fingerprint,
+        name: hostname.clone(),
+        host_addrs: if host_addrs.is_empty() {
+            vec![primary_ip.clone()]
+        } else {
+            host_addrs.clone()
+        },
+        tailscale_addr: None, // TODO: detect Tailscale IP
+        relay_url: relay_url.to_string(),
+        relay_room: relay_room.to_string(),
+        relay_secret: relay_secret.to_string(),
+    };
+
+    let json = serde_json::to_string(&payload)?;
+    let encoded = base64_url::encode(&json);
+    let uri = format!("zedra://pair?d={}", encoded);
+
+    let code = QrCode::new(uri.as_bytes())?;
+    let string = render_qr_to_terminal(&code);
+
+    let addrs_display = if host_addrs.is_empty() {
+        primary_ip.clone()
+    } else {
+        host_addrs.join(", ")
+    };
+
+    println!();
+    println!("  Zedra Host Pairing (v2 - relay enabled)");
+    println!("  ========================================");
+    println!();
+    println!("  Scan this QR code with the Zedra app to pair this device.");
+    println!("  Host: {} ({})", hostname, addrs_display);
+    println!("  Port: {}", port);
+    println!("  Relay: {} (room: {})", relay_url, relay_room);
+    println!("  Token expires in 5 minutes.");
+    println!();
+    println!("{}", string);
+    println!();
+    println!("  Or connect manually:");
+    println!("    Host: {}", primary_ip);
+    println!("    Port: {}", port);
+    println!("    Username: zedra");
+    println!();
+
+    Ok(())
+}
+
 /// Render QR code to terminal using Unicode block characters
 fn render_qr_to_terminal(code: &QrCode) -> String {
     let width = code.width();

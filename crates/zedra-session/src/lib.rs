@@ -10,7 +10,7 @@
 //   4. Main thread drains drain_callbacks() each frame for deferred work
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::Result;
@@ -22,6 +22,7 @@ use zedra_rpc::{
     GitLogParams, GitStatusResult, Response, RpcClient, SessionInfoResult, TermCreateParams,
     TermCreateResult, TermDataParams, TermOutputNotification, TermResizeParams,
 };
+use zedra_transport::{PeerInfo, TransportManager, TransportState};
 
 // ---------------------------------------------------------------------------
 // Type aliases
@@ -181,10 +182,15 @@ pub struct RemoteSession {
     state: Arc<Mutex<SessionState>>,
     terminal_output: OutputBuffer,
     terminal_id: Arc<Mutex<Option<String>>>,
+    session_id: Arc<Mutex<Option<String>>>,
+    /// Transport state from TransportManager (None for direct TCP connections).
+    transport_state: Option<Arc<Mutex<TransportState>>>,
+    /// Latest ping RTT in milliseconds (0 = not yet measured).
+    latency_ms: Arc<AtomicU64>,
 }
 
 impl RemoteSession {
-    /// Connect to a zedra-host RPC daemon over TCP.
+    /// Connect to a zedra-host RPC daemon over TCP (direct connection).
     ///
     /// 1. Opens a TCP connection to `host:port`.
     /// 2. Spawns the RPC client reader/writer tasks.
@@ -197,23 +203,103 @@ impl RemoteSession {
         let stream = TcpStream::connect(&addr).await?;
         let (reader, writer) = tokio::io::split(stream);
 
-        let (rpc_client, mut notif_rx) = RpcClient::spawn(reader, writer);
+        let (rpc_client, notif_rx) = RpcClient::spawn(reader, writer);
         let client = Arc::new(rpc_client);
 
         let terminal_output: OutputBuffer = Arc::new(Mutex::new(VecDeque::new()));
         let state = Arc::new(Mutex::new(SessionState::Connecting));
+
+        let latency_ms = Arc::new(AtomicU64::new(0));
 
         let session = Arc::new(Self {
             client,
             state,
             terminal_output,
             terminal_id: Arc::new(Mutex::new(None)),
+            session_id: Arc::new(Mutex::new(None)),
+            transport_state: None,
+            latency_ms: latency_ms.clone(),
         });
 
         // Spawn notification listener
+        Self::spawn_notification_listener(&session, notif_rx);
+
+        // Fetch session info to populate state
+        Self::fetch_session_info(&session, host).await;
+
+        // Spawn background ping loop for latency measurement
+        Self::spawn_ping_loop(session.client.clone(), latency_ms);
+
+        log::info!("RemoteSession: connected to {addr}");
+        Ok(session)
+    }
+
+    /// Connect via TransportManager (supports multi-transport discovery).
+    ///
+    /// Uses PeerInfo from a v2 QR pairing payload to try LAN, Tailscale, and
+    /// relay transports in priority order. The TransportManager runs in the
+    /// background and can reconnect on transport failure.
+    pub async fn connect_with_peer_info(peer_info: PeerInfo) -> Result<Arc<Self>> {
+        let hostname = peer_info.hostname.clone();
+        log::info!(
+            "RemoteSession: connecting via TransportManager to {}",
+            hostname
+        );
+
+        // 1. Create TransportManager and get session-facing channels
+        let (mut manager, recv_rx, send_tx) = TransportManager::new(peer_info);
+
+        // 2. Run discovery to find and connect the best transport
+        manager.connect().await?;
+
+        // 3. Create RpcClient over the channel pair (transport-agnostic)
+        let (rpc_client, notif_rx) = RpcClient::spawn_from_channels(recv_rx, send_tx);
+        let client = Arc::new(rpc_client);
+
+        // 4. Grab transport state handle for UI monitoring
+        let transport_state_handle = manager.state();
+
+        // 5. Build session
+        let terminal_output: OutputBuffer = Arc::new(Mutex::new(VecDeque::new()));
+        let state = Arc::new(Mutex::new(SessionState::Connecting));
+        let latency_ms = Arc::new(AtomicU64::new(0));
+
+        let session = Arc::new(Self {
+            client,
+            state,
+            terminal_output,
+            terminal_id: Arc::new(Mutex::new(None)),
+            session_id: Arc::new(Mutex::new(None)),
+            transport_state: Some(transport_state_handle),
+            latency_ms: latency_ms.clone(),
+        });
+
+        // 6. Spawn notification listener
+        Self::spawn_notification_listener(&session, notif_rx);
+
+        // 7. Spawn TransportManager background task (bridges transport <-> channels)
+        tokio::spawn(manager.run());
+
+        // 8. Fetch session info to populate state
+        Self::fetch_session_info(&session, &hostname).await;
+
+        // 9. Spawn background ping loop for latency measurement
+        Self::spawn_ping_loop(session.client.clone(), latency_ms);
+
+        log::info!("RemoteSession: connected via TransportManager to {}", hostname);
+        Ok(session)
+    }
+
+    /// Spawn the notification listener that routes terminal/output to the buffer.
+    fn spawn_notification_listener(
+        session: &Arc<Self>,
+        notif_rx: tokio::sync::mpsc::Receiver<zedra_rpc::Notification>,
+    ) {
         let output_buf = session.terminal_output.clone();
+        let mut rx = notif_rx;
+
         tokio::spawn(async move {
-            while let Some(notif) = notif_rx.recv().await {
+            while let Some(notif) = rx.recv().await {
                 if notif.method == methods::TERM_OUTPUT {
                     match serde_json::from_value::<TermOutputNotification>(notif.params) {
                         Ok(term_notif) => {
@@ -238,10 +324,15 @@ impl RemoteSession {
             }
             log::info!("Notification listener exited");
         });
+    }
 
-        // Fetch session info to populate state
+    /// Fetch session/info from the host and populate the session state.
+    async fn fetch_session_info(session: &Arc<Self>, fallback_hostname: &str) {
         let info_client = session.client.clone();
         let info_state = session.state.clone();
+        let session_id_slot = session.session_id.clone();
+        let hostname_fallback = fallback_hostname.to_string();
+
         match info_client
             .call(methods::SESSION_INFO, serde_json::json!({}))
             .await
@@ -250,6 +341,12 @@ impl RemoteSession {
                 if let Some(result) = resp.result {
                     match serde_json::from_value::<SessionInfoResult>(result) {
                         Ok(info) => {
+                            // Store session_id if present in the response
+                            if let Some(ref sid) = info.session_id {
+                                if let Ok(mut id_slot) = session_id_slot.lock() {
+                                    *id_slot = Some(sid.clone());
+                                }
+                            }
                             if let Ok(mut s) = info_state.lock() {
                                 *s = SessionState::Connected {
                                     hostname: info.hostname,
@@ -261,7 +358,7 @@ impl RemoteSession {
                             log::warn!("session/info parse error: {e}");
                             if let Ok(mut s) = info_state.lock() {
                                 *s = SessionState::Connected {
-                                    hostname: host.to_string(),
+                                    hostname: hostname_fallback,
                                     workdir: String::new(),
                                 };
                             }
@@ -271,7 +368,7 @@ impl RemoteSession {
                     log::warn!("session/info error: {}", err.message);
                     if let Ok(mut s) = info_state.lock() {
                         *s = SessionState::Connected {
-                            hostname: host.to_string(),
+                            hostname: hostname_fallback,
                             workdir: String::new(),
                         };
                     }
@@ -284,9 +381,6 @@ impl RemoteSession {
                 }
             }
         }
-
-        log::info!("RemoteSession: connected to {addr}");
-        Ok(session)
     }
 
     // -----------------------------------------------------------------------
@@ -312,6 +406,63 @@ impl RemoteSession {
             .lock()
             .ok()
             .and_then(|guard| guard.clone())
+    }
+
+    /// The session ID assigned by the host (if available).
+    pub fn session_id(&self) -> Option<String> {
+        self.session_id
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
+    /// Current transport state (None for direct TCP connections).
+    pub fn transport_state(&self) -> Option<TransportState> {
+        self.transport_state
+            .as_ref()
+            .and_then(|ts| ts.lock().ok().map(|s| s.clone()))
+    }
+
+    /// Latest ping RTT in milliseconds (0 = not yet measured).
+    pub fn latency_ms(&self) -> u64 {
+        self.latency_ms.load(Ordering::Relaxed)
+    }
+
+    /// Send a `session/ping` RPC and measure the round-trip time.
+    pub async fn ping(&self) -> Result<u64> {
+        let start = std::time::Instant::now();
+        let resp = self
+            .client
+            .call(methods::SESSION_PING, serde_json::json!({}))
+            .await?;
+        Self::check_error(resp)?;
+        let rtt_ms = start.elapsed().as_millis() as u64;
+        self.latency_ms.store(rtt_ms, Ordering::Relaxed);
+        Ok(rtt_ms)
+    }
+
+    /// Spawn a background loop that pings every 10 seconds to measure RTT.
+    fn spawn_ping_loop(client: Arc<RpcClient>, latency_ms: Arc<AtomicU64>) {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                let start = std::time::Instant::now();
+                match client
+                    .call(methods::SESSION_PING, serde_json::json!({}))
+                    .await
+                {
+                    Ok(_) => {
+                        let rtt = start.elapsed().as_millis() as u64;
+                        latency_ms.store(rtt, Ordering::Relaxed);
+                        log::debug!("ping RTT: {}ms", rtt);
+                    }
+                    Err(e) => {
+                        latency_ms.store(0, Ordering::Relaxed);
+                        log::warn!("ping failed: {}", e);
+                    }
+                }
+            }
+        });
     }
 
     // -----------------------------------------------------------------------

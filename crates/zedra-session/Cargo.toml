@@ -5,6 +5,8 @@ edition.workspace = true
 
 [dependencies]
 zedra-rpc = { path = "../zedra-rpc" }
+zedra-transport = { path = "../zedra-transport" }
+zedra-relay = { path = "../zedra-relay" }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "sync"] }
 serde.workspace = true
 serde_json.workspace = true

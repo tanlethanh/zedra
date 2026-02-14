@@ -59,8 +59,15 @@ anyhow.workspace = true
 
 # Workspace crates
 zedra-rpc = { path = "../zedra-rpc" }
+zedra-relay = { path = "../zedra-relay" }
 zedra-fs = { path = "../zedra-fs" }
 zedra-git = { path = "../zedra-git" }
+
+# Session IDs
+uuid = { version = "1", features = ["v4"] }
+
+# Async trait
+async-trait.workspace = true
 
 # Async utilities
 futures.workspace = true
