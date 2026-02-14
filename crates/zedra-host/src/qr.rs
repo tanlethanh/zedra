@@ -30,7 +30,7 @@ pub async fn generate_pairing_qr() -> Result<()> {
     // Get host info
     let hostname = gethostname();
     let ip = get_local_ip().unwrap_or_else(|| "localhost".to_string());
-    let port = 2222u16;
+    let port = 2123u16;
 
     // Get host key fingerprint
     let fingerprint = get_host_fingerprint()?;
@@ -96,10 +96,10 @@ fn render_qr_to_terminal(code: &QrCode) -> String {
             };
 
             match (top, bottom) {
-                (true, true) => result.push('\u{2588}'),   // Full block
-                (true, false) => result.push('\u{2580}'),  // Upper half
-                (false, true) => result.push('\u{2584}'),  // Lower half
-                (false, false) => result.push(' '),         // Empty
+                (true, true) => result.push('\u{2588}'),  // Full block
+                (true, false) => result.push('\u{2580}'), // Upper half
+                (false, true) => result.push('\u{2584}'), // Lower half
+                (false, false) => result.push(' '),       // Empty
             }
         }
         result.push('\n');
@@ -157,7 +157,7 @@ fn gethostname() -> String {
 }
 
 /// Get local IP address
-fn get_local_ip() -> Option<String> {
+pub fn get_local_ip() -> Option<String> {
     // Try to find a non-loopback IPv4 address
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("8.8.8.8:80").ok()?;
@@ -186,7 +186,7 @@ mod tests {
         let payload = PairingPayload {
             v: 1,
             host: "192.168.1.1".to_string(),
-            port: 2222,
+            port: 2123,
             token: "abc123".to_string(),
             fingerprint: "SHA256:xxxx".to_string(),
             name: "my-machine".to_string(),
@@ -194,7 +194,7 @@ mod tests {
 
         let json = serde_json::to_string(&payload).unwrap();
         assert!(json.contains("192.168.1.1"));
-        assert!(json.contains("2222"));
+        assert!(json.contains("2123"));
         assert!(json.contains("abc123"));
         assert!(json.contains("SHA256:xxxx"));
         assert!(json.contains("my-machine"));
@@ -211,7 +211,7 @@ mod tests {
         let payload = PairingPayload {
             v: 1,
             host: "10.0.0.1".to_string(),
-            port: 2222,
+            port: 2123,
             token: "token".to_string(),
             fingerprint: "fp".to_string(),
             name: "host".to_string(),
