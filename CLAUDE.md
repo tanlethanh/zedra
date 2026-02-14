@@ -130,7 +130,7 @@ crates/
   │       ├── client.rs         # russh SSH session
   │       ├── connection.rs     # Connection state machine
   │       ├── bridge.rs         # Async SSH ↔ terminal I/O
-  │       └── pairing.rs        # QR code pairing protocol
+  │       └── pairing.rs        # QR code pairing protocol (v1 + v2 multi-transport)
   ├── zedra-terminal/           # Terminal emulation (alacritty + GPUI rendering)
   │   └── src/
   │       ├── lib.rs            # TerminalState + types
@@ -151,6 +151,26 @@ crates/
   │       ├── tab.rs            # TabNavigator: bottom tab bar with lazy views
   │       ├── modal.rs          # ModalHost: deferred overlay with backdrop
   │       └── drawer.rs         # DrawerHost: slide-from-left drawer overlay
+  ├── zedra-rpc/                # RPC protocol, Transport trait, framing
+  │   └── src/
+  │       ├── transport.rs      # Transport trait + TcpTransport + spawn_from_channels
+  │       └── protocol.rs       # RPC methods incl. session/resume_or_create
+  ├── zedra-relay/              # Relay client + RelayTransport impl
+  │   └── src/
+  │       ├── lib.rs            # Re-exports, DEFAULT_RELAY_URL
+  │       ├── client.rs         # HTTP client for relay API (reqwest + rustls)
+  │       ├── transport.rs      # RelayTransport: Transport trait via HTTP polling
+  │       └── types.rs          # Shared types (RoomCode, RelayMessage, etc.)
+  ├── zedra-transport/          # TransportManager, discovery chain, providers
+  │   └── src/
+  │       ├── lib.rs            # PeerInfo struct, re-exports
+  │       ├── discovery.rs      # Concurrent provider racing (JoinSet)
+  │       ├── manager.rs        # Transport lifecycle, health, switching
+  │       └── providers/
+  │           ├── mod.rs        # TransportProvider trait
+  │           ├── lan.rs        # LAN TCP provider (priority 0)
+  │           ├── tailscale.rs  # Tailscale provider (priority 1)
+  │           └── relay.rs      # Relay provider (priority 2, fallback)
   ├── zedra/                    # Android cdylib (final binary crate)
   │   ├── build.rs
   │   └── src/
@@ -158,11 +178,16 @@ crates/
   │       ├── android_app.rs    # Main thread GPUI app + touch/scroll/key handling
   │       ├── android_command_queue.rs # Thread-safe queue
   │       ├── android_jni.rs    # JNI bridge
-  │       ├── zedra_app.rs      # DrawerHost + TabNavigator + StackNavigator wiring
+  │       ├── zedra_app.rs      # DrawerHost + TabNavigator + transport state indicator
   │       ├── file_explorer.rs  # FileExplorer tree view (demo data)
   │       └── file_preview_list.rs # Preview card grid for code samples
   └── zedra-host/               # Desktop SSH server daemon
       └── src/
+          ├── main.rs           # CLI: listen + relay subcommands
+          ├── rpc_daemon.rs     # handle_transport_connection (generic over Transport)
+          ├── session_registry.rs # Persistent sessions with terminal ownership
+          ├── relay_bridge.rs   # Relay mode: room creation, QR, bridge to RPC
+          └── qr.rs             # QR generation (v1 LAN + v2 relay)
 
 android/app/src/main/java/dev/zedra/app/
   ├── MainActivity.java         # Activity + frame loop
@@ -186,24 +211,47 @@ vendor/blade/ (git submodule - vulkan-1.1-compat branch)
       ├── command.rs            # Compatible rendering commands
       └── pipeline.rs           # Pipeline for traditional renderpass
 
+relay-worker/                   # Cloudflare Worker relay server
+  ├── wrangler.toml             # CF Worker config + KV bindings
+  └── src/
+      ├── index.ts              # Router + CORS + rate limiting
+      ├── rooms.ts              # Room CRUD (create, join, delete, heartbeat)
+      ├── messaging.ts          # Send/recv with KV message store
+      ├── signaling.ts          # Connection info exchange for upgrades
+      ├── types.ts              # TypeScript types
+      └── utils.ts              # Code gen, rate limiting, validation
+
 docs/
   ├── README.md                 # Project overview
   ├── ARCHITECTURE.md           # Design decisions
   ├── TECHNICAL_DEBT.md         # Known issues with solutions
-  └── DEBUGGING.md              # Debug workflow and tools
+  ├── DEBUGGING.md              # Debug workflow and tools
+  └── TRANSPORT_RELAY.md        # Transport layer + relay architecture docs
 ```
 
 ### Dependency Graph
 
 ```
-zedra-ssh (defines TerminalSink trait, no terminal dependency)
+zedra-rpc (Transport trait, RpcClient, framing)
+    ↑
+zedra-relay (RelayTransport impl, HTTP client for CF Worker)
+    ↑
+zedra-transport (TransportManager, discovery chain, providers)
+    ↑
+zedra-session (RemoteSession, uses TransportManager or direct TCP)
+    ↑
+zedra-ssh (defines TerminalSink trait, pairing v1+v2)
     ↑
 zedra-terminal (depends on zedra-ssh for trait, implements TerminalSink)
     ↑
-zedra (Android cdylib, depends on all crates below)
+zedra (Android cdylib, depends on all crates)
     ↑
-zedra-editor (standalone: gpui + tree-sitter, no SSH/terminal dependency)
-zedra-nav (standalone: gpui only — StackNavigator, TabNavigator, ModalHost)
+zedra-editor (standalone: gpui + tree-sitter)
+zedra-nav (standalone: gpui only)
+
+zedra-host (SessionRegistry, relay bridge, uses Transport trait + zedra-relay)
+    ↑
+zedra-rpc, zedra-relay
 ```
 
 ## What Works
@@ -223,6 +271,13 @@ zedra-nav (standalone: gpui only — StackNavigator, TabNavigator, ModalHost)
 - Code editor: syntax-highlighted Rust code with tree-sitter, cursor, and virtual scrolling
 - File preview grid: card-based file browser that opens editor views
 - SSH terminal: connection form with SSH client (zedra-ssh + zedra-terminal)
+- Transport abstraction: pluggable Transport trait with LAN TCP, Tailscale, and relay providers
+- Relay server: Cloudflare Worker with KV for room-based message relay
+- Transport discovery: automatic best-transport selection (LAN > Tailscale > relay)
+- Health monitoring: stale connection detection (45s timeout) with auto-reconnect
+- Hot transport switching: relay → LAN upgrade when direct path becomes available
+- Session persistence: server-side SessionRegistry with terminal PTY survival across reconnects
+- Message buffering: outgoing messages buffered during transport switches, replayed on reconnect
 
 ## Known Limitations (Technical Debt)
 
@@ -344,7 +399,8 @@ See `docs/DEBUGGING.md` for complete workflow.
 - **Phase 3**: Dynamic Configuration ✅ Complete (DisplayMetrics via JNI)
 - **Phase 4**: Input Integration ✅ Complete (touch→scroll, keyboard, tap detection)
 - **Phase 5**: Navigation + Editor ✅ Complete (tabs, stacks, drawer, syntax editor)
-- **Phase 6**: Production Hardening - Next (momentum scrolling, real file access, multi-touch)
+- **Phase 6**: Transport + Relay ✅ Complete (transport abstraction, CF Worker relay, discovery chain, health monitoring, session persistence)
+- **Phase 7**: Production Hardening - Next (momentum scrolling, real file access, multi-touch, E2E encryption)
 
 ## Performance Characteristics
 
@@ -369,6 +425,7 @@ See `docs/DEBUGGING.md` for complete workflow.
 - Architecture and design patterns: `docs/ARCHITECTURE.md`
 - Known issues with solutions: `docs/TECHNICAL_DEBT.md`
 - Debug workflow and tools: `docs/DEBUGGING.md`
+- Transport layer + relay architecture: `docs/TRANSPORT_RELAY.md`
 
 ## Performance Testing
 
@@ -396,6 +453,10 @@ First successful port of GPUI to Android with:
 - Full touch input (tap + scroll) with IME keyboard support
 - Mobile navigation (tabs, stacks, drawer)
 - Syntax-highlighted code editor with tree-sitter
+- Transport-agnostic sessions with pluggable Transport trait
+- Multi-transport discovery (LAN TCP, Tailscale, relay) with auto-selection
+- Cloudflare Worker relay for NAT traversal
+- Health monitoring and hot transport switching
 
 ---
 
