@@ -262,9 +262,11 @@ impl TerminalElement {
 
     /// Layout the grid following Zed's layout_grid approach.
     /// Groups cells by line and batches adjacent cells with the same style.
+    /// Only cells within [0, grid_rows) after display_offset adjustment are rendered.
     fn layout_grid(
         cells: &[IndexedCell],
         display_offset: i32,
+        grid_rows: usize,
     ) -> (Vec<LayoutRect>, Vec<BatchedTextRun>) {
         let mut batched_runs: Vec<BatchedTextRun> = Vec::new();
         let mut rects: Vec<LayoutRect> = Vec::new();
@@ -282,6 +284,11 @@ impl TerminalElement {
             for cell in line_cells {
                 let line = cell.point.line.0 + display_offset;
                 let col = cell.point.column.0 as i32;
+
+                // Skip cells outside the visible grid (stale circular buffer data)
+                if line < 0 || line >= grid_rows as i32 {
+                    continue;
+                }
 
                 // Handle INVERSE flag
                 let mut fg = cell.cell.fg;
@@ -449,8 +456,11 @@ impl Element for TerminalElement {
         window.paint_quad(fill(bounds, rgb(TermColors::BACKGROUND)));
 
         // Layout the grid (batch text runs, collect background rects)
-        let (rects, batched_runs) =
-            Self::layout_grid(&layout.content.cells, layout.content.display_offset as i32);
+        let (rects, batched_runs) = Self::layout_grid(
+            &layout.content.cells,
+            layout.content.display_offset as i32,
+            layout.content.grid_rows,
+        );
 
         // Paint background rectangles first
         for rect in &rects {
@@ -496,6 +506,11 @@ fn paint_cursor(
 ) {
     let col = cursor.point.column.0 as i32;
     let line = cursor.point.line.0 + display_offset;
+
+    // Don't paint cursor when hidden (TUI apps manage their own virtual cursor)
+    if matches!(cursor.shape, CursorShape::Hidden) {
+        return;
+    }
 
     // Only paint cursor if it's within the visible grid area
     if line < 0 || line >= grid_rows as i32 || col < 0 || col >= grid_cols as i32 {
