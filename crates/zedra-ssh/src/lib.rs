@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::mpsc;
 
-pub mod bridge;
 pub mod client;
 pub mod connection;
 pub mod pairing;
