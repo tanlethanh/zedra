@@ -2,7 +2,8 @@
 // Generates a QR code containing connection info + one-time pairing token
 
 use anyhow::Result;
-use qrcode::QrCode;
+use qrcode::render::unicode;
+use qrcode::{EcLevel, QrCode};
 use serde::Serialize;
 
 use crate::auth;
@@ -52,11 +53,8 @@ pub async fn generate_pairing_qr() -> Result<()> {
     let encoded = base64_url::encode(&json);
     let uri = format!("zedra://pair?d={}", encoded);
 
-    // Generate QR code
-    let code = QrCode::new(uri.as_bytes())?;
-
-    // Render to terminal using Unicode block characters
-    let string = render_qr_to_terminal(&code);
+    let code = QrCode::with_error_correction_level(uri.as_bytes(), EcLevel::L)?;
+    let string = render_qr_compact(&code);
 
     println!();
     println!("  Zedra Host Pairing");
@@ -143,8 +141,8 @@ pub async fn generate_relay_pairing_qr(
     let encoded = base64_url::encode(&json);
     let uri = format!("zedra://pair?d={}", encoded);
 
-    let code = QrCode::new(uri.as_bytes())?;
-    let string = render_qr_to_terminal(&code);
+    let code = QrCode::with_error_correction_level(uri.as_bytes(), EcLevel::L)?;
+    let string = render_qr_compact(&code);
 
     let addrs_display = if host_addrs.is_empty() {
         primary_ip.clone()
@@ -173,35 +171,14 @@ pub async fn generate_relay_pairing_qr(
     Ok(())
 }
 
-/// Render QR code to terminal using Unicode block characters
-fn render_qr_to_terminal(code: &QrCode) -> String {
-    let width = code.width();
-    let mut result = String::new();
-
-    // Process two rows at a time using Unicode half blocks
-    let mut row = 0;
-    while row < width {
-        result.push_str("    "); // Left margin
-        for col in 0..width {
-            let top = code[(col, row)] == qrcode::types::Color::Dark;
-            let bottom = if row + 1 < width {
-                code[(col, row + 1)] == qrcode::types::Color::Dark
-            } else {
-                false
-            };
-
-            match (top, bottom) {
-                (true, true) => result.push('\u{2588}'),  // Full block
-                (true, false) => result.push('\u{2580}'), // Upper half
-                (false, true) => result.push('\u{2584}'), // Lower half
-                (false, false) => result.push(' '),       // Empty
-            }
-        }
-        result.push('\n');
-        row += 2;
-    }
-
-    result
+/// Render a compact QR code for terminal display using the qrcode crate's
+/// built-in Dense1x2 Unicode renderer (two rows per character via half-blocks).
+fn render_qr_compact(code: &QrCode) -> String {
+    code.render::<unicode::Dense1x2>()
+        .dark_color(unicode::Dense1x2::Dark)
+        .light_color(unicode::Dense1x2::Light)
+        .quiet_zone(true)
+        .build()
 }
 
 /// Get the host key fingerprint
@@ -265,15 +242,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_render_qr_to_terminal() {
+    fn test_render_qr_compact() {
         let code = QrCode::new(b"test").unwrap();
-        let rendered = render_qr_to_terminal(&code);
+        let rendered = render_qr_compact(&code);
         assert!(!rendered.is_empty());
         assert!(rendered.contains('\n'));
-        // Should have left margin
-        for line in rendered.lines() {
-            assert!(line.starts_with("    "));
-        }
     }
 
     #[test]
@@ -294,7 +267,6 @@ mod tests {
         assert!(json.contains("SHA256:xxxx"));
         assert!(json.contains("my-machine"));
 
-        // Verify it can be encoded/decoded as base64url
         let encoded = base64_url::encode(&json);
         let decoded = base64_url::decode(&encoded).unwrap();
         let decoded_str = String::from_utf8(decoded).unwrap();
@@ -317,7 +289,6 @@ mod tests {
         let uri = format!("zedra://pair?d={}", encoded);
 
         assert!(uri.starts_with("zedra://pair?d="));
-        // The base64url-encoded data portion should not contain + or /
         let data_part = uri.strip_prefix("zedra://pair?d=").unwrap();
         assert!(!data_part.contains('+'));
         assert!(!data_part.contains('/'));
