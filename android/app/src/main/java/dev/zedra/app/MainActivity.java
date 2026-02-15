@@ -1,6 +1,7 @@
 package dev.zedra.app;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.splashscreen.SplashScreen;
 
 import android.app.Activity;
 import android.content.Intent;
@@ -97,6 +98,7 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        SplashScreen.installSplashScreen(this);
         super.onCreate(savedInstanceState);
         Log.d(TAG, "onCreate");
 

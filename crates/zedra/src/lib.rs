@@ -1,9 +1,18 @@
 // Zedra Android application - GPUI on Android via Blade/Vulkan
 
+// Shared color constants (Figma palette)
+pub mod theme;
+
+// Home screen (starting + projects)
+pub mod home_view;
+
+// App drawer (header + file tree + footer nav icons)
+pub mod app_drawer;
+
 // Text input component with keyboard support
 pub mod input;
 
-// Shared Zedra app (connection UI + terminal)
+// Shared Zedra app (screen navigation + connection)
 pub mod zedra_app;
 
 // File explorer view
