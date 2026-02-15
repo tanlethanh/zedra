@@ -1,0 +1,47 @@
+name: Zedra
+options:
+  bundleIdPrefix: dev.zedra
+  deploymentTarget:
+    iOS: "16.0"
+  generateEmptyDirectories: true
+
+targets:
+  Zedra:
+    type: application
+    platform: iOS
+    sources:
+      - path: Zedra
+        excludes:
+          # Exclude SwiftUI files — we use Obj-C main.m with GPUI rendering
+          - "ZedraApp.swift"
+          - "ContentView.swift"
+          - "AppState.swift"
+          - "ConnectView.swift"
+          - "TerminalView.swift"
+    dependencies:
+      - framework: ../ZedraFFI.xcframework
+        embed: false
+      # System frameworks required by GPUI (Metal rendering + CoreText)
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: QuartzCore.framework
+      - sdk: CoreFoundation.framework
+      - sdk: CoreGraphics.framework
+      - sdk: CoreText.framework
+      - sdk: UIKit.framework
+      - sdk: Security.framework
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        PRODUCT_BUNDLE_IDENTIFIER: dev.zedra.app
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 4R7EAZY462
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_NSCameraUsageDescription: "Zedra needs camera access to scan QR codes for pairing"
+        # -ObjC: Force-load all ObjC classes/categories from static libs
+        # -all_load: Ensure all symbols (including GPUI FFI) are included
+        OTHER_LDFLAGS: ["-ObjC", "-all_load"]
+        CLANG_ENABLE_OBJC_ARC: YES
