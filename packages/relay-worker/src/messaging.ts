@@ -13,7 +13,9 @@ export async function sendMessages(
 
   for (const msg of messages) {
     if (msg.length > MAX_MESSAGE_SIZE) {
-      throw new Error(`Message size exceeds maximum of ${MAX_MESSAGE_SIZE} bytes`);
+      throw new Error(
+        `Message size exceeds maximum of ${MAX_MESSAGE_SIZE} bytes`,
+      );
     }
   }
 
@@ -27,15 +29,11 @@ export async function sendMessages(
   for (const msg of messages) {
     seq++;
     const msgKey = `msg:${code}:${role}:${seq}`;
-    puts.push(
-      env.RELAY_KV.put(msgKey, msg, { expirationTtl: 60 }),
-    );
+    puts.push(env.RELAY_KV.put(msgKey, msg, { expirationTtl: 60 }));
   }
 
   // Update sequence counter
-  puts.push(
-    env.RELAY_KV.put(seqKey, String(seq), { expirationTtl: 3600 }),
-  );
+  puts.push(env.RELAY_KV.put(seqKey, String(seq), { expirationTtl: 3600 }));
 
   await Promise.all(puts);
 
@@ -64,9 +62,7 @@ export async function recvMessages(
   const fetches: Promise<{ seq: number; data: string | null }>[] = [];
   for (let s = startSeq; s <= endSeq; s++) {
     const msgKey = `msg:${code}:${peerRole}:${s}`;
-    fetches.push(
-      env.RELAY_KV.get(msgKey).then((data) => ({ seq: s, data })),
-    );
+    fetches.push(env.RELAY_KV.get(msgKey).then((data) => ({ seq: s, data })));
   }
 
   const results = await Promise.all(fetches);
