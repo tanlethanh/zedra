@@ -244,11 +244,11 @@ impl ZedraApp {
         let sub = cx.subscribe_in(
             &home_view,
             window,
-            |this: &mut Self, _emitter, event: &HomeEvent, _window, cx| {
+            |this: &mut Self, _emitter, event: &HomeEvent, window, cx| {
                 match event {
                     HomeEvent::ConnectTapped => {
                         log::info!("Home: Connect tapped");
-                        this.show_connect_form(cx);
+                        this.show_connect_form(window, cx);
                     }
                     HomeEvent::ScanQrTapped => {
                         log::info!("Home: Scan QR tapped");
@@ -316,14 +316,15 @@ impl ZedraApp {
         }
     }
 
-    fn show_connect_form(&mut self, cx: &mut Context<Self>) {
+    fn show_connect_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.screen = AppScreen::Connect;
         let connect_view = cx.new(|cx| ConnectView::new(cx));
-        let sub = cx.subscribe(
+        let sub = cx.subscribe_in(
             &connect_view,
-            |this: &mut Self, _emitter, event: &ConnectRequested, cx| {
+            window,
+            |this: &mut Self, _emitter, event: &ConnectRequested, window, cx| {
                 log::info!("ConnectRequested: {}:{}", event.host, event.port);
-                this.start_connection(&event.host, event.port, cx);
+                this.start_connection(&event.host, event.port, window, cx);
             },
         );
         self._subscriptions.push(sub);
@@ -331,19 +332,25 @@ impl ZedraApp {
         cx.notify();
     }
 
-    fn start_connection(&mut self, host: &str, port: u16, cx: &mut Context<Self>) {
-        // Transition to Editor screen immediately
+    fn start_connection(
+        &mut self,
+        host: &str,
+        port: u16,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.screen = AppScreen::Editor;
         self.connect_view = None;
 
         let host = host.to_string();
+        let (cols, rows) = self.create_terminal_view(&host, window, cx);
 
         zedra_session::session_runtime().spawn(async move {
             log::info!("RemoteSession: connecting to {}:{}...", host, port);
             match RemoteSession::connect(&host, port).await {
                 Ok(session) => {
                     log::info!("RemoteSession: connected!");
-                    match session.terminal_create(80, 24).await {
+                    match session.terminal_create(cols, rows).await {
                         Ok(term_id) => log::info!("Remote terminal created: {}", term_id),
                         Err(e) => log::error!("Failed to create remote terminal: {}", e),
                     }
@@ -357,6 +364,87 @@ impl ZedraApp {
         });
 
         cx.notify();
+    }
+
+    /// Create a terminal view with proper viewport-based dimensions and wire up
+    /// disconnect handling. Returns (cols, rows) for the remote terminal.
+    fn create_terminal_view(
+        &mut self,
+        hostname: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (u16, u16) {
+        let viewport = window.viewport_size();
+        let line_height = px(16.0);
+
+        zedra_terminal::load_terminal_font(window);
+
+        let font = gpui::Font {
+            family: zedra_terminal::TERMINAL_FONT_FAMILY.into(),
+            features: gpui::FontFeatures::default(),
+            fallbacks: None,
+            weight: gpui::FontWeight::NORMAL,
+            style: gpui::FontStyle::Normal,
+        };
+        let font_size = line_height * 0.75;
+        let text_system = window.text_system();
+        let font_id = text_system.resolve_font(&font);
+        let cell_width = text_system
+            .advance(font_id, font_size, 'm')
+            .map(|size| size.width)
+            .unwrap_or(px(9.0));
+
+        let available_width = viewport.width;
+        // Vertical overhead: custom header (88px) + terminal status bar (~24px)
+        let available_height = viewport.height - px(112.0);
+
+        let columns = ((available_width / cell_width).floor() as usize).saturating_sub(1);
+        let rows = (available_height / line_height).floor() as usize;
+        let columns = columns.clamp(20, 200);
+        let rows = rows.clamp(5, 100);
+
+        let terminal_view =
+            cx.new(|cx| TerminalView::new(columns, rows, cell_width, line_height, cx));
+
+        terminal_view.update(cx, |view, _cx| {
+            view.set_keyboard_request(Box::new(|show| {
+                if show {
+                    crate::android_jni::show_keyboard();
+                } else {
+                    crate::android_jni::hide_keyboard();
+                }
+            }));
+        });
+
+        let disconnect_sub = cx.subscribe(
+            &terminal_view,
+            |this, _terminal, _event: &DisconnectRequested, cx| {
+                log::info!("DisconnectRequested received, returning to Home");
+                zedra_session::clear_active_session();
+                this.session = None;
+                this.terminal_view = None;
+                this.editor_showing_project = false;
+                this.screen = AppScreen::Home;
+                let preview = cx.new(|cx| FilePreviewList::new(cx));
+                this.editor_stack.update(cx, |stack, cx| {
+                    stack.replace(preview.into(), "Code Samples", cx);
+                });
+                cx.notify();
+            },
+        );
+        self._subscriptions.push(disconnect_sub);
+
+        self.editor_stack.update(cx, |stack, cx| {
+            stack.replace(terminal_view.clone().into(), "Terminal", cx);
+        });
+
+        terminal_view.update(cx, |view, _cx| {
+            view.set_status(format!("Connecting to {}...", hostname));
+        });
+
+        self.terminal_view = Some(terminal_view);
+
+        (columns as u16, rows as u16)
     }
 
     fn open_app_drawer(&mut self, cx: &mut Context<Self>) {
@@ -421,8 +509,13 @@ impl ZedraApp {
     fn switch_section(&mut self, section: DrawerSection, cx: &mut Context<Self>) {
         match section {
             DrawerSection::Files => {
-                // Already showing editor stack — swap to preview list if not project
-                if !self.editor_showing_project {
+                if zedra_session::active_session().is_some() && !self.editor_showing_project {
+                    let project_editor = cx.new(|cx| ProjectEditor::new(cx));
+                    self.editor_stack.update(cx, |stack, cx| {
+                        stack.replace(project_editor.into(), "Project", cx);
+                    });
+                    self.editor_showing_project = true;
+                } else if !self.editor_showing_project {
                     let preview = cx.new(|cx| FilePreviewList::new(cx));
                     self.editor_stack.update(cx, |stack, cx| {
                         stack.replace(preview.into(), "Code Samples", cx);
@@ -459,93 +552,17 @@ impl ZedraApp {
         let hostname = peer_info.hostname.clone();
         log::info!("QR connect: starting connection to {}", hostname);
 
-        // Transition to Editor screen
         self.screen = AppScreen::Editor;
         self.connect_view = None;
 
-        // Calculate terminal dimensions
-        let viewport = window.viewport_size();
-        let line_height = px(16.0);
-
-        zedra_terminal::load_terminal_font(window);
-
-        let font = gpui::Font {
-            family: zedra_terminal::TERMINAL_FONT_FAMILY.into(),
-            features: gpui::FontFeatures::default(),
-            fallbacks: None,
-            weight: gpui::FontWeight::NORMAL,
-            style: gpui::FontStyle::Normal,
-        };
-        let font_size = line_height * 0.75;
-        let text_system = window.text_system();
-        let font_id = text_system.resolve_font(&font);
-        let cell_width = text_system
-            .advance(font_id, font_size, 'm')
-            .map(|size| size.width)
-            .unwrap_or(px(9.0));
-
-        let available_width = viewport.width;
-        // Vertical overhead: custom header (88px) + terminal status bar (~24px)
-        let available_height = viewport.height - px(112.0);
-
-        let columns = ((available_width / cell_width).floor() as usize).saturating_sub(1);
-        let rows = (available_height / line_height).floor() as usize;
-        let columns = columns.clamp(20, 200);
-        let rows = rows.clamp(5, 100);
-
-        let terminal_view =
-            cx.new(|cx| TerminalView::new(columns, rows, cell_width, line_height, cx));
-
-        terminal_view.update(cx, |view, _cx| {
-            view.set_keyboard_request(Box::new(|show| {
-                if show {
-                    crate::android_jni::show_keyboard();
-                } else {
-                    crate::android_jni::hide_keyboard();
-                }
-            }));
-        });
-
-        // Subscribe to disconnect event
-        let disconnect_sub = cx.subscribe(
-            &terminal_view,
-            |this, _terminal, _event: &DisconnectRequested, cx| {
-                log::info!("DisconnectRequested received, returning to Home");
-                zedra_session::clear_active_session();
-                this.session = None;
-                this.terminal_view = None;
-                this.editor_showing_project = false;
-                this.screen = AppScreen::Home;
-                // Reset editor stack
-                let preview = cx.new(|cx| FilePreviewList::new(cx));
-                this.editor_stack.update(cx, |stack, cx| {
-                    stack.replace(preview.into(), "Code Samples", cx);
-                });
-                cx.notify();
-            },
-        );
-        self._subscriptions.push(disconnect_sub);
-
-        // Show terminal in editor stack
-        self.editor_stack.update(cx, |stack, cx| {
-            stack.replace(terminal_view.clone().into(), "Terminal", cx);
-        });
-
-        terminal_view.update(cx, |view, _cx| {
-            view.set_status(format!("Connecting to {}...", hostname));
-        });
-
-        self.terminal_view = Some(terminal_view);
-
-        let cols = columns as u16;
-        let term_rows = rows as u16;
+        let (cols, rows) = self.create_terminal_view(&hostname, window, cx);
 
         zedra_session::session_runtime().spawn(async move {
             log::info!("RemoteSession: connecting via QR to {}...", hostname);
             match RemoteSession::connect_with_peer_info(peer_info).await {
                 Ok(session) => {
                     log::info!("RemoteSession: connected via QR!");
-                    match session.terminal_create(cols, term_rows).await {
+                    match session.terminal_create(cols, rows).await {
                         Ok(term_id) => log::info!("Remote terminal created: {}", term_id),
                         Err(e) => log::error!("Failed to create remote terminal: {}", e),
                     }
@@ -624,10 +641,12 @@ impl Render for ZedraApp {
             );
         }
 
-        // Swap editor stack to ProjectEditor when session becomes active
+        // Swap editor stack to ProjectEditor when session becomes active,
+        // but only if no terminal view is showing (terminal takes priority)
         if self.screen == AppScreen::Editor
             && zedra_session::active_session().is_some()
             && !self.editor_showing_project
+            && self.terminal_view.is_none()
         {
             let project_editor = cx.new(|cx| ProjectEditor::new(cx));
             self.editor_stack.update(cx, |stack, cx| {
