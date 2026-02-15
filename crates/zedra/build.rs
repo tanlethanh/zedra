@@ -1,7 +1,7 @@
 use std::env;
 
 fn main() {
-    let target = env::var("TARGET").unwrap();
+    let target = env::var("TARGET").unwrap_or_default();
 
     if target.contains("android") {
         // Android-specific build configuration
@@ -24,5 +24,16 @@ fn main() {
 
         println!("cargo:rustc-link-search=native={}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/{}",
                  ndk_home, target_arch);
+    }
+
+    if target.contains("apple-ios") {
+        let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+        cbindgen::Builder::new()
+            .with_crate(crate_dir)
+            .with_language(cbindgen::Language::C)
+            .with_include_guard("ZEDRA_IOS_H")
+            .generate()
+            .expect("Unable to generate bindings")
+            .write_to_file("../../include/zedra_ios.h");
     }
 }

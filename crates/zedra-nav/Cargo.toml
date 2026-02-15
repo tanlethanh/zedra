@@ -4,5 +4,5 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-gpui = { path = "../../vendor/zed/crates/gpui", features = ["android"] }
+gpui = { path = "../../vendor/zed/crates/gpui", default-features = false }
 log.workspace = true

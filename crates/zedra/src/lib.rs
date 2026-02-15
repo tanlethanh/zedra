@@ -1,4 +1,5 @@
-// Zedra Android application - GPUI on Android via Blade/Vulkan
+// Zedra — universal mobile application (Android + iOS)
+// Platform-specific code is gated with #[cfg(target_os)]
 
 // Shared color constants (Figma palette)
 pub mod theme;
@@ -24,16 +25,21 @@ pub mod file_preview_list;
 // Project editor: split-pane file explorer + code editor
 pub mod project_editor;
 
-// GPUI Android JNI bridge
+// Unified platform bridge (keyboard, QR scanner)
+pub mod platform_bridge;
+
+// --- Android-only modules ---
+
+#[cfg(target_os = "android")]
 pub mod android_jni;
 
-// Android app bridge
+#[cfg(target_os = "android")]
 pub mod android_app;
 
-// Android command queue for threading
+#[cfg(target_os = "android")]
 pub mod android_command_queue;
 
-// Legacy JNI stubs (called by Java but no longer used)
+#[cfg(target_os = "android")]
 mod legacy_jni {
     use jni::{JNIEnv, objects::JClass};
 
@@ -43,3 +49,20 @@ mod legacy_jni {
     #[unsafe(no_mangle)]
     pub extern "system" fn Java_dev_zedra_app_MainActivity_rustOnPause(_: JNIEnv, _: JClass) {}
 }
+
+// --- iOS-only modules ---
+
+#[cfg(target_os = "ios")]
+pub mod gpui_app;
+
+#[cfg(target_os = "ios")]
+pub mod ios_ffi;
+
+#[cfg(target_os = "ios")]
+pub mod ios_app;
+
+#[cfg(target_os = "ios")]
+pub mod ios_command_queue;
+
+#[cfg(target_os = "ios")]
+pub mod pairing;

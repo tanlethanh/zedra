@@ -6,16 +6,36 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-/**
- * Create the GPUI Application and open the main window.
- *
- * Lifecycle (called from Obj-C app delegate):
- *   1. gpui_ios_initialize()         — set up GPUI FFI state
- *   2. zedra_launch_gpui()           — create Application, register window callback
- *   3. gpui_ios_did_finish_launching — invoke callback → opens window
- *   4. gpui_ios_get_window()         — get window pointer for CADisplayLink
- *   5. gpui_ios_request_frame()      — called each frame by CADisplayLink
- */
+#define BG_PRIMARY 920588
+
+#define BG_CARD 1250067
+
+#define BG_OVERLAY 1250067
+
+#define TEXT_PRIMARY 16777215
+
+#define TEXT_SECONDARY 13290186
+
+#define TEXT_MUTED 5263440
+
+#define BORDER_DEFAULT 5263440
+
+#define BORDER_SUBTLE 1710618
+
+#define ACCENT_GREEN 10011513
+
+#define ACCENT_BLUE 6402031
+
+#define ACCENT_YELLOW 15057019
+
+#define ACCENT_RED 14707829
+
+extern void *gpui_ios_get_window(void);
+
+extern void gpui_ios_show_keyboard(void *window_ptr);
+
+extern void gpui_ios_hide_keyboard(void *window_ptr);
+
 void zedra_launch_gpui(void);
 
 /**

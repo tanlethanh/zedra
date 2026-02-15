@@ -194,7 +194,7 @@ impl Render for ConnectView {
                                 MouseButton::Left,
                                 |_event, _window, _cx| {
                                     log::info!("Scan QR Code button pressed!");
-                                    crate::android_jni::launch_qr_scanner();
+                                    crate::platform_bridge::launch_qr_scanner();
                                 },
                             )
                             .child(div().flex().justify_center().child("Scan QR Code")),
@@ -252,7 +252,7 @@ impl ZedraApp {
                     }
                     HomeEvent::ScanQrTapped => {
                         log::info!("Home: Scan QR tapped");
-                        crate::android_jni::launch_qr_scanner();
+                        crate::platform_bridge::launch_qr_scanner();
                     }
                 }
             },
@@ -499,9 +499,9 @@ impl ZedraApp {
         terminal_view.update(cx, |view, _cx| {
             view.set_keyboard_request(Box::new(|show| {
                 if show {
-                    crate::android_jni::show_keyboard();
+                    crate::platform_bridge::show_keyboard();
                 } else {
-                    crate::android_jni::hide_keyboard();
+                    crate::platform_bridge::hide_keyboard();
                 }
             }));
         });

@@ -5,21 +5,28 @@ edition.workspace = true
 
 [lib]
 name = "zedra"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "staticlib"]
+
+[features]
+android-platform = ["gpui/android"]
+ios-platform = ["gpui/font-kit"]
 
 [dependencies]
-gpui = { path = "../../vendor/zed/crates/gpui", features = ["android"] }
+gpui = { path = "../../vendor/zed/crates/gpui", default-features = false }
 http_client = { path = "../../vendor/zed/crates/http_client" }
 anyhow.workspace = true
 log.workspace = true
 
-# Android-specific
-android_logger = "0.15.1"
-jni = "0.21.1"
-ndk = "0.9"
-ndk-context = "0.1"
+# Thread-safe command queue (shared by Android + iOS)
 crossbeam-channel = "0.5"
 once_cell = "1.19"
+
+# Serialization (transport state, QR pairing)
+serde.workspace = true
+serde_json.workspace = true
+
+# Base64 decoding for QR pairing
+base64-url.workspace = true
 
 # Workspace crates
 zedra-ssh = { path = "../zedra-ssh" }
@@ -29,3 +36,15 @@ zedra-editor = { path = "../zedra-editor" }
 zedra-nav = { path = "../zedra-nav" }
 zedra-transport = { path = "../zedra-transport" }
 rust-embed = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.15.1"
+jni = "0.21.1"
+ndk = "0.9"
+ndk-context = "0.1"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+oslog = "0.2"
+
+[build-dependencies]
+cbindgen = "0.29"

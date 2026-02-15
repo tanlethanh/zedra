@@ -3,14 +3,14 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-LIB_NAME="zedra_ios"
+LIB_NAME="zedra"
 FRAMEWORK_NAME="ZedraFFI"
 
 echo "==> Building for iOS device (aarch64-apple-ios)..."
-cargo build --target aarch64-apple-ios --release -p zedra-ios
+cargo build --target aarch64-apple-ios --release --features ios-platform -p zedra
 
 echo "==> Building for iOS simulator (aarch64-apple-ios-sim)..."
-cargo build --target aarch64-apple-ios-sim --release -p zedra-ios
+cargo build --target aarch64-apple-ios-sim --release --features ios-platform -p zedra
 
 echo "==> Creating XCFramework..."
 rm -rf "${FRAMEWORK_NAME}.xcframework"
