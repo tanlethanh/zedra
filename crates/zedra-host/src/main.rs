@@ -2,6 +2,10 @@
 //
 // Provides an RPC daemon that Zedra (Android) connects to for remote terminal,
 // filesystem, git, and AI operations over JSON-RPC.
+//
+// A single `start` command handles both LAN and relay transports. LAN TCP is
+// always available; relay is attempted automatically when --relay-url is set
+// and the relay server is reachable.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -17,7 +21,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the RPC daemon (foreground)
+    /// Start the daemon (LAN + optional relay)
     Start {
         /// Port to listen on
         #[arg(short, long, default_value = "2123")]
@@ -30,15 +34,14 @@ enum Commands {
         /// Working directory to serve
         #[arg(short, long, default_value = ".")]
         workdir: String,
-    },
-    /// Start in relay mode (connect through cloud relay)
-    Relay {
-        /// Working directory to serve
-        #[arg(short, long, default_value = ".")]
-        workdir: String,
-        /// Relay server URL
-        #[arg(long, default_value = "https://relay.zedra.dev")]
+
+        /// Relay server URL (omit to disable relay)
+        #[arg(long, default_value = zedra_relay::DEFAULT_RELAY_URL)]
         relay_url: String,
+
+        /// Disable relay transport
+        #[arg(long)]
+        no_relay: bool,
     },
     /// List paired devices
     Devices,
@@ -51,7 +54,6 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -66,28 +68,59 @@ async fn main() -> Result<()> {
             port,
             bind,
             workdir,
+            relay_url,
+            no_relay,
         } => {
             let workdir = std::path::PathBuf::from(workdir)
                 .canonicalize()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
+
             let local_ip = qr::get_local_ip().unwrap_or_else(|| "unknown".to_string());
             tracing::info!("Starting zedra-host on {}:{}", bind, port);
-            tracing::info!("Local IP: {} (use this to connect from Zedra)", local_ip);
-            tracing::info!("Serving workdir: {}", workdir.display());
-            rpc_daemon::run_daemon(&bind, port, workdir).await?;
-        }
-        Commands::Relay { workdir, relay_url } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
-            tracing::info!("Starting zedra-host in relay mode");
+            tracing::info!("Local IP: {}", local_ip);
             tracing::info!("Serving workdir: {}", workdir.display());
 
             let registry = std::sync::Arc::new(session_registry::SessionRegistry::new());
-            let daemon_state =
-                std::sync::Arc::new(rpc_daemon::DaemonState::new(workdir.clone()));
+            let state = std::sync::Arc::new(rpc_daemon::DaemonState::new(workdir));
 
-            relay_bridge::run_relay_mode(workdir, &relay_url, registry, daemon_state).await?;
+            // Try to register a relay room (non-fatal on failure)
+            let relay_info = if no_relay {
+                tracing::info!("Relay disabled (--no-relay)");
+                None
+            } else {
+                tracing::info!("Registering relay room at {}...", relay_url);
+                relay_bridge::try_register_relay(&relay_url).await
+            };
+
+            // Show QR code with all available transports
+            if let Err(e) = qr::generate_pairing_qr(port, relay_info.as_ref()) {
+                tracing::warn!("Failed to generate QR code: {}", e);
+            }
+
+            // Spawn relay acceptor alongside LAN TCP if relay registered
+            if let Some(info) = relay_info {
+                let relay_registry = registry.clone();
+                let relay_state = state.clone();
+                tokio::spawn(async move {
+                    relay_bridge::accept_relay_connections(info, relay_registry, relay_state).await;
+                });
+            }
+
+            // Spawn session cleanup task
+            let cleanup_registry = registry.clone();
+            tokio::spawn(async move {
+                let grace_period = std::time::Duration::from_secs(300);
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    let removed = cleanup_registry.cleanup(grace_period).await;
+                    if !removed.is_empty() {
+                        tracing::info!("Cleaned up {} idle sessions", removed.len());
+                    }
+                }
+            });
+
+            // Run LAN TCP listener (blocks)
+            rpc_daemon::run_daemon(&bind, port, registry, state).await?;
         }
         Commands::Devices => {
             let devices = store::list_devices()?;
