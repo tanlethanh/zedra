@@ -38,7 +38,9 @@ pub extern "C" fn zedra_launch_gpui() {
 
     log::info!("Zedra iOS: Creating GPUI application");
 
-    Application::new().run(|cx: &mut App| {
+    Application::new()
+        .with_assets(crate::ZedraAssets)
+        .run(|cx: &mut App| {
         log::info!("Zedra iOS: Opening main window");
 
         cx.open_window(

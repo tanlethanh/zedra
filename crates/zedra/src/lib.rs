@@ -28,6 +28,27 @@ pub mod project_editor;
 // Unified platform bridge (keyboard, QR scanner)
 pub mod platform_bridge;
 
+// Embedded assets (SVG icons) — shared across platforms
+use rust_embed::RustEmbed;
+
+#[derive(RustEmbed)]
+#[folder = "assets"]
+#[include = "icons/*.svg"]
+pub struct ZedraAssets;
+
+impl gpui::AssetSource for ZedraAssets {
+    fn load(&self, path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        Ok(Self::get(path).map(|f| f.data))
+    }
+
+    fn list(&self, path: &str) -> gpui::Result<Vec<gpui::SharedString>> {
+        Ok(Self::iter()
+            .filter(|name| name.starts_with(path))
+            .map(|name| name.into())
+            .collect())
+    }
+}
+
 // --- Android-only modules ---
 
 #[cfg(target_os = "android")]

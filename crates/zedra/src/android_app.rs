@@ -5,32 +5,12 @@
 use anyhow::Result;
 use gpui::{AndroidPlatform, *};
 use jni::{JavaVM, objects::GlobalRef};
-use rust_embed::RustEmbed;
-use std::borrow::Cow;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use crate::android_command_queue::AndroidCommand;
 use crate::zedra_app::ZedraApp;
-
-/// Embedded assets for Zedra (SVG icons, etc.)
-#[derive(RustEmbed)]
-#[folder = "assets"]
-#[include = "icons/*.svg"]
-struct ZedraAssets;
-
-impl gpui::AssetSource for ZedraAssets {
-    fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
-        Ok(Self::get(path).map(|f| f.data))
-    }
-
-    fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
-        Ok(Self::iter()
-            .filter(|name| name.starts_with(path))
-            .map(|name| name.into())
-            .collect())
-    }
-}
+use crate::ZedraAssets;
 
 /// Active fling state for momentum scrolling
 struct FlingState {
