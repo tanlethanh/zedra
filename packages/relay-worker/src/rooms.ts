@@ -63,7 +63,13 @@ export async function deleteRoom(
   if (!verifySecret(room, secret)) return false;
 
   // Delete room and associated keys
-  const keysToDelete = [`room:${code}`, `seq:${code}:host`, `seq:${code}:mobile`, `signal:${code}:host`, `signal:${code}:mobile`];
+  const keysToDelete = [
+    `room:${code}`,
+    `seq:${code}:host`,
+    `seq:${code}:mobile`,
+    `signal:${code}:host`,
+    `signal:${code}:mobile`,
+  ];
 
   await Promise.all(keysToDelete.map((k) => env.RELAY_KV.delete(k)));
 
