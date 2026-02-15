@@ -308,16 +308,16 @@ impl Render for FilePreviewList {
                 div()
                     .w(px(155.0))
                     .h(px(180.0))
-                    .bg(rgb(0x282c34))
+                    .bg(rgb(0x131313))
                     .rounded(px(8.0))
                     .border_1()
-                    .border_color(rgb(0x3e4451))
+                    .border_color(rgb(0x1a1a1a))
                     .p_3()
                     .flex()
                     .flex_col()
                     .gap_2()
                     .cursor_pointer()
-                    .hover(|s| s.border_color(rgb(0x61afef)))
+                    .hover(|s| s.border_color(rgb(0x505050)))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |_this, _event, _window, cx| {
@@ -328,7 +328,7 @@ impl Render for FilePreviewList {
                     .child(
                         div()
                             .text_sm()
-                            .text_color(rgb(0xabb2bf))
+                            .text_color(rgb(0xcacaca))
                             .child(filename),
                     )
                     // Language badge
@@ -337,7 +337,7 @@ impl Render for FilePreviewList {
                             .px(px(6.0))
                             .py(px(2.0))
                             .rounded(px(4.0))
-                            .bg(rgb(0x3e4451))
+                            .bg(rgb(0x1a1a1a))
                             .text_xs()
                             .text_color(rgb(0xe5c07b))
                             .child(language),
@@ -348,14 +348,14 @@ impl Render for FilePreviewList {
                             .flex_1()
                             .overflow_hidden()
                             .text_xs()
-                            .text_color(rgb(0x5c6370))
+                            .text_color(rgb(0x505050))
                             .child(preview_text),
                     )
                     // Line count
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(0x4b5263))
+                            .text_color(rgb(0x505050))
                             .child(line_count_label),
                     ),
             );
@@ -367,20 +367,20 @@ impl Render for FilePreviewList {
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0x1e1e1e))
+            .bg(rgb(0x0e0c0c))
             .overflow_y_scroll()
             .child(
                 div()
                     .p_4()
                     .child(
                         div()
-                            .text_color(rgb(0x61afef))
+                            .text_color(rgb(0xffffff))
                             .text_lg()
                             .child("Code Samples"),
                     )
                     .child(
                         div()
-                            .text_color(rgb(0x5c6370))
+                            .text_color(rgb(0x505050))
                             .text_sm()
                             .mt_1()
                             .child("Tap a file to open in editor"),

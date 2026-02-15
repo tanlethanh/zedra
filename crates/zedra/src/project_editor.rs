@@ -227,7 +227,7 @@ impl Render for ProjectEditor {
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0x282c34))
+            .bg(rgb(0x0e0c0c))
             .track_focus(&self.focus_handle)
             .on_mouse_up(
                 MouseButton::Left,
@@ -266,9 +266,9 @@ impl Render for ProjectEditor {
                             .items_center()
                             .h(px(28.0))
                             .px_2()
-                            .bg(rgb(0x21252b))
+                            .bg(rgb(0x0e0c0c))
                             .border_b_1()
-                            .border_color(rgb(0x181a1f))
+                            .border_color(rgb(0x1a1a1a))
                             .child(
                                 div()
                                     .w(px(24.0))
@@ -278,8 +278,8 @@ impl Render for ProjectEditor {
                                     .justify_center()
                                     .rounded(px(4.0))
                                     .cursor_pointer()
-                                    .text_color(rgb(0x636d83))
-                                    .hover(|s| s.bg(rgb(0x2c313a)))
+                                    .text_color(rgb(0x505050))
+                                    .hover(|s| s.bg(hsla(0.0, 0.0, 1.0, 0.05)))
                                     .on_mouse_down(
                                         MouseButton::Left,
                                         cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
@@ -294,7 +294,7 @@ impl Render for ProjectEditor {
                             .child(
                                 div()
                                     .ml_1()
-                                    .text_color(rgb(0x636d83))
+                                    .text_color(rgb(0x505050))
                                     .text_size(px(12.0))
                                     .child(filename_display.to_string()),
                             ),
@@ -425,7 +425,7 @@ impl Render for ProjectEditor {
                     .top_0()
                     .bottom_0()
                     .w(px(SIDEBAR_WIDTH))
-                    .bg(rgb(0x21252b))
+                    .bg(rgb(0x0e0c0c))
                     .child(self.file_explorer.clone());
 
                 let sidebar: AnyElement = if animating {

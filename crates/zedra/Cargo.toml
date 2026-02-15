@@ -28,3 +28,4 @@ zedra-terminal = { path = "../zedra-terminal" }
 zedra-editor = { path = "../zedra-editor" }
 zedra-nav = { path = "../zedra-nav" }
 zedra-transport = { path = "../zedra-transport" }
+rust-embed = { workspace = true }

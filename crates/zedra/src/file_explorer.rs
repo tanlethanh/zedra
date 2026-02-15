@@ -315,9 +315,9 @@ impl Render for FileExplorer {
                 "  📄"
             };
             let text_color = if entry.is_dir {
-                rgb(0x61afef) // blue for dirs
+                rgb(0xffffff) // white for dirs
             } else {
-                rgb(0xabb2bf) // light gray for files
+                rgb(0xcacaca) // light gray for files
             };
             let index_path = entry.index_path.clone();
             let is_dir = entry.is_dir;
@@ -333,7 +333,7 @@ impl Render for FileExplorer {
                     .pl(px(12.0 + indent))
                     .pr(px(8.0))
                     .cursor_pointer()
-                    .hover(|s| s.bg(rgb(0x2c313a)))
+                    .hover(|s| s.bg(hsla(0.0, 0.0, 1.0, 0.05)))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _event, _window, cx| {
@@ -359,39 +359,7 @@ impl Render for FileExplorer {
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0x21252b))
-            // Header
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .h(px(44.0))
-                    .px(px(12.0))
-                    .border_b_1()
-                    .border_color(rgb(0x3e4451))
-                    .child(div().text_color(rgb(0x61afef)).text_sm().child("Files"))
-                    .child(
-                        div()
-                            .px(px(8.0))
-                            .py(px(4.0))
-                            .rounded(px(4.0))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(rgb(0x2c313a)))
-                            .text_color(rgb(0xabb2bf))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|_this, _event, _window, cx| {
-                                    cx.emit(FileSelected {
-                                        path: String::new(),
-                                    });
-                                }),
-                            )
-                            .child("✕"),
-                    ),
-            )
-            // File list
+            // File list (transparent bg, inherits from drawer)
             .child(
                 div()
                     .id("file-list-container")

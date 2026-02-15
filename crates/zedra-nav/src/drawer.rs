@@ -34,8 +34,8 @@ impl DrawerHost {
             content,
             drawer: None,
             side: DrawerSide::Left,
-            width: px(280.0),
-            backdrop_opacity: 0.4,
+            width: px(293.0),
+            backdrop_opacity: 0.6,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -98,7 +98,7 @@ impl Render for DrawerHost {
                                 div()
                                     .absolute()
                                     .size_full()
-                                    .bg(hsla(0.0, 0.0, 0.0, backdrop_opacity))
+                                    .bg(hsla(0.0, 0.0, 0.075, backdrop_opacity))
                                     .on_mouse_down(
                                         MouseButton::Left,
                                         cx.listener(|this, _event, _window, cx| {
@@ -115,9 +115,7 @@ impl Render for DrawerHost {
                                     .left_0()
                                     .h_full()
                                     .w(drawer_width)
-                                    .bg(rgb(0x21252b))
-                                    .border_r_1()
-                                    .border_color(rgb(0x3e4451))
+                                    .bg(rgb(0x0e0c0c))
                                     .child(drawer_view),
                             ),
                     )

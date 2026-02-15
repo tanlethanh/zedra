@@ -5,11 +5,32 @@
 use anyhow::Result;
 use gpui::{AndroidPlatform, *};
 use jni::{JavaVM, objects::GlobalRef};
+use rust_embed::RustEmbed;
+use std::borrow::Cow;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use crate::android_command_queue::AndroidCommand;
 use crate::zedra_app::ZedraApp;
+
+/// Embedded assets for Zedra (SVG icons, etc.)
+#[derive(RustEmbed)]
+#[folder = "assets"]
+#[include = "icons/*.svg"]
+struct ZedraAssets;
+
+impl gpui::AssetSource for ZedraAssets {
+    fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        Ok(Self::get(path).map(|f| f.data))
+    }
+
+    fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
+        Ok(Self::iter()
+            .filter(|name| name.starts_with(path))
+            .map(|name| name.into())
+            .collect())
+    }
+}
 
 /// Active fling state for momentum scrolling
 struct FlingState {
@@ -172,7 +193,7 @@ impl AndroidApp {
         let app_cell = App::new_app(
             platform,
             liveness,
-            Arc::new(()),                             // Unit type implements AssetSource
+            Arc::new(ZedraAssets),                     // Embedded SVG icons
             Arc::new(http_client::BlockedHttpClient), // Use BlockedHttpClient
         );
         log::info!(
@@ -723,6 +744,11 @@ pub fn process_commands_from_queue() -> Result<()> {
                 if let Err(e) = app.process_command(command) {
                     log::error!("Error processing command: {}", e);
                 }
+            }
+
+            // Drain foreground executor task queue (spawned async tasks, timers, etc.)
+            if let Some(platform) = &app.platform {
+                platform.process_pending_tasks();
             }
 
             // Request frame refresh (called every Choreographer frame @ 60 FPS)

@@ -22,10 +22,10 @@ use zedra_rpc::methods;
 use zedra_rpc::{FsListParams, FsReadParams, FsStatParams, FsWriteParams};
 use zedra_rpc::{GitCommitParams, GitDiffParams, GitLogParams};
 use zedra_rpc::{SessionResumeParams, TermCreateParams, TermDataParams, TermResizeParams};
-use zedra_rpc::{Transport, TcpTransport};
+use zedra_rpc::{TcpTransport, Transport};
 
 use crate::pty::ShellSession;
-use crate::session_registry::{SessionRegistry, ServerSession, TermSession as SessionTermSession};
+use crate::session_registry::{ServerSession, SessionRegistry, TermSession as SessionTermSession};
 
 /// Handler function type: takes params, returns result or error.
 type HandlerFn = Arc<
@@ -95,11 +95,8 @@ pub async fn run_daemon(bind: &str, port: u16, workdir: std::path::PathBuf) -> R
         let registry = registry.clone();
         tokio::spawn(async move {
             let transport = TcpTransport::new(stream);
-            if let Err(e) = handle_transport_connection(
-                Box::new(transport),
-                registry,
-                state,
-            ).await {
+            if let Err(e) = handle_transport_connection(Box::new(transport), registry, state).await
+            {
                 tracing::error!("RPC connection error from {}: {}", addr, e);
             }
         });
@@ -315,14 +312,9 @@ fn build_session_handlers(
     );
 
     // session/ping — lightweight RTT probe (no session touch, no side effects)
-    register!(
-        methods::SESSION_PING,
-        move |_params: serde_json::Value| {
-            Box::pin(async move {
-                Ok(serde_json::to_value(zedra_rpc::PingResult { pong: true })?)
-            })
-        }
-    );
+    register!(methods::SESSION_PING, move |_params: serde_json::Value| {
+        Box::pin(async move { Ok(serde_json::to_value(zedra_rpc::PingResult { pong: true })?) })
+    });
 
     // session/info — return hostname, workdir, username
     let s = state.clone();
@@ -725,9 +717,7 @@ fn build_session_handlers(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            Ok(
-                serde_json::json!({"contents": "LSP hover not yet connected to a language server."}),
-            )
+            Ok(serde_json::json!({"contents": "LSP hover not yet connected to a language server."}))
         })
     });
 
@@ -1105,14 +1095,9 @@ fn build_handlers(
     // -------------------------------------------------------------------
 
     // session/ping -- lightweight RTT probe
-    register!(
-        methods::SESSION_PING,
-        move |_params: serde_json::Value| {
-            Box::pin(async move {
-                Ok(serde_json::to_value(zedra_rpc::PingResult { pong: true })?)
-            })
-        }
-    );
+    register!(methods::SESSION_PING, move |_params: serde_json::Value| {
+        Box::pin(async move { Ok(serde_json::to_value(zedra_rpc::PingResult { pong: true })?) })
+    });
 
     // session/info -- return hostname, workdir, username
     let s = state.clone();
