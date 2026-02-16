@@ -1,6 +1,8 @@
 package dev.zedra.app;
 
 import android.content.Context;
+import android.graphics.Rect;
+import android.os.Build;
 import android.text.InputType;
 import android.util.AttributeSet;
 import android.util.Log;
@@ -83,6 +85,25 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
         });
 
         Log.d(TAG, "GpuiSurfaceView initialized");
+    }
+
+    /**
+     * Exclude the left edge from system gesture navigation so the app can
+     * detect drawer swipe gestures.  Android limits exclusion rects to 200dp
+     * vertically per edge, but we claim the full height and let the system
+     * cap it.
+     */
+    @Override
+    protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+        super.onLayout(changed, left, top, right, bottom);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            int edgeWidth = (int) (60 * getResources().getDisplayMetrics().density); // 60dp
+            java.util.List<Rect> exclusions = java.util.Collections.singletonList(
+                new Rect(0, 0, edgeWidth, bottom - top)
+            );
+            setSystemGestureExclusionRects(exclusions);
+            Log.d(TAG, "Set gesture exclusion rect: 0,0," + edgeWidth + "," + (bottom - top));
+        }
     }
 
     /**

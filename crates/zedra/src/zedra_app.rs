@@ -300,7 +300,79 @@ impl ZedraApp {
 
         // --- DrawerHost (wraps editor content, drawer = AppDrawer) ---
         let editor_stack_clone = editor_stack.clone();
-        let drawer_host = cx.new(|cx| DrawerHost::new(editor_stack_clone.into(), cx));
+        let drawer_host = cx.new(|cx| {
+            let mut host = DrawerHost::new(editor_stack_clone.into(), cx);
+            host.set_edge_zone_width(px(180.0));
+            host
+        });
+
+        // --- Pre-create AppDrawer and register with DrawerHost ---
+        let app_drawer = cx.new(|cx| AppDrawer::new(cx));
+        drawer_host.update(cx, |host, _cx| {
+            host.set_drawer(app_drawer.clone().into());
+        });
+
+        // Subscribe to AppDrawer events once (persists across open/close)
+        let drawer_host_for_sub = drawer_host.clone();
+        let editor_stack_for_sub = editor_stack.clone();
+        let sub = cx.subscribe_in(
+            &app_drawer,
+            window,
+            move |this: &mut ZedraApp,
+                  _emitter: &Entity<AppDrawer>,
+                  event: &AppDrawerEvent,
+                  _window: &mut Window,
+                  cx: &mut Context<ZedraApp>| {
+                match event {
+                    AppDrawerEvent::FileSelected(path) => {
+                        drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
+                        if !path.is_empty() {
+                            log::info!("File selected from drawer: {}", path);
+                            let path = path.clone();
+                            let filename =
+                                path.rsplit('/').next().unwrap_or(&path).to_string();
+
+                            if let Some(session) = zedra_session::active_session() {
+                                let filename_clone = filename.clone();
+                                zedra_session::session_runtime().spawn(async move {
+                                    match session.fs_read(&path).await {
+                                        Ok(content) => {
+                                            set_pending_file_content(
+                                                filename_clone,
+                                                content,
+                                            );
+                                            zedra_session::signal_terminal_data();
+                                        }
+                                        Err(e) => {
+                                            log::error!(
+                                                "fs/read failed for {}: {}",
+                                                path,
+                                                e
+                                            );
+                                        }
+                                    }
+                                });
+                            } else if let Some(sample) =
+                                SAMPLE_FILES.iter().find(|s| s.filename == filename)
+                            {
+                                let editor_view = cx.new(|cx| {
+                                    EditorView::new(sample.content.to_string(), cx)
+                                });
+                                editor_stack_for_sub.update(cx, |stack, cx| {
+                                    stack.push(editor_view.into(), sample.filename, cx);
+                                });
+                            }
+                        }
+                    }
+                    AppDrawerEvent::SectionChanged(section) => {
+                        this.active_section = *section;
+                        drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
+                        this.switch_section(*section, cx);
+                    }
+                }
+            },
+        );
+        subscriptions.push(sub);
 
         Self {
             screen: AppScreen::Home,
@@ -448,65 +520,8 @@ impl ZedraApp {
         (columns as u16, rows as u16)
     }
 
-    fn open_app_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let app_drawer = cx.new(|cx| AppDrawer::new(cx));
-
-        let drawer_host = self.drawer_host.clone();
-        let editor_stack = self.editor_stack.clone();
-        let sub = cx.subscribe_in(
-            &app_drawer,
-            window,
-            move |this: &mut ZedraApp,
-                  _emitter: &Entity<AppDrawer>,
-                  event: &AppDrawerEvent,
-                  _window: &mut Window,
-                  cx: &mut Context<ZedraApp>| {
-                match event {
-                    AppDrawerEvent::FileSelected(path) => {
-                        drawer_host.update(cx, |host, cx| host.close(cx));
-                        if !path.is_empty() {
-                            log::info!("File selected from drawer: {}", path);
-                            let path = path.clone();
-                            let filename =
-                                path.rsplit('/').next().unwrap_or(&path).to_string();
-
-                            if let Some(session) = zedra_session::active_session() {
-                                let filename_clone = filename.clone();
-                                zedra_session::session_runtime().spawn(async move {
-                                    match session.fs_read(&path).await {
-                                        Ok(content) => {
-                                            set_pending_file_content(filename_clone, content);
-                                            zedra_session::signal_terminal_data();
-                                        }
-                                        Err(e) => {
-                                            log::error!("fs/read failed for {}: {}", path, e);
-                                        }
-                                    }
-                                });
-                            } else if let Some(sample) =
-                                SAMPLE_FILES.iter().find(|s| s.filename == filename)
-                            {
-                                let editor_view = cx
-                                    .new(|cx| EditorView::new(sample.content.to_string(), cx));
-                                editor_stack.update(cx, |stack, cx| {
-                                    stack.push(editor_view.into(), sample.filename, cx);
-                                });
-                            }
-                        }
-                    }
-                    AppDrawerEvent::SectionChanged(section) => {
-                        this.active_section = *section;
-                        drawer_host.update(cx, |host, cx| host.close(cx));
-                        this.switch_section(*section, cx);
-                    }
-                }
-            },
-        );
-        self._subscriptions.push(sub);
-
-        self.drawer_host.update(cx, |host, cx| {
-            host.open(app_drawer.into(), cx);
-        });
+    fn open_app_drawer(&mut self, cx: &mut Context<Self>) {
+        self.drawer_host.update(cx, |host, cx| host.open(cx));
     }
 
     fn switch_section(&mut self, section: DrawerSection, cx: &mut Context<Self>) {
@@ -620,11 +635,11 @@ impl ZedraApp {
                     .hover(|s| s.bg(theme::hover_bg()))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, _event, window, cx| {
+                        cx.listener(|this, _event, _window, cx| {
                             if this.drawer_host.read(cx).is_open() {
                                 this.drawer_host.update(cx, |host, cx| host.close(cx));
                             } else {
-                                this.open_app_drawer(window, cx);
+                                this.open_app_drawer(cx);
                             }
                         }),
                     )
@@ -734,14 +749,6 @@ impl Render for ZedraApp {
             self.connect_with_peer_info(peer_info, window, cx);
         }
 
-        // Check for edge-swipe drawer open signal
-        if self.screen == AppScreen::Editor
-            && check_and_clear_drawer_open()
-            && !self.drawer_host.read(cx).is_open()
-        {
-            self.open_app_drawer(window, cx);
-        }
-
         let screen_content: AnyElement = match self.screen {
             AppScreen::Home => {
                 div()
@@ -837,18 +844,6 @@ use std::sync::Mutex;
 
 static PENDING_FILE_CONTENT: Mutex<Option<(String, String)>> = Mutex::new(None);
 static PENDING_QR_PEER_INFO: Mutex<Option<PeerInfo>> = Mutex::new(None);
-static PENDING_DRAWER_OPEN: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-/// Signal that an edge swipe was detected and the drawer should open.
-pub fn signal_drawer_open() {
-    PENDING_DRAWER_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
-}
-
-fn check_and_clear_drawer_open() -> bool {
-    PENDING_DRAWER_OPEN.swap(false, std::sync::atomic::Ordering::Relaxed)
-}
-
 pub fn set_pending_qr_peer_info(info: PeerInfo) {
     if let Ok(mut slot) = PENDING_QR_PEER_INFO.lock() {
         *slot = Some(info);
