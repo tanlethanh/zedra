@@ -1,7 +1,7 @@
 // zedra-session: RemoteSession client library for connecting to a zedra-host RPC daemon.
 //
-// Bridges async RPC calls to the GPUI main thread using the same global-state pattern
-// as zedra-ssh (OutputBuffer, AtomicBool signaling, OnceLock singletons).
+// Bridges async RPC calls to the GPUI main thread using a global-state pattern
+// (OutputBuffer, AtomicBool signaling, OnceLock singletons).
 //
 // Usage:
 //   1. Call RemoteSession::connect(host, port) on the session runtime

@@ -33,14 +33,14 @@ This replaces the original single-transport architecture (direct TCP on the same
 
 ### Crate Map
 
-| Crate | Path | Purpose |
-|-------|------|---------|
-| `zedra-rpc` | `crates/zedra-rpc/` | Transport trait, TcpTransport, RPC client/server |
-| `zedra-relay` | `crates/zedra-relay/` | HTTP relay client + RelayTransport impl |
-| `zedra-transport` | `crates/zedra-transport/` | TransportManager, discovery chain, providers |
-| `zedra-session` | `crates/zedra-session/` | RemoteSession (client-side, transport-agnostic) |
-| `zedra-host` | `crates/zedra-host/` | SessionRegistry, relay bridge, RPC daemon |
-| `relay-worker` | `relay-worker/` | Cloudflare Worker relay server (TypeScript) |
+| Crate             | Path                      | Purpose                                          |
+| ----------------- | ------------------------- | ------------------------------------------------ |
+| `zedra-rpc`       | `crates/zedra-rpc/`       | Transport trait, TcpTransport, RPC client/server |
+| `zedra-relay`     | `crates/zedra-relay/`     | HTTP relay client + RelayTransport impl          |
+| `zedra-transport` | `crates/zedra-transport/` | TransportManager, discovery chain, providers     |
+| `zedra-session`   | `crates/zedra-session/`   | RemoteSession (client-side, transport-agnostic)  |
+| `zedra-host`      | `crates/zedra-host/`      | SessionRegistry, relay bridge, RPC daemon        |
+| `relay-worker`    | `packages/relay-worker/`  | Cloudflare Worker relay server (TypeScript)      |
 
 ### Dependency Graph
 
@@ -78,10 +78,10 @@ pub trait Transport: Send + 'static {
 
 Each `send`/`recv` handles one complete framed message. Implementations:
 
-| Impl | Crate | Framing | Description |
-|------|-------|---------|-------------|
-| `TcpTransport` | `zedra-rpc` | 4-byte big-endian length prefix | Wraps `TcpStream::into_split()` |
-| `RelayTransport` | `zedra-relay` | Base64 over HTTP | Adaptive polling (50ms–1s) |
+| Impl             | Crate         | Framing                         | Description                     |
+| ---------------- | ------------- | ------------------------------- | ------------------------------- |
+| `TcpTransport`   | `zedra-rpc`   | 4-byte big-endian length prefix | Wraps `TcpStream::into_split()` |
+| `RelayTransport` | `zedra-relay` | Base64 over HTTP                | Adaptive polling (50ms–1s)      |
 
 ### RpcClient Channel Mode
 
@@ -95,11 +95,11 @@ Defined in `crates/zedra-transport/src/discovery.rs`.
 
 **Priority order** (lower = preferred):
 
-| Priority | Provider | Latency | When Used |
-|----------|----------|---------|-----------|
-| 0 | LAN TCP | ~1ms | Same local network |
-| 1 | Tailscale | 5–20ms | WireGuard tunnel (100.x.x.x) |
-| 2 | Relay | 50–250ms | Always works (HTTP via Cloudflare) |
+| Priority | Provider  | Latency  | When Used                          |
+| -------- | --------- | -------- | ---------------------------------- |
+| 0        | LAN TCP   | ~1ms     | Same local network                 |
+| 1        | Tailscale | 5–20ms   | WireGuard tunnel (100.x.x.x)       |
+| 2        | Relay     | 50–250ms | Always works (HTTP via Cloudflare) |
 
 **Strategy:**
 
@@ -163,6 +163,7 @@ pub enum TransportState {
 ### Message Buffering
 
 During a transport switch:
+
 1. Failed outgoing messages are pushed to `pending_outgoing: Vec<Vec<u8>>`.
 2. Additional messages from the session channel are drained into the buffer.
 3. After reconnection, all buffered messages are replayed on the new transport.
@@ -202,26 +203,26 @@ npx wrangler deploy       # Production deployment
 
 ### API Endpoints
 
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| `POST` | `/rooms` | None | Host creates a room (returns code + secret) |
-| `POST` | `/rooms/:code/join` | Bearer secret | Mobile joins (rate-limited: 5/min/IP) |
-| `POST` | `/rooms/:code/send` | Bearer secret | Send batched messages (max 10, max 1MB each) |
-| `GET` | `/rooms/:code/recv?role=X&after=N` | Bearer secret | Poll for messages (max 50) |
-| `POST` | `/rooms/:code/signal` | Bearer secret | Exchange connection info (IPs, capabilities) |
-| `GET` | `/rooms/:code/signal?role=X` | Bearer secret | Get peer's signaling data |
-| `POST` | `/rooms/:code/heartbeat` | Bearer secret | Keep room alive |
-| `DELETE` | `/rooms/:code` | Bearer secret | Tear down room |
+| Method   | Path                               | Auth          | Description                                  |
+| -------- | ---------------------------------- | ------------- | -------------------------------------------- |
+| `POST`   | `/rooms`                           | None          | Host creates a room (returns code + secret)  |
+| `POST`   | `/rooms/:code/join`                | Bearer secret | Mobile joins (rate-limited: 5/min/IP)        |
+| `POST`   | `/rooms/:code/send`                | Bearer secret | Send batched messages (max 10, max 1MB each) |
+| `GET`    | `/rooms/:code/recv?role=X&after=N` | Bearer secret | Poll for messages (max 50)                   |
+| `POST`   | `/rooms/:code/signal`              | Bearer secret | Exchange connection info (IPs, capabilities) |
+| `GET`    | `/rooms/:code/signal?role=X`       | Bearer secret | Get peer's signaling data                    |
+| `POST`   | `/rooms/:code/heartbeat`           | Bearer secret | Keep room alive                              |
+| `DELETE` | `/rooms/:code`                     | Bearer secret | Tear down room                               |
 
 ### KV Schema
 
-| Key Pattern | TTL | Content |
-|-------------|-----|---------|
-| `room:{code}` | 300s (unjoined) / 3600s (joined) | Room metadata (code, secret, state) |
-| `msg:{code}:{role}:{seq}` | 60s | Base64-encoded RPC frame |
-| `seq:{code}:{role}` | 3600s | Sequence counter (atomic via KV) |
-| `signal:{code}:{role}` | 300s | Signaling data (JSON) |
-| `rl:{ip}` | 60s | Rate limit counter |
+| Key Pattern               | TTL                              | Content                             |
+| ------------------------- | -------------------------------- | ----------------------------------- |
+| `room:{code}`             | 300s (unjoined) / 3600s (joined) | Room metadata (code, secret, state) |
+| `msg:{code}:{role}:{seq}` | 60s                              | Base64-encoded RPC frame            |
+| `seq:{code}:{role}`       | 3600s                            | Sequence counter (atomic via KV)    |
+| `signal:{code}:{role}`    | 300s                             | Signaling data (JSON)               |
+| `rl:{ip}`                 | 60s                              | Rate limit counter                  |
 
 ### Security
 
@@ -300,10 +301,10 @@ A background task runs every 60 seconds, removing sessions idle for more than 5 
 
 ### New RPC Methods
 
-| Method | Description |
-|--------|-------------|
+| Method                     | Description                                                                                   |
+| -------------------------- | --------------------------------------------------------------------------------------------- |
 | `session/resume_or_create` | Client sends optional `session_id` + `auth_token`. Returns session_id + notification backlog. |
-| `session/heartbeat` | Keeps session alive, returns OK. |
+| `session/heartbeat`        | Keeps session alive, returns OK.                                                              |
 
 ---
 
@@ -342,6 +343,7 @@ zedra-host relay --workdir /path/to/project --relay-url https://relay.zedra.dev
 ```
 
 Flow:
+
 1. Creates a relay room via `RelayClient::create_room()`.
 2. Displays a QR code with room code, secret, and LAN addresses.
 3. Waits for the mobile client to join (polls signal endpoint).
@@ -430,11 +432,11 @@ Session: never sees the switch, PTY still running on host
 
 ## Latency Characteristics
 
-| Transport | Latency | Bandwidth | Reliability | When to Use |
-|-----------|---------|-----------|-------------|-------------|
-| LAN TCP | ~1ms | Full LAN speed | High | Same network |
-| Tailscale | 5–20ms | WireGuard tunnel | High | Across NATs, VPN |
-| Relay | 50–250ms | HTTP polling overhead | High (CF edge) | Always available |
+| Transport | Latency  | Bandwidth             | Reliability    | When to Use      |
+| --------- | -------- | --------------------- | -------------- | ---------------- |
+| LAN TCP   | ~1ms     | Full LAN speed        | High           | Same network     |
+| Tailscale | 5–20ms   | WireGuard tunnel      | High           | Across NATs, VPN |
+| Relay     | 50–250ms | HTTP polling overhead | High (CF edge) | Always available |
 
 ---
 
@@ -505,14 +507,14 @@ crates/zedra-host/src/
 
 ### Modified Files
 
-| File | Changes |
-|------|---------|
-| `crates/zedra-rpc/src/transport.rs` | Added `Transport` trait, `TcpTransport`, `RpcClient::spawn_from_channels()` |
-| `crates/zedra-rpc/src/protocol.rs` | Added `session/resume_or_create`, `session/heartbeat` methods + types |
-| `crates/zedra-host/src/rpc_daemon.rs` | Added `handle_transport_connection()` (generic over Transport), session registry integration, cleanup task |
-| `crates/zedra-host/src/main.rs` | Added `relay` subcommand |
-| `crates/zedra-host/src/qr.rs` | Added `generate_relay_pairing_qr()` with v2 payload and multi-IP support |
-| `crates/zedra-host/src/lib.rs` | Added `session_registry`, `relay_bridge` module declarations |
-| `crates/zedra-session/src/lib.rs` | Added `connect_with_peer_info()`, `session_id`, `transport_state` fields, extracted notification listener |
-| `crates/zedra-ssh/src/pairing.rs` | Extended `PairingPayload` to v2, added `to_peer_info()` |
-| `crates/zedra/src/zedra_app.rs` | Transport state indicator in connection UI |
+| File                                    | Changes                                                                                                    |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `crates/zedra-rpc/src/transport.rs`     | Added `Transport` trait, `TcpTransport`, `RpcClient::spawn_from_channels()`                                |
+| `crates/zedra-rpc/src/protocol.rs`      | Added `session/resume_or_create`, `session/heartbeat` methods + types                                      |
+| `crates/zedra-host/src/rpc_daemon.rs`   | Added `handle_transport_connection()` (generic over Transport), session registry integration, cleanup task |
+| `crates/zedra-host/src/main.rs`         | Added `relay` subcommand                                                                                   |
+| `crates/zedra-host/src/qr.rs`           | Added `generate_relay_pairing_qr()` with v2 payload and multi-IP support                                   |
+| `crates/zedra-host/src/lib.rs`          | Added `session_registry`, `relay_bridge` module declarations                                               |
+| `crates/zedra-session/src/lib.rs`       | Added `connect_with_peer_info()`, `session_id`, `transport_state` fields, extracted notification listener  |
+| `crates/zedra-transport/src/pairing.rs` | Extended `PairingPayload` to v2, added `to_peer_info()`                                                    |
+| `crates/zedra/src/zedra_app.rs`         | Transport state indicator in connection UI                                                                 |

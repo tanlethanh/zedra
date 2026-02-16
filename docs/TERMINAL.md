@@ -1,13 +1,13 @@
 # Terminal Implementation
 
-This document describes the terminal emulation implementation in Zedra, which provides SSH terminal functionality on Android using GPUI.
+This document describes the terminal emulation implementation in Zedra, which provides remote terminal functionality on Android using GPUI.
 
 ## Architecture Overview
 
 The terminal feature consists of three main crates:
 
 ```
-zedra-ssh (SSH client, defines TerminalSink trait)
+zedra-session (RPC client, manages remote connection)
     ↑
 zedra-terminal (Terminal emulation + GPUI rendering)
     ↑
@@ -31,9 +31,9 @@ The terminal crate provides:
    - Uses embedded JetBrains Mono NL font for monospace rendering
 
 3. **TerminalView** (`view.rs`) - GPUI Render implementation
-   - Manages terminal state and SSH output buffer
+   - Manages terminal state and output buffer
    - Handles keyboard input and scroll events
-   - Implements `TerminalSink` trait for SSH integration
+   - Sends input to remote host via `zedra_session::send_terminal_input()`
 
 ### Embedded Font
 
@@ -122,26 +122,15 @@ let columns = (available_width / cell_width).floor() as usize;
 let rows = (available_height / line_height).floor() as usize;
 ```
 
-This ensures the PTY size sent to SSH matches the rendered terminal size, preventing overflow.
+This ensures the PTY size sent to the remote host matches the rendered terminal size, preventing overflow.
 
-## SSH Integration
+## Remote Terminal Integration
 
-The terminal integrates with SSH via the `TerminalSink` trait:
+Terminal input and output flow through `zedra-session`:
 
-```rust
-pub trait TerminalSink: 'static {
-    fn advance_bytes(&mut self, bytes: &[u8]);
-    fn set_connected(&mut self, connected: bool);
-    fn set_status(&mut self, status: String);
-    fn set_send_bytes(&mut self, callback: Box<dyn Fn(Vec<u8>) + Send + 'static>);
-    fn terminal_size_cells(&self) -> (u32, u32);
-    fn output_buffer(&self) -> OutputBuffer;
-}
-```
+Output flows: RPC notification listener -> OutputBuffer -> TerminalView.process_output() -> TerminalState.advance_bytes()
 
-Output flows: SSH I/O task -> OutputBuffer -> TerminalView.process_output() -> TerminalState.advance_bytes()
-
-Input flows: Keyboard -> TerminalView.handle_keystroke() -> zedra_ssh::send_to_ssh()
+Input flows: Keyboard -> TerminalView.handle_keystroke() -> zedra_session::send_terminal_input()
 
 ## Configuration
 
@@ -156,4 +145,4 @@ Current terminal settings:
 - `alacritty_terminal` - Terminal emulation (VT100/ANSI parsing)
 - `gpui` - UI framework (rendering, input handling)
 - `itertools` - For `chunk_by` grouping of cells by line
-- `zedra-ssh` - SSH client integration
+- `zedra-session` - RPC session for remote terminal I/O

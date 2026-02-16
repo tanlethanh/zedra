@@ -13,3 +13,4 @@ anyhow.workspace = true
 async-trait.workspace = true
 log.workspace = true
 futures.workspace = true
+base64-url.workspace = true

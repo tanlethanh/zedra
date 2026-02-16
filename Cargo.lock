@@ -1654,15 +1654,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "des"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffdd80ce8ce993de27e9f063a444a4d53ce8e8db4c1f00cc03af5ad5a9867a1e"
-dependencies = [
- "cipher",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2165,18 +2156,6 @@ dependencies = [
  "futures-sink",
  "nanorand",
  "spin 0.9.8",
-]
-
-[[package]]
-name = "flurry"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf5efcf77a4da27927d3ab0509dec5b0954bb3bc59da5a1de9e52642ebd4cdf9"
-dependencies = [
- "ahash",
- "num_cpus",
- "parking_lot",
- "seize",
 ]
 
 [[package]]
@@ -2733,12 +2712,6 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
-
-[[package]]
-name = "hex-literal"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fe2267d4ed49bc07b63801559be28c718ea06c4738b7a03c94df7386d2cde46"
 
 [[package]]
 name = "hexf-parse"
@@ -3833,7 +3806,6 @@ checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
 dependencies = [
  "num-integer",
  "num-traits",
- "rand 0.8.5",
 ]
 
 [[package]]
@@ -5123,54 +5095,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "russh"
-version = "0.49.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b206640a622d63529540fc48036aa39f211b2b71432a451156004f40655cdb4"
-dependencies = [
- "aes",
- "aes-gcm",
- "async-trait",
- "bitflags 2.10.0",
- "byteorder",
- "bytes",
- "cbc",
- "chacha20",
- "ctr",
- "curve25519-dalek",
- "delegate",
- "des",
- "digest",
- "elliptic-curve",
- "futures",
- "generic-array",
- "hex-literal",
- "hmac",
- "log",
- "num-bigint",
- "once_cell",
- "p256",
- "p384",
- "p521",
- "poly1305",
- "rand 0.8.5",
- "rand_core 0.6.4",
- "rsa",
- "russh-cryptovec",
- "russh-keys",
- "russh-sftp",
- "russh-util",
- "sha1",
- "sha2",
- "signature",
- "ssh-encoding",
- "ssh-key",
- "subtle",
- "thiserror 1.0.69",
- "tokio",
-]
-
-[[package]]
 name = "russh-cryptovec"
 version = "0.48.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5235,23 +5159,6 @@ dependencies = [
  "tokio-stream",
  "typenum",
  "zeroize",
-]
-
-[[package]]
-name = "russh-sftp"
-version = "2.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bb94393cafad0530145b8f626d8687f1ee1dedb93d7ba7740d6ae81868b13b5"
-dependencies = [
- "bitflags 2.10.0",
- "bytes",
- "chrono",
- "flurry",
- "log",
- "serde",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
 ]
 
 [[package]]
@@ -5550,12 +5457,6 @@ dependencies = [
  "subtle",
  "zeroize",
 ]
-
-[[package]]
-name = "seize"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "689224d06523904ebcc9b482c6a3f4f7fb396096645c4cd10c0d2ff7371a34d3"
 
 [[package]]
 name = "self_cell"
@@ -8347,7 +8248,6 @@ dependencies = [
  "zedra-editor",
  "zedra-nav",
  "zedra-session",
- "zedra-ssh",
  "zedra-terminal",
  "zedra-transport",
 ]
@@ -8477,24 +8377,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zedra-ssh"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64-url",
- "futures",
- "gpui",
- "log",
- "russh",
- "russh-keys",
- "serde",
- "serde_json",
- "tokio",
- "zedra-transport",
-]
-
-[[package]]
 name = "zedra-terminal"
 version = "0.1.0"
 dependencies = [
@@ -8503,7 +8385,6 @@ dependencies = [
  "itertools 0.14.0",
  "log",
  "zedra-session",
- "zedra-ssh",
 ]
 
 [[package]]
@@ -8512,6 +8393,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64-url",
  "futures",
  "log",
  "serde",

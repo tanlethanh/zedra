@@ -124,19 +124,12 @@ JNI Thread → Command Queue → Main Thread → GPUI → Blade → Vulkan
 ```
 Cargo.toml                      # Workspace root (no package)
 crates/
-  ├── zedra-ssh/                # SSH client (generic over TerminalSink trait)
-  │   └── src/
-  │       ├── lib.rs            # TerminalSink trait + re-exports
-  │       ├── client.rs         # russh SSH session
-  │       ├── connection.rs     # Connection state machine
-  │       ├── bridge.rs         # Async SSH ↔ terminal I/O
-  │       └── pairing.rs        # QR code pairing protocol (v1 + v2 multi-transport)
   ├── zedra-terminal/           # Terminal emulation (alacritty + GPUI rendering)
   │   └── src/
   │       ├── lib.rs            # TerminalState + types
   │       ├── element.rs        # GPUI Element for terminal grid
   │       ├── keys.rs           # Keystroke → escape sequence mapping
-  │       └── view.rs           # TerminalView + TerminalSink impl
+  │       └── view.rs           # TerminalView + GPUI Render
   ├── zedra-editor/             # Code editor with syntax highlighting
   │   └── src/
   │       ├── lib.rs            # Re-exports
@@ -161,9 +154,10 @@ crates/
   │       ├── client.rs         # HTTP client for relay API (reqwest + rustls)
   │       ├── transport.rs      # RelayTransport: Transport trait via HTTP polling
   │       └── types.rs          # Shared types (RoomCode, RelayMessage, etc.)
-  ├── zedra-transport/          # TransportManager, discovery chain, providers
+  ├── zedra-transport/          # TransportManager, discovery chain, providers, pairing
   │   └── src/
   │       ├── lib.rs            # PeerInfo struct, re-exports
+  │       ├── pairing.rs        # QR code pairing protocol (v1 + v2 multi-transport)
   │       ├── discovery.rs      # Concurrent provider racing (JoinSet)
   │       ├── manager.rs        # Transport lifecycle, health, switching
   │       └── providers/
@@ -236,13 +230,11 @@ zedra-rpc (Transport trait, RpcClient, framing)
     ↑
 zedra-relay (RelayTransport impl, HTTP client for CF Worker)
     ↑
-zedra-transport (TransportManager, discovery chain, providers)
+zedra-transport (TransportManager, discovery chain, providers, pairing)
     ↑
 zedra-session (RemoteSession, uses TransportManager or direct TCP)
     ↑
-zedra-ssh (defines TerminalSink trait, pairing v1+v2)
-    ↑
-zedra-terminal (depends on zedra-ssh for trait, implements TerminalSink)
+zedra-terminal (terminal emulation, sends input via zedra-session)
     ↑
 zedra (Android cdylib, depends on all crates)
     ↑
@@ -270,7 +262,7 @@ zedra-rpc, zedra-relay
 - DrawerHost: slide-from-left file explorer drawer
 - Code editor: syntax-highlighted Rust code with tree-sitter, cursor, and virtual scrolling
 - File preview grid: card-based file browser that opens editor views
-- SSH terminal: connection form with SSH client (zedra-ssh + zedra-terminal)
+- Remote terminal: connection form with RPC session (zedra-session + zedra-terminal)
 - Transport abstraction: pluggable Transport trait with LAN TCP, Tailscale, and relay providers
 - Relay server: Cloudflare Worker with KV for room-based message relay
 - Transport discovery: automatic best-transport selection (LAN > Tailscale > relay)

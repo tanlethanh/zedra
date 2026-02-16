@@ -39,12 +39,12 @@ pub struct PairingPayload {
 
 impl PairingPayload {
     /// Convert this pairing payload into a PeerInfo for TransportManager.
-    pub fn to_peer_info(&self) -> zedra_transport::PeerInfo {
+    pub fn to_peer_info(&self) -> crate::PeerInfo {
         let mut host_addrs = self.host_addrs.clone();
         if host_addrs.is_empty() {
             host_addrs.push(self.host.clone());
         }
-        zedra_transport::PeerInfo {
+        crate::PeerInfo {
             host_addrs,
             tailscale_addr: self.tailscale_addr.clone(),
             port: self.port,

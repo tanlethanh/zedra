@@ -1,5 +1,6 @@
 pub mod discovery;
 pub mod manager;
+pub mod pairing;
 pub mod providers;
 
 pub use manager::{TransportManager, TransportState};
