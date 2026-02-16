@@ -14,7 +14,7 @@ use crate::{CursorState, IndexedCell, TERMINAL_FONT_FAMILY, TerminalContent, Ter
 struct TermColors;
 
 impl TermColors {
-    const BACKGROUND: u32 = 0x1e1e1e;
+    const BACKGROUND: u32 = 0x0e0c0c;
     const FOREGROUND: u32 = 0xabb2bf;
     const CURSOR: u32 = 0x528bff;
 

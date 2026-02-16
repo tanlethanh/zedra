@@ -4,6 +4,7 @@ use gpui::Hsla;
 pub const BG_PRIMARY: u32 = 0x0e0c0c;
 pub const BG_CARD: u32 = 0x131313;
 pub const BG_OVERLAY: u32 = 0x131313;
+pub const BG_SURFACE: u32 = 0x0e0c0c; // Terminal / input field background (matches BG_PRIMARY)
 
 // Text colors
 pub const TEXT_PRIMARY: u32 = 0xffffff;

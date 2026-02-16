@@ -10,6 +10,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::android_jni;
+use crate::theme;
 
 /// Event emitted when the input value changes
 #[derive(Clone, Debug)]
@@ -135,7 +136,7 @@ impl Input {
         div()
             .w(px(2.0))
             .h(px(18.0))
-            .bg(rgb(0xabb2bf)) // Light gray color
+            .bg(rgb(theme::TEXT_SECONDARY))
             .rounded(px(1.0))
             .with_animation(
                 cursor_id,
@@ -178,15 +179,15 @@ impl Render for Input {
         let show_placeholder = self.value.is_empty() && !is_focused;
 
         let text_color = if show_placeholder {
-            rgb(0x5c6370) // Placeholder color
+            rgb(theme::TEXT_MUTED)
         } else {
-            rgb(0xabb2bf) // Normal text color
+            rgb(theme::TEXT_SECONDARY)
         };
 
         let border_color = if is_focused {
-            rgb(0x61afef) // Focused border
+            rgb(theme::ACCENT_BLUE)
         } else {
-            rgb(0x3e4451) // Normal border
+            rgb(theme::BORDER_DEFAULT)
         };
 
         // Build display text
@@ -208,7 +209,7 @@ impl Render for Input {
             .py_2()
             .w_full()
             .min_h(px(40.0))
-            .bg(rgb(0x1e1e1e))
+            .bg(rgb(theme::BG_SURFACE))
             .rounded(px(6.0))
             .border_1()
             .border_color(border_color)
