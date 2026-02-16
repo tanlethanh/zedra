@@ -703,6 +703,9 @@ impl ZedraApp {
 
         terminal_view.update(cx, |view, _cx| {
             view.set_keyboard_request(Box::new(|show| {
+                if show && zedra_nav::is_drawer_overlay_visible() {
+                    return; // Don't show keyboard when drawer overlay is active
+                }
                 if show {
                     crate::android_jni::show_keyboard();
                 } else {

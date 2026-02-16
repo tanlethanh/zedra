@@ -1,8 +1,17 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+
+/// Global flag: true when any drawer overlay is visible.
+/// Used to suppress input (e.g. keyboard) behind the overlay.
+static DRAWER_OVERLAY_VISIBLE: AtomicBool = AtomicBool::new(false);
+
+pub fn is_drawer_overlay_visible() -> bool {
+    DRAWER_OVERLAY_VISIBLE.load(Ordering::Relaxed)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DrawerSide {
@@ -218,6 +227,7 @@ impl Render for DrawerHost {
         let show_edge = has_drawer && !is_open && !snap_target.map_or(false, |t| t > 0.0);
         // Overlay shows when drawer is visible or animating
         let show_overlay = has_drawer && (is_open || snap_target.is_some());
+        DRAWER_OVERLAY_VISIBLE.store(show_overlay, Ordering::Relaxed);
 
         div()
             .track_focus(&self.focus_handle)
@@ -345,7 +355,13 @@ impl Render for DrawerHost {
                     .inset_0()
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
+                        cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                            // Ignore taps that land on the drawer panel
+                            let offset =
+                                this.drawer_state.lock().map(|s| s.offset).unwrap_or(0.0);
+                            if f32::from(event.position.x) < offset {
+                                return;
+                            }
                             cx.emit(DrawerEvent::BackdropTapped);
                             this.close(cx);
                         }),
