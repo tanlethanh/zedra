@@ -8,12 +8,12 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::diff_view::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
-use crate::highlighter::Highlighter;
-use crate::theme::SyntaxTheme;
+use crate::syntax_highlighter::Highlighter;
+use crate::syntax_theme::SyntaxTheme;
 
-const LINE_HEIGHT: f32 = 20.0;
-const GUTTER_WIDTH: f32 = 40.0;
-const FONT_SIZE: f32 = 13.0;
+const LINE_HEIGHT: f32 = 15.0;
+const GUTTER_WIDTH: f32 = 36.0;
+const FONT_SIZE: f32 = 10.0;
 
 pub struct GitDiffView {
     diff: FileDiff,

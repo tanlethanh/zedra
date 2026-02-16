@@ -14,14 +14,15 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::diff_view::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
-use crate::highlighter::Highlighter;
-use crate::theme::SyntaxTheme;
+use crate::syntax_highlighter::Highlighter;
+use crate::syntax_theme::SyntaxTheme;
+use crate::theme;
 
 // Layout constants
 const SIDEBAR_WIDTH: f32 = 260.0;
-const LINE_HEIGHT: f32 = 20.0;
-const GUTTER_WIDTH: f32 = 40.0;
-const FONT_SIZE: f32 = 13.0;
+const LINE_HEIGHT: f32 = 15.0;
+const GUTTER_WIDTH: f32 = 36.0;
+const FONT_SIZE: f32 = 10.0;
 const ICON_SIZE: f32 = 14.0;
 
 /// Git file status
@@ -600,13 +601,13 @@ impl GitStack {
                             .child(
                                 div()
                                     .text_color(rgb(0x61afef))
-                                    .text_sm()
+                                    .text_size(px(theme::FONT_DETAIL))
                                     .child("*"),
                             )
                             .child(
                                 div()
                                     .text_color(rgb(0xabb2bf))
-                                    .text_sm()
+                                    .text_size(px(theme::FONT_DETAIL))
                                     .child(branch),
                             ),
                     ),
@@ -624,7 +625,7 @@ impl GitStack {
                             .flex_row()
                             .items_center()
                             .gap_1()
-                            .text_sm()
+                            .text_size(px(theme::FONT_DETAIL))
                             .child(div().text_color(rgb(0x98c379)).child(format!("+{}", staged_count)))
                             .child(div().text_color(rgb(0x636d83)).child("staged")),
                     )
@@ -634,7 +635,7 @@ impl GitStack {
                             .flex_row()
                             .items_center()
                             .gap_1()
-                            .text_sm()
+                            .text_size(px(theme::FONT_DETAIL))
                             .child(div().text_color(rgb(0xe5c07b)).child(format!("~{}", unstaged_count)))
                             .child(div().text_color(rgb(0x636d83)).child("modified")),
                     )
@@ -644,7 +645,7 @@ impl GitStack {
                             .flex_row()
                             .items_center()
                             .gap_1()
-                            .text_sm()
+                            .text_size(px(theme::FONT_DETAIL))
                             .child(div().text_color(rgb(0x56b6c2)).child(format!("?{}", untracked_count)))
                             .child(div().text_color(rgb(0x636d83)).child("untracked")),
                     ),
@@ -699,7 +700,7 @@ impl GitStack {
                     .child(
                         div()
                             .text_color(rgb(0xabb2bf))
-                            .text_size(px(12.0))
+                            .text_size(px(theme::FONT_BODY))
                             .overflow_hidden()
                             .child(filename),
                     ),
@@ -711,7 +712,7 @@ impl GitStack {
                     .flex_row()
                     .items_center()
                     .gap_1()
-                    .text_size(px(10.0))
+                    .text_size(px(theme::FONT_DETAIL))
                     .when(insertions > 0, |s| {
                         s.child(div().text_color(rgb(0x98c379)).child(format!("+{}", insertions)))
                     })
@@ -758,7 +759,7 @@ impl GitStack {
                     .child(
                         div()
                             .text_color(rgb(0x636d83))
-                            .text_size(px(10.0))
+                            .text_size(px(theme::FONT_DETAIL))
                             .child(if is_expanded { "v" } else { ">" }),
                     )
                     // Title
@@ -776,7 +777,7 @@ impl GitStack {
                             .rounded(px(8.0))
                             .bg(rgb(0x3e4451))
                             .text_color(rgb(0xabb2bf))
-                            .text_size(px(10.0))
+                            .text_size(px(theme::FONT_DETAIL))
                             .child(count.to_string()),
                     ),
             )
@@ -788,7 +789,7 @@ impl GitStack {
                         .py_px()
                         .rounded(px(3.0))
                         .text_color(rgb(0x636d83))
-                        .text_size(px(10.0))
+                        .text_size(px(theme::FONT_DETAIL))
                         .hover(|s| s.bg(rgb(0x3e4451)).text_color(rgb(0xabb2bf)))
                         .child(label),
                 )
@@ -889,7 +890,7 @@ impl GitStack {
                     .border_1()
                     .border_color(rgb(0x3e4451))
                     .text_color(rgb(0x5c6370))
-                    .text_size(px(12.0))
+                    .text_size(px(theme::FONT_BODY))
                     .child("Commit message..."),
             )
             // Action buttons
@@ -909,7 +910,7 @@ impl GitStack {
                             .bg(rgb(0x3e4451))
                             .rounded(px(4.0))
                             .text_color(rgb(0xabb2bf))
-                            .text_size(px(12.0))
+                            .text_size(px(theme::FONT_BODY))
                             .cursor_pointer()
                             .hover(|s| s.bg(rgb(0x4e5561)))
                             .child("Commit"),
@@ -925,7 +926,7 @@ impl GitStack {
                             .bg(rgb(0x61afef))
                             .rounded(px(4.0))
                             .text_color(rgb(0x21252b))
-                            .text_size(px(12.0))
+                            .text_size(px(theme::FONT_BODY))
                             .cursor_pointer()
                             .hover(|s| s.bg(rgb(0x71bfff)))
                             .child("Push"),
@@ -1099,7 +1100,7 @@ impl GitStack {
             .child(
                 div()
                     .text_color(rgb(0x636d83))
-                    .text_size(px(12.0))
+                    .text_size(px(theme::FONT_BODY))
                     .child("Make some changes to see them here"),
             )
     }

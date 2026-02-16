@@ -8,12 +8,12 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::app_drawer::{AppDrawer, AppDrawerEvent};
-use crate::file_preview_list::{FilePreviewList, PreviewSelected, SAMPLE_FILES};
 use crate::input::{Input, InputChanged};
 use crate::project_editor::ProjectEditor;
 use crate::home_view::{HomeEvent, HomeView};
 use crate::theme;
-use zedra_editor::{EditorView, GitDiffView};
+use crate::code_editor::EditorView;
+use crate::git_diff_view::GitDiffView;
 use zedra_nav::{DrawerHost, HeaderConfig, StackNavigator};
 use zedra_session::RemoteSession;
 use zedra_terminal::view::{DisconnectRequested, TerminalView};
@@ -108,13 +108,14 @@ impl Render for ConnectView {
                     .child(
                         div()
                             .text_color(rgb(theme::TEXT_PRIMARY))
-                            .text_xl()
+                            .text_size(px(theme::FONT_HEADING))
+                            .font_weight(FontWeight::MEDIUM)
                             .child("Connect"),
                     )
                     .child(
                         div()
                             .text_color(rgb(theme::TEXT_MUTED))
-                            .text_sm()
+                            .text_size(px(theme::FONT_DETAIL))
                             .child("Connect to zedra-host daemon"),
                     )
                     // Host input
@@ -126,7 +127,7 @@ impl Render for ConnectView {
                             .child(
                                 div()
                                     .text_color(rgb(theme::TEXT_SECONDARY))
-                                    .text_sm()
+                                    .text_size(px(theme::FONT_BODY))
                                     .child("Host"),
                             )
                             .child(self.host_input.clone()),
@@ -140,7 +141,7 @@ impl Render for ConnectView {
                             .child(
                                 div()
                                     .text_color(rgb(theme::TEXT_SECONDARY))
-                                    .text_sm()
+                                    .text_size(px(theme::FONT_BODY))
                                     .child("Port"),
                             )
                             .child(self.port_input.clone()),
@@ -155,6 +156,7 @@ impl Render for ConnectView {
                             .border_1()
                             .border_color(rgb(theme::BORDER_DEFAULT))
                             .text_color(rgb(theme::TEXT_PRIMARY))
+                            .text_size(px(theme::FONT_BODY))
                             .cursor_pointer()
                             .hover(|s| s.bg(theme::hover_bg()))
                             .on_mouse_down(
@@ -176,7 +178,7 @@ impl Render for ConnectView {
                             .items_center()
                             .justify_center()
                             .text_color(rgb(theme::TEXT_MUTED))
-                            .text_sm()
+                            .text_size(px(theme::FONT_DETAIL))
                             .child("— or —"),
                     )
                     // Scan QR Code button
@@ -189,6 +191,7 @@ impl Render for ConnectView {
                             .border_1()
                             .border_color(rgb(theme::BORDER_DEFAULT))
                             .text_color(rgb(theme::TEXT_PRIMARY))
+                            .text_size(px(theme::FONT_BODY))
                             .cursor_pointer()
                             .hover(|s| s.bg(theme::hover_bg()))
                             .on_mouse_down(
@@ -219,38 +222,21 @@ enum AppScreen {
 // EditorContent — header + separator + stack (rendered inside DrawerHost)
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug)]
-pub struct DisconnectEvent;
-
-impl EventEmitter<DisconnectEvent> for EditorContent {}
-
 pub struct EditorContent {
     editor_stack: Entity<StackNavigator>,
     drawer_host: Entity<DrawerHost>,
-    terminal_view: Option<Entity<TerminalView>>,
 }
 
 impl EditorContent {
     pub fn new(
         editor_stack: Entity<StackNavigator>,
         drawer_host: Entity<DrawerHost>,
-        terminal_view: Option<Entity<TerminalView>>,
         _cx: &mut Context<Self>,
     ) -> Self {
         Self {
             editor_stack,
             drawer_host,
-            terminal_view,
         }
-    }
-
-    pub fn set_terminal_view(
-        &mut self,
-        tv: Option<Entity<TerminalView>>,
-        cx: &mut Context<Self>,
-    ) {
-        self.terminal_view = tv;
-        cx.notify();
     }
 }
 
@@ -264,17 +250,6 @@ impl Render for EditorContent {
             .unwrap_or_default();
 
         let stack_depth = self.editor_stack.read(cx).stack_depth();
-
-        let (terminal_connected, terminal_status) = self
-            .terminal_view
-            .as_ref()
-            .map(|tv| {
-                let tv = tv.read(cx);
-                (tv.is_connected(), tv.status_text().to_string())
-            })
-            .unwrap_or((false, String::new()));
-
-        let has_terminal = self.terminal_view.is_some();
 
         // Status bar inset (applied locally so backdrop stays full-screen)
         let density = crate::android_jni::get_density();
@@ -316,7 +291,7 @@ impl Render for EditorContent {
                         .child(
                             div()
                                 .text_color(rgb(theme::TEXT_SECONDARY))
-                                .text_sm()
+                                .text_size(px(theme::FONT_BODY))
                                 .child("\u{2039} Back"),
                         ),
                 )
@@ -327,14 +302,14 @@ impl Render for EditorContent {
                         .child(
                             div()
                                 .text_color(rgb(theme::TEXT_SECONDARY))
-                                .text_sm()
+                                .text_size(px(theme::FONT_BODY))
                                 .font_weight(FontWeight::MEDIUM)
                                 .child(title),
                         ),
                 )
         } else {
-            // Root view: logo button + title + optional disconnect
-            let mut h = div()
+            // Root view: logo button + title
+            div()
                 .h(px(48.0))
                 .flex()
                 .flex_row()
@@ -343,7 +318,6 @@ impl Render for EditorContent {
                 .border_b_1()
                 .border_color(rgb(theme::BORDER_SUBTLE))
                 .child(
-                    // Logo button (opens/closes drawer)
                     div()
                         .id("logo-btn")
                         .w(px(36.0))
@@ -369,57 +343,22 @@ impl Render for EditorContent {
                         .child(
                             svg()
                                 .path("icons/logo.svg")
-                                .size(px(24.0))
+                                .size(px(theme::ICON_HEADER))
                                 .text_color(rgb(theme::TEXT_PRIMARY)),
                         ),
                 )
                 .child(
-                    // Title + connection status
                     div()
                         .ml_3()
                         .flex_1()
-                        .flex()
-                        .flex_col()
                         .child(
                             div()
                                 .text_color(rgb(theme::TEXT_SECONDARY))
-                                .text_sm()
+                                .text_size(px(theme::FONT_BODY))
                                 .font_weight(FontWeight::MEDIUM)
                                 .child(title),
-                        )
-                        .when(has_terminal && !terminal_connected, |el| {
-                            el.child(
-                                div()
-                                    .text_color(rgb(theme::TEXT_MUTED))
-                                    .text_xs()
-                                    .child(terminal_status.clone()),
-                            )
-                        }),
-                );
-            // Disconnect button (only when terminal is connected)
-            if terminal_connected {
-                h = h.child(
-                    div()
-                        .mr_2()
-                        .px_2()
-                        .py(px(4.0))
-                        .rounded(px(4.0))
-                        .border_1()
-                        .border_color(rgb(theme::ACCENT_RED))
-                        .text_color(rgb(theme::ACCENT_RED))
-                        .text_xs()
-                        .cursor_pointer()
-                        .hover(|s| s.bg(gpui::hsla(0.0, 0.6, 0.5, 0.1)))
-                        .child("Disconnect")
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|_this, _event, _window, cx| {
-                                cx.emit(DisconnectEvent);
-                            }),
                         ),
-                );
-            }
-            h
+                )
         };
 
         div()
@@ -475,7 +414,7 @@ impl Render for FileLoadingView {
             .child(
                 div()
                     .text_color(rgb(theme::TEXT_MUTED))
-                    .text_sm()
+                    .text_size(px(theme::FONT_BODY))
                     .child(self.message.clone()),
             )
     }
@@ -536,33 +475,9 @@ impl ZedraApp {
                 },
                 cx,
             );
-            let preview_list = cx.new(|cx| FilePreviewList::new(cx));
-            stack.push(preview_list.into(), "Code Samples", cx);
+            let placeholder = cx.new(|cx| FileLoadingView::new("No active session", cx));
+            stack.push(placeholder.into(), "Zedra", cx);
             stack
-        });
-
-        // --- PreviewSelected subscription ---
-        let preview_list = cx.new(|cx| FilePreviewList::new(cx));
-        let editor_stack_for_preview = editor_stack.clone();
-        let sub = cx.subscribe_in(
-            &preview_list,
-            window,
-            move |_this: &mut ZedraApp,
-                  _emitter: &Entity<FilePreviewList>,
-                  event: &PreviewSelected,
-                  _window: &mut Window,
-                  cx: &mut Context<ZedraApp>| {
-                if let Some(sample) = SAMPLE_FILES.get(event.index) {
-                    let editor_view = cx.new(|cx| EditorView::new(sample.content.to_string(), cx));
-                    editor_stack_for_preview.update(cx, |stack, cx| {
-                        stack.push(editor_view.into(), sample.filename, cx);
-                    });
-                }
-            },
-        );
-        subscriptions.push(sub);
-        editor_stack.update(cx, |stack, cx| {
-            stack.replace(preview_list.into(), "Code Samples", cx);
         });
 
         // --- DrawerHost (initially wraps editor_stack, we'll replace content below) ---
@@ -577,29 +492,8 @@ impl ZedraApp {
         let drawer_host_for_content = drawer_host.clone();
         let editor_stack_for_content = editor_stack.clone();
         let editor_content = cx.new(|cx| {
-            EditorContent::new(editor_stack_for_content, drawer_host_for_content, None, cx)
+            EditorContent::new(editor_stack_for_content, drawer_host_for_content, cx)
         });
-
-        // Subscribe to disconnect events from EditorContent
-        let sub = cx.subscribe(
-            &editor_content,
-            |this: &mut Self, _emitter, _event: &DisconnectEvent, cx| {
-                log::info!("Disconnect requested from EditorContent header");
-                zedra_session::clear_active_session();
-                this.session = None;
-                this.terminal_view = None;
-                this.editor_content
-                    .update(cx, |ec, cx| ec.set_terminal_view(None, cx));
-                this.editor_showing_project = false;
-                this.screen = AppScreen::Home;
-                let preview = cx.new(|cx| FilePreviewList::new(cx));
-                this.editor_stack.update(cx, |stack, cx| {
-                    stack.replace(preview.into(), "Code Samples", cx);
-                });
-                cx.notify();
-            },
-        );
-        subscriptions.push(sub);
 
         // Update DrawerHost to wrap EditorContent (so overlay covers header)
         drawer_host.update(cx, |host, _cx| {
@@ -615,10 +509,11 @@ impl ZedraApp {
         // Subscribe to AppDrawer events
         let drawer_host_for_sub = drawer_host.clone();
         let editor_stack_for_sub = editor_stack.clone();
+        let app_drawer_for_sub = app_drawer.clone();
         let sub = cx.subscribe_in(
             &app_drawer,
             window,
-            move |_this: &mut ZedraApp,
+            move |this: &mut ZedraApp,
                   _emitter: &Entity<AppDrawer>,
                   event: &AppDrawerEvent,
                   _window: &mut Window,
@@ -626,6 +521,23 @@ impl ZedraApp {
                 match event {
                     AppDrawerEvent::CloseRequested => {
                         drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
+                    }
+                    AppDrawerEvent::DisconnectRequested => {
+                        log::info!("Disconnect requested from Session tab");
+                        drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
+                        zedra_session::clear_active_session();
+                        this.session = None;
+                        this.terminal_view = None;
+                        this.editor_showing_project = false;
+                        this.screen = AppScreen::Home;
+                        app_drawer_for_sub.update(cx, |drawer, cx| {
+                            drawer.reset_for_disconnect(cx);
+                        });
+                        let placeholder = cx.new(|cx| FileLoadingView::new("No active session", cx));
+                        editor_stack_for_sub.update(cx, |stack, cx| {
+                            stack.replace(placeholder.into(), "Zedra", cx);
+                        });
+                        cx.notify();
                     }
                     AppDrawerEvent::FileSelected(path) => {
                         drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
@@ -635,17 +547,7 @@ impl ZedraApp {
                             let filename =
                                 path.rsplit('/').next().unwrap_or(&path).to_string();
 
-                            if let Some(sample) =
-                                SAMPLE_FILES.iter().find(|s| s.filename == filename)
-                            {
-                                // Local sample file — push editor immediately
-                                let editor_view = cx.new(|cx| {
-                                    EditorView::new(sample.content.to_string(), cx)
-                                });
-                                editor_stack_for_sub.update(cx, |stack, cx| {
-                                    stack.push(editor_view.into(), sample.filename, cx);
-                                });
-                            } else if let Some(session) = zedra_session::active_session() {
+                            if let Some(session) = zedra_session::active_session() {
                                 // Remote file — push loading placeholder, then swap
                                 let loading_view = cx.new(|cx| {
                                     FileLoadingView::new("Loading\u{2026}", cx)
@@ -716,7 +618,7 @@ impl ZedraApp {
                             });
                         } else {
                             // Fallback to sample data when no session
-                            let diffs = zedra_editor::GitStack::sample_diffs_public();
+                            let diffs = crate::git_stack::GitStack::sample_diffs_public();
                             if let Some(diff) =
                                 diffs.into_iter().find(|d| d.new_path == path)
                             {
@@ -869,13 +771,11 @@ impl ZedraApp {
                 zedra_session::clear_active_session();
                 this.session = None;
                 this.terminal_view = None;
-                this.editor_content
-                    .update(cx, |ec, cx| ec.set_terminal_view(None, cx));
                 this.editor_showing_project = false;
                 this.screen = AppScreen::Home;
-                let preview = cx.new(|cx| FilePreviewList::new(cx));
+                let placeholder = cx.new(|cx| FileLoadingView::new("No active session", cx));
                 this.editor_stack.update(cx, |stack, cx| {
-                    stack.replace(preview.into(), "Code Samples", cx);
+                    stack.replace(placeholder.into(), "Zedra", cx);
                 });
                 cx.notify();
             },
@@ -891,9 +791,6 @@ impl ZedraApp {
         });
 
         self.terminal_view = Some(terminal_view.clone());
-        self.editor_content.update(cx, |ec, cx| {
-            ec.set_terminal_view(Some(terminal_view), cx);
-        });
 
         (columns as u16, rows as u16)
     }
@@ -972,16 +869,16 @@ impl Render for ZedraApp {
         // Check for pending git diff from async RPC
         if self.screen == AppScreen::Editor {
             if let Some((path, filename, diff_text)) = take_pending_git_diff() {
-                let diffs = zedra_editor::parse_unified_diff(&diff_text);
+                let diffs = crate::diff_view::parse_unified_diff(&diff_text);
                 let diff = diffs
                     .into_iter()
                     .find(|d| d.new_path == path)
                     .unwrap_or_else(|| {
                         // If no matching path found, use the first diff or create empty
-                        zedra_editor::parse_unified_diff(&diff_text)
+                        crate::diff_view::parse_unified_diff(&diff_text)
                             .into_iter()
                             .next()
-                            .unwrap_or(zedra_editor::FileDiff {
+                            .unwrap_or(crate::diff_view::FileDiff {
                                 old_path: path.clone(),
                                 new_path: path.clone(),
                                 hunks: Vec::new(),
@@ -1054,14 +951,14 @@ impl Render for ZedraApp {
                                 .bg(theme::badge_bg())
                                 .child(
                                     div()
-                                        .w(px(6.0))
-                                        .h(px(6.0))
+                                        .w(px(theme::ICON_STATUS))
+                                        .h(px(theme::ICON_STATUS))
                                         .rounded(px(3.0))
                                         .bg(rgb(dot_color)),
                                 )
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_size(px(theme::FONT_DETAIL))
                                         .text_color(rgb(dot_color))
                                         .child(label),
                                 ),
@@ -1134,7 +1031,7 @@ fn take_pending_git_diff() -> Option<(String, String, String)> {
     }
 }
 
-fn transport_badge_info(state: &TransportState, latency_ms: u64) -> (String, u32) {
+pub(crate) fn transport_badge_info(state: &TransportState, latency_ms: u64) -> (String, u32) {
     let (base_label, color) = match state {
         TransportState::Connected { transport_name } => {
             if transport_name.contains("lan") || transport_name.contains("tcp") {

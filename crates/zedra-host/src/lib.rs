@@ -1,6 +1,8 @@
 // zedra-host library — re-exports for integration tests
 
 pub mod auth;
+pub mod fs;
+pub mod git;
 pub mod pty;
 pub mod qr;
 pub mod relay_bridge;

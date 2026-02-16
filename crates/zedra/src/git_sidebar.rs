@@ -7,6 +7,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::git_stack::{GitFileEntry, GitFileStatus, GitRepoState};
+use crate::theme;
 
 const ICON_SIZE: f32 = 14.0;
 
@@ -81,7 +82,7 @@ impl GitSidebar {
                     .child(
                         div()
                             .text_color(rgb(0x505050))
-                            .text_size(px(10.0))
+                            .text_size(px(theme::FONT_DETAIL))
                             .child(if is_expanded { "v" } else { ">" }),
                     )
                     .child(
@@ -97,7 +98,7 @@ impl GitSidebar {
                             .rounded(px(8.0))
                             .bg(rgb(0x252525))
                             .text_color(rgb(0xcacaca))
-                            .text_size(px(10.0))
+                            .text_size(px(theme::FONT_DETAIL))
                             .child(count.to_string()),
                     ),
             )
@@ -108,7 +109,7 @@ impl GitSidebar {
                         .py_px()
                         .rounded(px(3.0))
                         .text_color(rgb(0x505050))
-                        .text_size(px(10.0))
+                        .text_size(px(theme::FONT_DETAIL))
                         .hover(|s| s.bg(rgb(0x252525)).text_color(rgb(0xcacaca)))
                         .child(label),
                 )
@@ -159,7 +160,7 @@ impl GitSidebar {
                     .child(
                         div()
                             .text_color(rgb(0xcacaca))
-                            .text_size(px(12.0))
+                            .text_size(px(theme::FONT_BODY))
                             .overflow_hidden()
                             .child(filename),
                     ),
@@ -170,7 +171,7 @@ impl GitSidebar {
                     .flex_row()
                     .items_center()
                     .gap_1()
-                    .text_size(px(10.0))
+                    .text_size(px(theme::FONT_DETAIL))
                     .when(insertions > 0, |s| {
                         s.child(
                             div()
@@ -206,7 +207,7 @@ impl GitSidebar {
                     .border_1()
                     .border_color(rgb(0x252525))
                     .text_color(rgb(0x505050))
-                    .text_size(px(12.0))
+                    .text_size(px(theme::FONT_BODY))
                     .child("Commit message..."),
             )
             .child(
@@ -224,7 +225,7 @@ impl GitSidebar {
                             .bg(rgb(0x252525))
                             .rounded(px(4.0))
                             .text_color(rgb(0xcacaca))
-                            .text_size(px(12.0))
+                            .text_size(px(theme::FONT_BODY))
                             .cursor_pointer()
                             .hover(|s| s.bg(rgb(0x303030)))
                             .child("Commit"),
@@ -239,7 +240,7 @@ impl GitSidebar {
                             .bg(rgb(0x61afef))
                             .rounded(px(4.0))
                             .text_color(rgb(0x0e0c0c))
-                            .text_size(px(12.0))
+                            .text_size(px(theme::FONT_BODY))
                             .cursor_pointer()
                             .hover(|s| s.bg(rgb(0x71bfff)))
                             .child("Push"),
@@ -331,13 +332,13 @@ impl Render for GitSidebar {
                     .child(
                         div()
                             .text_color(rgb(0x61afef))
-                            .text_sm()
+                            .text_size(px(theme::FONT_DETAIL))
                             .child("*"),
                     )
                     .child(
                         div()
                             .text_color(rgb(0xcacaca))
-                            .text_sm()
+                            .text_size(px(theme::FONT_DETAIL))
                             .child(branch),
                     ),
             )

@@ -8245,51 +8245,12 @@ dependencies = [
  "ndk-context",
  "once_cell",
  "rust-embed",
- "zedra-editor",
+ "tree-sitter",
+ "tree-sitter-rust",
  "zedra-nav",
  "zedra-session",
  "zedra-terminal",
  "zedra-transport",
-]
-
-[[package]]
-name = "zedra-editor"
-version = "0.1.0"
-dependencies = [
- "gpui",
- "log",
- "tree-sitter",
- "tree-sitter-rust",
- "zedra-gesture",
-]
-
-[[package]]
-name = "zedra-fs"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "log",
- "serde",
- "tempfile",
-]
-
-[[package]]
-name = "zedra-gesture"
-version = "0.1.0"
-dependencies = [
- "gpui",
- "log",
-]
-
-[[package]]
-name = "zedra-git"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "log",
- "serde",
- "serde_json",
- "tempfile",
 ]
 
 [[package]]
@@ -8319,8 +8280,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
- "zedra-fs",
- "zedra-git",
  "zedra-relay",
  "zedra-rpc",
 ]

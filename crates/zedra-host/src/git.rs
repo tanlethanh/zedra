@@ -1,4 +1,4 @@
-// zedra-git: Git operations for Zedra
+// Git operations for Zedra
 //
 // Uses `git` CLI under the hood for zero-dependency simplicity.
 // All operations are synchronous and work on the host side.

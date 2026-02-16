@@ -4,14 +4,17 @@ use gpui::*;
 
 use crate::file_explorer::{FileExplorer, FileSelected};
 use crate::theme;
-use zedra_editor::{GitFileEntry, GitFileSelected, GitFileStatus, GitRepoState, GitSidebar};
+use crate::zedra_app::transport_badge_info;
+use crate::git_sidebar::{GitFileSelected, GitSidebar};
+use crate::git_stack::{GitFileEntry, GitFileStatus, GitRepoState};
+use zedra_session::SessionState;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DrawerSection {
     Files,
     Git,
     Terminal,
-    Packages,
+    Session,
 }
 
 #[derive(Clone, Debug)]
@@ -19,6 +22,7 @@ pub enum AppDrawerEvent {
     FileSelected(String),
     GitFileSelected(String),
     CloseRequested,
+    DisconnectRequested,
 }
 
 impl EventEmitter<AppDrawerEvent> for AppDrawer {}
@@ -80,6 +84,13 @@ impl AppDrawer {
         self.load_git_status();
     }
 
+    /// Reset state after disconnect so next session triggers fresh loads
+    pub fn reset_for_disconnect(&mut self, cx: &mut Context<Self>) {
+        self.git_loaded = false;
+        self.file_explorer
+            .update(cx, |fe, cx| fe.reset_to_demo(cx));
+    }
+
     fn load_git_status(&mut self) {
         if self.git_loaded {
             return;
@@ -135,7 +146,7 @@ impl AppDrawer {
             DrawerSection::Files => "Files",
             DrawerSection::Git => "Source Control",
             DrawerSection::Terminal => "Terminal",
-            DrawerSection::Packages => "Packages",
+            DrawerSection::Session => "Session",
         }
     }
 
@@ -174,9 +185,173 @@ impl AppDrawer {
             .child(
                 svg()
                     .path(icon_path)
-                    .size(px(20.0))
+                    .size(px(theme::ICON_NAV))
                     .text_color(color),
             )
+    }
+
+    fn render_session_tab(&self, cx: &mut Context<Self>) -> Div {
+        let session = zedra_session::active_session();
+
+        let Some(session) = session else {
+            return div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(rgb(theme::TEXT_MUTED))
+                .text_size(px(theme::FONT_BODY))
+                .child("No active session");
+        };
+
+        let state = session.state();
+        let transport_state = session.transport_state();
+        let latency = session.latency_ms();
+        let session_id = session
+            .session_id()
+            .unwrap_or_else(|| "—".to_string());
+
+        let (status_label, status_color) = match &state {
+            SessionState::Connected { .. } => ("Connected", theme::ACCENT_GREEN),
+            SessionState::Connecting => ("Connecting...", theme::ACCENT_YELLOW),
+            SessionState::Disconnected => ("Disconnected", theme::ACCENT_RED),
+            SessionState::Error(_) => ("Error", theme::ACCENT_RED),
+        };
+
+        let (hostname, workdir) = match &state {
+            SessionState::Connected { hostname, workdir } => {
+                (hostname.clone(), workdir.clone())
+            }
+            _ => ("—".to_string(), "—".to_string()),
+        };
+
+        let transport_info = transport_state
+            .as_ref()
+            .map(|ts| transport_badge_info(ts, latency));
+
+        let info_row =
+            |label: &'static str, value: String| -> Div {
+                div()
+                    .py(px(6.0))
+                    .child(
+                        div()
+                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_size(px(theme::FONT_DETAIL))
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .mt(px(2.0))
+                            .text_color(rgb(theme::TEXT_PRIMARY))
+                            .text_size(px(theme::FONT_BODY))
+                            .child(value),
+                    )
+            };
+
+        let mut content = div()
+            .px(px(16.0))
+            .pt(px(12.0))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.0))
+                    .pb(px(10.0))
+                    .border_b_1()
+                    .border_color(rgb(theme::BORDER_SUBTLE))
+                    .child(
+                        div()
+                            .w(px(theme::ICON_STATUS))
+                            .h(px(theme::ICON_STATUS))
+                            .rounded(px(3.0))
+                            .bg(rgb(status_color)),
+                    )
+                    .child(
+                        div()
+                            .text_color(rgb(theme::TEXT_PRIMARY))
+                            .text_size(px(theme::FONT_BODY))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(status_label),
+                    ),
+            )
+            .child(info_row("Hostname", hostname))
+            .child(info_row("Directory", workdir))
+            .child(info_row("Session ID", session_id));
+
+        if let Some((transport_label, dot_color)) = transport_info {
+            content = content.child(
+                div()
+                    .py(px(6.0))
+                    .child(
+                        div()
+                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_size(px(theme::FONT_DETAIL))
+                            .child("Transport"),
+                    )
+                    .child(
+                        div()
+                            .mt(px(2.0))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(
+                                div()
+                                    .w(px(theme::ICON_STATUS))
+                                    .h(px(theme::ICON_STATUS))
+                                    .rounded(px(3.0))
+                                    .bg(rgb(dot_color)),
+                            )
+                            .child(
+                                div()
+                                    .text_color(rgb(dot_color))
+                                    .text_size(px(theme::FONT_BODY))
+                                    .child(transport_label),
+                            ),
+                    ),
+            );
+        }
+
+        if let SessionState::Error(msg) = &state {
+            content = content.child(
+                div()
+                    .pt(px(6.0))
+                    .text_color(rgb(theme::ACCENT_RED))
+                    .text_size(px(theme::FONT_BODY))
+                    .child(msg.clone()),
+            );
+        }
+
+        let disconnect_button = div()
+            .id("session-disconnect-btn")
+            .mx(px(16.0))
+            .mt(px(16.0))
+            .px(px(12.0))
+            .py(px(8.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(rgb(theme::ACCENT_RED))
+            .text_color(rgb(theme::ACCENT_RED))
+            .text_size(px(theme::FONT_BODY))
+            .cursor_pointer()
+            .hover(|s| s.bg(gpui::hsla(0.0, 0.6, 0.5, 0.1)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_this, _event, _window, cx| {
+                    cx.emit(AppDrawerEvent::DisconnectRequested);
+                }),
+            )
+            .child(div().flex().justify_center().child("Disconnect"));
+
+        div()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .child(content)
+            .child(disconnect_button)
     }
 }
 
@@ -208,6 +383,7 @@ impl Render for AppDrawer {
                 .into_any_element(),
             DrawerSection::Git => div()
                 .flex_1()
+                .overflow_hidden()
                 .child(self.git_sidebar.clone())
                 .into_any_element(),
             DrawerSection::Terminal => div()
@@ -216,18 +392,10 @@ impl Render for AppDrawer {
                 .items_center()
                 .justify_center()
                 .text_color(rgb(theme::TEXT_MUTED))
-                .text_sm()
+                .text_size(px(theme::FONT_BODY))
                 .child("Terminal sessions")
                 .into_any_element(),
-            DrawerSection::Packages => div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(rgb(theme::TEXT_MUTED))
-                .text_sm()
-                .child("Package manager")
-                .into_any_element(),
+            DrawerSection::Session => self.render_session_tab(cx).into_any_element(),
         };
 
         let density = crate::android_jni::get_density();
@@ -259,7 +427,7 @@ impl Render for AppDrawer {
                     .child(
                         div()
                             .text_color(rgb(theme::TEXT_SECONDARY))
-                            .text_sm()
+                            .text_size(px(theme::FONT_HEADING))
                             .font_weight(FontWeight::MEDIUM)
                             .child(title),
                     ),
@@ -279,7 +447,7 @@ impl Render for AppDrawer {
                     .child(self.nav_icon("icons/folder.svg", DrawerSection::Files, cx))
                     .child(self.nav_icon("icons/git-branch.svg", DrawerSection::Git, cx))
                     .child(self.nav_icon("icons/terminal.svg", DrawerSection::Terminal, cx))
-                    .child(self.nav_icon("icons/cube.svg", DrawerSection::Packages, cx)),
+                    .child(self.nav_icon("icons/server.svg", DrawerSection::Session, cx)),
             )
     }
 }

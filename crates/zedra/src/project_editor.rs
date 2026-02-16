@@ -11,7 +11,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::file_explorer::{FileExplorer, FileSelected};
-use zedra_editor::EditorView;
+use crate::code_editor::EditorView;
 
 const SIDEBAR_WIDTH: f32 = 260.0;
 

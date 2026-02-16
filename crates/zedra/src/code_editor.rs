@@ -3,13 +3,13 @@ use std::ops::Range;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use crate::buffer::Buffer;
-use crate::highlighter::Highlighter;
-use crate::theme::SyntaxTheme;
+use crate::text_buffer::Buffer;
+use crate::syntax_highlighter::Highlighter;
+use crate::syntax_theme::SyntaxTheme;
 
-const LINE_HEIGHT: f32 = 18.0;
-const GUTTER_WIDTH: f32 = 48.0;
-const FONT_SIZE: f32 = 12.0;
+const LINE_HEIGHT: f32 = 15.0;
+const GUTTER_WIDTH: f32 = 36.0;
+const FONT_SIZE: f32 = 10.0;
 
 /// A code editor view with syntax highlighting and virtual scrolling.
 pub struct EditorView {

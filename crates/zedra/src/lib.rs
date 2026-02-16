@@ -3,6 +3,16 @@
 // Shared color constants (Figma palette)
 pub mod theme;
 
+// Editor: text buffer, syntax highlighting, code editor view
+pub mod text_buffer;
+pub mod syntax_highlighter;
+pub mod syntax_theme;
+pub mod code_editor;
+pub mod diff_view;
+pub mod git_diff_view;
+pub mod git_sidebar;
+pub mod git_stack;
+
 // Home screen (starting + projects)
 pub mod home_view;
 
@@ -17,9 +27,6 @@ pub mod zedra_app;
 
 // File explorer view
 pub mod file_explorer;
-
-// File preview card grid
-pub mod file_preview_list;
 
 // Project editor: split-pane file explorer + code editor
 pub mod project_editor;

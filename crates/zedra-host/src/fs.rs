@@ -1,4 +1,4 @@
-// zedra-fs: Filesystem operations for Zedra
+// Filesystem operations for Zedra
 //
 // Provides a trait-based filesystem abstraction with a local implementation.
 // The trait allows swapping in remote (RPC-backed) implementations on mobile.

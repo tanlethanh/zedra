@@ -3,12 +3,13 @@ use std::ops::Range;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use crate::highlighter::Highlighter;
-use crate::theme::SyntaxTheme;
+use crate::syntax_highlighter::Highlighter;
+use crate::syntax_theme::SyntaxTheme;
+use crate::theme;
 
-const LINE_HEIGHT: f32 = 20.0;
-const GUTTER_WIDTH: f32 = 40.0;
-const FONT_SIZE: f32 = 13.0;
+const LINE_HEIGHT: f32 = 15.0;
+const GUTTER_WIDTH: f32 = 36.0;
+const FONT_SIZE: f32 = 10.0;
 
 /// Type of change for a diff line
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -612,7 +613,7 @@ impl DiffView {
                     .py_1()
                     .rounded(px(4.0))
                     .cursor_pointer()
-                    .text_sm()
+                    .text_size(px(theme::FONT_DETAIL))
                     .when(is_active, |s| s.bg(rgb(0x2c313a)).text_color(rgb(0xabb2bf)))
                     .when(!is_active, |s| {
                         s.text_color(rgb(0x636d83)).hover(|s| s.bg(rgb(0x2c313a)))
@@ -661,13 +662,13 @@ impl DiffView {
                     .child(
                         div()
                             .text_color(rgb(0x98c379))
-                            .text_sm()
+                            .text_size(px(theme::FONT_DETAIL))
                             .child(format!("+{}", stats.0)),
                     )
                     .child(
                         div()
                             .text_color(rgb(0xe06c75))
-                            .text_sm()
+                            .text_size(px(theme::FONT_DETAIL))
                             .child(format!("-{}", stats.1)),
                     ),
             )
@@ -695,7 +696,7 @@ impl DiffView {
                     .child(
                         div()
                             .text_color(rgb(0x636d83))
-                            .text_sm()
+                            .text_size(px(theme::FONT_DETAIL))
                             .child(format!("{}/{}", self.current_file + 1, self.diffs.len())),
                     )
                     // Next file button
@@ -723,7 +724,7 @@ impl DiffView {
                             .cursor_pointer()
                             .bg(rgb(0x2c313a))
                             .text_color(rgb(0xabb2bf))
-                            .text_sm()
+                            .text_size(px(theme::FONT_DETAIL))
                             .hover(|s| s.bg(rgb(0x3e4451)))
                             .on_mouse_down(
                                 MouseButton::Left,

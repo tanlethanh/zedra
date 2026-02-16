@@ -2,6 +2,8 @@ use std::sync::{Arc, Mutex};
 
 use gpui::*;
 
+use crate::theme;
+
 #[derive(Clone, Debug)]
 pub struct FileSelected {
     pub path: String,
@@ -77,6 +79,13 @@ impl FileExplorer {
         explorer.try_load_remote_root(cx);
 
         explorer
+    }
+
+    /// Reset to demo data (e.g. after disconnect)
+    pub fn reset_to_demo(&mut self, cx: &mut Context<Self>) {
+        self.entries = demo_entries();
+        self.remote_loaded = false;
+        cx.notify();
     }
 
     /// Attempt to load the root directory listing from the active remote session
@@ -293,6 +302,11 @@ impl Focusable for FileExplorer {
 
 impl Render for FileExplorer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // If a session appeared after construction, load remote root
+        if !self.remote_loaded && zedra_session::active_session().is_some() {
+            self.try_load_remote_root(cx);
+        }
+
         // Apply any pending async results
         self.apply_pending_entries();
         self.apply_pending_children();
@@ -317,25 +331,25 @@ impl Render for FileExplorer {
 
             let icon_element: AnyElement = if loading {
                 div()
-                    .text_color(rgb(0x505050))
-                    .text_sm()
+                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_size(px(theme::FONT_BODY))
                     .child("...")
                     .into_any_element()
             } else if is_dir {
-                let icon_path = if expanded {
-                    "icons/folder-open.svg"
+                let (icon_path, icon_size) = if expanded {
+                    ("icons/folder-open.svg", px(theme::ICON_FILE_DIR))
                 } else {
-                    "icons/folder.svg"
+                    ("icons/folder.svg", px(theme::ICON_FILE))
                 };
                 svg()
                     .path(icon_path)
-                    .size(px(16.0))
-                    .text_color(rgb(0xcacaca))
+                    .size(icon_size)
+                    .text_color(rgb(theme::TEXT_SECONDARY))
                     .into_any_element()
             } else {
                 svg()
                     .path("icons/file.svg")
-                    .size(px(16.0))
+                    .size(px(theme::ICON_FILE))
                     .text_color(rgb(0x808080))
                     .into_any_element()
             };
@@ -345,8 +359,8 @@ impl Render for FileExplorer {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(6.0))
-                    .py(px(6.0))
+                    .gap(px(5.0))
+                    .py(px(4.0))
                     .pl(px(12.0 + indent))
                     .pr(px(8.0))
                     .cursor_pointer()
@@ -366,7 +380,7 @@ impl Render for FileExplorer {
                     .child(
                         div()
                             .text_color(text_color)
-                            .text_sm()
+                            .text_size(px(theme::FONT_BODY))
                             .child(name),
                     ),
             );

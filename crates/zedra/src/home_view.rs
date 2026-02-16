@@ -79,7 +79,7 @@ impl HomeView {
                     .child(
                         div()
                             .text_color(rgb(theme::TEXT_PRIMARY))
-                            .text_size(px(28.0))
+                            .text_size(px(theme::FONT_TITLE))
                             .font_weight(FontWeight::BOLD)
                             .child("Zedra"),
                     )
@@ -99,26 +99,26 @@ impl HomeView {
                             .child(
                                 div()
                                     .text_color(rgb(theme::TEXT_MUTED))
-                                    .text_xs()
+                                    .text_size(px(theme::FONT_DETAIL))
                                     .child("# Install zedra-host on your machine"),
                             )
                             .child(
                                 div()
                                     .text_color(rgb(theme::TEXT_SECONDARY))
-                                    .text_xs()
+                                    .text_size(px(theme::FONT_DETAIL))
                                     .child("cargo install zedra-host"),
                             )
                             .child(
                                 div()
                                     .text_color(rgb(theme::TEXT_MUTED))
-                                    .text_xs()
+                                    .text_size(px(theme::FONT_DETAIL))
                                     .mt_2()
                                     .child("# Start the daemon"),
                             )
                             .child(
                                 div()
                                     .text_color(rgb(theme::TEXT_SECONDARY))
-                                    .text_xs()
+                                    .text_size(px(theme::FONT_DETAIL))
                                     .child("zedra-host listen"),
                             ),
                     )
@@ -136,7 +136,7 @@ impl HomeView {
                             .cursor_pointer()
                             .hover(|s| s.bg(theme::hover_bg()))
                             .text_color(rgb(theme::TEXT_PRIMARY))
-                            .text_sm()
+                            .text_size(px(theme::FONT_BODY))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
@@ -158,7 +158,7 @@ impl HomeView {
                             .cursor_pointer()
                             .hover(|s| s.bg(theme::hover_bg()))
                             .text_color(rgb(theme::TEXT_PRIMARY))
-                            .text_sm()
+                            .text_size(px(theme::FONT_BODY))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
@@ -172,7 +172,7 @@ impl HomeView {
                         div()
                             .mt_8()
                             .text_color(rgb(theme::TEXT_MUTED))
-                            .text_xs()
+                            .text_size(px(theme::FONT_DETAIL))
                             .child("zedra v0.1.0"),
                     ),
             )
@@ -204,13 +204,13 @@ impl HomeView {
                             .child(
                                 svg()
                                     .path("icons/logo.svg")
-                                    .size(px(24.0))
+                                    .size(px(theme::ICON_HEADER))
                                     .text_color(rgb(theme::TEXT_PRIMARY)),
                             )
                             .child(
                                 div()
                                     .text_color(rgb(theme::TEXT_PRIMARY))
-                                    .text_sm()
+                                    .text_size(px(theme::FONT_BODY))
                                     .font_weight(FontWeight::BOLD)
                                     .child("Zedra"),
                             ),
@@ -225,7 +225,7 @@ impl HomeView {
                             .items_center()
                             .justify_center()
                             .text_color(rgb(theme::TEXT_MUTED))
-                            .text_xs()
+                            .text_size(px(theme::FONT_DETAIL))
                             .child("U"),
                     ),
             )
@@ -241,7 +241,7 @@ impl HomeView {
                     .child(
                         div()
                             .text_color(rgb(theme::TEXT_MUTED))
-                            .text_sm()
+                            .text_size(px(theme::FONT_BODY))
                             .child("We need money!"),
                     )
                     // Project card placeholders
@@ -265,7 +265,7 @@ impl HomeView {
                             .cursor_pointer()
                             .hover(|s| s.bg(theme::hover_bg()))
                             .text_color(rgb(theme::TEXT_PRIMARY))
-                            .text_sm()
+                            .text_size(px(theme::FONT_BODY))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
@@ -291,13 +291,13 @@ impl HomeView {
             .child(
                 div()
                     .text_color(rgb(theme::TEXT_PRIMARY))
-                    .text_sm()
+                    .text_size(px(theme::FONT_BODY))
                     .child(name.to_string()),
             )
             .child(
                 div()
                     .text_color(rgb(theme::TEXT_MUTED))
-                    .text_xs()
+                    .text_size(px(theme::FONT_DETAIL))
                     .child(description.to_string()),
             )
     }
