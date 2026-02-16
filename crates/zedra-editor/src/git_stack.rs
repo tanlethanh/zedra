@@ -42,7 +42,7 @@ pub enum GitFileStatus {
 }
 
 impl GitFileStatus {
-    fn icon(&self) -> &'static str {
+    pub fn icon(&self) -> &'static str {
         match self {
             GitFileStatus::Staged => "+",
             GitFileStatus::Modified => "M",
@@ -53,7 +53,7 @@ impl GitFileStatus {
         }
     }
 
-    fn color(&self) -> Hsla {
+    pub fn color(&self) -> Hsla {
         match self {
             GitFileStatus::Staged => rgb(0x98c379).into(),    // green
             GitFileStatus::Modified => rgb(0xe5c07b).into(),  // yellow
@@ -216,6 +216,11 @@ impl GitStack {
     pub fn with_repo_state(mut self, state: GitRepoState) -> Self {
         self.repo_state = state;
         self
+    }
+
+    /// Public access to sample diffs (used by GitDiffView integration)
+    pub fn sample_diffs_public() -> Vec<FileDiff> {
+        Self::sample_diffs()
     }
 
     /// Generate sample diffs matching the repo state

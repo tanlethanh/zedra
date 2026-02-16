@@ -1,19 +1,19 @@
 // Root application view for Zedra
 // Screen-based navigation: Home → Editor
-// Drawer-based navigation with footer icons replaces the bottom tab bar.
+// Drawer overlays full screen, bottom nav bar switches drawer tab content.
 
 use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use crate::app_drawer::{AppDrawer, AppDrawerEvent, DrawerSection};
+use crate::app_drawer::{AppDrawer, AppDrawerEvent};
 use crate::file_preview_list::{FilePreviewList, PreviewSelected, SAMPLE_FILES};
 use crate::input::{Input, InputChanged};
 use crate::project_editor::ProjectEditor;
 use crate::home_view::{HomeEvent, HomeView};
 use crate::theme;
-use zedra_editor::{EditorView, GitStack};
+use zedra_editor::{EditorView, GitDiffView};
 use zedra_nav::{DrawerHost, HeaderConfig, StackNavigator};
 use zedra_session::RemoteSession;
 use zedra_terminal::view::{DisconnectRequested, TerminalView};
@@ -216,6 +216,176 @@ enum AppScreen {
 }
 
 // ---------------------------------------------------------------------------
+// EditorContent — header + separator + stack (rendered inside DrawerHost)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct DisconnectEvent;
+
+impl EventEmitter<DisconnectEvent> for EditorContent {}
+
+pub struct EditorContent {
+    editor_stack: Entity<StackNavigator>,
+    drawer_host: Entity<DrawerHost>,
+    terminal_view: Option<Entity<TerminalView>>,
+}
+
+impl EditorContent {
+    pub fn new(
+        editor_stack: Entity<StackNavigator>,
+        drawer_host: Entity<DrawerHost>,
+        terminal_view: Option<Entity<TerminalView>>,
+        _cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            editor_stack,
+            drawer_host,
+            terminal_view,
+        }
+    }
+
+    pub fn set_terminal_view(
+        &mut self,
+        tv: Option<Entity<TerminalView>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.terminal_view = tv;
+        cx.notify();
+    }
+}
+
+impl Render for EditorContent {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let title = self
+            .editor_stack
+            .read(cx)
+            .current_title()
+            .cloned()
+            .unwrap_or_default();
+
+        let (terminal_connected, terminal_status) = self
+            .terminal_view
+            .as_ref()
+            .map(|tv| {
+                let tv = tv.read(cx);
+                (tv.is_connected(), tv.status_text().to_string())
+            })
+            .unwrap_or((false, String::new()));
+
+        let has_terminal = self.terminal_view.is_some();
+
+        // Status bar inset (applied locally so backdrop stays full-screen)
+        let density = crate::android_jni::get_density();
+        let top_inset = if density > 0.0 {
+            crate::android_jni::get_system_inset_top() as f32 / density
+        } else {
+            0.0
+        };
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(rgb(theme::BG_PRIMARY))
+            // Header (top_inset + 88px)
+            .child(
+                div()
+                    .h(px(top_inset + 88.0))
+                    .pt(px(top_inset))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .px(px(16.0))
+                    .bg(rgb(theme::BG_PRIMARY))
+                    .child(
+                        // Logo button (opens/closes drawer)
+                        div()
+                            .id("logo-btn")
+                            .w(px(36.0))
+                            .h(px(36.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(6.0))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme::hover_bg()))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _event, _window, cx| {
+                                    if this.drawer_host.read(cx).is_open() {
+                                        this.drawer_host
+                                            .update(cx, |host, cx| host.close(cx));
+                                    } else {
+                                        this.drawer_host
+                                            .update(cx, |host, cx| host.open(cx));
+                                    }
+                                }),
+                            )
+                            .child(
+                                svg()
+                                    .path("icons/logo.svg")
+                                    .size(px(24.0))
+                                    .text_color(rgb(theme::TEXT_PRIMARY)),
+                            ),
+                    )
+                    .child(
+                        // Title + connection status
+                        div()
+                            .ml_3()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_color(rgb(theme::TEXT_SECONDARY))
+                                    .text_sm()
+                                    .child(title),
+                            )
+                            .when(has_terminal && !terminal_connected, |el| {
+                                el.child(
+                                    div()
+                                        .text_color(rgb(theme::TEXT_MUTED))
+                                        .text_xs()
+                                        .child(terminal_status.clone()),
+                                )
+                            }),
+                    )
+                    // Disconnect button (only when terminal is connected)
+                    .when(terminal_connected, |el| {
+                        el.child(
+                            div()
+                                .mr_2()
+                                .px_2()
+                                .py(px(4.0))
+                                .rounded(px(4.0))
+                                .border_1()
+                                .border_color(rgb(theme::ACCENT_RED))
+                                .text_color(rgb(theme::ACCENT_RED))
+                                .text_xs()
+                                .cursor_pointer()
+                                .hover(|s| s.bg(gpui::hsla(0.0, 0.6, 0.5, 0.1)))
+                                .child("Disconnect")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|_this, _event, _window, cx| {
+                                        cx.emit(DisconnectEvent);
+                                    }),
+                                ),
+                        )
+                    }),
+            )
+            // Separator
+            .child(div().h(px(1.0)).bg(rgb(theme::BORDER_SUBTLE)))
+            // Main content (stack navigator)
+            .child(
+                div()
+                    .flex_1()
+                    .child(self.editor_stack.clone()),
+            )
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ZedraApp — screen-based navigation (Home → Editor)
 // ---------------------------------------------------------------------------
 
@@ -225,10 +395,11 @@ pub struct ZedraApp {
     connect_view: Option<Entity<ConnectView>>,
     drawer_host: Entity<DrawerHost>,
     editor_stack: Entity<StackNavigator>,
+    editor_content: Entity<EditorContent>,
+    _app_drawer: Entity<AppDrawer>,
     terminal_view: Option<Entity<TerminalView>>,
     session: Option<Arc<RemoteSession>>,
     editor_showing_project: bool,
-    active_section: DrawerSection,
     render_count: u64,
     _subscriptions: Vec<Subscription>,
 }
@@ -298,12 +469,45 @@ impl ZedraApp {
             stack.replace(preview_list.into(), "Code Samples", cx);
         });
 
-        // --- DrawerHost (wraps editor content, drawer = AppDrawer) ---
+        // --- DrawerHost (initially wraps editor_stack, we'll replace content below) ---
         let editor_stack_clone = editor_stack.clone();
         let drawer_host = cx.new(|cx| {
             let mut host = DrawerHost::new(editor_stack_clone.into(), cx);
             host.set_edge_zone_width(px(180.0));
             host
+        });
+
+        // --- EditorContent (header + separator + stack) ---
+        let drawer_host_for_content = drawer_host.clone();
+        let editor_stack_for_content = editor_stack.clone();
+        let editor_content = cx.new(|cx| {
+            EditorContent::new(editor_stack_for_content, drawer_host_for_content, None, cx)
+        });
+
+        // Subscribe to disconnect events from EditorContent
+        let sub = cx.subscribe(
+            &editor_content,
+            |this: &mut Self, _emitter, _event: &DisconnectEvent, cx| {
+                log::info!("Disconnect requested from EditorContent header");
+                zedra_session::clear_active_session();
+                this.session = None;
+                this.terminal_view = None;
+                this.editor_content
+                    .update(cx, |ec, cx| ec.set_terminal_view(None, cx));
+                this.editor_showing_project = false;
+                this.screen = AppScreen::Home;
+                let preview = cx.new(|cx| FilePreviewList::new(cx));
+                this.editor_stack.update(cx, |stack, cx| {
+                    stack.replace(preview.into(), "Code Samples", cx);
+                });
+                cx.notify();
+            },
+        );
+        subscriptions.push(sub);
+
+        // Update DrawerHost to wrap EditorContent (so overlay covers header)
+        drawer_host.update(cx, |host, _cx| {
+            host.set_content(editor_content.clone().into());
         });
 
         // --- Pre-create AppDrawer and register with DrawerHost ---
@@ -312,18 +516,21 @@ impl ZedraApp {
             host.set_drawer(app_drawer.clone().into());
         });
 
-        // Subscribe to AppDrawer events once (persists across open/close)
+        // Subscribe to AppDrawer events
         let drawer_host_for_sub = drawer_host.clone();
         let editor_stack_for_sub = editor_stack.clone();
         let sub = cx.subscribe_in(
             &app_drawer,
             window,
-            move |this: &mut ZedraApp,
+            move |_this: &mut ZedraApp,
                   _emitter: &Entity<AppDrawer>,
                   event: &AppDrawerEvent,
                   _window: &mut Window,
                   cx: &mut Context<ZedraApp>| {
                 match event {
+                    AppDrawerEvent::CloseRequested => {
+                        drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
+                    }
                     AppDrawerEvent::FileSelected(path) => {
                         drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
                         if !path.is_empty() {
@@ -364,10 +571,24 @@ impl ZedraApp {
                             }
                         }
                     }
-                    AppDrawerEvent::SectionChanged(section) => {
-                        this.active_section = *section;
+                    AppDrawerEvent::GitFileSelected(path) => {
                         drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
-                        this.switch_section(*section, cx);
+                        log::info!("Git file selected: {}", path);
+                        // Find the diff for this file and push a GitDiffView
+                        let diffs = zedra_editor::GitStack::sample_diffs_public();
+                        if let Some(diff) = diffs.into_iter().find(|d| d.new_path == *path) {
+                            let filename =
+                                path.rsplit('/').next().unwrap_or(path).to_string();
+                            let diff_view =
+                                cx.new(|cx| GitDiffView::new(diff, path.clone(), cx));
+                            editor_stack_for_sub.update(cx, |stack, cx| {
+                                stack.push(
+                                    diff_view.into(),
+                                    &format!("Diff: {}", filename),
+                                    cx,
+                                );
+                            });
+                        }
                     }
                 }
             },
@@ -380,10 +601,11 @@ impl ZedraApp {
             connect_view: None,
             drawer_host,
             editor_stack,
+            editor_content,
+            _app_drawer: app_drawer,
             terminal_view: None,
             session: None,
             editor_showing_project: false,
-            active_section: DrawerSection::Files,
             render_count: 0,
             _subscriptions: subscriptions,
         }
@@ -468,7 +690,7 @@ impl ZedraApp {
             .unwrap_or(px(9.0));
 
         let available_width = viewport.width;
-        // Vertical overhead: custom header (88px) + 1px separator
+        // Vertical overhead: header (88px) + separator (1px)
         let available_height = viewport.height - px(89.0);
 
         let columns = ((available_width / cell_width).floor() as usize).saturating_sub(1);
@@ -496,6 +718,8 @@ impl ZedraApp {
                 zedra_session::clear_active_session();
                 this.session = None;
                 this.terminal_view = None;
+                this.editor_content
+                    .update(cx, |ec, cx| ec.set_terminal_view(None, cx));
                 this.editor_showing_project = false;
                 this.screen = AppScreen::Home;
                 let preview = cx.new(|cx| FilePreviewList::new(cx));
@@ -515,50 +739,12 @@ impl ZedraApp {
             view.set_status(format!("Connecting to {}...", hostname));
         });
 
-        self.terminal_view = Some(terminal_view);
+        self.terminal_view = Some(terminal_view.clone());
+        self.editor_content.update(cx, |ec, cx| {
+            ec.set_terminal_view(Some(terminal_view), cx);
+        });
 
         (columns as u16, rows as u16)
-    }
-
-    fn open_app_drawer(&mut self, cx: &mut Context<Self>) {
-        self.drawer_host.update(cx, |host, cx| host.open(cx));
-    }
-
-    fn switch_section(&mut self, section: DrawerSection, cx: &mut Context<Self>) {
-        match section {
-            DrawerSection::Files => {
-                if zedra_session::active_session().is_some() && !self.editor_showing_project {
-                    let project_editor = cx.new(|cx| ProjectEditor::new(cx));
-                    self.editor_stack.update(cx, |stack, cx| {
-                        stack.replace(project_editor.into(), "Project", cx);
-                    });
-                    self.editor_showing_project = true;
-                } else if !self.editor_showing_project {
-                    let preview = cx.new(|cx| FilePreviewList::new(cx));
-                    self.editor_stack.update(cx, |stack, cx| {
-                        stack.replace(preview.into(), "Code Samples", cx);
-                    });
-                }
-            }
-            DrawerSection::Terminal => {
-                if let Some(terminal) = &self.terminal_view {
-                    let terminal = terminal.clone();
-                    self.editor_stack.update(cx, |stack, cx| {
-                        stack.replace(terminal.into(), "Terminal", cx);
-                    });
-                }
-            }
-            DrawerSection::Git => {
-                let git_stack = cx.new(|cx| GitStack::new(cx));
-                self.editor_stack.update(cx, |stack, cx| {
-                    stack.replace(git_stack.into(), "Git", cx);
-                });
-            }
-            DrawerSection::Packages => {
-                // Placeholder
-            }
-        }
-        cx.notify();
     }
 
     fn connect_with_peer_info(
@@ -594,118 +780,6 @@ impl ZedraApp {
         });
     }
 
-    fn render_editor_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = self
-            .editor_stack
-            .read(cx)
-            .current_title()
-            .cloned()
-            .unwrap_or_default();
-
-        // Read terminal connection state for header display
-        let (terminal_connected, terminal_status) = self
-            .terminal_view
-            .as_ref()
-            .map(|tv| {
-                let tv = tv.read(cx);
-                (tv.is_connected(), tv.status_text().to_string())
-            })
-            .unwrap_or((false, String::new()));
-
-        let has_terminal = self.terminal_view.is_some();
-
-        div()
-            .h(px(88.0))
-            .flex()
-            .flex_row()
-            .items_center()
-            .px(px(16.0))
-            .bg(rgb(theme::BG_PRIMARY))
-            .child(
-                // Logo button (opens drawer)
-                div()
-                    .id("logo-btn")
-                    .w(px(36.0))
-                    .h(px(36.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(6.0))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme::hover_bg()))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| {
-                            if this.drawer_host.read(cx).is_open() {
-                                this.drawer_host.update(cx, |host, cx| host.close(cx));
-                            } else {
-                                this.open_app_drawer(cx);
-                            }
-                        }),
-                    )
-                    .child(
-                        svg()
-                            .path("icons/logo.svg")
-                            .size(px(24.0))
-                            .text_color(rgb(theme::TEXT_PRIMARY)),
-                    ),
-            )
-            .child(
-                // Title + connection status
-                div()
-                    .ml_3()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .text_color(rgb(theme::TEXT_SECONDARY))
-                            .text_sm()
-                            .child(title),
-                    )
-                    .when(has_terminal && !terminal_connected, |el| {
-                        el.child(
-                            div()
-                                .text_color(rgb(theme::TEXT_MUTED))
-                                .text_xs()
-                                .child(terminal_status.clone()),
-                        )
-                    }),
-            )
-            // Disconnect button (only when terminal is connected)
-            .when(terminal_connected, |el| {
-                el.child(
-                    div()
-                        .mr_2()
-                        .px_2()
-                        .py(px(4.0))
-                        .rounded(px(4.0))
-                        .border_1()
-                        .border_color(rgb(theme::ACCENT_RED))
-                        .text_color(rgb(theme::ACCENT_RED))
-                        .text_xs()
-                        .cursor_pointer()
-                        .hover(|s| s.bg(gpui::hsla(0.0, 0.6, 0.5, 0.1)))
-                        .child("Disconnect")
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _event, _window, cx| {
-                                log::info!("Disconnect requested from header");
-                                zedra_session::clear_active_session();
-                                this.session = None;
-                                this.terminal_view = None;
-                                this.editor_showing_project = false;
-                                this.screen = AppScreen::Home;
-                                let preview = cx.new(|cx| FilePreviewList::new(cx));
-                                this.editor_stack.update(cx, |stack, cx| {
-                                    stack.replace(preview.into(), "Code Samples", cx);
-                                });
-                                cx.notify();
-                            }),
-                        ),
-                )
-            })
-    }
 }
 
 impl Render for ZedraApp {
@@ -773,11 +847,7 @@ impl Render for ZedraApp {
                     .bg(rgb(theme::BG_PRIMARY))
                     .flex()
                     .flex_col()
-                    // Custom 88px header
-                    .child(self.render_editor_header(cx))
-                    // Separator
-                    .child(div().h(px(1.0)).bg(rgb(theme::BORDER_SUBTLE)))
-                    // Main content (DrawerHost wrapping editor stack)
+                    // DrawerHost (contains EditorContent + drawer overlay)
                     .child(
                         div()
                             .flex_1()

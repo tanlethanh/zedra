@@ -24,6 +24,10 @@ static DISPLAY_DENSITY: Mutex<f32> = Mutex::new(3.0);
 // Global storage for soft keyboard height in physical pixels (0 = hidden)
 static KEYBOARD_HEIGHT: AtomicU32 = AtomicU32::new(0);
 
+// Global storage for system bar insets in physical pixels
+static SYSTEM_INSET_TOP: AtomicU32 = AtomicU32::new(0);
+static SYSTEM_INSET_BOTTOM: AtomicU32 = AtomicU32::new(0);
+
 /// Get the stored display density
 pub fn get_density() -> f32 {
     *DISPLAY_DENSITY.lock().unwrap()
@@ -32,6 +36,16 @@ pub fn get_density() -> f32 {
 /// Get the current soft keyboard height in physical pixels (0 = hidden)
 pub fn get_keyboard_height() -> u32 {
     KEYBOARD_HEIGHT.load(Ordering::Relaxed)
+}
+
+/// Get the system status bar inset in physical pixels
+pub fn get_system_inset_top() -> u32 {
+    SYSTEM_INSET_TOP.load(Ordering::Relaxed)
+}
+
+/// Get the system navigation bar inset in physical pixels
+pub fn get_system_inset_bottom() -> u32 {
+    SYSTEM_INSET_BOTTOM.load(Ordering::Relaxed)
 }
 
 /// Get the stored NativeWindow (must be called from main thread)
@@ -567,6 +581,24 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeFlingEvent(
         velocity_x,
         velocity_y,
     });
+}
+
+/// System insets changed callback
+///
+/// Called when the system bar insets change (status bar top, navigation bar bottom).
+/// Values are in physical pixels.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeSystemInsetsChanged(
+    _env: JNIEnv,
+    _class: JClass,
+    top: jint,
+    bottom: jint,
+) {
+    let t = top.max(0) as u32;
+    let b = bottom.max(0) as u32;
+    SYSTEM_INSET_TOP.store(t, Ordering::Relaxed);
+    SYSTEM_INSET_BOTTOM.store(b, Ordering::Relaxed);
+    log::info!("System insets changed: top={}px, bottom={}px", t, b);
 }
 
 /// Keyboard height changed callback

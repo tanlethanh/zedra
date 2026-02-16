@@ -108,6 +108,11 @@ impl DrawerHost {
         self.drawer_view = Some(view);
     }
 
+    /// Replace the main content view.
+    pub fn set_content(&mut self, content: AnyView) {
+        self.content = content;
+    }
+
     /// Animate the drawer open (slide-in).
     pub fn open(&mut self, cx: &mut Context<Self>) {
         let w = f32::from(self.width);
@@ -399,13 +404,16 @@ impl Render for DrawerHost {
                         .into_any_element()
                 };
 
-                // Drawer panel
+                // Drawer panel — flex col so child can use flex_1/size_full properly
                 let panel = div()
                     .absolute()
                     .top_0()
                     .bottom_0()
                     .w(px(drawer_width))
                     .bg(rgb(0x0e0c0c))
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
                     .child(drawer_view);
 
                 let panel: AnyElement = if animating {

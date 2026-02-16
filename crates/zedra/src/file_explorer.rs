@@ -303,17 +303,6 @@ impl Render for FileExplorer {
 
         for entry in flat {
             let indent = entry.depth as f32 * 16.0;
-            let icon = if entry.loading {
-                "  ..."
-            } else if entry.is_dir {
-                if entry.expanded {
-                    "▼ 📁"
-                } else {
-                    "▶ 📁"
-                }
-            } else {
-                "  📄"
-            };
             let text_color = if entry.is_dir {
                 rgb(0xffffff) // white for dirs
             } else {
@@ -322,13 +311,41 @@ impl Render for FileExplorer {
             let index_path = entry.index_path.clone();
             let is_dir = entry.is_dir;
             let name = entry.name.clone();
+            let loading = entry.loading;
+            let expanded = entry.expanded;
             let index_path_for_path = index_path.clone();
+
+            let icon_element: AnyElement = if loading {
+                div()
+                    .text_color(rgb(0x505050))
+                    .text_sm()
+                    .child("...")
+                    .into_any_element()
+            } else if is_dir {
+                let icon_path = if expanded {
+                    "icons/folder-open.svg"
+                } else {
+                    "icons/folder.svg"
+                };
+                svg()
+                    .path(icon_path)
+                    .size(px(16.0))
+                    .text_color(rgb(0xcacaca))
+                    .into_any_element()
+            } else {
+                svg()
+                    .path("icons/file.svg")
+                    .size(px(16.0))
+                    .text_color(rgb(0x808080))
+                    .into_any_element()
+            };
 
             list = list.child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
+                    .gap(px(6.0))
                     .py(px(6.0))
                     .pl(px(12.0 + indent))
                     .pr(px(8.0))
@@ -345,11 +362,12 @@ impl Render for FileExplorer {
                             }
                         }),
                     )
+                    .child(icon_element)
                     .child(
                         div()
                             .text_color(text_color)
                             .text_sm()
-                            .child(format!("{} {}", icon, name)),
+                            .child(name),
                     ),
             );
         }

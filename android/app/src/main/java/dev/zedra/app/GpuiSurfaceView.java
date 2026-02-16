@@ -77,10 +77,17 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
         setFocusable(true);
         setFocusableInTouchMode(true);
 
-        // Detect soft keyboard height changes via WindowInsets
+        // Detect soft keyboard and system bar insets via WindowInsets
         ViewCompat.setOnApplyWindowInsetsListener(this, (v, insets) -> {
+            // IME (keyboard) inset
             int imeHeight = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom;
             nativeKeyboardHeightChanged(imeHeight);
+
+            // System bar insets (status bar top, navigation bar bottom)
+            int systemTop = insets.getInsets(WindowInsetsCompat.Type.systemBars()).top;
+            int systemBottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom;
+            nativeSystemInsetsChanged(systemTop, systemBottom);
+
             return insets;
         });
 
@@ -379,4 +386,5 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
     private static native void nativeImeInput(long handle, String text);
     private static native void nativeFlingEvent(long handle, float velocityX, float velocityY);
     private static native void nativeKeyboardHeightChanged(int height);
+    private static native void nativeSystemInsetsChanged(int top, int bottom);
 }

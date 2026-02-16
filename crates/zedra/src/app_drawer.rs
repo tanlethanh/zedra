@@ -2,6 +2,7 @@ use gpui::*;
 
 use crate::file_explorer::{FileExplorer, FileSelected};
 use crate::theme;
+use zedra_editor::{GitFileSelected, GitSidebar};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DrawerSection {
@@ -14,13 +15,15 @@ pub enum DrawerSection {
 #[derive(Clone, Debug)]
 pub enum AppDrawerEvent {
     FileSelected(String),
-    SectionChanged(DrawerSection),
+    GitFileSelected(String),
+    CloseRequested,
 }
 
 impl EventEmitter<AppDrawerEvent> for AppDrawer {}
 
 pub struct AppDrawer {
     file_explorer: Entity<FileExplorer>,
+    git_sidebar: Entity<GitSidebar>,
     active_section: DrawerSection,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -29,8 +32,10 @@ pub struct AppDrawer {
 impl AppDrawer {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let file_explorer = cx.new(|cx| FileExplorer::new(cx));
+        let git_sidebar = cx.new(|cx| GitSidebar::new(cx));
 
         let mut subscriptions = Vec::new();
+
         let sub = cx.subscribe(
             &file_explorer,
             |_this: &mut Self, _emitter, event: &FileSelected, cx| {
@@ -39,11 +44,38 @@ impl AppDrawer {
         );
         subscriptions.push(sub);
 
+        let sub = cx.subscribe(
+            &git_sidebar,
+            |_this: &mut Self, _emitter, event: &GitFileSelected, cx| {
+                cx.emit(AppDrawerEvent::GitFileSelected(event.path.clone()));
+            },
+        );
+        subscriptions.push(sub);
+
         Self {
             file_explorer,
+            git_sidebar,
             active_section: DrawerSection::Files,
             focus_handle: cx.focus_handle(),
             _subscriptions: subscriptions,
+        }
+    }
+
+    pub fn set_section(&mut self, section: DrawerSection, cx: &mut Context<Self>) {
+        self.active_section = section;
+        cx.notify();
+    }
+
+    pub fn active_section(&self) -> DrawerSection {
+        self.active_section
+    }
+
+    fn section_title(&self) -> &'static str {
+        match self.active_section {
+            DrawerSection::Files => "Files",
+            DrawerSection::Git => "Source Control",
+            DrawerSection::Terminal => "Terminal",
+            DrawerSection::Packages => "Packages",
         }
     }
 
@@ -72,9 +104,11 @@ impl AppDrawer {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event, _window, cx| {
-                    this.active_section = section;
-                    cx.emit(AppDrawerEvent::SectionChanged(section));
-                    cx.notify();
+                    if this.active_section == section {
+                        cx.emit(AppDrawerEvent::CloseRequested);
+                    } else {
+                        this.set_section(section, cx);
+                    }
                 }),
             )
             .child(
@@ -93,76 +127,87 @@ impl Focusable for AppDrawer {
 }
 
 impl Render for AppDrawer {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let title = self.section_title();
+        let viewport_h = window.viewport_size().height;
+
+        let tab_content: AnyElement = match self.active_section {
+            DrawerSection::Files => div()
+                .id("drawer-file-tree")
+                .flex_1()
+                .overflow_y_scroll()
+                .child(self.file_explorer.clone())
+                .into_any_element(),
+            DrawerSection::Git => div()
+                .flex_1()
+                .child(self.git_sidebar.clone())
+                .into_any_element(),
+            DrawerSection::Terminal => div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(rgb(theme::TEXT_MUTED))
+                .text_sm()
+                .child("Terminal sessions")
+                .into_any_element(),
+            DrawerSection::Packages => div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(rgb(theme::TEXT_MUTED))
+                .text_sm()
+                .child("Package manager")
+                .into_any_element(),
+        };
+
+        let density = crate::android_jni::get_density();
+        let top_inset = if density > 0.0 {
+            crate::android_jni::get_system_inset_top() as f32 / density
+        } else {
+            0.0
+        };
+
         div()
             .track_focus(&self.focus_handle)
             .flex()
             .flex_col()
-            .size_full()
+            .w_full()
+            .h(viewport_h)
             .bg(rgb(theme::BG_PRIMARY))
-            // Header (88px): logo + project info
+            // Status bar spacer (separate from header to avoid h+pt conflict)
+            .child(div().h(px(top_inset)))
+            // Section header (fixed 48px, no padding)
             .child(
                 div()
-                    .h(px(88.0))
+                    .h(px(48.0))
                     .flex()
                     .flex_row()
                     .items_center()
                     .px(px(16.0))
-                    .gap(px(12.0))
-                    .child(
-                        svg()
-                            .path("icons/logo.svg")
-                            .size(px(28.0))
-                            .text_color(rgb(theme::TEXT_PRIMARY)),
-                    )
+                    .border_b_1()
+                    .border_color(rgb(theme::BORDER_SUBTLE))
                     .child(
                         div()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_color(rgb(theme::TEXT_PRIMARY))
-                                    .text_sm()
-                                    .font_weight(FontWeight::BOLD)
-                                    .child("Zedra"),
-                            )
-                            .child(
-                                div()
-                                    .text_color(rgb(theme::TEXT_MUTED))
-                                    .text_xs()
-                                    .child("~/projects"),
-                            ),
+                            .text_color(rgb(theme::TEXT_SECONDARY))
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(title),
                     ),
             )
-            // Separator
+            // Tab content
+            .child(tab_content)
+            // Footer nav bar — explicit py for balanced padding
             .child(
                 div()
-                    .h(px(1.0))
-                    .bg(rgb(theme::BORDER_SUBTLE)),
-            )
-            // File tree (scrollable middle)
-            .child(
-                div()
-                    .id("drawer-file-tree")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .child(self.file_explorer.clone()),
-            )
-            // Separator
-            .child(
-                div()
-                    .h(px(1.0))
-                    .bg(rgb(theme::BORDER_SUBTLE)),
-            )
-            // Footer (88px): 4 nav icons
-            .child(
-                div()
-                    .h(px(88.0))
                     .flex()
                     .flex_row()
-                    .items_center()
+                    .py(px(10.0))
                     .justify_center()
                     .gap(px(36.0))
+                    .border_t_1()
+                    .border_color(rgb(theme::BORDER_SUBTLE))
                     .child(self.nav_icon("icons/folder.svg", DrawerSection::Files, cx))
                     .child(self.nav_icon("icons/git-branch.svg", DrawerSection::Git, cx))
                     .child(self.nav_icon("icons/terminal.svg", DrawerSection::Terminal, cx))
