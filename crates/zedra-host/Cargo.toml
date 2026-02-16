@@ -60,6 +60,9 @@ anyhow.workspace = true
 # Workspace crates
 zedra-rpc = { path = "../zedra-rpc" }
 zedra-relay = { path = "../zedra-relay" }
+zedra-transport = { path = "../zedra-transport" }
+zedra-identity = { path = "../zedra-identity" }
+zedra-crypto = { path = "../zedra-crypto" }
 
 # Session IDs
 uuid = { version = "1", features = ["v4"] }

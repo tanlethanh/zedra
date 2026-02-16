@@ -1,4 +1,11 @@
-import type { Env, SendRequest, SignalData } from "./types";
+import type {
+  Env,
+  SendRequest,
+  SignalData,
+  RegisterRequest,
+  HeartbeatRequest,
+  SignalCandidates,
+} from "./types";
 import {
   createRoom,
   joinRoom,
@@ -8,6 +15,13 @@ import {
 } from "./rooms";
 import { sendMessages, recvMessages } from "./messaging";
 import { setSignal, getSignal } from "./signaling";
+import {
+  registerHost,
+  heartbeatHost,
+  lookupHost,
+  storeSignal,
+  drainSignals,
+} from "./hosts";
 import {
   errorResponse,
   jsonResponse,
@@ -62,13 +76,19 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   const method = request.method;
   const { segments, code } = parseRoute(url);
 
+  // --- v2 Routes: Host Registry (Coordination Server) ---
+  // Handle v2 routes first since they don't use room codes.
+  if (segments[0] === "v2") {
+    return handleV2Request(method, segments, request, env);
+  }
+
   // POST /rooms - Create room (no auth required)
   if (method === "POST" && segments.length === 1 && segments[0] === "rooms") {
     const result = await createRoom(env);
     return jsonResponse(result, 201);
   }
 
-  // All other routes require a valid room code
+  // All other v1 routes require a valid room code
   if (!code || !validateRoomCode(code)) {
     return errorResponse("Invalid room code", 400);
   }
@@ -187,6 +207,87 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
 
   return errorResponse("Not found", 404);
 }
+
+/** Handle v2 coordination server routes. */
+async function handleV2Request(
+  method: string,
+  segments: string[],
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  // POST /v2/hosts/register
+  if (
+    method === "POST" &&
+    segments.length === 3 &&
+    segments[1] === "hosts" &&
+    segments[2] === "register"
+  ) {
+    const body = (await request.json()) as RegisterRequest;
+    if (!body.device_id || !body.public_key) {
+      return errorResponse("device_id and public_key required", 400);
+    }
+    const result = await registerHost(env, body);
+    return jsonResponse(result, 201);
+  }
+
+  // POST /v2/hosts/:device_id/heartbeat
+  if (
+    method === "POST" &&
+    segments.length === 4 &&
+    segments[1] === "hosts" &&
+    segments[3] === "heartbeat"
+  ) {
+    const deviceId = segments[2];
+    const body = (await request.json()) as HeartbeatRequest;
+    const result = await heartbeatHost(env, deviceId, body);
+    if (!result) return errorResponse("Host not registered", 404);
+    return jsonResponse(result);
+  }
+
+  // GET /v2/hosts/:device_id
+  if (method === "GET" && segments.length === 3 && segments[1] === "hosts") {
+    const deviceId = segments[2];
+    const result = await lookupHost(env, deviceId);
+    if (!result) return errorResponse("Host not found", 404);
+    return jsonResponse(result);
+  }
+
+  // POST /v2/signal/:device_id
+  if (method === "POST" && segments.length === 3 && segments[1] === "signal") {
+    const targetDeviceId = segments[2];
+    const body = (await request.json()) as SignalCandidates;
+    if (!body.from_device_id || !body.candidates) {
+      return errorResponse("from_device_id and candidates required", 400);
+    }
+    await storeSignal(env, targetDeviceId, body);
+    return jsonResponse({ ok: true });
+  }
+
+  // GET /v2/signal/:device_id
+  if (method === "GET" && segments.length === 3 && segments[1] === "signal") {
+    const deviceId = segments[2];
+    const signals = await drainSignals(env, deviceId);
+    return jsonResponse({ signals });
+  }
+
+  // GET /v2/ws/:room_id - WebSocket relay (upgrade to WebSocket)
+  if (method === "GET" && segments.length === 3 && segments[1] === "ws") {
+    const roomId = segments[2];
+    const upgradeHeader = request.headers.get("Upgrade");
+    if (upgradeHeader !== "websocket") {
+      return errorResponse("Expected WebSocket upgrade", 426);
+    }
+
+    // Route to Durable Object for this room
+    const doId = env.WS_RELAY.idFromName(roomId);
+    const stub = env.WS_RELAY.get(doId);
+    return stub.fetch(request);
+  }
+
+  return errorResponse("Not found", 404);
+}
+
+export { WsRelay } from "./ws-relay";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {

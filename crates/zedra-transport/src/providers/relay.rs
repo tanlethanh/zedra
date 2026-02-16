@@ -4,7 +4,8 @@ use zedra_relay::transport::RelayTransport;
 
 use super::TransportProvider;
 
-/// Relay transport provider. Connects via the HTTP relay server.
+/// HTTP relay transport provider. Legacy fallback for when WebSocket relay
+/// is unavailable. Uses HTTP polling with adaptive intervals.
 pub struct RelayProvider {
     relay_url: String,
     room_code: String,
@@ -24,7 +25,7 @@ impl RelayProvider {
 #[async_trait::async_trait]
 impl TransportProvider for RelayProvider {
     fn name(&self) -> &str {
-        "relay"
+        "relay-http"
     }
 
     async fn connect(&self) -> Result<Box<dyn zedra_rpc::Transport>> {
@@ -46,6 +47,6 @@ impl TransportProvider for RelayProvider {
     }
 
     fn priority(&self) -> u32 {
-        2
+        3 // Legacy fallback, prefer WS relay (priority 2)
     }
 }

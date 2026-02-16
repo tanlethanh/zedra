@@ -7,6 +7,8 @@ edition.workspace = true
 zedra-rpc = { path = "../zedra-rpc" }
 reqwest.workspace = true
 tokio = { workspace = true }
+tokio-tungstenite.workspace = true
+futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

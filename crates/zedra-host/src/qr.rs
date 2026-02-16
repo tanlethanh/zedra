@@ -7,6 +7,7 @@ use qrcode::{EcLevel, QrCode};
 use serde::Serialize;
 
 use crate::auth;
+use crate::identity::SharedIdentity;
 use crate::store;
 
 /// Relay info included in the QR code when relay is available.
@@ -39,7 +40,105 @@ struct PairingPayload {
     relay_secret: Option<String>,
 }
 
-/// Generate and display a pairing QR code.
+/// v3 pairing payload with Curve25519 host public key for Noise_IK handshake.
+#[derive(Serialize)]
+struct PairingPayloadV3 {
+    v: u32,
+    /// Base64url-encoded 32-byte Curve25519 public key
+    host_pubkey: String,
+    /// One-time pairing token (replaces v2's reusable `token`)
+    otp: String,
+    /// Friendly hostname
+    name: String,
+    /// All LAN addresses
+    host_addrs: Vec<String>,
+    /// Port
+    port: u16,
+    /// Coordination server URL (future use)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    coord_url: Option<String>,
+    /// Connection hints
+    hints: PairingHints,
+}
+
+#[derive(Serialize)]
+struct PairingHints {
+    addrs: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tailscale: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    relay: Option<String>,
+}
+
+/// Generate and display a v3 pairing QR code with Noise_IK encryption support.
+///
+/// The QR includes the host's Curve25519 public key for the Noise_IK handshake
+/// and a one-time pairing token for first-contact authentication.
+pub fn generate_pairing_qr_v3(
+    port: u16,
+    identity: &SharedIdentity,
+    relay: Option<&RelayInfo>,
+) -> Result<()> {
+    let hostname = gethostname();
+    let primary_ip = get_local_ip().unwrap_or_else(|| "localhost".to_string());
+    let otp = auth::create_pairing_token();
+    let host_addrs = collect_lan_addrs();
+    let addrs = if host_addrs.is_empty() {
+        vec![primary_ip.clone()]
+    } else {
+        host_addrs.clone()
+    };
+
+    let payload = PairingPayloadV3 {
+        v: 3,
+        host_pubkey: base64_url::encode(&identity.public_key_bytes()),
+        otp,
+        name: hostname.clone(),
+        host_addrs: addrs.clone(),
+        port,
+        coord_url: None, // Phase 3: coordination server
+        hints: PairingHints {
+            addrs: addrs.iter().map(|a| format!("{}:{}", a, port)).collect(),
+            tailscale: None,
+            relay: relay.map(|r| format!("{}?room={}", r.relay_url, r.room_code)),
+        },
+    };
+
+    let json = serde_json::to_string(&payload)?;
+    let encoded = base64_url::encode(&json);
+    let uri = format!("zedra://pair?d={}", encoded);
+
+    let code = QrCode::with_error_correction_level(uri.as_bytes(), EcLevel::L)?;
+    let qr_string = render_qr_compact(&code);
+
+    let addrs_display = if addrs.len() == 1 {
+        addrs[0].clone()
+    } else {
+        addrs.join(", ")
+    };
+
+    println!();
+    println!("  Zedra Host Pairing (v3 - Encrypted)");
+    println!("  ====================================");
+    println!();
+    println!("  Scan this QR code with the Zedra app to pair this device.");
+    println!("  Host: {} ({})", hostname, addrs_display);
+    println!("  Port: {}", port);
+    println!("  Device ID: {}", identity.device_id.short());
+    print!("  Transports: LAN (encrypted)");
+    if let Some(r) = relay {
+        print!(" + Relay (room: {})", r.room_code);
+    }
+    println!();
+    println!("  OTP expires in 5 minutes.");
+    println!();
+    println!("{}", qr_string);
+    println!();
+
+    Ok(())
+}
+
+/// Generate and display a pairing QR code (v2 format, legacy/plaintext).
 ///
 /// Always includes LAN addresses. If `relay` is provided, the relay room
 /// credentials are embedded so the client can fall back to relay transport.

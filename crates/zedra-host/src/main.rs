@@ -10,7 +10,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use zedra_host::{qr, relay_bridge, rpc_daemon, session_registry, store};
+use zedra_host::{identity, qr, registration, relay_bridge, rpc_daemon, session_registry, store};
 
 #[derive(Parser)]
 #[command(name = "zedra-host", about = "Desktop companion daemon for Zedra")]
@@ -42,6 +42,10 @@ enum Commands {
         /// Disable relay transport
         #[arg(long)]
         no_relay: bool,
+
+        /// Disable encryption (plaintext mode, for backward compat with v1/v2 clients)
+        #[arg(long)]
+        no_encrypt: bool,
     },
     /// List paired devices
     Devices,
@@ -49,6 +53,36 @@ enum Commands {
     Revoke {
         /// Device ID to revoke
         device_id: String,
+    },
+    /// Session management
+    Session {
+        #[command(subcommand)]
+        action: SessionAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum SessionAction {
+    /// Create a named session for a working directory
+    Create {
+        /// Human-readable session name
+        #[arg(short, long)]
+        name: String,
+        /// Working directory for this session
+        #[arg(short, long)]
+        workdir: String,
+    },
+    /// List active sessions
+    List,
+    /// Show QR code for a specific session
+    Qr {
+        /// Session name
+        name: String,
+    },
+    /// Remove a named session
+    Remove {
+        /// Session name
+        name: String,
     },
 }
 
@@ -70,6 +104,7 @@ async fn main() -> Result<()> {
             workdir,
             relay_url,
             no_relay,
+            no_encrypt,
         } => {
             let workdir = std::path::PathBuf::from(workdir)
                 .canonicalize()
@@ -80,8 +115,38 @@ async fn main() -> Result<()> {
             tracing::info!("Local IP: {}", local_ip);
             tracing::info!("Serving workdir: {}", workdir.display());
 
+            // Load or generate persistent host identity
+            let host_identity = if no_encrypt {
+                tracing::info!("Encryption disabled (--no-encrypt)");
+                None
+            } else {
+                match identity::HostIdentity::load_or_generate() {
+                    Ok(id) => Some(std::sync::Arc::new(id)),
+                    Err(e) => {
+                        tracing::warn!("Failed to load identity, running without encryption: {}", e);
+                        None
+                    }
+                }
+            };
+
             let registry = std::sync::Arc::new(session_registry::SessionRegistry::new());
-            let state = std::sync::Arc::new(rpc_daemon::DaemonState::new(workdir));
+
+            // Create a named session for the working directory.
+            let session_name = workdir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("default")
+                .to_string();
+            registry
+                .create_named(&session_name, workdir.clone(), "auto")
+                .await;
+            tracing::info!("Created session '{}' for {}", session_name, workdir.display());
+
+            let mut state = rpc_daemon::DaemonState::new(workdir.clone());
+            if let Some(ref id) = host_identity {
+                state = state.with_identity(id.clone());
+            }
+            let state = std::sync::Arc::new(state);
 
             // Try to register a relay room (non-fatal on failure)
             let relay_info = if no_relay {
@@ -93,7 +158,11 @@ async fn main() -> Result<()> {
             };
 
             // Show QR code with all available transports
-            if let Err(e) = qr::generate_pairing_qr(port, relay_info.as_ref()) {
+            if let Some(ref id) = host_identity {
+                if let Err(e) = qr::generate_pairing_qr_v3(port, id, relay_info.as_ref()) {
+                    tracing::warn!("Failed to generate v3 QR code: {}", e);
+                }
+            } else if let Err(e) = qr::generate_pairing_qr(port, relay_info.as_ref()) {
                 tracing::warn!("Failed to generate QR code: {}", e);
             }
 
@@ -104,6 +173,40 @@ async fn main() -> Result<()> {
                 tokio::spawn(async move {
                     relay_bridge::accept_relay_connections(info, relay_registry, relay_state).await;
                 });
+            }
+
+            // Spawn coordination server registration loop (non-fatal)
+            if let Some(ref id) = host_identity {
+                let reg_config = registration::RegistrationConfig {
+                    coord_url: relay_url.clone(),
+                    identity: id.clone(),
+                    port,
+                    workdir: workdir.clone(),
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                };
+                tokio::spawn(registration::run_registration_loop(reg_config));
+            }
+
+            // Spawn mDNS/UDP local discovery announcer (non-fatal)
+            if let Some(ref id) = host_identity {
+                let lan_addrs = qr::collect_lan_addrs();
+                let addresses: Vec<String> = lan_addrs
+                    .iter()
+                    .map(|ip| format!("{}:{}", ip, port))
+                    .collect();
+
+                let announcement = zedra_transport::Announcement {
+                    v: 1,
+                    device_id: id.device_id.to_string(),
+                    addresses,
+                    sessions: vec![workdir
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("default")
+                        .to_string()],
+                };
+                tokio::spawn(zedra_transport::mdns::run_announcer(announcement));
+                tracing::info!("mDNS local discovery announcer started");
             }
 
             // Spawn session cleanup task
@@ -141,6 +244,37 @@ async fn main() -> Result<()> {
             store::revoke_device(&device_id)?;
             println!("Device {} revoked.", device_id);
         }
+        Commands::Session { action } => match action {
+            SessionAction::Create { name, workdir } => {
+                let workdir = std::path::PathBuf::from(workdir)
+                    .canonicalize()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                println!("Session '{}' created for {}", name, workdir.display());
+                println!(
+                    "Note: sessions are created in-memory when the daemon starts. \
+                     Use `zedra-host start --workdir {}` to serve this directory.",
+                    workdir.display()
+                );
+            }
+            SessionAction::List => {
+                println!("Sessions are only available while the daemon is running.");
+                println!("Connect a client and use the session/list RPC method,");
+                println!("or check daemon logs for active sessions.");
+            }
+            SessionAction::Qr { name } => {
+                // Load identity for QR generation.
+                let host_identity = identity::HostIdentity::load_or_generate()?;
+                let id = std::sync::Arc::new(host_identity);
+                println!("QR code for session '{}':", name);
+                if let Err(e) = qr::generate_pairing_qr_v3(2123, &id, None) {
+                    eprintln!("Failed to generate QR code: {}", e);
+                }
+            }
+            SessionAction::Remove { name } => {
+                println!("Session '{}' marked for removal.", name);
+                println!("Active sessions are managed by the running daemon.");
+            }
+        },
     }
 
     Ok(())

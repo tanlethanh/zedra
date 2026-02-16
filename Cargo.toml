@@ -42,6 +42,9 @@ hex = "0.4"
 itertools = "0.14"
 rust-embed = "8"
 
+# WebSocket
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+
 # Patch blade-graphics to use local version with Android fixes
 [patch.'https://github.com/kvark/blade']
 blade-graphics = { path = "vendor/blade/blade-graphics" }

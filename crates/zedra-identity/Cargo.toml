@@ -1,0 +1,20 @@
+[package]
+name = "zedra-identity"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+curve25519-dalek = "4"
+sha2 = "0.10"
+base32 = "0.5"
+base64-url.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+rand = "0.8"
+directories = "5"
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3"

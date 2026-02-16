@@ -22,6 +22,9 @@ pub mod app_drawer;
 // Text input component with keyboard support
 pub mod input;
 
+// Gesture arena for drawer vs scroll disambiguation
+pub mod gesture;
+
 // Shared Zedra app (screen navigation + connection)
 pub mod zedra_app;
 

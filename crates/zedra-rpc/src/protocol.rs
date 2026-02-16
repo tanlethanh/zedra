@@ -154,6 +154,8 @@ pub mod methods {
     pub const SESSION_RESUME_OR_CREATE: &str = "session/resume_or_create";
     pub const SESSION_HEARTBEAT: &str = "session/heartbeat";
     pub const SESSION_PING: &str = "session/ping";
+    pub const SESSION_LIST: &str = "session/list";
+    pub const SESSION_SWITCH: &str = "session/switch";
 
     // Notifications (server → client)
     pub const TERM_OUTPUT: &str = "terminal/output";
@@ -330,6 +332,38 @@ pub struct SessionResumeResult {
 pub struct SessionBacklogEntry {
     pub seq: u64,
     pub payload: String, // base64-encoded notification JSON
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionListEntry {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<String>,
+    pub terminal_count: usize,
+    pub uptime_secs: u64,
+    pub idle_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionListResult {
+    pub sessions: Vec<SessionListEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSwitchParams {
+    pub session_name: String,
+    pub auth_token: String,
+    #[serde(default)]
+    pub last_notif_seq: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSwitchResult {
+    pub session_id: String,
+    pub workdir: Option<String>,
+    pub backlog: Vec<SessionBacklogEntry>,
 }
 
 #[cfg(test)]

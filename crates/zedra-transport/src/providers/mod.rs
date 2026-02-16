@@ -1,5 +1,6 @@
 pub mod lan;
 pub mod relay;
+pub mod relay_ws;
 pub mod tailscale;
 
 use anyhow::Result;

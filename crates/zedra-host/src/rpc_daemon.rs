@@ -9,12 +9,15 @@
 // from a blocking PTY reader task through the shared writer.
 
 use anyhow::Result;
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::Arc;
+use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use crate::fs::{Filesystem, LocalFs};
 use crate::git::GitRepo;
+use crate::identity::SharedIdentity;
 use zedra_rpc::methods;
 use zedra_rpc::{FsListParams, FsReadParams, FsStatParams, FsWriteParams};
 use zedra_rpc::{GitCommitParams, GitDiffParams, GitLogParams};
@@ -23,6 +26,7 @@ use zedra_rpc::{TcpTransport, Transport};
 
 use crate::pty::ShellSession;
 use crate::session_registry::{ServerSession, SessionRegistry, TermSession as SessionTermSession};
+use zedra_transport::frame::{Frame, FrameType};
 
 /// Handler function type: takes params, returns result or error.
 type HandlerFn = Arc<
@@ -35,6 +39,8 @@ type HandlerFn = Arc<
 pub struct DaemonState {
     pub fs: Arc<dyn Filesystem>,
     pub workdir: std::path::PathBuf,
+    /// Host identity for Noise_IK handshake. None = plaintext mode (legacy).
+    pub identity: Option<SharedIdentity>,
 }
 
 impl DaemonState {
@@ -42,8 +48,153 @@ impl DaemonState {
         Self {
             fs: Arc::new(LocalFs),
             workdir,
+            identity: None,
         }
     }
+
+    pub fn with_identity(mut self, identity: SharedIdentity) -> Self {
+        self.identity = Some(identity);
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PeekableTransport: wraps a Transport with one pre-read frame
+// ---------------------------------------------------------------------------
+
+/// Transport wrapper that replays a single pre-read frame before delegating
+/// to the inner transport. Used for protocol auto-detection: we read the first
+/// frame to decide plaintext vs encrypted, then replay it.
+struct PeekableTransport {
+    inner: Box<dyn Transport>,
+    first_frame: Option<Vec<u8>>,
+}
+
+#[async_trait]
+impl Transport for PeekableTransport {
+    async fn send(&mut self, payload: &[u8]) -> Result<()> {
+        self.inner.send(payload).await
+    }
+
+    async fn recv(&mut self) -> Result<Vec<u8>> {
+        if let Some(frame) = self.first_frame.take() {
+            Ok(frame)
+        } else {
+            self.inner.recv().await
+        }
+    }
+
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// L4Transport: server-side adapter for clients using the L4 durable queue
+// ---------------------------------------------------------------------------
+
+/// Transport wrapper that speaks the L4 durable queue protocol.
+///
+/// Clients using `TransportManager` wrap every message in L4 DATA frames and
+/// begin each connection with a RESUME handshake. This adapter:
+///   - Completes the RESUME exchange on construction
+///   - Unwraps incoming L4 DATA frames → raw application payloads
+///   - Wraps outgoing payloads → L4 DATA frames
+///   - Tracks sequence numbers and piggybacks ACKs
+struct L4Transport {
+    inner: Box<dyn Transport>,
+    send_seq: u64,
+    recv_seq: u64,
+}
+
+impl L4Transport {
+    /// Perform the server-side RESUME handshake and return an L4Transport.
+    ///
+    /// `first_frame_data` is the already-read first frame (the client's RESUME).
+    async fn accept(
+        mut inner: Box<dyn Transport>,
+        first_frame_data: &[u8],
+    ) -> Result<Self> {
+        let client_frame = Frame::decode(first_frame_data)?;
+        match client_frame.frame_type {
+            FrameType::Resume => {
+                let client_resume = client_frame.parse_resume_payload()?;
+                tracing::info!(
+                    "L4 client RESUME: gen={}, last_recv={}",
+                    client_resume.generation,
+                    client_resume.last_received_seq,
+                );
+            }
+            _ => {
+                tracing::warn!("Expected L4 RESUME, got {:?}", client_frame.frame_type);
+            }
+        }
+
+        // Send our RESUME back (gen=0, last_recv=0 since we're stateless on reconnect)
+        let server_resume = Frame::resume(0, 0);
+        inner.send(&server_resume.encode()).await?;
+
+        Ok(Self {
+            inner,
+            send_seq: 1,
+            recv_seq: 0,
+        })
+    }
+}
+
+#[async_trait]
+impl Transport for L4Transport {
+    async fn send(&mut self, payload: &[u8]) -> Result<()> {
+        let frame = Frame::data(self.send_seq, self.recv_seq, payload.to_vec());
+        self.send_seq += 1;
+        self.inner.send(&frame.encode()).await
+    }
+
+    async fn recv(&mut self) -> Result<Vec<u8>> {
+        loop {
+            let raw = self.inner.recv().await?;
+            let frame = Frame::decode(&raw)?;
+
+            match frame.frame_type {
+                FrameType::Data => {
+                    if frame.seq > self.recv_seq {
+                        self.recv_seq = frame.seq;
+                    }
+                    return Ok(frame.payload);
+                }
+                FrameType::Ack => {
+                    // ACK-only frame, no data to return; keep reading
+                    continue;
+                }
+                FrameType::Resume => {
+                    // Duplicate RESUME (race condition), respond and continue
+                    let resp = Frame::resume(0, self.recv_seq);
+                    let _ = self.inner.send(&resp.encode()).await;
+                    continue;
+                }
+                FrameType::Reset => {
+                    tracing::warn!("L4 client sent RESET");
+                    self.send_seq = 1;
+                    self.recv_seq = 0;
+                    continue;
+                }
+            }
+        }
+    }
+
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+}
+
+/// Check if a frame payload looks like an L4 RESUME frame.
+///
+/// RESUME: 8 bytes seq(=0) + 8 bytes ack(=0) + 1 byte type(=0x01) + 12 bytes payload = 29 bytes.
+/// We check: length >= 17, first 16 bytes are zero, byte 16 is 0x01.
+fn is_l4_resume(data: &[u8]) -> bool {
+    data.len() >= 17
+        && data[..16] == [0u8; 16]
+        && data[16] == FrameType::Resume as u8
 }
 
 /// Start the RPC daemon TCP listener.
@@ -56,19 +207,146 @@ pub async fn run_daemon(
     let listener = TcpListener::bind(format!("{}:{}", bind, port)).await?;
     tracing::info!("RPC daemon listening on {}:{}", bind, port);
 
+    if state.identity.is_some() {
+        tracing::info!("Encryption enabled (Noise_IK), with plaintext fallback");
+    } else {
+        tracing::info!("Encryption disabled (plaintext mode)");
+    }
+
     loop {
         let (stream, addr) = listener.accept().await?;
         tracing::info!("RPC connection from {}", addr);
         let state = state.clone();
         let registry = registry.clone();
         tokio::spawn(async move {
-            let transport = TcpTransport::new(stream);
-            if let Err(e) = handle_transport_connection(Box::new(transport), registry, state).await
-            {
+            let result = handle_new_connection(stream, addr, registry, state).await;
+            if let Err(e) = result {
                 tracing::error!("RPC connection error from {}: {}", addr, e);
             }
         });
     }
+}
+
+/// Handle a new TCP connection with protocol auto-detection.
+///
+/// Reads the first frame and checks if it's a plaintext JSON-RPC message
+/// (starts with `{` or `[`) or a Noise handshake frame. Falls back to
+/// plaintext for legacy clients that don't support encryption.
+async fn handle_new_connection(
+    mut stream: tokio::net::TcpStream,
+    addr: std::net::SocketAddr,
+    registry: Arc<SessionRegistry>,
+    state: Arc<DaemonState>,
+) -> Result<()> {
+    // Read the first frame manually (4-byte length prefix + payload).
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf).await?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+
+    if len > 16 * 1024 * 1024 {
+        anyhow::bail!("first frame too large: {} bytes", len);
+    }
+
+    let mut first_frame = vec![0u8; len];
+    stream.read_exact(&mut first_frame).await?;
+
+    // Detect protocol from the first frame:
+    //   1. JSON-RPC plaintext: starts with `{` or `[`
+    //   2. L4 RESUME frame: 16 zero bytes + 0x01 type byte (from TransportManager clients)
+    //   3. Otherwise: assume Noise_IK handshake (encrypted client)
+    let first_byte = first_frame.first().copied().unwrap_or(0);
+    let is_plaintext_json = first_byte == b'{' || first_byte == b'[';
+    let is_l4 = is_l4_resume(&first_frame);
+
+    if is_plaintext_json {
+        // Legacy plaintext client — wrap with PeekableTransport to replay first frame.
+        tracing::info!("Plaintext JSON-RPC client from {}", addr);
+        let transport = PeekableTransport {
+            inner: Box::new(TcpTransport::new(stream)),
+            first_frame: Some(first_frame),
+        };
+        handle_transport_connection(Box::new(transport), registry, state).await
+    } else if is_l4 {
+        // L4 durable queue client (TransportManager) — handle RESUME and wrap in L4Transport.
+        tracing::info!("L4 durable queue client from {}", addr);
+        let inner = Box::new(TcpTransport::new(stream));
+        let l4_transport = L4Transport::accept(inner, &first_frame).await?;
+        handle_transport_connection(Box::new(l4_transport), registry, state).await
+    } else if let Some(ref identity) = state.identity {
+        // Encrypted client — Noise handshake with pre-read first frame.
+        tracing::info!("Noise handshake from {}", addr);
+        let transport = PeekableTransport {
+            inner: Box::new(TcpTransport::new(stream)),
+            first_frame: Some(first_frame),
+        };
+        match perform_noise_handshake_transport(Box::new(transport), identity).await {
+            Ok(secure_transport) => {
+                tracing::info!(
+                    "Encrypted connection from {} (conn: {})",
+                    addr,
+                    secure_transport.connection_id()
+                );
+                handle_transport_connection(Box::new(secure_transport), registry, state).await
+            }
+            Err(e) => {
+                tracing::warn!("Noise handshake failed from {}: {}", addr, e);
+                Err(e)
+            }
+        }
+    } else {
+        // No identity loaded — treat everything as plaintext.
+        let transport = PeekableTransport {
+            inner: Box::new(TcpTransport::new(stream)),
+            first_frame: Some(first_frame),
+        };
+        handle_transport_connection(Box::new(transport), registry, state).await
+    }
+}
+
+/// Perform Noise_IK handshake over a Transport (which may have a pre-read first frame).
+async fn perform_noise_handshake_transport(
+    mut transport: Box<dyn Transport>,
+    identity: &SharedIdentity,
+) -> Result<zedra_crypto::SecureTransport> {
+    let secret = identity.secret_key_bytes();
+
+    let responder = zedra_crypto::NoiseResponder::new(&secret)?;
+
+    // Responder payload: host device ID and confirmation
+    let resp_payload = serde_json::to_vec(&serde_json::json!({
+        "device_id": identity.device_id.as_str(),
+        "ok": true,
+    }))?;
+
+    let (hs_result, init_payload) = responder.handshake(&mut *transport, &resp_payload).await?;
+
+    // Parse initiator's payload (client info)
+    let client_info: serde_json::Value = serde_json::from_slice(&init_payload)
+        .unwrap_or_else(|_| serde_json::json!({}));
+
+    let client_device_id = client_info
+        .get("device_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    tracing::info!(
+        "Handshake complete with client {} (remote key: {:02x}{:02x}...)",
+        client_device_id,
+        hs_result.remote_static_key[0],
+        hs_result.remote_static_key[1],
+    );
+
+    // TODO: Phase 2 — validate client against trust store
+    // For now, accept any client that completes the handshake
+
+    // Wrap the transport in a SecureTransport
+    let secure = zedra_crypto::SecureTransport::new(
+        transport,
+        hs_result.transport,
+        hs_result.connection_id,
+    );
+
+    Ok(secure)
 }
 
 /// Start the RPC daemon on a pre-bound listener (for tests).
@@ -301,6 +579,86 @@ fn build_session_handlers(
             })?)
         })
     });
+
+    // session/list — list all available named sessions
+    let reg = registry.clone();
+    register!(
+        methods::SESSION_LIST,
+        move |_params: serde_json::Value| {
+            let reg = reg.clone();
+            Box::pin(async move {
+                let list = reg.list_sessions().await;
+                let entries: Vec<zedra_rpc::SessionListEntry> = list
+                    .into_iter()
+                    .map(|s| zedra_rpc::SessionListEntry {
+                        id: s.id,
+                        name: s.name,
+                        workdir: s.workdir.map(|p| p.to_string_lossy().into_owned()),
+                        terminal_count: s.terminal_count,
+                        uptime_secs: s.created_at_elapsed_secs,
+                        idle_secs: s.last_activity_elapsed_secs,
+                    })
+                    .collect();
+                Ok(serde_json::to_value(zedra_rpc::SessionListResult {
+                    sessions: entries,
+                })?)
+            })
+        }
+    );
+
+    // session/switch — switch to a different named session
+    let reg = registry.clone();
+    let sess = session.clone();
+    let wtx = write_tx.clone();
+    register!(
+        methods::SESSION_SWITCH,
+        move |params: serde_json::Value| {
+            let reg = reg.clone();
+            let sess = sess.clone();
+            let wtx = wtx.clone();
+            Box::pin(async move {
+                let p: zedra_rpc::SessionSwitchParams = serde_json::from_value(params)?;
+
+                let target = reg
+                    .get_by_name(&p.session_name)
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("Session '{}' not found", p.session_name))?;
+
+                // Verify auth token matches.
+                if target.auth_token != p.auth_token {
+                    anyhow::bail!("Invalid auth token for session '{}'", p.session_name);
+                }
+
+                target.touch().await;
+
+                // Replay notification backlog for the new session.
+                let missed = target.notifications_after(p.last_notif_seq).await;
+                let backlog: Vec<zedra_rpc::SessionBacklogEntry> = missed
+                    .iter()
+                    .map(|(seq, payload)| zedra_rpc::SessionBacklogEntry {
+                        seq: *seq,
+                        payload: base64_url::encode(payload),
+                    })
+                    .collect();
+
+                for (_, payload) in &missed {
+                    let _ = wtx.send(payload.clone()).await;
+                }
+
+                let workdir = target.workdir.as_ref().map(|p| p.to_string_lossy().into_owned());
+                let session_id = target.id.clone();
+
+                // Switch the active session.
+                *sess.lock().await = Some(target);
+
+                Ok(serde_json::to_value(zedra_rpc::SessionSwitchResult {
+                    session_id,
+                    workdir,
+                    backlog,
+                })?)
+            })
+        }
+    );
 
     // -------------------------------------------------------------------
     // Filesystem handlers (stateless, use DaemonState)

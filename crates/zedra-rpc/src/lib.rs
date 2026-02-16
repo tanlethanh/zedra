@@ -3,6 +3,7 @@
 // Provides the wire protocol between mobile client and desktop host.
 // Transport-agnostic: works over WebSocket, TCP, or any async stream.
 
+pub mod channel;
 mod protocol;
 mod transport;
 

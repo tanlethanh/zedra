@@ -483,9 +483,7 @@ impl ZedraApp {
         // --- DrawerHost (initially wraps editor_stack, we'll replace content below) ---
         let editor_stack_clone = editor_stack.clone();
         let drawer_host = cx.new(|cx| {
-            let mut host = DrawerHost::new(editor_stack_clone.into(), cx);
-            host.set_edge_zone_width(px(180.0));
-            host
+            DrawerHost::new(editor_stack_clone.into(), cx)
         });
 
         // --- EditorContent (header + separator + stack) ---
@@ -1046,6 +1044,7 @@ pub(crate) fn transport_badge_info(state: &TransportState, latency_ms: u64) -> (
         }
         TransportState::Discovering => ("Discovering...".to_string(), theme::TEXT_MUTED),
         TransportState::Switching { .. } => ("Switching...".to_string(), theme::ACCENT_YELLOW),
+        TransportState::Reconnecting { .. } => ("Reconnecting...".to_string(), theme::ACCENT_YELLOW),
         TransportState::Disconnected => ("Disconnected".to_string(), theme::ACCENT_RED),
     };
 
