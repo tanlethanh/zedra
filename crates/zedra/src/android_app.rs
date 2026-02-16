@@ -61,6 +61,8 @@ pub struct AndroidApp {
     touch_is_drag: bool,
     /// Active fling for momentum scrolling
     fling_state: Option<FlingState>,
+    /// Whether an edge swipe (left-edge rightward) was detected for this gesture
+    edge_swipe_triggered: bool,
 }
 
 impl AndroidApp {
@@ -75,6 +77,7 @@ impl AndroidApp {
             touch_down_position: None,
             touch_is_drag: false,
             fling_state: None,
+            edge_swipe_triggered: false,
         }
     }
 
@@ -383,6 +386,7 @@ impl AndroidApp {
                 self.last_touch_position = Some((logical_x, logical_y));
                 self.touch_down_position = Some((logical_x, logical_y));
                 self.touch_is_drag = false;
+                self.edge_swipe_triggered = false;
             }
             1 => {
                 // ACTION_UP — if the finger didn't move beyond TAP_SLOP, treat as tap
@@ -413,6 +417,37 @@ impl AndroidApp {
             }
             2 => {
                 // ACTION_MOVE — check if we've exceeded tap slop, then scroll
+
+                // Edge swipe detection: left-edge rightward swipe opens the drawer.
+                // A touch that started within EDGE_ZONE of the left edge and has moved
+                // rightward by SWIPE_THRESHOLD (with horizontal > vertical) triggers the
+                // drawer.  Once triggered, further move events for this gesture are
+                // suppressed so the terminal doesn't scroll underneath.
+                const EDGE_ZONE: f32 = 30.0;
+                const SWIPE_THRESHOLD: f32 = 60.0;
+
+                if !self.edge_swipe_triggered {
+                    if let Some((down_x, down_y)) = self.touch_down_position {
+                        if down_x < EDGE_ZONE {
+                            let h_delta = logical_x - down_x;
+                            let v_delta = (logical_y - down_y).abs();
+                            if h_delta > SWIPE_THRESHOLD && h_delta > v_delta {
+                                self.edge_swipe_triggered = true;
+                                crate::zedra_app::signal_drawer_open();
+                                platform.request_frame_forced();
+                                self.last_touch_position = Some((logical_x, logical_y));
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+
+                if self.edge_swipe_triggered {
+                    // Suppress scroll events for the rest of this gesture
+                    self.last_touch_position = Some((logical_x, logical_y));
+                    return Ok(());
+                }
+
                 if !self.touch_is_drag {
                     if let Some((down_x, down_y)) = self.touch_down_position {
                         let dx = logical_x - down_x;
@@ -601,11 +636,9 @@ impl AndroidApp {
         // Process active fling momentum scrolling
         self.process_fling();
 
-        // Check if terminal has pending data from SSH or RPC session
-        let ssh_data_pending = zedra_ssh::check_and_clear_terminal_data();
-        let session_data_pending = zedra_session::check_and_clear_terminal_data();
+        // Check if terminal has pending data from RPC session
+        let terminal_data_pending = zedra_session::check_and_clear_terminal_data();
         let fling_active = self.fling_state.is_some();
-        let terminal_data_pending = ssh_data_pending || session_data_pending;
 
         // Drain and execute any main-thread callbacks from the session runtime
         for cb in zedra_session::drain_callbacks() {
@@ -632,7 +665,7 @@ impl AndroidApp {
         );
 
         // Parse the QR URI into a PairingPayload, then convert to PeerInfo
-        match zedra_ssh::pairing::parse_pairing_uri(&qr_data) {
+        match zedra_transport::pairing::parse_pairing_uri(&qr_data) {
             Ok(payload) => {
                 let peer_info = payload.to_peer_info();
                 log::info!(

@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::app_drawer::{AppDrawer, AppDrawerEvent, DrawerSection};
@@ -395,8 +396,8 @@ impl ZedraApp {
             .unwrap_or(px(9.0));
 
         let available_width = viewport.width;
-        // Vertical overhead: custom header (88px) + terminal status bar (~24px)
-        let available_height = viewport.height - px(112.0);
+        // Vertical overhead: custom header (88px) + 1px separator
+        let available_height = viewport.height - px(89.0);
 
         let columns = ((available_width / cell_width).floor() as usize).saturating_sub(1);
         let rows = (available_height / line_height).floor() as usize;
@@ -447,16 +448,18 @@ impl ZedraApp {
         (columns as u16, rows as u16)
     }
 
-    fn open_app_drawer(&mut self, cx: &mut Context<Self>) {
+    fn open_app_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let app_drawer = cx.new(|cx| AppDrawer::new(cx));
 
         let drawer_host = self.drawer_host.clone();
         let editor_stack = self.editor_stack.clone();
-        let sub = cx.subscribe(
+        let sub = cx.subscribe_in(
             &app_drawer,
+            window,
             move |this: &mut ZedraApp,
-                  _emitter: Entity<AppDrawer>,
+                  _emitter: &Entity<AppDrawer>,
                   event: &AppDrawerEvent,
+                  _window: &mut Window,
                   cx: &mut Context<ZedraApp>| {
                 match event {
                     AppDrawerEvent::FileSelected(path) => {
@@ -584,6 +587,18 @@ impl ZedraApp {
             .cloned()
             .unwrap_or_default();
 
+        // Read terminal connection state for header display
+        let (terminal_connected, terminal_status) = self
+            .terminal_view
+            .as_ref()
+            .map(|tv| {
+                let tv = tv.read(cx);
+                (tv.is_connected(), tv.status_text().to_string())
+            })
+            .unwrap_or((false, String::new()));
+
+        let has_terminal = self.terminal_view.is_some();
+
         div()
             .h(px(88.0))
             .flex()
@@ -594,6 +609,7 @@ impl ZedraApp {
             .child(
                 // Logo button (opens drawer)
                 div()
+                    .id("logo-btn")
                     .w(px(36.0))
                     .h(px(36.0))
                     .flex()
@@ -604,11 +620,11 @@ impl ZedraApp {
                     .hover(|s| s.bg(theme::hover_bg()))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| {
+                        cx.listener(|this, _event, window, cx| {
                             if this.drawer_host.read(cx).is_open() {
                                 this.drawer_host.update(cx, |host, cx| host.close(cx));
                             } else {
-                                this.open_app_drawer(cx);
+                                this.open_app_drawer(window, cx);
                             }
                         }),
                     )
@@ -620,13 +636,60 @@ impl ZedraApp {
                     ),
             )
             .child(
+                // Title + connection status
                 div()
                     .ml_3()
                     .flex_1()
-                    .text_color(rgb(theme::TEXT_SECONDARY))
-                    .text_sm()
-                    .child(title),
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .text_color(rgb(theme::TEXT_SECONDARY))
+                            .text_sm()
+                            .child(title),
+                    )
+                    .when(has_terminal && !terminal_connected, |el| {
+                        el.child(
+                            div()
+                                .text_color(rgb(theme::TEXT_MUTED))
+                                .text_xs()
+                                .child(terminal_status.clone()),
+                        )
+                    }),
             )
+            // Disconnect button (only when terminal is connected)
+            .when(terminal_connected, |el| {
+                el.child(
+                    div()
+                        .mr_2()
+                        .px_2()
+                        .py(px(4.0))
+                        .rounded(px(4.0))
+                        .border_1()
+                        .border_color(rgb(theme::ACCENT_RED))
+                        .text_color(rgb(theme::ACCENT_RED))
+                        .text_xs()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(gpui::hsla(0.0, 0.6, 0.5, 0.1)))
+                        .child("Disconnect")
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                log::info!("Disconnect requested from header");
+                                zedra_session::clear_active_session();
+                                this.session = None;
+                                this.terminal_view = None;
+                                this.editor_showing_project = false;
+                                this.screen = AppScreen::Home;
+                                let preview = cx.new(|cx| FilePreviewList::new(cx));
+                                this.editor_stack.update(cx, |stack, cx| {
+                                    stack.replace(preview.into(), "Code Samples", cx);
+                                });
+                                cx.notify();
+                            }),
+                        ),
+                )
+            })
     }
 }
 
@@ -669,6 +732,14 @@ impl Render for ZedraApp {
         // Check for QR-scanned PeerInfo
         if let Some(peer_info) = take_pending_qr_peer_info() {
             self.connect_with_peer_info(peer_info, window, cx);
+        }
+
+        // Check for edge-swipe drawer open signal
+        if self.screen == AppScreen::Editor
+            && check_and_clear_drawer_open()
+            && !self.drawer_host.read(cx).is_open()
+        {
+            self.open_app_drawer(window, cx);
         }
 
         let screen_content: AnyElement = match self.screen {
@@ -766,6 +837,17 @@ use std::sync::Mutex;
 
 static PENDING_FILE_CONTENT: Mutex<Option<(String, String)>> = Mutex::new(None);
 static PENDING_QR_PEER_INFO: Mutex<Option<PeerInfo>> = Mutex::new(None);
+static PENDING_DRAWER_OPEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Signal that an edge swipe was detected and the drawer should open.
+pub fn signal_drawer_open() {
+    PENDING_DRAWER_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn check_and_clear_drawer_open() -> bool {
+    PENDING_DRAWER_OPEN.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
 
 pub fn set_pending_qr_peer_info(info: PeerInfo) {
     if let Ok(mut slot) = PENDING_QR_PEER_INFO.lock() {
