@@ -1,8 +1,10 @@
+use std::sync::{Arc, Mutex};
+
 use gpui::*;
 
 use crate::file_explorer::{FileExplorer, FileSelected};
 use crate::theme;
-use zedra_editor::{GitFileSelected, GitSidebar};
+use zedra_editor::{GitFileEntry, GitFileSelected, GitFileStatus, GitRepoState, GitSidebar};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DrawerSection {
@@ -26,6 +28,8 @@ pub struct AppDrawer {
     git_sidebar: Entity<GitSidebar>,
     active_section: DrawerSection,
     focus_handle: FocusHandle,
+    pending_git_status: Arc<Mutex<Option<GitRepoState>>>,
+    git_loaded: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -57,13 +61,69 @@ impl AppDrawer {
             git_sidebar,
             active_section: DrawerSection::Files,
             focus_handle: cx.focus_handle(),
+            pending_git_status: Arc::new(Mutex::new(None)),
+            git_loaded: false,
             _subscriptions: subscriptions,
         }
     }
 
     pub fn set_section(&mut self, section: DrawerSection, cx: &mut Context<Self>) {
         self.active_section = section;
+        if section == DrawerSection::Git {
+            self.load_git_status();
+        }
         cx.notify();
+    }
+
+    pub fn refresh_git(&mut self, _cx: &mut Context<Self>) {
+        self.git_loaded = false;
+        self.load_git_status();
+    }
+
+    fn load_git_status(&mut self) {
+        if self.git_loaded {
+            return;
+        }
+        let Some(session) = zedra_session::active_session() else {
+            return;
+        };
+        self.git_loaded = true;
+        let pending = self.pending_git_status.clone();
+        zedra_session::session_runtime().spawn(async move {
+            match session.git_status().await {
+                Ok(result) => {
+                    let mut staged = Vec::new();
+                    let mut unstaged = Vec::new();
+                    let mut untracked = Vec::new();
+
+                    for entry in &result.entries {
+                        let status = GitFileStatus::from_status_str(&entry.status);
+                        let file = GitFileEntry::new(&entry.path, status, 0, 0);
+                        match entry.status.as_str() {
+                            "added" => staged.push(file),
+                            "untracked" => untracked.push(file),
+                            _ => unstaged.push(file),
+                        }
+                    }
+
+                    let repo_state = GitRepoState {
+                        branch: result.branch,
+                        staged_files: staged,
+                        unstaged_files: unstaged,
+                        untracked_files: untracked,
+                        commit_message: String::new(),
+                    };
+
+                    if let Ok(mut slot) = pending.lock() {
+                        *slot = Some(repo_state);
+                    }
+                    zedra_session::signal_terminal_data();
+                }
+                Err(e) => {
+                    log::error!("git_status RPC failed: {}", e);
+                }
+            }
+        });
     }
 
     pub fn active_section(&self) -> DrawerSection {
@@ -128,6 +188,14 @@ impl Focusable for AppDrawer {
 
 impl Render for AppDrawer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Check for pending git status from async RPC
+        if let Ok(mut slot) = self.pending_git_status.lock() {
+            if let Some(state) = slot.take() {
+                self.git_sidebar
+                    .update(cx, |sidebar, cx| sidebar.set_repo_state(state, cx));
+            }
+        }
+
         let title = self.section_title();
         let viewport_h = window.viewport_size().height;
 

@@ -33,6 +33,11 @@ impl GitSidebar {
         }
     }
 
+    pub fn set_repo_state(&mut self, state: GitRepoState, cx: &mut Context<Self>) {
+        self.repo_state = state;
+        cx.notify();
+    }
+
     fn toggle_section(&mut self, section: usize, cx: &mut Context<Self>) {
         if section < 3 {
             self.section_expanded[section] = !self.section_expanded[section];

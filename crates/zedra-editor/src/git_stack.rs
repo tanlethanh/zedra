@@ -53,6 +53,18 @@ impl GitFileStatus {
         }
     }
 
+    pub fn from_status_str(s: &str) -> Self {
+        match s {
+            "added" => GitFileStatus::Staged,
+            "modified" => GitFileStatus::Modified,
+            "deleted" => GitFileStatus::Deleted,
+            "renamed" => GitFileStatus::Renamed,
+            "untracked" => GitFileStatus::Untracked,
+            "conflicted" => GitFileStatus::Conflict,
+            _ => GitFileStatus::Modified,
+        }
+    }
+
     pub fn color(&self) -> Hsla {
         match self {
             GitFileStatus::Staged => rgb(0x98c379).into(),    // green

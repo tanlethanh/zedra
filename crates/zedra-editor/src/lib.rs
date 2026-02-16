@@ -8,7 +8,7 @@ mod highlighter;
 mod theme;
 
 pub use buffer::Buffer;
-pub use diff_view::{DiffHunk, DiffLine, DiffLineKind, DiffView, FileDiff};
+pub use diff_view::{parse_unified_diff, DiffHunk, DiffLine, DiffLineKind, DiffView, FileDiff};
 pub use editor_view::EditorView;
 pub use git_diff_view::GitDiffView;
 pub use git_sidebar::{GitFileSelected, GitSidebar};

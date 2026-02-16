@@ -50,6 +50,195 @@ pub struct FileDiff {
     pub hunks: Vec<DiffHunk>,
 }
 
+/// Parse a unified diff string (e.g. `git diff` output) into `Vec<FileDiff>`.
+pub fn parse_unified_diff(diff_text: &str) -> Vec<FileDiff> {
+    let mut files: Vec<FileDiff> = Vec::new();
+    let mut current_hunks: Vec<DiffHunk> = Vec::new();
+    let mut current_old_path = String::new();
+    let mut current_new_path = String::new();
+    let mut in_file = false;
+
+    let mut hunk_lines: Vec<DiffLine> = Vec::new();
+    let mut hunk_old_start: usize = 0;
+    let mut hunk_old_count: usize = 0;
+    let mut hunk_new_start: usize = 0;
+    let mut hunk_new_count: usize = 0;
+    let mut in_hunk = false;
+    let mut old_line: usize = 0;
+    let mut new_line: usize = 0;
+
+    let flush_hunk =
+        |hunks: &mut Vec<DiffHunk>,
+         lines: &mut Vec<DiffLine>,
+         os: usize,
+         oc: usize,
+         ns: usize,
+         nc: usize,
+         active: &mut bool| {
+            if *active && !lines.is_empty() {
+                hunks.push(DiffHunk {
+                    old_start: os,
+                    old_count: oc,
+                    new_start: ns,
+                    new_count: nc,
+                    lines: std::mem::take(lines),
+                });
+            }
+            *active = false;
+        };
+
+    let flush_file = |files: &mut Vec<FileDiff>,
+                      hunks: &mut Vec<DiffHunk>,
+                      old_path: &mut String,
+                      new_path: &mut String,
+                      active: &mut bool| {
+        if *active && !hunks.is_empty() {
+            files.push(FileDiff {
+                old_path: std::mem::take(old_path),
+                new_path: std::mem::take(new_path),
+                hunks: std::mem::take(hunks),
+            });
+        }
+        *active = false;
+    };
+
+    for line in diff_text.lines() {
+        if line.starts_with("diff --git ") {
+            // Flush previous hunk and file
+            flush_hunk(
+                &mut current_hunks,
+                &mut hunk_lines,
+                hunk_old_start,
+                hunk_old_count,
+                hunk_new_start,
+                hunk_new_count,
+                &mut in_hunk,
+            );
+            flush_file(
+                &mut files,
+                &mut current_hunks,
+                &mut current_old_path,
+                &mut current_new_path,
+                &mut in_file,
+            );
+            in_file = true;
+            // Parse paths from "diff --git a/path b/path"
+            let rest = &line["diff --git ".len()..];
+            if let Some(b_pos) = rest.find(" b/") {
+                current_old_path = rest[2..b_pos].to_string(); // skip "a/"
+                current_new_path = rest[b_pos + 3..].to_string(); // skip " b/"
+            }
+        } else if line.starts_with("--- ") {
+            let path = line[4..].trim();
+            if path != "/dev/null" && path.starts_with("a/") {
+                current_old_path = path[2..].to_string();
+            }
+        } else if line.starts_with("+++ ") {
+            let path = line[4..].trim();
+            if path != "/dev/null" && path.starts_with("b/") {
+                current_new_path = path[2..].to_string();
+            }
+        } else if line.starts_with("@@ ") {
+            // Flush previous hunk
+            flush_hunk(
+                &mut current_hunks,
+                &mut hunk_lines,
+                hunk_old_start,
+                hunk_old_count,
+                hunk_new_start,
+                hunk_new_count,
+                &mut in_hunk,
+            );
+            // Parse "@@ -old_start,old_count +new_start,new_count @@"
+            if let Some(end) = line[3..].find(" @@") {
+                let header = &line[3..3 + end];
+                let parts: Vec<&str> = header.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    let old_part = parts[0].trim_start_matches('-');
+                    let new_part = parts[1].trim_start_matches('+');
+                    let parse_range = |s: &str| -> (usize, usize) {
+                        if let Some(comma) = s.find(',') {
+                            let start = s[..comma].parse().unwrap_or(1);
+                            let count = s[comma + 1..].parse().unwrap_or(0);
+                            (start, count)
+                        } else {
+                            (s.parse().unwrap_or(1), 1)
+                        }
+                    };
+                    let (os, oc) = parse_range(old_part);
+                    let (ns, nc) = parse_range(new_part);
+                    hunk_old_start = os;
+                    hunk_old_count = oc;
+                    hunk_new_start = ns;
+                    hunk_new_count = nc;
+                    old_line = os;
+                    new_line = ns;
+                    in_hunk = true;
+                }
+            }
+        } else if in_hunk {
+            if let Some(content) = line.strip_prefix('+') {
+                hunk_lines.push(DiffLine {
+                    kind: DiffLineKind::Added,
+                    old_line_num: None,
+                    new_line_num: Some(new_line),
+                    content: content.to_string(),
+                });
+                new_line += 1;
+            } else if let Some(content) = line.strip_prefix('-') {
+                hunk_lines.push(DiffLine {
+                    kind: DiffLineKind::Removed,
+                    old_line_num: Some(old_line),
+                    new_line_num: None,
+                    content: content.to_string(),
+                });
+                old_line += 1;
+            } else if let Some(content) = line.strip_prefix(' ') {
+                hunk_lines.push(DiffLine {
+                    kind: DiffLineKind::Unchanged,
+                    old_line_num: Some(old_line),
+                    new_line_num: Some(new_line),
+                    content: content.to_string(),
+                });
+                old_line += 1;
+                new_line += 1;
+            } else if line == "\\ No newline at end of file" {
+                // skip
+            } else {
+                // Context line without prefix (some diffs omit the space)
+                hunk_lines.push(DiffLine {
+                    kind: DiffLineKind::Unchanged,
+                    old_line_num: Some(old_line),
+                    new_line_num: Some(new_line),
+                    content: line.to_string(),
+                });
+                old_line += 1;
+                new_line += 1;
+            }
+        }
+    }
+
+    // Flush remaining hunk and file
+    flush_hunk(
+        &mut current_hunks,
+        &mut hunk_lines,
+        hunk_old_start,
+        hunk_old_count,
+        hunk_new_start,
+        hunk_new_count,
+        &mut in_hunk,
+    );
+    flush_file(
+        &mut files,
+        &mut current_hunks,
+        &mut current_old_path,
+        &mut current_new_path,
+        &mut in_file,
+    );
+
+    files
+}
+
 /// VS Code-like git diff view with syntax highlighting
 pub struct DiffView {
     diffs: Vec<FileDiff>,

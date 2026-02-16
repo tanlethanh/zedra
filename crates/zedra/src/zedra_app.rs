@@ -263,6 +263,8 @@ impl Render for EditorContent {
             .cloned()
             .unwrap_or_default();
 
+        let stack_depth = self.editor_stack.read(cx).stack_depth();
+
         let (terminal_connected, terminal_status) = self
             .terminal_view
             .as_ref()
@@ -282,105 +284,199 @@ impl Render for EditorContent {
             0.0
         };
 
+        // Adaptive header: root shows logo+title, pushed views show back+title
+        let header = if stack_depth > 1 {
+            // Pushed view: "< Back" button + title
+            div()
+                .h(px(48.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .px(px(16.0))
+                .border_b_1()
+                .border_color(rgb(theme::BORDER_SUBTLE))
+                .child(
+                    div()
+                        .id("back-btn")
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(4.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::hover_bg()).rounded(px(4.0)))
+                        .px(px(4.0))
+                        .py(px(4.0))
+                        .rounded(px(4.0))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.editor_stack.update(cx, |s, cx| { s.pop(cx); });
+                            }),
+                        )
+                        .child(
+                            div()
+                                .text_color(rgb(theme::TEXT_SECONDARY))
+                                .text_sm()
+                                .child("\u{2039} Back"),
+                        ),
+                )
+                .child(
+                    div()
+                        .ml_3()
+                        .flex_1()
+                        .child(
+                            div()
+                                .text_color(rgb(theme::TEXT_SECONDARY))
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(title),
+                        ),
+                )
+        } else {
+            // Root view: logo button + title + optional disconnect
+            let mut h = div()
+                .h(px(48.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .px(px(16.0))
+                .border_b_1()
+                .border_color(rgb(theme::BORDER_SUBTLE))
+                .child(
+                    // Logo button (opens/closes drawer)
+                    div()
+                        .id("logo-btn")
+                        .w(px(36.0))
+                        .h(px(36.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::hover_bg()))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                if this.drawer_host.read(cx).is_open() {
+                                    this.drawer_host
+                                        .update(cx, |host, cx| host.close(cx));
+                                } else {
+                                    this.drawer_host
+                                        .update(cx, |host, cx| host.open(cx));
+                                }
+                            }),
+                        )
+                        .child(
+                            svg()
+                                .path("icons/logo.svg")
+                                .size(px(24.0))
+                                .text_color(rgb(theme::TEXT_PRIMARY)),
+                        ),
+                )
+                .child(
+                    // Title + connection status
+                    div()
+                        .ml_3()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .text_color(rgb(theme::TEXT_SECONDARY))
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(title),
+                        )
+                        .when(has_terminal && !terminal_connected, |el| {
+                            el.child(
+                                div()
+                                    .text_color(rgb(theme::TEXT_MUTED))
+                                    .text_xs()
+                                    .child(terminal_status.clone()),
+                            )
+                        }),
+                );
+            // Disconnect button (only when terminal is connected)
+            if terminal_connected {
+                h = h.child(
+                    div()
+                        .mr_2()
+                        .px_2()
+                        .py(px(4.0))
+                        .rounded(px(4.0))
+                        .border_1()
+                        .border_color(rgb(theme::ACCENT_RED))
+                        .text_color(rgb(theme::ACCENT_RED))
+                        .text_xs()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(gpui::hsla(0.0, 0.6, 0.5, 0.1)))
+                        .child("Disconnect")
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|_this, _event, _window, cx| {
+                                cx.emit(DisconnectEvent);
+                            }),
+                        ),
+                );
+            }
+            h
+        };
+
         div()
             .size_full()
             .flex()
             .flex_col()
             .bg(rgb(theme::BG_PRIMARY))
-            // Header (top_inset + 88px)
-            .child(
-                div()
-                    .h(px(top_inset + 88.0))
-                    .pt(px(top_inset))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .px(px(16.0))
-                    .bg(rgb(theme::BG_PRIMARY))
-                    .child(
-                        // Logo button (opens/closes drawer)
-                        div()
-                            .id("logo-btn")
-                            .w(px(36.0))
-                            .h(px(36.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(6.0))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme::hover_bg()))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    if this.drawer_host.read(cx).is_open() {
-                                        this.drawer_host
-                                            .update(cx, |host, cx| host.close(cx));
-                                    } else {
-                                        this.drawer_host
-                                            .update(cx, |host, cx| host.open(cx));
-                                    }
-                                }),
-                            )
-                            .child(
-                                svg()
-                                    .path("icons/logo.svg")
-                                    .size(px(24.0))
-                                    .text_color(rgb(theme::TEXT_PRIMARY)),
-                            ),
-                    )
-                    .child(
-                        // Title + connection status
-                        div()
-                            .ml_3()
-                            .flex_1()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_color(rgb(theme::TEXT_SECONDARY))
-                                    .text_sm()
-                                    .child(title),
-                            )
-                            .when(has_terminal && !terminal_connected, |el| {
-                                el.child(
-                                    div()
-                                        .text_color(rgb(theme::TEXT_MUTED))
-                                        .text_xs()
-                                        .child(terminal_status.clone()),
-                                )
-                            }),
-                    )
-                    // Disconnect button (only when terminal is connected)
-                    .when(terminal_connected, |el| {
-                        el.child(
-                            div()
-                                .mr_2()
-                                .px_2()
-                                .py(px(4.0))
-                                .rounded(px(4.0))
-                                .border_1()
-                                .border_color(rgb(theme::ACCENT_RED))
-                                .text_color(rgb(theme::ACCENT_RED))
-                                .text_xs()
-                                .cursor_pointer()
-                                .hover(|s| s.bg(gpui::hsla(0.0, 0.6, 0.5, 0.1)))
-                                .child("Disconnect")
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|_this, _event, _window, cx| {
-                                        cx.emit(DisconnectEvent);
-                                    }),
-                                ),
-                        )
-                    }),
-            )
-            // Separator
-            .child(div().h(px(1.0)).bg(rgb(theme::BORDER_SUBTLE)))
+            // Status bar inset spacer
+            .child(div().h(px(top_inset)))
+            // Header (48px, matches drawer header)
+            .child(header)
             // Main content (stack navigator)
             .child(
                 div()
                     .flex_1()
                     .child(self.editor_stack.clone()),
+            )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FileLoadingView — placeholder when a file is loading or unavailable
+// ---------------------------------------------------------------------------
+
+struct FileLoadingView {
+    message: SharedString,
+    focus_handle: FocusHandle,
+}
+
+impl FileLoadingView {
+    fn new(message: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
+        Self {
+            message: message.into(),
+            focus_handle: cx.focus_handle(),
+        }
+    }
+}
+
+impl Focusable for FileLoadingView {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for FileLoadingView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .track_focus(&self.focus_handle)
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_sm()
+                    .child(self.message.clone()),
             )
     }
 }
@@ -539,7 +635,25 @@ impl ZedraApp {
                             let filename =
                                 path.rsplit('/').next().unwrap_or(&path).to_string();
 
-                            if let Some(session) = zedra_session::active_session() {
+                            if let Some(sample) =
+                                SAMPLE_FILES.iter().find(|s| s.filename == filename)
+                            {
+                                // Local sample file — push editor immediately
+                                let editor_view = cx.new(|cx| {
+                                    EditorView::new(sample.content.to_string(), cx)
+                                });
+                                editor_stack_for_sub.update(cx, |stack, cx| {
+                                    stack.push(editor_view.into(), sample.filename, cx);
+                                });
+                            } else if let Some(session) = zedra_session::active_session() {
+                                // Remote file — push loading placeholder, then swap
+                                let loading_view = cx.new(|cx| {
+                                    FileLoadingView::new("Loading\u{2026}", cx)
+                                });
+                                let fname = filename.clone();
+                                editor_stack_for_sub.update(cx, |stack, cx| {
+                                    stack.push(loading_view.into(), &fname, cx);
+                                });
                                 let filename_clone = filename.clone();
                                 zedra_session::session_runtime().spawn(async move {
                                     match session.fs_read(&path).await {
@@ -559,14 +673,14 @@ impl ZedraApp {
                                         }
                                     }
                                 });
-                            } else if let Some(sample) =
-                                SAMPLE_FILES.iter().find(|s| s.filename == filename)
-                            {
-                                let editor_view = cx.new(|cx| {
-                                    EditorView::new(sample.content.to_string(), cx)
+                            } else {
+                                // No session, not in samples — show placeholder
+                                let placeholder = cx.new(|cx| {
+                                    FileLoadingView::new("No preview available", cx)
                                 });
+                                let fname = filename.clone();
                                 editor_stack_for_sub.update(cx, |stack, cx| {
-                                    stack.push(editor_view.into(), sample.filename, cx);
+                                    stack.push(placeholder.into(), &fname, cx);
                                 });
                             }
                         }
@@ -574,20 +688,48 @@ impl ZedraApp {
                     AppDrawerEvent::GitFileSelected(path) => {
                         drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
                         log::info!("Git file selected: {}", path);
-                        // Find the diff for this file and push a GitDiffView
-                        let diffs = zedra_editor::GitStack::sample_diffs_public();
-                        if let Some(diff) = diffs.into_iter().find(|d| d.new_path == *path) {
-                            let filename =
-                                path.rsplit('/').next().unwrap_or(path).to_string();
-                            let diff_view =
-                                cx.new(|cx| GitDiffView::new(diff, path.clone(), cx));
-                            editor_stack_for_sub.update(cx, |stack, cx| {
-                                stack.push(
-                                    diff_view.into(),
-                                    &format!("Diff: {}", filename),
-                                    cx,
-                                );
+                        let path = path.clone();
+                        let filename =
+                            path.rsplit('/').next().unwrap_or(&path).to_string();
+
+                        if let Some(session) = zedra_session::active_session() {
+                            let path_clone = path.clone();
+                            let filename_clone = filename.clone();
+                            zedra_session::session_runtime().spawn(async move {
+                                match session.git_diff(Some(&path_clone), false).await {
+                                    Ok(diff_text) => {
+                                        set_pending_git_diff(
+                                            path_clone,
+                                            filename_clone,
+                                            diff_text,
+                                        );
+                                        zedra_session::signal_terminal_data();
+                                    }
+                                    Err(e) => {
+                                        log::error!(
+                                            "git_diff RPC failed for {}: {}",
+                                            path_clone,
+                                            e
+                                        );
+                                    }
+                                }
                             });
+                        } else {
+                            // Fallback to sample data when no session
+                            let diffs = zedra_editor::GitStack::sample_diffs_public();
+                            if let Some(diff) =
+                                diffs.into_iter().find(|d| d.new_path == path)
+                            {
+                                let diff_view =
+                                    cx.new(|cx| GitDiffView::new(diff, path.clone(), cx));
+                                editor_stack_for_sub.update(cx, |stack, cx| {
+                                    stack.push(
+                                        diff_view.into(),
+                                        &format!("Diff: {}", filename),
+                                        cx,
+                                    );
+                                });
+                            }
                         }
                     }
                 }
@@ -690,8 +832,14 @@ impl ZedraApp {
             .unwrap_or(px(9.0));
 
         let available_width = viewport.width;
-        // Vertical overhead: header (88px) + separator (1px)
-        let available_height = viewport.height - px(89.0);
+        // Vertical overhead: status bar inset + header (48px)
+        let density = crate::android_jni::get_density();
+        let top_inset_px = if density > 0.0 {
+            crate::android_jni::get_system_inset_top() as f32 / density
+        } else {
+            0.0
+        };
+        let available_height = viewport.height - px(top_inset_px + 48.0);
 
         let columns = ((available_width / cell_width).floor() as usize).saturating_sub(1);
         let rows = (available_height / line_height).floor() as usize;
@@ -810,13 +958,38 @@ impl Render for ZedraApp {
             self.editor_showing_project = true;
         }
 
-        // Check for pending remote file content
+        // Check for pending remote file content (replaces loading placeholder)
         if self.screen == AppScreen::Editor && !self.editor_showing_project {
             if let Some((filename, content)) = take_pending_file_content() {
                 let editor_view = cx.new(|cx| EditorView::new(content, cx));
                 let fname = filename.clone();
                 self.editor_stack.update(cx, |stack, cx| {
-                    stack.push(editor_view.into(), &fname, cx);
+                    stack.replace(editor_view.into(), &fname, cx);
+                });
+            }
+        }
+
+        // Check for pending git diff from async RPC
+        if self.screen == AppScreen::Editor {
+            if let Some((path, filename, diff_text)) = take_pending_git_diff() {
+                let diffs = zedra_editor::parse_unified_diff(&diff_text);
+                let diff = diffs
+                    .into_iter()
+                    .find(|d| d.new_path == path)
+                    .unwrap_or_else(|| {
+                        // If no matching path found, use the first diff or create empty
+                        zedra_editor::parse_unified_diff(&diff_text)
+                            .into_iter()
+                            .next()
+                            .unwrap_or(zedra_editor::FileDiff {
+                                old_path: path.clone(),
+                                new_path: path.clone(),
+                                hunks: Vec::new(),
+                            })
+                    });
+                let diff_view = cx.new(|cx| GitDiffView::new(diff, path.clone(), cx));
+                self.editor_stack.update(cx, |stack, cx| {
+                    stack.push(diff_view.into(), &format!("Diff: {}", filename), cx);
                 });
             }
         }
@@ -916,6 +1089,8 @@ impl Render for ZedraApp {
 use std::sync::Mutex;
 
 static PENDING_FILE_CONTENT: Mutex<Option<(String, String)>> = Mutex::new(None);
+/// (path, filename, diff_text) for async git diff → main thread
+static PENDING_GIT_DIFF: Mutex<Option<(String, String, String)>> = Mutex::new(None);
 static PENDING_QR_PEER_INFO: Mutex<Option<PeerInfo>> = Mutex::new(None);
 pub fn set_pending_qr_peer_info(info: PeerInfo) {
     if let Ok(mut slot) = PENDING_QR_PEER_INFO.lock() {
@@ -939,6 +1114,20 @@ fn set_pending_file_content(filename: String, content: String) {
 
 fn take_pending_file_content() -> Option<(String, String)> {
     if let Ok(mut slot) = PENDING_FILE_CONTENT.lock() {
+        slot.take()
+    } else {
+        None
+    }
+}
+
+fn set_pending_git_diff(path: String, filename: String, diff_text: String) {
+    if let Ok(mut slot) = PENDING_GIT_DIFF.lock() {
+        *slot = Some((path, filename, diff_text));
+    }
+}
+
+fn take_pending_git_diff() -> Option<(String, String, String)> {
+    if let Ok(mut slot) = PENDING_GIT_DIFF.lock() {
         slot.take()
     } else {
         None
