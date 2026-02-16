@@ -34,6 +34,12 @@ pub const ICON_FILE: f32 = 12.0; // File tree icons
 pub const ICON_FILE_DIR: f32 = 14.0; // Directory icons (slightly larger than file)
 pub const ICON_STATUS: f32 = 6.0; // Status dots (connected/disconnected)
 
+// Editor / diff code view constants
+pub const EDITOR_FONT_SIZE: f32 = 12.0; // Code text in editor and diff views
+pub const EDITOR_GUTTER_FONT_SIZE: f32 = 11.0; // Line numbers in gutter
+pub const EDITOR_LINE_HEIGHT: f32 = 15.0; // Row height for code lines
+pub const EDITOR_GUTTER_WIDTH: f32 = 36.0; // Gutter column width
+
 // Line number color (white at 30% opacity)
 pub fn line_number_color() -> Hsla {
     gpui::hsla(0.0, 0.0, 0.83, 0.3)

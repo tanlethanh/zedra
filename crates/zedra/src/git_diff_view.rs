@@ -11,9 +11,12 @@ use crate::diff_view::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 use crate::syntax_highlighter::Highlighter;
 use crate::syntax_theme::SyntaxTheme;
 
-const LINE_HEIGHT: f32 = 15.0;
-const GUTTER_WIDTH: f32 = 36.0;
-const FONT_SIZE: f32 = 10.0;
+use crate::theme;
+
+const LINE_HEIGHT: f32 = theme::EDITOR_LINE_HEIGHT;
+const GUTTER_WIDTH: f32 = theme::EDITOR_GUTTER_WIDTH;
+const FONT_SIZE: f32 = theme::EDITOR_FONT_SIZE;
+const GUTTER_FONT_SIZE: f32 = theme::EDITOR_GUTTER_FONT_SIZE;
 
 pub struct GitDiffView {
     diff: FileDiff,
@@ -254,7 +257,7 @@ impl Render for GitDiffView {
                                             .justify_end()
                                             .pr_2()
                                             .text_color(rgb(0x404040))
-                                            .text_size(px(FONT_SIZE))
+                                            .text_size(px(GUTTER_FONT_SIZE))
                                             .child(gutter_text),
                                     )
                                     .child(
@@ -263,6 +266,7 @@ impl Render for GitDiffView {
                                             .h(px(LINE_HEIGHT))
                                             .flex()
                                             .items_center()
+                                            .text_size(px(FONT_SIZE))
                                             .child(styled_text),
                                     )
                                     .into_any_element()

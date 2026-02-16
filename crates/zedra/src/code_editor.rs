@@ -7,9 +7,12 @@ use crate::text_buffer::Buffer;
 use crate::syntax_highlighter::Highlighter;
 use crate::syntax_theme::SyntaxTheme;
 
-const LINE_HEIGHT: f32 = 15.0;
-const GUTTER_WIDTH: f32 = 36.0;
-const FONT_SIZE: f32 = 10.0;
+use crate::theme;
+
+const LINE_HEIGHT: f32 = theme::EDITOR_LINE_HEIGHT;
+const GUTTER_WIDTH: f32 = theme::EDITOR_GUTTER_WIDTH;
+const FONT_SIZE: f32 = theme::EDITOR_FONT_SIZE;
+const GUTTER_FONT_SIZE: f32 = theme::EDITOR_GUTTER_FONT_SIZE;
 
 /// A code editor view with syntax highlighting and virtual scrolling.
 pub struct EditorView {
@@ -274,7 +277,7 @@ impl Render for EditorView {
                                             .justify_end()
                                             .pr_2()
                                             .text_color(hsla(0.0, 0.0, 0.83, 0.3))
-                                            .text_size(px(FONT_SIZE))
+                                            .text_size(px(GUTTER_FONT_SIZE))
                                             .child(line_number.clone()),
                                     )
                                     .child(
@@ -283,6 +286,7 @@ impl Render for EditorView {
                                             .h(px(LINE_HEIGHT))
                                             .flex()
                                             .items_center()
+                                            .text_size(px(FONT_SIZE))
                                             .relative()
                                             .when(show_cursor, |this| {
                                                 let char_width = FONT_SIZE * 0.6;
