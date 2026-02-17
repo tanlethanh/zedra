@@ -8,7 +8,6 @@ use crate::durable_queue::DurableQueue;
 use crate::frame::{Frame, FrameType};
 use crate::mdns::DiscoveryCache;
 use crate::providers::lan::LanProvider;
-use crate::providers::relay::RelayProvider;
 use crate::providers::relay_ws::WsRelayProvider;
 use crate::providers::tailscale::TailscaleProvider;
 use crate::providers::TransportProvider;
@@ -144,7 +143,7 @@ impl TransportManager {
             )));
         }
 
-        // WebSocket relay provider (priority 2) - preferred over HTTP polling
+        // WebSocket relay provider (priority 2) - fallback when direct connections fail
         if !peer_info.relay_url.is_empty() && !peer_info.relay_room.is_empty() {
             providers.push(Box::new(WsRelayProvider::new(
                 peer_info.relay_url.clone(),
@@ -152,13 +151,6 @@ impl TransportManager {
                 peer_info.relay_secret.clone(),
             )));
         }
-
-        // HTTP relay provider (priority 3) - legacy fallback if WS fails
-        providers.push(Box::new(RelayProvider::new(
-            peer_info.relay_url.clone(),
-            peer_info.relay_room.clone(),
-            peer_info.relay_secret.clone(),
-        )));
 
         providers
     }

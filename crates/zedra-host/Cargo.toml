@@ -13,10 +13,6 @@ name = "zedra-host"
 path = "src/main.rs"
 
 [dependencies]
-# Key management (used by QR pairing for host key fingerprinting)
-russh-keys.workspace = true
-ssh-key = { version = "0.6", features = ["ed25519", "rand_core"] }
-
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
@@ -32,9 +28,6 @@ clap = { version = "4", features = ["derive"] }
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
-
-# Password hashing
-argon2 = "0.5"
 
 # Random/crypto
 rand = "0.8"

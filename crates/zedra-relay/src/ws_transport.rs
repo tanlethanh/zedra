@@ -34,7 +34,7 @@ pub struct WsRelayTransport {
 impl WsRelayTransport {
     /// Connect to a WebSocket relay endpoint and return a Transport.
     ///
-    /// The `ws_url` should be in the format `wss://relay.example.com/v2/ws/:room_id`
+    /// The `ws_url` should be in the format `wss://relay.example.com/ws/:room_id`
     /// with optional query parameters for authentication.
     pub async fn connect(ws_url: &str) -> Result<Self> {
         let (ws_stream, _response) = tokio_tungstenite::connect_async(ws_url)
@@ -127,7 +127,7 @@ async fn ws_reader(
 
 /// Build a WebSocket relay URL from components.
 ///
-/// Returns a URL like `wss://relay.example.com/v2/ws/:room_id?secret=:secret&role=:role`
+/// Returns a URL like `wss://relay.example.com/ws/:room_id?secret=:secret&role=:role`
 pub fn build_ws_url(relay_url: &str, room_id: &str, secret: &str, role: &str) -> String {
     // Convert https:// to wss:// and http:// to ws://
     let ws_base = if relay_url.starts_with("https://") {
@@ -140,7 +140,7 @@ pub fn build_ws_url(relay_url: &str, room_id: &str, secret: &str, role: &str) ->
 
     let base = ws_base.trim_end_matches('/');
     format!(
-        "{}/v2/ws/{}?secret={}&role={}",
+        "{}/ws/{}?secret={}&role={}",
         base, room_id, secret, role
     )
 }
@@ -154,7 +154,7 @@ mod tests {
         let url = build_ws_url("https://relay.zedra.dev", "ROOM123", "secret", "host");
         assert_eq!(
             url,
-            "wss://relay.zedra.dev/v2/ws/ROOM123?secret=secret&role=host"
+            "wss://relay.zedra.dev/ws/ROOM123?secret=secret&role=host"
         );
     }
 
@@ -163,7 +163,7 @@ mod tests {
         let url = build_ws_url("http://localhost:8787", "ABC", "sec", "mobile");
         assert_eq!(
             url,
-            "ws://localhost:8787/v2/ws/ABC?secret=sec&role=mobile"
+            "ws://localhost:8787/ws/ABC?secret=sec&role=mobile"
         );
     }
 
@@ -172,7 +172,7 @@ mod tests {
         let url = build_ws_url("https://relay.zedra.dev/", "ROOM", "s", "host");
         assert_eq!(
             url,
-            "wss://relay.zedra.dev/v2/ws/ROOM?secret=s&role=host"
+            "wss://relay.zedra.dev/ws/ROOM?secret=s&role=host"
         );
     }
 
@@ -181,7 +181,7 @@ mod tests {
         let url = build_ws_url("wss://relay.zedra.dev", "ROOM", "s", "host");
         assert_eq!(
             url,
-            "wss://relay.zedra.dev/v2/ws/ROOM?secret=s&role=host"
+            "wss://relay.zedra.dev/ws/ROOM?secret=s&role=host"
         );
     }
 }

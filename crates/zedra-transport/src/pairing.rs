@@ -1,68 +1,10 @@
 // QR code pairing protocol
 // Parses zedra://pair URIs and performs the pairing handshake
 //
-// Supports three QR payload versions:
-//   v1/v2 — legacy plaintext (PairingPayload with token + fingerprint)
-//   v3    — encrypted with Noise_IK (PairingPayloadV3 with host_pubkey + OTP)
+// Supports v3 pairing payload — encrypted with Noise_IK (PairingPayloadV3 with host_pubkey + OTP)
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-
-/// Pairing payload from QR code (v1 and v2 — legacy plaintext)
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct PairingPayload {
-    /// Protocol version (1 or 2)
-    pub v: u32,
-    /// Host address (primary LAN IP for backward compat)
-    pub host: String,
-    /// SSH port
-    pub port: u16,
-    /// One-time pairing token
-    pub token: String,
-    /// Expected host key fingerprint
-    pub fingerprint: String,
-    /// Friendly name for the host
-    pub name: String,
-    // v2 fields — optional with serde defaults for backward compat with v1
-    /// All LAN IPs discovered on the host
-    #[serde(default)]
-    pub host_addrs: Vec<String>,
-    /// Tailscale 100.x.x.x address, if available
-    #[serde(default)]
-    pub tailscale_addr: Option<String>,
-    /// Cloudflare Worker relay URL
-    #[serde(default)]
-    pub relay_url: Option<String>,
-    /// Relay room code
-    #[serde(default)]
-    pub relay_room: Option<String>,
-    /// Relay room secret
-    #[serde(default)]
-    pub relay_secret: Option<String>,
-}
-
-impl PairingPayload {
-    /// Convert this pairing payload into a PeerInfo for TransportManager.
-    pub fn to_peer_info(&self) -> crate::PeerInfo {
-        let mut host_addrs = self.host_addrs.clone();
-        if host_addrs.is_empty() {
-            host_addrs.push(self.host.clone());
-        }
-        crate::PeerInfo {
-            host_addrs,
-            tailscale_addr: self.tailscale_addr.clone(),
-            port: self.port,
-            relay_url: self.relay_url.clone().unwrap_or_default(),
-            relay_room: self.relay_room.clone().unwrap_or_default(),
-            relay_secret: self.relay_secret.clone().unwrap_or_default(),
-            fingerprint: self.fingerprint.clone(),
-            hostname: self.name.clone(),
-            host_pubkey: None,
-            otp: None,
-            coord_url: None,
-        }
-    }
-}
 
 /// v3 pairing payload — encrypted transport with Noise_IK.
 ///
@@ -127,35 +69,16 @@ impl PairingPayloadV3 {
             relay_url,
             relay_room,
             relay_secret: String::new(), // v3 uses Noise encryption, no relay secret needed
-            fingerprint: String::new(),  // v3 uses host_pubkey instead
             hostname: self.name.clone(),
-            host_pubkey: Some(self.host_pubkey.clone()),
+            host_pubkey: self.host_pubkey.clone(),
             otp: Some(self.otp.clone()),
             coord_url: self.coord_url.clone(),
         }
     }
 }
 
-/// Parsed result from any QR version
-pub enum ParsedPairing {
-    /// v1/v2 legacy plaintext
-    Legacy(PairingPayload),
-    /// v3 encrypted (Noise_IK)
-    V3(PairingPayloadV3),
-}
-
-impl ParsedPairing {
-    /// Convert any version into a PeerInfo.
-    pub fn to_peer_info(&self) -> crate::PeerInfo {
-        match self {
-            ParsedPairing::Legacy(p) => p.to_peer_info(),
-            ParsedPairing::V3(p) => p.to_peer_info(),
-        }
-    }
-}
-
-/// Parse a zedra://pair?d=<payload> URI (supports v1, v2, and v3).
-pub fn parse_pairing_uri(uri: &str) -> Result<ParsedPairing> {
+/// Parse a zedra://pair?d=<payload> URI (v3 only).
+pub fn parse_pairing_uri(uri: &str) -> Result<PairingPayloadV3> {
     let prefix = "zedra://pair?d=";
     if !uri.starts_with(prefix) {
         anyhow::bail!("Invalid pairing URI: expected zedra://pair?d=...");
@@ -166,50 +89,20 @@ pub fn parse_pairing_uri(uri: &str) -> Result<ParsedPairing> {
         .map_err(|e| anyhow::anyhow!("Failed to decode base64: {}", e))?;
     let json_str = String::from_utf8(json_bytes)?;
 
-    // Peek at version to decide which struct to deserialize into
+    // Peek at version to validate
     let version: serde_json::Value = serde_json::from_str(&json_str)?;
     let v = version
         .get("v")
         .and_then(|v| v.as_u64())
-        .unwrap_or(1) as u32;
+        .unwrap_or(0) as u32;
 
-    match v {
-        1 | 2 => {
-            let payload: PairingPayload = serde_json::from_str(&json_str)?;
-            Ok(ParsedPairing::Legacy(payload))
-        }
-        3 => {
-            let payload: PairingPayloadV3 = serde_json::from_str(&json_str)?;
-            Ok(ParsedPairing::V3(payload))
-        }
-        _ => anyhow::bail!("Unsupported pairing protocol version: {}", v),
+    if v != 3 {
+        anyhow::bail!(
+            "Unsupported pairing protocol version: {} (only v3 is supported)",
+            v
+        );
     }
-}
 
-/// Parse a zedra://pair URI and return a legacy PairingPayload (v1/v2 only).
-///
-/// This is kept for backward compatibility with code that expects the old return type.
-pub fn parse_pairing_uri_legacy(uri: &str) -> Result<PairingPayload> {
-    match parse_pairing_uri(uri)? {
-        ParsedPairing::Legacy(p) => Ok(p),
-        ParsedPairing::V3(_) => anyhow::bail!("v3 pairing requires encrypted transport support"),
-    }
-}
-
-/// Saved host credentials (stored on the device after pairing)
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SavedHost {
-    pub id: String,
-    pub name: String,
-    pub host: String,
-    pub port: u16,
-    pub fingerprint: String,
-    pub username: String,
-    pub auth_method: SavedAuthMethod,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum SavedAuthMethod {
-    Password { password: String },
-    PublicKey { private_key_pem: String },
+    let payload: PairingPayloadV3 = serde_json::from_str(&json_str)?;
+    Ok(payload)
 }

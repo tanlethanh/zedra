@@ -1,6 +1,6 @@
 // Coordination Server Client
 //
-// HTTP client for the v2 host registry API. Used by:
+// HTTP client for the host registry API. Used by:
 // - zedra-host: register + heartbeat loop
 // - zedra-transport: host lookup + signaling for reconnection
 
@@ -23,7 +23,7 @@ pub struct HostSession {
     pub workdir: String,
 }
 
-/// POST /v2/hosts/register request body.
+/// POST /hosts/register request body.
 #[derive(Debug, Clone, Serialize)]
 pub struct RegisterRequest {
     pub device_id: String,
@@ -35,14 +35,14 @@ pub struct RegisterRequest {
     pub version: String,
 }
 
-/// POST /v2/hosts/register response.
+/// POST /hosts/register response.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RegisterResponse {
     pub ttl: u64,
     pub relay_endpoint: String,
 }
 
-/// POST /v2/hosts/:device_id/heartbeat request body.
+/// POST /hosts/:device_id/heartbeat request body.
 #[derive(Debug, Clone, Serialize)]
 pub struct HeartbeatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -51,13 +51,13 @@ pub struct HeartbeatRequest {
     pub sessions: Option<Vec<HostSession>>,
 }
 
-/// POST /v2/hosts/:device_id/heartbeat response.
+/// POST /hosts/:device_id/heartbeat response.
 #[derive(Debug, Clone, Deserialize)]
 pub struct HeartbeatResponse {
     pub ttl: u64,
 }
 
-/// GET /v2/hosts/:device_id response.
+/// GET /hosts/:device_id response.
 #[derive(Debug, Clone, Deserialize)]
 pub struct HostLookupResponse {
     pub online: bool,
@@ -81,7 +81,7 @@ pub struct ConnectionCandidate {
     pub priority: u32,
 }
 
-/// POST /v2/signal/:device_id request body.
+/// POST /signal/:device_id request body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignalCandidates {
     pub from_device_id: String,
@@ -90,13 +90,13 @@ pub struct SignalCandidates {
     pub session_id: Option<String>,
 }
 
-/// GET /v2/signal/:device_id response.
+/// GET /signal/:device_id response.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SignalResponse {
     pub signals: Vec<SignalCandidates>,
 }
 
-/// Client for the v2 coordination server API.
+/// Client for the coordination server API.
 pub struct CoordClient {
     http: reqwest::Client,
     base_url: String,
@@ -113,7 +113,7 @@ impl CoordClient {
 
     /// Register a host with the coordination server.
     pub async fn register(&self, req: &RegisterRequest) -> Result<RegisterResponse> {
-        let url = format!("{}/v2/hosts/register", self.base_url);
+        let url = format!("{}/hosts/register", self.base_url);
         let resp = self
             .http
             .post(&url)
@@ -136,7 +136,7 @@ impl CoordClient {
         device_id: &str,
         req: &HeartbeatRequest,
     ) -> Result<HeartbeatResponse> {
-        let url = format!("{}/v2/hosts/{}/heartbeat", self.base_url, device_id);
+        let url = format!("{}/hosts/{}/heartbeat", self.base_url, device_id);
         let resp = self
             .http
             .post(&url)
@@ -155,7 +155,7 @@ impl CoordClient {
 
     /// Look up a host by device ID.
     pub async fn lookup(&self, device_id: &str) -> Result<HostLookupResponse> {
-        let url = format!("{}/v2/hosts/{}", self.base_url, device_id);
+        let url = format!("{}/hosts/{}", self.base_url, device_id);
         let resp = self.http.get(&url).send().await?;
 
         if !resp.status().is_success() {
@@ -173,7 +173,7 @@ impl CoordClient {
         target_device_id: &str,
         candidates: &SignalCandidates,
     ) -> Result<()> {
-        let url = format!("{}/v2/signal/{}", self.base_url, target_device_id);
+        let url = format!("{}/signal/{}", self.base_url, target_device_id);
         let resp = self
             .http
             .post(&url)
@@ -192,7 +192,7 @@ impl CoordClient {
 
     /// Drain pending signals for a device.
     pub async fn drain_signals(&self, device_id: &str) -> Result<Vec<SignalCandidates>> {
-        let url = format!("{}/v2/signal/{}", self.base_url, device_id);
+        let url = format!("{}/signal/{}", self.base_url, device_id);
         let resp = self.http.get(&url).send().await?;
 
         if !resp.status().is_success() {

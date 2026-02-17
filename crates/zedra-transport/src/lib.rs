@@ -24,18 +24,16 @@ pub struct PeerInfo {
     pub port: u16,
     /// Cloudflare Worker relay URL
     pub relay_url: String,
-    /// Relay room code
+    /// Relay room code (used by WS relay)
     pub relay_room: String,
-    /// Relay room secret
+    /// Relay room secret (used by WS relay)
     pub relay_secret: String,
-    /// Host key fingerprint (v2 SSH fingerprint, empty for v3)
-    pub fingerprint: String,
     /// Friendly hostname
     pub hostname: String,
-    /// Host's Curve25519 public key for Noise_IK (v3 only, base64url-encoded)
-    pub host_pubkey: Option<String>,
-    /// One-time pairing token (v3 OTP, replaces v2 token)
+    /// Host's Curve25519 public key for Noise_IK (base64url-encoded)
+    pub host_pubkey: String,
+    /// One-time pairing token (OTP, only present on first pairing)
     pub otp: Option<String>,
-    /// Coordination server URL (v3)
+    /// Coordination server URL
     pub coord_url: Option<String>,
 }

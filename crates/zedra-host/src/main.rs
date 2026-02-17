@@ -4,13 +4,12 @@
 // filesystem, git, and AI operations over JSON-RPC.
 //
 // A single `start` command handles both LAN and relay transports. LAN TCP is
-// always available; relay is attempted automatically when --relay-url is set
-// and the relay server is reachable.
+// always available; relay is coordinated via the coordination server.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use zedra_host::{identity, qr, registration, relay_bridge, rpc_daemon, session_registry, store};
+use zedra_host::{identity, qr, registration, rpc_daemon, session_registry, store};
 
 #[derive(Parser)]
 #[command(name = "zedra-host", about = "Desktop companion daemon for Zedra")]
@@ -42,10 +41,6 @@ enum Commands {
         /// Disable relay transport
         #[arg(long)]
         no_relay: bool,
-
-        /// Disable encryption (plaintext mode, for backward compat with v1/v2 clients)
-        #[arg(long)]
-        no_encrypt: bool,
     },
     /// List paired devices
     Devices,
@@ -104,7 +99,6 @@ async fn main() -> Result<()> {
             workdir,
             relay_url,
             no_relay,
-            no_encrypt,
         } => {
             let workdir = std::path::PathBuf::from(workdir)
                 .canonicalize()
@@ -115,17 +109,11 @@ async fn main() -> Result<()> {
             tracing::info!("Local IP: {}", local_ip);
             tracing::info!("Serving workdir: {}", workdir.display());
 
-            // Load or generate persistent host identity
-            let host_identity = if no_encrypt {
-                tracing::info!("Encryption disabled (--no-encrypt)");
-                None
-            } else {
-                match identity::HostIdentity::load_or_generate() {
-                    Ok(id) => Some(std::sync::Arc::new(id)),
-                    Err(e) => {
-                        tracing::warn!("Failed to load identity, running without encryption: {}", e);
-                        None
-                    }
+            // Load or generate persistent host identity (required for v3 encryption)
+            let host_identity = match identity::HostIdentity::load_or_generate() {
+                Ok(id) => std::sync::Arc::new(id),
+                Err(e) => {
+                    anyhow::bail!("Failed to load host identity: {}", e);
                 }
             };
 
@@ -143,43 +131,19 @@ async fn main() -> Result<()> {
             tracing::info!("Created session '{}' for {}", session_name, workdir.display());
 
             let mut state = rpc_daemon::DaemonState::new(workdir.clone());
-            if let Some(ref id) = host_identity {
-                state = state.with_identity(id.clone());
-            }
+            state = state.with_identity(host_identity.clone());
             let state = std::sync::Arc::new(state);
 
-            // Try to register a relay room (non-fatal on failure)
-            let relay_info = if no_relay {
-                tracing::info!("Relay disabled (--no-relay)");
-                None
-            } else {
-                tracing::info!("Registering relay room at {}...", relay_url);
-                relay_bridge::try_register_relay(&relay_url).await
-            };
-
-            // Show QR code with all available transports
-            if let Some(ref id) = host_identity {
-                if let Err(e) = qr::generate_pairing_qr_v3(port, id, relay_info.as_ref()) {
-                    tracing::warn!("Failed to generate v3 QR code: {}", e);
-                }
-            } else if let Err(e) = qr::generate_pairing_qr(port, relay_info.as_ref()) {
-                tracing::warn!("Failed to generate QR code: {}", e);
-            }
-
-            // Spawn relay acceptor alongside LAN TCP if relay registered
-            if let Some(info) = relay_info {
-                let relay_registry = registry.clone();
-                let relay_state = state.clone();
-                tokio::spawn(async move {
-                    relay_bridge::accept_relay_connections(info, relay_registry, relay_state).await;
-                });
+            // Show QR code
+            if let Err(e) = qr::generate_pairing_qr_v3(port, &host_identity, None) {
+                tracing::warn!("Failed to generate v3 QR code: {}", e);
             }
 
             // Spawn coordination server registration loop (non-fatal)
-            if let Some(ref id) = host_identity {
+            if !no_relay {
                 let reg_config = registration::RegistrationConfig {
                     coord_url: relay_url.clone(),
-                    identity: id.clone(),
+                    identity: host_identity.clone(),
                     port,
                     workdir: workdir.clone(),
                     version: env!("CARGO_PKG_VERSION").to_string(),
@@ -188,7 +152,7 @@ async fn main() -> Result<()> {
             }
 
             // Spawn mDNS/UDP local discovery announcer (non-fatal)
-            if let Some(ref id) = host_identity {
+            {
                 let lan_addrs = qr::collect_lan_addrs();
                 let addresses: Vec<String> = lan_addrs
                     .iter()
@@ -197,7 +161,7 @@ async fn main() -> Result<()> {
 
                 let announcement = zedra_transport::Announcement {
                     v: 1,
-                    device_id: id.device_id.to_string(),
+                    device_id: host_identity.device_id.to_string(),
                     addresses,
                     sessions: vec![workdir
                         .file_name()

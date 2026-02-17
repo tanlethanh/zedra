@@ -388,6 +388,7 @@ impl AndroidApp {
                 self.touch_down_position = Some((logical_x, logical_y));
                 self.touch_is_drag = false;
                 self.gesture_arena.reset();
+                zedra_nav::reset_drawer_gesture();
             }
             1 => {
                 // ACTION_UP — if the finger didn't move beyond TAP_SLOP, treat as tap
@@ -410,14 +411,14 @@ impl AndroidApp {
                 self.last_touch_position = None;
                 self.touch_down_position = None;
                 self.touch_is_drag = false;
-                self.gesture_arena.reset();
+                // Don't reset arena here — handle_fling() needs the winner.
+                // Arena resets on next ACTION_DOWN.
             }
             3 => {
                 // ACTION_CANCEL — clean up, no tap
                 self.last_touch_position = None;
                 self.touch_down_position = None;
                 self.touch_is_drag = false;
-                self.gesture_arena.reset();
             }
             2 => {
                 // ACTION_MOVE — check tap slop, then feed gesture arena
@@ -441,18 +442,10 @@ impl AndroidApp {
 
                         match self.gesture_arena.winner() {
                             Some(GestureKind::DrawerPan) => {
-                                // Horizontal only — for drawer
-                                platform.dispatch_input(PlatformInput::ScrollWheel(
-                                    ScrollWheelEvent {
-                                        position,
-                                        delta: ScrollDelta::Pixels(point(
-                                            px(delta_x),
-                                            px(0.0),
-                                        )),
-                                        modifiers: Modifiers::default(),
-                                        touch_phase: TouchPhase::Moved,
-                                    },
-                                ));
+                                // Push to drawer bridge — bypasses GPUI scroll
+                                // dispatch so it can't conflict with content scroll.
+                                zedra_nav::push_drawer_pan_delta(delta_x);
+                                platform.request_frame_forced();
                             }
                             Some(GestureKind::Scroll) => {
                                 // Vertical only — for content scroll
@@ -543,11 +536,13 @@ impl AndroidApp {
         let vx = velocity_x / scale;
         let vy = velocity_y / scale;
 
-        // Filter fling velocity to the winning gesture's axis
+        // Filter fling velocity to the winning gesture's axis.
+        // DrawerPan: skip fling entirely — the drawer snap animation handles it.
+        // Scroll: vertical only.
         let (fling_vx, fling_vy) = match self.gesture_arena.winner() {
-            Some(GestureKind::DrawerPan) => (vx, 0.0),
+            Some(GestureKind::DrawerPan) => return Ok(()),
             Some(GestureKind::Scroll) => (0.0, vy),
-            None => (vx, vy), // No winner — pass through both axes
+            None => (vx, vy),
         };
 
         // Use last known touch position for dispatching fling scroll events
@@ -675,15 +670,15 @@ impl AndroidApp {
             &qr_data[..qr_data.len().min(50)]
         );
 
-        // Parse the QR URI into a PairingPayload, then convert to PeerInfo
+        // Parse the QR URI into a PairingPayloadV3, then convert to PeerInfo
         match zedra_transport::pairing::parse_pairing_uri(&qr_data) {
             Ok(payload) => {
                 let peer_info = payload.to_peer_info();
                 log::info!(
-                    "QR parsed: hostname={}, addrs={:?}, relay={}",
+                    "QR parsed: hostname={}, addrs={:?}, pubkey={}",
                     peer_info.hostname,
                     peer_info.host_addrs,
-                    peer_info.relay_room
+                    &peer_info.host_pubkey[..8]
                 );
                 crate::zedra_app::set_pending_qr_peer_info(peer_info);
                 // Signal re-render so ZedraApp picks up the pending PeerInfo
