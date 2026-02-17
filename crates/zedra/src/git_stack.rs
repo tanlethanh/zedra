@@ -8,6 +8,7 @@
 //! Designed to be reusable for any git project.
 
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use gpui::prelude::FluentBuilder;
@@ -188,6 +189,12 @@ impl Default for DrawerState {
     }
 }
 
+/// Cached per-line data for the diff content area.
+struct CachedDiffLine {
+    line: Option<DiffLine>,
+    highlights: Vec<(Range<usize>, HighlightStyle)>,
+}
+
 /// Main GitStack component
 pub struct GitStack {
     repo_state: GitRepoState,
@@ -203,6 +210,11 @@ pub struct GitStack {
     focus_handle: FocusHandle,
     /// Shared drawer state for gesture handling
     drawer_state: Arc<Mutex<DrawerState>>,
+    /// Cached diff line data — only rebuilt when selected file changes.
+    cached_diff_lines: Rc<Vec<CachedDiffLine>>,
+    diff_lines_dirty: bool,
+    /// Track which file the cache was built for.
+    cached_selected_file: Option<String>,
 }
 
 impl GitStack {
@@ -223,6 +235,9 @@ impl GitStack {
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             drawer_state: Arc::new(Mutex::new(DrawerState::default())),
+            cached_diff_lines: Rc::new(Vec::new()),
+            diff_lines_dirty: true,
+            cached_selected_file: None,
         }
     }
 
@@ -456,6 +471,7 @@ impl GitStack {
 
     fn select_file(&mut self, path: String, cx: &mut Context<Self>) {
         self.selected_file = Some(path);
+        self.diff_lines_dirty = true;
         cx.notify();
     }
 
@@ -935,8 +951,42 @@ impl GitStack {
             )
     }
 
-    fn render_diff_content(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn rebuild_diff_cache(&mut self) {
         let Some(diff) = self.get_selected_diff().cloned() else {
+            self.cached_diff_lines = Rc::new(Vec::new());
+            self.cached_selected_file = self.selected_file.clone();
+            self.diff_lines_dirty = false;
+            return;
+        };
+
+        let line_count = Self::total_lines_for_diff(&diff);
+        let lines: Vec<CachedDiffLine> = (0..line_count)
+            .map(|i| {
+                let line = self.get_diff_line(&diff, i);
+                let highlights = line
+                    .as_ref()
+                    .filter(|l| l.kind != DiffLineKind::Header)
+                    .map(|l| self.line_highlights(&l.content))
+                    .unwrap_or_default();
+                CachedDiffLine { line, highlights }
+            })
+            .collect();
+        self.cached_diff_lines = Rc::new(lines);
+        self.cached_selected_file = self.selected_file.clone();
+        self.diff_lines_dirty = false;
+    }
+
+    fn render_diff_content(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        // Invalidate cache when selected file changes
+        if self.cached_selected_file != self.selected_file {
+            self.diff_lines_dirty = true;
+        }
+        if self.diff_lines_dirty {
+            self.rebuild_diff_cache();
+        }
+
+        let line_count = self.cached_diff_lines.len();
+        if line_count == 0 {
             return div()
                 .flex_1()
                 .flex()
@@ -945,14 +995,9 @@ impl GitStack {
                 .text_color(rgb(0x5c6370))
                 .child("Select a file to view changes")
                 .into_any_element();
-        };
+        }
 
-        let line_count = Self::total_lines_for_diff(&diff);
-
-        // Pre-compute line data
-        let line_data: Vec<Option<DiffLine>> = (0..line_count)
-            .map(|i| self.get_diff_line(&diff, i))
-            .collect();
+        let cached_lines = self.cached_diff_lines.clone();
 
         let text_style = {
             let mut style = window.text_style();
@@ -961,23 +1006,13 @@ impl GitStack {
             style
         };
 
-        // Pre-compute highlights (need &mut self for highlighter)
-        let highlights: Vec<Vec<(Range<usize>, HighlightStyle)>> = line_data
-            .iter()
-            .map(|line| {
-                line.as_ref()
-                    .filter(|l| l.kind != DiffLineKind::Header)
-                    .map(|l| self.line_highlights(&l.content))
-                    .unwrap_or_default()
-            })
-            .collect();
-
         uniform_list("git-diff-lines", line_count, {
             let text_style = text_style.clone();
             move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
                 range
                     .map(|i| {
-                        let Some(line) = &line_data[i] else {
+                        let cached = &cached_lines[i];
+                        let Some(line) = &cached.line else {
                             return div().h(px(LINE_HEIGHT)).into_any_element();
                         };
 
@@ -1026,9 +1061,8 @@ impl GitStack {
                                 .into_any_element();
                         }
 
-                        let line_highlights = &highlights[i];
                         let adjusted_highlights: Vec<(Range<usize>, HighlightStyle)> =
-                            line_highlights
+                            cached.highlights
                                 .iter()
                                 .map(|(range, style)| {
                                     let offset = prefix.len();

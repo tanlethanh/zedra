@@ -1,4 +1,5 @@
 use std::ops::Range;
+use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -241,6 +242,12 @@ pub fn parse_unified_diff(diff_text: &str) -> Vec<FileDiff> {
     files
 }
 
+/// Cached per-line data for the diff view.
+struct CachedDiffLine {
+    line: Option<DiffLine>,
+    highlights: Vec<(Range<usize>, HighlightStyle)>,
+}
+
 /// VS Code-like git diff view with syntax highlighting
 pub struct DiffView {
     diffs: Vec<FileDiff>,
@@ -251,6 +258,10 @@ pub struct DiffView {
     focus_handle: FocusHandle,
     /// Unified view mode (true) or side-by-side (false)
     unified_view: bool,
+    cached_lines: Rc<Vec<CachedDiffLine>>,
+    lines_dirty: bool,
+    /// Track which file index the cache was built for.
+    cached_file_index: usize,
 }
 
 impl DiffView {
@@ -263,7 +274,28 @@ impl DiffView {
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             unified_view: true,
+            cached_lines: Rc::new(Vec::new()),
+            lines_dirty: true,
+            cached_file_index: 0,
         }
+    }
+
+    fn rebuild_line_cache(&mut self) {
+        let line_count = self.total_lines();
+        let lines: Vec<CachedDiffLine> = (0..line_count)
+            .map(|i| {
+                let line = self.get_line(i);
+                let highlights = line
+                    .as_ref()
+                    .filter(|l| l.kind != DiffLineKind::Header)
+                    .map(|l| self.line_highlights(&l.content))
+                    .unwrap_or_default();
+                CachedDiffLine { line, highlights }
+            })
+            .collect();
+        self.cached_lines = Rc::new(lines);
+        self.cached_file_index = self.current_file;
+        self.lines_dirty = false;
     }
 
     /// Generate sample diff data for preview
@@ -578,12 +610,14 @@ impl DiffView {
 
     fn toggle_view_mode(&mut self, cx: &mut Context<Self>) {
         self.unified_view = !self.unified_view;
+        self.lines_dirty = true;
         cx.notify();
     }
 
     fn next_file(&mut self, cx: &mut Context<Self>) {
         if self.current_file + 1 < self.diffs.len() {
             self.current_file += 1;
+            self.lines_dirty = true;
             cx.notify();
         }
     }
@@ -591,6 +625,7 @@ impl DiffView {
     fn prev_file(&mut self, cx: &mut Context<Self>) {
         if self.current_file > 0 {
             self.current_file -= 1;
+            self.lines_dirty = true;
             cx.notify();
         }
     }
@@ -749,11 +784,16 @@ impl Focusable for DiffView {
 
 impl Render for DiffView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let line_count = self.total_lines();
+        // Invalidate cache when switching files
+        if self.cached_file_index != self.current_file {
+            self.lines_dirty = true;
+        }
+        if self.lines_dirty {
+            self.rebuild_line_cache();
+        }
 
-        // Pre-compute line data for the list
-        let line_data: Vec<Option<DiffLine>> =
-            (0..line_count).map(|i| self.get_line(i)).collect();
+        let line_count = self.cached_lines.len();
+        let cached_lines = self.cached_lines.clone();
 
         let text_style = {
             let mut style = window.text_style();
@@ -761,17 +801,6 @@ impl Render for DiffView {
             style.font_size = px(FONT_SIZE).into();
             style
         };
-
-        // Pre-compute highlights for non-header lines
-        let highlights: Vec<Vec<(Range<usize>, HighlightStyle)>> = line_data
-            .iter()
-            .map(|line| {
-                line.as_ref()
-                    .filter(|l| l.kind != DiffLineKind::Header)
-                    .map(|l| self.line_highlights(&l.content))
-                    .unwrap_or_default()
-            })
-            .collect();
 
         div()
             .flex()
@@ -798,7 +827,8 @@ impl Render for DiffView {
                     move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
                         range
                             .map(|i| {
-                                let Some(line) = &line_data[i] else {
+                                let cached = &cached_lines[i];
+                                let Some(line) = &cached.line else {
                                     return div().h(px(LINE_HEIGHT));
                                 };
 
@@ -848,9 +878,8 @@ impl Render for DiffView {
                                 }
 
                                 // Apply syntax highlighting with offset for prefix
-                                let line_highlights = &highlights[i];
                                 let adjusted_highlights: Vec<(Range<usize>, HighlightStyle)> =
-                                    line_highlights
+                                    cached.highlights
                                         .iter()
                                         .map(|(range, style)| {
                                             let offset = prefix.len();
