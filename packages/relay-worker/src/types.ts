@@ -1,6 +1,6 @@
 export interface Env {
-  RELAY_KV: KVNamespace;
-  WS_RELAY: DurableObjectNamespace;
+  ZEDRA_RELAY_KV: KVNamespace;
+  ZEDRA_WS_RELAY: DurableObjectNamespace;
 }
 
 export interface ErrorResponse {

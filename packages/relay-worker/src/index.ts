@@ -114,8 +114,8 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     }
 
     // Route to Durable Object for this room
-    const doId = env.WS_RELAY.idFromName(roomId);
-    const stub = env.WS_RELAY.get(doId);
+    const doId = env.ZEDRA_WS_RELAY.idFromName(roomId);
+    const stub = env.ZEDRA_WS_RELAY.get(doId);
     return stub.fetch(request);
   }
 

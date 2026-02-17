@@ -7,14 +7,14 @@ export async function rateLimit(
   windowSecs: number,
 ): Promise<boolean> {
   const key = `rl:${ip}`;
-  const current = await env.RELAY_KV.get(key);
+  const current = await env.ZEDRA_RELAY_KV.get(key);
   const count = current ? parseInt(current, 10) : 0;
 
   if (count >= limit) {
     return false; // rate limited
   }
 
-  await env.RELAY_KV.put(key, String(count + 1), {
+  await env.ZEDRA_RELAY_KV.put(key, String(count + 1), {
     expirationTtl: windowSecs,
   });
   return true; // allowed

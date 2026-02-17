@@ -47,7 +47,7 @@ export async function registerHost(
     last_seen: now,
   };
 
-  await env.RELAY_KV.put(
+  await env.ZEDRA_RELAY_KV.put(
     HOST_PREFIX + body.device_id,
     JSON.stringify(reg),
     { expirationTtl: HOST_TTL_SECS },
@@ -65,7 +65,7 @@ export async function heartbeatHost(
   body: HeartbeatRequest,
 ): Promise<{ ttl: number } | null> {
   const key = HOST_PREFIX + deviceId;
-  const existing = await env.RELAY_KV.get(key);
+  const existing = await env.ZEDRA_RELAY_KV.get(key);
   if (!existing) return null;
 
   const reg: HostRegistration = JSON.parse(existing);
@@ -78,7 +78,7 @@ export async function heartbeatHost(
     reg.sessions = body.sessions;
   }
 
-  await env.RELAY_KV.put(key, JSON.stringify(reg), {
+  await env.ZEDRA_RELAY_KV.put(key, JSON.stringify(reg), {
     expirationTtl: HOST_TTL_SECS,
   });
 
@@ -93,7 +93,7 @@ export async function lookupHost(
   deviceId: string,
 ): Promise<HostLookupResponse | null> {
   const key = HOST_PREFIX + deviceId;
-  const data = await env.RELAY_KV.get(key);
+  const data = await env.ZEDRA_RELAY_KV.get(key);
 
   if (!data) {
     // Host not registered or TTL expired = offline
@@ -131,7 +131,7 @@ export async function storeSignal(
 ): Promise<void> {
   // Store signal as a list — multiple clients may signal the same host
   const key = SIGNAL_PREFIX + targetDeviceId;
-  const existing = await env.RELAY_KV.get(key);
+  const existing = await env.ZEDRA_RELAY_KV.get(key);
   const signals: SignalCandidates[] = existing ? JSON.parse(existing) : [];
 
   // Replace existing signal from same sender, or append
@@ -149,7 +149,7 @@ export async function storeSignal(
     signals.shift();
   }
 
-  await env.RELAY_KV.put(key, JSON.stringify(signals), {
+  await env.ZEDRA_RELAY_KV.put(key, JSON.stringify(signals), {
     expirationTtl: SIGNAL_TTL_SECS,
   });
 }
@@ -162,10 +162,10 @@ export async function drainSignals(
   deviceId: string,
 ): Promise<SignalCandidates[]> {
   const key = SIGNAL_PREFIX + deviceId;
-  const data = await env.RELAY_KV.get(key);
+  const data = await env.ZEDRA_RELAY_KV.get(key);
   if (!data) return [];
 
   // Delete after reading (consumed)
-  await env.RELAY_KV.delete(key);
+  await env.ZEDRA_RELAY_KV.delete(key);
   return JSON.parse(data);
 }
