@@ -1,6 +1,8 @@
 package dev.zedra.app;
 
 import android.content.Context;
+import android.graphics.Rect;
+import android.os.Build;
 import android.text.InputType;
 import android.util.AttributeSet;
 import android.util.Log;
@@ -9,10 +11,13 @@ import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.VelocityTracker;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 
 /**
  * Custom SurfaceView for GPUI rendering.
@@ -38,6 +43,9 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
     private float touchDownY = 0;
     private boolean touchMoved = false;
     private static final float TAP_SLOP = 20f; // px threshold to distinguish tap from scroll
+
+    // Velocity tracking for fling gestures
+    private VelocityTracker velocityTracker = null;
 
     // Key action constants
     private static final int KEY_ACTION_DOWN = 0;
@@ -69,7 +77,40 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
         setFocusable(true);
         setFocusableInTouchMode(true);
 
+        // Detect soft keyboard and system bar insets via WindowInsets
+        ViewCompat.setOnApplyWindowInsetsListener(this, (v, insets) -> {
+            // IME (keyboard) inset
+            int imeHeight = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom;
+            nativeKeyboardHeightChanged(imeHeight);
+
+            // System bar insets (status bar top, navigation bar bottom)
+            int systemTop = insets.getInsets(WindowInsetsCompat.Type.systemBars()).top;
+            int systemBottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom;
+            nativeSystemInsetsChanged(systemTop, systemBottom);
+
+            return insets;
+        });
+
         Log.d(TAG, "GpuiSurfaceView initialized");
+    }
+
+    /**
+     * Exclude the left edge from system gesture navigation so the app can
+     * detect drawer swipe gestures.  Android limits exclusion rects to 200dp
+     * vertically per edge, but we claim the full height and let the system
+     * cap it.
+     */
+    @Override
+    protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+        super.onLayout(changed, left, top, right, bottom);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            int edgeWidth = (int) (60 * getResources().getDisplayMetrics().density); // 60dp
+            java.util.List<Rect> exclusions = java.util.Collections.singletonList(
+                new Rect(0, 0, edgeWidth, bottom - top)
+            );
+            setSystemGestureExclusionRects(exclusions);
+            Log.d(TAG, "Set gesture exclusion rect: 0,0," + edgeWidth + "," + (bottom - top));
+        }
     }
 
     /**
@@ -112,14 +153,34 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
         hideSoftKeyboard();
     }
 
+    // Track the current text content for proper IME handling
+    private StringBuilder currentText = new StringBuilder();
+
     @Override
     public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
-        outAttrs.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
+        outAttrs.inputType = InputType.TYPE_CLASS_TEXT;
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI | EditorInfo.IME_ACTION_NONE;
+
+        final GpuiSurfaceView view = this;
 
         return new BaseInputConnection(this, false) {
             @Override
+            public boolean setComposingText(CharSequence text, int newCursorPosition) {
+                // For composing text, we don't send anything yet - wait for commit
+                Log.d(TAG, "setComposingText: " + text + " (ignored, waiting for commit)");
+                return true;
+            }
+
+            @Override
+            public boolean finishComposingText() {
+                Log.d(TAG, "finishComposingText");
+                return true;
+            }
+
+            @Override
             public boolean commitText(CharSequence text, int newCursorPosition) {
+                Log.d(TAG, "commitText: " + text);
+                // Only send the final committed text to native
                 if (nativeHandle != 0 && text != null && text.length() > 0) {
                     nativeImeInput(nativeHandle, text.toString());
                 }
@@ -128,9 +189,12 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
 
             @Override
             public boolean deleteSurroundingText(int beforeLength, int afterLength) {
-                // Send backspace for each deleted character
-                for (int i = 0; i < beforeLength; i++) {
-                    nativeKeyEvent(nativeHandle, KEY_ACTION_DOWN, 67, 0); // KEYCODE_DEL
+                Log.d(TAG, "deleteSurroundingText: before=" + beforeLength + ", after=" + afterLength);
+                // Send backspace for deletion requests
+                if (nativeHandle != 0) {
+                    for (int i = 0; i < beforeLength; i++) {
+                        nativeKeyEvent(nativeHandle, KEY_ACTION_DOWN, 67, 0); // KEYCODE_DEL
+                    }
                 }
                 return true;
             }
@@ -138,6 +202,7 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
             @Override
             public boolean sendKeyEvent(KeyEvent event) {
                 if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    Log.d(TAG, "sendKeyEvent: keyCode=" + event.getKeyCode());
                     nativeKeyEvent(nativeHandle, KEY_ACTION_DOWN,
                             event.getKeyCode(), event.getUnicodeChar());
                 }
@@ -215,7 +280,9 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
+        Log.d(TAG, "onTouchEvent: action=" + event.getActionMasked() + ", nativeHandle=" + nativeHandle);
         if (nativeHandle == 0) {
+            Log.w(TAG, "Touch event ignored - nativeHandle is 0");
             return super.onTouchEvent(event);
         }
 
@@ -226,9 +293,28 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
                 touchDownX = event.getX();
                 touchDownY = event.getY();
                 touchMoved = false;
+                // Obtain velocity tracker for fling detection
+                if (velocityTracker == null) {
+                    velocityTracker = VelocityTracker.obtain();
+                } else {
+                    velocityTracker.clear();
+                }
+                velocityTracker.addMovement(event);
                 break;
             case MotionEvent.ACTION_UP:
                 action = ACTION_UP;
+                // Compute fling velocity on touch release
+                if (velocityTracker != null && touchMoved) {
+                    velocityTracker.addMovement(event);
+                    velocityTracker.computeCurrentVelocity(1000); // pixels per second
+                    float velX = velocityTracker.getXVelocity();
+                    float velY = velocityTracker.getYVelocity();
+                    if (Math.abs(velX) > 150 || Math.abs(velY) > 150) {
+                        nativeFlingEvent(nativeHandle, velX, velY);
+                    }
+                    velocityTracker.recycle();
+                    velocityTracker = null;
+                }
                 break;
             case MotionEvent.ACTION_MOVE:
                 action = ACTION_MOVE;
@@ -237,10 +323,17 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
                 if (dx * dx + dy * dy > TAP_SLOP * TAP_SLOP) {
                     touchMoved = true;
                 }
+                if (velocityTracker != null) {
+                    velocityTracker.addMovement(event);
+                }
                 break;
             case MotionEvent.ACTION_CANCEL:
                 action = ACTION_CANCEL;
                 touchMoved = false;
+                if (velocityTracker != null) {
+                    velocityTracker.recycle();
+                    velocityTracker = null;
+                }
                 break;
             default:
                 return super.onTouchEvent(event);
@@ -291,4 +384,7 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
     private static native void nativeTouchEvent(long handle, int action, float x, float y, int pointerId);
     private static native void nativeKeyEvent(long handle, int action, int keyCode, int unicode);
     private static native void nativeImeInput(long handle, String text);
+    private static native void nativeFlingEvent(long handle, float velocityX, float velocityY);
+    private static native void nativeKeyboardHeightChanged(int height);
+    private static native void nativeSystemInsetsChanged(int top, int bottom);
 }

@@ -3,6 +3,57 @@ pub mod keys;
 pub mod view;
 
 use std::borrow::Cow;
+use std::sync::Once;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+// Global keyboard height in physical pixels, set by the JNI layer.
+// 0 means the keyboard is hidden.
+static KEYBOARD_HEIGHT_PX: AtomicU32 = AtomicU32::new(0);
+
+// Global display density (scale factor × 100, stored as integer).
+// Default 300 = 3.0× scale. Set by the JNI layer.
+static DISPLAY_DENSITY_X100: AtomicU32 = AtomicU32::new(300);
+
+/// Set the current soft keyboard height (physical pixels). Called from JNI layer.
+pub fn set_keyboard_height(px: u32) {
+    KEYBOARD_HEIGHT_PX.store(px, Ordering::Relaxed);
+}
+
+/// Get the current soft keyboard height in physical pixels (0 = hidden).
+pub fn get_keyboard_height() -> u32 {
+    KEYBOARD_HEIGHT_PX.load(Ordering::Relaxed)
+}
+
+/// Set the display density (scale factor). Called from JNI layer.
+pub fn set_display_density(density: f32) {
+    DISPLAY_DENSITY_X100.store((density * 100.0) as u32, Ordering::Relaxed);
+}
+
+/// Get the display density (scale factor).
+pub fn get_display_density() -> f32 {
+    DISPLAY_DENSITY_X100.load(Ordering::Relaxed) as f32 / 100.0
+}
+
+/// JetBrains Mono NL (No Ligatures) - embedded terminal font
+pub static JETBRAINS_MONO_REGULAR: &[u8] = include_bytes!("../assets/JetBrainsMonoNL-Regular.ttf");
+
+/// The font family name for the embedded terminal font
+pub const TERMINAL_FONT_FAMILY: &str = "JetBrains Mono NL";
+
+static FONT_LOADED: Once = Once::new();
+
+/// Load the embedded JetBrains Mono font into GPUI's text system.
+/// This should be called once during app initialization.
+pub fn load_terminal_font(window: &mut gpui::Window) {
+    FONT_LOADED.call_once(|| {
+        let text_system = window.text_system();
+        if let Err(e) = text_system.add_fonts(vec![Cow::Borrowed(JETBRAINS_MONO_REGULAR)]) {
+            log::error!("Failed to load terminal font: {:?}", e);
+        } else {
+            log::info!("Loaded JetBrains Mono NL terminal font");
+        }
+    });
+}
 
 use alacritty_terminal::event::{Event as AlacTermEvent, EventListener};
 use alacritty_terminal::grid::Dimensions;
@@ -82,6 +133,9 @@ impl Dimensions for SimpleDimensions {
 /// Minimal terminal state wrapping alacritty_terminal::Term
 pub struct TerminalState {
     term: Term<ZedraListener>,
+    /// VTE processor — persisted across advance_bytes calls so that
+    /// escape sequences split across network packets are parsed correctly.
+    processor: Processor,
     mode: TermMode,
     size: TerminalSize,
 }
@@ -95,6 +149,7 @@ impl TerminalState {
 
         Self {
             term,
+            processor: Processor::new(),
             mode: TermMode::empty(),
             size: TerminalSize {
                 cell_width,
@@ -107,8 +162,7 @@ impl TerminalState {
 
     /// Feed bytes from SSH output into the terminal emulator
     pub fn advance_bytes(&mut self, bytes: &[u8]) {
-        let mut processor: Processor = Processor::new();
-        processor.advance(&mut self.term, bytes);
+        self.processor.advance(&mut self.term, bytes);
         self.mode = *self.term.mode();
     }
 

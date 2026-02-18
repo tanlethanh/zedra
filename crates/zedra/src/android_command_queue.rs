@@ -36,6 +36,8 @@ pub enum AndroidCommand {
         key_code: i32,
         unicode: i32,
     },
+    /// IME text input (handles composed text like Vietnamese 'ê' from 'ee')
+    ImeText { text: String },
     /// App resumed
     Resume,
     /// App paused
@@ -48,6 +50,10 @@ pub enum AndroidCommand {
     PairViaQr { qr_data: String },
     /// Connect to a saved host
     ConnectToHost { host_id: String },
+    /// Fling gesture (velocity from Android VelocityTracker)
+    Fling { velocity_x: f32, velocity_y: f32 },
+    /// Soft keyboard height changed (in physical pixels, 0 = hidden)
+    KeyboardHeightChanged { height: u32 },
 }
 
 /// Thread-safe command queue for Android

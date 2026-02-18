@@ -4,12 +4,42 @@
 /// It processes commands from the thread-safe queue and manages the GPUI App lifecycle.
 use anyhow::Result;
 use gpui::{AndroidPlatform, *};
-use jni::{objects::GlobalRef, JavaVM};
+use jni::{JavaVM, objects::GlobalRef};
+use rust_embed::RustEmbed;
+use std::borrow::Cow;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use crate::android_command_queue::AndroidCommand;
 use crate::zedra_app::ZedraApp;
+
+/// Embedded assets for Zedra (SVG icons, etc.)
+#[derive(RustEmbed)]
+#[folder = "assets"]
+#[include = "icons/*.svg"]
+struct ZedraAssets;
+
+impl gpui::AssetSource for ZedraAssets {
+    fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        Ok(Self::get(path).map(|f| f.data))
+    }
+
+    fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
+        Ok(Self::iter()
+            .filter(|name| name.starts_with(path))
+            .map(|name| name.into())
+            .collect())
+    }
+}
+
+/// Active fling state for momentum scrolling
+struct FlingState {
+    velocity_x: f32,
+    velocity_y: f32,
+    last_time: std::time::Instant,
+    /// Last touch position (logical pixels) for dispatching scroll events
+    position: Point<Pixels>,
+}
 
 /// Android app state - must only be accessed from the main UI thread
 pub struct AndroidApp {
@@ -25,6 +55,12 @@ pub struct AndroidApp {
     surface_available: bool,
     /// Last touch position for scroll delta calculation (logical pixels)
     last_touch_position: Option<(f32, f32)>,
+    /// Touch-down origin for tap detection (logical pixels)
+    touch_down_position: Option<(f32, f32)>,
+    /// Whether the current touch gesture has moved beyond tap threshold
+    touch_is_drag: bool,
+    /// Active fling for momentum scrolling
+    fling_state: Option<FlingState>,
 }
 
 impl AndroidApp {
@@ -36,6 +72,9 @@ impl AndroidApp {
             window: None,
             surface_available: false,
             last_touch_position: None,
+            touch_down_position: None,
+            touch_is_drag: false,
+            fling_state: None,
         }
     }
 
@@ -61,18 +100,19 @@ impl AndroidApp {
                 key_code,
                 unicode,
             } => self.handle_key(action, key_code, unicode),
+            AndroidCommand::ImeText { text } => self.handle_ime_text(&text),
             AndroidCommand::Resume => self.handle_resume(),
             AndroidCommand::Pause => self.handle_pause(),
             AndroidCommand::Destroy => self.handle_destroy(),
             AndroidCommand::RequestFrame => self.handle_frame_request(),
-            AndroidCommand::PairViaQr { qr_data } => {
-                log::info!("QR pairing requested: {}", &qr_data[..qr_data.len().min(50)]);
-                // Pairing is handled by the ZedraApp view
-                Ok(())
-            }
-            AndroidCommand::ConnectToHost { host_id } => {
-                log::info!("Connect to host requested: {}", host_id);
-                Ok(())
+            AndroidCommand::PairViaQr { qr_data } => self.handle_scan_via_qr(qr_data),
+            AndroidCommand::ConnectToHost { host_id } => self.handle_connect_to_host(host_id),
+            AndroidCommand::Fling {
+                velocity_x,
+                velocity_y,
+            } => self.handle_fling(velocity_x, velocity_y),
+            AndroidCommand::KeyboardHeightChanged { height } => {
+                self.handle_keyboard_height(height)
             }
         }
     }
@@ -138,6 +178,12 @@ impl AndroidApp {
         // Wrap in Rc - no need to specify dyn Platform since we're passing it directly
         let platform = Rc::new(android_platform);
 
+        // Set the actual display scale from Android DisplayMetrics before opening any windows.
+        // The platform defaults to 3.0 but the actual device density may differ (e.g. 2.75).
+        let density = crate::android_jni::get_density();
+        platform.set_display_scale(density);
+        log::info!("Set platform display_scale to {}", density);
+
         // Store a reference to the platform for frame requests
         self.platform = Some(platform.clone());
 
@@ -147,7 +193,7 @@ impl AndroidApp {
         let app_cell = App::new_app(
             platform,
             liveness,
-            Arc::new(()),                             // Unit type implements AssetSource
+            Arc::new(ZedraAssets),                     // Embedded SVG icons
             Arc::new(http_client::BlockedHttpClient), // Use BlockedHttpClient
         );
         log::info!(
@@ -188,8 +234,11 @@ impl AndroidApp {
                 let scale = crate::android_jni::get_density();
                 log::info!(
                     "Window dimensions: {}x{} physical, scale={}, logical={}x{}",
-                    screen_width_px, screen_height_px, scale,
-                    screen_width_px / scale, screen_height_px / scale
+                    screen_width_px,
+                    screen_height_px,
+                    scale,
+                    screen_width_px / scale,
+                    screen_height_px / scale
                 );
 
                 let window_bounds = WindowBounds::Windowed(Bounds {
@@ -317,42 +366,78 @@ impl AndroidApp {
         let logical_y = y / scale;
         let position = point(px(logical_x), px(logical_y));
 
+        log::trace!(
+            "handle_touch: action={}, pos=({:.1}, {:.1})",
+            action,
+            logical_x,
+            logical_y
+        );
+
+        // Tap slop threshold in logical pixels — movement beyond this means a drag, not a tap
+        const TAP_SLOP: f32 = 10.0;
+
         match action {
             0 => {
-                // ACTION_DOWN — record position for scroll delta, send mouse down
+                // ACTION_DOWN — cancel any active fling, record origin for tap detection
+                self.fling_state = None;
                 self.last_touch_position = Some((logical_x, logical_y));
-                platform.dispatch_input(PlatformInput::MouseDown(MouseDownEvent {
-                    button: MouseButton::Left,
-                    position,
-                    modifiers: Modifiers::default(),
-                    click_count: 1,
-                    first_mouse: false,
-                }));
+                self.touch_down_position = Some((logical_x, logical_y));
+                self.touch_is_drag = false;
             }
-            1 | 3 => {
-                // ACTION_UP or ACTION_CANCEL
-                self.last_touch_position = None;
+            1 => {
+                // ACTION_UP — if the finger didn't move beyond TAP_SLOP, treat as tap
+                if !self.touch_is_drag {
+                    platform.dispatch_input(PlatformInput::MouseDown(MouseDownEvent {
+                        button: MouseButton::Left,
+                        position,
+                        modifiers: Modifiers::default(),
+                        click_count: 1,
+                        first_mouse: false,
+                    }));
+                }
+                // Always dispatch MouseUp so gesture-driven UI (drawer snap) works
                 platform.dispatch_input(PlatformInput::MouseUp(MouseUpEvent {
                     button: MouseButton::Left,
                     position,
                     modifiers: Modifiers::default(),
                     click_count: 1,
                 }));
+                self.last_touch_position = None;
+                self.touch_down_position = None;
+                self.touch_is_drag = false;
+            }
+            3 => {
+                // ACTION_CANCEL — clean up, no tap
+                self.last_touch_position = None;
+                self.touch_down_position = None;
+                self.touch_is_drag = false;
             }
             2 => {
-                // ACTION_MOVE — send scroll wheel event for touch dragging
-                if let Some((last_x, last_y)) = self.last_touch_position {
-                    let delta_x = logical_x - last_x;
-                    let delta_y = logical_y - last_y;
-                    self.last_touch_position = Some((logical_x, logical_y));
-
-                    platform.dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
-                        position,
-                        delta: ScrollDelta::Pixels(point(px(delta_x), px(delta_y))),
-                        modifiers: Modifiers::default(),
-                        touch_phase: TouchPhase::Moved,
-                    }));
+                // ACTION_MOVE — check if we've exceeded tap slop, then scroll
+                if !self.touch_is_drag {
+                    if let Some((down_x, down_y)) = self.touch_down_position {
+                        let dx = logical_x - down_x;
+                        let dy = logical_y - down_y;
+                        if (dx * dx + dy * dy).sqrt() > TAP_SLOP {
+                            self.touch_is_drag = true;
+                        }
+                    }
                 }
+
+                if self.touch_is_drag {
+                    if let Some((last_x, last_y)) = self.last_touch_position {
+                        let delta_x = logical_x - last_x;
+                        let delta_y = logical_y - last_y;
+
+                        platform.dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
+                            position,
+                            delta: ScrollDelta::Pixels(point(px(delta_x), px(delta_y))),
+                            modifiers: Modifiers::default(),
+                            touch_phase: TouchPhase::Moved,
+                        }));
+                    }
+                }
+                self.last_touch_position = Some((logical_x, logical_y));
             }
             _ => {}
         }
@@ -385,6 +470,110 @@ impl AndroidApp {
         Ok(())
     }
 
+    /// Handle IME text input - dispatches text as individual key events
+    /// but defers to next frame to avoid reentrancy issues
+    fn handle_ime_text(&mut self, text: &str) -> Result<()> {
+        let platform = match &self.platform {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        log::debug!("IME text: {}", text);
+
+        // Dispatch each character as a key event
+        for ch in text.chars() {
+            let keystroke = Keystroke {
+                modifiers: Modifiers::default(),
+                key: ch.to_lowercase().to_string(),
+                key_char: Some(ch.to_string()),
+            };
+            let input = PlatformInput::KeyDown(KeyDownEvent {
+                keystroke,
+                is_held: false,
+                prefer_character_input: true, // Prefer character input for IME
+            });
+            platform.dispatch_input(input);
+        }
+
+        Ok(())
+    }
+
+    /// Handle fling gesture — start momentum scrolling
+    fn handle_fling(&mut self, velocity_x: f32, velocity_y: f32) -> Result<()> {
+        // Convert physical velocity to logical pixels/second
+        let scale = crate::android_jni::get_density();
+        let vx = velocity_x / scale;
+        let vy = velocity_y / scale;
+
+        // Use last known touch position for dispatching fling scroll events
+        let pos = self
+            .last_touch_position
+            .map(|(x, y)| point(px(x), px(y)))
+            .unwrap_or_else(|| point(px(0.0), px(0.0)));
+
+        // Only start fling if velocity is significant
+        if vx.abs() > 50.0 || vy.abs() > 50.0 {
+            self.fling_state = Some(FlingState {
+                velocity_x: vx,
+                velocity_y: vy,
+                last_time: std::time::Instant::now(),
+                position: pos,
+            });
+        }
+        Ok(())
+    }
+
+    /// Process active fling — apply friction and dispatch scroll events
+    fn process_fling(&mut self) {
+        let platform = match &self.platform {
+            Some(p) => p,
+            None => return,
+        };
+
+        let fling = match &mut self.fling_state {
+            Some(f) => f,
+            None => return,
+        };
+
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(fling.last_time).as_secs_f32();
+        fling.last_time = now;
+
+        // Apply frame-rate independent friction: velocity *= 0.95^(dt * 60)
+        let friction = 0.95_f32.powf(dt * 60.0);
+        fling.velocity_x *= friction;
+        fling.velocity_y *= friction;
+
+        let vx = fling.velocity_x;
+        let vy = fling.velocity_y;
+
+        // Stop fling when velocity is below threshold
+        if vx.abs() < 50.0 && vy.abs() < 50.0 {
+            self.fling_state = None;
+            return;
+        }
+
+        // Dispatch scroll event with velocity-based delta at original touch position
+        let delta_x = vx * dt;
+        let delta_y = vy * dt;
+
+        platform.dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position: fling.position,
+            delta: ScrollDelta::Pixels(point(px(delta_x), px(delta_y))),
+            modifiers: Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+        }));
+    }
+
+    /// Handle keyboard height change — trigger a re-render so TerminalView picks up the new height
+    fn handle_keyboard_height(&mut self, height: u32) -> Result<()> {
+        log::info!("Keyboard height changed: {}px", height);
+        if let Some(ref platform) = self.platform {
+            platform.request_frame_forced();
+        }
+        Ok(())
+    }
+
     /// Handle app resume
     fn handle_resume(&mut self) -> Result<()> {
         log::info!("App resumed");
@@ -410,11 +599,60 @@ impl AndroidApp {
 
     /// Handle frame request (called at ~60 FPS)
     fn handle_frame_request(&mut self) -> Result<()> {
+        // Process active fling momentum scrolling
+        self.process_fling();
+
+        // Check if terminal has pending data from RPC session
+        let terminal_data_pending = zedra_session::check_and_clear_terminal_data();
+        let fling_active = self.fling_state.is_some();
+
+        // Drain and execute any main-thread callbacks from the session runtime
+        for cb in zedra_session::drain_callbacks() {
+            cb();
+        }
+
         // Request frames on all windows via the AndroidPlatform
         // This triggers GPUI's rendering pipeline
         if let Some(ref platform) = self.platform {
-            platform.request_frame_for_all_windows();
+            if terminal_data_pending || fling_active {
+                // Force render when terminal data is pending or fling is active
+                platform.request_frame_forced();
+            } else {
+                platform.request_frame_for_all_windows();
+            }
         }
+        Ok(())
+    }
+
+    fn handle_scan_via_qr(&mut self, qr_data: String) -> Result<()> {
+        log::info!(
+            "QR pairing requested: {}",
+            &qr_data[..qr_data.len().min(50)]
+        );
+
+        // Parse the QR URI into a PairingPayload, then convert to PeerInfo
+        match zedra_transport::pairing::parse_pairing_uri(&qr_data) {
+            Ok(payload) => {
+                let peer_info = payload.to_peer_info();
+                log::info!(
+                    "QR parsed: hostname={}, addrs={:?}, relay={}",
+                    peer_info.hostname,
+                    peer_info.host_addrs,
+                    peer_info.relay_room
+                );
+                crate::zedra_app::set_pending_qr_peer_info(peer_info);
+                // Signal re-render so ZedraApp picks up the pending PeerInfo
+                zedra_session::signal_terminal_data();
+            }
+            Err(e) => {
+                log::error!("Failed to parse QR pairing URI: {}", e);
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_connect_to_host(&mut self, host_id: String) -> Result<()> {
+        log::info!("Connect to host requested: {}", host_id);
         Ok(())
     }
 }
@@ -505,6 +743,11 @@ pub fn process_commands_from_queue() -> Result<()> {
                 if let Err(e) = app.process_command(command) {
                     log::error!("Error processing command: {}", e);
                 }
+            }
+
+            // Drain foreground executor task queue (spawned async tasks, timers, etc.)
+            if let Some(platform) = &app.platform {
+                platform.process_pending_tasks();
             }
 
             // Request frame refresh (called every Choreographer frame @ 60 FPS)

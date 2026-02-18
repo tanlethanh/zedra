@@ -4,9 +4,13 @@ use jni::{
     sys::{jfloat, jint, jlong},
 };
 use ndk::native_window::NativeWindow;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Once};
 
 use crate::android_command_queue::{AndroidCommand, get_command_sender};
+
+// Global storage for JavaVM to enable Rust→Java callbacks
+static JVM: Mutex<Option<Arc<JavaVM>>> = Mutex::new(None);
 
 // Static initialization for logging
 static INIT: Once = Once::new();
@@ -17,9 +21,31 @@ static NATIVE_WINDOW: Mutex<Option<NativeWindow>> = Mutex::new(None);
 // Global storage for display density (set from Java, read by Rust)
 static DISPLAY_DENSITY: Mutex<f32> = Mutex::new(3.0);
 
+// Global storage for soft keyboard height in physical pixels (0 = hidden)
+static KEYBOARD_HEIGHT: AtomicU32 = AtomicU32::new(0);
+
+// Global storage for system bar insets in physical pixels
+static SYSTEM_INSET_TOP: AtomicU32 = AtomicU32::new(0);
+static SYSTEM_INSET_BOTTOM: AtomicU32 = AtomicU32::new(0);
+
 /// Get the stored display density
 pub fn get_density() -> f32 {
     *DISPLAY_DENSITY.lock().unwrap()
+}
+
+/// Get the current soft keyboard height in physical pixels (0 = hidden)
+pub fn get_keyboard_height() -> u32 {
+    KEYBOARD_HEIGHT.load(Ordering::Relaxed)
+}
+
+/// Get the system status bar inset in physical pixels
+pub fn get_system_inset_top() -> u32 {
+    SYSTEM_INSET_TOP.load(Ordering::Relaxed)
+}
+
+/// Get the system navigation bar inset in physical pixels
+pub fn get_system_inset_bottom() -> u32 {
+    SYSTEM_INSET_BOTTOM.load(Ordering::Relaxed)
 }
 
 /// Get the stored NativeWindow (must be called from main thread)
@@ -87,6 +113,9 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_gpuiInit(
             return 0;
         }
     };
+
+    // Store JVM globally for Rust→Java callbacks (keyboard, etc.)
+    *JVM.lock().unwrap() = Some(jvm.clone());
 
     // Create a global reference to the activity
     let activity_ref = match env.new_global_ref(activity) {
@@ -495,6 +524,8 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_getDisplayDensity(
         Ok(density) => {
             log::info!("Display density: {}", density);
             *DISPLAY_DENSITY.lock().unwrap() = density;
+            // Also update the terminal crate's global for keyboard resize calculations
+            zedra_terminal::set_display_density(density);
             density
         }
         Err(e) => {
@@ -526,6 +557,68 @@ pub extern "system" fn Java_dev_zedra_app_QRScannerActivity_nativeOnQrCodeScanne
     // Send pairing command to queue
     let sender = get_command_sender();
     let _ = sender.send(AndroidCommand::PairViaQr { qr_data });
+}
+
+/// Fling event callback
+///
+/// Called when a fling gesture is detected (velocity from Android VelocityTracker)
+///
+/// # Arguments
+/// * `velocity_x` - Horizontal velocity in pixels/second
+/// * `velocity_y` - Vertical velocity in pixels/second
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeFlingEvent(
+    _env: JNIEnv,
+    _class: JClass,
+    _handle: jlong,
+    velocity_x: jfloat,
+    velocity_y: jfloat,
+) {
+    log::debug!("nativeFlingEvent: vx={}, vy={}", velocity_x, velocity_y);
+
+    let sender = get_command_sender();
+    let _ = sender.send(AndroidCommand::Fling {
+        velocity_x,
+        velocity_y,
+    });
+}
+
+/// System insets changed callback
+///
+/// Called when the system bar insets change (status bar top, navigation bar bottom).
+/// Values are in physical pixels.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeSystemInsetsChanged(
+    _env: JNIEnv,
+    _class: JClass,
+    top: jint,
+    bottom: jint,
+) {
+    let t = top.max(0) as u32;
+    let b = bottom.max(0) as u32;
+    SYSTEM_INSET_TOP.store(t, Ordering::Relaxed);
+    SYSTEM_INSET_BOTTOM.store(b, Ordering::Relaxed);
+    log::info!("System insets changed: top={}px, bottom={}px", t, b);
+}
+
+/// Keyboard height changed callback
+///
+/// Called when the soft keyboard appears, resizes, or disappears.
+/// Height is in physical pixels (0 = keyboard hidden).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeKeyboardHeightChanged(
+    _env: JNIEnv,
+    _class: JClass,
+    height: jint,
+) {
+    let h = height.max(0) as u32;
+    KEYBOARD_HEIGHT.store(h, Ordering::Relaxed);
+    // Also update the terminal crate's global so TerminalView can read it
+    zedra_terminal::set_keyboard_height(h);
+    log::info!("Keyboard height changed: {}px", h);
+
+    let sender = get_command_sender();
+    let _ = sender.send(AndroidCommand::KeyboardHeightChanged { height: h });
 }
 
 /// Show soft keyboard
@@ -571,15 +664,220 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeImeInput(
 
     log::debug!("IME input: {}", input);
 
-    // Convert each character to a key event
+    // Send entire text as a single ImeText command to avoid reentrancy issues
     let sender = get_command_sender();
-    for ch in input.chars() {
-        let unicode = ch as i32;
-        let _ = sender.send(AndroidCommand::Key {
-            action: 0, // DOWN
-            key_code: 0,
-            unicode,
-        });
+    let _ = sender.send(AndroidCommand::ImeText { text: input });
+}
+
+// =============================================================================
+// Public Rust API for keyboard control (Rust → Java callbacks)
+// =============================================================================
+
+/// Show the Android soft keyboard
+///
+/// Call this when a text input gains focus
+pub fn show_keyboard() {
+    log::info!("show_keyboard() called");
+
+    // Wrap in catch_unwind to prevent panics from crossing JNI boundary
+    let result = std::panic::catch_unwind(|| {
+        show_keyboard_inner();
+    });
+
+    if let Err(e) = result {
+        log::error!("Panic in show_keyboard: {:?}", e);
+    }
+}
+
+fn show_keyboard_inner() {
+    let jvm = match JVM.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(jvm) => jvm.clone(),
+            None => {
+                log::error!("JVM not available for keyboard call");
+                return;
+            }
+        },
+        Err(e) => {
+            log::error!("Failed to lock JVM mutex: {:?}", e);
+            return;
+        }
+    };
+
+    // Use get_env for the main thread which should already be attached
+    let mut env = match jvm.get_env() {
+        Ok(env) => env,
+        Err(_) => {
+            // Fall back to attach if not already attached
+            match jvm.attach_current_thread_as_daemon() {
+                Ok(env) => env,
+                Err(e) => {
+                    log::error!("Failed to attach thread for keyboard: {:?}", e);
+                    return;
+                }
+            }
+        }
+    };
+
+    // Call MainActivity.showKeyboard() static method
+    let class = match env.find_class("dev/zedra/app/MainActivity") {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Failed to find MainActivity class: {:?}", e);
+            // Check for pending exception
+            if env.exception_check().unwrap_or(false) {
+                env.exception_describe().ok();
+                env.exception_clear().ok();
+            }
+            return;
+        }
+    };
+
+    if let Err(e) = env.call_static_method(&class, "showKeyboard", "()V", &[]) {
+        log::error!("Failed to call showKeyboard: {:?}", e);
+        // Check for pending exception
+        if env.exception_check().unwrap_or(false) {
+            env.exception_describe().ok();
+            env.exception_clear().ok();
+        }
+    } else {
+        log::info!("showKeyboard JNI call succeeded");
+    }
+}
+
+/// Launch the QR scanner activity
+///
+/// Call this to open the camera for QR code scanning
+pub fn launch_qr_scanner() {
+    log::info!("launch_qr_scanner() called");
+
+    let result = std::panic::catch_unwind(|| {
+        launch_qr_scanner_inner();
+    });
+
+    if let Err(e) = result {
+        log::error!("Panic in launch_qr_scanner: {:?}", e);
+    }
+}
+
+fn launch_qr_scanner_inner() {
+    let jvm = match JVM.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(jvm) => jvm.clone(),
+            None => {
+                log::error!("JVM not available for QR scanner");
+                return;
+            }
+        },
+        Err(e) => {
+            log::error!("Failed to lock JVM mutex: {:?}", e);
+            return;
+        }
+    };
+
+    let mut env = match jvm.get_env() {
+        Ok(env) => env,
+        Err(_) => match jvm.attach_current_thread_as_daemon() {
+            Ok(env) => env,
+            Err(e) => {
+                log::error!("Failed to attach thread for QR scanner: {:?}", e);
+                return;
+            }
+        },
+    };
+
+    let class = match env.find_class("dev/zedra/app/MainActivity") {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Failed to find MainActivity class: {:?}", e);
+            if env.exception_check().unwrap_or(false) {
+                env.exception_describe().ok();
+                env.exception_clear().ok();
+            }
+            return;
+        }
+    };
+
+    if let Err(e) = env.call_static_method(&class, "launchQrScanner", "()V", &[]) {
+        log::error!("Failed to call launchQrScanner: {:?}", e);
+        if env.exception_check().unwrap_or(false) {
+            env.exception_describe().ok();
+            env.exception_clear().ok();
+        }
+    } else {
+        log::info!("launchQrScanner JNI call succeeded");
+    }
+}
+
+/// Hide the Android soft keyboard
+///
+/// Call this when a text input loses focus
+pub fn hide_keyboard() {
+    log::info!("hide_keyboard() called");
+
+    // Wrap in catch_unwind to prevent panics from crossing JNI boundary
+    let result = std::panic::catch_unwind(|| {
+        hide_keyboard_inner();
+    });
+
+    if let Err(e) = result {
+        log::error!("Panic in hide_keyboard: {:?}", e);
+    }
+}
+
+fn hide_keyboard_inner() {
+    let jvm = match JVM.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(jvm) => jvm.clone(),
+            None => {
+                log::error!("JVM not available for keyboard call");
+                return;
+            }
+        },
+        Err(e) => {
+            log::error!("Failed to lock JVM mutex: {:?}", e);
+            return;
+        }
+    };
+
+    // Use get_env for the main thread which should already be attached
+    let mut env = match jvm.get_env() {
+        Ok(env) => env,
+        Err(_) => {
+            // Fall back to attach if not already attached
+            match jvm.attach_current_thread_as_daemon() {
+                Ok(env) => env,
+                Err(e) => {
+                    log::error!("Failed to attach thread for keyboard: {:?}", e);
+                    return;
+                }
+            }
+        }
+    };
+
+    // Call MainActivity.hideKeyboard() static method
+    let class = match env.find_class("dev/zedra/app/MainActivity") {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Failed to find MainActivity class: {:?}", e);
+            // Check for pending exception
+            if env.exception_check().unwrap_or(false) {
+                env.exception_describe().ok();
+                env.exception_clear().ok();
+            }
+            return;
+        }
+    };
+
+    if let Err(e) = env.call_static_method(&class, "hideKeyboard", "()V", &[]) {
+        log::error!("Failed to call hideKeyboard: {:?}", e);
+        // Check for pending exception
+        if env.exception_check().unwrap_or(false) {
+            env.exception_describe().ok();
+            env.exception_clear().ok();
+        }
+    } else {
+        log::info!("hideKeyboard JNI call succeeded");
     }
 }
 

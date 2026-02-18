@@ -1,0 +1,16 @@
+[package]
+name = "zedra-transport"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+zedra-rpc = { path = "../zedra-rpc" }
+zedra-relay = { path = "../zedra-relay" }
+tokio = { workspace = true, features = ["rt", "net", "time", "sync", "macros"] }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+log.workspace = true
+futures.workspace = true
+base64-url.workspace = true

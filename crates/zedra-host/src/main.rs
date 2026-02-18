@@ -1,15 +1,19 @@
-// zedra-host: Desktop companion daemon for Zedra terminal
+// zedra-host: Desktop companion daemon for Zedra
 //
-// Provides an SSH server that Zedra (Android) connects to for remote terminal access.
-// Supports QR code pairing for easy setup and password fallback authentication.
+// Provides an RPC daemon that Zedra (Android) connects to for remote terminal,
+// filesystem, git, and AI operations over JSON-RPC.
+//
+// A single `start` command handles both LAN and relay transports. LAN TCP is
+// always available; relay is attempted automatically when --relay-url is set
+// and the relay server is reachable.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use zedra_host::{auth, qr, rpc_daemon, server, store};
+use zedra_host::{qr, relay_bridge, rpc_daemon, session_registry, store};
 
 #[derive(Parser)]
-#[command(name = "zedra-host", about = "Desktop companion daemon for Zedra terminal")]
+#[command(name = "zedra-host", about = "Desktop companion daemon for Zedra")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -17,29 +21,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the SSH server daemon (foreground)
+    /// Start the daemon (LAN + optional relay)
     Start {
         /// Port to listen on
-        #[arg(short, long, default_value = "2222")]
-        port: u16,
-
-        /// Bind address
-        #[arg(short, long, default_value = "0.0.0.0")]
-        bind: String,
-    },
-    /// Generate a QR code for pairing with a mobile device
-    Pair,
-    /// List paired devices
-    Devices,
-    /// Revoke a paired device
-    Revoke {
-        /// Device ID to revoke
-        device_id: String,
-    },
-    /// Start the RPC daemon (filesystem, git, terminal over JSON-RPC)
-    Daemon {
-        /// Port to listen on
-        #[arg(short, long, default_value = "2223")]
+        #[arg(short, long, default_value = "2123")]
         port: u16,
 
         /// Bind address
@@ -49,14 +34,26 @@ enum Commands {
         /// Working directory to serve
         #[arg(short, long, default_value = ".")]
         workdir: String,
+
+        /// Relay server URL (omit to disable relay)
+        #[arg(long, default_value = zedra_relay::DEFAULT_RELAY_URL)]
+        relay_url: String,
+
+        /// Disable relay transport
+        #[arg(long)]
+        no_relay: bool,
     },
-    /// Set or update the fallback password
-    SetPassword,
+    /// List paired devices
+    Devices,
+    /// Revoke a paired device
+    Revoke {
+        /// Device ID to revoke
+        device_id: String,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -67,12 +64,63 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Start { port, bind } => {
+        Commands::Start {
+            port,
+            bind,
+            workdir,
+            relay_url,
+            no_relay,
+        } => {
+            let workdir = std::path::PathBuf::from(workdir)
+                .canonicalize()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+            let local_ip = qr::get_local_ip().unwrap_or_else(|| "unknown".to_string());
             tracing::info!("Starting zedra-host on {}:{}", bind, port);
-            server::run_server(&bind, port).await?;
-        }
-        Commands::Pair => {
-            qr::generate_pairing_qr().await?;
+            tracing::info!("Local IP: {}", local_ip);
+            tracing::info!("Serving workdir: {}", workdir.display());
+
+            let registry = std::sync::Arc::new(session_registry::SessionRegistry::new());
+            let state = std::sync::Arc::new(rpc_daemon::DaemonState::new(workdir));
+
+            // Try to register a relay room (non-fatal on failure)
+            let relay_info = if no_relay {
+                tracing::info!("Relay disabled (--no-relay)");
+                None
+            } else {
+                tracing::info!("Registering relay room at {}...", relay_url);
+                relay_bridge::try_register_relay(&relay_url).await
+            };
+
+            // Show QR code with all available transports
+            if let Err(e) = qr::generate_pairing_qr(port, relay_info.as_ref()) {
+                tracing::warn!("Failed to generate QR code: {}", e);
+            }
+
+            // Spawn relay acceptor alongside LAN TCP if relay registered
+            if let Some(info) = relay_info {
+                let relay_registry = registry.clone();
+                let relay_state = state.clone();
+                tokio::spawn(async move {
+                    relay_bridge::accept_relay_connections(info, relay_registry, relay_state).await;
+                });
+            }
+
+            // Spawn session cleanup task
+            let cleanup_registry = registry.clone();
+            tokio::spawn(async move {
+                let grace_period = std::time::Duration::from_secs(300);
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    let removed = cleanup_registry.cleanup(grace_period).await;
+                    if !removed.is_empty() {
+                        tracing::info!("Cleaned up {} idle sessions", removed.len());
+                    }
+                }
+            });
+
+            // Run LAN TCP listener (blocks)
+            rpc_daemon::run_daemon(&bind, port, registry, state).await?;
         }
         Commands::Devices => {
             let devices = store::list_devices()?;
@@ -93,36 +141,7 @@ async fn main() -> Result<()> {
             store::revoke_device(&device_id)?;
             println!("Device {} revoked.", device_id);
         }
-        Commands::Daemon {
-            port,
-            bind,
-            workdir,
-        } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
-            tracing::info!("Starting RPC daemon on {}:{} serving {}", bind, port, workdir.display());
-            rpc_daemon::run_daemon(&bind, port, workdir).await?;
-        }
-        Commands::SetPassword => {
-            let password = rpassword_prompt("Enter new password: ")?;
-            let confirm = rpassword_prompt("Confirm password: ")?;
-            if password != confirm {
-                anyhow::bail!("Passwords do not match");
-            }
-            auth::set_password(&password)?;
-            println!("Password updated.");
-        }
     }
 
     Ok(())
-}
-
-fn rpassword_prompt(prompt: &str) -> Result<String> {
-    use std::io::{self, Write};
-    print!("{}", prompt);
-    io::stdout().flush()?;
-    let mut password = String::new();
-    io::stdin().read_line(&mut password)?;
-    Ok(password.trim().to_string())
 }

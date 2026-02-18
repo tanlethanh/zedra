@@ -4,12 +4,82 @@
 // This works over TCP, Unix sockets, or WebSocket binary frames.
 
 use anyhow::Result;
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::protocol::{Message, Notification, Request, Response, INTERNAL_ERROR};
+
+// ---------------------------------------------------------------------------
+// Transport trait
+// ---------------------------------------------------------------------------
+
+/// Abstraction over a framed byte transport (TCP, relay, etc.).
+///
+/// Each `send`/`recv` call handles one complete length-delimited frame.
+#[async_trait]
+pub trait Transport: Send + 'static {
+    /// Send a length-delimited frame.
+    async fn send(&mut self, payload: &[u8]) -> Result<()>;
+    /// Receive a length-delimited frame.
+    async fn recv(&mut self) -> Result<Vec<u8>>;
+    /// Human-readable transport name for logging.
+    fn name(&self) -> &str;
+}
+
+// ---------------------------------------------------------------------------
+// TcpTransport
+// ---------------------------------------------------------------------------
+
+/// Length-delimited transport over a TCP stream.
+pub struct TcpTransport {
+    reader: OwnedReadHalf,
+    writer: OwnedWriteHalf,
+}
+
+impl TcpTransport {
+    pub fn new(stream: TcpStream) -> Self {
+        let (reader, writer) = stream.into_split();
+        Self { reader, writer }
+    }
+}
+
+#[async_trait]
+impl Transport for TcpTransport {
+    async fn send(&mut self, payload: &[u8]) -> Result<()> {
+        let len = (payload.len() as u32).to_be_bytes();
+        self.writer.write_all(&len).await?;
+        self.writer.write_all(payload).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    async fn recv(&mut self) -> Result<Vec<u8>> {
+        let mut len_buf = [0u8; 4];
+        self.reader.read_exact(&mut len_buf).await?;
+        let len = u32::from_be_bytes(len_buf) as usize;
+
+        if len > 16 * 1024 * 1024 {
+            anyhow::bail!("message too large: {} bytes", len);
+        }
+
+        let mut payload = vec![0u8; len];
+        self.reader.read_exact(&mut payload).await?;
+        Ok(payload)
+    }
+
+    fn name(&self) -> &str {
+        "tcp"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Framed read/write helpers (for generic AsyncRead/AsyncWrite)
+// ---------------------------------------------------------------------------
 
 /// Framed writer: serialize + length-prefix a message.
 pub async fn write_message<W: AsyncWriteExt + Unpin>(
@@ -100,6 +170,65 @@ impl RpcClient {
                         // Client shouldn't receive requests; ignore
                     }
                     Err(_) => break,
+                }
+            }
+        });
+
+        let client = Self {
+            tx: write_tx,
+            pending,
+            notifications: notif_tx,
+        };
+        (client, notif_rx)
+    }
+
+    /// Spawn a client over mpsc channels instead of raw streams.
+    ///
+    /// `incoming_rx` delivers raw frames from the active transport.
+    /// `outgoing_tx` sends raw frames to the active transport.
+    ///
+    /// This allows a TransportManager to bridge between the active transport
+    /// and the RPC client, swapping transports without recreating the client.
+    pub fn spawn_from_channels(
+        incoming_rx: mpsc::Receiver<Vec<u8>>,
+        outgoing_tx: mpsc::Sender<Vec<u8>>,
+    ) -> (Self, mpsc::Receiver<Notification>) {
+        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+        let (write_tx, mut write_rx) = mpsc::channel::<Vec<u8>>(64);
+        let (notif_tx, notif_rx) = mpsc::channel::<Notification>(64);
+
+        // Writer task: forward serialized payloads to the outgoing channel
+        tokio::spawn(async move {
+            while let Some(payload) = write_rx.recv().await {
+                if outgoing_tx.send(payload).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Reader task: parse incoming frames into responses/notifications
+        let pending_clone = pending.clone();
+        let notif_tx_clone = notif_tx.clone();
+        tokio::spawn(async move {
+            let mut incoming_rx = incoming_rx;
+            while let Some(payload) = incoming_rx.recv().await {
+                let msg: Message = match serde_json::from_slice(&payload) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                match msg {
+                    Message::Response(resp) => {
+                        let mut map = pending_clone.lock().await;
+                        if let Some(tx) = map.remove(&resp.id) {
+                            let _ = tx.send(resp);
+                        }
+                    }
+                    Message::Notification(notif) => {
+                        let _ = notif_tx_clone.send(notif).await;
+                    }
+                    Message::Request(_) => {
+                        // Client shouldn't receive requests; ignore
+                    }
                 }
             }
         });
@@ -297,5 +426,47 @@ mod tests {
         );
 
         server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn spawn_from_channels_roundtrip() {
+        // Set up channels to simulate a transport
+        let (incoming_tx, incoming_rx) = mpsc::channel::<Vec<u8>>(64);
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<Vec<u8>>(64);
+
+        let (client, _notifs) = RpcClient::spawn_from_channels(incoming_rx, outgoing_tx);
+
+        // Send a request via the client
+        let call_handle = tokio::spawn(async move {
+            client.call("test", serde_json::json!({"foo": "bar"})).await
+        });
+
+        // Read the outgoing payload (the serialized Request)
+        let outgoing_payload = outgoing_rx.recv().await.unwrap();
+        let msg: Message = serde_json::from_slice(&outgoing_payload).unwrap();
+        let req_id = match msg {
+            Message::Request(r) => {
+                assert_eq!(r.method, "test");
+                r.id
+            }
+            _ => panic!("expected request"),
+        };
+
+        // Simulate sending a response back
+        let resp = Response::ok(req_id, serde_json::json!({"result": "ok"}));
+        let resp_payload = serde_json::to_vec(&resp).unwrap();
+        incoming_tx.send(resp_payload).await.unwrap();
+
+        // The call should resolve with the response
+        let result = call_handle.await.unwrap().unwrap();
+        assert!(result.error.is_none());
+        assert_eq!(result.result.unwrap(), serde_json::json!({"result": "ok"}));
+    }
+
+    #[tokio::test]
+    async fn tcp_transport_trait() {
+        // Verify TcpTransport implements Transport (compile-time check)
+        fn assert_transport<T: Transport>() {}
+        assert_transport::<TcpTransport>();
     }
 }

@@ -18,9 +18,9 @@ impl Default for HeaderConfig {
     fn default() -> Self {
         Self {
             height: 44.0,
-            bg_color: hsla(220.0 / 360.0, 0.13, 0.14, 1.0),   // #21252b
-            title_color: hsla(207.0 / 360.0, 0.82, 0.66, 1.0), // #61afef
-            back_color: hsla(220.0 / 360.0, 0.14, 0.71, 1.0),  // #abb2bf
+            bg_color: hsla(0.0, 0.0, 0.055, 1.0),              // #0e0c0c
+            title_color: hsla(0.0, 0.0, 1.0, 1.0),             // white
+            back_color: hsla(0.0, 0.0, 0.79, 1.0),             // #cacaca
             show_header: true,
         }
     }
@@ -140,7 +140,7 @@ impl Render for StackNavigator {
                         .px_2()
                         .bg(header_bg)
                         .border_b_1()
-                        .border_color(hsla(220.0 / 360.0, 0.14, 0.27, 1.0)) // #3e4451
+                        .border_color(hsla(0.0, 0.0, 0.1, 1.0)) // subtle border
                         .when(show_back, |d| {
                             d.child(
                                 div()

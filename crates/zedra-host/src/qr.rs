@@ -2,75 +2,104 @@
 // Generates a QR code containing connection info + one-time pairing token
 
 use anyhow::Result;
-use qrcode::QrCode;
+use qrcode::render::unicode;
+use qrcode::{EcLevel, QrCode};
 use serde::Serialize;
 
 use crate::auth;
 use crate::store;
 
-/// Pairing payload encoded in the QR code
-#[derive(Serialize)]
-struct PairingPayload {
-    /// Protocol version
-    v: u32,
-    /// Host address (IP or hostname)
-    host: String,
-    /// SSH port
-    port: u16,
-    /// One-time pairing token
-    token: String,
-    /// Host key fingerprint for verification
-    fingerprint: String,
-    /// Friendly name for this machine
-    name: String,
+/// Relay info included in the QR code when relay is available.
+pub struct RelayInfo {
+    pub relay_url: String,
+    pub room_code: String,
+    pub secret: String,
 }
 
-/// Generate and display a pairing QR code
-pub async fn generate_pairing_qr() -> Result<()> {
-    // Get host info
+/// Pairing payload encoded in the QR code.
+///
+/// Always includes LAN addresses. Relay fields are present only when the
+/// host successfully registered a relay room.
+#[derive(Serialize)]
+struct PairingPayload {
+    v: u32,
+    host: String,
+    port: u16,
+    token: String,
+    fingerprint: String,
+    name: String,
+    host_addrs: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tailscale_addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    relay_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    relay_room: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    relay_secret: Option<String>,
+}
+
+/// Generate and display a pairing QR code.
+///
+/// Always includes LAN addresses. If `relay` is provided, the relay room
+/// credentials are embedded so the client can fall back to relay transport.
+pub fn generate_pairing_qr(port: u16, relay: Option<&RelayInfo>) -> Result<()> {
     let hostname = gethostname();
-    let ip = get_local_ip().unwrap_or_else(|| "localhost".to_string());
-    let port = 2222u16;
-
-    // Get host key fingerprint
+    let primary_ip = get_local_ip().unwrap_or_else(|| "localhost".to_string());
     let fingerprint = get_host_fingerprint()?;
-
-    // Generate pairing token
     let token = auth::create_pairing_token();
 
-    // Build payload
+    let host_addrs = collect_lan_addrs();
+
     let payload = PairingPayload {
-        v: 1,
-        host: ip.clone(),
+        v: 2,
+        host: primary_ip.clone(),
         port,
         token,
         fingerprint,
         name: hostname.clone(),
+        host_addrs: if host_addrs.is_empty() {
+            vec![primary_ip.clone()]
+        } else {
+            host_addrs.clone()
+        },
+        tailscale_addr: None,
+        relay_url: relay.map(|r| r.relay_url.clone()),
+        relay_room: relay.map(|r| r.room_code.clone()),
+        relay_secret: relay.map(|r| r.secret.clone()),
     };
 
     let json = serde_json::to_string(&payload)?;
     let encoded = base64_url::encode(&json);
     let uri = format!("zedra://pair?d={}", encoded);
 
-    // Generate QR code
-    let code = QrCode::new(uri.as_bytes())?;
+    let code = QrCode::with_error_correction_level(uri.as_bytes(), EcLevel::L)?;
+    let qr_string = render_qr_compact(&code);
 
-    // Render to terminal using Unicode block characters
-    let string = render_qr_to_terminal(&code);
+    let addrs_display = if host_addrs.is_empty() {
+        primary_ip.clone()
+    } else {
+        host_addrs.join(", ")
+    };
 
     println!();
     println!("  Zedra Host Pairing");
     println!("  ==================");
     println!();
     println!("  Scan this QR code with the Zedra app to pair this device.");
-    println!("  Host: {} ({})", hostname, ip);
+    println!("  Host: {} ({})", hostname, addrs_display);
     println!("  Port: {}", port);
+    print!("  Transports: LAN");
+    if let Some(r) = relay {
+        print!(" + Relay (room: {})", r.room_code);
+    }
+    println!();
     println!("  Token expires in 5 minutes.");
     println!();
-    println!("{}", string);
+    println!("{}", qr_string);
     println!();
     println!("  Or connect manually:");
-    println!("    Host: {}", ip);
+    println!("    Host: {}", primary_ip);
     println!("    Port: {}", port);
     println!("    Username: zedra");
     println!();
@@ -78,35 +107,27 @@ pub async fn generate_pairing_qr() -> Result<()> {
     Ok(())
 }
 
-/// Render QR code to terminal using Unicode block characters
-fn render_qr_to_terminal(code: &QrCode) -> String {
-    let width = code.width();
-    let mut result = String::new();
+/// Collect all non-loopback IPv4 addresses on the host.
+pub fn collect_lan_addrs() -> Vec<String> {
+    if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|iface| !iface.is_loopback())
+        .filter_map(|iface| match iface.ip() {
+            std::net::IpAddr::V4(v4) => Some(v4.to_string()),
+            _ => None,
+        })
+        .collect()
+}
 
-    // Process two rows at a time using Unicode half blocks
-    let mut row = 0;
-    while row < width {
-        result.push_str("    "); // Left margin
-        for col in 0..width {
-            let top = code[(col, row)] == qrcode::types::Color::Dark;
-            let bottom = if row + 1 < width {
-                code[(col, row + 1)] == qrcode::types::Color::Dark
-            } else {
-                false
-            };
-
-            match (top, bottom) {
-                (true, true) => result.push('\u{2588}'),   // Full block
-                (true, false) => result.push('\u{2580}'),  // Upper half
-                (false, true) => result.push('\u{2584}'),  // Lower half
-                (false, false) => result.push(' '),         // Empty
-            }
-        }
-        result.push('\n');
-        row += 2;
-    }
-
-    result
+/// Render a compact QR code for terminal display using the qrcode crate's
+/// built-in Dense1x2 Unicode renderer (two rows per character via half-blocks).
+fn render_qr_compact(code: &QrCode) -> String {
+    code.render::<unicode::Dense1x2>()
+        .dark_color(unicode::Dense1x2::Dark)
+        .light_color(unicode::Dense1x2::Light)
+        .quiet_zone(true)
+        .build()
 }
 
 /// Get the host key fingerprint
@@ -157,7 +178,7 @@ fn gethostname() -> String {
 }
 
 /// Get local IP address
-fn get_local_ip() -> Option<String> {
+pub fn get_local_ip() -> Option<String> {
     // Try to find a non-loopback IPv4 address
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("8.8.8.8:80").ok()?;
@@ -170,36 +191,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_render_qr_to_terminal() {
+    fn test_render_qr_compact() {
         let code = QrCode::new(b"test").unwrap();
-        let rendered = render_qr_to_terminal(&code);
+        let rendered = render_qr_compact(&code);
         assert!(!rendered.is_empty());
         assert!(rendered.contains('\n'));
-        // Should have left margin
-        for line in rendered.lines() {
-            assert!(line.starts_with("    "));
-        }
     }
 
     #[test]
-    fn test_pairing_payload_serialization() {
+    fn test_pairing_payload_lan_only() {
         let payload = PairingPayload {
-            v: 1,
+            v: 2,
             host: "192.168.1.1".to_string(),
-            port: 2222,
+            port: 2123,
             token: "abc123".to_string(),
             fingerprint: "SHA256:xxxx".to_string(),
             name: "my-machine".to_string(),
+            host_addrs: vec!["192.168.1.1".to_string()],
+            tailscale_addr: None,
+            relay_url: None,
+            relay_room: None,
+            relay_secret: None,
         };
 
         let json = serde_json::to_string(&payload).unwrap();
         assert!(json.contains("192.168.1.1"));
-        assert!(json.contains("2222"));
+        assert!(json.contains("2123"));
         assert!(json.contains("abc123"));
-        assert!(json.contains("SHA256:xxxx"));
-        assert!(json.contains("my-machine"));
+        // relay fields should be omitted when None
+        assert!(!json.contains("relay_url"));
+        assert!(!json.contains("relay_room"));
 
-        // Verify it can be encoded/decoded as base64url
         let encoded = base64_url::encode(&json);
         let decoded = base64_url::decode(&encoded).unwrap();
         let decoded_str = String::from_utf8(decoded).unwrap();
@@ -207,14 +229,40 @@ mod tests {
     }
 
     #[test]
-    fn test_pairing_uri_format() {
+    fn test_pairing_payload_with_relay() {
         let payload = PairingPayload {
-            v: 1,
+            v: 2,
             host: "10.0.0.1".to_string(),
-            port: 2222,
+            port: 2123,
             token: "token".to_string(),
             fingerprint: "fp".to_string(),
             name: "host".to_string(),
+            host_addrs: vec!["10.0.0.1".to_string()],
+            tailscale_addr: None,
+            relay_url: Some("https://relay.zedra.dev".to_string()),
+            relay_room: Some("ABC123".to_string()),
+            relay_secret: Some("secret".to_string()),
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        assert!(json.contains("relay_url"));
+        assert!(json.contains("ABC123"));
+    }
+
+    #[test]
+    fn test_pairing_uri_format() {
+        let payload = PairingPayload {
+            v: 2,
+            host: "10.0.0.1".to_string(),
+            port: 2123,
+            token: "token".to_string(),
+            fingerprint: "fp".to_string(),
+            name: "host".to_string(),
+            host_addrs: vec!["10.0.0.1".to_string()],
+            tailscale_addr: None,
+            relay_url: None,
+            relay_room: None,
+            relay_secret: None,
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -222,7 +270,6 @@ mod tests {
         let uri = format!("zedra://pair?d={}", encoded);
 
         assert!(uri.starts_with("zedra://pair?d="));
-        // The base64url-encoded data portion should not contain + or /
         let data_part = uri.strip_prefix("zedra://pair?d=").unwrap();
         assert!(!data_part.contains('+'));
         assert!(!data_part.contains('/'));

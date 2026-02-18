@@ -1,17 +1,20 @@
 // Terminal element for GPUI rendering
 // Adapted from vendor/zed/crates/terminal_view/src/terminal_element.rs
 
+use std::mem;
+
 use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::vte::ansi::{Color as AlacColor, CursorShape, NamedColor};
 use gpui::*;
+use itertools::Itertools;
 
-use crate::{CursorState, TerminalContent, TerminalSize};
+use crate::{CursorState, IndexedCell, TERMINAL_FONT_FAMILY, TerminalContent, TerminalSize};
 
 /// Colors for the terminal (One Dark theme)
 struct TermColors;
 
 impl TermColors {
-    const BACKGROUND: u32 = 0x1e1e1e;
+    const BACKGROUND: u32 = 0x0e0c0c;
     const FOREGROUND: u32 = 0xabb2bf;
     const CURSOR: u32 = 0x528bff;
 
@@ -53,12 +56,14 @@ impl TermColors {
             NamedColor::BrightMagenta => Self::BRIGHT_MAGENTA,
             NamedColor::BrightCyan => Self::BRIGHT_CYAN,
             NamedColor::BrightWhite => Self::BRIGHT_WHITE,
+            NamedColor::Foreground => Self::FOREGROUND,
+            NamedColor::Background => Self::BACKGROUND,
             _ => Self::FOREGROUND,
         };
         rgb(hex).into()
     }
 
-    fn alac_color_to_hsla(color: &AlacColor) -> Hsla {
+    fn convert_color(color: &AlacColor) -> Hsla {
         match color {
             AlacColor::Named(named) => Self::named_color(*named),
             AlacColor::Spec(rgb_color) => {
@@ -106,12 +111,142 @@ impl TermColors {
     }
 }
 
+/// A batched text run that combines multiple adjacent cells with the same style
+/// Following Zed's BatchedTextRun implementation
+#[derive(Debug)]
+struct BatchedTextRun {
+    /// Starting grid position (line, column)
+    start_line: i32,
+    start_col: i32,
+    /// The accumulated text
+    text: String,
+    /// Number of cells this run covers (may differ from text.len() for wide chars)
+    cell_count: usize,
+    /// Text color
+    color: Hsla,
+}
+
+impl BatchedTextRun {
+    fn new(line: i32, col: i32, c: char, color: Hsla) -> Self {
+        let mut text = String::with_capacity(100);
+        text.push(c);
+        BatchedTextRun {
+            start_line: line,
+            start_col: col,
+            text,
+            cell_count: 1,
+            color,
+        }
+    }
+
+    fn can_append(&self, line: i32, col: i32, color: Hsla) -> bool {
+        self.start_line == line
+            && self.start_col + self.cell_count as i32 == col
+            && self.color == color
+    }
+
+    fn append_char(&mut self, c: char) {
+        self.text.push(c);
+        self.cell_count += 1;
+    }
+
+    fn paint(
+        &self,
+        origin: Point<Pixels>,
+        cell_width: Pixels,
+        line_height: Pixels,
+        font_size: Pixels,
+        font: &Font,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        // Position: no floor/ceil for text (unlike background rects)
+        let pos = point(
+            origin.x + self.start_col as f32 * cell_width,
+            origin.y + self.start_line as f32 * line_height,
+        );
+
+        let runs = vec![TextRun {
+            len: self.text.len(),
+            font: font.clone(),
+            color: self.color,
+            ..Default::default()
+        }];
+
+        let text_system = window.text_system();
+        let shared_text: SharedString = self.text.clone().into();
+
+        // Use force_width to ensure monospace grid alignment
+        let shaped = text_system.shape_line(shared_text, font_size, &runs, Some(cell_width));
+
+        let _ = shaped.paint(pos, line_height, TextAlign::Left, None, window, cx);
+    }
+}
+
+/// A background rectangle
+#[derive(Debug, Clone)]
+struct LayoutRect {
+    line: i32,
+    col: i32,
+    num_cells: usize,
+    color: Hsla,
+}
+
+impl LayoutRect {
+    fn new(line: i32, col: i32, num_cells: usize, color: Hsla) -> Self {
+        LayoutRect {
+            line,
+            col,
+            num_cells,
+            color,
+        }
+    }
+
+    fn paint(
+        &self,
+        origin: Point<Pixels>,
+        cell_width: Pixels,
+        line_height: Pixels,
+        window: &mut Window,
+    ) {
+        // Background rects use floor for position and ceil for width to prevent gaps
+        let position = point(
+            (origin.x + self.col as f32 * cell_width).floor(),
+            origin.y + self.line as f32 * line_height,
+        );
+        let size = gpui::Size {
+            width: (cell_width * self.num_cells as f32).ceil(),
+            height: line_height,
+        };
+        window.paint_quad(fill(Bounds::new(position, size), self.color));
+    }
+}
+
+/// Check if a cell is blank (following Zed's is_blank function)
+fn is_blank(cell: &IndexedCell) -> bool {
+    if cell.cell.c != ' ' {
+        return false;
+    }
+    if !matches!(cell.cell.bg, AlacColor::Named(NamedColor::Background)) {
+        return false;
+    }
+    if cell
+        .cell
+        .flags
+        .intersects(CellFlags::ALL_UNDERLINES | CellFlags::INVERSE | CellFlags::STRIKEOUT)
+    {
+        return false;
+    }
+    true
+}
+
 /// Data needed to paint the terminal element
 pub struct TerminalElementLayout {
     content: TerminalContent,
-    size: TerminalSize,
     font: Font,
     font_size: Pixels,
+    cell_width: Pixels,
+    line_height: Pixels,
 }
 
 /// GPUI element that renders a terminal grid
@@ -123,6 +258,101 @@ pub struct TerminalElement {
 impl TerminalElement {
     pub fn new(content: TerminalContent, size: TerminalSize) -> Self {
         Self { content, size }
+    }
+
+    /// Layout the grid following Zed's layout_grid approach.
+    /// Groups cells by line and batches adjacent cells with the same style.
+    /// Only cells within [0, grid_rows) after display_offset adjustment are rendered.
+    fn layout_grid(
+        cells: &[IndexedCell],
+        display_offset: i32,
+        grid_rows: usize,
+    ) -> (Vec<LayoutRect>, Vec<BatchedTextRun>) {
+        let mut batched_runs: Vec<BatchedTextRun> = Vec::new();
+        let mut rects: Vec<LayoutRect> = Vec::new();
+        let mut current_batch: Option<BatchedTextRun> = None;
+
+        // Group cells by line (following Zed's chunk_by approach)
+        let line_groups = cells.iter().chunk_by(|cell| cell.point.line.0);
+
+        for (_line_key, line_cells) in &line_groups {
+            // Flush batch at line boundaries
+            if let Some(batch) = current_batch.take() {
+                batched_runs.push(batch);
+            }
+
+            for cell in line_cells {
+                let line = cell.point.line.0 + display_offset;
+                let col = cell.point.column.0 as i32;
+
+                // Skip cells outside the visible grid (stale circular buffer data)
+                if line < 0 || line >= grid_rows as i32 {
+                    continue;
+                }
+
+                // Handle INVERSE flag
+                let mut fg = cell.cell.fg;
+                let mut bg = cell.cell.bg;
+                if cell.cell.flags.contains(CellFlags::INVERSE) {
+                    mem::swap(&mut fg, &mut bg);
+                }
+
+                let fg_color = TermColors::convert_color(&fg);
+                let bg_color = TermColors::convert_color(&bg);
+
+                // Collect background rectangles (skip default background)
+                if !matches!(bg, AlacColor::Named(NamedColor::Background)) {
+                    // Try to extend the last rect if it's adjacent and same color
+                    if let Some(last_rect) = rects.last_mut() {
+                        if last_rect.line == line
+                            && last_rect.col + last_rect.num_cells as i32 == col
+                            && last_rect.color == bg_color
+                        {
+                            last_rect.num_cells += 1;
+                        } else {
+                            rects.push(LayoutRect::new(line, col, 1, bg_color));
+                        }
+                    } else {
+                        rects.push(LayoutRect::new(line, col, 1, bg_color));
+                    }
+                }
+
+                // Skip wide character spacers
+                if cell.cell.flags.contains(CellFlags::WIDE_CHAR_SPACER) {
+                    continue;
+                }
+
+                // Skip blank cells (but they break the current batch)
+                if is_blank(cell) {
+                    if let Some(batch) = current_batch.take() {
+                        batched_runs.push(batch);
+                    }
+                    continue;
+                }
+
+                let c = cell.cell.c;
+
+                // Try to batch with existing run
+                if let Some(ref mut batch) = current_batch {
+                    if batch.can_append(line, col, fg_color) {
+                        batch.append_char(c);
+                    } else {
+                        // Flush current batch and start new one
+                        batched_runs.push(current_batch.take().unwrap());
+                        current_batch = Some(BatchedTextRun::new(line, col, c, fg_color));
+                    }
+                } else {
+                    current_batch = Some(BatchedTextRun::new(line, col, c, fg_color));
+                }
+            }
+        }
+
+        // Flush any remaining batch
+        if let Some(batch) = current_batch {
+            batched_runs.push(batch);
+        }
+
+        (rects, batched_runs)
     }
 }
 
@@ -152,11 +382,10 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let width = self.size.cell_width * self.size.columns as f32;
         let height = self.size.line_height * self.size.rows as f32;
         let style = Style {
             size: gpui::Size {
-                width: width.into(),
+                width: relative(1.).into(), // fill parent, center grid in paint
                 height: height.into(),
             },
             ..Default::default()
@@ -171,23 +400,40 @@ impl Element for TerminalElement {
         _inspector_id: Option<&InspectorElementId>,
         _bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
-        _window: &mut Window,
+        window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
+        // Use JetBrains Mono NL - embedded monospace font (loaded once at app init)
         let font = Font {
-            family: "monospace".into(),
+            family: TERMINAL_FONT_FAMILY.into(),
             features: FontFeatures::default(),
-            fallbacks: None,
+            fallbacks: Some(FontFallbacks::from_fonts(vec![
+                "Droid Sans Mono".to_string(),
+                "monospace".to_string(),
+            ])),
             weight: FontWeight::NORMAL,
             style: FontStyle::Normal,
         };
-        let font_size = self.size.line_height * 0.75;
+
+        // Use configured line height
+        let line_height = self.size.line_height;
+        // Font size scaled to fit within line height
+        let font_size = line_height * 0.75;
+
+        // Get exact cell width from font metrics using 'm' as reference (following Zed)
+        let text_system = window.text_system();
+        let font_id = text_system.resolve_font(&font);
+        let cell_width = text_system
+            .advance(font_id, font_size, 'm')
+            .map(|size| size.width)
+            .unwrap_or(self.size.cell_width);
 
         TerminalElementLayout {
             content: self.content.clone(),
-            size: self.size,
             font,
             font_size,
+            cell_width,
+            line_height,
         }
     }
 
@@ -201,180 +447,54 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let origin = bounds.origin;
-        let cell_width = layout.size.cell_width;
-        let line_height = layout.size.line_height;
+        let cell_width = layout.cell_width;
+        let line_height = layout.line_height;
 
-        // Draw background
+        // Center the grid horizontally when it's narrower than the allocated bounds
+        let grid_width = cell_width * layout.content.grid_cols as f32;
+        let x_offset = ((bounds.size.width - grid_width) * 0.5).max(px(0.0));
+        let origin = point(bounds.origin.x + x_offset, bounds.origin.y);
+
+        // Draw terminal background
         window.paint_quad(fill(bounds, rgb(TermColors::BACKGROUND)));
 
-        // Group cells by line for batch rendering
-        let mut current_line: Option<i32> = None;
-        let mut line_text = String::new();
-        let mut line_start_col: usize = 0;
-        let mut line_fg_color: Hsla = rgb(TermColors::FOREGROUND).into();
+        // Layout the grid (batch text runs, collect background rects)
+        let (rects, batched_runs) = Self::layout_grid(
+            &layout.content.cells,
+            layout.content.display_offset as i32,
+            layout.content.grid_rows,
+        );
 
-        for cell in &layout.content.cells {
-            let line = cell.point.line.0;
-            let col = cell.point.column.0;
-
-            let fg = TermColors::alac_color_to_hsla(&cell.cell.fg);
-            let bg = TermColors::alac_color_to_hsla(&cell.cell.bg);
-
-            // Draw cell background if not default
-            let is_default_bg = matches!(cell.cell.bg, AlacColor::Named(NamedColor::Background));
-            if !is_default_bg {
-                let cell_origin = point(
-                    origin.x + cell_width * col as f32,
-                    origin.y + line_height * (line + layout.content.display_offset as i32) as f32,
-                );
-                let cell_bounds = Bounds {
-                    origin: cell_origin,
-                    size: gpui::Size {
-                        width: cell_width,
-                        height: line_height,
-                    },
-                };
-                window.paint_quad(fill(cell_bounds, bg));
-            }
-
-            // Skip spacers for wide characters
-            if cell.cell.flags.contains(CellFlags::WIDE_CHAR_SPACER) {
-                continue;
-            }
-
-            let ch = cell.cell.c;
-            if ch == ' ' || ch == '\0' {
-                // Flush current text batch if style changed
-                if !line_text.is_empty() && (Some(line) != current_line || fg != line_fg_color) {
-                    paint_text_run(
-                        window,
-                        cx,
-                        &line_text,
-                        origin,
-                        line_start_col,
-                        current_line.unwrap_or(0),
-                        layout.content.display_offset as i32,
-                        cell_width,
-                        line_height,
-                        layout.font_size,
-                        &layout.font,
-                        line_fg_color,
-                    );
-                    line_text.clear();
-                }
-                current_line = Some(line);
-                line_fg_color = fg;
-                continue;
-            }
-
-            // Start new batch or continue existing
-            if Some(line) != current_line || fg != line_fg_color || line_text.is_empty() {
-                // Flush previous batch
-                if !line_text.is_empty() {
-                    paint_text_run(
-                        window,
-                        cx,
-                        &line_text,
-                        origin,
-                        line_start_col,
-                        current_line.unwrap_or(0),
-                        layout.content.display_offset as i32,
-                        cell_width,
-                        line_height,
-                        layout.font_size,
-                        &layout.font,
-                        line_fg_color,
-                    );
-                    line_text.clear();
-                }
-                current_line = Some(line);
-                line_start_col = col;
-                line_fg_color = fg;
-            }
-
-            line_text.push(ch);
+        // Paint background rectangles first
+        for rect in &rects {
+            rect.paint(origin, cell_width, line_height, window);
         }
 
-        // Flush remaining text
-        if !line_text.is_empty() {
-            paint_text_run(
-                window,
-                cx,
-                &line_text,
+        // Paint text runs
+        for batch in &batched_runs {
+            batch.paint(
                 origin,
-                line_start_col,
-                current_line.unwrap_or(0),
-                layout.content.display_offset as i32,
                 cell_width,
                 line_height,
                 layout.font_size,
                 &layout.font,
-                line_fg_color,
+                window,
+                cx,
             );
         }
 
-        // Draw cursor
+        // Paint cursor (following Zed's cursor positioning)
         paint_cursor(
             window,
             &layout.content.cursor,
             origin,
             layout.content.display_offset as i32,
+            layout.content.grid_rows,
+            layout.content.grid_cols,
             cell_width,
             line_height,
         );
     }
-}
-
-fn paint_text_run(
-    window: &mut Window,
-    cx: &mut App,
-    text: &str,
-    origin: Point<Pixels>,
-    start_col: usize,
-    line: i32,
-    display_offset: i32,
-    cell_width: Pixels,
-    line_height: Pixels,
-    font_size: Pixels,
-    font: &Font,
-    color: Hsla,
-) {
-    let text_origin = point(
-        origin.x + cell_width * start_col as f32,
-        origin.y + line_height * (line + display_offset) as f32,
-    );
-
-    // Use TextRun (public API) for shape_line
-    let runs = vec![TextRun {
-        len: text.len(),
-        font: font.clone(),
-        color,
-        ..Default::default()
-    }];
-
-    let text_system = window.text_system();
-    let shared_text: SharedString = text.to_string().into();
-    let shaped = text_system.shape_line(
-        shared_text,
-        font_size,
-        &runs,
-        None,
-    );
-
-    // Calculate vertical centering within line height
-    let text_height = shaped.ascent + shaped.descent;
-    let y_offset = (line_height - text_height) / 2.0 + shaped.ascent;
-
-    let paint_origin = point(text_origin.x, text_origin.y + y_offset);
-    let _ = shaped.paint(
-        paint_origin,
-        line_height,
-        TextAlign::Left,
-        None,
-        window,
-        cx,
-    );
 }
 
 fn paint_cursor(
@@ -382,25 +502,41 @@ fn paint_cursor(
     cursor: &CursorState,
     origin: Point<Pixels>,
     display_offset: i32,
+    grid_rows: usize,
+    grid_cols: usize,
     cell_width: Pixels,
     line_height: Pixels,
 ) {
-    let col = cursor.point.column.0;
-    let line = cursor.point.line.0;
+    let col = cursor.point.column.0 as i32;
+    let line = cursor.point.line.0 + display_offset;
 
+    // Don't paint cursor when hidden (TUI apps manage their own virtual cursor)
+    if matches!(cursor.shape, CursorShape::Hidden) {
+        return;
+    }
+
+    // Only paint cursor if it's within the visible grid area
+    if line < 0 || line >= grid_rows as i32 || col < 0 || col >= grid_cols as i32 {
+        return;
+    }
+
+    // Cursor uses floor for position (following Zed's shape_cursor)
     let cursor_origin = point(
-        origin.x + cell_width * col as f32,
-        origin.y + line_height * (line + display_offset) as f32,
+        (origin.x + col as f32 * cell_width).floor(),
+        (origin.y + line as f32 * line_height).floor(),
     );
 
     let cursor_color: Hsla = rgb(TermColors::CURSOR).into();
+
+    // Cursor width uses ceil (following Zed)
+    let cursor_width = cell_width.ceil();
 
     match cursor.shape {
         CursorShape::Block => {
             let bounds = Bounds {
                 origin: cursor_origin,
                 size: gpui::Size {
-                    width: cell_width,
+                    width: cursor_width,
                     height: line_height,
                 },
             };
@@ -414,7 +550,7 @@ fn paint_cursor(
                     cursor_origin.y + line_height - underline_height,
                 ),
                 size: gpui::Size {
-                    width: cell_width,
+                    width: cursor_width,
                     height: underline_height,
                 },
             };
@@ -435,7 +571,7 @@ fn paint_cursor(
             let bounds = Bounds {
                 origin: cursor_origin,
                 size: gpui::Size {
-                    width: cell_width,
+                    width: cursor_width,
                     height: line_height,
                 },
             };
