@@ -1,83 +1,48 @@
-// QR code generation for device pairing
-// Generates a QR code containing connection info + one-time pairing token
+// QR code generation for device pairing (iroh)
 
 use anyhow::Result;
 use qrcode::render::unicode;
 use qrcode::{EcLevel, QrCode};
 use serde::Serialize;
 
-use crate::auth;
 use crate::identity::SharedIdentity;
 
-/// Relay info included in the QR code when relay is available.
-pub struct RelayInfo {
-    pub relay_url: String,
-    pub room_code: String,
-    pub secret: String,
-}
-
-/// v3 pairing payload with Curve25519 host public key for Noise_IK handshake.
+/// Pairing payload with iroh EndpointId.
 #[derive(Serialize)]
-struct PairingPayloadV3 {
+struct PairingPayload {
     v: u32,
-    /// Base64url-encoded 32-byte Curve25519 public key
-    host_pubkey: String,
-    /// One-time pairing token (replaces v2's reusable `token`)
-    otp: String,
+    /// iroh EndpointId (z-base-32 encoded Ed25519 public key)
+    endpoint_id: String,
     /// Friendly hostname
     name: String,
-    /// All LAN addresses
-    host_addrs: Vec<String>,
-    /// Port
-    port: u16,
-    /// Coordination server URL (future use)
+    /// iroh relay URL the host is connected to
+    #[serde(skip_serializing_if = "Option::is_none")]
+    relay_url: Option<String>,
+    /// Direct addresses (LAN IPs with iroh UDP port)
+    addrs: Vec<String>,
+    /// Coordination server URL (for CF Worker discovery)
     #[serde(skip_serializing_if = "Option::is_none")]
     coord_url: Option<String>,
-    /// Connection hints
-    hints: PairingHints,
 }
 
-#[derive(Serialize)]
-struct PairingHints {
-    addrs: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tailscale: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    relay: Option<String>,
-}
-
-/// Generate and display a v3 pairing QR code with Noise_IK encryption support.
+/// Generate and display a pairing QR code for iroh-based connections.
 ///
-/// The QR includes the host's Curve25519 public key for the Noise_IK handshake
-/// and a one-time pairing token for first-contact authentication.
-pub fn generate_pairing_qr_v3(
-    port: u16,
+/// The QR includes the iroh EndpointId (Ed25519 public key) which is both
+/// the host's identity and the addressing key for iroh connections.
+pub fn generate_pairing_qr(
+    endpoint_info: &crate::iroh_listener::EndpointQrInfo,
     identity: &SharedIdentity,
-    relay: Option<&RelayInfo>,
+    coord_url: Option<&str>,
 ) -> Result<()> {
     let hostname = gethostname();
-    let primary_ip = get_local_ip().unwrap_or_else(|| "localhost".to_string());
-    let otp = auth::create_pairing_token();
-    let host_addrs = collect_lan_addrs();
-    let addrs = if host_addrs.is_empty() {
-        vec![primary_ip.clone()]
-    } else {
-        host_addrs.clone()
-    };
 
-    let payload = PairingPayloadV3 {
-        v: 3,
-        host_pubkey: base64_url::encode(&identity.public_key_bytes()),
-        otp,
+    let payload = PairingPayload {
+        v: 1,
+        endpoint_id: endpoint_info.endpoint_id.clone(),
         name: hostname.clone(),
-        host_addrs: addrs.clone(),
-        port,
-        coord_url: None, // Phase 3: coordination server
-        hints: PairingHints {
-            addrs: addrs.iter().map(|a| format!("{}:{}", a, port)).collect(),
-            tailscale: None,
-            relay: relay.map(|r| format!("{}?room={}", r.relay_url, r.room_code)),
-        },
+        relay_url: endpoint_info.relay_url.clone(),
+        addrs: endpoint_info.direct_addrs.clone(),
+        coord_url: coord_url.map(|s| s.to_string()),
     };
 
     let json = serde_json::to_string(&payload)?;
@@ -87,26 +52,18 @@ pub fn generate_pairing_qr_v3(
     let code = QrCode::with_error_correction_level(uri.as_bytes(), EcLevel::L)?;
     let qr_string = render_qr_compact(&code);
 
-    let addrs_display = if addrs.len() == 1 {
-        addrs[0].clone()
-    } else {
-        addrs.join(", ")
-    };
-
     println!();
-    println!("  Zedra Host Pairing (v3 - Encrypted)");
-    println!("  ====================================");
+    println!("  Zedra Host Pairing");
+    println!("  ==================");
     println!();
     println!("  Scan this QR code with the Zedra app to pair this device.");
-    println!("  Host: {} ({})", hostname, addrs_display);
-    println!("  Port: {}", port);
+    println!("  Host: {}", hostname);
+    println!("  Endpoint: {}", &endpoint_info.endpoint_id[..16]);
     println!("  Device ID: {}", identity.device_id.short());
-    print!("  Transports: LAN (encrypted)");
-    if let Some(r) = relay {
-        print!(" + Relay (room: {})", r.room_code);
+    if let Some(ref relay) = endpoint_info.relay_url {
+        println!("  Relay: {}", relay);
     }
-    println!();
-    println!("  OTP expires in 5 minutes.");
+    println!("  Direct addrs: {}", endpoint_info.direct_addrs.len());
     println!();
     println!("{}", qr_string);
     println!();
@@ -147,7 +104,6 @@ fn gethostname() -> String {
 
 /// Get local IP address
 pub fn get_local_ip() -> Option<String> {
-    // Try to find a non-loopback IPv4 address
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("8.8.8.8:80").ok()?;
     let addr = socket.local_addr().ok()?;

@@ -1,6 +1,6 @@
 use sha2::{Digest, Sha256};
 
-/// A human-readable device identifier derived from a Curve25519 public key.
+/// A human-readable device identifier derived from an Ed25519 public key.
 ///
 /// Format: 8 groups of 7 characters, base32-encoded (RFC 4648, no padding),
 /// separated by hyphens.
@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 pub struct DeviceId(String);
 
 impl DeviceId {
-    /// Create a `DeviceId` from a 32-byte Curve25519 public key.
+    /// Create a `DeviceId` from a 32-byte Ed25519 public key.
     ///
     /// The key is SHA-256 hashed. Since SHA-256 produces only 32 bytes but
     /// we need 35 bytes for 56 base32 characters (8 groups of 7), we extend

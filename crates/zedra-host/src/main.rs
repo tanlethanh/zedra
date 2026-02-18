@@ -3,13 +3,13 @@
 // Provides an RPC daemon that Zedra (Android) connects to for remote terminal,
 // filesystem, git, and AI operations over JSON-RPC.
 //
-// A single `start` command handles both LAN and relay transports. LAN TCP is
-// always available; relay is coordinated via the coordination server.
+// All connections go through iroh (QUIC/TLS 1.3) — handles LAN, relay, and
+// hole-punched connections through a single Endpoint.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use zedra_host::{identity, qr, registration, rpc_daemon, session_registry, store};
+use zedra_host::{identity, iroh_listener, qr, rpc_daemon, session_registry, store};
 
 #[derive(Parser)]
 #[command(name = "zedra-host", about = "Desktop companion daemon for Zedra")]
@@ -20,22 +20,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the daemon (LAN + optional relay)
+    /// Start the daemon (iroh transport)
     Start {
-        /// Port to listen on
-        #[arg(short, long, default_value = "2123")]
-        port: u16,
-
-        /// Bind address
-        #[arg(short, long, default_value = "0.0.0.0")]
-        bind: String,
-
         /// Working directory to serve
         #[arg(short, long, default_value = ".")]
         workdir: String,
 
-        /// Relay server URL (omit to disable relay)
-        #[arg(long, default_value = zedra_relay::DEFAULT_RELAY_URL)]
+        /// Relay/coordination server URL (for CF Worker discovery)
+        #[arg(long, default_value = zedra_transport::DEFAULT_RELAY_URL)]
         relay_url: String,
 
         /// Disable relay transport
@@ -69,11 +61,8 @@ enum SessionAction {
     },
     /// List active sessions
     List,
-    /// Show QR code for a specific session
-    Qr {
-        /// Session name
-        name: String,
-    },
+    /// Show QR code for pairing
+    Qr,
     /// Remove a named session
     Remove {
         /// Session name
@@ -94,8 +83,6 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Start {
-            port,
-            bind,
             workdir,
             relay_url,
             no_relay,
@@ -104,12 +91,10 @@ async fn main() -> Result<()> {
                 .canonicalize()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
 
-            let local_ip = qr::get_local_ip().unwrap_or_else(|| "unknown".to_string());
-            tracing::info!("Starting zedra-host on {}:{}", bind, port);
-            tracing::info!("Local IP: {}", local_ip);
+            tracing::info!("Starting zedra-host (iroh transport)");
             tracing::info!("Serving workdir: {}", workdir.display());
 
-            // Load or generate persistent host identity (required for v3 encryption)
+            // Load or generate persistent host identity
             let host_identity = match identity::HostIdentity::load_or_generate() {
                 Ok(id) => std::sync::Arc::new(id),
                 Err(e) => {
@@ -128,52 +113,40 @@ async fn main() -> Result<()> {
             registry
                 .create_named(&session_name, workdir.clone(), "auto")
                 .await;
-            tracing::info!("Created session '{}' for {}", session_name, workdir.display());
+            tracing::info!(
+                "Created session '{}' for {}",
+                session_name,
+                workdir.display()
+            );
 
             let mut state = rpc_daemon::DaemonState::new(workdir.clone());
             state = state.with_identity(host_identity.clone());
             let state = std::sync::Arc::new(state);
 
-            // Show QR code
-            if let Err(e) = qr::generate_pairing_qr_v3(port, &host_identity, None) {
-                tracing::warn!("Failed to generate v3 QR code: {}", e);
+            // 1. Bind iroh endpoint
+            let coord = if no_relay {
+                None
+            } else {
+                Some(relay_url.as_str())
+            };
+            let endpoint = iroh_listener::create_endpoint(&host_identity, coord).await?;
+
+            // 2. Generate QR code (needs endpoint info)
+            let endpoint_info = iroh_listener::get_endpoint_info(&endpoint);
+            if let Err(e) = qr::generate_pairing_qr(&endpoint_info, &host_identity, coord) {
+                tracing::warn!("Failed to generate QR code: {}", e);
             }
 
-            // Spawn coordination server registration loop (non-fatal)
-            if !no_relay {
-                let reg_config = registration::RegistrationConfig {
-                    coord_url: relay_url.clone(),
-                    identity: host_identity.clone(),
-                    port,
-                    workdir: workdir.clone(),
-                    version: env!("CARGO_PKG_VERSION").to_string(),
-                };
-                tokio::spawn(registration::run_registration_loop(reg_config));
+            // 3. Spawn CF Worker publish loop (background task)
+            if let Some(url) = coord {
+                let publish_url = url.to_string();
+                let publish_endpoint = endpoint.clone();
+                tokio::spawn(async move {
+                    iroh_listener::run_publish_loop(&publish_url, &publish_endpoint).await;
+                });
             }
 
-            // Spawn mDNS/UDP local discovery announcer (non-fatal)
-            {
-                let lan_addrs = qr::collect_lan_addrs();
-                let addresses: Vec<String> = lan_addrs
-                    .iter()
-                    .map(|ip| format!("{}:{}", ip, port))
-                    .collect();
-
-                let announcement = zedra_transport::Announcement {
-                    v: 1,
-                    device_id: host_identity.device_id.to_string(),
-                    addresses,
-                    sessions: vec![workdir
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("default")
-                        .to_string()],
-                };
-                tokio::spawn(zedra_transport::mdns::run_announcer(announcement));
-                tracing::info!("mDNS local discovery announcer started");
-            }
-
-            // Spawn session cleanup task
+            // 4. Spawn session cleanup (background task)
             let cleanup_registry = registry.clone();
             tokio::spawn(async move {
                 let grace_period = std::time::Duration::from_secs(300);
@@ -186,8 +159,8 @@ async fn main() -> Result<()> {
                 }
             });
 
-            // Run LAN TCP listener (blocks)
-            rpc_daemon::run_daemon(&bind, port, registry, state).await?;
+            // 5. Run iroh accept loop (blocks main)
+            iroh_listener::run_accept_loop(&endpoint, registry, state).await?;
         }
         Commands::Devices => {
             let devices = store::list_devices()?;
@@ -225,12 +198,13 @@ async fn main() -> Result<()> {
                 println!("Connect a client and use the session/list RPC method,");
                 println!("or check daemon logs for active sessions.");
             }
-            SessionAction::Qr { name } => {
-                // Load identity for QR generation.
+            SessionAction::Qr => {
+                // Load identity and create a temporary endpoint for QR generation.
                 let host_identity = identity::HostIdentity::load_or_generate()?;
                 let id = std::sync::Arc::new(host_identity);
-                println!("QR code for session '{}':", name);
-                if let Err(e) = qr::generate_pairing_qr_v3(2123, &id, None) {
+                let endpoint = iroh_listener::create_endpoint(&id, None).await?;
+                let endpoint_info = iroh_listener::get_endpoint_info(&endpoint);
+                if let Err(e) = qr::generate_pairing_qr(&endpoint_info, &id, None) {
                     eprintln!("Failed to generate QR code: {}", e);
                 }
             }

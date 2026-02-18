@@ -1,30 +1,29 @@
 use anyhow::{Context, Result};
-use rand::RngCore;
+use iroh::SecretKey;
 use std::path::Path;
-use x25519_dalek::{PublicKey, StaticSecret};
 
-/// A persistent Curve25519 keypair for device identity.
+/// A persistent Ed25519 keypair for device identity.
 ///
-/// Because `StaticSecret` does not implement `Clone` or expose its raw bytes
-/// after construction, we keep the original 32-byte secret alongside the
-/// `StaticSecret` so we can serialize it back to disk.
+/// Wraps iroh's `SecretKey` (Ed25519 via ed25519-dalek) for use as both the
+/// device identity and the iroh Endpoint secret key. The 32-byte secret is
+/// stored on disk in the same raw format as the previous X25519 keys.
+///
+/// Note: Migrating from X25519 to Ed25519 means existing keys produce a
+/// different public key (Edwards vs Montgomery form). Devices that were
+/// paired with the old key format will need to re-pair.
 pub struct Keypair {
-    secret: StaticSecret,
+    secret: SecretKey,
     secret_bytes: [u8; 32],
-    pub public: PublicKey,
 }
 
 impl Keypair {
     /// Generate a new random keypair.
     pub fn generate() -> Self {
-        let mut bytes = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut bytes);
-        let secret = StaticSecret::from(bytes);
-        let public = PublicKey::from(&secret);
+        let secret = SecretKey::generate(&mut rand::rng());
+        let secret_bytes = secret.to_bytes();
         Self {
             secret,
-            secret_bytes: bytes,
-            public,
+            secret_bytes,
         }
     }
 
@@ -42,12 +41,10 @@ impl Keypair {
         }
         let mut bytes = [0u8; 32];
         bytes.copy_from_slice(&data);
-        let secret = StaticSecret::from(bytes);
-        let public = PublicKey::from(&secret);
+        let secret = SecretKey::from_bytes(&bytes);
         Ok(Self {
             secret,
             secret_bytes: bytes,
-            public,
         })
     }
 
@@ -96,9 +93,9 @@ impl Keypair {
         }
     }
 
-    /// Get the public key as 32 raw bytes.
+    /// Get the Ed25519 public key as 32 raw bytes.
     pub fn public_key_bytes(&self) -> [u8; 32] {
-        self.public.to_bytes()
+        *self.secret.public().as_bytes()
     }
 
     /// Get the secret key as 32 raw bytes.
@@ -106,9 +103,14 @@ impl Keypair {
         self.secret_bytes
     }
 
-    /// Borrow the `StaticSecret` (e.g. for Diffie-Hellman).
-    pub fn secret(&self) -> &StaticSecret {
+    /// Get the iroh `SecretKey` (for use with iroh Endpoint builder).
+    pub fn iroh_secret_key(&self) -> &SecretKey {
         &self.secret
+    }
+
+    /// Get the iroh `PublicKey` / `EndpointId`.
+    pub fn iroh_public_key(&self) -> iroh::PublicKey {
+        self.secret.public()
     }
 }
 
@@ -158,5 +160,12 @@ mod tests {
         let kp2 = Keypair::load_or_generate(&path).unwrap();
         assert_eq!(kp1.public_key_bytes(), kp2.public_key_bytes());
         assert_eq!(kp1.secret_key_bytes(), kp2.secret_key_bytes());
+    }
+
+    #[test]
+    fn iroh_key_roundtrip() {
+        let kp = Keypair::generate();
+        let pk = kp.iroh_public_key();
+        assert_eq!(*pk.as_bytes(), kp.public_key_bytes());
     }
 }

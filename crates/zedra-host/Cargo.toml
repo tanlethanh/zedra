@@ -50,11 +50,12 @@ if-addrs = "0.15.0"
 # Error handling
 anyhow.workspace = true
 
+# P2P networking
+iroh.workspace = true
+
 # Workspace crates
 zedra-rpc = { path = "../zedra-rpc" }
-zedra-relay = { path = "../zedra-relay" }
 zedra-transport = { path = "../zedra-transport" }
-zedra-identity = { path = "../zedra-identity" }
 zedra-crypto = { path = "../zedra-crypto" }
 
 # Session IDs

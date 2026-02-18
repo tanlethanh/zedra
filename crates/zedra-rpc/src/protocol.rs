@@ -160,6 +160,9 @@ pub mod methods {
     // Notifications (server → client)
     pub const TERM_OUTPUT: &str = "terminal/output";
     pub const AI_STREAM: &str = "ai/stream";
+
+    // Notifications (client → server)
+    pub const SESSION_ATTACH: &str = "session/attach";
 }
 
 // ---------------------------------------------------------------------------
@@ -364,6 +367,12 @@ pub struct SessionSwitchResult {
     pub session_id: String,
     pub workdir: Option<String>,
     pub backlog: Vec<SessionBacklogEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionAttachParams {
+    pub session_id: String,
+    pub auth_token: String,
 }
 
 #[cfg(test)]

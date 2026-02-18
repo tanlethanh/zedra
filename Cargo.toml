@@ -27,6 +27,7 @@ anyhow = "1"
 
 # Logging
 log = "0.4.29"
+tracing = { version = "0.1", features = ["log"] }
 
 # Async utilities
 async-trait = "0.1"
@@ -44,6 +45,9 @@ rust-embed = "8"
 
 # WebSocket
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+
+# P2P networking (iroh)
+iroh = "0.96"
 
 # Patch blade-graphics to use local version with Android fixes
 [patch.'https://github.com/kvark/blade']

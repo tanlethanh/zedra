@@ -46,6 +46,11 @@ pub struct ServerSession {
 pub struct TermSession {
     pub writer: Box<dyn Write + Send>,
     pub master: Box<dyn portable_pty::MasterPty + Send>,
+    /// Swappable notification sender. Updated on each reconnect so the PTY
+    /// reader can forward output to the current connection's write channel.
+    /// `None` when no connection is active (output is still stored in the
+    /// session's notification backlog).
+    pub notif_sender: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<Vec<u8>>>>>,
 }
 
 /// Summary of a session for listing purposes (no PTY handles).
@@ -159,6 +164,12 @@ impl SessionRegistry {
             .await
             .insert(name.to_string(), id);
         session
+    }
+
+    /// Look up a session by its unique ID.
+    pub async fn get_by_id(&self, id: &str) -> Option<Arc<ServerSession>> {
+        let sessions = self.sessions.lock().await;
+        sessions.get(id).cloned()
     }
 
     /// Look up a session by its human-readable name.
@@ -291,6 +302,24 @@ impl ServerSession {
             .filter(|(seq, _)| *seq > after_seq)
             .cloned()
             .collect()
+    }
+
+    /// Update all terminal notification senders to point to a new connection's
+    /// write channel. Called on reconnect so PTY readers forward output to the
+    /// current transport.
+    pub async fn update_notif_senders(&self, sender: tokio::sync::mpsc::Sender<Vec<u8>>) {
+        let terms = self.terminals.lock().await;
+        for term in terms.values() {
+            *term.notif_sender.lock().unwrap() = Some(sender.clone());
+        }
+    }
+
+    /// Clear all terminal notification senders (e.g. when connection drops).
+    pub async fn clear_notif_senders(&self) {
+        let terms = self.terminals.lock().await;
+        for term in terms.values() {
+            *term.notif_sender.lock().unwrap() = None;
+        }
     }
 
     /// Touch the session to update last_activity.

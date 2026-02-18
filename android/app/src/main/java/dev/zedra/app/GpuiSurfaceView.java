@@ -42,7 +42,7 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
     private float touchDownX = 0;
     private float touchDownY = 0;
     private boolean touchMoved = false;
-    private static final float TAP_SLOP = 20f; // px threshold to distinguish tap from scroll
+    private static final float TAP_SLOP = 12f; // px threshold to distinguish tap from scroll (4dp * 3x density)
 
     // Velocity tracking for fling gestures
     private VelocityTracker velocityTracker = null;

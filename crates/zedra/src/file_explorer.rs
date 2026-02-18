@@ -313,7 +313,7 @@ impl Render for FileExplorer {
 
         let flat = self.flatten();
 
-        let mut list = div().id("file-list").flex().flex_col().overflow_y_scroll();
+        let mut list = div().id("file-list").flex().flex_col();
 
         for entry in flat {
             let indent = entry.depth as f32 * 16.0;
