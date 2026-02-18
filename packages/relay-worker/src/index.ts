@@ -1,17 +1,6 @@
-import type {
-  Env,
-  RegisterRequest,
-  HeartbeatRequest,
-  SignalCandidates,
-} from "./types";
-import {
-  registerHost,
-  heartbeatHost,
-  lookupHost,
-  storeSignal,
-  drainSignals,
-} from "./hosts";
-import { errorResponse, jsonResponse, rateLimit } from "./utils";
+import type { Env, PublishRequest } from "./types";
+import { publishEndpoint, resolveEndpoint } from "./hosts";
+import { errorResponse, jsonResponse } from "./utils";
 
 function corsHeaders(): Record<string, string> {
   return {
@@ -46,83 +35,60 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   const { segments } = parseRoute(url);
 
   // GET / — health check
-  if (method === "GET" && (segments.length === 0 || (segments.length === 1 && segments[0] === ""))) {
+  if (
+    method === "GET" &&
+    (segments.length === 0 ||
+      (segments.length === 1 && segments[0] === ""))
+  ) {
     return jsonResponse({ ok: true });
   }
 
-  // POST /hosts/register
-  if (
-    method === "POST" &&
-    segments.length === 2 &&
-    segments[0] === "hosts" &&
-    segments[1] === "register"
-  ) {
-    const body = (await request.json()) as RegisterRequest;
-    if (!body.device_id || !body.public_key) {
-      return errorResponse("device_id and public_key required", 400);
+  // POST /publish — iroh endpoint discovery publish
+  if (method === "POST" && segments.length === 1 && segments[0] === "publish") {
+    const body = (await request.json()) as PublishRequest;
+    if (!body.endpoint_id) {
+      return errorResponse("endpoint_id required", 400);
     }
-    const result = await registerHost(env, body);
-    return jsonResponse(result, 201);
-  }
-
-  // POST /hosts/:device_id/heartbeat
-  if (
-    method === "POST" &&
-    segments.length === 3 &&
-    segments[0] === "hosts" &&
-    segments[2] === "heartbeat"
-  ) {
-    const deviceId = segments[1];
-    const body = (await request.json()) as HeartbeatRequest;
-    const result = await heartbeatHost(env, deviceId, body);
-    if (!result) return errorResponse("Host not registered", 404);
+    const result = await publishEndpoint(env, body);
     return jsonResponse(result);
   }
 
-  // GET /hosts/:device_id
-  if (method === "GET" && segments.length === 2 && segments[0] === "hosts") {
-    const deviceId = segments[1];
-    const result = await lookupHost(env, deviceId);
-    if (!result) return errorResponse("Host not found", 404);
+  // GET /resolve/:endpoint_id — iroh endpoint discovery resolve
+  if (method === "GET" && segments.length === 2 && segments[0] === "resolve") {
+    const endpointId = segments[1];
+    const result = await resolveEndpoint(env, endpointId);
+    if (!result) return errorResponse("Endpoint not found", 404);
     return jsonResponse(result);
   }
 
-  // POST /signal/:device_id
-  if (method === "POST" && segments.length === 2 && segments[0] === "signal") {
-    const targetDeviceId = segments[1];
-    const body = (await request.json()) as SignalCandidates;
-    if (!body.from_device_id || !body.candidates) {
-      return errorResponse("from_device_id and candidates required", 400);
-    }
-    await storeSignal(env, targetDeviceId, body);
-    return jsonResponse({ ok: true });
-  }
-
-  // GET /signal/:device_id
-  if (method === "GET" && segments.length === 2 && segments[0] === "signal") {
-    const deviceId = segments[1];
-    const signals = await drainSignals(env, deviceId);
-    return jsonResponse({ signals });
-  }
-
-  // GET /ws/:room_id - WebSocket relay (upgrade to WebSocket)
-  if (method === "GET" && segments.length === 2 && segments[0] === "ws") {
-    const roomId = segments[1];
+  // GET /relay — WebSocket upgrade to RelayEndpoint DO
+  if (method === "GET" && segments.length === 1 && segments[0] === "relay") {
     const upgradeHeader = request.headers.get("Upgrade");
     if (upgradeHeader !== "websocket") {
       return errorResponse("Expected WebSocket upgrade", 426);
     }
 
-    // Route to Durable Object for this room
-    const doId = env.ZEDRA_WS_RELAY.idFromName(roomId);
-    const stub = env.ZEDRA_WS_RELAY.get(doId);
-    return stub.fetch(request);
+    // Each connection gets a unique DO (keyed by a random name).
+    // After handshake, the DO registers itself in KV by endpoint public key.
+    const doName = "conn:" + crypto.randomUUID();
+    const doId = env.ZEDRA_RELAY_ENDPOINT.idFromName(doName);
+    const stub = env.ZEDRA_RELAY_ENDPOINT.get(doId);
+
+    // Pass the DO name so the DO can register itself in KV
+    const doUrl = new URL(request.url);
+    doUrl.searchParams.set("do_name", doName);
+
+    return stub.fetch(
+      new Request(doUrl.toString(), {
+        headers: request.headers,
+      }),
+    );
   }
 
   return errorResponse("Not found", 404);
 }
 
-export { WsRelay } from "./ws-relay";
+export { RelayEndpoint } from "./relay-endpoint";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -133,6 +99,11 @@ export default {
 
     try {
       const response = await handleRequest(request, env);
+      // WebSocket upgrade responses (101) must be returned directly —
+      // withCors creates a new Response which strips the webSocket property.
+      if (response.status === 101) {
+        return response;
+      }
       return withCors(response);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Internal server error";
