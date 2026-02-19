@@ -1,4 +1,5 @@
 use std::ops::Range;
+use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -14,6 +15,14 @@ const GUTTER_WIDTH: f32 = theme::EDITOR_GUTTER_WIDTH;
 const FONT_SIZE: f32 = theme::EDITOR_FONT_SIZE;
 const GUTTER_FONT_SIZE: f32 = theme::EDITOR_GUTTER_FONT_SIZE;
 
+/// Cached per-line data (text, line number, syntax highlights).
+/// Recomputed only when the buffer content changes, NOT on every scroll frame.
+struct CachedLine {
+    text: String,
+    number: String,
+    highlights: Vec<(Range<usize>, HighlightStyle)>,
+}
+
 /// A code editor view with syntax highlighting and virtual scrolling.
 pub struct EditorView {
     buffer: Buffer,
@@ -22,6 +31,11 @@ pub struct EditorView {
     cursor_offset: usize,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
+    /// Cached line data shared with the uniform_list closure via Rc.
+    /// Only rebuilt when the buffer content changes.
+    cached_lines: Rc<Vec<CachedLine>>,
+    /// Whether cached_lines needs rebuilding.
+    lines_dirty: bool,
 }
 
 impl EditorView {
@@ -36,6 +50,8 @@ impl EditorView {
             cursor_offset: 0,
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
+            cached_lines: Rc::new(Vec::new()),
+            lines_dirty: true,
         }
     }
 
@@ -44,6 +60,21 @@ impl EditorView {
         self.buffer.set_text(content);
         self.highlighter.parse(self.buffer.text());
         self.cursor_offset = 0;
+        self.lines_dirty = true;
+    }
+
+    /// Rebuild the cached line data from the buffer and highlighter.
+    fn rebuild_line_cache(&mut self) {
+        let line_count = self.buffer.line_count();
+        let lines: Vec<CachedLine> = (0..line_count)
+            .map(|line| CachedLine {
+                text: self.buffer.line_text(line).to_string(),
+                number: format!("{:>4}", line + 1),
+                highlights: self.line_highlights(line),
+            })
+            .collect();
+        self.cached_lines = Rc::new(lines);
+        self.lines_dirty = false;
     }
 
     fn move_cursor_left(&mut self) {
@@ -87,12 +118,14 @@ impl EditorView {
         self.buffer.insert(self.cursor_offset, character);
         self.cursor_offset += character.len();
         self.highlighter.parse(self.buffer.text());
+        self.lines_dirty = true;
     }
 
     fn insert_newline(&mut self) {
         self.buffer.insert(self.cursor_offset, "\n");
         self.cursor_offset += 1;
         self.highlighter.parse(self.buffer.text());
+        self.lines_dirty = true;
     }
 
     fn backspace(&mut self) {
@@ -105,6 +138,7 @@ impl EditorView {
             self.buffer.delete(prev..self.cursor_offset);
             self.cursor_offset = prev;
             self.highlighter.parse(self.buffer.text());
+            self.lines_dirty = true;
         }
     }
 
@@ -118,6 +152,7 @@ impl EditorView {
                 .unwrap_or(text.len());
             self.buffer.delete(self.cursor_offset..next);
             self.highlighter.parse(self.buffer.text());
+            self.lines_dirty = true;
         }
     }
 
@@ -174,20 +209,20 @@ impl Focusable for EditorView {
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let line_count = self.buffer.line_count();
+        // Rebuild line cache only when buffer content changed.
+        // During scroll, this is skipped — the expensive tree-sitter highlight
+        // iteration and string allocations are avoided entirely.
+        if self.lines_dirty {
+            self.rebuild_line_cache();
+        }
 
-        // Capture data needed by the uniform_list closure
-        let line_highlights: Vec<(String, String, Vec<(Range<usize>, HighlightStyle)>, bool, usize)> =
-            (0..line_count)
-                .map(|line| {
-                    let line_text = self.buffer.line_text(line).to_string();
-                    let line_number = format!("{:>4}", line + 1);
-                    let highlights = self.line_highlights(line);
-                    let (cursor_row, cursor_col) = self.buffer.offset_to_point(self.cursor_offset);
-                    let show_cursor = cursor_row == line;
-                    (line_text, line_number, highlights, show_cursor, cursor_col)
-                })
-                .collect();
+        let line_count = self.cached_lines.len();
+
+        // Cursor position is cheap to compute per frame.
+        let (cursor_row, cursor_col) = self.buffer.offset_to_point(self.cursor_offset);
+
+        // Rc clone is cheap — just a reference count bump.
+        let cached_lines = self.cached_lines.clone();
 
         let text_style = {
             let mut style = window.text_style();
@@ -253,15 +288,18 @@ impl Render for EditorView {
                     move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
                         range
                             .map(|line| {
-                                let (ref line_text, ref line_number, ref highlights, show_cursor, cursor_col) =
-                                    line_highlights[line];
+                                let cached = &cached_lines[line];
+                                let show_cursor = cursor_row == line;
 
-                                let styled_text = if line_text.is_empty() {
+                                let styled_text = if cached.text.is_empty() {
                                     StyledText::new(" ")
                                         .with_default_highlights(&text_style, Vec::new())
                                 } else {
-                                    StyledText::new(line_text.clone())
-                                        .with_default_highlights(&text_style, highlights.clone())
+                                    StyledText::new(cached.text.clone())
+                                        .with_default_highlights(
+                                            &text_style,
+                                            cached.highlights.clone(),
+                                        )
                                 };
 
                                 div()
@@ -278,7 +316,7 @@ impl Render for EditorView {
                                             .pr_2()
                                             .text_color(hsla(0.0, 0.0, 0.83, 0.3))
                                             .text_size(px(GUTTER_FONT_SIZE))
-                                            .child(line_number.clone()),
+                                            .child(cached.number.clone()),
                                     )
                                     .child(
                                         div()

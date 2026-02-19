@@ -526,7 +526,7 @@ impl Render for AppDrawer {
             DrawerSection::Files => div()
                 .id("drawer-file-tree")
                 .flex_1()
-                .overflow_y_scroll()
+                .overflow_hidden()
                 .child(self.file_explorer.clone())
                 .into_any_element(),
             DrawerSection::Git => div()

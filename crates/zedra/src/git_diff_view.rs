@@ -3,6 +3,7 @@
 //! Pushed onto the StackNavigator when a git file is selected from GitSidebar.
 
 use std::ops::Range;
+use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -18,6 +19,12 @@ const GUTTER_WIDTH: f32 = theme::EDITOR_GUTTER_WIDTH;
 const FONT_SIZE: f32 = theme::EDITOR_FONT_SIZE;
 const GUTTER_FONT_SIZE: f32 = theme::EDITOR_GUTTER_FONT_SIZE;
 
+/// Cached per-line data for the diff view.
+struct CachedDiffLine {
+    line: Option<DiffLine>,
+    highlights: Vec<(Range<usize>, HighlightStyle)>,
+}
+
 pub struct GitDiffView {
     diff: FileDiff,
     file_path: String,
@@ -25,6 +32,8 @@ pub struct GitDiffView {
     theme: SyntaxTheme,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
+    cached_lines: Rc<Vec<CachedDiffLine>>,
+    lines_dirty: bool,
 }
 
 impl GitDiffView {
@@ -36,7 +45,26 @@ impl GitDiffView {
             theme: SyntaxTheme::default_dark(),
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
+            cached_lines: Rc::new(Vec::new()),
+            lines_dirty: true,
         }
+    }
+
+    fn rebuild_line_cache(&mut self) {
+        let line_count = self.total_lines();
+        let lines: Vec<CachedDiffLine> = (0..line_count)
+            .map(|i| {
+                let line = self.get_line(i);
+                let highlights = line
+                    .as_ref()
+                    .filter(|l| l.kind != DiffLineKind::Header)
+                    .map(|l| self.line_highlights(&l.content))
+                    .unwrap_or_default();
+                CachedDiffLine { line, highlights }
+            })
+            .collect();
+        self.cached_lines = Rc::new(lines);
+        self.lines_dirty = false;
     }
 
     fn total_lines(&self) -> usize {
@@ -132,10 +160,12 @@ impl Focusable for GitDiffView {
 
 impl Render for GitDiffView {
     fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let line_count = self.total_lines();
+        if self.lines_dirty {
+            self.rebuild_line_cache();
+        }
 
-        let line_data: Vec<Option<DiffLine>> =
-            (0..line_count).map(|i| self.get_line(i)).collect();
+        let line_count = self.cached_lines.len();
+        let cached_lines = self.cached_lines.clone();
 
         let text_style = {
             let mut style = window.text_style();
@@ -143,16 +173,6 @@ impl Render for GitDiffView {
             style.font_size = px(FONT_SIZE).into();
             style
         };
-
-        let highlights: Vec<Vec<(Range<usize>, HighlightStyle)>> = line_data
-            .iter()
-            .map(|line| {
-                line.as_ref()
-                    .filter(|l| l.kind != DiffLineKind::Header)
-                    .map(|l| self.line_highlights(&l.content))
-                    .unwrap_or_default()
-            })
-            .collect();
 
         div()
             .flex()
@@ -166,7 +186,8 @@ impl Render for GitDiffView {
                     move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
                         range
                             .map(|i| {
-                                let Some(line) = &line_data[i] else {
+                                let cached = &cached_lines[i];
+                                let Some(line) = &cached.line else {
                                     return div().h(px(LINE_HEIGHT)).into_any_element();
                                 };
 
@@ -217,11 +238,10 @@ impl Render for GitDiffView {
                                         .into_any_element();
                                 }
 
-                                let line_highlights = &highlights[i];
                                 let adjusted_highlights: Vec<(
                                     Range<usize>,
                                     HighlightStyle,
-                                )> = line_highlights
+                                )> = cached.highlights
                                     .iter()
                                     .map(|(range, style)| {
                                         let offset = prefix.len();
