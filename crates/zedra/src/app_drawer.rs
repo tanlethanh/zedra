@@ -360,6 +360,7 @@ impl AppDrawer {
         let (status_label, status_color) = match &state {
             SessionState::Connected { .. } => ("Connected", theme::ACCENT_GREEN),
             SessionState::Connecting => ("Connecting...", theme::ACCENT_YELLOW),
+            SessionState::Reconnecting { .. } => ("Reconnecting...", theme::ACCENT_YELLOW),
             SessionState::Disconnected => ("Disconnected", theme::ACCENT_RED),
             SessionState::Error(_) => ("Error", theme::ACCENT_RED),
         };

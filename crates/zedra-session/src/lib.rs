@@ -10,7 +10,7 @@
 //   4. Main thread drains drain_callbacks() each frame for deferred work
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::Result;
@@ -55,6 +55,9 @@ pub enum SessionState {
         /// zedra-host binary version
         host_version: String,
     },
+    Reconnecting {
+        attempt: u32,
+    },
     Error(String),
 }
 
@@ -98,6 +101,77 @@ static ACTIVE_SESSION: OnceLock<Mutex<Option<Arc<RemoteSession>>>> = OnceLock::n
 /// Queue of callbacks to be drained and executed on the main thread.
 static MAIN_THREAD_CALLBACKS: OnceLock<Mutex<VecDeque<MainCallback>>> = OnceLock::new();
 
+// ---------------------------------------------------------------------------
+// Reconnect state (persists across RemoteSession rebuilds)
+// ---------------------------------------------------------------------------
+
+/// Current reconnect attempt number (0 = not reconnecting).
+static RECONNECT_ATTEMPT: AtomicU32 = AtomicU32::new(0);
+
+/// Set on user-initiated disconnect to prevent automatic reconnect.
+static USER_DISCONNECT: AtomicBool = AtomicBool::new(false);
+
+/// Highest notification seq successfully processed (for backlog resumption).
+static LAST_NOTIF_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Stored pairing payload for reconnect attempts.
+static PAIRING_PAYLOAD: OnceLock<Mutex<Option<PairingPayload>>> = OnceLock::new();
+
+/// (session_id, auth_token) preserved across RemoteSession rebuilds.
+static SESSION_CREDENTIALS: OnceLock<Mutex<(Option<String>, Option<String>)>> = OnceLock::new();
+
+/// Shared terminal output buffers that survive reconnect.
+static PERSISTENT_TERMINAL_OUTPUTS: OnceLock<TerminalOutputMap> = OnceLock::new();
+
+/// Terminal ID list that survives reconnect.
+static PERSISTENT_TERMINAL_IDS: OnceLock<Arc<Mutex<Vec<String>>>> = OnceLock::new();
+
+/// Active terminal ID that survives reconnect.
+static PERSISTENT_ACTIVE_TERMINAL: OnceLock<Arc<Mutex<Option<String>>>> = OnceLock::new();
+
+fn pairing_payload_slot() -> &'static Mutex<Option<PairingPayload>> {
+    PAIRING_PAYLOAD.get_or_init(|| Mutex::new(None))
+}
+
+fn session_credentials_slot() -> &'static Mutex<(Option<String>, Option<String>)> {
+    SESSION_CREDENTIALS.get_or_init(|| Mutex::new((None, None)))
+}
+
+fn persistent_terminal_outputs() -> TerminalOutputMap {
+    PERSISTENT_TERMINAL_OUTPUTS
+        .get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+        .clone()
+}
+
+fn persistent_terminal_ids() -> Arc<Mutex<Vec<String>>> {
+    PERSISTENT_TERMINAL_IDS
+        .get_or_init(|| Arc::new(Mutex::new(Vec::new())))
+        .clone()
+}
+
+fn persistent_active_terminal() -> Arc<Mutex<Option<String>>> {
+    PERSISTENT_ACTIVE_TERMINAL
+        .get_or_init(|| Arc::new(Mutex::new(None)))
+        .clone()
+}
+
+/// Current reconnect attempt number (0 = not reconnecting).
+pub fn reconnect_attempt() -> u32 {
+    RECONNECT_ATTEMPT.load(Ordering::Relaxed)
+}
+
+/// Whether a reconnect is currently in progress.
+pub fn is_reconnecting() -> bool {
+    reconnect_attempt() > 0
+}
+
+/// Store a pairing payload for use during automatic reconnect.
+pub fn store_pairing_payload(payload: PairingPayload) {
+    if let Ok(mut slot) = pairing_payload_slot().lock() {
+        *slot = Some(payload);
+    }
+}
+
 /// Get (or lazily create) the session tokio runtime.
 pub fn session_runtime() -> &'static tokio::runtime::Runtime {
     SESSION_RUNTIME.get_or_init(|| {
@@ -134,11 +208,14 @@ pub fn active_session() -> Option<Arc<RemoteSession>> {
     None
 }
 
-/// Clear the active session.
+/// Clear the active session (user-initiated disconnect).
+///
+/// Sets `USER_DISCONNECT` to prevent automatic reconnect attempts.
 pub fn clear_active_session() {
+    USER_DISCONNECT.store(true, Ordering::Release);
     if let Ok(mut slot) = active_session_slot().lock() {
         *slot = None;
-        tracing::info!("Active remote session cleared");
+        tracing::info!("Active remote session cleared (user disconnect)");
     }
 }
 
@@ -241,7 +318,16 @@ impl RemoteSession {
     /// Uses iroh's Endpoint for direct QUIC/UDP with automatic NAT traversal,
     /// relay fallback, and TLS 1.3 encryption. No TransportManager needed —
     /// iroh handles discovery, connection, and reconnection internally.
+    ///
+    /// On first connect, creates fresh persistent state. On reconnect, reuses
+    /// existing terminal output buffers and IDs so UI views survive.
     pub async fn connect_with_iroh(payload: PairingPayload) -> Result<Arc<Self>> {
+        // Store pairing payload for future reconnect attempts
+        store_pairing_payload(payload.clone());
+
+        // Reset user disconnect flag (we're intentionally connecting)
+        USER_DISCONNECT.store(false, Ordering::Release);
+
         let hostname = payload.name.clone();
         tracing::info!(
             "RemoteSession: connecting via iroh to {} (endpoint: {})",
@@ -282,8 +368,13 @@ impl RemoteSession {
         let (rpc_client, notif_rx) = RpcClient::spawn_from_channels(reader, writer);
         let client = Arc::new(rpc_client);
 
+        // Use persistent state for terminal outputs/IDs so UI views survive reconnect
+        let terminal_outputs = persistent_terminal_outputs();
+        let terminal_ids = persistent_terminal_ids();
+        let active_terminal_id = persistent_active_terminal();
+
+        // Fresh per-connection state
         let terminal_output: OutputBuffer = Arc::new(Mutex::new(VecDeque::new()));
-        let terminal_outputs: TerminalOutputMap = Arc::new(Mutex::new(HashMap::new()));
         let state = Arc::new(Mutex::new(SessionState::Connecting));
         let latency_ms = Arc::new(AtomicU64::new(0));
         let connection_info: Arc<Mutex<Option<ConnectionInfo>>> = Arc::new(Mutex::new(None));
@@ -338,24 +429,24 @@ impl RemoteSession {
             state,
             terminal_output,
             terminal_outputs,
-            terminal_ids: Arc::new(Mutex::new(Vec::new())),
-            active_terminal_id: Arc::new(Mutex::new(None)),
+            terminal_ids,
+            active_terminal_id,
             session_id: Arc::new(Mutex::new(None)),
             auth_token: Arc::new(Mutex::new(None)),
             latency_ms: latency_ms.clone(),
             connection_info,
         });
 
-        // Spawn notification listener
+        // Spawn notification listener (triggers reconnect on exit)
         Self::spawn_notification_listener(&session, notif_rx);
 
-        // Establish RPC session
+        // Establish RPC session (uses SESSION_CREDENTIALS for reconnect)
         Self::establish_rpc_session(&session).await;
 
         // Fetch session info
         Self::fetch_session_info(&session, &hostname).await;
 
-        // Spawn ping loop
+        // Spawn ping loop (breaks after 2 consecutive failures)
         Self::spawn_ping_loop(session.client.clone(), latency_ms);
 
         tracing::info!("RemoteSession: connected via iroh to {}", hostname);
@@ -363,6 +454,9 @@ impl RemoteSession {
     }
 
     /// Spawn the notification listener that routes terminal/output to per-terminal buffers.
+    ///
+    /// Tracks `LAST_NOTIF_SEQ` for backlog resumption on reconnect.
+    /// When the channel closes (transport dead), triggers `spawn_reconnect()`.
     fn spawn_notification_listener(
         session: &Arc<Self>,
         notif_rx: tokio::sync::mpsc::Receiver<zedra_rpc::Notification>,
@@ -372,14 +466,14 @@ impl RemoteSession {
 
         tokio::spawn(async move {
             while let Some(notif) = rx.recv().await {
+                // Track notification seq for backlog resumption
+                LAST_NOTIF_SEQ.fetch_add(1, Ordering::Release);
+
                 if notif.method == methods::TERM_OUTPUT {
                     match serde_json::from_value::<TermOutputNotification>(notif.params) {
                         Ok(term_notif) => {
                             match base64_url::decode(&term_notif.data) {
                                 Ok(bytes) => {
-                                    // Route to per-terminal buffer if it exists,
-                                    // creating one on the fly if needed (handles
-                                    // race between create and first output).
                                     // Route to per-terminal buffer, creating one on
                                     // the fly if needed (handles race between create
                                     // and first output).
@@ -404,40 +498,38 @@ impl RemoteSession {
                         }
                     }
                 }
-                // Other notification types can be handled here in the future
             }
-            tracing::info!("Notification listener exited");
+            tracing::info!("Notification listener exited — transport dead");
+            spawn_reconnect();
         });
     }
 
     /// Establish an RPC session on the host via session/resume_or_create.
     ///
-    /// On first call, creates a new session and stores the session_id + auth_token.
-    /// On subsequent calls (after reconnect), resumes the existing session so
-    /// terminals and other state survive transport switches.
+    /// On first call, creates a new session. On reconnect, resumes the existing
+    /// session using credentials from `SESSION_CREDENTIALS`. Processes any
+    /// notification backlog and updates `LAST_NOTIF_SEQ`.
     async fn establish_rpc_session(session: &Arc<Self>) {
-        let auth_token = {
-            let guard = session.auth_token.lock().unwrap();
-            guard.clone()
-        }
-        .unwrap_or_else(|| {
-            // Generate a stable auth token for this session lifetime
+        // Try stored credentials first (for reconnect), then generate new ones
+        let (stored_session_id, stored_auth_token) = session_credentials_slot()
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or((None, None));
+
+        let auth_token = stored_auth_token.unwrap_or_else(|| {
             let token = format!("{:016x}", std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos());
-            if let Ok(mut guard) = session.auth_token.lock() {
-                *guard = Some(token.clone());
-            }
             token
         });
 
-        let existing_session_id = session.session_id();
+        let session_id_to_resume = stored_session_id.or_else(|| session.session_id());
 
         let params = zedra_rpc::SessionResumeParams {
-            session_id: existing_session_id.clone(),
-            auth_token,
-            last_notif_seq: 0,
+            session_id: session_id_to_resume.clone(),
+            auth_token: auth_token.clone(),
+            last_notif_seq: LAST_NOTIF_SEQ.load(Ordering::Relaxed),
         };
 
         match session
@@ -458,8 +550,47 @@ impl RemoteSession {
                                 resume.session_id,
                                 resume.backlog.len(),
                             );
+
+                            // Process backlog: route missed terminal output to buffers
+                            for entry in &resume.backlog {
+                                if let Ok(notif_json) = base64_url::decode(&entry.payload) {
+                                    if let Ok(notif) = serde_json::from_slice::<zedra_rpc::Notification>(&notif_json) {
+                                        if notif.method == methods::TERM_OUTPUT {
+                                            if let Ok(term_notif) = serde_json::from_value::<TermOutputNotification>(notif.params) {
+                                                if let Ok(bytes) = base64_url::decode(&term_notif.data) {
+                                                    let target_buf = {
+                                                        let mut map = session.terminal_outputs.lock().unwrap();
+                                                        map.entry(term_notif.id.clone())
+                                                            .or_insert_with(|| Arc::new(Mutex::new(VecDeque::new())))
+                                                            .clone()
+                                                    };
+                                                    if let Ok(mut buf) = target_buf.lock() {
+                                                        buf.push_back(bytes);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                // Track highest seq from backlog
+                                LAST_NOTIF_SEQ.fetch_max(entry.seq, Ordering::Release);
+                            }
+
+                            if !resume.backlog.is_empty() {
+                                signal_terminal_data();
+                            }
+
+                            // Store in instance fields
                             if let Ok(mut id_slot) = session.session_id.lock() {
-                                *id_slot = Some(resume.session_id);
+                                *id_slot = Some(resume.session_id.clone());
+                            }
+                            if let Ok(mut token_slot) = session.auth_token.lock() {
+                                *token_slot = Some(auth_token.clone());
+                            }
+
+                            // Persist credentials for future reconnects
+                            if let Ok(mut creds) = session_credentials_slot().lock() {
+                                *creds = (Some(resume.session_id), Some(auth_token));
                             }
                         }
                         Err(e) => {
@@ -641,8 +772,12 @@ impl RemoteSession {
     }
 
     /// Spawn a background loop that pings every 10 seconds to measure RTT.
+    ///
+    /// Breaks after 2 consecutive failures — the notification listener exit
+    /// handles triggering reconnect.
     fn spawn_ping_loop(client: Arc<RpcClient>, latency_ms: Arc<AtomicU64>) {
         tokio::spawn(async move {
+            let mut consecutive_failures = 0u32;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                 let start = std::time::Instant::now();
@@ -651,13 +786,22 @@ impl RemoteSession {
                     .await
                 {
                     Ok(_) => {
+                        consecutive_failures = 0;
                         let rtt = start.elapsed().as_millis() as u64;
                         latency_ms.store(rtt, Ordering::Relaxed);
                         tracing::debug!("ping RTT: {}ms", rtt);
                     }
                     Err(e) => {
+                        consecutive_failures += 1;
                         latency_ms.store(0, Ordering::Relaxed);
-                        tracing::warn!("ping failed: {}", e);
+                        tracing::warn!("ping failed ({}/2): {}", consecutive_failures, e);
+                        if consecutive_failures >= 2 {
+                            tracing::info!(
+                                "ping: 2 consecutive failures, stopping \
+                                 (notification listener handles reconnect)"
+                            );
+                            break;
+                        }
                     }
                 }
             }
@@ -894,6 +1038,16 @@ impl RemoteSession {
         Self::check_error(resp)
     }
 
+    /// List active terminal IDs on the server (for reconnect reconciliation).
+    pub async fn terminal_list(&self) -> Result<Vec<String>> {
+        let resp = self
+            .client
+            .call(methods::TERM_LIST, serde_json::json!({}))
+            .await?;
+        let result: zedra_rpc::TermListResult = Self::extract_result(resp)?;
+        Ok(result.terminals.into_iter().map(|e| e.id).collect())
+    }
+
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
@@ -918,4 +1072,113 @@ impl RemoteSession {
         }
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Automatic reconnect
+// ---------------------------------------------------------------------------
+
+/// Spawn a background task that attempts to reconnect after transport failure.
+///
+/// Guards:
+/// - Does nothing if `USER_DISCONNECT` is set (user initiated disconnect)
+/// - CAS on `RECONNECT_ATTEMPT` prevents concurrent reconnect loops
+///
+/// Uses exponential backoff (1s, 2s, 4s, 8s, 16s, 30s cap) with a maximum
+/// of ~20 attempts (~5 minutes, matching the server's session grace period).
+fn spawn_reconnect() {
+    if USER_DISCONNECT.load(Ordering::Acquire) {
+        tracing::info!("spawn_reconnect: skipping, user disconnect in progress");
+        return;
+    }
+
+    // CAS: only one reconnect loop at a time
+    if RECONNECT_ATTEMPT
+        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        tracing::info!("spawn_reconnect: already reconnecting");
+        return;
+    }
+
+    tokio::spawn(async move {
+        let max_attempts = 20u32;
+        let mut attempt = 1u32;
+
+        loop {
+            if USER_DISCONNECT.load(Ordering::Acquire) {
+                tracing::info!("reconnect: user disconnect during reconnect, aborting");
+                break;
+            }
+
+            if attempt > max_attempts {
+                tracing::warn!(
+                    "reconnect: max attempts ({}) reached, giving up",
+                    max_attempts
+                );
+                break;
+            }
+
+            RECONNECT_ATTEMPT.store(attempt, Ordering::Release);
+            signal_terminal_data(); // trigger UI refresh to show "Reconnecting..."
+
+            // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s cap
+            let delay_secs = std::cmp::min(1u64 << (attempt - 1), 30);
+            tracing::info!(
+                "reconnect: attempt {} of {} (backoff {}s)",
+                attempt,
+                max_attempts,
+                delay_secs,
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+
+            // Check again after sleep
+            if USER_DISCONNECT.load(Ordering::Acquire) {
+                tracing::info!("reconnect: user disconnect during backoff, aborting");
+                break;
+            }
+
+            // Get stored pairing payload
+            let payload = match pairing_payload_slot().lock().ok().and_then(|g| g.clone()) {
+                Some(p) => p,
+                None => {
+                    tracing::error!("reconnect: no stored pairing payload, aborting");
+                    break;
+                }
+            };
+
+            match RemoteSession::connect_with_iroh(payload).await {
+                Ok(session) => {
+                    tracing::info!("reconnect: success on attempt {}", attempt);
+                    set_active_session(session.clone());
+
+                    // Verify server-side terminals are still alive
+                    match session.terminal_list().await {
+                        Ok(ids) => {
+                            tracing::info!(
+                                "reconnect: server has {} terminals: {:?}",
+                                ids.len(),
+                                ids,
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!("reconnect: terminal_list failed: {}", e);
+                        }
+                    }
+
+                    RECONNECT_ATTEMPT.store(0, Ordering::Release);
+                    signal_terminal_data(); // trigger UI refresh
+                    return; // success — don't fall through to reset below
+                }
+                Err(e) => {
+                    tracing::warn!("reconnect: attempt {} failed: {}", attempt, e);
+                    attempt += 1;
+                }
+            }
+        }
+
+        // Gave up or aborted
+        RECONNECT_ATTEMPT.store(0, Ordering::Release);
+        signal_terminal_data();
+    });
 }

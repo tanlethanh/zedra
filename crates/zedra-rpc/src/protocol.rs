@@ -132,6 +132,7 @@ pub mod methods {
     pub const TERM_DATA: &str = "terminal/data";
     pub const TERM_RESIZE: &str = "terminal/resize";
     pub const TERM_CLOSE: &str = "terminal/close";
+    pub const TERM_LIST: &str = "terminal/list";
 
     // Git
     pub const GIT_STATUS: &str = "git/status";
@@ -281,6 +282,16 @@ pub struct TermResizeParams {
     pub id: String,
     pub cols: u16,
     pub rows: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TermListResult {
+    pub terminals: Vec<TermListEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TermListEntry {
+    pub id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

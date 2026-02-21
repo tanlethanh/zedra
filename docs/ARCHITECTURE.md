@@ -25,7 +25,7 @@ crates/
   zedra-transport/     Identity, iroh transport, CF Worker discovery, QR pairing
   zedra-rpc/           Transport trait, JSON-RPC 2.0 framing, RpcClient/RpcServer
   zedra-host/          Desktop daemon: iroh listener, RPC dispatch, session registry
-  zedra-session/       Mobile client: iroh connection, RPC session, terminal buffers
+  zedra-session/       Mobile client: iroh connection, RPC session, terminal buffers, auto-reconnect
   zedra-terminal/      Terminal emulation (alacritty) + GPUI rendering
   zedra-editor/        Code editor with tree-sitter syntax highlighting
   zedra-nav/           Mobile navigation primitives (tabs, stacks, drawer)
@@ -133,7 +133,7 @@ Standard JSON-RPC 2.0 messages with domain-specific methods:
 | Category   | Methods                                                                           |
 | ---------- | --------------------------------------------------------------------------------- |
 | Filesystem | `fs/list`, `fs/read`, `fs/write`, `fs/stat`, `fs/remove`, `fs/mkdir`              |
-| Terminal   | `terminal/create`, `terminal/data`, `terminal/resize`, `terminal/close`           |
+| Terminal   | `terminal/create`, `terminal/data`, `terminal/resize`, `terminal/close`, `terminal/list` |
 | Git        | `git/status`, `git/diff`, `git/log`, `git/commit`, `git/branches`, `git/checkout` |
 | Session    | `session/resume_or_create`, `session/attach`, `session/info`, `session/list`      |
 | LSP        | `lsp/hover`                                                                       |
@@ -174,6 +174,8 @@ Desktop process that listens for incoming iroh connections and dispatches RPC op
 2. Main loop reads requests, dispatches to handlers, sends responses
 3. Spawns notification forwarder (session backlog -> transport)
 4. Spawns PTY reader tasks for terminal output streaming
+5. On disconnect: `clear_notif_senders()` so PTY readers don't send on dead channel
+6. `terminal/list` handler returns active terminal IDs for reconnect reconciliation
 
 ### Session Registry (`session_registry.rs`)
 
@@ -218,14 +220,20 @@ Mobile client library for connecting to zedra-host via iroh and issuing RPC call
 ### Connection (`connect_with_iroh`)
 
 ```
-1. Create ephemeral iroh Endpoint (client side, relay: relay.zedra.dev)
-2. Parse host's EndpointAddr from PairingPayload (includes relay URL)
-3. endpoint.connect(addr, b"zedra/rpc/1")
+1. Store PairingPayload in PAIRING_PAYLOAD (for reconnect)
+2. Reset USER_DISCONNECT flag
+3. Create ephemeral iroh Endpoint (client side, relay: relay.zedra.dev)
+4. Parse host's EndpointAddr from PairingPayload (includes relay URL)
+5. endpoint.connect(addr, b"zedra/rpc/1")
    iroh internally: tries direct addrs -> hole-punches -> relay fallback (relay.zedra.dev)
-4. Open bidi stream, wrap in IrohTransport
-5. Convert to RpcClient via into_rpc_channels()
-6. session/resume_or_create -> establish or resume session
-7. Spawn notification listener + ping loop
+6. Open bidi stream, wrap in IrohTransport
+7. Convert to RpcClient via into_rpc_channels()
+8. Use persistent terminal output buffers (PERSISTENT_TERMINAL_OUTPUTS)
+   so UI views survive reconnect via shared Arc references
+9. session/resume_or_create with SESSION_CREDENTIALS + LAST_NOTIF_SEQ
+10. Process notification backlog (decode base64, route terminal output to buffers)
+11. Spawn notification listener (tracks seq, triggers reconnect on exit)
+12. Spawn ping loop (breaks after 2 consecutive failures)
 ```
 
 ### Global State (OnceLock singletons)
@@ -235,14 +243,44 @@ Mobile client library for connecting to zedra-host via iroh and issuing RPC call
 - `MAIN_THREAD_CALLBACKS` -- deferred work queue for GPUI main thread
 - `TERMINAL_DATA_PENDING` -- atomic flag, signaled by notification listener, polled by GPUI frame loop
 
+Reconnect state (persists across `RemoteSession` rebuilds):
+
+- `RECONNECT_ATTEMPT` (AtomicU32) -- current attempt (0 = not reconnecting)
+- `USER_DISCONNECT` (AtomicBool) -- set on user disconnect, prevents auto-reconnect
+- `LAST_NOTIF_SEQ` (AtomicU64) -- highest notification seq processed
+- `PAIRING_PAYLOAD` -- stored for reconnect attempts
+- `SESSION_CREDENTIALS` -- (session_id, auth_token) for session resumption
+- `PERSISTENT_TERMINAL_OUTPUTS` -- shared output buffers that survive reconnect
+- `PERSISTENT_TERMINAL_IDS` -- terminal ID list that survives reconnect
+- `PERSISTENT_ACTIVE_TERMINAL` -- active terminal ID that survives reconnect
+
 ### Terminal Output Flow
 
 ```
 Host PTY reader -> terminal/output notification -> IrohTransport
-    -> notification listener -> per-terminal OutputBuffer
+    -> notification listener -> per-terminal OutputBuffer (persistent Arc)
+    -> LAST_NOTIF_SEQ incremented
     -> TERMINAL_DATA_PENDING atomic flag
     -> GPUI frame loop polls flag -> drains buffer
     -> TerminalState.advance_bytes() -> re-render
+```
+
+### Auto-Reconnect Flow
+
+```
+Connection drops -> notification listener rx.recv() returns None
+    -> spawn_reconnect()
+       Guard: USER_DISCONNECT? abort
+       Guard: CAS RECONNECT_ATTEMPT 0->1 (prevent double-reconnect)
+       Loop (max 20 attempts, ~5 min matching server grace period):
+         1. Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s cap
+         2. Signal TERMINAL_DATA_PENDING -> UI shows "Reconnecting... (N)"
+         3. connect_with_iroh(stored PairingPayload)
+            -> reuses persistent output buffers (UI views keep working)
+            -> establish_rpc_session with stored credentials
+            -> server resumes same session, replays backlog
+         4. On success: set_active_session(), terminal_list() reconcile
+         5. On failure: increment attempt, continue
 ```
 
 ---
@@ -350,15 +388,21 @@ Mobile                                  Host
 Client connects -> session/resume_or_create -> new session
     terminal/create -> PTY spawned on host
     terminal/output notifications stream to client
+    LAST_NOTIF_SEQ incremented per notification
 
 Client disconnects (network drop, app backgrounded)
+    Server: clear_notif_senders() on disconnect
     PTY keeps running on host
     Output buffered in notification backlog (seq + payload)
+    Client: notification listener detects dead channel
+    Client: spawn_reconnect() with exponential backoff
 
-Client reconnects -> session/resume_or_create with session_id
+Client reconnects -> session/resume_or_create with stored credentials
+    Passes LAST_NOTIF_SEQ to get only missed notifications
     Host sends backlog entries (seq, base64 payload)
-    Client replays into terminal view
-    Seamless continuation
+    Client decodes backlog, routes terminal output to persistent buffers
+    terminal/list verifies server-side terminals still alive
+    UI views resume seamlessly (same Arc<OutputBuffer> references)
 ```
 
 ---

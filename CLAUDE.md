@@ -147,7 +147,7 @@ crates/
   ├── zedra-rpc/                # RPC protocol, Transport trait, framing
   │   └── src/
   │       ├── transport.rs      # Transport trait + TcpTransport + spawn_from_channels
-  │       └── protocol.rs       # RPC methods incl. session/resume_or_create
+  │       └── protocol.rs       # RPC methods incl. session/resume_or_create, terminal/list
   ├── zedra-relay/              # Relay client + RelayTransport impl
   │   └── src/
   │       ├── lib.rs            # Re-exports, DEFAULT_RELAY_URL
@@ -172,13 +172,13 @@ crates/
   │       ├── android_app.rs    # Main thread GPUI app + touch/scroll/key handling
   │       ├── android_command_queue.rs # Thread-safe queue
   │       ├── android_jni.rs    # JNI bridge
-  │       ├── zedra_app.rs      # DrawerHost + TabNavigator + transport state indicator
+  │       ├── zedra_app.rs      # DrawerHost + TabNavigator + transport/reconnect badge
   │       ├── file_explorer.rs  # FileExplorer tree view (demo data)
   │       └── file_preview_list.rs # Preview card grid for code samples
   └── zedra-host/               # Desktop SSH server daemon
       └── src/
           ├── main.rs           # CLI: listen + relay subcommands
-          ├── rpc_daemon.rs     # handle_transport_connection (generic over Transport)
+          ├── rpc_daemon.rs     # handle_transport_connection, terminal/list handler, clear_notif_senders on disconnect
           ├── session_registry.rs # Persistent sessions with terminal ownership
           ├── relay_bridge.rs   # Relay mode: room creation, QR, bridge to RPC
           └── qr.rs             # QR generation (v1 LAN + v2 relay)
@@ -268,6 +268,9 @@ zedra-rpc, zedra-relay
 - Automatic path selection: iroh handles direct → hole-punch → relay internally
 - Path upgrade: relay → direct P2P when hole-punch succeeds
 - Session persistence: server-side SessionRegistry with terminal PTY survival across reconnects
+- Client-side auto-reconnect: exponential backoff (1s–30s), persistent terminal output buffers survive reconnect
+- Notification backlog replay: missed terminal output replayed on session resume via LAST_NOTIF_SEQ tracking
+- Reconnecting UI badge: transport indicator shows "Reconnecting... (N)" with red dot during reconnect
 - Connection monitoring: path watcher tracks direct vs relay, RTT, bytes sent/recv
 
 ## Known Limitations (Technical Debt)
@@ -391,6 +394,7 @@ See `docs/DEBUGGING.md` for complete workflow.
 - **Phase 4**: Input Integration ✅ Complete (touch→scroll, keyboard, tap detection)
 - **Phase 5**: Navigation + Editor ✅ Complete (tabs, stacks, drawer, syntax editor)
 - **Phase 6**: Transport + Relay ✅ Complete (transport abstraction, CF Worker relay, discovery chain, health monitoring, session persistence)
+- **Phase 6.5**: Session Reconnect ✅ Complete (auto-reconnect with exponential backoff, persistent terminal buffers, backlog replay, reconnecting UI badge)
 - **Phase 7**: Production Hardening - Next (momentum scrolling, real file access, multi-touch, E2E encryption)
 
 ## Performance Characteristics
@@ -447,6 +451,7 @@ First successful port of GPUI to Android with:
 - iroh transport: QUIC/TLS 1.3 with automatic path selection (direct, hole-punch, relay)
 - Cross-network relay: iroh-compatible CF Worker relay at relay.zedra.dev
 - Connection path monitoring with automatic relay → direct P2P upgrade
+- Auto-reconnect: exponential backoff, persistent output buffers, notification backlog replay
 
 ---
 

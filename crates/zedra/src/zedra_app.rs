@@ -898,6 +898,12 @@ pub(crate) fn transport_badge_info(
     latency_ms: u64,
     conn_info: Option<&zedra_session::ConnectionInfo>,
 ) -> (String, u32) {
+    // Show reconnecting state if a reconnect attempt is in progress
+    let attempt = zedra_session::reconnect_attempt();
+    if attempt > 0 {
+        return (format!("Reconnecting... ({})", attempt), theme::ACCENT_RED);
+    }
+
     let conn_type = conn_info
         .map(|i| if i.is_direct { "P2P" } else { "Relay" })
         .unwrap_or("...");

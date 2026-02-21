@@ -296,6 +296,9 @@ pub async fn handle_transport_connection(
         dispatch_payload(&payload, &handlers, &write_tx).await;
     }
 
+    // Clear notification senders so PTY readers don't send on a dead channel
+    session.lock().await.clear_notif_senders().await;
+
     // Clean up: abort transport I/O task
     io_handle.abort();
 
@@ -803,6 +806,23 @@ fn build_session_handlers(
                 .to_string();
             session.terminals.lock().await.remove(&id);
             Ok(serde_json::json!({"ok": true}))
+        })
+    });
+
+    // terminal/list — list active terminal IDs
+    let sess = session.clone();
+    register!(methods::TERM_LIST, move |_params: serde_json::Value| {
+        let sess = sess.clone();
+        Box::pin(async move {
+            let session = sess.lock().await.clone();
+            let terms = session.terminals.lock().await;
+            let entries: Vec<zedra_rpc::TermListEntry> = terms
+                .keys()
+                .map(|id| zedra_rpc::TermListEntry { id: id.clone() })
+                .collect();
+            Ok(serde_json::to_value(zedra_rpc::TermListResult {
+                terminals: entries,
+            })?)
         })
     });
 
