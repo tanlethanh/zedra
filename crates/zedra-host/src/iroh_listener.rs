@@ -18,17 +18,32 @@ const ZEDRA_ALPN: &[u8] = b"zedra/rpc/1";
 /// Create and bind an iroh endpoint with the host's identity.
 ///
 /// Returns the endpoint ready for `accept()` calls and QR code generation.
+/// Uses the Zedra relay server for NAT traversal and cross-network connectivity.
 pub async fn create_endpoint(
     identity: &SharedIdentity,
 ) -> Result<iroh::Endpoint> {
+    let relay_url: iroh::RelayUrl = zedra_transport::DEFAULT_RELAY_URL.parse()
+        .map_err(|e| anyhow::anyhow!("invalid relay URL: {}", e))?;
+    tracing::info!("Using relay: {}", relay_url);
+
     let builder = iroh::Endpoint::builder()
-        .relay_mode(iroh::RelayMode::Disabled)
+        .relay_mode(iroh::RelayMode::custom([relay_url]))
         .secret_key(identity.iroh_secret_key().clone())
         .alpns(vec![ZEDRA_ALPN.to_vec()]);
 
     let endpoint = builder.bind().await?;
 
     tracing::info!("iroh endpoint bound: {}", endpoint.id().fmt_short());
+
+    // Wait for relay connection so endpoint.addr() includes the relay URL
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        endpoint.online(),
+    ).await {
+        Ok(()) => tracing::info!("iroh endpoint online (relay connected)"),
+        Err(_) => tracing::warn!("Timed out waiting for relay connection; continuing with direct addrs only"),
+    }
+
     tracing::info!("iroh endpoint addr: {:?}", endpoint.addr());
 
     Ok(endpoint)

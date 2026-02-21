@@ -161,7 +161,8 @@ Desktop process that listens for incoming iroh connections and dispatches RPC op
 ### Iroh Listener (`iroh_listener.rs`)
 
 - **ALPN**: `zedra/rpc/1`
-- `create_endpoint()` -- builds iroh Endpoint with host's SecretKey
+- **Relay**: `RelayMode::custom([DEFAULT_RELAY_URL])` -- uses `relay.zedra.dev` for NAT traversal
+- `create_endpoint()` -- builds iroh Endpoint with host's SecretKey, waits for relay connection (10s timeout)
 - `run_accept_loop()` -- accepts connections, spawns handler per connection
 - `handle_incoming()` -- accepts bidi stream, wraps in `IrohTransport`, passes to RPC dispatch
 
@@ -217,10 +218,10 @@ Mobile client library for connecting to zedra-host via iroh and issuing RPC call
 ### Connection (`connect_with_iroh`)
 
 ```
-1. Create ephemeral iroh Endpoint (client side)
-2. Parse host's EndpointAddr from PairingPayload
+1. Create ephemeral iroh Endpoint (client side, relay: relay.zedra.dev)
+2. Parse host's EndpointAddr from PairingPayload (includes relay URL)
 3. endpoint.connect(addr, b"zedra/rpc/1")
-   iroh internally: tries direct addrs -> hole-punches -> relay fallback
+   iroh internally: tries direct addrs -> hole-punches -> relay fallback (relay.zedra.dev)
 4. Open bidi stream, wrap in IrohTransport
 5. Convert to RpcClient via into_rpc_channels()
 6. session/resume_or_create -> establish or resume session
@@ -248,35 +249,27 @@ Host PTY reader -> terminal/output notification -> IrohTransport
 
 ## Relay Worker (`packages/relay-worker`)
 
-Cloudflare Worker providing endpoint discovery and WebSocket relay.
+Cloudflare Worker implementing an iroh-compatible relay server at `relay.zedra.dev`. Standard iroh clients connect directly — no fork needed.
 
 ### Bindings
 
-- `ZEDRA_RELAY_KV` -- KV namespace for endpoint registry
-- `ZEDRA_WS_RELAY` -- Durable Object for WebSocket relay rooms
+- `ZEDRA_RELAY_KV` -- KV namespace for endpoint routing table
+- `ZEDRA_RELAY_ENDPOINT` -- Durable Object for per-endpoint WebSocket relay
 
-### Endpoint Discovery
+### HTTP Endpoints
 
-| Method | Path                     | Description                                           |
-| ------ | ------------------------ | ----------------------------------------------------- |
-| `POST` | `/publish`               | Host publishes iroh endpoint addressing (KV, 90s TTL) |
-| `GET`  | `/resolve/{endpoint_id}` | Client resolves endpoint by ID                        |
+| Method | Path             | Description                                          |
+| ------ | ---------------- | ---------------------------------------------------- |
+| `GET`  | `/`              | Health check (`{"ok": true}`)                        |
+| `GET`  | `/ping`          | HTTPS probe for iroh `net_report` (latency measurement) |
+| `GET`  | `/generate_204`  | Captive portal detection (returns 204)               |
+| `GET`  | `/relay`         | WebSocket upgrade to `RelayEndpoint` Durable Object  |
 
-KV schema: `ep:{endpoint_id}` -> `{ endpoint_id, relay_url, direct_addrs[] }`
+### WebSocket Relay (Durable Object: `RelayEndpoint`)
 
-### WebSocket Relay (Durable Object)
+Each iroh `Endpoint` gets its own DO instance. After Ed25519 challenge-response handshake, the DO registers the endpoint in KV (`relay:ep:{pubkey_hex}`, 90s TTL). Datagrams are forwarded between DOs via internal `POST /forward` calls.
 
-- `GET /ws/{room_id}?role={host|mobile}&secret=...`
-- Two peers (host + mobile) connect, messages relayed in real-time
-- Uses Hibernation API for peer survival across DO hibernation
-
-### Host Registry (legacy, retained)
-
-| Method | Path                    | Description                                              |
-| ------ | ----------------------- | -------------------------------------------------------- |
-| `POST` | `/hosts/register`       | Store host registration (device_id, addresses, sessions) |
-| `POST` | `/hosts/{id}/heartbeat` | Refresh TTL (90s)                                        |
-| `GET`  | `/hosts/{id}`           | Lookup host by device ID                                 |
+See `docs/RELAY.md` for full wire protocol details.
 
 ---
 
@@ -323,8 +316,8 @@ Window (logical) persists across surface recreation. Renderer (physical) is crea
 ```
 Host                                    Mobile
 1. Generate Ed25519 identity
-2. Start iroh Endpoint
-3. Publish endpoint to CF Worker
+2. Start iroh Endpoint (connects to relay.zedra.dev)
+3. Wait for relay connection (endpoint.online())
 4. Display QR code:
    zedra://pair?d=<base64url-json>
                                         5. Scan QR code
@@ -336,8 +329,8 @@ Host                                    Mobile
 
 ```
 Mobile                                  Host
-1. Create ephemeral iroh Endpoint
-2. Parse EndpointAddr from payload
+1. Create ephemeral iroh Endpoint (relay: relay.zedra.dev)
+2. Parse EndpointAddr from payload (includes relay URL)
 3. endpoint.connect(addr, "zedra/rpc/1")
    iroh: direct -> hole-punch -> relay
                                         4. endpoint.accept()

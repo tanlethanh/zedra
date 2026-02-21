@@ -205,22 +205,22 @@ vendor/blade/ (git submodule - vulkan-1.1-compat branch)
       ├── command.rs            # Compatible rendering commands
       └── pipeline.rs           # Pipeline for traditional renderpass
 
-relay-worker/                   # Cloudflare Worker relay server
-  ├── wrangler.toml             # CF Worker config + KV bindings
+packages/relay-worker/              # Cloudflare Worker relay server (relay.zedra.dev)
+  ├── wrangler.toml             # CF Worker config + KV + DO bindings
   └── src/
-      ├── index.ts              # Router + CORS + rate limiting
-      ├── rooms.ts              # Room CRUD (create, join, delete, heartbeat)
-      ├── messaging.ts          # Send/recv with KV message store
-      ├── signaling.ts          # Connection info exchange for upgrades
-      ├── types.ts              # TypeScript types
-      └── utils.ts              # Code gen, rate limiting, validation
+      ├── index.ts              # Router: /ping, /generate_204, /relay (WS upgrade)
+      ├── relay-endpoint.ts     # RelayEndpoint Durable Object (per-endpoint WS relay)
+      ├── frame-codec.ts        # iroh relay wire protocol (13 frame types)
+      ├── crypto.ts             # BLAKE3 KDF + Ed25519 handshake verification
+      ├── types.ts              # TypeScript types + CF bindings
+      └── utils.ts              # JSON responses, error helpers
 
 docs/
   ├── README.md                 # Project overview
   ├── ARCHITECTURE.md           # Design decisions
   ├── TECHNICAL_DEBT.md         # Known issues with solutions
   ├── DEBUGGING.md              # Debug workflow and tools
-  └── TRANSPORT_RELAY.md        # Transport layer + relay architecture docs
+  └── RELAY.md                  # Relay wire protocol + DO topology docs
 ```
 
 ### Dependency Graph
@@ -263,13 +263,12 @@ zedra-rpc, zedra-relay
 - Code editor: syntax-highlighted Rust code with tree-sitter, cursor, and virtual scrolling
 - File preview grid: card-based file browser that opens editor views
 - Remote terminal: connection form with RPC session (zedra-session + zedra-terminal)
-- Transport abstraction: pluggable Transport trait with LAN TCP, Tailscale, and relay providers
-- Relay server: Cloudflare Worker with KV for room-based message relay
-- Transport discovery: automatic best-transport selection (LAN > Tailscale > relay)
-- Health monitoring: stale connection detection (45s timeout) with auto-reconnect
-- Hot transport switching: relay → LAN upgrade when direct path becomes available
+- iroh transport: QUIC/TLS 1.3 with automatic NAT traversal and relay fallback
+- Cross-network connectivity: relay.zedra.dev (Cloudflare Worker, iroh-compatible relay protocol)
+- Automatic path selection: iroh handles direct → hole-punch → relay internally
+- Path upgrade: relay → direct P2P when hole-punch succeeds
 - Session persistence: server-side SessionRegistry with terminal PTY survival across reconnects
-- Message buffering: outgoing messages buffered during transport switches, replayed on reconnect
+- Connection monitoring: path watcher tracks direct vs relay, RTT, bytes sent/recv
 
 ## Known Limitations (Technical Debt)
 
@@ -417,7 +416,7 @@ See `docs/DEBUGGING.md` for complete workflow.
 - Architecture and design patterns: `docs/ARCHITECTURE.md`
 - Known issues with solutions: `docs/TECHNICAL_DEBT.md`
 - Debug workflow and tools: `docs/DEBUGGING.md`
-- Transport layer + relay architecture: `docs/TRANSPORT_RELAY.md`
+- Relay wire protocol + DO topology: `docs/RELAY.md`
 
 ## Performance Testing
 
@@ -445,11 +444,10 @@ First successful port of GPUI to Android with:
 - Full touch input (tap + scroll) with IME keyboard support
 - Mobile navigation (tabs, stacks, drawer)
 - Syntax-highlighted code editor with tree-sitter
-- Transport-agnostic sessions with pluggable Transport trait
-- Multi-transport discovery (LAN TCP, Tailscale, relay) with auto-selection
-- Cloudflare Worker relay for NAT traversal
-- Health monitoring and hot transport switching
+- iroh transport: QUIC/TLS 1.3 with automatic path selection (direct, hole-punch, relay)
+- Cross-network relay: iroh-compatible CF Worker relay at relay.zedra.dev
+- Connection path monitoring with automatic relay → direct P2P upgrade
 
 ---
 
-**Last Updated**: 2026-02-04
+**Last Updated**: 2026-02-21

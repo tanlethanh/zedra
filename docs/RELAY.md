@@ -32,6 +32,17 @@ iroh clients connect directly.
               └───────────────┘
 ```
 
+## HTTP Endpoints
+
+The Worker serves these HTTP endpoints required by iroh clients:
+
+| Method | Path            | Purpose                                          |
+| ------ | --------------- | ------------------------------------------------ |
+| `GET`  | `/`             | Health check (`{"ok": true}`)                    |
+| `GET`  | `/ping`         | HTTPS probe for iroh `net_report` latency probes |
+| `GET`  | `/generate_204` | Captive portal detection (returns 204)           |
+| `GET`  | `/relay`        | WebSocket upgrade to `RelayEndpoint` DO          |
+
 ## Wire Protocol
 
 ### Frame Format

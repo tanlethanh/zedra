@@ -250,8 +250,13 @@ impl RemoteSession {
         );
 
         // Build iroh endpoint (client side — generates ephemeral key)
+        // Use the Zedra relay for NAT traversal and cross-network connectivity
+        let relay_url: iroh::RelayUrl = zedra_transport::DEFAULT_RELAY_URL.parse()
+            .map_err(|e| anyhow::anyhow!("invalid relay URL: {}", e))?;
+        tracing::info!("Using relay: {}", relay_url);
+
         let builder = iroh::Endpoint::builder()
-            .relay_mode(iroh::RelayMode::Disabled)
+            .relay_mode(iroh::RelayMode::custom([relay_url]))
             .alpns(vec![b"zedra/rpc/1".to_vec()]);
 
         let endpoint = builder.bind().await?;
