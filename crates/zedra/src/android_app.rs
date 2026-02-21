@@ -3,7 +3,8 @@
 /// This module provides the main-thread-only interface for running GPUI apps on Android.
 /// It processes commands from the thread-safe queue and manages the GPUI App lifecycle.
 use anyhow::Result;
-use gpui::{AndroidPlatform, *};
+use gpui::*;
+use gpui_android::AndroidPlatform;
 use jni::{JavaVM, objects::GlobalRef};
 use rust_embed::RustEmbed;
 use std::borrow::Cow;
@@ -135,10 +136,6 @@ impl AndroidApp {
             return Ok(());
         }
 
-        // Create liveness tracking
-        let liveness = Arc::new(());
-        let liveness_weak = Arc::downgrade(&liveness);
-
         // Extract owned values from Arc
         let extract_start = std::time::Instant::now();
         let jvm_owned = Arc::try_unwrap(jvm).unwrap_or_else(|arc| {
@@ -160,7 +157,7 @@ impl AndroidApp {
         let platform_start = std::time::Instant::now();
         log::info!("[TIMING] Starting AndroidPlatform::new()...");
         let android_platform = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            AndroidPlatform::new(liveness_weak, jvm_owned, activity_owned)
+            AndroidPlatform::new(jvm_owned, activity_owned)
         })) {
             Ok(platform) => platform,
             Err(e) => {
@@ -197,7 +194,6 @@ impl AndroidApp {
         log::info!("[TIMING] Starting App::new_app()...");
         let app_cell = App::new_app(
             platform,
-            liveness,
             Arc::new(ZedraAssets),                    // Embedded SVG icons
             Arc::new(http_client::BlockedHttpClient), // Use BlockedHttpClient
         );

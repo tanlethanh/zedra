@@ -8,7 +8,8 @@ name = "zedra"
 crate-type = ["cdylib"]
 
 [dependencies]
-gpui = { path = "../../vendor/zed/crates/gpui", features = ["android"] }
+gpui = { path = "../../vendor/zed/crates/gpui", default-features = false }
+gpui_android = { path = "../../vendor/zed/crates/gpui_android" }
 http_client = { path = "../../vendor/zed/crates/http_client" }
 anyhow.workspace = true
 log.workspace = true
