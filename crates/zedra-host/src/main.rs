@@ -26,14 +26,6 @@ enum Commands {
         #[arg(short, long, default_value = ".")]
         workdir: String,
 
-        /// Relay/coordination server URL (for CF Worker discovery)
-        #[arg(long, default_value = zedra_transport::DEFAULT_RELAY_URL)]
-        relay_url: String,
-
-        /// Disable relay transport
-        #[arg(long)]
-        no_relay: bool,
-
         /// Output startup info as a single JSON line (for tool integration)
         #[arg(long)]
         json: bool,
@@ -88,8 +80,6 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Start {
             workdir,
-            relay_url,
-            no_relay,
             json,
         } => {
             let workdir = std::path::PathBuf::from(workdir)
@@ -129,21 +119,16 @@ async fn main() -> Result<()> {
             let state = std::sync::Arc::new(state);
 
             // 1. Bind iroh endpoint
-            let coord = if no_relay {
-                None
-            } else {
-                Some(relay_url.as_str())
-            };
-            let endpoint = iroh_listener::create_endpoint(&host_identity, coord).await?;
+            let endpoint = iroh_listener::create_endpoint(&host_identity).await?;
 
             // 2. Generate QR code (needs endpoint info)
             let endpoint_info = iroh_listener::get_endpoint_info(&endpoint);
-            match qr::build_pairing_info(&endpoint_info, &host_identity, coord) {
+            match qr::build_pairing_info(&endpoint_info, &host_identity) {
                 Ok(info) => {
                     if json {
                         qr::print_pairing_json(&info);
                     } else {
-                        qr::generate_pairing_qr(&endpoint_info, &host_identity, coord).ok();
+                        qr::generate_pairing_qr(&endpoint_info, &host_identity).ok();
                     }
                 }
                 Err(e) => {
@@ -151,16 +136,7 @@ async fn main() -> Result<()> {
                 }
             }
 
-            // 3. Spawn CF Worker publish loop (background task)
-            if let Some(url) = coord {
-                let publish_url = url.to_string();
-                let publish_endpoint = endpoint.clone();
-                tokio::spawn(async move {
-                    iroh_listener::run_publish_loop(&publish_url, &publish_endpoint).await;
-                });
-            }
-
-            // 4. Spawn session cleanup (background task)
+            // 3. Spawn session cleanup (background task)
             let cleanup_registry = registry.clone();
             tokio::spawn(async move {
                 let grace_period = std::time::Duration::from_secs(300);
@@ -173,7 +149,7 @@ async fn main() -> Result<()> {
                 }
             });
 
-            // 5. Run iroh accept loop (blocks main)
+            // 4. Run iroh accept loop (blocks main)
             iroh_listener::run_accept_loop(&endpoint, registry, state).await?;
         }
         Commands::Devices => {
@@ -216,9 +192,9 @@ async fn main() -> Result<()> {
                 // Load identity and create a temporary endpoint for QR generation.
                 let host_identity = identity::HostIdentity::load_or_generate()?;
                 let id = std::sync::Arc::new(host_identity);
-                let endpoint = iroh_listener::create_endpoint(&id, None).await?;
+                let endpoint = iroh_listener::create_endpoint(&id).await?;
                 let endpoint_info = iroh_listener::get_endpoint_info(&endpoint);
-                if let Err(e) = qr::generate_pairing_qr(&endpoint_info, &id, None) {
+                if let Err(e) = qr::generate_pairing_qr(&endpoint_info, &id) {
                     eprintln!("Failed to generate QR code: {}", e);
                 }
             }

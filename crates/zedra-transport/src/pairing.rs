@@ -22,9 +22,6 @@ pub struct PairingPayload {
     /// Direct addresses (host IPs with iroh UDP port)
     #[serde(default)]
     pub addrs: Vec<String>,
-    /// Coordination server URL (for CF Worker discovery)
-    #[serde(default)]
-    pub coord_url: Option<String>,
 }
 
 impl PairingPayload {

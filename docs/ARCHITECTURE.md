@@ -40,7 +40,7 @@ packages/
 ```
 zedra-rpc          (Transport trait, RpcClient, framing)
     ^
-zedra-transport    (IrohTransport, CfWorkerDiscovery, identity, pairing)
+zedra-transport    (IrohTransport, identity, pairing)
     ^
 zedra-session      (RemoteSession, iroh connection, terminal output buffers)
     ^
@@ -64,11 +64,11 @@ All connectivity goes through a single iroh Endpoint per device. iroh handles pa
 
 Every device has a persistent Ed25519 keypair that serves as both identity and iroh Endpoint secret key.
 
-| Component | Purpose |
-|-----------|---------|
-| `Keypair` | Ed25519 keypair stored at `~/.config/zedra-host/identity.key` (32-byte secret) |
-| `DeviceId` | Human-readable 56-char base32 identifier derived from public key |
-| `PublicKey`/`SecretKey` | Re-exported from iroh |
+| Component               | Purpose                                                                        |
+| ----------------------- | ------------------------------------------------------------------------------ |
+| `Keypair`               | Ed25519 keypair stored at `~/.config/zedra-host/identity.key` (32-byte secret) |
+| `DeviceId`              | Human-readable 56-char base32 identifier derived from public key               |
+| `PublicKey`/`SecretKey` | Re-exported from iroh                                                          |
 
 ```
 DeviceId format: RLKQ4WE-GLLHZT5-7QFG3G2-VFI3HTG-XFQTPNL-BNVHJ6Q-WDHYQFP-XWIQTAH
@@ -82,13 +82,6 @@ Adapter wrapping iroh's QUIC bidirectional streams into the `Transport` trait:
 - Length-delimited framing: `[4-byte big-endian length][JSON payload]`
 - `into_rpc_channels()` spawns reader/writer tasks, returns mpsc pairs for `RpcClient`
 
-### CF Worker Discovery (`cf_discovery.rs`)
-
-Implements iroh's `AddressLookup` trait backed by the Cloudflare Worker coordination server:
-
-- `POST /publish` -- host publishes endpoint addressing (relay URL + direct socket addresses)
-- `GET /resolve/{endpoint_id}` -- client resolves endpoint addressing by ID
-
 ### Pairing (`pairing.rs`)
 
 QR code pairing protocol using `zedra://pair?d=<base64url-json>` URIs:
@@ -98,9 +91,8 @@ QR code pairing protocol using `zedra://pair?d=<base64url-json>` URIs:
   "v": 1,
   "endpoint_id": "<z-base-32 Ed25519 public key>",
   "name": "my-laptop",
-  "relay_url": "https://use1-1.relay.iroh.network.",
-  "addrs": ["192.168.1.100:12345"],
-  "coord_url": "https://relay.zedra.dev"
+  "relay_url": "https://relay.zedra.dev",
+  "addrs": ["192.168.1.100:12345"]
 }
 ```
 
@@ -138,14 +130,14 @@ Multiplexed client with pending-request map:
 
 Standard JSON-RPC 2.0 messages with domain-specific methods:
 
-| Category | Methods |
-|----------|---------|
-| Filesystem | `fs/list`, `fs/read`, `fs/write`, `fs/stat`, `fs/remove`, `fs/mkdir` |
-| Terminal | `terminal/create`, `terminal/data`, `terminal/resize`, `terminal/close` |
-| Git | `git/status`, `git/diff`, `git/log`, `git/commit`, `git/branches`, `git/checkout` |
-| Session | `session/resume_or_create`, `session/attach`, `session/info`, `session/list` |
-| LSP | `lsp/hover` |
-| AI | `ai/prompt` |
+| Category   | Methods                                                                           |
+| ---------- | --------------------------------------------------------------------------------- |
+| Filesystem | `fs/list`, `fs/read`, `fs/write`, `fs/stat`, `fs/remove`, `fs/mkdir`              |
+| Terminal   | `terminal/create`, `terminal/data`, `terminal/resize`, `terminal/close`           |
+| Git        | `git/status`, `git/diff`, `git/log`, `git/commit`, `git/branches`, `git/checkout` |
+| Session    | `session/resume_or_create`, `session/attach`, `session/info`, `session/list`      |
+| LSP        | `lsp/hover`                                                                       |
+| AI         | `ai/prompt`                                                                       |
 
 Notifications: `terminal/output` (streamed from PTY reader).
 
@@ -160,20 +152,18 @@ Desktop process that listens for incoming iroh connections and dispatches RPC op
 ```
 1. Load/generate persistent host identity (Ed25519 keypair)
 2. Create named session for working directory
-3. Bind iroh Endpoint (with CfWorkerDiscovery)
+3. Bind iroh Endpoint
 4. Generate pairing QR code (endpoint ID + relay URL + direct addrs)
-5. Spawn CF Worker publish loop (every 30s)
-6. Spawn session cleanup loop (every 60s, 5-min grace period)
-7. Run iroh accept loop (blocks main thread)
+5. Spawn session cleanup loop (every 60s, 5-min grace period)
+6. Run iroh accept loop (blocks main thread)
 ```
 
 ### Iroh Listener (`iroh_listener.rs`)
 
 - **ALPN**: `zedra/rpc/1`
-- `create_endpoint()` -- builds iroh Endpoint with host's SecretKey and CfWorkerDiscovery
+- `create_endpoint()` -- builds iroh Endpoint with host's SecretKey
 - `run_accept_loop()` -- accepts connections, spawns handler per connection
 - `handle_incoming()` -- accepts bidi stream, wraps in `IrohTransport`, passes to RPC dispatch
-- `run_publish_loop()` -- periodically publishes endpoint addressing to CF Worker
 
 ### RPC Dispatch (`rpc_daemon.rs`)
 
@@ -198,6 +188,7 @@ Client reconnects   -> session/resume_or_create with session_id + auth_token
 ```
 
 **ServerSession** holds:
+
 - `id` (UUID), `auth_token`
 - `terminals: HashMap<String, TermSession>` (active PTYs)
 - `notification_backlog: VecDeque<(seq, payload)>` (capped at 1000 entries)
@@ -227,14 +218,13 @@ Mobile client library for connecting to zedra-host via iroh and issuing RPC call
 
 ```
 1. Create ephemeral iroh Endpoint (client side)
-2. Add CfWorkerDiscovery if coord_url present in pairing payload
-3. Parse host's EndpointAddr from PairingPayload
-4. endpoint.connect(addr, b"zedra/rpc/1")
+2. Parse host's EndpointAddr from PairingPayload
+3. endpoint.connect(addr, b"zedra/rpc/1")
    iroh internally: tries direct addrs -> hole-punches -> relay fallback
-5. Open bidi stream, wrap in IrohTransport
-6. Convert to RpcClient via into_rpc_channels()
-7. session/resume_or_create -> establish or resume session
-8. Spawn notification listener + ping loop
+4. Open bidi stream, wrap in IrohTransport
+5. Convert to RpcClient via into_rpc_channels()
+6. session/resume_or_create -> establish or resume session
+7. Spawn notification listener + ping loop
 ```
 
 ### Global State (OnceLock singletons)
@@ -267,10 +257,10 @@ Cloudflare Worker providing endpoint discovery and WebSocket relay.
 
 ### Endpoint Discovery
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/publish` | Host publishes iroh endpoint addressing (KV, 90s TTL) |
-| `GET` | `/resolve/{endpoint_id}` | Client resolves endpoint by ID |
+| Method | Path                     | Description                                           |
+| ------ | ------------------------ | ----------------------------------------------------- |
+| `POST` | `/publish`               | Host publishes iroh endpoint addressing (KV, 90s TTL) |
+| `GET`  | `/resolve/{endpoint_id}` | Client resolves endpoint by ID                        |
 
 KV schema: `ep:{endpoint_id}` -> `{ endpoint_id, relay_url, direct_addrs[] }`
 
@@ -282,11 +272,11 @@ KV schema: `ep:{endpoint_id}` -> `{ endpoint_id, relay_url, direct_addrs[] }`
 
 ### Host Registry (legacy, retained)
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/hosts/register` | Store host registration (device_id, addresses, sessions) |
-| `POST` | `/hosts/{id}/heartbeat` | Refresh TTL (90s) |
-| `GET` | `/hosts/{id}` | Lookup host by device ID |
+| Method | Path                    | Description                                              |
+| ------ | ----------------------- | -------------------------------------------------------- |
+| `POST` | `/hosts/register`       | Store host registration (device_id, addresses, sessions) |
+| `POST` | `/hosts/{id}/heartbeat` | Refresh TTL (90s)                                        |
+| `GET`  | `/hosts/{id}`           | Lookup host by device ID                                 |
 
 ---
 
@@ -304,13 +294,13 @@ JNI Thread (any) -> AndroidCommandQueue (crossbeam channel)
 
 ### Key Components
 
-| Component | File | Purpose |
-|-----------|------|---------|
-| JNI Bridge | `android_jni.rs` | Java-Rust interface, thread-safe command queue |
-| Android App | `android_app.rs` | Main-thread GPUI state, touch/scroll/key handling |
-| Command Queue | `android_command_queue.rs` | Crossbeam mpsc channel for JNI decoupling |
-| Zedra App | `zedra_app.rs` | Root view: DrawerHost + TabNavigator + connection state |
-| QR Scanner | `QRScannerActivity.java` | Camera-based QR code scanning for pairing |
+| Component     | File                       | Purpose                                                 |
+| ------------- | -------------------------- | ------------------------------------------------------- |
+| JNI Bridge    | `android_jni.rs`           | Java-Rust interface, thread-safe command queue          |
+| Android App   | `android_app.rs`           | Main-thread GPUI state, touch/scroll/key handling       |
+| Command Queue | `android_command_queue.rs` | Crossbeam mpsc channel for JNI decoupling               |
+| Zedra App     | `zedra_app.rs`             | Root view: DrawerHost + TabNavigator + connection state |
+| QR Scanner    | `QRScannerActivity.java`   | Camera-based QR code scanning for pairing               |
 
 ### Pixel Handling
 
@@ -382,14 +372,14 @@ Client reconnects -> session/resume_or_create with session_id
 
 ## Security Model
 
-| Layer | Mechanism |
-|-------|-----------|
-| Transport encryption | iroh uses QUIC with TLS 1.3 (Ed25519 keys) |
-| Identity | Ed25519 keypair = device identity = iroh Endpoint key |
-| Pairing | QR code establishes host public key out-of-band |
-| Session auth | Auth token from initial session creation, required for resume |
-| Relay | iroh relay forwards encrypted QUIC packets (cannot read contents) |
-| Session expiry | 5-minute grace period, then cleanup |
+| Layer                | Mechanism                                                         |
+| -------------------- | ----------------------------------------------------------------- |
+| Transport encryption | iroh uses QUIC with TLS 1.3 (Ed25519 keys)                        |
+| Identity             | Ed25519 keypair = device identity = iroh Endpoint key             |
+| Pairing              | QR code establishes host public key out-of-band                   |
+| Session auth         | Auth token from initial session creation, required for resume     |
+| Relay                | iroh relay forwards encrypted QUIC packets (cannot read contents) |
+| Session expiry       | 5-minute grace period, then cleanup                               |
 
 iroh encrypts all traffic end-to-end. The relay server and CF Worker coordination server only see ciphertext.
 
@@ -397,10 +387,10 @@ iroh encrypts all traffic end-to-end. The relay server and CF Worker coordinatio
 
 ## Performance
 
-| Metric | Value |
-|--------|-------|
-| Platform init | ~51ms |
-| Frame time | <5ms CPU, <4ms GPU |
-| Frame rate | 60 FPS (Choreographer-driven) |
-| Memory | ~40-50 MB |
-| iroh connection | <100ms LAN, <500ms relay |
+| Metric          | Value                         |
+| --------------- | ----------------------------- |
+| Platform init   | ~51ms                         |
+| Frame time      | <5ms CPU, <4ms GPU            |
+| Frame rate      | 60 FPS (Choreographer-driven) |
+| Memory          | ~40-50 MB                     |
+| iroh connection | <100ms LAN, <500ms relay      |

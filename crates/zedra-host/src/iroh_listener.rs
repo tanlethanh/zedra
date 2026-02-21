@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::identity::SharedIdentity;
 use crate::rpc_daemon::{self, DaemonState};
 use crate::session_registry::SessionRegistry;
-use zedra_transport::{CfWorkerDiscovery, IrohTransport};
+use zedra_transport::IrohTransport;
 
 /// ALPN protocol identifier for Zedra RPC over iroh.
 const ZEDRA_ALPN: &[u8] = b"zedra/rpc/1";
@@ -20,17 +20,11 @@ const ZEDRA_ALPN: &[u8] = b"zedra/rpc/1";
 /// Returns the endpoint ready for `accept()` calls and QR code generation.
 pub async fn create_endpoint(
     identity: &SharedIdentity,
-    coord_url: Option<&str>,
 ) -> Result<iroh::Endpoint> {
-    let mut builder = iroh::Endpoint::builder()
+    let builder = iroh::Endpoint::builder()
         .relay_mode(iroh::RelayMode::Disabled)
         .secret_key(identity.iroh_secret_key().clone())
         .alpns(vec![ZEDRA_ALPN.to_vec()]);
-
-    // Add CF Worker discovery if coord URL is available
-    if let Some(url) = coord_url {
-        builder = builder.address_lookup(CfWorkerDiscovery::new(url));
-    }
 
     let endpoint = builder.bind().await?;
 
@@ -78,19 +72,8 @@ pub async fn run_iroh_listener(
     identity: SharedIdentity,
     registry: Arc<SessionRegistry>,
     state: Arc<DaemonState>,
-    coord_url: Option<&str>,
 ) -> Result<()> {
-    let endpoint = create_endpoint(&identity, coord_url).await?;
-
-    // Publish endpoint address to coordination server
-    if let Some(url) = coord_url {
-        let publish_url = url.to_string();
-        let publish_endpoint = endpoint.clone();
-        tokio::spawn(async move {
-            run_publish_loop(&publish_url, &publish_endpoint).await;
-        });
-    }
-
+    let endpoint = create_endpoint(&identity).await?;
     run_accept_loop(&endpoint, registry, state).await
 }
 
@@ -114,41 +97,6 @@ async fn handle_incoming(
     let transport = IrohTransport::new(send, recv);
 
     rpc_daemon::handle_transport_connection(Box::new(transport), registry, state).await
-}
-
-/// Periodically publish endpoint addressing info to the CF Worker.
-pub async fn run_publish_loop(coord_url: &str, endpoint: &iroh::Endpoint) {
-    let endpoint_id = endpoint.id();
-
-    loop {
-        let addr = endpoint.addr();
-
-        let relay_url: Option<iroh::RelayUrl> = addr.relay_urls().next().cloned();
-        let direct_addrs: Vec<std::net::SocketAddr> = addr
-            .ip_addrs()
-            .cloned()
-            .collect();
-
-        if let Err(e) = zedra_transport::cf_discovery::publish_endpoint(
-            coord_url,
-            &endpoint_id,
-            relay_url.as_ref(),
-            &direct_addrs,
-        )
-        .await
-        {
-            tracing::warn!("Failed to publish endpoint to coord server: {}", e);
-        } else {
-            tracing::debug!(
-                "Published endpoint {} ({} direct addrs, relay: {})",
-                endpoint_id.fmt_short(),
-                direct_addrs.len(),
-                relay_url.as_ref().map(|u| u.to_string()).unwrap_or_else(|| "none".into()),
-            );
-        }
-
-        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-    }
 }
 
 /// Get the iroh endpoint's address info for QR code generation.

@@ -21,7 +21,7 @@ use zedra_rpc::{
     GitLogParams, GitStatusResult, Response, RpcClient, SessionInfoResult,
     TermCreateParams, TermCreateResult, TermDataParams, TermOutputNotification, TermResizeParams,
 };
-use zedra_transport::{CfWorkerDiscovery, IrohTransport, PairingPayload};
+use zedra_transport::{IrohTransport, PairingPayload};
 
 // ---------------------------------------------------------------------------
 // Type aliases
@@ -250,14 +250,9 @@ impl RemoteSession {
         );
 
         // Build iroh endpoint (client side — generates ephemeral key)
-        let mut builder = iroh::Endpoint::builder()
+        let builder = iroh::Endpoint::builder()
             .relay_mode(iroh::RelayMode::Disabled)
             .alpns(vec![b"zedra/rpc/1".to_vec()]);
-
-        // Add CF Worker discovery if coord URL is available
-        if let Some(ref url) = payload.coord_url {
-            builder = builder.address_lookup(CfWorkerDiscovery::new(url));
-        }
 
         let endpoint = builder.bind().await?;
         tracing::info!("iroh client endpoint bound: {}", endpoint.id().fmt_short());

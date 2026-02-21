@@ -20,9 +20,6 @@ struct PairingPayload {
     relay_url: Option<String>,
     /// Direct addresses (LAN IPs with iroh UDP port)
     addrs: Vec<String>,
-    /// Coordination server URL (for CF Worker discovery)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    coord_url: Option<String>,
 }
 
 /// Machine-readable startup output for `--json` mode.
@@ -42,7 +39,6 @@ pub struct StartupInfo {
 pub fn build_pairing_info(
     endpoint_info: &crate::iroh_listener::EndpointQrInfo,
     identity: &SharedIdentity,
-    coord_url: Option<&str>,
 ) -> Result<StartupInfo> {
     let hostname = gethostname();
 
@@ -52,7 +48,6 @@ pub fn build_pairing_info(
         name: hostname.clone(),
         relay_url: endpoint_info.relay_url.clone(),
         addrs: endpoint_info.direct_addrs.clone(),
-        coord_url: coord_url.map(|s| s.to_string()),
     };
 
     let json = serde_json::to_string(&payload)?;
@@ -81,9 +76,8 @@ pub fn build_pairing_info(
 pub fn generate_pairing_qr(
     endpoint_info: &crate::iroh_listener::EndpointQrInfo,
     identity: &SharedIdentity,
-    coord_url: Option<&str>,
 ) -> Result<()> {
-    let info = build_pairing_info(endpoint_info, identity, coord_url)?;
+    let info = build_pairing_info(endpoint_info, identity)?;
     print_pairing_info(&info);
     Ok(())
 }

@@ -1,5 +1,4 @@
-import type { Env, PublishRequest } from "./types";
-import { publishEndpoint, resolveEndpoint } from "./hosts";
+import type { Env } from "./types";
 import { errorResponse, jsonResponse } from "./utils";
 
 function corsHeaders(): Record<string, string> {
@@ -41,24 +40,6 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       (segments.length === 1 && segments[0] === ""))
   ) {
     return jsonResponse({ ok: true });
-  }
-
-  // POST /publish — iroh endpoint discovery publish
-  if (method === "POST" && segments.length === 1 && segments[0] === "publish") {
-    const body = (await request.json()) as PublishRequest;
-    if (!body.endpoint_id) {
-      return errorResponse("endpoint_id required", 400);
-    }
-    const result = await publishEndpoint(env, body);
-    return jsonResponse(result);
-  }
-
-  // GET /resolve/:endpoint_id — iroh endpoint discovery resolve
-  if (method === "GET" && segments.length === 2 && segments[0] === "resolve") {
-    const endpointId = segments[1];
-    const result = await resolveEndpoint(env, endpointId);
-    if (!result) return errorResponse("Endpoint not found", 404);
-    return jsonResponse(result);
   }
 
   // GET /relay — WebSocket upgrade to RelayEndpoint DO
