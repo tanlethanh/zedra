@@ -6,45 +6,44 @@ allowed-tools:
 
 # /zedra-start
 
-Start the zedra-host daemon and display a QR code for mobile pairing.
+Start the zedra daemon and display a QR code for mobile pairing.
 
 ## Instructions
 
 Follow these steps exactly:
 
-### 1. Find the zedra-host binary
+### 1. Find or install zedra
 
-Check for `zedra-host` in PATH first, then fall back to `./target/release/zedra-host`:
+Check for `zedra` in PATH first, then fall back to `~/.local/bin/zedra`, then `./target/release/zedra`:
 
 ```bash
-which zedra-host 2>/dev/null || (test -x ./target/release/zedra-host && echo "./target/release/zedra-host")
+which zedra 2>/dev/null || (test -x "$HOME/.local/bin/zedra" && echo "$HOME/.local/bin/zedra") || (test -x ./target/release/zedra && echo "./target/release/zedra")
 ```
 
-If neither exists, tell the user to install it:
+If none exist, install it automatically:
 
-```
-zedra-host not found. Install it with:
-  curl -fsSL https://raw.githubusercontent.com/tanlethanh/zedra/main/scripts/install-host.sh | sh
+```bash
+curl -fsSL https://zedra.dev/install.sh | sh
 ```
 
-Then stop.
+After the install script finishes, resolve the binary path again — it will be at `~/.local/bin/zedra` (the default install prefix). If the install fails, show the error and stop.
 
 ### 2. Check if already running
 
 ```bash
-pgrep -f "zedra-host start" >/dev/null 2>&1 && echo "RUNNING" || echo "NOT_RUNNING"
+pgrep -f "zedra start" >/dev/null 2>&1 && echo "RUNNING" || echo "NOT_RUNNING"
 ```
 
-If already running, tell the user zedra-host is already active and skip to step 5.
+If already running, tell the user zedra is already active and skip to step 5.
 
 ### 3. Launch the daemon with --json
 
 Use `--json` to get machine-readable startup output. The daemon prints a single JSON line to stdout when ready, then continues running.
 
-Use the resolved binary path from step 1 (either `zedra-host` or `./target/release/zedra-host`).
+Use the resolved binary path from step 1 (either `zedra` or `./target/release/zedra`).
 
 ```bash
-ZEDRA_PIPE=$(mktemp -u /tmp/zedra-host-XXXXXX.pipe)
+ZEDRA_PIPE=$(mktemp -u /tmp/zedra-XXXXXX.pipe)
 mkfifo "$ZEDRA_PIPE"
 nohup <BINARY> start --workdir "$(pwd)" --json > "$ZEDRA_PIPE" 2>/dev/null &
 ZEDRA_PID=$!
@@ -56,7 +55,7 @@ echo "$ZEDRA_JSON"
 
 Replace `<BINARY>` with the actual path found in step 1.
 
-If the read times out (empty output), tell the user startup may have failed and suggest checking `ps aux | grep zedra-host` and logs.
+If the read times out (empty output), tell the user startup may have failed and suggest checking `ps aux | grep zedra` and logs.
 
 ### 4. Parse and display
 

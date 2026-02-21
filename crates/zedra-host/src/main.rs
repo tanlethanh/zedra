@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 use zedra_host::{identity, iroh_listener, qr, rpc_daemon, session_registry, store};
 
 #[derive(Parser)]
-#[command(name = "zedra-host", about = "Desktop companion daemon for Zedra")]
+#[command(name = "zedra", about = "Desktop companion daemon for Zedra")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

@@ -9,7 +9,7 @@ name = "zedra_host"
 path = "src/lib.rs"
 
 [[bin]]
-name = "zedra-host"
+name = "zedra"
 path = "src/main.rs"
 
 [dependencies]

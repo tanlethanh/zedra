@@ -5,7 +5,7 @@
 set -eu
 
 REPO="tanlethanh/zedra"
-BINARY="zedra-host"
+BINARY="zedra"
 DEFAULT_PREFIX="${HOME}/.local/bin"
 
 # --- Argument parsing ---

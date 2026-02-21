@@ -56,17 +56,17 @@ jobs:
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf zedra-host-${{ matrix.target }}.tar.gz zedra-host
-          shasum -a 256 zedra-host-${{ matrix.target }}.tar.gz > zedra-host-${{ matrix.target }}.tar.gz.sha256 || \
-            sha256sum zedra-host-${{ matrix.target }}.tar.gz > zedra-host-${{ matrix.target }}.tar.gz.sha256
+          tar czf zedra-${{ matrix.target }}.tar.gz zedra
+          shasum -a 256 zedra-${{ matrix.target }}.tar.gz > zedra-${{ matrix.target }}.tar.gz.sha256 || \
+            sha256sum zedra-${{ matrix.target }}.tar.gz > zedra-${{ matrix.target }}.tar.gz.sha256
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: zedra-host-${{ matrix.target }}
+          name: zedra-${{ matrix.target }}
           path: |
-            target/${{ matrix.target }}/release/zedra-host-${{ matrix.target }}.tar.gz
-            target/${{ matrix.target }}/release/zedra-host-${{ matrix.target }}.tar.gz.sha256
+            target/${{ matrix.target }}/release/zedra-${{ matrix.target }}.tar.gz
+            target/${{ matrix.target }}/release/zedra-${{ matrix.target }}.tar.gz.sha256
 
   release:
     needs: build
