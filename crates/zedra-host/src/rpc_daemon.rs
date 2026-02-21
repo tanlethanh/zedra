@@ -395,7 +395,7 @@ fn build_session_handlers(
         Box::pin(async move { Ok(serde_json::to_value(zedra_rpc::PingResult { pong: true })?) })
     });
 
-    // session/info — return hostname, workdir, username
+    // session/info — return hostname, workdir, username, OS, arch, version
     let s = state.clone();
     register!(methods::SESSION_INFO, move |_params: serde_json::Value| {
         let s = s.clone();
@@ -411,6 +411,10 @@ fn build_session_handlers(
                 workdir,
                 username,
                 session_id: None,
+                os: Some(std::env::consts::OS.to_string()),
+                arch: Some(std::env::consts::ARCH.to_string()),
+                os_version: os_version_string(),
+                host_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             })?)
         })
     });
@@ -920,6 +924,39 @@ fn run_lsp_check(path: &std::path::Path) -> Vec<LspDiagnostic> {
 struct LspDiagnostic {
     message: String,
     severity: String,
+}
+
+/// Get a human-readable OS version string.
+fn os_version_string() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        // Try /etc/os-release first (e.g. "Ubuntu 22.04.3 LTS")
+        if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
+            for line in content.lines() {
+                if let Some(pretty) = line.strip_prefix("PRETTY_NAME=") {
+                    return Some(pretty.trim_matches('"').to_string());
+                }
+            }
+        }
+        // Fallback to kernel version
+        let output = std::process::Command::new("uname").arg("-r").output().ok()?;
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("sw_vers")
+            .arg("-productVersion")
+            .output()
+            .ok()?;
+        Some(format!(
+            "macOS {}",
+            String::from_utf8_lossy(&output.stdout).trim()
+        ))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
 }
 
 #[cfg(test)]

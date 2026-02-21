@@ -23,6 +23,7 @@ pub async fn create_endpoint(
     coord_url: Option<&str>,
 ) -> Result<iroh::Endpoint> {
     let mut builder = iroh::Endpoint::builder()
+        .relay_mode(iroh::RelayMode::Disabled)
         .secret_key(identity.iroh_secret_key().clone())
         .alpns(vec![ZEDRA_ALPN.to_vec()]);
 

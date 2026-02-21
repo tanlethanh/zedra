@@ -766,7 +766,8 @@ impl Render for ZedraApp {
                 // Transport badge (top-right, centered in 48px header)
                 let transport_badge = zedra_session::active_session().map(|s| {
                     let latency = s.latency_ms();
-                    transport_badge_info(latency)
+                    let conn_info = s.connection_info();
+                    transport_badge_info(latency, conn_info.as_ref())
                 });
 
                 if let Some((label, dot_color)) = transport_badge {
@@ -893,11 +894,22 @@ fn take_pending_git_diff() -> Option<(String, String, String)> {
     }
 }
 
-pub(crate) fn transport_badge_info(latency_ms: u64) -> (String, u32) {
+pub(crate) fn transport_badge_info(
+    latency_ms: u64,
+    conn_info: Option<&zedra_session::ConnectionInfo>,
+) -> (String, u32) {
+    let conn_type = conn_info
+        .map(|i| if i.is_direct { "P2P" } else { "Relay" })
+        .unwrap_or("...");
     let label = if latency_ms > 0 {
-        format!("Connected \u{00b7} {}ms", latency_ms)
+        format!("{} \u{00b7} {}ms", conn_type, latency_ms)
     } else {
-        "Connected".to_string()
+        conn_type.to_string()
     };
-    (label, theme::ACCENT_GREEN)
+    let color = match conn_info {
+        Some(i) if i.is_direct => theme::ACCENT_GREEN,
+        Some(_) => theme::ACCENT_YELLOW,
+        None => theme::ACCENT_GREEN,
+    };
+    (label, color)
 }

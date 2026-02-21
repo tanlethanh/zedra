@@ -42,8 +42,43 @@ pub type MainCallback = Box<dyn FnOnce() + Send + 'static>;
 pub enum SessionState {
     Disconnected,
     Connecting,
-    Connected { hostname: String, workdir: String },
+    Connected {
+        hostname: String,
+        username: String,
+        workdir: String,
+        /// e.g. "linux", "macos"
+        os: String,
+        /// e.g. "aarch64", "x86_64"
+        arch: String,
+        /// e.g. "Ubuntu 22.04.3 LTS", "macOS 15.3"
+        os_version: String,
+        /// zedra-host binary version
+        host_version: String,
+    },
     Error(String),
+}
+
+/// Metadata about the iroh connection path (direct P2P vs relay).
+#[derive(Clone, Debug)]
+pub struct ConnectionInfo {
+    /// true = direct P2P (UDP holepunch), false = relayed
+    pub is_direct: bool,
+    /// Selected path address (IP:port or relay URL)
+    pub remote_addr: String,
+    /// Remote endpoint ID (short form)
+    pub endpoint_id: String,
+    /// Our local endpoint ID (short form)
+    pub local_endpoint_id: String,
+    /// Total number of available paths
+    pub num_paths: usize,
+    /// ALPN protocol string (e.g. "zedra/rpc/1")
+    pub protocol: String,
+    /// QUIC path RTT in milliseconds
+    pub path_rtt_ms: u64,
+    /// Bytes sent on this path
+    pub bytes_sent: u64,
+    /// Bytes received on this path
+    pub bytes_recv: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +231,8 @@ pub struct RemoteSession {
     auth_token: Arc<Mutex<Option<String>>>,
     /// Latest ping RTT in milliseconds (0 = not yet measured).
     latency_ms: Arc<AtomicU64>,
+    /// Connection path metadata (direct vs relay), updated by watcher task.
+    connection_info: Arc<Mutex<Option<ConnectionInfo>>>,
 }
 
 impl RemoteSession {
@@ -214,6 +251,7 @@ impl RemoteSession {
 
         // Build iroh endpoint (client side — generates ephemeral key)
         let mut builder = iroh::Endpoint::builder()
+            .relay_mode(iroh::RelayMode::Disabled)
             .alpns(vec![b"zedra/rpc/1".to_vec()]);
 
         // Add CF Worker discovery if coord URL is available
@@ -248,6 +286,52 @@ impl RemoteSession {
         let terminal_outputs: TerminalOutputMap = Arc::new(Mutex::new(HashMap::new()));
         let state = Arc::new(Mutex::new(SessionState::Connecting));
         let latency_ms = Arc::new(AtomicU64::new(0));
+        let connection_info: Arc<Mutex<Option<ConnectionInfo>>> = Arc::new(Mutex::new(None));
+
+        // Spawn path watcher to track direct vs relay connection
+        {
+            use iroh::Watcher;
+            let mut paths = conn.paths();
+            let info_slot = connection_info.clone();
+            let local_eid = endpoint.id().fmt_short().to_string();
+            let remote_eid = conn.remote_id().fmt_short().to_string();
+            let alpn = String::from_utf8_lossy(conn.alpn()).to_string();
+            tokio::spawn(async move {
+                loop {
+                    let path_list = paths.get();
+                    let selected = path_list.iter().find(|p| p.is_selected());
+                    if let Some(path) = selected {
+                        let stats = path.stats();
+                        let info = ConnectionInfo {
+                            is_direct: path.is_ip(),
+                            remote_addr: format!("{:?}", path.remote_addr()),
+                            endpoint_id: remote_eid.clone(),
+                            local_endpoint_id: local_eid.clone(),
+                            num_paths: path_list.len(),
+                            protocol: alpn.clone(),
+                            path_rtt_ms: stats.rtt.as_millis() as u64,
+                            bytes_sent: stats.udp_tx.bytes,
+                            bytes_recv: stats.udp_rx.bytes,
+                        };
+                        let was_relay = info_slot
+                            .lock()
+                            .ok()
+                            .and_then(|g| g.as_ref().map(|i| !i.is_direct))
+                            .unwrap_or(true);
+                        if was_relay && info.is_direct {
+                            tracing::info!("iroh path upgraded: relay -> direct P2P");
+                        }
+                        if let Ok(mut slot) = info_slot.lock() {
+                            *slot = Some(info);
+                        }
+                    }
+                    if paths.updated().await.is_err() {
+                        tracing::debug!("iroh path watcher disconnected");
+                        break;
+                    }
+                }
+            });
+        }
 
         let session = Arc::new(Self {
             client,
@@ -258,8 +342,8 @@ impl RemoteSession {
             active_terminal_id: Arc::new(Mutex::new(None)),
             session_id: Arc::new(Mutex::new(None)),
             auth_token: Arc::new(Mutex::new(None)),
-
             latency_ms: latency_ms.clone(),
+            connection_info,
         });
 
         // Spawn notification listener
@@ -416,7 +500,12 @@ impl RemoteSession {
                             if let Ok(mut s) = info_state.lock() {
                                 *s = SessionState::Connected {
                                     hostname: info.hostname,
+                                    username: info.username,
                                     workdir: info.workdir,
+                                    os: info.os.unwrap_or_default(),
+                                    arch: info.arch.unwrap_or_default(),
+                                    os_version: info.os_version.unwrap_or_default(),
+                                    host_version: info.host_version.unwrap_or_default(),
                                 };
                             }
                         }
@@ -425,7 +514,12 @@ impl RemoteSession {
                             if let Ok(mut s) = info_state.lock() {
                                 *s = SessionState::Connected {
                                     hostname: hostname_fallback,
+                                    username: String::new(),
                                     workdir: String::new(),
+                                    os: String::new(),
+                                    arch: String::new(),
+                                    os_version: String::new(),
+                                    host_version: String::new(),
                                 };
                             }
                         }
@@ -435,7 +529,12 @@ impl RemoteSession {
                     if let Ok(mut s) = info_state.lock() {
                         *s = SessionState::Connected {
                             hostname: hostname_fallback,
+                            username: String::new(),
                             workdir: String::new(),
+                            os: String::new(),
+                            arch: String::new(),
+                            os_version: String::new(),
+                            host_version: String::new(),
                         };
                     }
                 }
@@ -521,6 +620,11 @@ impl RemoteSession {
     /// Latest ping RTT in milliseconds (0 = not yet measured).
     pub fn latency_ms(&self) -> u64 {
         self.latency_ms.load(Ordering::Relaxed)
+    }
+
+    /// Connection path metadata (direct P2P vs relay).
+    pub fn connection_info(&self) -> Option<ConnectionInfo> {
+        self.connection_info.lock().ok().and_then(|g| g.clone())
     }
 
     /// Send a `session/ping` RPC and measure the round-trip time.

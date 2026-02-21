@@ -308,6 +308,18 @@ pub struct SessionInfoResult {
     /// Session ID for resume support (v2+, optional for backward compat).
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Host OS name (e.g. "Linux", "macOS", "Windows").
+    #[serde(default)]
+    pub os: Option<String>,
+    /// Host CPU architecture (e.g. "aarch64", "x86_64").
+    #[serde(default)]
+    pub arch: Option<String>,
+    /// Host OS version or kernel version string.
+    #[serde(default)]
+    pub os_version: Option<String>,
+    /// zedra-host binary version.
+    #[serde(default)]
+    pub host_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
