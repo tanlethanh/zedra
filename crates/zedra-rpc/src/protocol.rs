@@ -154,10 +154,15 @@ pub mod methods {
     pub const SESSION_RESUME_OR_CREATE: &str = "session/resume_or_create";
     pub const SESSION_HEARTBEAT: &str = "session/heartbeat";
     pub const SESSION_PING: &str = "session/ping";
+    pub const SESSION_LIST: &str = "session/list";
+    pub const SESSION_SWITCH: &str = "session/switch";
 
     // Notifications (server → client)
     pub const TERM_OUTPUT: &str = "terminal/output";
     pub const AI_STREAM: &str = "ai/stream";
+
+    // Notifications (client → server)
+    pub const SESSION_ATTACH: &str = "session/attach";
 }
 
 // ---------------------------------------------------------------------------
@@ -303,6 +308,18 @@ pub struct SessionInfoResult {
     /// Session ID for resume support (v2+, optional for backward compat).
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Host OS name (e.g. "Linux", "macOS", "Windows").
+    #[serde(default)]
+    pub os: Option<String>,
+    /// Host CPU architecture (e.g. "aarch64", "x86_64").
+    #[serde(default)]
+    pub arch: Option<String>,
+    /// Host OS version or kernel version string.
+    #[serde(default)]
+    pub os_version: Option<String>,
+    /// zedra-host binary version.
+    #[serde(default)]
+    pub host_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -330,6 +347,44 @@ pub struct SessionResumeResult {
 pub struct SessionBacklogEntry {
     pub seq: u64,
     pub payload: String, // base64-encoded notification JSON
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionListEntry {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<String>,
+    pub terminal_count: usize,
+    pub uptime_secs: u64,
+    pub idle_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionListResult {
+    pub sessions: Vec<SessionListEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSwitchParams {
+    pub session_name: String,
+    pub auth_token: String,
+    #[serde(default)]
+    pub last_notif_seq: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSwitchResult {
+    pub session_id: String,
+    pub workdir: Option<String>,
+    pub backlog: Vec<SessionBacklogEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionAttachParams {
+    pub session_id: String,
+    pub auth_token: String,
 }
 
 #[cfg(test)]

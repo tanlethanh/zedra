@@ -8,8 +8,6 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::protocol::{Message, Notification, Request, Response, INTERNAL_ERROR};
@@ -29,52 +27,6 @@ pub trait Transport: Send + 'static {
     async fn recv(&mut self) -> Result<Vec<u8>>;
     /// Human-readable transport name for logging.
     fn name(&self) -> &str;
-}
-
-// ---------------------------------------------------------------------------
-// TcpTransport
-// ---------------------------------------------------------------------------
-
-/// Length-delimited transport over a TCP stream.
-pub struct TcpTransport {
-    reader: OwnedReadHalf,
-    writer: OwnedWriteHalf,
-}
-
-impl TcpTransport {
-    pub fn new(stream: TcpStream) -> Self {
-        let (reader, writer) = stream.into_split();
-        Self { reader, writer }
-    }
-}
-
-#[async_trait]
-impl Transport for TcpTransport {
-    async fn send(&mut self, payload: &[u8]) -> Result<()> {
-        let len = (payload.len() as u32).to_be_bytes();
-        self.writer.write_all(&len).await?;
-        self.writer.write_all(payload).await?;
-        self.writer.flush().await?;
-        Ok(())
-    }
-
-    async fn recv(&mut self) -> Result<Vec<u8>> {
-        let mut len_buf = [0u8; 4];
-        self.reader.read_exact(&mut len_buf).await?;
-        let len = u32::from_be_bytes(len_buf) as usize;
-
-        if len > 16 * 1024 * 1024 {
-            anyhow::bail!("message too large: {} bytes", len);
-        }
-
-        let mut payload = vec![0u8; len];
-        self.reader.read_exact(&mut payload).await?;
-        Ok(payload)
-    }
-
-    fn name(&self) -> &str {
-        "tcp"
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -463,10 +415,4 @@ mod tests {
         assert_eq!(result.result.unwrap(), serde_json::json!({"result": "ok"}));
     }
 
-    #[tokio::test]
-    async fn tcp_transport_trait() {
-        // Verify TcpTransport implements Transport (compile-time check)
-        fn assert_transport<T: Transport>() {}
-        assert_transport::<TcpTransport>();
-    }
 }

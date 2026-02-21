@@ -30,12 +30,15 @@ pub struct TerminalView {
     status_text: String,
     focus_handle: FocusHandle,
     keyboard_request: Option<KeyboardRequestFn>,
-    /// Accumulated scroll pixels that haven't yet formed a full line
-    scroll_pixel_remainder: f32,
+    /// Sub-line pixel offset for smooth scrolling. Applied as a visual shift
+    /// to the terminal grid; when it exceeds line_height, a whole line is committed.
+    scroll_offset_px: f32,
     /// Row count without keyboard (the "full" terminal height)
     base_rows: usize,
     /// Last keyboard-adjusted row count to avoid redundant resizes
     last_keyboard_rows: usize,
+    /// Terminal ID for per-terminal buffer routing (None = use legacy global buffer).
+    terminal_id: Option<String>,
 }
 
 impl TerminalView {
@@ -54,9 +57,10 @@ impl TerminalView {
             status_text: "Disconnected".to_string(),
             focus_handle: cx.focus_handle(),
             keyboard_request: None,
-            scroll_pixel_remainder: 0.0,
+            scroll_offset_px: 0.0,
             base_rows: rows,
             last_keyboard_rows: rows,
+            terminal_id: None,
         }
     }
 
@@ -82,6 +86,16 @@ impl TerminalView {
         self.output_buffer = buffer;
     }
 
+    /// Set the terminal ID for per-terminal buffer routing.
+    pub fn set_terminal_id(&mut self, id: String) {
+        self.terminal_id = Some(id);
+    }
+
+    /// Get the terminal ID (if set).
+    pub fn terminal_id(&self) -> Option<&str> {
+        self.terminal_id.as_deref()
+    }
+
     /// Process any pending output from SSH or RPC session
     /// Returns true if any data was processed
     fn process_output(&mut self) -> bool {
@@ -97,14 +111,22 @@ impl TerminalView {
             }
         }
 
-        // Check active RPC session buffer
+        // Check per-terminal or active RPC session buffer
         if let Some(session) = zedra_session::active_session() {
-            let session_buf = session.output_buffer();
-            if let Ok(mut buffer) = session_buf.try_lock() {
-                while let Some(data) = buffer.pop_front() {
-                    total_bytes += data.len();
-                    self.terminal.advance_bytes(&data);
-                    had_data = true;
+            let session_buf = if let Some(ref tid) = self.terminal_id {
+                // Per-terminal buffer: read only this terminal's output
+                session.output_buffer_for(tid)
+            } else {
+                // Legacy path: use the global active buffer
+                Some(session.output_buffer())
+            };
+            if let Some(buf) = session_buf {
+                if let Ok(mut buffer) = buf.try_lock() {
+                    while let Some(data) = buffer.pop_front() {
+                        total_bytes += data.len();
+                        self.terminal.advance_bytes(&data);
+                        had_data = true;
+                    }
                 }
             }
         }
@@ -291,25 +313,69 @@ impl Render for TerminalView {
                 this.handle_keystroke(&event.keystroke);
             }))
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
-                let lines = match event.delta {
+                match event.delta {
                     ScrollDelta::Lines(l) => {
-                        this.scroll_pixel_remainder = 0.0;
-                        l.y as i32
+                        // Line-based scroll (e.g. mouse wheel): commit immediately
+                        this.scroll_offset_px = 0.0;
+                        let lines = l.y as i32;
+                        if lines != 0 {
+                            this.scroll(lines);
+                        }
                     }
                     ScrollDelta::Pixels(pixels) => {
-                        let lh: f32 = (this.terminal.size().line_height / px(1.0)) as f32;
-                        let py: f32 = (pixels.y / px(1.0)) as f32;
-                        this.scroll_pixel_remainder += py;
-                        let whole = (this.scroll_pixel_remainder / lh) as i32;
-                        this.scroll_pixel_remainder -= whole as f32 * lh;
-                        whole
+                        if matches!(event.touch_phase, TouchPhase::Ended) {
+                            // Touch lifted: snap remaining offset to nearest line
+                            let lh: f32 = (this.terminal.size().line_height / px(1.0)) as f32;
+                            if this.scroll_offset_px.abs() > lh * 0.5 {
+                                if this.scroll_offset_px > 0.0 {
+                                    this.scroll(1);
+                                } else {
+                                    this.scroll(-1);
+                                }
+                            }
+                            this.scroll_offset_px = 0.0;
+                        } else {
+                            let lh: f32 = (this.terminal.size().line_height / px(1.0)) as f32;
+                            let py: f32 = (pixels.y / px(1.0)) as f32;
+                            this.scroll_offset_px += py;
+
+                            // Commit whole lines, clamping at scrollback boundaries.
+                            while this.scroll_offset_px >= lh {
+                                let before = this.terminal.display_offset();
+                                this.scroll(1);
+                                if this.terminal.display_offset() == before {
+                                    // Hit top of scrollback — clamp offset
+                                    this.scroll_offset_px = 0.0;
+                                    break;
+                                }
+                                this.scroll_offset_px -= lh;
+                            }
+                            while this.scroll_offset_px <= -lh {
+                                let before = this.terminal.display_offset();
+                                this.scroll(-1);
+                                if this.terminal.display_offset() == before {
+                                    // Hit bottom of scrollback — clamp offset
+                                    this.scroll_offset_px = 0.0;
+                                    break;
+                                }
+                                this.scroll_offset_px += lh;
+                            }
+
+                            // Also clamp sub-line drift at boundaries
+                            let offset = this.terminal.display_offset();
+                            let history = this.terminal.history_size();
+                            if offset == 0 && this.scroll_offset_px < 0.0 {
+                                this.scroll_offset_px = 0.0; // at bottom
+                            }
+                            if offset >= history && this.scroll_offset_px > 0.0 {
+                                this.scroll_offset_px = 0.0; // at top
+                            }
+                        }
                     }
                 };
-                if lines != 0 {
-                    this.scroll(lines);
-                    cx.notify();
-                }
+                // Always re-render — sub-line offset changes are visual even without whole-line commits
+                cx.notify();
             }))
-            .child(TerminalElement::new(content, size))
+            .child(TerminalElement::new(content, size, self.scroll_offset_px))
     }
 }

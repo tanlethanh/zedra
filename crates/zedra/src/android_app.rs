@@ -11,6 +11,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use crate::android_command_queue::AndroidCommand;
+use crate::gesture::{GestureArena, GestureKind};
 use crate::zedra_app::ZedraApp;
 
 /// Embedded assets for Zedra (SVG icons, etc.)
@@ -59,8 +60,12 @@ pub struct AndroidApp {
     touch_down_position: Option<(f32, f32)>,
     /// Whether the current touch gesture has moved beyond tap threshold
     touch_is_drag: bool,
+    /// Whether the arena winner has been dispatched (for catchup delta on first win)
+    arena_winner_dispatched: bool,
     /// Active fling for momentum scrolling
     fling_state: Option<FlingState>,
+    /// Gesture arena for drawer-vs-scroll disambiguation
+    gesture_arena: GestureArena,
 }
 
 impl AndroidApp {
@@ -74,7 +79,9 @@ impl AndroidApp {
             last_touch_position: None,
             touch_down_position: None,
             touch_is_drag: false,
+            arena_winner_dispatched: false,
             fling_state: None,
+            gesture_arena: GestureArena::default_drawer_scroll(),
         }
     }
 
@@ -111,9 +118,7 @@ impl AndroidApp {
                 velocity_x,
                 velocity_y,
             } => self.handle_fling(velocity_x, velocity_y),
-            AndroidCommand::KeyboardHeightChanged { height } => {
-                self.handle_keyboard_height(height)
-            }
+            AndroidCommand::KeyboardHeightChanged { height } => self.handle_keyboard_height(height),
         }
     }
 
@@ -193,7 +198,7 @@ impl AndroidApp {
         let app_cell = App::new_app(
             platform,
             liveness,
-            Arc::new(ZedraAssets),                     // Embedded SVG icons
+            Arc::new(ZedraAssets),                    // Embedded SVG icons
             Arc::new(http_client::BlockedHttpClient), // Use BlockedHttpClient
         );
         log::info!(
@@ -373,8 +378,9 @@ impl AndroidApp {
             logical_y
         );
 
-        // Tap slop threshold in logical pixels — movement beyond this means a drag, not a tap
-        const TAP_SLOP: f32 = 10.0;
+        // Tap slop threshold in logical pixels — movement beyond this means a drag, not a tap.
+        // 4px logical = 12px physical at 3x density (close to Android's 8dp standard).
+        const TAP_SLOP: f32 = 4.0;
 
         match action {
             0 => {
@@ -383,6 +389,9 @@ impl AndroidApp {
                 self.last_touch_position = Some((logical_x, logical_y));
                 self.touch_down_position = Some((logical_x, logical_y));
                 self.touch_is_drag = false;
+                self.arena_winner_dispatched = false;
+                self.gesture_arena.reset();
+                zedra_nav::reset_drawer_gesture();
             }
             1 => {
                 // ACTION_UP — if the finger didn't move beyond TAP_SLOP, treat as tap
@@ -393,6 +402,15 @@ impl AndroidApp {
                         modifiers: Modifiers::default(),
                         click_count: 1,
                         first_mouse: false,
+                    }));
+                } else if matches!(self.gesture_arena.winner(), Some(GestureKind::Scroll)) {
+                    // Notify scrollable elements that the touch ended so they can
+                    // snap sub-line offsets back to line boundaries.
+                    platform.dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
+                        position,
+                        delta: ScrollDelta::Pixels(point(px(0.0), px(0.0))),
+                        modifiers: Modifiers::default(),
+                        touch_phase: TouchPhase::Ended,
                     }));
                 }
                 // Always dispatch MouseUp so gesture-driven UI (drawer snap) works
@@ -405,15 +423,19 @@ impl AndroidApp {
                 self.last_touch_position = None;
                 self.touch_down_position = None;
                 self.touch_is_drag = false;
+                self.arena_winner_dispatched = false;
+                // Don't reset arena here — handle_fling() needs the winner.
+                // Arena resets on next ACTION_DOWN.
             }
             3 => {
                 // ACTION_CANCEL — clean up, no tap
                 self.last_touch_position = None;
                 self.touch_down_position = None;
                 self.touch_is_drag = false;
+                self.arena_winner_dispatched = false;
             }
             2 => {
-                // ACTION_MOVE — check if we've exceeded tap slop, then scroll
+                // ACTION_MOVE — check tap slop, then feed gesture arena
                 if !self.touch_is_drag {
                     if let Some((down_x, down_y)) = self.touch_down_position {
                         let dx = logical_x - down_x;
@@ -429,12 +451,47 @@ impl AndroidApp {
                         let delta_x = logical_x - last_x;
                         let delta_y = logical_y - last_y;
 
-                        platform.dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
-                            position,
-                            delta: ScrollDelta::Pixels(point(px(delta_x), px(delta_y))),
-                            modifiers: Modifiers::default(),
-                            touch_phase: TouchPhase::Moved,
-                        }));
+                        // Feed the gesture arena
+                        self.gesture_arena.on_move(delta_x, delta_y);
+
+                        match self.gesture_arena.winner() {
+                            Some(GestureKind::DrawerPan) => {
+                                let dx = if !self.arena_winner_dispatched {
+                                    // First win — replay accumulated horizontal delta
+                                    self.arena_winner_dispatched = true;
+                                    let (accum_x, _) = self
+                                        .gesture_arena
+                                        .accumulated_delta(GestureKind::DrawerPan);
+                                    accum_x
+                                } else {
+                                    delta_x
+                                };
+                                zedra_nav::push_drawer_pan_delta(dx);
+                                platform.request_frame_forced();
+                            }
+                            Some(GestureKind::Scroll) => {
+                                let dy = if !self.arena_winner_dispatched {
+                                    // First win — replay accumulated vertical delta
+                                    self.arena_winner_dispatched = true;
+                                    let (_, accum_y) =
+                                        self.gesture_arena.accumulated_delta(GestureKind::Scroll);
+                                    accum_y
+                                } else {
+                                    delta_y
+                                };
+                                platform.dispatch_input(PlatformInput::ScrollWheel(
+                                    ScrollWheelEvent {
+                                        position,
+                                        delta: ScrollDelta::Pixels(point(px(0.0), px(dy))),
+                                        modifiers: Modifiers::default(),
+                                        touch_phase: TouchPhase::Moved,
+                                    },
+                                ));
+                            }
+                            None => {
+                                // Still undetermined — don't dispatch (buffer phase)
+                            }
+                        }
                     }
                 }
                 self.last_touch_position = Some((logical_x, logical_y));
@@ -498,12 +555,22 @@ impl AndroidApp {
         Ok(())
     }
 
-    /// Handle fling gesture — start momentum scrolling
+    /// Handle fling gesture — start momentum scrolling.
+    /// Filters velocity to match the gesture arena winner's axis.
     fn handle_fling(&mut self, velocity_x: f32, velocity_y: f32) -> Result<()> {
         // Convert physical velocity to logical pixels/second
         let scale = crate::android_jni::get_density();
         let vx = velocity_x / scale;
         let vy = velocity_y / scale;
+
+        // Filter fling velocity to the winning gesture's axis.
+        // DrawerPan: skip fling entirely — the drawer snap animation handles it.
+        // Scroll: vertical only.
+        let (fling_vx, fling_vy) = match self.gesture_arena.winner() {
+            Some(GestureKind::DrawerPan) => return Ok(()),
+            Some(GestureKind::Scroll) => (0.0, vy),
+            None => (vx, vy),
+        };
 
         // Use last known touch position for dispatching fling scroll events
         let pos = self
@@ -512,10 +579,10 @@ impl AndroidApp {
             .unwrap_or_else(|| point(px(0.0), px(0.0)));
 
         // Only start fling if velocity is significant
-        if vx.abs() > 50.0 || vy.abs() > 50.0 {
+        if fling_vx.abs() > 50.0 || fling_vy.abs() > 50.0 {
             self.fling_state = Some(FlingState {
-                velocity_x: vx,
-                velocity_y: vy,
+                velocity_x: fling_vx,
+                velocity_y: fling_vy,
                 last_time: std::time::Instant::now(),
                 position: pos,
             });
@@ -549,6 +616,13 @@ impl AndroidApp {
 
         // Stop fling when velocity is below threshold
         if vx.abs() < 50.0 && vy.abs() < 50.0 {
+            // Send touch-ended so terminal view can snap sub-line offset
+            platform.dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
+                position: fling.position,
+                delta: ScrollDelta::Pixels(point(px(0.0), px(0.0))),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Ended,
+            }));
             self.fling_state = None;
             return;
         }
@@ -630,18 +704,15 @@ impl AndroidApp {
             &qr_data[..qr_data.len().min(50)]
         );
 
-        // Parse the QR URI into a PairingPayload, then convert to PeerInfo
-        match zedra_transport::pairing::parse_pairing_uri(&qr_data) {
+        // Parse the QR URI into a pairing payload
+        match zedra_transport::parse_pairing_uri(&qr_data) {
             Ok(payload) => {
-                let peer_info = payload.to_peer_info();
                 log::info!(
-                    "QR parsed: hostname={}, addrs={:?}, relay={}",
-                    peer_info.hostname,
-                    peer_info.host_addrs,
-                    peer_info.relay_room
+                    "QR parsed: name={}, endpoint_id={}...",
+                    payload.name,
+                    &payload.endpoint_id[..16.min(payload.endpoint_id.len())]
                 );
-                crate::zedra_app::set_pending_qr_peer_info(peer_info);
-                // Signal re-render so ZedraApp picks up the pending PeerInfo
+                crate::zedra_app::set_pending_qr_payload(payload);
                 zedra_session::signal_terminal_data();
             }
             Err(e) => {

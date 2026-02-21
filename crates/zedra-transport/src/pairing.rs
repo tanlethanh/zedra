@@ -1,63 +1,54 @@
 // QR code pairing protocol
-// Parses zedra://pair URIs and performs the pairing handshake
+// Parses zedra://pair URIs (iroh-based)
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-/// Pairing payload from QR code (supports v1 and v2)
+/// Pairing payload for iroh-based transport.
+///
+/// Contains the host's iroh EndpointId (Ed25519 public key) which is both
+/// the host's identity and addressing key for iroh connections.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PairingPayload {
-    /// Protocol version (1 or 2)
+    /// Protocol version (always 1)
     pub v: u32,
-    /// Host address (primary LAN IP for backward compat)
-    pub host: String,
-    /// SSH port
-    pub port: u16,
-    /// One-time pairing token
-    pub token: String,
-    /// Expected host key fingerprint
-    pub fingerprint: String,
-    /// Friendly name for the host
+    /// iroh EndpointId (z-base-32 encoded Ed25519 public key)
+    pub endpoint_id: String,
+    /// Friendly hostname
     pub name: String,
-    // v2 fields — optional with serde defaults for backward compat with v1
-    /// All LAN IPs discovered on the host
-    #[serde(default)]
-    pub host_addrs: Vec<String>,
-    /// Tailscale 100.x.x.x address, if available
-    #[serde(default)]
-    pub tailscale_addr: Option<String>,
-    /// Cloudflare Worker relay URL
+    /// iroh relay URL the host is connected to
     #[serde(default)]
     pub relay_url: Option<String>,
-    /// Relay room code
+    /// Direct addresses (host IPs with iroh UDP port)
     #[serde(default)]
-    pub relay_room: Option<String>,
-    /// Relay room secret
-    #[serde(default)]
-    pub relay_secret: Option<String>,
+    pub addrs: Vec<String>,
 }
 
 impl PairingPayload {
-    /// Convert this pairing payload into a PeerInfo for TransportManager.
-    pub fn to_peer_info(&self) -> crate::PeerInfo {
-        let mut host_addrs = self.host_addrs.clone();
-        if host_addrs.is_empty() {
-            host_addrs.push(self.host.clone());
+    /// Convert this payload into an iroh `EndpointAddr`.
+    pub fn to_endpoint_addr(&self) -> Result<iroh::EndpointAddr> {
+        let endpoint_id: iroh::PublicKey = self.endpoint_id.parse()
+            .map_err(|e| anyhow::anyhow!("invalid endpoint_id: {}", e))?;
+
+        let mut addr = iroh::EndpointAddr::from(endpoint_id);
+
+        if let Some(ref relay) = self.relay_url {
+            if let Ok(relay_url) = relay.parse::<iroh::RelayUrl>() {
+                addr = addr.with_relay_url(relay_url);
+            }
         }
-        crate::PeerInfo {
-            host_addrs,
-            tailscale_addr: self.tailscale_addr.clone(),
-            port: self.port,
-            relay_url: self.relay_url.clone().unwrap_or_default(),
-            relay_room: self.relay_room.clone().unwrap_or_default(),
-            relay_secret: self.relay_secret.clone().unwrap_or_default(),
-            fingerprint: self.fingerprint.clone(),
-            hostname: self.name.clone(),
+
+        for a in &self.addrs {
+            if let Ok(sock_addr) = a.parse::<std::net::SocketAddr>() {
+                addr = addr.with_ip_addr(sock_addr);
+            }
         }
+
+        Ok(addr)
     }
 }
 
-/// Parse a zedra://pair?d=<payload> URI
+/// Parse a zedra://pair?d=<payload> URI.
 pub fn parse_pairing_uri(uri: &str) -> Result<PairingPayload> {
     let prefix = "zedra://pair?d=";
     if !uri.starts_with(prefix) {
@@ -68,29 +59,13 @@ pub fn parse_pairing_uri(uri: &str) -> Result<PairingPayload> {
     let json_bytes = base64_url::decode(encoded)
         .map_err(|e| anyhow::anyhow!("Failed to decode base64: {}", e))?;
     let json_str = String::from_utf8(json_bytes)?;
+
     let payload: PairingPayload = serde_json::from_str(&json_str)?;
-
-    if payload.v != 1 && payload.v != 2 {
-        anyhow::bail!("Unsupported pairing protocol version: {}", payload.v);
+    if payload.v != 1 {
+        anyhow::bail!(
+            "Unsupported pairing protocol version: {} (only v1 supported)",
+            payload.v
+        );
     }
-
     Ok(payload)
-}
-
-/// Saved host credentials (stored on the device after pairing)
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SavedHost {
-    pub id: String,
-    pub name: String,
-    pub host: String,
-    pub port: u16,
-    pub fingerprint: String,
-    pub username: String,
-    pub auth_method: SavedAuthMethod,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum SavedAuthMethod {
-    Password { password: String },
-    PublicKey { private_key_pem: String },
 }

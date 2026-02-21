@@ -232,6 +232,11 @@ impl TerminalState {
         self.term.scroll_display(scroll);
     }
 
+    /// Current display offset (0 = bottom, history_size = top)
+    pub fn display_offset(&self) -> usize {
+        self.term.grid().display_offset()
+    }
+
     /// Get total history size
     pub fn history_size(&self) -> usize {
         self.term.grid().history_size()

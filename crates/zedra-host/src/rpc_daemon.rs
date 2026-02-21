@@ -1,8 +1,8 @@
 // RPC daemon: exposes filesystem, git, terminal, LSP, and AI operations over JSON-RPC.
 //
-// Mobile clients connect via TCP or relay and issue JSON-RPC requests for file
-// browsing, editing, git operations, terminal sessions, LSP queries, and Claude
-// Code AI integration.
+// Mobile clients connect via iroh (QUIC/TLS 1.3) and issue JSON-RPC requests
+// for file browsing, editing, git operations, terminal sessions, LSP queries,
+// and Claude Code AI integration.
 //
 // Architecture: manual dispatch loop with shared writer channel for bidirectional
 // notifications. Terminal output is streamed as `terminal/output` notifications
@@ -12,14 +12,14 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::Arc;
-use tokio::net::TcpListener;
 use crate::fs::{Filesystem, LocalFs};
 use crate::git::GitRepo;
+use crate::identity::SharedIdentity;
 use zedra_rpc::methods;
 use zedra_rpc::{FsListParams, FsReadParams, FsStatParams, FsWriteParams};
 use zedra_rpc::{GitCommitParams, GitDiffParams, GitLogParams};
-use zedra_rpc::{SessionResumeParams, TermCreateParams, TermDataParams, TermResizeParams};
-use zedra_rpc::{TcpTransport, Transport};
+use zedra_rpc::{SessionAttachParams, SessionResumeParams, TermCreateParams, TermDataParams, TermResizeParams};
+use zedra_rpc::Transport;
 
 use crate::pty::ShellSession;
 use crate::session_registry::{ServerSession, SessionRegistry, TermSession as SessionTermSession};
@@ -35,6 +35,8 @@ type HandlerFn = Arc<
 pub struct DaemonState {
     pub fs: Arc<dyn Filesystem>,
     pub workdir: std::path::PathBuf,
+    /// Host identity (used by iroh listener for endpoint key).
+    pub identity: Option<SharedIdentity>,
 }
 
 impl DaemonState {
@@ -42,49 +44,177 @@ impl DaemonState {
         Self {
             fs: Arc::new(LocalFs),
             workdir,
+            identity: None,
+        }
+    }
+
+    pub fn with_identity(mut self, identity: SharedIdentity) -> Self {
+        self.identity = Some(identity);
+        self
+    }
+}
+
+/// Read the first application-level message and bind the session before
+/// entering the dispatch loop. This ensures handlers always have a bound
+/// session — no window of unbound state during which replayed RPCs could
+/// arrive before the session is set.
+///
+/// Returns the bound session and optionally the first message's raw bytes
+/// if it wasn't a session-management message (needs replay through dispatch).
+async fn bind_session(
+    recv_rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>,
+    write_tx: &tokio::sync::mpsc::Sender<Vec<u8>>,
+    registry: &SessionRegistry,
+) -> Result<(Arc<ServerSession>, Option<Vec<u8>>)> {
+    let payload = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        recv_rx.recv(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for first message"))?
+    .ok_or_else(|| anyhow::anyhow!("connection closed before first message"))?;
+
+    let msg: zedra_rpc::Message = match serde_json::from_slice(&payload) {
+        Ok(m) => m,
+        Err(_) => {
+            let session = registry.resume_or_create(None, "auto").await;
+            session.update_notif_senders(write_tx.clone()).await;
+            return Ok((session, Some(payload)));
+        }
+    };
+
+    match msg {
+        zedra_rpc::Message::Notification(ref notif)
+            if notif.method == methods::SESSION_ATTACH =>
+        {
+            let p: SessionAttachParams = serde_json::from_value(notif.params.clone())?;
+            let target = registry.get_by_id(&p.session_id).await;
+            match target {
+                Some(server_session) if server_session.auth_token == p.auth_token => {
+                    tracing::info!(
+                        "bind_session: attached session {} via session/attach",
+                        p.session_id,
+                    );
+                    server_session.update_notif_senders(write_tx.clone()).await;
+                    server_session.touch().await;
+                    Ok((server_session, None))
+                }
+                Some(_) => {
+                    tracing::warn!(
+                        "bind_session: auth token mismatch for session {}",
+                        p.session_id,
+                    );
+                    anyhow::bail!("session/attach: auth token mismatch for {}", p.session_id)
+                }
+                None => {
+                    tracing::warn!(
+                        "bind_session: session {} not found, creating new",
+                        p.session_id,
+                    );
+                    let session = registry.resume_or_create(None, &p.auth_token).await;
+                    session.update_notif_senders(write_tx.clone()).await;
+                    Ok((session, None))
+                }
+            }
+        }
+        zedra_rpc::Message::Request(ref req)
+            if req.method == methods::SESSION_RESUME_OR_CREATE =>
+        {
+            let p: SessionResumeParams = serde_json::from_value(req.params.clone())?;
+            let existing_id = p.session_id.as_deref();
+            let server_session = registry.resume_or_create(existing_id, &p.auth_token).await;
+            let resumed = existing_id.is_some_and(|id| id == server_session.id);
+            let session_id = server_session.id.clone();
+
+            let missed = server_session.notifications_after(p.last_notif_seq).await;
+            let backlog: Vec<zedra_rpc::SessionBacklogEntry> = missed
+                .iter()
+                .map(|(seq, payload)| zedra_rpc::SessionBacklogEntry {
+                    seq: *seq,
+                    payload: base64_url::encode(payload),
+                })
+                .collect();
+
+            for (_, notif_payload) in &missed {
+                let _ = write_tx.send(notif_payload.clone()).await;
+            }
+
+            server_session.update_notif_senders(write_tx.clone()).await;
+
+            let resp = zedra_rpc::Response::ok(
+                req.id,
+                serde_json::to_value(zedra_rpc::SessionResumeResult {
+                    session_id,
+                    resumed,
+                    backlog,
+                })?,
+            );
+            let _ = write_tx.send(serde_json::to_vec(&resp)?).await;
+
+            tracing::info!(
+                "bind_session: {} session {} via session/resume_or_create (backlog={})",
+                if resumed { "resumed" } else { "created" },
+                server_session.id,
+                missed.len(),
+            );
+
+            Ok((server_session, None))
+        }
+        _ => {
+            tracing::debug!("bind_session: auto-creating session for non-session first message");
+            let session = registry.resume_or_create(None, "auto").await;
+            session.update_notif_senders(write_tx.clone()).await;
+            Ok((session, Some(payload)))
         }
     }
 }
 
-/// Start the RPC daemon TCP listener.
-pub async fn run_daemon(
-    bind: &str,
-    port: u16,
-    registry: Arc<SessionRegistry>,
-    state: Arc<DaemonState>,
-) -> Result<()> {
-    let listener = TcpListener::bind(format!("{}:{}", bind, port)).await?;
-    tracing::info!("RPC daemon listening on {}:{}", bind, port);
+/// Dispatch a single message payload through the handler map.
+async fn dispatch_payload(
+    payload: &[u8],
+    handlers: &HashMap<String, HandlerFn>,
+    write_tx: &tokio::sync::mpsc::Sender<Vec<u8>>,
+) {
+    let msg: zedra_rpc::Message = match serde_json::from_slice(payload) {
+        Ok(m) => m,
+        Err(_) => return,
+    };
 
-    loop {
-        let (stream, addr) = listener.accept().await?;
-        tracing::info!("RPC connection from {}", addr);
-        let state = state.clone();
-        let registry = registry.clone();
-        tokio::spawn(async move {
-            let transport = TcpTransport::new(stream);
-            if let Err(e) = handle_transport_connection(Box::new(transport), registry, state).await
-            {
-                tracing::error!("RPC connection error from {}: {}", addr, e);
+    match msg {
+        zedra_rpc::Message::Request(req) => {
+            let write_tx = write_tx.clone();
+            if let Some(handler) = handlers.get(&req.method) {
+                let handler = handler.clone();
+                tokio::spawn(async move {
+                    let resp = match handler(req.params).await {
+                        Ok(result) => zedra_rpc::Response::ok(req.id, result),
+                        Err(e) => zedra_rpc::Response::err(
+                            req.id,
+                            zedra_rpc::INTERNAL_ERROR,
+                            e.to_string(),
+                        ),
+                    };
+                    let payload = serde_json::to_vec(&resp).unwrap_or_default();
+                    let _ = write_tx.send(payload).await;
+                });
+            } else {
+                let resp = zedra_rpc::Response::err(
+                    req.id,
+                    zedra_rpc::METHOD_NOT_FOUND,
+                    format!("unknown method: {}", req.method),
+                );
+                let payload = serde_json::to_vec(&resp).unwrap_or_default();
+                let _ = write_tx.send(payload).await;
             }
-        });
+        }
+        _ => {} // Ignore notifications and responses from client
     }
-}
-
-/// Start the RPC daemon on a pre-bound listener (for tests).
-pub async fn start_on_listener(listener: &TcpListener, state: Arc<DaemonState>) -> Result<()> {
-    let registry = Arc::new(SessionRegistry::new());
-    let (stream, addr) = listener.accept().await?;
-    tracing::info!("RPC connection from {}", addr);
-    let transport = TcpTransport::new(stream);
-    handle_transport_connection(Box::new(transport), registry, state).await
 }
 
 /// Handle a connection using the Transport trait.
 ///
-/// The first RPC call should be `session/resume_or_create` to establish or
-/// resume a session. If the client skips this, a default session is created
-/// automatically on the first terminal request.
+/// Session binding happens upfront via `bind_session()` before any RPCs
+/// are processed, ensuring handlers always have access to a bound session.
 ///
 /// On disconnect the session remains alive in the registry for the grace
 /// period, allowing the client to reconnect and resume.
@@ -135,10 +265,18 @@ pub async fn handle_transport_connection(
         }
     });
 
-    // Session state — lazily initialized on first session/resume_or_create call,
-    // or auto-created on first terminal request.
-    let session: Arc<tokio::sync::Mutex<Option<Arc<ServerSession>>>> =
-        Arc::new(tokio::sync::Mutex::new(None));
+    // Bind session upfront: read the first application message and resolve
+    // the session before entering the dispatch loop.
+    let (bound_session, replay_msg) = bind_session(&mut recv_rx, &write_tx, &registry).await?;
+    let session_id = bound_session.id.clone();
+    tracing::info!(
+        "Session bound: id={}, transport={}, has_replay={}",
+        session_id,
+        transport_name,
+        replay_msg.is_some(),
+    );
+    let session: Arc<tokio::sync::Mutex<Arc<ServerSession>>> =
+        Arc::new(tokio::sync::Mutex::new(bound_session));
 
     // Build handler map using session-aware terminal handlers
     let handlers = build_session_handlers(
@@ -148,50 +286,23 @@ pub async fn handle_transport_connection(
         write_tx.clone(),
     );
 
+    // If bind_session returned a non-session first message, dispatch it now.
+    if let Some(payload) = replay_msg {
+        dispatch_payload(&payload, &handlers, &write_tx).await;
+    }
+
     // Dispatch loop
     while let Some(payload) = recv_rx.recv().await {
-        let msg: zedra_rpc::Message = match serde_json::from_slice(&payload) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-
-        match msg {
-            zedra_rpc::Message::Request(req) => {
-                let write_tx = write_tx.clone();
-                if let Some(handler) = handlers.get(&req.method) {
-                    let handler = handler.clone();
-                    tokio::spawn(async move {
-                        let resp = match handler(req.params).await {
-                            Ok(result) => zedra_rpc::Response::ok(req.id, result),
-                            Err(e) => zedra_rpc::Response::err(
-                                req.id,
-                                zedra_rpc::INTERNAL_ERROR,
-                                e.to_string(),
-                            ),
-                        };
-                        let payload = serde_json::to_vec(&resp).unwrap_or_default();
-                        let _ = write_tx.send(payload).await;
-                    });
-                } else {
-                    let resp = zedra_rpc::Response::err(
-                        req.id,
-                        zedra_rpc::METHOD_NOT_FOUND,
-                        format!("unknown method: {}", req.method),
-                    );
-                    let payload = serde_json::to_vec(&resp).unwrap_or_default();
-                    let _ = write_tx.send(payload).await;
-                }
-            }
-            _ => {} // Ignore notifications and responses from client
-        }
+        dispatch_payload(&payload, &handlers, &write_tx).await;
     }
 
     // Clean up: abort transport I/O task
     io_handle.abort();
 
     tracing::info!(
-        "Transport connection closed via {} (session stays alive in registry)",
-        transport_name
+        "Transport connection closed: session={}, transport={} (session stays alive in registry)",
+        session_id,
+        transport_name,
     );
     Ok(())
 }
@@ -203,7 +314,7 @@ pub async fn handle_transport_connection(
 fn build_session_handlers(
     state: Arc<DaemonState>,
     registry: Arc<SessionRegistry>,
-    session: Arc<tokio::sync::Mutex<Option<Arc<ServerSession>>>>,
+    session: Arc<tokio::sync::Mutex<Arc<ServerSession>>>,
     write_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
 ) -> HashMap<String, HandlerFn> {
     let mut handlers: HashMap<String, HandlerFn> = HashMap::new();
@@ -250,8 +361,12 @@ fn build_session_handlers(
                     let _ = wtx.send(payload.clone()).await;
                 }
 
-                // Store the session
-                *sess.lock().await = Some(server_session);
+                // Update all terminal notification senders to point to this
+                // connection's write channel so PTY output flows to the client.
+                server_session.update_notif_senders(wtx.clone()).await;
+
+                // Update bound session (idempotent re-call from durable queue replay)
+                *sess.lock().await = server_session;
 
                 Ok(serde_json::to_value(zedra_rpc::SessionResumeResult {
                     session_id,
@@ -269,9 +384,7 @@ fn build_session_handlers(
         move |_params: serde_json::Value| {
             let sess = sess.clone();
             Box::pin(async move {
-                if let Some(s) = sess.lock().await.as_ref() {
-                    s.touch().await;
-                }
+                sess.lock().await.touch().await;
                 Ok(serde_json::json!({"ok": true}))
             })
         }
@@ -282,7 +395,7 @@ fn build_session_handlers(
         Box::pin(async move { Ok(serde_json::to_value(zedra_rpc::PingResult { pong: true })?) })
     });
 
-    // session/info — return hostname, workdir, username
+    // session/info — return hostname, workdir, username, OS, arch, version
     let s = state.clone();
     register!(methods::SESSION_INFO, move |_params: serde_json::Value| {
         let s = s.clone();
@@ -298,9 +411,96 @@ fn build_session_handlers(
                 workdir,
                 username,
                 session_id: None,
+                os: Some(std::env::consts::OS.to_string()),
+                arch: Some(std::env::consts::ARCH.to_string()),
+                os_version: os_version_string(),
+                host_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             })?)
         })
     });
+
+    // session/list — list all available named sessions
+    let reg = registry.clone();
+    register!(
+        methods::SESSION_LIST,
+        move |_params: serde_json::Value| {
+            let reg = reg.clone();
+            Box::pin(async move {
+                let list = reg.list_sessions().await;
+                let entries: Vec<zedra_rpc::SessionListEntry> = list
+                    .into_iter()
+                    .map(|s| zedra_rpc::SessionListEntry {
+                        id: s.id,
+                        name: s.name,
+                        workdir: s.workdir.map(|p| p.to_string_lossy().into_owned()),
+                        terminal_count: s.terminal_count,
+                        uptime_secs: s.created_at_elapsed_secs,
+                        idle_secs: s.last_activity_elapsed_secs,
+                    })
+                    .collect();
+                Ok(serde_json::to_value(zedra_rpc::SessionListResult {
+                    sessions: entries,
+                })?)
+            })
+        }
+    );
+
+    // session/switch — switch to a different named session
+    let reg = registry.clone();
+    let sess = session.clone();
+    let wtx = write_tx.clone();
+    register!(
+        methods::SESSION_SWITCH,
+        move |params: serde_json::Value| {
+            let reg = reg.clone();
+            let sess = sess.clone();
+            let wtx = wtx.clone();
+            Box::pin(async move {
+                let p: zedra_rpc::SessionSwitchParams = serde_json::from_value(params)?;
+
+                let target = reg
+                    .get_by_name(&p.session_name)
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("Session '{}' not found", p.session_name))?;
+
+                // Verify auth token matches.
+                if target.auth_token != p.auth_token {
+                    anyhow::bail!("Invalid auth token for session '{}'", p.session_name);
+                }
+
+                target.touch().await;
+
+                // Replay notification backlog for the new session.
+                let missed = target.notifications_after(p.last_notif_seq).await;
+                let backlog: Vec<zedra_rpc::SessionBacklogEntry> = missed
+                    .iter()
+                    .map(|(seq, payload)| zedra_rpc::SessionBacklogEntry {
+                        seq: *seq,
+                        payload: base64_url::encode(payload),
+                    })
+                    .collect();
+
+                for (_, payload) in &missed {
+                    let _ = wtx.send(payload.clone()).await;
+                }
+
+                // Update terminal senders to point to this connection.
+                target.update_notif_senders(wtx.clone()).await;
+
+                let workdir = target.workdir.as_ref().map(|p| p.to_string_lossy().into_owned());
+                let session_id = target.id.clone();
+
+                // Switch the active session.
+                *sess.lock().await = target;
+
+                Ok(serde_json::to_value(zedra_rpc::SessionSwitchResult {
+                    session_id,
+                    workdir,
+                    backlog,
+                })?)
+            })
+        }
+    );
 
     // -------------------------------------------------------------------
     // Filesystem handlers (stateless, use DaemonState)
@@ -470,34 +670,14 @@ fn build_session_handlers(
     // Terminal handlers (session-aware: terminals live in ServerSession)
     // -------------------------------------------------------------------
 
-    // Helper: ensure session exists (auto-create if client skipped resume_or_create)
-    let ensure_session = {
-        let reg = registry.clone();
-        let sess = session.clone();
-        move || {
-            let reg = reg.clone();
-            let sess = sess.clone();
-            async move {
-                let mut guard = sess.lock().await;
-                if guard.is_none() {
-                    let s = reg.resume_or_create(None, "auto").await;
-                    *guard = Some(s.clone());
-                    s
-                } else {
-                    guard.as_ref().unwrap().clone()
-                }
-            }
-        }
-    };
-
     // terminal/create — spawn PTY, store in session
-    let es = ensure_session.clone();
+    let sess = session.clone();
     let notif_tx = write_tx.clone();
     register!(methods::TERM_CREATE, move |params: serde_json::Value| {
-        let es = es.clone();
+        let sess = sess.clone();
         let notif_tx = notif_tx.clone();
         Box::pin(async move {
-            let session = es().await;
+            let session = sess.lock().await.clone();
             session.touch().await;
 
             let p: TermCreateParams = serde_json::from_value(params)?;
@@ -505,16 +685,21 @@ fn build_session_handlers(
             let (pty_reader, pty_writer, master) = shell.take_reader();
             let id = session.next_terminal_id().await;
 
+            let notif_sender = Arc::new(std::sync::Mutex::new(Some(notif_tx.clone())));
+
             session.terminals.lock().await.insert(
                 id.clone(),
                 SessionTermSession {
                     writer: pty_writer,
                     master,
+                    notif_sender: notif_sender.clone(),
                 },
             );
 
             // Spawn PTY reader that sends terminal/output notifications
             // and also stores them in the session's notification backlog.
+            // The reader survives transport reconnections: it never exits on
+            // send failure, only when the PTY process itself closes.
             let term_id = id.clone();
             let sess_for_reader = session.clone();
             tokio::task::spawn_blocking(move || {
@@ -533,14 +718,18 @@ fn build_session_handlers(
                                 // Store in backlog for replay on reconnect
                                 let sess = sess_for_reader.clone();
                                 let payload_clone = payload.clone();
-                                // Use a runtime handle since we're in spawn_blocking
                                 let rt = tokio::runtime::Handle::current();
                                 rt.block_on(async {
                                     sess.push_notification(payload_clone).await;
                                 });
 
-                                if notif_tx.blocking_send(payload).is_err() {
-                                    break;
+                                // Try to send to current connection. If no
+                                // connection is active (sender is None or
+                                // channel closed), output is still in the
+                                // backlog for replay on reconnect.
+                                let sender = notif_sender.lock().unwrap().clone();
+                                if let Some(tx) = sender {
+                                    let _ = tx.blocking_send(payload);
                                 }
                             }
                         }
@@ -554,11 +743,11 @@ fn build_session_handlers(
     });
 
     // terminal/data — write input to a terminal
-    let es = ensure_session.clone();
+    let sess = session.clone();
     register!(methods::TERM_DATA, move |params: serde_json::Value| {
-        let es = es.clone();
+        let sess = sess.clone();
         Box::pin(async move {
-            let session = es().await;
+            let session = sess.lock().await.clone();
             session.touch().await;
 
             let p: TermDataParams = serde_json::from_value(params)?;
@@ -575,11 +764,11 @@ fn build_session_handlers(
     });
 
     // terminal/resize
-    let es = ensure_session.clone();
+    let sess = session.clone();
     register!(methods::TERM_RESIZE, move |params: serde_json::Value| {
-        let es = es.clone();
+        let sess = sess.clone();
         Box::pin(async move {
-            let session = es().await;
+            let session = sess.lock().await.clone();
             session.touch().await;
 
             let p: TermResizeParams = serde_json::from_value(params)?;
@@ -600,11 +789,11 @@ fn build_session_handlers(
     });
 
     // terminal/close
-    let es = ensure_session.clone();
+    let sess = session.clone();
     register!(methods::TERM_CLOSE, move |params: serde_json::Value| {
-        let es = es.clone();
+        let sess = sess.clone();
         Box::pin(async move {
-            let session = es().await;
+            let session = sess.lock().await.clone();
             session.touch().await;
 
             let id: String = serde_json::from_value::<serde_json::Value>(params)?
@@ -737,14 +926,87 @@ struct LspDiagnostic {
     severity: String,
 }
 
+/// Get a human-readable OS version string.
+fn os_version_string() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        // Try /etc/os-release first (e.g. "Ubuntu 22.04.3 LTS")
+        if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
+            for line in content.lines() {
+                if let Some(pretty) = line.strip_prefix("PRETTY_NAME=") {
+                    return Some(pretty.trim_matches('"').to_string());
+                }
+            }
+        }
+        // Fallback to kernel version
+        let output = std::process::Command::new("uname").arg("-r").output().ok()?;
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("sw_vers")
+            .arg("-productVersion")
+            .output()
+            .ok()?;
+        Some(format!(
+            "macOS {}",
+            String::from_utf8_lossy(&output.stdout).trim()
+        ))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::process::Command;
-    use tokio::net::TcpListener;
     use zedra_rpc::RpcClient;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    async fn setup() -> (tempfile::TempDir, Arc<DaemonState>, TcpListener) {
+    /// Length-delimited transport over a tokio duplex stream (for tests).
+    struct DuplexTransport {
+        reader: tokio::io::ReadHalf<tokio::io::DuplexStream>,
+        writer: tokio::io::WriteHalf<tokio::io::DuplexStream>,
+    }
+
+    impl DuplexTransport {
+        fn new(stream: tokio::io::DuplexStream) -> Self {
+            let (reader, writer) = tokio::io::split(stream);
+            Self { reader, writer }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Transport for DuplexTransport {
+        async fn send(&mut self, payload: &[u8]) -> anyhow::Result<()> {
+            let len = (payload.len() as u32).to_be_bytes();
+            self.writer.write_all(&len).await?;
+            self.writer.write_all(payload).await?;
+            self.writer.flush().await?;
+            Ok(())
+        }
+
+        async fn recv(&mut self) -> anyhow::Result<Vec<u8>> {
+            let mut len_buf = [0u8; 4];
+            self.reader.read_exact(&mut len_buf).await?;
+            let len = u32::from_be_bytes(len_buf) as usize;
+            if len > 16 * 1024 * 1024 {
+                anyhow::bail!("message too large: {} bytes", len);
+            }
+            let mut payload = vec![0u8; len];
+            self.reader.read_exact(&mut payload).await?;
+            Ok(payload)
+        }
+
+        fn name(&self) -> &str {
+            "duplex"
+        }
+    }
+
+    async fn setup() -> (tempfile::TempDir, Arc<DaemonState>) {
         let dir = tempfile::tempdir().unwrap();
         // Init git repo
         Command::new("git")
@@ -767,23 +1029,36 @@ mod tests {
         std::fs::write(dir.path().join("hello.txt"), "hello world").unwrap();
 
         let state = Arc::new(DaemonState::new(dir.path().to_path_buf()));
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        (dir, state, listener)
+        (dir, state)
+    }
+
+    /// Create a connected (client, server) pair over duplex streams.
+    /// Server side runs handle_transport_connection in a background task.
+    /// Client side returns an RpcClient + notification receiver.
+    async fn setup_rpc_pair(
+        state: Arc<DaemonState>,
+    ) -> (RpcClient, tokio::sync::mpsc::Receiver<zedra_rpc::Notification>) {
+        let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
+
+        let registry = Arc::new(SessionRegistry::new());
+        let server_transport = DuplexTransport::new(server_stream);
+        tokio::spawn(async move {
+            let _ = handle_transport_connection(
+                Box::new(server_transport),
+                registry,
+                state,
+            )
+            .await;
+        });
+
+        let (cr, cw) = tokio::io::split(client_stream);
+        RpcClient::spawn(cr, cw)
     }
 
     #[tokio::test]
     async fn rpc_fs_list() {
-        let (_dir, state, listener) = setup().await;
-        let addr = listener.local_addr().unwrap();
-
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            let _ = start_on_listener(&listener, state_clone).await;
-        });
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (r, w) = tokio::io::split(stream);
-        let (client, _notifs) = RpcClient::spawn(r, w);
+        let (_dir, state) = setup().await;
+        let (client, _notifs) = setup_rpc_pair(state).await;
 
         let resp = client
             .call(methods::FS_LIST, serde_json::json!({"path": "."}))
@@ -797,17 +1072,8 @@ mod tests {
 
     #[tokio::test]
     async fn rpc_fs_read_write() {
-        let (_dir, state, listener) = setup().await;
-        let addr = listener.local_addr().unwrap();
-
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            let _ = start_on_listener(&listener, state_clone).await;
-        });
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (r, w) = tokio::io::split(stream);
-        let (client, _notifs) = RpcClient::spawn(r, w);
+        let (_dir, state) = setup().await;
+        let (client, _notifs) = setup_rpc_pair(state).await;
 
         // Write
         let resp = client
@@ -830,17 +1096,8 @@ mod tests {
 
     #[tokio::test]
     async fn rpc_git_status() {
-        let (_dir, state, listener) = setup().await;
-        let addr = listener.local_addr().unwrap();
-
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            let _ = start_on_listener(&listener, state_clone).await;
-        });
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (r, w) = tokio::io::split(stream);
-        let (client, _notifs) = RpcClient::spawn(r, w);
+        let (_dir, state) = setup().await;
+        let (client, _notifs) = setup_rpc_pair(state).await;
 
         let resp = client
             .call(methods::GIT_STATUS, serde_json::json!({}))
@@ -854,17 +1111,8 @@ mod tests {
 
     #[tokio::test]
     async fn rpc_terminal_lifecycle() {
-        let (_dir, state, listener) = setup().await;
-        let addr = listener.local_addr().unwrap();
-
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            let _ = start_on_listener(&listener, state_clone).await;
-        });
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (r, w) = tokio::io::split(stream);
-        let (client, _notifs) = RpcClient::spawn(r, w);
+        let (_dir, state) = setup().await;
+        let (client, _notifs) = setup_rpc_pair(state).await;
 
         // Create terminal
         let resp = client
@@ -899,17 +1147,8 @@ mod tests {
 
     #[tokio::test]
     async fn rpc_terminal_output_streaming() {
-        let (_dir, state, listener) = setup().await;
-        let addr = listener.local_addr().unwrap();
-
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            let _ = start_on_listener(&listener, state_clone).await;
-        });
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (r, w) = tokio::io::split(stream);
-        let (client, mut notifs) = RpcClient::spawn(r, w);
+        let (_dir, state) = setup().await;
+        let (client, mut notifs) = setup_rpc_pair(state).await;
 
         // Create terminal
         let resp = client
@@ -955,17 +1194,8 @@ mod tests {
 
     #[tokio::test]
     async fn rpc_session_info() {
-        let (_dir, state, listener) = setup().await;
-        let addr = listener.local_addr().unwrap();
-
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            let _ = start_on_listener(&listener, state_clone).await;
-        });
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (r, w) = tokio::io::split(stream);
-        let (client, _notifs) = RpcClient::spawn(r, w);
+        let (_dir, state) = setup().await;
+        let (client, _notifs) = setup_rpc_pair(state).await;
 
         let resp = client
             .call(methods::SESSION_INFO, serde_json::json!({}))
@@ -985,17 +1215,8 @@ mod tests {
 
     #[tokio::test]
     async fn rpc_ai_prompt_fallback() {
-        let (_dir, state, listener) = setup().await;
-        let addr = listener.local_addr().unwrap();
-
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            let _ = start_on_listener(&listener, state_clone).await;
-        });
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (r, w) = tokio::io::split(stream);
-        let (client, _notifs) = RpcClient::spawn(r, w);
+        let (_dir, state) = setup().await;
+        let (client, _notifs) = setup_rpc_pair(state).await;
 
         // AI prompt — should at least return something (fallback if no claude CLI)
         let resp = client
@@ -1010,17 +1231,8 @@ mod tests {
 
     #[tokio::test]
     async fn rpc_lsp_hover() {
-        let (_dir, state, listener) = setup().await;
-        let addr = listener.local_addr().unwrap();
-
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            let _ = start_on_listener(&listener, state_clone).await;
-        });
-
-        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (r, w) = tokio::io::split(stream);
-        let (client, _notifs) = RpcClient::spawn(r, w);
+        let (_dir, state) = setup().await;
+        let (client, _notifs) = setup_rpc_pair(state).await;
 
         let resp = client
             .call("lsp/hover", serde_json::json!({"path": "hello.txt"}))

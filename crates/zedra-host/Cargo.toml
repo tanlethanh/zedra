@@ -9,14 +9,10 @@ name = "zedra_host"
 path = "src/lib.rs"
 
 [[bin]]
-name = "zedra-host"
+name = "zedra"
 path = "src/main.rs"
 
 [dependencies]
-# Key management (used by QR pairing for host key fingerprinting)
-russh-keys.workspace = true
-ssh-key = { version = "0.6", features = ["ed25519", "rand_core"] }
-
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
@@ -32,9 +28,6 @@ clap = { version = "4", features = ["derive"] }
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
-
-# Password hashing
-argon2 = "0.5"
 
 # Random/crypto
 rand = "0.8"
@@ -57,9 +50,12 @@ if-addrs = "0.15.0"
 # Error handling
 anyhow.workspace = true
 
+# P2P networking
+iroh.workspace = true
+
 # Workspace crates
 zedra-rpc = { path = "../zedra-rpc" }
-zedra-relay = { path = "../zedra-relay" }
+zedra-transport = { path = "../zedra-transport" }
 
 # Session IDs
 uuid = { version = "1", features = ["v4"] }

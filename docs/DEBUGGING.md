@@ -50,7 +50,7 @@ adb pull /sdcard/test.png /tmp/test.png
 - UI elements visible (not black screen)
 - Correct colors and positions
 - Proper scaling (1080x2400 for test device)
-- Text rendering (if Phase 2+)
+- Text rendering
 
 ## Common Issues
 

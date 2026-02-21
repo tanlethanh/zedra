@@ -1,14 +1,7 @@
 // Authentication logic for zedra-host
-// Supports pairing token auth and password fallback
+// Supports OTP-based pairing tokens for Noise_IK handshake
 
-use anyhow::Result;
-use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
-    Argon2,
-};
 use std::sync::Mutex;
-
-use crate::store;
 
 /// Active pairing tokens (in-memory, expire after use)
 static PAIRING_TOKENS: Mutex<Vec<PairingToken>> = Mutex::new(Vec::new());
@@ -52,62 +45,6 @@ pub fn validate_pairing_token(token: &str) -> bool {
     }
 }
 
-/// Set the fallback password (hashed with argon2)
-pub fn set_password(password: &str) -> Result<()> {
-    let salt = SaltString::generate(&mut OsRng);
-    let argon2 = Argon2::default();
-    let hash = argon2
-        .hash_password(password.as_bytes(), &salt)
-        .map_err(|e| anyhow::anyhow!("Failed to hash password: {}", e))?;
-
-    let mut store_data = store::load_store()?;
-    store_data.password_hash = Some(hash.to_string());
-    store::save_store(&store_data)?;
-
-    Ok(())
-}
-
-/// Verify a password against the stored hash
-pub fn verify_password(password: &str) -> Result<bool> {
-    let store_data = store::load_store()?;
-    let hash_str = match store_data.password_hash {
-        Some(h) => h,
-        None => {
-            // No password set — only accept a hardcoded default in debug builds
-            #[cfg(debug_assertions)]
-            {
-                return Ok(password == "zedra");
-            }
-            #[cfg(not(debug_assertions))]
-            {
-                return Ok(false);
-            }
-        }
-    };
-
-    let parsed_hash =
-        PasswordHash::new(&hash_str).map_err(|e| anyhow::anyhow!("Invalid hash: {}", e))?;
-    let argon2 = Argon2::default();
-    Ok(argon2
-        .verify_password(password.as_bytes(), &parsed_hash)
-        .is_ok())
-}
-
-/// Authenticate a user
-/// Returns true if authentication succeeds
-pub fn authenticate(username: &str, password: &str) -> Result<bool> {
-    match username {
-        "zedra-pair" => {
-            // Pairing token authentication
-            Ok(validate_pairing_token(password))
-        }
-        "zedra" | _ => {
-            // Password authentication
-            verify_password(password)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,18 +79,5 @@ mod tests {
     #[test]
     fn test_validate_invalid_token() {
         assert!(!validate_pairing_token("not-a-real-token"));
-    }
-
-    #[test]
-    fn test_authenticate_pair_user_with_valid_token() {
-        let token = create_pairing_token();
-        let result = authenticate("zedra-pair", &token).unwrap();
-        assert!(result);
-    }
-
-    #[test]
-    fn test_authenticate_pair_user_with_invalid_token() {
-        let result = authenticate("zedra-pair", "invalid").unwrap();
-        assert!(!result);
     }
 }

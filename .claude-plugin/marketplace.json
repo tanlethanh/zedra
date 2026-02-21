@@ -1,0 +1,16 @@
+{
+  "name": "zedra",
+  "owner": {
+    "name": "tanlethanh"
+  },
+  "metadata": {
+    "description": "Zedra plugins for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "claude-code",
+      "source": "./plugins/claude-code",
+      "description": "Start zedra-host daemon and pair mobile devices with /zedra-start"
+    }
+  ]
+}

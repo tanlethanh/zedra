@@ -4,25 +4,24 @@
 // (OutputBuffer, AtomicBool signaling, OnceLock singletons).
 //
 // Usage:
-//   1. Call RemoteSession::connect(host, port) on the session runtime
+//   1. Call RemoteSession::connect_with_iroh(payload) on the session runtime
 //   2. Store the result via set_active_session()
 //   3. Main thread polls check_and_clear_terminal_data() each frame
 //   4. Main thread drains drain_callbacks() each frame for deferred work
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::Result;
-use tokio::net::TcpStream;
 
 use zedra_rpc::{
     methods, FsEntry, FsListParams, FsReadParams, FsReadResult, FsStatParams, FsStatResult,
     FsWriteParams, GitBranchEntry, GitCommitParams, GitDiffParams, GitDiffResult, GitLogEntry,
-    GitLogParams, GitStatusResult, Response, RpcClient, SessionInfoResult, TermCreateParams,
-    TermCreateResult, TermDataParams, TermOutputNotification, TermResizeParams,
+    GitLogParams, GitStatusResult, Response, RpcClient, SessionInfoResult,
+    TermCreateParams, TermCreateResult, TermDataParams, TermOutputNotification, TermResizeParams,
 };
-use zedra_transport::{PeerInfo, TransportManager, TransportState};
+use zedra_transport::{IrohTransport, PairingPayload};
 
 // ---------------------------------------------------------------------------
 // Type aliases
@@ -43,8 +42,43 @@ pub type MainCallback = Box<dyn FnOnce() + Send + 'static>;
 pub enum SessionState {
     Disconnected,
     Connecting,
-    Connected { hostname: String, workdir: String },
+    Connected {
+        hostname: String,
+        username: String,
+        workdir: String,
+        /// e.g. "linux", "macos"
+        os: String,
+        /// e.g. "aarch64", "x86_64"
+        arch: String,
+        /// e.g. "Ubuntu 22.04.3 LTS", "macOS 15.3"
+        os_version: String,
+        /// zedra-host binary version
+        host_version: String,
+    },
     Error(String),
+}
+
+/// Metadata about the iroh connection path (direct P2P vs relay).
+#[derive(Clone, Debug)]
+pub struct ConnectionInfo {
+    /// true = direct P2P (UDP holepunch), false = relayed
+    pub is_direct: bool,
+    /// Selected path address (IP:port or relay URL)
+    pub remote_addr: String,
+    /// Remote endpoint ID (short form)
+    pub endpoint_id: String,
+    /// Our local endpoint ID (short form)
+    pub local_endpoint_id: String,
+    /// Total number of available paths
+    pub num_paths: usize,
+    /// ALPN protocol string (e.g. "zedra/rpc/1")
+    pub protocol: String,
+    /// QUIC path RTT in milliseconds
+    pub path_rtt_ms: u64,
+    /// Bytes sent on this path
+    pub bytes_sent: u64,
+    /// Bytes received on this path
+    pub bytes_recv: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -88,7 +122,7 @@ fn callback_queue() -> &'static Mutex<VecDeque<MainCallback>> {
 pub fn set_active_session(session: Arc<RemoteSession>) {
     if let Ok(mut slot) = active_session_slot().lock() {
         *slot = Some(session);
-        log::info!("Active remote session set");
+        tracing::info!("Active remote session set");
     }
 }
 
@@ -104,7 +138,7 @@ pub fn active_session() -> Option<Arc<RemoteSession>> {
 pub fn clear_active_session() {
     if let Ok(mut slot) = active_session_slot().lock() {
         *slot = None;
-        log::info!("Active remote session cleared");
+        tracing::info!("Active remote session cleared");
     }
 }
 
@@ -144,7 +178,7 @@ pub fn send_terminal_input(data: Vec<u8>) -> bool {
         None => return false,
     };
 
-    let term_id = match session.terminal_id() {
+    let term_id = match session.active_terminal_id() {
         Some(id) => id,
         None => return false,
     };
@@ -161,7 +195,7 @@ pub fn send_terminal_input(data: Vec<u8>) -> bool {
             .call(methods::TERM_DATA, serde_json::to_value(&params).unwrap())
             .await
         {
-            log::error!("terminal_write RPC failed: {e}");
+            tracing::error!("terminal_write RPC failed: {e}");
         }
     });
 
@@ -172,130 +206,163 @@ pub fn send_terminal_input(data: Vec<u8>) -> bool {
 // RemoteSession
 // ---------------------------------------------------------------------------
 
+/// Per-terminal output buffers, keyed by terminal ID.
+pub type TerminalOutputMap = Arc<Mutex<HashMap<String, OutputBuffer>>>;
+
 /// Client-side handle to a remote zedra-host daemon.
 ///
 /// Wraps an `RpcClient` and provides typed accessors for every RPC method.
-/// The notification listener task pushes terminal output into `terminal_output`
-/// and signals the main thread via `signal_terminal_data()`.
+/// The notification listener task pushes terminal output into per-terminal
+/// buffers in `terminal_outputs` and signals the main thread via
+/// `signal_terminal_data()`.
 pub struct RemoteSession {
     client: Arc<RpcClient>,
     state: Arc<Mutex<SessionState>>,
+    /// Legacy single-buffer field — used as fallback for direct TCP connections
+    /// that don't go through terminal_create().
     terminal_output: OutputBuffer,
-    terminal_id: Arc<Mutex<Option<String>>>,
+    /// Per-terminal output buffers (populated by terminal_create + notification listener).
+    terminal_outputs: TerminalOutputMap,
+    /// All terminal IDs created on this session, in creation order.
+    terminal_ids: Arc<Mutex<Vec<String>>>,
+    /// Which terminal currently receives input from send_terminal_input().
+    active_terminal_id: Arc<Mutex<Option<String>>>,
     session_id: Arc<Mutex<Option<String>>>,
-    /// Transport state from TransportManager (None for direct TCP connections).
-    transport_state: Option<Arc<Mutex<TransportState>>>,
+    auth_token: Arc<Mutex<Option<String>>>,
     /// Latest ping RTT in milliseconds (0 = not yet measured).
     latency_ms: Arc<AtomicU64>,
+    /// Connection path metadata (direct vs relay), updated by watcher task.
+    connection_info: Arc<Mutex<Option<ConnectionInfo>>>,
 }
 
 impl RemoteSession {
-    /// Connect to a zedra-host RPC daemon over TCP (direct connection).
+    /// Connect to a zedra-host via iroh.
     ///
-    /// 1. Opens a TCP connection to `host:port`.
-    /// 2. Spawns the RPC client reader/writer tasks.
-    /// 3. Spawns a notification listener for `terminal/output`.
-    /// 4. Fetches `session/info` to populate the Connected state.
-    pub async fn connect(host: &str, port: u16) -> Result<Arc<Self>> {
-        let addr = format!("{host}:{port}");
-        log::info!("RemoteSession: connecting to {addr}");
+    /// Uses iroh's Endpoint for direct QUIC/UDP with automatic NAT traversal,
+    /// relay fallback, and TLS 1.3 encryption. No TransportManager needed —
+    /// iroh handles discovery, connection, and reconnection internally.
+    pub async fn connect_with_iroh(payload: PairingPayload) -> Result<Arc<Self>> {
+        let hostname = payload.name.clone();
+        tracing::info!(
+            "RemoteSession: connecting via iroh to {} (endpoint: {})",
+            hostname,
+            &payload.endpoint_id[..16.min(payload.endpoint_id.len())],
+        );
 
-        let stream = TcpStream::connect(&addr).await?;
-        let (reader, writer) = tokio::io::split(stream);
+        // Build iroh endpoint (client side — generates ephemeral key)
+        let builder = iroh::Endpoint::builder()
+            .relay_mode(iroh::RelayMode::Disabled)
+            .alpns(vec![b"zedra/rpc/1".to_vec()]);
 
-        let (rpc_client, notif_rx) = RpcClient::spawn(reader, writer);
+        let endpoint = builder.bind().await?;
+        tracing::info!("iroh client endpoint bound: {}", endpoint.id().fmt_short());
+
+        // Parse host's EndpointAddr from the pairing payload
+        let addr = payload.to_endpoint_addr()?;
+        tracing::info!(
+            "Connecting to host endpoint: {:?}",
+            addr,
+        );
+
+        // Connect to host
+        let conn = endpoint.connect(addr, b"zedra/rpc/1").await?;
+        tracing::info!("iroh: connected to {}", conn.remote_id().fmt_short());
+
+        // Open a bidi stream for RPC
+        let (send, recv) = conn.open_bi().await?;
+        let transport = IrohTransport::new(send, recv);
+
+        // Create RpcClient from transport channels
+        let (reader, writer) = transport.into_rpc_channels();
+        let (rpc_client, notif_rx) = RpcClient::spawn_from_channels(reader, writer);
         let client = Arc::new(rpc_client);
 
         let terminal_output: OutputBuffer = Arc::new(Mutex::new(VecDeque::new()));
+        let terminal_outputs: TerminalOutputMap = Arc::new(Mutex::new(HashMap::new()));
         let state = Arc::new(Mutex::new(SessionState::Connecting));
-
         let latency_ms = Arc::new(AtomicU64::new(0));
+        let connection_info: Arc<Mutex<Option<ConnectionInfo>>> = Arc::new(Mutex::new(None));
+
+        // Spawn path watcher to track direct vs relay connection
+        {
+            use iroh::Watcher;
+            let mut paths = conn.paths();
+            let info_slot = connection_info.clone();
+            let local_eid = endpoint.id().fmt_short().to_string();
+            let remote_eid = conn.remote_id().fmt_short().to_string();
+            let alpn = String::from_utf8_lossy(conn.alpn()).to_string();
+            tokio::spawn(async move {
+                loop {
+                    let path_list = paths.get();
+                    let selected = path_list.iter().find(|p| p.is_selected());
+                    if let Some(path) = selected {
+                        let stats = path.stats();
+                        let info = ConnectionInfo {
+                            is_direct: path.is_ip(),
+                            remote_addr: format!("{:?}", path.remote_addr()),
+                            endpoint_id: remote_eid.clone(),
+                            local_endpoint_id: local_eid.clone(),
+                            num_paths: path_list.len(),
+                            protocol: alpn.clone(),
+                            path_rtt_ms: stats.rtt.as_millis() as u64,
+                            bytes_sent: stats.udp_tx.bytes,
+                            bytes_recv: stats.udp_rx.bytes,
+                        };
+                        let was_relay = info_slot
+                            .lock()
+                            .ok()
+                            .and_then(|g| g.as_ref().map(|i| !i.is_direct))
+                            .unwrap_or(true);
+                        if was_relay && info.is_direct {
+                            tracing::info!("iroh path upgraded: relay -> direct P2P");
+                        }
+                        if let Ok(mut slot) = info_slot.lock() {
+                            *slot = Some(info);
+                        }
+                    }
+                    if paths.updated().await.is_err() {
+                        tracing::debug!("iroh path watcher disconnected");
+                        break;
+                    }
+                }
+            });
+        }
 
         let session = Arc::new(Self {
             client,
             state,
             terminal_output,
-            terminal_id: Arc::new(Mutex::new(None)),
+            terminal_outputs,
+            terminal_ids: Arc::new(Mutex::new(Vec::new())),
+            active_terminal_id: Arc::new(Mutex::new(None)),
             session_id: Arc::new(Mutex::new(None)),
-            transport_state: None,
+            auth_token: Arc::new(Mutex::new(None)),
             latency_ms: latency_ms.clone(),
+            connection_info,
         });
 
         // Spawn notification listener
         Self::spawn_notification_listener(&session, notif_rx);
 
-        // Fetch session info to populate state
-        Self::fetch_session_info(&session, host).await;
+        // Establish RPC session
+        Self::establish_rpc_session(&session).await;
 
-        // Spawn background ping loop for latency measurement
-        Self::spawn_ping_loop(session.client.clone(), latency_ms);
-
-        log::info!("RemoteSession: connected to {addr}");
-        Ok(session)
-    }
-
-    /// Connect via TransportManager (supports multi-transport discovery).
-    ///
-    /// Uses PeerInfo from a v2 QR pairing payload to try LAN, Tailscale, and
-    /// relay transports in priority order. The TransportManager runs in the
-    /// background and can reconnect on transport failure.
-    pub async fn connect_with_peer_info(peer_info: PeerInfo) -> Result<Arc<Self>> {
-        let hostname = peer_info.hostname.clone();
-        log::info!(
-            "RemoteSession: connecting via TransportManager to {}",
-            hostname
-        );
-
-        // 1. Create TransportManager and get session-facing channels
-        let (mut manager, recv_rx, send_tx) = TransportManager::new(peer_info);
-
-        // 2. Run discovery to find and connect the best transport
-        manager.connect().await?;
-
-        // 3. Create RpcClient over the channel pair (transport-agnostic)
-        let (rpc_client, notif_rx) = RpcClient::spawn_from_channels(recv_rx, send_tx);
-        let client = Arc::new(rpc_client);
-
-        // 4. Grab transport state handle for UI monitoring
-        let transport_state_handle = manager.state();
-
-        // 5. Build session
-        let terminal_output: OutputBuffer = Arc::new(Mutex::new(VecDeque::new()));
-        let state = Arc::new(Mutex::new(SessionState::Connecting));
-        let latency_ms = Arc::new(AtomicU64::new(0));
-
-        let session = Arc::new(Self {
-            client,
-            state,
-            terminal_output,
-            terminal_id: Arc::new(Mutex::new(None)),
-            session_id: Arc::new(Mutex::new(None)),
-            transport_state: Some(transport_state_handle),
-            latency_ms: latency_ms.clone(),
-        });
-
-        // 6. Spawn notification listener
-        Self::spawn_notification_listener(&session, notif_rx);
-
-        // 7. Spawn TransportManager background task (bridges transport <-> channels)
-        tokio::spawn(manager.run());
-
-        // 8. Fetch session info to populate state
+        // Fetch session info
         Self::fetch_session_info(&session, &hostname).await;
 
-        // 9. Spawn background ping loop for latency measurement
+        // Spawn ping loop
         Self::spawn_ping_loop(session.client.clone(), latency_ms);
 
-        log::info!("RemoteSession: connected via TransportManager to {}", hostname);
+        tracing::info!("RemoteSession: connected via iroh to {}", hostname);
         Ok(session)
     }
 
-    /// Spawn the notification listener that routes terminal/output to the buffer.
+    /// Spawn the notification listener that routes terminal/output to per-terminal buffers.
     fn spawn_notification_listener(
         session: &Arc<Self>,
         notif_rx: tokio::sync::mpsc::Receiver<zedra_rpc::Notification>,
     ) {
-        let output_buf = session.terminal_output.clone();
+        let terminal_outputs = session.terminal_outputs.clone();
         let mut rx = notif_rx;
 
         tokio::spawn(async move {
@@ -305,25 +372,103 @@ impl RemoteSession {
                         Ok(term_notif) => {
                             match base64_url::decode(&term_notif.data) {
                                 Ok(bytes) => {
-                                    if let Ok(mut buf) = output_buf.lock() {
+                                    // Route to per-terminal buffer if it exists,
+                                    // creating one on the fly if needed (handles
+                                    // race between create and first output).
+                                    // Route to per-terminal buffer, creating one on
+                                    // the fly if needed (handles race between create
+                                    // and first output).
+                                    let target_buf = {
+                                        let mut map = terminal_outputs.lock().unwrap();
+                                        map.entry(term_notif.id.clone())
+                                            .or_insert_with(|| Arc::new(Mutex::new(VecDeque::new())))
+                                            .clone()
+                                    };
+                                    if let Ok(mut buf) = target_buf.lock() {
                                         buf.push_back(bytes);
                                     }
                                     signal_terminal_data();
                                 }
                                 Err(e) => {
-                                    log::warn!("terminal/output base64 decode error: {e}");
+                                    tracing::warn!("terminal/output base64 decode error: {e}");
                                 }
                             }
                         }
                         Err(e) => {
-                            log::warn!("terminal/output parse error: {e}");
+                            tracing::warn!("terminal/output parse error: {e}");
                         }
                     }
                 }
                 // Other notification types can be handled here in the future
             }
-            log::info!("Notification listener exited");
+            tracing::info!("Notification listener exited");
         });
+    }
+
+    /// Establish an RPC session on the host via session/resume_or_create.
+    ///
+    /// On first call, creates a new session and stores the session_id + auth_token.
+    /// On subsequent calls (after reconnect), resumes the existing session so
+    /// terminals and other state survive transport switches.
+    async fn establish_rpc_session(session: &Arc<Self>) {
+        let auth_token = {
+            let guard = session.auth_token.lock().unwrap();
+            guard.clone()
+        }
+        .unwrap_or_else(|| {
+            // Generate a stable auth token for this session lifetime
+            let token = format!("{:016x}", std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos());
+            if let Ok(mut guard) = session.auth_token.lock() {
+                *guard = Some(token.clone());
+            }
+            token
+        });
+
+        let existing_session_id = session.session_id();
+
+        let params = zedra_rpc::SessionResumeParams {
+            session_id: existing_session_id.clone(),
+            auth_token,
+            last_notif_seq: 0,
+        };
+
+        match session
+            .client
+            .call(
+                methods::SESSION_RESUME_OR_CREATE,
+                serde_json::to_value(&params).unwrap(),
+            )
+            .await
+        {
+            Ok(resp) => {
+                if let Some(result) = resp.result {
+                    match serde_json::from_value::<zedra_rpc::SessionResumeResult>(result) {
+                        Ok(resume) => {
+                            tracing::info!(
+                                "RPC session {}: id={}, backlog={} notifications",
+                                if resume.resumed { "resumed" } else { "created" },
+                                resume.session_id,
+                                resume.backlog.len(),
+                            );
+                            if let Ok(mut id_slot) = session.session_id.lock() {
+                                *id_slot = Some(resume.session_id);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("session/resume_or_create parse error: {}", e);
+                        }
+                    }
+                } else if let Some(err) = resp.error {
+                    tracing::warn!("session/resume_or_create error: {}", err.message);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("session/resume_or_create call failed: {}", e);
+            }
+        }
     }
 
     /// Fetch session/info from the host and populate the session state.
@@ -350,32 +495,47 @@ impl RemoteSession {
                             if let Ok(mut s) = info_state.lock() {
                                 *s = SessionState::Connected {
                                     hostname: info.hostname,
+                                    username: info.username,
                                     workdir: info.workdir,
+                                    os: info.os.unwrap_or_default(),
+                                    arch: info.arch.unwrap_or_default(),
+                                    os_version: info.os_version.unwrap_or_default(),
+                                    host_version: info.host_version.unwrap_or_default(),
                                 };
                             }
                         }
                         Err(e) => {
-                            log::warn!("session/info parse error: {e}");
+                            tracing::warn!("session/info parse error: {e}");
                             if let Ok(mut s) = info_state.lock() {
                                 *s = SessionState::Connected {
                                     hostname: hostname_fallback,
+                                    username: String::new(),
                                     workdir: String::new(),
+                                    os: String::new(),
+                                    arch: String::new(),
+                                    os_version: String::new(),
+                                    host_version: String::new(),
                                 };
                             }
                         }
                     }
                 } else if let Some(err) = resp.error {
-                    log::warn!("session/info error: {}", err.message);
+                    tracing::warn!("session/info error: {}", err.message);
                     if let Ok(mut s) = info_state.lock() {
                         *s = SessionState::Connected {
                             hostname: hostname_fallback,
+                            username: String::new(),
                             workdir: String::new(),
+                            os: String::new(),
+                            arch: String::new(),
+                            os_version: String::new(),
+                            host_version: String::new(),
                         };
                     }
                 }
             }
             Err(e) => {
-                log::warn!("session/info call failed: {e}");
+                tracing::warn!("session/info call failed: {e}");
                 if let Ok(mut s) = info_state.lock() {
                     *s = SessionState::Error(format!("session/info failed: {e}"));
                 }
@@ -395,17 +555,53 @@ impl RemoteSession {
             .unwrap_or(SessionState::Disconnected)
     }
 
-    /// The shared output buffer that receives terminal data from the host.
+    /// The shared output buffer for the active terminal (backward compat).
+    ///
+    /// If an active terminal is set and has a per-terminal buffer, returns that.
+    /// Otherwise falls back to the legacy single buffer.
     pub fn output_buffer(&self) -> OutputBuffer {
+        if let Some(id) = self.active_terminal_id() {
+            if let Some(buf) = self.output_buffer_for(&id) {
+                return buf;
+            }
+        }
         self.terminal_output.clone()
     }
 
-    /// The currently-active terminal ID (set after `terminal_create`).
-    pub fn terminal_id(&self) -> Option<String> {
-        self.terminal_id
+    /// Get the output buffer for a specific terminal ID.
+    pub fn output_buffer_for(&self, id: &str) -> Option<OutputBuffer> {
+        self.terminal_outputs
+            .lock()
+            .ok()
+            .and_then(|map| map.get(id).cloned())
+    }
+
+    /// The currently-active terminal ID (receives input from send_terminal_input).
+    pub fn active_terminal_id(&self) -> Option<String> {
+        self.active_terminal_id
             .lock()
             .ok()
             .and_then(|guard| guard.clone())
+    }
+
+    /// Backward-compat alias for `active_terminal_id()`.
+    pub fn terminal_id(&self) -> Option<String> {
+        self.active_terminal_id()
+    }
+
+    /// List all terminal IDs in creation order.
+    pub fn terminal_ids(&self) -> Vec<String> {
+        self.terminal_ids
+            .lock()
+            .map(|ids| ids.clone())
+            .unwrap_or_default()
+    }
+
+    /// Switch which terminal receives input from `send_terminal_input()`.
+    pub fn set_active_terminal(&self, id: &str) {
+        if let Ok(mut active) = self.active_terminal_id.lock() {
+            *active = Some(id.to_string());
+        }
     }
 
     /// The session ID assigned by the host (if available).
@@ -416,16 +612,14 @@ impl RemoteSession {
             .and_then(|guard| guard.clone())
     }
 
-    /// Current transport state (None for direct TCP connections).
-    pub fn transport_state(&self) -> Option<TransportState> {
-        self.transport_state
-            .as_ref()
-            .and_then(|ts| ts.lock().ok().map(|s| s.clone()))
-    }
-
     /// Latest ping RTT in milliseconds (0 = not yet measured).
     pub fn latency_ms(&self) -> u64 {
         self.latency_ms.load(Ordering::Relaxed)
+    }
+
+    /// Connection path metadata (direct P2P vs relay).
+    pub fn connection_info(&self) -> Option<ConnectionInfo> {
+        self.connection_info.lock().ok().and_then(|g| g.clone())
     }
 
     /// Send a `session/ping` RPC and measure the round-trip time.
@@ -454,11 +648,11 @@ impl RemoteSession {
                     Ok(_) => {
                         let rtt = start.elapsed().as_millis() as u64;
                         latency_ms.store(rtt, Ordering::Relaxed);
-                        log::debug!("ping RTT: {}ms", rtt);
+                        tracing::debug!("ping RTT: {}ms", rtt);
                     }
                     Err(e) => {
                         latency_ms.store(0, Ordering::Relaxed);
-                        log::warn!("ping failed: {}", e);
+                        tracing::warn!("ping failed: {}", e);
                     }
                 }
             }
@@ -601,7 +795,7 @@ impl RemoteSession {
     // -----------------------------------------------------------------------
 
     /// Create a new terminal on the remote host.
-    /// Stores the returned terminal ID in `self.terminal_id`.
+    /// Registers a per-terminal output buffer and sets as active if first terminal.
     pub async fn terminal_create(&self, cols: u16, rows: u16) -> Result<String> {
         let params = TermCreateParams { cols, rows };
         let resp = self
@@ -609,10 +803,30 @@ impl RemoteSession {
             .call(methods::TERM_CREATE, serde_json::to_value(&params)?)
             .await?;
         let result: TermCreateResult = Self::extract_result(resp)?;
-        if let Ok(mut id_slot) = self.terminal_id.lock() {
-            *id_slot = Some(result.id.clone());
+
+        // Register per-terminal output buffer
+        {
+            let mut map = self.terminal_outputs.lock().unwrap();
+            map.entry(result.id.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(VecDeque::new())));
         }
-        log::info!("Terminal created with id: {}", result.id);
+
+        // Append to terminal IDs list
+        let is_first = {
+            let mut ids = self.terminal_ids.lock().unwrap();
+            let first = ids.is_empty();
+            ids.push(result.id.clone());
+            first
+        };
+
+        // Set as active if it's the first terminal
+        if is_first {
+            if let Ok(mut active) = self.active_terminal_id.lock() {
+                *active = Some(result.id.clone());
+            }
+        }
+
+        tracing::info!("Terminal created with id: {}", result.id);
         Ok(result.id)
     }
 
@@ -643,13 +857,10 @@ impl RemoteSession {
         Self::check_error(resp)
     }
 
-    /// Close the active terminal (uses the stored terminal_id).
+    /// Close the active terminal.
     pub async fn terminal_close(&self) -> Result<()> {
         let id = self
-            .terminal_id
-            .lock()
-            .ok()
-            .and_then(|guard| guard.clone())
+            .active_terminal_id()
             .ok_or_else(|| anyhow::anyhow!("no active terminal to close"))?;
 
         let resp = self
@@ -657,9 +868,22 @@ impl RemoteSession {
             .call(methods::TERM_CLOSE, serde_json::json!({ "id": id }))
             .await?;
 
-        // Clear stored terminal ID
-        if let Ok(mut id_slot) = self.terminal_id.lock() {
-            *id_slot = None;
+        // Remove from terminal_ids
+        if let Ok(mut ids) = self.terminal_ids.lock() {
+            ids.retain(|i| i != &id);
+        }
+
+        // Remove per-terminal buffer
+        if let Ok(mut map) = self.terminal_outputs.lock() {
+            map.remove(&id);
+        }
+
+        // If this was the active terminal, switch to the next available one
+        if self.active_terminal_id() == Some(id) {
+            let next = self.terminal_ids.lock().ok().and_then(|ids| ids.first().cloned());
+            if let Ok(mut active) = self.active_terminal_id.lock() {
+                *active = next;
+            }
         }
 
         Self::check_error(resp)

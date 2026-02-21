@@ -108,14 +108,14 @@ impl GestureArena {
         arena.add(PanRecognizer::new(
             GestureKind::DrawerPan,
             true,  // horizontal
-            20.0,  // activate after 20px horizontal
-            15.0,  // fail after 15px vertical
+            10.0,  // activate after 10px horizontal
+            12.0,  // fail after 12px vertical
         ));
         arena.add(PanRecognizer::new(
             GestureKind::Scroll,
             false, // vertical
-            10.0,  // activate after 10px vertical
-            15.0,  // fail after 15px horizontal
+            2.0,   // activate after 2px vertical — near-instant scroll start
+            12.0,  // fail after 12px horizontal
         ));
         arena
     }
@@ -133,6 +133,17 @@ impl GestureArena {
 
     pub fn winner(&self) -> Option<GestureKind> {
         self.winner.map(|i| self.recognizers[i].kind)
+    }
+
+    /// Return the accumulated (x, y) delta for a recognizer by kind.
+    /// Used to replay buffered movement when a winner is first determined.
+    pub fn accumulated_delta(&self, kind: GestureKind) -> (f32, f32) {
+        for rec in &self.recognizers {
+            if rec.kind == kind {
+                return (rec.accum_x, rec.accum_y);
+            }
+        }
+        (0.0, 0.0)
     }
 
     /// Feed delta to all undetermined recognizers. Returns the winner if one just activated.
