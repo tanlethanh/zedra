@@ -33,6 +33,10 @@ enum Commands {
         /// Disable relay transport
         #[arg(long)]
         no_relay: bool,
+
+        /// Output startup info as a single JSON line (for tool integration)
+        #[arg(long)]
+        json: bool,
     },
     /// List paired devices
     Devices,
@@ -86,6 +90,7 @@ async fn main() -> Result<()> {
             workdir,
             relay_url,
             no_relay,
+            json,
         } => {
             let workdir = std::path::PathBuf::from(workdir)
                 .canonicalize()
@@ -133,8 +138,17 @@ async fn main() -> Result<()> {
 
             // 2. Generate QR code (needs endpoint info)
             let endpoint_info = iroh_listener::get_endpoint_info(&endpoint);
-            if let Err(e) = qr::generate_pairing_qr(&endpoint_info, &host_identity, coord) {
-                tracing::warn!("Failed to generate QR code: {}", e);
+            match qr::build_pairing_info(&endpoint_info, &host_identity, coord) {
+                Ok(info) => {
+                    if json {
+                        qr::print_pairing_json(&info);
+                    } else {
+                        qr::generate_pairing_qr(&endpoint_info, &host_identity, coord).ok();
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to generate QR code: {}", e);
+                }
             }
 
             // 3. Spawn CF Worker publish loop (background task)

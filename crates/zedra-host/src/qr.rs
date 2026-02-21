@@ -25,15 +25,25 @@ struct PairingPayload {
     coord_url: Option<String>,
 }
 
-/// Generate and display a pairing QR code for iroh-based connections.
-///
-/// The QR includes the iroh EndpointId (Ed25519 public key) which is both
-/// the host's identity and the addressing key for iroh connections.
-pub fn generate_pairing_qr(
+/// Machine-readable startup output for `--json` mode.
+#[derive(Serialize)]
+pub struct StartupInfo {
+    pub status: String,
+    pub host: String,
+    pub endpoint_id: String,
+    pub device_id: String,
+    pub relay_url: Option<String>,
+    pub direct_addrs: Vec<String>,
+    pub pairing_uri: String,
+    pub qr_code: String,
+}
+
+/// Build the pairing info (URI, QR string, metadata) without printing anything.
+pub fn build_pairing_info(
     endpoint_info: &crate::iroh_listener::EndpointQrInfo,
     identity: &SharedIdentity,
     coord_url: Option<&str>,
-) -> Result<()> {
+) -> Result<StartupInfo> {
     let hostname = gethostname();
 
     let payload = PairingPayload {
@@ -52,23 +62,56 @@ pub fn generate_pairing_qr(
     let code = QrCode::with_error_correction_level(uri.as_bytes(), EcLevel::L)?;
     let qr_string = render_qr_compact(&code);
 
+    Ok(StartupInfo {
+        status: "ready".to_string(),
+        host: hostname,
+        endpoint_id: endpoint_info.endpoint_id.clone(),
+        device_id: identity.device_id.short().to_string(),
+        relay_url: endpoint_info.relay_url.clone(),
+        direct_addrs: endpoint_info.direct_addrs.clone(),
+        pairing_uri: uri,
+        qr_code: qr_string,
+    })
+}
+
+/// Generate and display a pairing QR code for iroh-based connections.
+///
+/// The QR includes the iroh EndpointId (Ed25519 public key) which is both
+/// the host's identity and the addressing key for iroh connections.
+pub fn generate_pairing_qr(
+    endpoint_info: &crate::iroh_listener::EndpointQrInfo,
+    identity: &SharedIdentity,
+    coord_url: Option<&str>,
+) -> Result<()> {
+    let info = build_pairing_info(endpoint_info, identity, coord_url)?;
+    print_pairing_info(&info);
+    Ok(())
+}
+
+/// Print pairing info in human-readable format.
+fn print_pairing_info(info: &StartupInfo) {
     println!();
     println!("  Zedra Host Pairing");
     println!("  ==================");
     println!();
     println!("  Scan this QR code with the Zedra app to pair this device.");
-    println!("  Host: {}", hostname);
-    println!("  Endpoint: {}", &endpoint_info.endpoint_id[..16]);
-    println!("  Device ID: {}", identity.device_id.short());
-    if let Some(ref relay) = endpoint_info.relay_url {
+    println!("  Host: {}", info.host);
+    println!("  Endpoint: {}", &info.endpoint_id[..16]);
+    println!("  Device ID: {}", info.device_id);
+    if let Some(ref relay) = info.relay_url {
         println!("  Relay: {}", relay);
     }
-    println!("  Direct addrs: {}", endpoint_info.direct_addrs.len());
+    println!("  Direct addrs: {}", info.direct_addrs.len());
     println!();
-    println!("{}", qr_string);
+    println!("{}", info.qr_code);
     println!();
+}
 
-    Ok(())
+/// Print pairing info as a single JSON line to stdout.
+pub fn print_pairing_json(info: &StartupInfo) {
+    if let Ok(json) = serde_json::to_string(info) {
+        println!("{}", json);
+    }
 }
 
 /// Collect all non-loopback IPv4 addresses on the host.
