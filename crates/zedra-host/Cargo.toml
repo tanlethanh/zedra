@@ -70,6 +70,9 @@ log.workspace = true
 [dev-dependencies]
 tempfile = "3"
 base64-url.workspace = true
+serde_json.workspace = true
+iroh = { workspace = true, features = ["test-utils"] }
+iroh-relay = { workspace = true }
 
 [[test]]
 name = "integration"

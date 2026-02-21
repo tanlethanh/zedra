@@ -7,6 +7,9 @@ export default defineWorkersConfig({
         wrangler: { configPath: "./wrangler.toml" },
         miniflare: {
           kvNamespaces: ["ZEDRA_RELAY_KV"],
+          durableObjects: {
+            ZEDRA_RELAY_ENDPOINT: "RelayEndpoint",
+          },
         },
       },
     },

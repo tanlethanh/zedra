@@ -41,6 +41,7 @@ rust-embed = "8"
 
 # P2P networking (iroh)
 iroh = "0.96"
+iroh-relay = { version = "0.96", features = ["server", "test-utils"] }
 
 # Patch blade-graphics to use local version with Android fixes
 [patch.'https://github.com/kvark/blade']
