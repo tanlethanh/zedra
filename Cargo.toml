@@ -47,3 +47,10 @@ iroh = "0.96"
 blade-graphics = { path = "vendor/blade/blade-graphics" }
 blade-macros = { path = "vendor/blade/blade-macros" }
 blade-util = { path = "vendor/blade/blade-util" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+codegen-units = 1
+panic = "abort"
