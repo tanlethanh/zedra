@@ -4,7 +4,7 @@ use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator, Tree}
 
 /// Highlight queries for Rust, embedded from vendor/zed's language definitions.
 const RUST_HIGHLIGHTS_SCM: &str =
-    include_str!("../../../vendor/zed/crates/languages/src/rust/highlights.scm");
+    include_str!("../../../../vendor/zed/crates/languages/src/rust/highlights.scm");
 
 /// Wraps tree-sitter parsing and highlight query execution.
 pub struct Highlighter {

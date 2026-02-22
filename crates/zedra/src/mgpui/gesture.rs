@@ -167,3 +167,86 @@ impl GestureArena {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scroll_wins_for_vertical_movement() {
+        let mut arena = GestureArena::default_drawer_scroll();
+        let winner = arena.on_move(0.0, -5.0);
+        assert_eq!(winner, Some(GestureKind::Scroll));
+        assert_eq!(arena.winner(), Some(GestureKind::Scroll));
+    }
+
+    #[test]
+    fn drawer_pan_wins_for_horizontal_movement() {
+        let mut arena = GestureArena::default_drawer_scroll();
+        let winner = arena.on_move(15.0, 0.0);
+        assert_eq!(winner, Some(GestureKind::DrawerPan));
+        assert_eq!(arena.winner(), Some(GestureKind::DrawerPan));
+    }
+
+    #[test]
+    fn no_winner_below_thresholds() {
+        let mut arena = GestureArena::default_drawer_scroll();
+        let winner = arena.on_move(1.0, 1.0);
+        assert_eq!(winner, None);
+        assert_eq!(arena.winner(), None);
+    }
+
+    #[test]
+    fn cross_axis_fails_both_recognizers() {
+        let mut arena = GestureArena::default_drawer_scroll();
+        // Diagonal: 15px each axis → both fail_offsets (12px) exceeded
+        let winner = arena.on_move(15.0, 15.0);
+        assert_eq!(winner, None);
+        assert_eq!(arena.winner(), None);
+    }
+
+    #[test]
+    fn reset_clears_winner() {
+        let mut arena = GestureArena::default_drawer_scroll();
+        arena.on_move(0.0, -5.0);
+        assert_eq!(arena.winner(), Some(GestureKind::Scroll));
+        arena.reset();
+        assert_eq!(arena.winner(), None);
+    }
+
+    #[test]
+    fn accumulated_delta_returns_buffered_movement() {
+        let mut arena = GestureArena::default_drawer_scroll();
+        arena.on_move(1.0, -1.5);
+        arena.on_move(0.5, -2.0);
+        // Scroll wins (vertical |3.5| > threshold 2.0)
+        assert_eq!(arena.winner(), Some(GestureKind::Scroll));
+        let (ax, ay) = arena.accumulated_delta(GestureKind::Scroll);
+        assert!((ax - 1.5).abs() < 0.01);
+        assert!((ay - (-3.5)).abs() < 0.01);
+    }
+
+    #[test]
+    fn winner_persists_after_more_movement() {
+        let mut arena = GestureArena::default_drawer_scroll();
+        arena.on_move(0.0, -5.0);
+        assert_eq!(arena.winner(), Some(GestureKind::Scroll));
+        arena.on_move(50.0, 0.0);
+        assert_eq!(arena.winner(), Some(GestureKind::Scroll));
+    }
+
+    #[test]
+    fn recognizer_activates_on_primary_axis() {
+        let mut rec = PanRecognizer::new(GestureKind::Scroll, false, 5.0, 10.0);
+        assert_eq!(rec.on_move(0.0, -3.0), GestureState::Undetermined);
+        assert_eq!(rec.on_move(0.0, -3.0), GestureState::Active);
+        // Once active, stays active
+        assert_eq!(rec.on_move(100.0, 0.0), GestureState::Active);
+    }
+
+    #[test]
+    fn recognizer_fails_on_cross_axis() {
+        let mut rec = PanRecognizer::new(GestureKind::Scroll, false, 5.0, 10.0);
+        assert_eq!(rec.on_move(11.0, 0.0), GestureState::Failed);
+    }
+}

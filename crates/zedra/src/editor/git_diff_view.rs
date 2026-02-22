@@ -1,25 +1,178 @@
 //! GitDiffView - Standalone diff viewer for a single file
 //!
 //! Pushed onto the StackNavigator when a git file is selected from GitSidebar.
+//! Also contains unified-diff data structures and parser.
 
 use std::ops::Range;
 use std::rc::Rc;
 
-use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use crate::diff_view::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
-use crate::syntax_highlighter::Highlighter;
-use crate::syntax_theme::SyntaxTheme;
-
+use super::syntax_highlighter::Highlighter;
+use super::syntax_theme::SyntaxTheme;
 use crate::theme;
+
+// ── Diff data types ─────────────────────────────────────────────────────────
+
+/// The kind of change a diff line represents.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DiffLineKind {
+    Header,
+    Added,
+    Removed,
+    Unchanged,
+}
+
+/// A single line in a diff hunk.
+#[derive(Clone, Debug)]
+pub struct DiffLine {
+    pub kind: DiffLineKind,
+    pub old_line_num: Option<usize>,
+    pub new_line_num: Option<usize>,
+    pub content: String,
+}
+
+/// A contiguous hunk of changes.
+#[derive(Clone, Debug)]
+pub struct DiffHunk {
+    pub old_start: usize,
+    pub old_count: usize,
+    pub new_start: usize,
+    pub new_count: usize,
+    pub lines: Vec<DiffLine>,
+}
+
+/// A single file's diff (old path → new path with hunks).
+#[derive(Clone, Debug)]
+pub struct FileDiff {
+    pub old_path: String,
+    pub new_path: String,
+    pub hunks: Vec<DiffHunk>,
+}
+
+// ── Unified-diff parser ─────────────────────────────────────────────────────
+
+/// Parse a unified diff string into a list of per-file diffs.
+pub fn parse_unified_diff(text: &str) -> Vec<FileDiff> {
+    let mut diffs: Vec<FileDiff> = Vec::new();
+    let mut current_diff: Option<FileDiff> = None;
+    let mut current_hunk: Option<DiffHunk> = None;
+    let mut old_line: usize = 0;
+    let mut new_line: usize = 0;
+
+    for raw_line in text.lines() {
+        if let Some(path) = raw_line.strip_prefix("--- ") {
+            if let (Some(diff), Some(hunk)) = (&mut current_diff, current_hunk.take()) {
+                diff.hunks.push(hunk);
+            }
+            if let Some(diff) = current_diff.take() {
+                diffs.push(diff);
+            }
+            let path = path.strip_prefix("a/").unwrap_or(path);
+            current_diff = Some(FileDiff {
+                old_path: path.to_string(),
+                new_path: String::new(),
+                hunks: Vec::new(),
+            });
+        } else if let Some(path) = raw_line.strip_prefix("+++ ") {
+            let path = path.strip_prefix("b/").unwrap_or(path);
+            if let Some(diff) = &mut current_diff {
+                diff.new_path = path.to_string();
+            }
+        } else if raw_line.starts_with("@@ ") {
+            if let (Some(diff), Some(hunk)) = (&mut current_diff, current_hunk.take()) {
+                diff.hunks.push(hunk);
+            }
+            let (os, oc, ns, nc) = parse_hunk_header(raw_line);
+            old_line = os;
+            new_line = ns;
+            current_hunk = Some(DiffHunk {
+                old_start: os,
+                old_count: oc,
+                new_start: ns,
+                new_count: nc,
+                lines: Vec::new(),
+            });
+        } else if let Some(hunk) = &mut current_hunk {
+            if let Some(content) = raw_line.strip_prefix('+') {
+                hunk.lines.push(DiffLine {
+                    kind: DiffLineKind::Added,
+                    old_line_num: None,
+                    new_line_num: Some(new_line),
+                    content: content.to_string(),
+                });
+                new_line += 1;
+            } else if let Some(content) = raw_line.strip_prefix('-') {
+                hunk.lines.push(DiffLine {
+                    kind: DiffLineKind::Removed,
+                    old_line_num: Some(old_line),
+                    new_line_num: None,
+                    content: content.to_string(),
+                });
+                old_line += 1;
+            } else {
+                let content = raw_line.strip_prefix(' ').unwrap_or(raw_line);
+                hunk.lines.push(DiffLine {
+                    kind: DiffLineKind::Unchanged,
+                    old_line_num: Some(old_line),
+                    new_line_num: Some(new_line),
+                    content: content.to_string(),
+                });
+                old_line += 1;
+                new_line += 1;
+            }
+        }
+    }
+
+    if let (Some(diff), Some(hunk)) = (&mut current_diff, current_hunk.take()) {
+        diff.hunks.push(hunk);
+    }
+    if let Some(diff) = current_diff.take() {
+        diffs.push(diff);
+    }
+
+    diffs
+}
+
+fn parse_hunk_header(line: &str) -> (usize, usize, usize, usize) {
+    let trimmed = line
+        .strip_prefix("@@ ")
+        .unwrap_or(line)
+        .split(" @@")
+        .next()
+        .unwrap_or("");
+
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    let (old_start, old_count) = parse_range(parts.first().unwrap_or(&""));
+    let (new_start, new_count) = parse_range(parts.get(1).unwrap_or(&""));
+    (old_start, old_count, new_start, new_count)
+}
+
+fn parse_range(s: &str) -> (usize, usize) {
+    let s = s.trim_start_matches(['-', '+']);
+    if let Some((start, count)) = s.split_once(',') {
+        (start.parse().unwrap_or(1), count.parse().unwrap_or(0))
+    } else {
+        (s.parse().unwrap_or(1), 1)
+    }
+}
+
+/// Return sample `FileDiff` entries for offline/demo use.
+pub fn sample_diffs() -> Vec<FileDiff> {
+    vec![FileDiff {
+        old_path: "src/lib.rs".to_string(),
+        new_path: "src/lib.rs".to_string(),
+        hunks: Vec::new(),
+    }]
+}
+
+// ── GitDiffView ─────────────────────────────────────────────────────────────
 
 const LINE_HEIGHT: f32 = theme::EDITOR_LINE_HEIGHT;
 const GUTTER_WIDTH: f32 = theme::EDITOR_GUTTER_WIDTH;
 const FONT_SIZE: f32 = theme::EDITOR_FONT_SIZE;
 const GUTTER_FONT_SIZE: f32 = theme::EDITOR_GUTTER_FONT_SIZE;
 
-/// Cached per-line data for the diff view.
 struct CachedDiffLine {
     line: Option<DiffLine>,
     highlights: Vec<(Range<usize>, HighlightStyle)>,
@@ -27,7 +180,7 @@ struct CachedDiffLine {
 
 pub struct GitDiffView {
     diff: FileDiff,
-    file_path: String,
+    _file_path: String,
     highlighter: Highlighter,
     theme: SyntaxTheme,
     scroll_handle: UniformListScrollHandle,
@@ -40,7 +193,7 @@ impl GitDiffView {
     pub fn new(diff: FileDiff, file_path: String, cx: &mut App) -> Self {
         Self {
             diff,
-            file_path,
+            _file_path: file_path,
             highlighter: Highlighter::rust(),
             theme: SyntaxTheme::default_dark(),
             scroll_handle: UniformListScrollHandle::new(),

@@ -7,7 +7,7 @@ use ndk::native_window::NativeWindow;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Once};
 
-use crate::android_command_queue::{AndroidCommand, get_command_sender};
+use crate::android::command_queue::{AndroidCommand, get_command_sender};
 
 // Global storage for JavaVM to enable Rust→Java callbacks
 static JVM: Mutex<Option<Arc<JavaVM>>> = Mutex::new(None);
@@ -157,7 +157,7 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_gpuiInitMainThread(
     _class: JClass,
 ) {
     log::info!("gpuiInitMainThread called - initializing thread-local AndroidApp");
-    crate::android_app::init_android_app();
+    crate::android::app::init_android_app();
 }
 
 /// Process commands from the queue on the main thread
@@ -169,7 +169,7 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_gpuiProcessCommands(
     _class: JClass,
 ) {
     // Process all pending commands
-    if let Err(e) = crate::android_app::process_commands_from_queue() {
+    if let Err(e) = crate::android::app::process_commands_from_queue() {
         log::error!("Error processing commands: {:?}", e);
     }
 }
@@ -184,7 +184,7 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_gpuiProcessCriticalComman
     _class: JClass,
 ) {
     log::info!("Processing critical commands immediately");
-    if let Err(e) = crate::android_app::process_commands_from_queue() {
+    if let Err(e) = crate::android::app::process_commands_from_queue() {
         log::error!("Error processing critical commands: {:?}", e);
     }
 }
@@ -273,7 +273,7 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeProcessSurfaceCo
     _env: JNIEnv,
     _class: JClass,
 ) {
-    if let Err(e) = crate::android_app::process_commands_from_queue() {
+    if let Err(e) = crate::android::app::process_commands_from_queue() {
         log::error!("Error processing surface commands: {:?}", e);
     }
 }

@@ -4,9 +4,9 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use crate::syntax_highlighter::Highlighter;
-use crate::syntax_theme::SyntaxTheme;
-use crate::text_buffer::Buffer;
+use super::syntax_highlighter::Highlighter;
+use super::syntax_theme::SyntaxTheme;
+use super::text_buffer::Buffer;
 
 use crate::theme;
 

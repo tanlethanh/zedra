@@ -1,7 +1,6 @@
-use std::sync::{Arc, Mutex};
-
 use gpui::*;
 
+use crate::pending::{shared_pending_slot, SharedPendingSlot};
 use crate::theme;
 
 #[derive(Clone, Debug)]
@@ -60,9 +59,9 @@ pub struct FileExplorer {
     /// Whether entries were loaded from the remote host
     remote_loaded: bool,
     /// Pending root entries from async fs/list (per-instance, not global)
-    pending_entries: Arc<Mutex<Option<Vec<FileEntry>>>>,
+    pending_entries: SharedPendingSlot<Vec<FileEntry>>,
     /// Pending children from async fs/list (per-instance, not global)
-    pending_children: Arc<Mutex<Option<(Vec<usize>, Vec<FileEntry>)>>>,
+    pending_children: SharedPendingSlot<(Vec<usize>, Vec<FileEntry>)>,
 }
 
 impl FileExplorer {
@@ -71,8 +70,8 @@ impl FileExplorer {
             entries: demo_entries(),
             focus_handle: cx.focus_handle(),
             remote_loaded: false,
-            pending_entries: Arc::new(Mutex::new(None)),
-            pending_children: Arc::new(Mutex::new(None)),
+            pending_entries: shared_pending_slot(),
+            pending_children: shared_pending_slot(),
         };
 
         // If there's an active session, load root entries from remote
@@ -89,7 +88,7 @@ impl FileExplorer {
     }
 
     /// Attempt to load the root directory listing from the active remote session
-    fn try_load_remote_root(&mut self, cx: &mut Context<Self>) {
+    fn try_load_remote_root(&mut self, _cx: &mut Context<Self>) {
         let session = match zedra_session::active_session() {
             Some(s) => s,
             None => return,
@@ -120,23 +119,19 @@ impl FileExplorer {
                         })
                         .collect();
 
-                    if let Ok(mut slot) = pending.lock() {
-                        *slot = Some(file_entries);
-                    }
+                    pending.set(file_entries);
                     zedra_session::signal_terminal_data(); // trigger re-render
                 }
                 Err(e) => {
                     log::error!("fs/list failed: {}", e);
-                    if let Ok(mut slot) = pending.lock() {
-                        *slot = Some(vec![FileEntry {
-                            name: format!("Error: {}", e),
-                            path: String::new(),
-                            is_dir: false,
-                            expanded: false,
-                            children: Vec::new(),
-                            loading: false,
-                        }]);
-                    }
+                    pending.set(vec![FileEntry {
+                        name: format!("Error: {}", e),
+                        path: String::new(),
+                        is_dir: false,
+                        expanded: false,
+                        children: Vec::new(),
+                        loading: false,
+                    }]);
                     zedra_session::signal_terminal_data();
                 }
             }
@@ -145,12 +140,7 @@ impl FileExplorer {
 
     /// Check for pending entries from async fs/list and apply them
     fn apply_pending_entries(&mut self) {
-        let taken = self
-            .pending_entries
-            .try_lock()
-            .ok()
-            .and_then(|mut s| s.take());
-        if let Some(entries) = taken {
+        if let Some(entries) = self.pending_entries.take() {
             self.entries = entries;
         }
     }
@@ -192,9 +182,7 @@ impl FileExplorer {
                         })
                         .collect();
 
-                    if let Ok(mut slot) = pending.lock() {
-                        *slot = Some((path_for_entries, file_entries));
-                    }
+                    pending.set((path_for_entries, file_entries));
                     zedra_session::signal_terminal_data();
                 }
                 Err(e) => {
@@ -206,12 +194,7 @@ impl FileExplorer {
 
     /// Check for pending children from async fs/list and apply them
     fn apply_pending_children(&mut self) {
-        let taken = self
-            .pending_children
-            .try_lock()
-            .ok()
-            .and_then(|mut s| s.take());
-        if let Some((path, children)) = taken {
+        if let Some((path, children)) = self.pending_children.take() {
             if let Some(entry) = self.entry_at_path_mut(&path) {
                 entry.children = children;
                 entry.loading = false;

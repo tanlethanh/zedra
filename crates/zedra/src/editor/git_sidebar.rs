@@ -2,12 +2,125 @@
 //!
 //! Shows staged/unstaged/untracked files with expand/collapse sections,
 //! commit controls, and branch info. Emits GitFileSelected when a file is tapped.
+//! Also owns the git state types used by the sidebar and app drawer.
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use crate::git_stack::{GitFileEntry, GitFileStatus, GitRepoState};
 use crate::theme;
+
+// ── Git state types ─────────────────────────────────────────────────────────
+
+/// Status of a file in the git working tree.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GitFileStatus {
+    Modified,
+    Added,
+    Deleted,
+    Renamed,
+    Untracked,
+}
+
+impl GitFileStatus {
+    pub fn color(&self) -> Hsla {
+        match self {
+            Self::Modified => rgb(0xe5c07b).into(),
+            Self::Added => rgb(0x98c379).into(),
+            Self::Deleted => rgb(0xe06c75).into(),
+            Self::Renamed => rgb(0x61afef).into(),
+            Self::Untracked => rgb(0x808080).into(),
+        }
+    }
+
+    pub fn icon(&self) -> &'static str {
+        match self {
+            Self::Modified => "M",
+            Self::Added => "A",
+            Self::Deleted => "D",
+            Self::Renamed => "R",
+            Self::Untracked => "?",
+        }
+    }
+
+    pub fn from_status_str(s: &str) -> Self {
+        match s {
+            "added" => Self::Added,
+            "deleted" => Self::Deleted,
+            "renamed" => Self::Renamed,
+            "untracked" => Self::Untracked,
+            _ => Self::Modified,
+        }
+    }
+}
+
+/// A single file entry in the git sidebar.
+#[derive(Clone, Debug)]
+pub struct GitFileEntry {
+    pub path: String,
+    pub filename: String,
+    pub status: GitFileStatus,
+    pub insertions: usize,
+    pub deletions: usize,
+}
+
+impl GitFileEntry {
+    pub fn new(path: &str, status: GitFileStatus, insertions: usize, deletions: usize) -> Self {
+        let filename = path.rsplit('/').next().unwrap_or(path).to_string();
+        Self {
+            path: path.to_string(),
+            filename,
+            status,
+            insertions,
+            deletions,
+        }
+    }
+}
+
+/// Repository state shown in the git sidebar.
+#[derive(Clone, Debug)]
+pub struct GitRepoState {
+    pub branch: String,
+    pub staged_files: Vec<GitFileEntry>,
+    pub unstaged_files: Vec<GitFileEntry>,
+    pub untracked_files: Vec<GitFileEntry>,
+    pub commit_message: String,
+}
+
+impl GitRepoState {
+    pub fn sample() -> Self {
+        Self {
+            branch: "main".to_string(),
+            staged_files: vec![GitFileEntry::new("src/lib.rs", GitFileStatus::Modified, 12, 3)],
+            unstaged_files: vec![GitFileEntry::new(
+                "src/main.rs",
+                GitFileStatus::Modified,
+                5,
+                1,
+            )],
+            untracked_files: vec![GitFileEntry::new(
+                "src/new_file.rs",
+                GitFileStatus::Untracked,
+                0,
+                0,
+            )],
+            commit_message: String::new(),
+        }
+    }
+
+    pub fn total_staged(&self) -> usize {
+        self.staged_files.len()
+    }
+
+    pub fn total_unstaged(&self) -> usize {
+        self.unstaged_files.len()
+    }
+
+    pub fn total_untracked(&self) -> usize {
+        self.untracked_files.len()
+    }
+}
+
+// ── Sidebar view ────────────────────────────────────────────────────────────
 
 const ICON_SIZE: f32 = 14.0;
 

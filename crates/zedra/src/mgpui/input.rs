@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use crate::android_jni;
 use crate::theme;
 
 /// Event emitted when the input value changes
@@ -76,7 +75,7 @@ impl Input {
         // Focus this element
         self.focus_handle.focus(window, cx);
         // Request keyboard
-        android_jni::show_keyboard();
+        crate::platform_bridge::bridge().show_keyboard();
         cx.notify();
     }
 
