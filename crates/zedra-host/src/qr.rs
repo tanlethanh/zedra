@@ -27,7 +27,15 @@ pub fn build_pairing_info(addr: &iroh::EndpointAddr) -> Result<StartupInfo> {
     let relay_url = addr.relay_urls().next().map(|u| u.to_string());
     let direct_addrs: Vec<String> = addr.ip_addrs().map(|a| a.to_string()).collect();
 
-    let pairing_code = zedra_rpc::encode_endpoint_addr(addr)?;
+    let pairing_code = format!("zedra://{}", zedra_rpc::encode_endpoint_addr(addr)?);
+
+    tracing::info!(
+        "QR pairing code: {} bytes, endpoint={}, relay={}, direct_addrs={}",
+        pairing_code.len(),
+        &endpoint_id[..16.min(endpoint_id.len())],
+        relay_url.as_deref().unwrap_or("none"),
+        direct_addrs.len(),
+    );
 
     let code = QrCode::with_error_correction_level(pairing_code.as_bytes(), EcLevel::L)?;
     let qr_string = render_qr_compact(&code);

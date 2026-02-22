@@ -471,10 +471,21 @@ impl AndroidApp {
             &qr_data[..qr_data.len().min(50)]
         );
 
-        // Decode the QR data into an iroh EndpointAddr
-        match zedra_rpc::decode_endpoint_addr(&qr_data) {
+        // Strip the zedra:// URI prefix if present, then decode
+        let payload = qr_data
+            .strip_prefix("zedra://")
+            .unwrap_or(&qr_data);
+        log::info!("QR payload: {} bytes (prefix stripped: {})", payload.len(), qr_data.len() != payload.len());
+        match zedra_rpc::decode_endpoint_addr(payload) {
             Ok(addr) => {
-                log::info!("QR parsed: endpoint={}", addr.id.fmt_short());
+                let relay = addr.relay_urls().next().map(|u| u.to_string());
+                let direct_count = addr.ip_addrs().count();
+                log::info!(
+                    "QR decoded: endpoint={}, relay={}, direct_addrs={}",
+                    addr.id.fmt_short(),
+                    relay.as_deref().unwrap_or("none"),
+                    direct_count,
+                );
                 crate::app::set_pending_qr_addr(addr);
                 zedra_session::signal_terminal_data();
             }

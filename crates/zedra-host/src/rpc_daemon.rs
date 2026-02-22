@@ -256,6 +256,11 @@ async fn dispatch(
             let (pty_reader, pty_writer, master) = shell.take_reader();
             let id = session.next_terminal_id().await;
 
+            tracing::info!(
+                "TermCreate: id={} cols={} rows={} session={}",
+                id, msg.cols, msg.rows, session.id,
+            );
+
             let output_sender = Arc::new(std::sync::Mutex::new(
                 None::<tokio::sync::mpsc::Sender<TermOutput>>,
             ));
@@ -328,6 +333,10 @@ async fn dispatch(
 
             // Replay backlog
             let backlog = session.backlog_after(&term_id, last_seq).await;
+            tracing::info!(
+                "TermAttach: id={} last_seq={} backlog_entries={} session={}",
+                term_id, last_seq, backlog.len(), session.id,
+            );
             for entry in backlog {
                 if irpc_tx
                     .send(TermOutput {

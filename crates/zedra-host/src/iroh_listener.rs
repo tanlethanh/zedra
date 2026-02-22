@@ -74,6 +74,12 @@ pub async fn run_accept_loop(
                 }
             };
 
+            tracing::info!(
+                "Accepted connection from {} (alpn={})",
+                conn.remote_id().fmt_short(),
+                String::from_utf8_lossy(conn.alpn()),
+            );
+
             if let Err(e) = rpc_daemon::handle_connection(conn, registry, state).await {
                 tracing::warn!("irpc connection error: {}", e);
             }

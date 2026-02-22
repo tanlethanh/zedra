@@ -516,6 +516,14 @@ impl RemoteSession {
     async fn fetch_session_info(session: &Arc<Self>, fallback_hostname: &str) {
         match session.client.rpc(SessionInfoReq {}).await {
             Ok(info) => {
+                tracing::info!(
+                    "Session info: host={}, user={}, workdir={}, os={}/{}",
+                    info.hostname,
+                    info.username,
+                    info.workdir,
+                    info.os.as_deref().unwrap_or("?"),
+                    info.arch.as_deref().unwrap_or("?"),
+                );
                 // Store session_id if present in the response
                 if let Some(ref sid) = info.session_id {
                     if let Ok(mut id_slot) = session.session_id.lock() {
