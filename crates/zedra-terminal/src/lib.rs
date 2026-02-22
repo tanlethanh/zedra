@@ -57,8 +57,8 @@ pub fn load_terminal_font(window: &mut gpui::Window) {
 
 use alacritty_terminal::event::{Event as AlacTermEvent, EventListener};
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::term::Config;
+use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, Processor};
 use gpui::Pixels;
@@ -144,7 +144,10 @@ impl TerminalState {
     /// Create a new terminal with the given grid dimensions
     pub fn new(columns: usize, rows: usize, cell_width: Pixels, line_height: Pixels) -> Self {
         let config = Config::default();
-        let term_size = SimpleDimensions { columns, screen_lines: rows };
+        let term_size = SimpleDimensions {
+            columns,
+            screen_lines: rows,
+        };
         let term = Term::new(config, &term_size, ZedraListener);
 
         Self {
@@ -212,7 +215,10 @@ impl TerminalState {
             columns,
             rows,
         };
-        let term_size = SimpleDimensions { columns, screen_lines: rows };
+        let term_size = SimpleDimensions {
+            columns,
+            screen_lines: rows,
+        };
         self.term.resize(term_size);
     }
 
@@ -230,6 +236,11 @@ impl TerminalState {
     pub fn scroll(&mut self, lines: i32) {
         let scroll = alacritty_terminal::grid::Scroll::Delta(lines);
         self.term.scroll_display(scroll);
+    }
+
+    /// Current display offset (0 = bottom, history_size = top)
+    pub fn display_offset(&self) -> usize {
+        self.term.grid().display_offset()
     }
 
     /// Get total history size

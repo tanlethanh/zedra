@@ -1,6 +1,7 @@
-use std::sync::{Arc, Mutex};
-
 use gpui::*;
+
+use crate::pending::{shared_pending_slot, SharedPendingSlot};
+use crate::theme;
 
 #[derive(Clone, Debug)]
 pub struct FileSelected {
@@ -58,9 +59,11 @@ pub struct FileExplorer {
     /// Whether entries were loaded from the remote host
     remote_loaded: bool,
     /// Pending root entries from async fs/list (per-instance, not global)
-    pending_entries: Arc<Mutex<Option<Vec<FileEntry>>>>,
+    pending_entries: SharedPendingSlot<Vec<FileEntry>>,
     /// Pending children from async fs/list (per-instance, not global)
-    pending_children: Arc<Mutex<Option<(Vec<usize>, Vec<FileEntry>)>>>,
+    pending_children: SharedPendingSlot<(Vec<usize>, Vec<FileEntry>)>,
+    /// Last flattened entry count, for change-only logging
+    last_flat_count: usize,
 }
 
 impl FileExplorer {
@@ -69,8 +72,9 @@ impl FileExplorer {
             entries: demo_entries(),
             focus_handle: cx.focus_handle(),
             remote_loaded: false,
-            pending_entries: Arc::new(Mutex::new(None)),
-            pending_children: Arc::new(Mutex::new(None)),
+            pending_entries: shared_pending_slot(),
+            pending_children: shared_pending_slot(),
+            last_flat_count: 0,
         };
 
         // If there's an active session, load root entries from remote
@@ -79,8 +83,15 @@ impl FileExplorer {
         explorer
     }
 
+    /// Reset to demo data (e.g. after disconnect)
+    pub fn reset_to_demo(&mut self, cx: &mut Context<Self>) {
+        self.entries = demo_entries();
+        self.remote_loaded = false;
+        cx.notify();
+    }
+
     /// Attempt to load the root directory listing from the active remote session
-    fn try_load_remote_root(&mut self, cx: &mut Context<Self>) {
+    fn try_load_remote_root(&mut self, _cx: &mut Context<Self>) {
         let session = match zedra_session::active_session() {
             Some(s) => s,
             None => return,
@@ -111,23 +122,19 @@ impl FileExplorer {
                         })
                         .collect();
 
-                    if let Ok(mut slot) = pending.lock() {
-                        *slot = Some(file_entries);
-                    }
+                    pending.set(file_entries);
                     zedra_session::signal_terminal_data(); // trigger re-render
                 }
                 Err(e) => {
                     log::error!("fs/list failed: {}", e);
-                    if let Ok(mut slot) = pending.lock() {
-                        *slot = Some(vec![FileEntry {
-                            name: format!("Error: {}", e),
-                            path: String::new(),
-                            is_dir: false,
-                            expanded: false,
-                            children: Vec::new(),
-                            loading: false,
-                        }]);
-                    }
+                    pending.set(vec![FileEntry {
+                        name: format!("Error: {}", e),
+                        path: String::new(),
+                        is_dir: false,
+                        expanded: false,
+                        children: Vec::new(),
+                        loading: false,
+                    }]);
                     zedra_session::signal_terminal_data();
                 }
             }
@@ -136,12 +143,7 @@ impl FileExplorer {
 
     /// Check for pending entries from async fs/list and apply them
     fn apply_pending_entries(&mut self) {
-        let taken = self
-            .pending_entries
-            .try_lock()
-            .ok()
-            .and_then(|mut s| s.take());
-        if let Some(entries) = taken {
+        if let Some(entries) = self.pending_entries.take() {
             self.entries = entries;
         }
     }
@@ -183,9 +185,7 @@ impl FileExplorer {
                         })
                         .collect();
 
-                    if let Ok(mut slot) = pending.lock() {
-                        *slot = Some((path_for_entries, file_entries));
-                    }
+                    pending.set((path_for_entries, file_entries));
                     zedra_session::signal_terminal_data();
                 }
                 Err(e) => {
@@ -197,12 +197,7 @@ impl FileExplorer {
 
     /// Check for pending children from async fs/list and apply them
     fn apply_pending_children(&mut self) {
-        let taken = self
-            .pending_children
-            .try_lock()
-            .ok()
-            .and_then(|mut s| s.take());
-        if let Some((path, children)) = taken {
+        if let Some((path, children)) = self.pending_children.take() {
             if let Some(entry) = self.entry_at_path_mut(&path) {
                 entry.children = children;
                 entry.loading = false;
@@ -293,27 +288,29 @@ impl Focusable for FileExplorer {
 
 impl Render for FileExplorer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // If a session appeared after construction, load remote root
+        if !self.remote_loaded && zedra_session::active_session().is_some() {
+            self.try_load_remote_root(cx);
+        }
+
         // Apply any pending async results
         self.apply_pending_entries();
         self.apply_pending_children();
 
         let flat = self.flatten();
 
-        let mut list = div().id("file-list").flex().flex_col().overflow_y_scroll();
+        if flat.len() != self.last_flat_count {
+            log::info!(
+                "[PERF] file_explorer: {} entries, remote={}",
+                flat.len(), self.remote_loaded
+            );
+            self.last_flat_count = flat.len();
+        }
+
+        let mut list = div().id("file-list").flex().flex_col();
 
         for entry in flat {
             let indent = entry.depth as f32 * 16.0;
-            let icon = if entry.loading {
-                "  ..."
-            } else if entry.is_dir {
-                if entry.expanded {
-                    "▼ 📁"
-                } else {
-                    "▶ 📁"
-                }
-            } else {
-                "  📄"
-            };
             let text_color = if entry.is_dir {
                 rgb(0xffffff) // white for dirs
             } else {
@@ -322,14 +319,42 @@ impl Render for FileExplorer {
             let index_path = entry.index_path.clone();
             let is_dir = entry.is_dir;
             let name = entry.name.clone();
+            let loading = entry.loading;
+            let expanded = entry.expanded;
             let index_path_for_path = index_path.clone();
+
+            let icon_element: AnyElement = if loading {
+                div()
+                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_size(px(theme::FONT_BODY))
+                    .child("...")
+                    .into_any_element()
+            } else if is_dir {
+                let (icon_path, icon_size) = if expanded {
+                    ("icons/folder-open.svg", px(theme::ICON_FILE_DIR))
+                } else {
+                    ("icons/folder.svg", px(theme::ICON_FILE))
+                };
+                svg()
+                    .path(icon_path)
+                    .size(icon_size)
+                    .text_color(rgb(theme::TEXT_SECONDARY))
+                    .into_any_element()
+            } else {
+                svg()
+                    .path("icons/file.svg")
+                    .size(px(theme::ICON_FILE))
+                    .text_color(rgb(0x808080))
+                    .into_any_element()
+            };
 
             list = list.child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .py(px(6.0))
+                    .gap(px(5.0))
+                    .py(px(4.0))
                     .pl(px(12.0 + indent))
                     .pr(px(8.0))
                     .cursor_pointer()
@@ -345,11 +370,12 @@ impl Render for FileExplorer {
                             }
                         }),
                     )
+                    .child(icon_element)
                     .child(
                         div()
                             .text_color(text_color)
-                            .text_sm()
-                            .child(format!("{} {}", icon, name)),
+                            .text_size(px(theme::FONT_BODY))
+                            .child(name),
                     ),
             );
         }

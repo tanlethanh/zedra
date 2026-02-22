@@ -54,8 +54,8 @@ cleanup() {
         kill "$HOST_PID" 2>/dev/null || true
         wait "$HOST_PID" 2>/dev/null || true
     fi
-    # Also kill any other zedra-host daemon processes on our port
-    pkill -f "zedra-host start.*--port $PORT" 2>/dev/null || true
+    # Also kill any other zedra daemon processes on our port
+    pkill -f "zedra start.*--port $PORT" 2>/dev/null || true
     echo -e "${GREEN}Clean shutdown.${NC}"
 }
 trap cleanup EXIT INT TERM
@@ -69,13 +69,13 @@ cd "$PROJECT_ROOT"
 
 # --- Step 1: Build host binary (desktop target) ---
 if [ "$SKIP_BUILD" = false ]; then
-    echo -e "${YELLOW}[1/6] Building zedra-host (desktop)...${NC}"
+    echo -e "${YELLOW}[1/6] Building zedra (desktop)...${NC}"
     cargo build -p zedra-host --release
     echo -e "${GREEN}  Host binary built.${NC}"
 else
     echo -e "${YELLOW}[1/6] Skipping host build (--skip-build)${NC}"
-    if [ ! -f "$PROJECT_ROOT/target/release/zedra-host" ]; then
-        echo -e "${RED}  Error: target/release/zedra-host not found. Run without --skip-build first.${NC}"
+    if [ ! -f "$PROJECT_ROOT/target/release/zedra" ]; then
+        echo -e "${RED}  Error: target/release/zedra not found. Run without --skip-build first.${NC}"
         exit 1
     fi
 fi
@@ -83,10 +83,10 @@ echo ""
 
 # --- Step 2: Kill existing daemon and start fresh ---
 echo -e "${YELLOW}[2/6] Starting host daemon on port $PORT...${NC}"
-pkill -f "zedra-host start.*--port $PORT" 2>/dev/null || true
+pkill -f "zedra start.*--port $PORT" 2>/dev/null || true
 sleep 0.5
 
-"$PROJECT_ROOT/target/release/zedra-host" start --port "$PORT" --bind 0.0.0.0 --workdir "$PROJECT_ROOT" &
+"$PROJECT_ROOT/target/release/zedra" start --port "$PORT" --bind 0.0.0.0 --workdir "$PROJECT_ROOT" &
 HOST_PID=$!
 
 # Wait for daemon to be ready

@@ -1,7 +1,33 @@
-name = "relay-worker"
+name = "zedra-relay"
 main = "src/index.ts"
 compatibility_date = "2024-05-01"
 
+routes = [
+  { pattern = "relay.zedra.dev/*", zone_name = "zedra.dev" },
+  { pattern = "relay.zedra.dev", custom_domain = true }
+]
+
 [[kv_namespaces]]
-binding = "RELAY_KV"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+binding = "ZEDRA_RELAY_KV"
+id = "34a6d7aaf5df43e99703d08e0fa61f57"
+
+[durable_objects]
+bindings = [
+  { name = "ZEDRA_RELAY_ENDPOINT", class_name = "RelayEndpoint" }
+]
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+
+[observability.traces]
+enabled = true
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["WsRelay"]
+
+[[migrations]]
+tag = "v2"
+deleted_classes = ["WsRelay"]
+new_sqlite_classes = ["RelayEndpoint"]

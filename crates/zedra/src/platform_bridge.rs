@@ -1,50 +1,60 @@
-// Unified platform bridge — provides the same interface on Android and iOS.
-//
-// Shared UI code calls these functions instead of platform-specific modules directly.
+/// Platform abstraction layer for Android/iOS integration.
+///
+/// Consolidates all platform-specific calls (density, insets, keyboard, QR scanner)
+/// behind a single trait. Android delegates to `android_jni`; the `StubBridge` fallback
+/// lets non-Android targets compile and run `cargo check`.
 
-#[cfg(target_os = "android")]
-pub fn show_keyboard() {
-    crate::android_jni::show_keyboard();
+use std::sync::OnceLock;
+
+pub trait PlatformBridge: Send + Sync + 'static {
+    fn density(&self) -> f32;
+    fn system_inset_top(&self) -> u32;
+    fn system_inset_bottom(&self) -> u32;
+    fn keyboard_height(&self) -> u32;
+    fn show_keyboard(&self);
+    fn hide_keyboard(&self);
+    fn launch_qr_scanner(&self);
 }
 
-#[cfg(target_os = "android")]
-pub fn hide_keyboard() {
-    crate::android_jni::hide_keyboard();
+static BRIDGE: OnceLock<Box<dyn PlatformBridge>> = OnceLock::new();
+
+pub fn set_bridge(bridge: impl PlatformBridge) {
+    let _ = BRIDGE.set(Box::new(bridge));
 }
 
-#[cfg(target_os = "android")]
-pub fn launch_qr_scanner() {
-    crate::android_jni::launch_qr_scanner();
+pub fn bridge() -> &'static dyn PlatformBridge {
+    BRIDGE.get().map(|b| &**b).unwrap_or(&StubBridge)
 }
 
-#[cfg(target_os = "ios")]
-unsafe extern "C" {
-    fn gpui_ios_get_window() -> *mut std::ffi::c_void;
-    fn gpui_ios_show_keyboard(window_ptr: *mut std::ffi::c_void);
-    fn gpui_ios_hide_keyboard(window_ptr: *mut std::ffi::c_void);
-}
-
-#[cfg(target_os = "ios")]
-pub fn show_keyboard() {
-    unsafe {
-        let window = gpui_ios_get_window();
-        if !window.is_null() {
-            gpui_ios_show_keyboard(window);
-        }
+/// Status bar top inset in logical pixels.
+/// Deduplicates the `if density > 0 { inset / density } else { 0 }` pattern.
+pub fn status_bar_inset() -> f32 {
+    let b = bridge();
+    let density = b.density();
+    if density > 0.0 {
+        b.system_inset_top() as f32 / density
+    } else {
+        0.0
     }
 }
 
-#[cfg(target_os = "ios")]
-pub fn hide_keyboard() {
-    unsafe {
-        let window = gpui_ios_get_window();
-        if !window.is_null() {
-            gpui_ios_hide_keyboard(window);
-        }
-    }
-}
+/// Fallback bridge for non-Android platforms (and before `set_bridge` is called).
+struct StubBridge;
 
-#[cfg(target_os = "ios")]
-pub fn launch_qr_scanner() {
-    log::warn!("QR scanner not yet implemented on iOS");
+impl PlatformBridge for StubBridge {
+    fn density(&self) -> f32 {
+        3.0
+    }
+    fn system_inset_top(&self) -> u32 {
+        0
+    }
+    fn system_inset_bottom(&self) -> u32 {
+        0
+    }
+    fn keyboard_height(&self) -> u32 {
+        0
+    }
+    fn show_keyboard(&self) {}
+    fn hide_keyboard(&self) {}
+    fn launch_qr_scanner(&self) {}
 }

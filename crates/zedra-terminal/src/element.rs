@@ -14,7 +14,7 @@ use crate::{CursorState, IndexedCell, TERMINAL_FONT_FAMILY, TerminalContent, Ter
 struct TermColors;
 
 impl TermColors {
-    const BACKGROUND: u32 = 0x1e1e1e;
+    const BACKGROUND: u32 = 0x0e0c0c;
     const FOREGROUND: u32 = 0xabb2bf;
     const CURSOR: u32 = 0x528bff;
 
@@ -253,11 +253,17 @@ pub struct TerminalElementLayout {
 pub struct TerminalElement {
     content: TerminalContent,
     size: TerminalSize,
+    /// Sub-line pixel offset for smooth scrolling (applied to grid origin.y)
+    scroll_offset_px: f32,
 }
 
 impl TerminalElement {
-    pub fn new(content: TerminalContent, size: TerminalSize) -> Self {
-        Self { content, size }
+    pub fn new(content: TerminalContent, size: TerminalSize, scroll_offset_px: f32) -> Self {
+        Self {
+            content,
+            size,
+            scroll_offset_px,
+        }
     }
 
     /// Layout the grid following Zed's layout_grid approach.
@@ -453,7 +459,11 @@ impl Element for TerminalElement {
         // Center the grid horizontally when it's narrower than the allocated bounds
         let grid_width = cell_width * layout.content.grid_cols as f32;
         let x_offset = ((bounds.size.width - grid_width) * 0.5).max(px(0.0));
-        let origin = point(bounds.origin.x + x_offset, bounds.origin.y);
+        // Apply smooth scroll offset: shifts grid vertically for sub-line scrolling
+        let origin = point(
+            bounds.origin.x + x_offset,
+            bounds.origin.y + px(self.scroll_offset_px),
+        );
 
         // Draw terminal background
         window.paint_quad(fill(bounds, rgb(TermColors::BACKGROUND)));

@@ -22,8 +22,10 @@ fn main() {
             "x86_64"
         };
 
-        println!("cargo:rustc-link-search=native={}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/{}",
-                 ndk_home, target_arch);
+        println!(
+            "cargo:rustc-link-search=native={}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/{}",
+            ndk_home, target_arch
+        );
     }
 
     if target.contains("apple-ios") {

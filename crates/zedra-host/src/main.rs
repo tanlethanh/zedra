@@ -1,15 +1,18 @@
 // zedra-host: Desktop companion daemon for Zedra
 //
 // Provides an RPC daemon that Zedra (Android) connects to for remote terminal,
-// filesystem, git, and AI operations over JSON-RPC.
+// filesystem, git, and AI operations over typed irpc.
+//
+// All connections go through iroh (QUIC/TLS 1.3) — handles LAN, relay, and
+// hole-punched connections through a single Endpoint.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use zedra_host::{qr, relay_bridge, rpc_daemon, session_registry, store};
+use zedra_host::{identity, iroh_listener, qr, rpc_daemon, session_registry};
 
 #[derive(Parser)]
-#[command(name = "zedra-host", about = "Desktop companion daemon for Zedra")]
+#[command(name = "zedra", about = "Desktop companion daemon for Zedra")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -17,41 +20,22 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the RPC daemon (foreground)
+    /// Start the daemon (iroh transport)
     Start {
-        /// Port to listen on
-        #[arg(short, long, default_value = "2123")]
-        port: u16,
-
-        /// Bind address
-        #[arg(short, long, default_value = "0.0.0.0")]
-        bind: String,
-
         /// Working directory to serve
         #[arg(short, long, default_value = ".")]
         workdir: String,
+
+        /// Output startup info as a single JSON line (for tool integration)
+        #[arg(long)]
+        json: bool,
     },
-    /// Start in relay mode (connect through cloud relay)
-    Relay {
-        /// Working directory to serve
-        #[arg(short, long, default_value = ".")]
-        workdir: String,
-        /// Relay server URL
-        #[arg(long, default_value = "https://relay.zedra.dev")]
-        relay_url: String,
-    },
-    /// List paired devices
-    Devices,
-    /// Revoke a paired device
-    Revoke {
-        /// Device ID to revoke
-        device_id: String,
-    },
+    /// Show QR code for pairing
+    Qr,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -62,51 +46,82 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Start {
-            port,
-            bind,
-            workdir,
-        } => {
+        Commands::Start { workdir, json } => {
             let workdir = std::path::PathBuf::from(workdir)
                 .canonicalize()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let local_ip = qr::get_local_ip().unwrap_or_else(|| "unknown".to_string());
-            tracing::info!("Starting zedra-host on {}:{}", bind, port);
-            tracing::info!("Local IP: {} (use this to connect from Zedra)", local_ip);
+
+            tracing::info!("Starting zedra-host (iroh transport)");
             tracing::info!("Serving workdir: {}", workdir.display());
-            rpc_daemon::run_daemon(&bind, port, workdir).await?;
-        }
-        Commands::Relay { workdir, relay_url } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
-            tracing::info!("Starting zedra-host in relay mode");
-            tracing::info!("Serving workdir: {}", workdir.display());
+
+            // Load or generate persistent host identity
+            let host_identity = match identity::HostIdentity::load_or_generate() {
+                Ok(id) => std::sync::Arc::new(id),
+                Err(e) => {
+                    anyhow::bail!("Failed to load host identity: {}", e);
+                }
+            };
 
             let registry = std::sync::Arc::new(session_registry::SessionRegistry::new());
-            let daemon_state =
-                std::sync::Arc::new(rpc_daemon::DaemonState::new(workdir.clone()));
 
-            relay_bridge::run_relay_mode(workdir, &relay_url, registry, daemon_state).await?;
-        }
-        Commands::Devices => {
-            let devices = store::list_devices()?;
-            if devices.is_empty() {
-                println!("No paired devices.");
-            } else {
-                println!("{:<36} {:<20} {:<24}", "ID", "Name", "Paired At");
-                println!("{}", "-".repeat(80));
-                for device in devices {
-                    println!(
-                        "{:<36} {:<20} {:<24}",
-                        device.id, device.name, device.paired_at
-                    );
+            // Create a named session for the working directory.
+            let session_name = workdir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("default")
+                .to_string();
+            registry
+                .create_named(&session_name, workdir.clone(), "auto")
+                .await;
+            tracing::info!(
+                "Created session '{}' for {}",
+                session_name,
+                workdir.display()
+            );
+
+            let state = std::sync::Arc::new(rpc_daemon::DaemonState::new(workdir.clone()));
+
+            // 1. Bind iroh endpoint
+            let endpoint = iroh_listener::create_endpoint(&host_identity).await?;
+
+            // 2. Generate QR code
+            let addr = endpoint.addr();
+            match qr::build_pairing_info(&addr) {
+                Ok(info) => {
+                    if json {
+                        qr::print_pairing_json(&info);
+                    } else {
+                        qr::generate_pairing_qr(&addr).ok();
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to generate QR code: {}", e);
                 }
             }
+
+            // 3. Spawn session cleanup (background task)
+            let cleanup_registry = registry.clone();
+            tokio::spawn(async move {
+                let grace_period = std::time::Duration::from_secs(300);
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    let removed = cleanup_registry.cleanup(grace_period).await;
+                    if !removed.is_empty() {
+                        tracing::info!("Cleaned up {} idle sessions", removed.len());
+                    }
+                }
+            });
+
+            // 4. Run iroh accept loop (blocks main)
+            iroh_listener::run_accept_loop(&endpoint, registry, state).await?;
         }
-        Commands::Revoke { device_id } => {
-            store::revoke_device(&device_id)?;
-            println!("Device {} revoked.", device_id);
+        Commands::Qr => {
+            let host_identity = identity::HostIdentity::load_or_generate()?;
+            let id = std::sync::Arc::new(host_identity);
+            let endpoint = iroh_listener::create_endpoint(&id).await?;
+            if let Err(e) = qr::generate_pairing_qr(&endpoint.addr()) {
+                eprintln!("Failed to generate QR code: {}", e);
+            }
         }
     }
 

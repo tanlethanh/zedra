@@ -4,7 +4,6 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::element::TerminalElement;
@@ -31,12 +30,15 @@ pub struct TerminalView {
     status_text: String,
     focus_handle: FocusHandle,
     keyboard_request: Option<KeyboardRequestFn>,
-    /// Accumulated scroll pixels that haven't yet formed a full line
-    scroll_pixel_remainder: f32,
+    /// Sub-line pixel offset for smooth scrolling. Applied as a visual shift
+    /// to the terminal grid; when it exceeds line_height, a whole line is committed.
+    scroll_offset_px: f32,
     /// Row count without keyboard (the "full" terminal height)
     base_rows: usize,
     /// Last keyboard-adjusted row count to avoid redundant resizes
     last_keyboard_rows: usize,
+    /// Terminal ID for per-terminal buffer routing (None = use legacy global buffer).
+    terminal_id: Option<String>,
 }
 
 impl TerminalView {
@@ -55,9 +57,10 @@ impl TerminalView {
             status_text: "Disconnected".to_string(),
             focus_handle: cx.focus_handle(),
             keyboard_request: None,
-            scroll_pixel_remainder: 0.0,
+            scroll_offset_px: 0.0,
             base_rows: rows,
             last_keyboard_rows: rows,
+            terminal_id: None,
         }
     }
 
@@ -83,6 +86,16 @@ impl TerminalView {
         self.output_buffer = buffer;
     }
 
+    /// Set the terminal ID for per-terminal buffer routing.
+    pub fn set_terminal_id(&mut self, id: String) {
+        self.terminal_id = Some(id);
+    }
+
+    /// Get the terminal ID (if set).
+    pub fn terminal_id(&self) -> Option<&str> {
+        self.terminal_id.as_deref()
+    }
+
     /// Process any pending output from SSH or RPC session
     /// Returns true if any data was processed
     fn process_output(&mut self) -> bool {
@@ -98,14 +111,22 @@ impl TerminalView {
             }
         }
 
-        // Check active RPC session buffer
+        // Check per-terminal or active RPC session buffer
         if let Some(session) = zedra_session::active_session() {
-            let session_buf = session.output_buffer();
-            if let Ok(mut buffer) = session_buf.try_lock() {
-                while let Some(data) = buffer.pop_front() {
-                    total_bytes += data.len();
-                    self.terminal.advance_bytes(&data);
-                    had_data = true;
+            let session_buf = if let Some(ref tid) = self.terminal_id {
+                // Per-terminal buffer: read only this terminal's output
+                session.output_buffer_for(tid)
+            } else {
+                // Legacy path: use the global active buffer
+                Some(session.output_buffer())
+            };
+            if let Some(buf) = session_buf {
+                if let Ok(mut buffer) = buf.try_lock() {
+                    while let Some(data) = buffer.pop_front() {
+                        total_bytes += data.len();
+                        self.terminal.advance_bytes(&data);
+                        had_data = true;
+                    }
                 }
             }
         }
@@ -187,23 +208,13 @@ impl TerminalView {
         self.send_bytes_to_remote(bytes);
     }
 
-    /// Send bytes to the remote host via RPC session, SSH, or callback fallback.
-    /// Clones are only made when a fallback path is needed.
+    /// Send bytes to the remote host via RPC session or callback fallback.
     fn send_bytes_to_remote(&self, bytes: Vec<u8>) {
-        // Try RPC session first
         if zedra_session::send_terminal_input(bytes.clone()) {
             return;
         }
-        // Try SSH — needs clone only if callback fallback exists
-        if self.send_bytes.is_some() {
-            if zedra_ssh::send_to_ssh(bytes.clone()) {
-                return;
-            }
-            if let Some(ref send) = self.send_bytes {
-                send(bytes);
-            }
-        } else {
-            let _ = zedra_ssh::send_to_ssh(bytes);
+        if let Some(ref send) = self.send_bytes {
+            send(bytes);
         }
     }
 
@@ -211,33 +222,15 @@ impl TerminalView {
     pub fn scroll(&mut self, lines: i32) {
         self.terminal.scroll(lines);
     }
-}
 
-/// Implement TerminalSink so SSH can drive this view generically
-impl zedra_ssh::TerminalSink for TerminalView {
-    fn advance_bytes(&mut self, bytes: &[u8]) {
-        self.advance_bytes(bytes);
+    /// Whether the terminal is connected
+    pub fn is_connected(&self) -> bool {
+        self.connected
     }
 
-    fn set_connected(&mut self, connected: bool) {
-        self.set_connected(connected);
-    }
-
-    fn set_status(&mut self, status: String) {
-        self.set_status(status);
-    }
-
-    fn set_send_bytes(&mut self, callback: Box<dyn Fn(Vec<u8>) + Send + 'static>) {
-        self.set_send_bytes(callback);
-    }
-
-    fn terminal_size_cells(&self) -> (u32, u32) {
-        let s = self.terminal_size();
-        (s.columns as u32, s.rows as u32)
-    }
-
-    fn output_buffer(&self) -> zedra_ssh::OutputBuffer {
-        self.output_buffer()
+    /// Current status text (e.g. "Connected", "Connecting to ...")
+    pub fn status_text(&self) -> &str {
+        &self.status_text
     }
 }
 
@@ -254,7 +247,14 @@ impl Render for TerminalView {
         // Process any pending SSH/RPC output before rendering.
         // Re-renders are driven by the frame loop (request_frame_forced) when
         // TERMINAL_DATA_PENDING is set, so no cx.notify() loop is needed here.
-        self.process_output();
+        let had_data = self.process_output();
+        if had_data {
+            let size = self.terminal.size();
+            log::info!(
+                "[PERF] terminal: processed data, grid={}x{}",
+                size.columns, size.rows
+            );
+        }
 
         // Adjust terminal rows based on soft keyboard height.
         // The keyboard height is reported in physical pixels by Android WindowInsets.
@@ -273,11 +273,19 @@ impl Render for TerminalView {
                 if effective_rows != self.last_keyboard_rows {
                     log::info!(
                         "Keyboard resize: kb={}px logical={:.0} kb_rows={} base={} effective={}",
-                        kb_px, kb_logical, kb_rows, self.base_rows, effective_rows
+                        kb_px,
+                        kb_logical,
+                        kb_rows,
+                        self.base_rows,
+                        effective_rows
                     );
                     let size = self.terminal.size();
-                    self.terminal
-                        .resize(size.columns, effective_rows, size.cell_width, size.line_height);
+                    self.terminal.resize(
+                        size.columns,
+                        effective_rows,
+                        size.cell_width,
+                        size.line_height,
+                    );
                     self.last_keyboard_rows = effective_rows;
 
                     // Fire-and-forget remote PTY resize
@@ -286,8 +294,7 @@ impl Render for TerminalView {
                     if let Some(session) = zedra_session::active_session() {
                         if let Some(term_id) = session.terminal_id() {
                             zedra_session::session_runtime().spawn(async move {
-                                if let Err(e) =
-                                    session.terminal_resize(&term_id, cols, rows).await
+                                if let Err(e) = session.terminal_resize(&term_id, cols, rows).await
                                 {
                                     log::warn!("Remote PTY resize failed: {}", e);
                                 }
@@ -300,106 +307,89 @@ impl Render for TerminalView {
 
         let content = self.terminal.content();
         let size = self.terminal.size();
-
-        let status = self.status_text.clone();
-        let connected = self.connected;
         let focus_handle = self.focus_handle.clone();
 
+        // Terminal grid only - status bar is rendered by the parent header
         div()
-            .flex()
-            .flex_col()
             .size_full()
-            .bg(rgb(0x1e1e1e))
-            .child(
-                // Status bar at top
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .px_2()
-                    .py_1()
-                    .bg(rgb(0x282c34))
-                    .child(
-                        div()
-                            .text_color(if connected {
-                                rgb(0x98c379) // green
-                            } else {
-                                rgb(0xe06c75) // red
-                            })
-                            .text_sm()
-                            .child(status),
-                    )
-                    .when(connected, |el| {
-                        el.child(
-                            div()
-                                .px_2()
-                                .py_1()
-                                .bg(rgb(0xe06c75))
-                                .rounded_sm()
-                                .cursor_pointer()
-                                .text_color(rgb(0xffffff))
-                                .text_sm()
-                                .child("Disconnect")
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _event, _window, cx| {
-                                        log::info!("Disconnect requested");
-                                        zedra_ssh::clear_input_sender();
-                                        zedra_session::clear_active_session();
-                                        this.connected = false;
-                                        this.status_text = "Disconnected".to_string();
-                                        cx.emit(DisconnectRequested);
-                                        cx.notify();
-                                    }),
-                                ),
-                        )
-                    }),
+            .overflow_hidden()
+            .bg(rgb(0x0e0c0c))
+            .track_focus(&focus_handle)
+            .key_context("Terminal")
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _event, window, cx| {
+                    this.focus_handle.focus(window, cx);
+                    this.request_keyboard(true);
+                }),
             )
-            .child(
-                // Terminal grid - focusable for keyboard input
-                div()
-                    .flex_1()
-                    .overflow_hidden()
-                    .track_focus(&focus_handle)
-                    .key_context("Terminal")
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _event, window, cx| {
-                            // Focus the terminal and request keyboard on tap
-                            this.focus_handle.focus(window, cx);
-                            this.request_keyboard(true);
-                            log::debug!("Terminal tapped, requesting focus and keyboard");
-                        }),
-                    )
-                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, _cx| {
-                        this.handle_keystroke(&event.keystroke);
-                    }))
-                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
-                        let lines = match event.delta {
-                            ScrollDelta::Lines(l) => {
-                                this.scroll_pixel_remainder = 0.0;
-                                l.y as i32
-                            }
-                            ScrollDelta::Pixels(pixels) => {
-                                // Accumulate sub-line pixel deltas so small
-                                // touch movements aren't truncated to zero.
-                                let lh: f32 = (this.terminal.size().line_height / px(1.0)) as f32;
-                                let py: f32 = (pixels.y / px(1.0)) as f32;
-                                this.scroll_pixel_remainder += py;
-                                let whole = (this.scroll_pixel_remainder / lh) as i32;
-                                this.scroll_pixel_remainder -= whole as f32 * lh;
-                                whole
-                            }
-                        };
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, _cx| {
+                this.handle_keystroke(&event.keystroke);
+            }))
+            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
+                match event.delta {
+                    ScrollDelta::Lines(l) => {
+                        // Line-based scroll (e.g. mouse wheel): commit immediately
+                        this.scroll_offset_px = 0.0;
+                        let lines = l.y as i32;
                         if lines != 0 {
-                            // Natural scrolling: positive pixel delta (finger
-                            // drags down) → scroll up to show history.
                             this.scroll(lines);
-                            cx.notify();
                         }
-                    }))
-                    .child(TerminalElement::new(content, size)),
-            )
+                    }
+                    ScrollDelta::Pixels(pixels) => {
+                        if matches!(event.touch_phase, TouchPhase::Ended) {
+                            // Touch lifted: snap remaining offset to nearest line
+                            let lh: f32 = (this.terminal.size().line_height / px(1.0)) as f32;
+                            if this.scroll_offset_px.abs() > lh * 0.5 {
+                                if this.scroll_offset_px > 0.0 {
+                                    this.scroll(1);
+                                } else {
+                                    this.scroll(-1);
+                                }
+                            }
+                            this.scroll_offset_px = 0.0;
+                        } else {
+                            let lh: f32 = (this.terminal.size().line_height / px(1.0)) as f32;
+                            let py: f32 = (pixels.y / px(1.0)) as f32;
+                            this.scroll_offset_px += py;
+
+                            // Commit whole lines, clamping at scrollback boundaries.
+                            while this.scroll_offset_px >= lh {
+                                let before = this.terminal.display_offset();
+                                this.scroll(1);
+                                if this.terminal.display_offset() == before {
+                                    // Hit top of scrollback — clamp offset
+                                    this.scroll_offset_px = 0.0;
+                                    break;
+                                }
+                                this.scroll_offset_px -= lh;
+                            }
+                            while this.scroll_offset_px <= -lh {
+                                let before = this.terminal.display_offset();
+                                this.scroll(-1);
+                                if this.terminal.display_offset() == before {
+                                    // Hit bottom of scrollback — clamp offset
+                                    this.scroll_offset_px = 0.0;
+                                    break;
+                                }
+                                this.scroll_offset_px += lh;
+                            }
+
+                            // Also clamp sub-line drift at boundaries
+                            let offset = this.terminal.display_offset();
+                            let history = this.terminal.history_size();
+                            if offset == 0 && this.scroll_offset_px < 0.0 {
+                                this.scroll_offset_px = 0.0; // at bottom
+                            }
+                            if offset >= history && this.scroll_offset_px > 0.0 {
+                                this.scroll_offset_px = 0.0; // at top
+                            }
+                        }
+                    }
+                };
+                // Always re-render — sub-line offset changes are visual even without whole-line commits
+                cx.notify();
+            }))
+            .child(TerminalElement::new(content, size, self.scroll_offset_px))
     }
 }

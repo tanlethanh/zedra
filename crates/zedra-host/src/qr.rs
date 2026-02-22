@@ -1,178 +1,89 @@
-// QR code generation for device pairing
-// Generates a QR code containing connection info + one-time pairing token
+// QR code generation for device pairing (iroh)
+//
+// Encodes the host's EndpointAddr as a compact postcard+base64-url string.
+// Hostname and other metadata are discovered post-connection via GetSessionInfo.
 
 use anyhow::Result;
 use qrcode::render::unicode;
 use qrcode::{EcLevel, QrCode};
 use serde::Serialize;
 
-use crate::auth;
-use crate::store;
-
-/// Pairing payload encoded in the QR code
+/// Machine-readable startup output for `--json` mode.
 #[derive(Serialize)]
-struct PairingPayload {
-    /// Protocol version
-    v: u32,
-    /// Host address (IP or hostname)
-    host: String,
-    /// SSH port
-    port: u16,
-    /// One-time pairing token
-    token: String,
-    /// Host key fingerprint for verification
-    fingerprint: String,
-    /// Friendly name for this machine
-    name: String,
+pub struct StartupInfo {
+    pub status: String,
+    pub host: String,
+    pub endpoint_id: String,
+    pub relay_url: Option<String>,
+    pub direct_addrs: Vec<String>,
+    pub pairing_code: String,
+    pub qr_code: String,
 }
 
-/// Generate and display a pairing QR code
-pub async fn generate_pairing_qr() -> Result<()> {
-    // Get host info
+/// Build the pairing info (QR string, metadata) without printing anything.
+pub fn build_pairing_info(addr: &iroh::EndpointAddr) -> Result<StartupInfo> {
     let hostname = gethostname();
-    let ip = get_local_ip().unwrap_or_else(|| "localhost".to_string());
-    let port = 2123u16;
+    let endpoint_id = addr.id.to_string();
+    let relay_url = addr.relay_urls().next().map(|u| u.to_string());
+    let direct_addrs: Vec<String> = addr.ip_addrs().map(|a| a.to_string()).collect();
 
-    // Get host key fingerprint
-    let fingerprint = get_host_fingerprint()?;
+    let pairing_code = format!("zedra://{}", zedra_rpc::encode_endpoint_addr(addr)?);
 
-    // Generate pairing token
-    let token = auth::create_pairing_token();
+    tracing::info!(
+        "QR pairing code: {} bytes, endpoint={}, relay={}, direct_addrs={}",
+        pairing_code.len(),
+        &endpoint_id[..16.min(endpoint_id.len())],
+        relay_url.as_deref().unwrap_or("none"),
+        direct_addrs.len(),
+    );
 
-    // Build payload
-    let payload = PairingPayload {
-        v: 1,
-        host: ip.clone(),
-        port,
-        token,
-        fingerprint,
-        name: hostname.clone(),
-    };
+    let code = QrCode::with_error_correction_level(pairing_code.as_bytes(), EcLevel::L)?;
+    let qr_string = render_qr_compact(&code);
 
-    let json = serde_json::to_string(&payload)?;
-    let encoded = base64_url::encode(&json);
-    let uri = format!("zedra://pair?d={}", encoded);
+    Ok(StartupInfo {
+        status: "ready".to_string(),
+        host: hostname,
+        endpoint_id,
+        relay_url,
+        direct_addrs,
+        pairing_code,
+        qr_code: qr_string,
+    })
+}
 
-    let code = QrCode::with_error_correction_level(uri.as_bytes(), EcLevel::L)?;
-    let string = render_qr_compact(&code);
+/// Generate and display a pairing QR code for iroh-based connections.
+pub fn generate_pairing_qr(addr: &iroh::EndpointAddr) -> Result<()> {
+    let info = build_pairing_info(addr)?;
+    print_pairing_info(&info);
+    Ok(())
+}
 
+/// Print pairing info in human-readable format.
+fn print_pairing_info(info: &StartupInfo) {
     println!();
     println!("  Zedra Host Pairing");
     println!("  ==================");
     println!();
     println!("  Scan this QR code with the Zedra app to pair this device.");
-    println!("  Host: {} ({})", hostname, ip);
-    println!("  Port: {}", port);
-    println!("  Token expires in 5 minutes.");
+    println!("  Host: {}", info.host);
+    println!("  Endpoint: {}", &info.endpoint_id[..16]);
+    if let Some(ref relay) = info.relay_url {
+        println!("  Relay: {}", relay);
+    }
+    println!("  Direct addrs: {}", info.direct_addrs.len());
     println!();
-    println!("{}", string);
+    println!("{}", info.qr_code);
     println!();
-    println!("  Or connect manually:");
-    println!("    Host: {}", ip);
-    println!("    Port: {}", port);
-    println!("    Username: zedra");
-    println!();
-
-    Ok(())
 }
 
-/// v2 pairing payload with relay and multi-address support
-#[derive(Serialize)]
-struct PairingPayloadV2 {
-    v: u32,
-    host: String,
-    port: u16,
-    token: String,
-    fingerprint: String,
-    name: String,
-    host_addrs: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tailscale_addr: Option<String>,
-    relay_url: String,
-    relay_room: String,
-    relay_secret: String,
+/// Print pairing info as a single JSON line to stdout.
+pub fn print_pairing_json(info: &StartupInfo) {
+    if let Ok(json) = serde_json::to_string(info) {
+        println!("{}", json);
+    }
 }
 
-/// Generate and display a v2 pairing QR code with relay info.
-///
-/// Includes all LAN IPs and relay room credentials so the client can
-/// attempt LAN, Tailscale, and relay transports in priority order.
-pub async fn generate_relay_pairing_qr(
-    relay_url: &str,
-    relay_room: &str,
-    relay_secret: &str,
-) -> Result<()> {
-    let hostname = gethostname();
-    let primary_ip = get_local_ip().unwrap_or_else(|| "localhost".to_string());
-    let port = 2123u16;
-    let fingerprint = get_host_fingerprint()?;
-    let token = auth::create_pairing_token();
-
-    // Collect all non-loopback IPv4 addresses
-    let host_addrs: Vec<String> = if_addrs::get_if_addrs()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|iface| !iface.is_loopback())
-        .filter_map(|iface| match iface.ip() {
-            std::net::IpAddr::V4(v4) => Some(v4.to_string()),
-            _ => None,
-        })
-        .collect();
-
-    let payload = PairingPayloadV2 {
-        v: 2,
-        host: primary_ip.clone(),
-        port,
-        token,
-        fingerprint,
-        name: hostname.clone(),
-        host_addrs: if host_addrs.is_empty() {
-            vec![primary_ip.clone()]
-        } else {
-            host_addrs.clone()
-        },
-        tailscale_addr: None, // TODO: detect Tailscale IP
-        relay_url: relay_url.to_string(),
-        relay_room: relay_room.to_string(),
-        relay_secret: relay_secret.to_string(),
-    };
-
-    let json = serde_json::to_string(&payload)?;
-    let encoded = base64_url::encode(&json);
-    let uri = format!("zedra://pair?d={}", encoded);
-
-    let code = QrCode::with_error_correction_level(uri.as_bytes(), EcLevel::L)?;
-    let string = render_qr_compact(&code);
-
-    let addrs_display = if host_addrs.is_empty() {
-        primary_ip.clone()
-    } else {
-        host_addrs.join(", ")
-    };
-
-    println!();
-    println!("  Zedra Host Pairing (v2 - relay enabled)");
-    println!("  ========================================");
-    println!();
-    println!("  Scan this QR code with the Zedra app to pair this device.");
-    println!("  Host: {} ({})", hostname, addrs_display);
-    println!("  Port: {}", port);
-    println!("  Relay: {} (room: {})", relay_url, relay_room);
-    println!("  Token expires in 5 minutes.");
-    println!();
-    println!("{}", string);
-    println!();
-    println!("  Or connect manually:");
-    println!("    Host: {}", primary_ip);
-    println!("    Port: {}", port);
-    println!("    Username: zedra");
-    println!();
-
-    Ok(())
-}
-
-/// Render a compact QR code for terminal display using the qrcode crate's
-/// built-in Dense1x2 Unicode renderer (two rows per character via half-blocks).
+/// Render a compact QR code for terminal display.
 fn render_qr_compact(code: &QrCode) -> String {
     code.render::<unicode::Dense1x2>()
         .dark_color(unicode::Dense1x2::Dark)
@@ -181,60 +92,12 @@ fn render_qr_compact(code: &QrCode) -> String {
         .build()
 }
 
-/// Get the host key fingerprint
-fn get_host_fingerprint() -> Result<String> {
-    let key_path = store::host_key_path()?;
-    if !key_path.exists() {
-        // Generate host key on first run
-        generate_host_key(&key_path)?;
-    }
-
-    let key_data = std::fs::read(&key_path)?;
-    let key = ssh_key::PrivateKey::from_openssh(&key_data)
-        .map_err(|e| anyhow::anyhow!("Failed to read host key: {}", e))?;
-    let public_key = key.public_key();
-    let fingerprint = public_key.fingerprint(ssh_key::HashAlg::Sha256);
-    Ok(fingerprint.to_string())
-}
-
-/// Generate an Ed25519 host key
-fn generate_host_key(path: &std::path::Path) -> Result<()> {
-    tracing::info!("Generating host key at {:?}", path);
-
-    let key = ssh_key::PrivateKey::random(&mut rand::thread_rng(), ssh_key::Algorithm::Ed25519)
-        .map_err(|e| anyhow::anyhow!("Failed to generate key: {}", e))?;
-
-    let openssh = key
-        .to_openssh(ssh_key::LineEnding::LF)
-        .map_err(|e| anyhow::anyhow!("Failed to serialize key: {}", e))?;
-
-    std::fs::write(path, openssh.as_bytes())?;
-
-    // Set permissions to 600
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
-
-    Ok(())
-}
-
 /// Get local hostname
 fn gethostname() -> String {
     hostname::get()
         .ok()
         .and_then(|h| h.into_string().ok())
         .unwrap_or_else(|| "unknown".to_string())
-}
-
-/// Get local IP address
-pub fn get_local_ip() -> Option<String> {
-    // Try to find a non-loopback IPv4 address
-    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.connect("8.8.8.8:80").ok()?;
-    let addr = socket.local_addr().ok()?;
-    Some(addr.ip().to_string())
 }
 
 #[cfg(test)]
@@ -247,58 +110,6 @@ mod tests {
         let rendered = render_qr_compact(&code);
         assert!(!rendered.is_empty());
         assert!(rendered.contains('\n'));
-    }
-
-    #[test]
-    fn test_pairing_payload_serialization() {
-        let payload = PairingPayload {
-            v: 1,
-            host: "192.168.1.1".to_string(),
-            port: 2123,
-            token: "abc123".to_string(),
-            fingerprint: "SHA256:xxxx".to_string(),
-            name: "my-machine".to_string(),
-        };
-
-        let json = serde_json::to_string(&payload).unwrap();
-        assert!(json.contains("192.168.1.1"));
-        assert!(json.contains("2123"));
-        assert!(json.contains("abc123"));
-        assert!(json.contains("SHA256:xxxx"));
-        assert!(json.contains("my-machine"));
-
-        let encoded = base64_url::encode(&json);
-        let decoded = base64_url::decode(&encoded).unwrap();
-        let decoded_str = String::from_utf8(decoded).unwrap();
-        assert_eq!(decoded_str, json);
-    }
-
-    #[test]
-    fn test_pairing_uri_format() {
-        let payload = PairingPayload {
-            v: 1,
-            host: "10.0.0.1".to_string(),
-            port: 2123,
-            token: "token".to_string(),
-            fingerprint: "fp".to_string(),
-            name: "host".to_string(),
-        };
-
-        let json = serde_json::to_string(&payload).unwrap();
-        let encoded = base64_url::encode(&json);
-        let uri = format!("zedra://pair?d={}", encoded);
-
-        assert!(uri.starts_with("zedra://pair?d="));
-        let data_part = uri.strip_prefix("zedra://pair?d=").unwrap();
-        assert!(!data_part.contains('+'));
-        assert!(!data_part.contains('/'));
-    }
-
-    #[test]
-    fn test_qr_code_from_uri() {
-        let uri = "zedra://pair?d=eyJ2IjoxfQ";
-        let code = QrCode::new(uri.as_bytes());
-        assert!(code.is_ok());
     }
 
     #[test]
