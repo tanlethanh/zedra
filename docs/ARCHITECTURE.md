@@ -327,6 +327,11 @@ Mobile                                  Host
 
 ### Terminal Session Persistence
 
+> See `docs/TERMINAL_PERSISTENCE.md` for the full design including server-side
+> `vt100` screen capture, fresh client terminal discovery, and credential persistence.
+
+**Current flow (within same app session):**
+
 ```
 Client connects -> ResumeOrCreate -> new session
     TermCreate -> PTY spawned on host
@@ -346,6 +351,10 @@ Client reconnects -> ResumeOrCreate with stored credentials
     terminal/list verifies server-side terminals still alive
     UI views resume seamlessly (same Arc<OutputBuffer> references)
 ```
+
+**Known gaps:** Fresh client can't discover existing terminals. No screen state
+restoration after long disconnect (blank/garbled terminal). No on-disk credential
+storage for cross-restart resume.
 
 ---
 

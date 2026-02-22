@@ -294,7 +294,14 @@ See `docs/TECHNICAL_DEBT.md` for detailed solutions.
    - No pinch-to-zoom or multi-touch gestures yet
    - Solution: Add multi-pointer tracking in `TouchHandler`
 
-3. **Sample Data Only** (Low Priority)
+3. **Terminal Session Persistence** (High Priority)
+   - PTYs survive disconnect but fresh clients can't discover or resume them
+   - No screen state restoration (blank/garbled terminal after long disconnect)
+   - No on-disk credential storage (app restart = new session)
+   - See `docs/TERMINAL_PERSISTENCE.md` for full analysis and implementation plan
+   - Solution: Server-side `vt100` parser for screen capture + terminal discovery flow
+
+4. **Sample Data Only** (Low Priority)
    - Editor shows 4 hardcoded Rust sample files, file explorer shows demo tree
    - No filesystem access on Android yet
    - Solution: Use Android Storage Access Framework or SSH file browsing
@@ -388,7 +395,8 @@ See `docs/DEBUGGING.md` for complete workflow.
 - **Phase 5**: Navigation + Editor ✅ Complete (tabs, stacks, drawer, syntax editor)
 - **Phase 6**: Transport + Relay ✅ Complete (transport abstraction, CF Worker relay, discovery chain, health monitoring, session persistence)
 - **Phase 6.5**: Session Reconnect ✅ Complete (auto-reconnect with exponential backoff, persistent terminal buffers, backlog replay, reconnecting UI badge)
-- **Phase 7**: Production Hardening - Next (momentum scrolling, real file access, multi-touch, E2E encryption)
+- **Phase 7**: Terminal Persistence - Next (server-side vt100 screen capture, fresh client terminal discovery, credential persistence)
+- **Phase 8**: Production Hardening (momentum scrolling, real file access, multi-touch, E2E encryption)
 
 ## Performance Characteristics
 
@@ -415,6 +423,7 @@ See `docs/DEBUGGING.md` for complete workflow.
 - Known issues with solutions: `docs/TECHNICAL_DEBT.md`
 - Debug workflow and tools: `docs/DEBUGGING.md`
 - Relay wire protocol + DO topology: `docs/RELAY.md`
+- Terminal persistence design: `docs/TERMINAL_PERSISTENCE.md`
 
 ## Performance Testing
 
