@@ -18,7 +18,6 @@ use crate::zedra_app::ZedraApp;
 /// Embedded assets for Zedra (SVG icons, etc.)
 #[derive(RustEmbed)]
 #[folder = "assets"]
-#[include = "icons/*.svg"]
 struct ZedraAssets;
 
 impl gpui::AssetSource for ZedraAssets {

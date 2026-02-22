@@ -116,11 +116,7 @@ impl GitSidebar {
             })
     }
 
-    fn render_file_entry(
-        &self,
-        file: &GitFileEntry,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_file_entry(&self, file: &GitFileEntry, cx: &mut Context<Self>) -> impl IntoElement {
         let path = file.path.clone();
         let filename = file.filename.clone();
         let status = file.status;

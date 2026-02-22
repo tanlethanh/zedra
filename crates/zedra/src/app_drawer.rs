@@ -4,9 +4,9 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::file_explorer::{FileExplorer, FileSelected};
-use crate::theme;
 use crate::git_sidebar::{GitFileSelected, GitSidebar};
 use crate::git_stack::{GitFileEntry, GitFileStatus, GitRepoState};
+use crate::theme;
 use zedra_session::SessionState;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -92,8 +92,7 @@ impl AppDrawer {
     pub fn reset_for_disconnect(&mut self, cx: &mut Context<Self>) {
         self.git_loaded = false;
         self.active_terminal_id = None;
-        self.file_explorer
-            .update(cx, |fe, cx| fe.reset_to_demo(cx));
+        self.file_explorer.update(cx, |fe, cx| fe.reset_to_demo(cx));
     }
 
     /// Update the active terminal indicator in the Terminal tab.
@@ -218,12 +217,7 @@ impl AppDrawer {
         let terminal_ids = session.terminal_ids();
         let active_id = self.active_terminal_id.clone();
 
-        let mut content = div()
-            .px(px(16.0))
-            .pt(px(12.0))
-            .flex()
-            .flex_col()
-            .flex_1();
+        let mut content = div().px(px(16.0)).pt(px(12.0)).flex().flex_col().flex_1();
 
         if terminal_ids.is_empty() {
             content = content.child(
@@ -296,12 +290,8 @@ impl AppDrawer {
 
                 // Separator between items
                 if index < terminal_ids.len() - 1 {
-                    content = content.child(
-                        div()
-                            .h(px(1.0))
-                            .mx(px(8.0))
-                            .bg(rgb(theme::BORDER_SUBTLE)),
-                    );
+                    content =
+                        content.child(div().h(px(1.0)).mx(px(8.0)).bg(rgb(theme::BORDER_SUBTLE)));
                 }
             }
         }
@@ -423,35 +413,30 @@ impl AppDrawer {
 
         // --- Status banner ---
 
-        let mut content = div()
-            .px(px(16.0))
-            .pt(px(12.0))
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.0))
-                    .pb(px(10.0))
-                    .border_b_1()
-                    .border_color(rgb(theme::BORDER_SUBTLE))
-                    .child(
-                        div()
-                            .w(px(theme::ICON_STATUS))
-                            .h(px(theme::ICON_STATUS))
-                            .rounded(px(3.0))
-                            .bg(rgb(status_color)),
-                    )
-                    .child(
-                        div()
-                            .text_color(rgb(theme::TEXT_PRIMARY))
-                            .text_size(px(theme::FONT_BODY))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(status_label),
-                    ),
-            );
+        let mut content = div().px(px(16.0)).pt(px(12.0)).flex().flex_col().child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .pb(px(10.0))
+                .border_b_1()
+                .border_color(rgb(theme::BORDER_SUBTLE))
+                .child(
+                    div()
+                        .w(px(theme::ICON_STATUS))
+                        .h(px(theme::ICON_STATUS))
+                        .rounded(px(3.0))
+                        .bg(rgb(status_color)),
+                )
+                .child(
+                    div()
+                        .text_color(rgb(theme::TEXT_PRIMARY))
+                        .text_size(px(theme::FONT_BODY))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(status_label),
+                ),
+        );
 
         // --- Host section ---
 
@@ -538,10 +523,7 @@ impl AppDrawer {
                 content = content.child(info_row("RTT", format!("{}ms", rtt_ms)));
             }
 
-            content = content.child(info_row(
-                "Paths",
-                format!("{}", ci.num_paths),
-            ));
+            content = content.child(info_row("Paths", format!("{}", ci.num_paths)));
 
             // Data transfer
             if ci.bytes_sent > 0 || ci.bytes_recv > 0 {

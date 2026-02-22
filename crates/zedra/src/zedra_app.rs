@@ -11,7 +11,6 @@ use crate::app_drawer::{AppDrawer, AppDrawerEvent};
 use crate::code_editor::EditorView;
 use crate::git_diff_view::GitDiffView;
 use crate::home_view::{HomeEvent, HomeView};
-use crate::project_editor::ProjectEditor;
 use crate::theme;
 use zedra_nav::{DrawerHost, HeaderConfig, StackNavigator};
 use zedra_session::RemoteSession;
@@ -667,20 +666,6 @@ impl Render for ZedraApp {
                 self.render_count,
                 self.screen
             );
-        }
-
-        // Swap editor stack to ProjectEditor when session becomes active,
-        // but only if no terminal view is showing (terminal takes priority)
-        if self.screen == AppScreen::Editor
-            && zedra_session::active_session().is_some()
-            && !self.editor_showing_project
-            && self.terminal_views.is_empty()
-        {
-            let project_editor = cx.new(|cx| ProjectEditor::new(cx));
-            self.editor_stack.update(cx, |stack, cx| {
-                stack.replace(project_editor.into(), "Project", cx);
-            });
-            self.editor_showing_project = true;
         }
 
         // Check for pending remote file content (replaces loading placeholder)

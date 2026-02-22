@@ -192,9 +192,7 @@ impl Render for GitDiffView {
                                 };
 
                                 let (bg_color, gutter_text, prefix) = match line.kind {
-                                    DiffLineKind::Header => {
-                                        (rgb(0x131313), "".to_string(), "")
-                                    }
+                                    DiffLineKind::Header => (rgb(0x131313), "".to_string(), ""),
                                     DiffLineKind::Added => {
                                         let num = line
                                             .new_line_num
@@ -238,29 +236,22 @@ impl Render for GitDiffView {
                                         .into_any_element();
                                 }
 
-                                let adjusted_highlights: Vec<(
-                                    Range<usize>,
-                                    HighlightStyle,
-                                )> = cached.highlights
-                                    .iter()
-                                    .map(|(range, style)| {
-                                        let offset = prefix.len();
-                                        (
-                                            (range.start + offset)..(range.end + offset),
-                                            *style,
-                                        )
-                                    })
-                                    .collect();
+                                let adjusted_highlights: Vec<(Range<usize>, HighlightStyle)> =
+                                    cached
+                                        .highlights
+                                        .iter()
+                                        .map(|(range, style)| {
+                                            let offset = prefix.len();
+                                            ((range.start + offset)..(range.end + offset), *style)
+                                        })
+                                        .collect();
 
                                 let styled_text = if display_content.is_empty() {
                                     StyledText::new(" ")
                                         .with_default_highlights(&text_style, Vec::new())
                                 } else {
                                     StyledText::new(display_content.clone())
-                                        .with_default_highlights(
-                                            &text_style,
-                                            adjusted_highlights,
-                                        )
+                                        .with_default_highlights(&text_style, adjusted_highlights)
                                 };
 
                                 div()

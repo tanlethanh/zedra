@@ -251,29 +251,27 @@ impl HomeView {
             )
             // Bottom connect button
             .child(
-                div()
-                    .p_4()
-                    .child(
-                        div()
-                            .w_full()
-                            .py(px(12.0))
-                            .rounded(px(8.0))
-                            .border_1()
-                            .border_color(rgb(theme::BORDER_DEFAULT))
-                            .flex()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme::hover_bg()))
-                            .text_color(rgb(theme::TEXT_PRIMARY))
-                            .text_size(px(theme::FONT_BODY))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|_this, _event, _window, cx| {
-                                    cx.emit(HomeEvent::ConnectTapped);
-                                }),
-                            )
-                            .child("Connect"),
-                    ),
+                div().p_4().child(
+                    div()
+                        .w_full()
+                        .py(px(12.0))
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(rgb(theme::BORDER_DEFAULT))
+                        .flex()
+                        .justify_center()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::hover_bg()))
+                        .text_color(rgb(theme::TEXT_PRIMARY))
+                        .text_size(px(theme::FONT_BODY))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|_this, _event, _window, cx| {
+                                cx.emit(HomeEvent::ConnectTapped);
+                            }),
+                        )
+                        .child("Connect"),
+                ),
             )
     }
 

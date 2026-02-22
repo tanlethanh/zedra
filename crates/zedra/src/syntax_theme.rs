@@ -13,21 +13,21 @@ impl SyntaxTheme {
         use gpui::rgb;
 
         let entries = vec![
-            ("keyword", rgb(0xc678dd)),       // purple
-            ("function", rgb(0x61afef)),       // blue
-            ("type", rgb(0xe5c07b)),           // yellow
-            ("string", rgb(0x98c379)),         // green
-            ("comment", rgb(0x5c6370)),        // gray
-            ("number", rgb(0xd19a66)),         // orange
-            ("constant", rgb(0xd19a66)),       // orange
-            ("property", rgb(0x56b6c2)),       // cyan
-            ("operator", rgb(0xc678dd)),       // purple
-            ("variable", rgb(0xabb2bf)),       // foreground
-            ("punctuation", rgb(0x636d83)),    // dim gray
-            ("attribute", rgb(0xd19a66)),      // orange
-            ("label", rgb(0xe06c75)),          // red
-            ("constructor", rgb(0x61afef)),    // blue
-            ("tag", rgb(0xe06c75)),            // red
+            ("keyword", rgb(0xc678dd)),     // purple
+            ("function", rgb(0x61afef)),    // blue
+            ("type", rgb(0xe5c07b)),        // yellow
+            ("string", rgb(0x98c379)),      // green
+            ("comment", rgb(0x5c6370)),     // gray
+            ("number", rgb(0xd19a66)),      // orange
+            ("constant", rgb(0xd19a66)),    // orange
+            ("property", rgb(0x56b6c2)),    // cyan
+            ("operator", rgb(0xc678dd)),    // purple
+            ("variable", rgb(0xabb2bf)),    // foreground
+            ("punctuation", rgb(0x636d83)), // dim gray
+            ("attribute", rgb(0xd19a66)),   // orange
+            ("label", rgb(0xe06c75)),       // red
+            ("constructor", rgb(0x61afef)), // blue
+            ("tag", rgb(0xe06c75)),         // red
         ];
 
         let styles = entries

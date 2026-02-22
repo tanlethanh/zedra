@@ -41,7 +41,11 @@ impl Buffer {
     }
 
     pub fn line_byte_range(&self, line: usize) -> Range<usize> {
-        let start = self.line_starts.get(line).copied().unwrap_or(self.text.len());
+        let start = self
+            .line_starts
+            .get(line)
+            .copied()
+            .unwrap_or(self.text.len());
         let end = self
             .line_starts
             .get(line + 1)

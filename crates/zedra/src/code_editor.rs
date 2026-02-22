@@ -4,9 +4,9 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use crate::text_buffer::Buffer;
 use crate::syntax_highlighter::Highlighter;
 use crate::syntax_theme::SyntaxTheme;
+use crate::text_buffer::Buffer;
 
 use crate::theme;
 
@@ -198,7 +198,6 @@ impl EditorView {
         }
         merged
     }
-
 }
 
 impl Focusable for EditorView {
@@ -295,11 +294,10 @@ impl Render for EditorView {
                                     StyledText::new(" ")
                                         .with_default_highlights(&text_style, Vec::new())
                                 } else {
-                                    StyledText::new(cached.text.clone())
-                                        .with_default_highlights(
-                                            &text_style,
-                                            cached.highlights.clone(),
-                                        )
+                                    StyledText::new(cached.text.clone()).with_default_highlights(
+                                        &text_style,
+                                        cached.highlights.clone(),
+                                    )
                                 };
 
                                 div()

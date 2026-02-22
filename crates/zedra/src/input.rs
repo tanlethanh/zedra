@@ -71,12 +71,7 @@ impl Input {
         self.value = value.into();
     }
 
-    fn handle_click(
-        &mut self,
-        _event: &ClickEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn handle_click(&mut self, _event: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         log::info!("Input clicked - focusing and requesting keyboard");
         // Focus this element
         self.focus_handle.focus(window, cx);

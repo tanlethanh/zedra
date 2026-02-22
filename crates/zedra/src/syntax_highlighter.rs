@@ -47,7 +47,11 @@ impl Highlighter {
     ///
     /// Each span is `(byte_range, capture_name)` where `capture_name` is the
     /// tree-sitter query capture (e.g. `"keyword"`, `"function"`, `"type"`).
-    pub fn highlights<'a>(&'a self, source: &'a str, range: Range<usize>) -> Vec<(Range<usize>, &'a str)> {
+    pub fn highlights<'a>(
+        &'a self,
+        source: &'a str,
+        range: Range<usize>,
+    ) -> Vec<(Range<usize>, &'a str)> {
         let tree = match &self.tree {
             Some(tree) => tree,
             None => return Vec::new(),

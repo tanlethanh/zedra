@@ -107,9 +107,9 @@ impl GestureArena {
         let mut arena = Self::new();
         arena.add(PanRecognizer::new(
             GestureKind::DrawerPan,
-            true,  // horizontal
-            10.0,  // activate after 10px horizontal
-            12.0,  // fail after 12px vertical
+            true, // horizontal
+            10.0, // activate after 10px horizontal
+            12.0, // fail after 12px vertical
         ));
         arena.add(PanRecognizer::new(
             GestureKind::Scroll,
