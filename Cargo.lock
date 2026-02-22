@@ -933,6 +933,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "cbindgen"
+version = "0.29.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "befbfd072a8e81c02f8c507aefce431fe5e7d051f83d48a23ffc9b9fe5a11799"
+dependencies = [
+ "clap",
+ "heck 0.5.0",
+ "indexmap",
+ "log",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "syn",
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.56"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1543,6 +1562,19 @@ dependencies = [
  "darling_core",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "dashmap"
+version = "5.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "978747c1d849a7d2ee5e8adc0159961c48fb7e5db2f06af6723b80123bb53856"
+dependencies = [
+ "cfg-if",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
 ]
 
 [[package]]
@@ -2588,7 +2620,7 @@ dependencies = [
  "async-task",
  "bindgen",
  "block",
- "cbindgen",
+ "cbindgen 0.28.0",
  "chrono",
  "circular-buffer",
  "cocoa",
@@ -2671,6 +2703,41 @@ dependencies = [
  "smallvec",
  "swash",
  "util",
+]
+
+[[package]]
+name = "gpui_ios"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-task",
+ "bindgen",
+ "block",
+ "cbindgen 0.28.0",
+ "collections",
+ "core-foundation 0.10.0",
+ "core-foundation-sys",
+ "core-graphics 0.24.0",
+ "core-text",
+ "core-video",
+ "derive_more 0.99.20",
+ "etagere",
+ "foreign-types",
+ "futures",
+ "gpui",
+ "image",
+ "itertools 0.14.0",
+ "libc",
+ "log",
+ "media",
+ "metal 0.29.0",
+ "objc",
+ "parking_lot",
+ "pathfinder_geometry",
+ "raw-window-handle",
+ "smallvec",
+ "util",
+ "uuid",
 ]
 
 [[package]]
@@ -3504,7 +3571,7 @@ dependencies = [
  "bytes",
  "cfg_aliases",
  "clap",
- "dashmap",
+ "dashmap 6.1.0",
  "data-encoding",
  "derive_more 2.1.1",
  "getrandom 0.3.4",
@@ -4656,6 +4723,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f4779c6901a562440c3786d08192c6fbda7c1c2060edd10006b05ee35d10f2d"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "oslog"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80d2043d1f61d77cb2f4b1f7b7b2295f40507f5f8e9d1c8bf10a1ca5f97a3969"
+dependencies = [
+ "cc",
+ "dashmap 5.5.3",
+ "log",
 ]
 
 [[package]]
@@ -8866,9 +8944,11 @@ version = "0.1.0"
 dependencies = [
  "android_logger",
  "anyhow",
+ "cbindgen 0.29.2",
  "crossbeam-channel",
  "gpui",
  "gpui_android",
+ "gpui_ios",
  "http_client",
  "iroh",
  "jni",
@@ -8876,6 +8956,7 @@ dependencies = [
  "ndk",
  "ndk-context",
  "once_cell",
+ "oslog",
  "rust-embed",
  "tree-sitter",
  "tree-sitter-rust",

@@ -1,15 +1,18 @@
 /// GPUI-based iOS app — renders via Metal through gpui_ios.
 ///
-/// Launches the full ZedraApp (same UI as Android) with tabs, navigation,
-/// terminal, editor, and transport layer.
+/// Creates the GPUI AppCell with IosPlatform and opens a window.
+/// The run loop is managed by iOS (UIApplicationMain), not by GPUI.
 ///
 /// Lifecycle (called from Obj-C app delegate):
 ///   1. gpui_ios_initialize()         — set up GPUI FFI state
-///   2. zedra_launch_gpui()           — create Application, register window callback
-///   3. gpui_ios_did_finish_launching — invoke callback -> opens window
+///   2. zedra_launch_gpui()           — create AppCell, IosPlatform runs
+///   3. gpui_ios_did_finish_launching — callback opens window
 ///   4. gpui_ios_get_window()         — get window pointer for CADisplayLink
 ///   5. gpui_ios_request_frame()      — called each frame by CADisplayLink
 use gpui::*;
+use gpui_ios::IosPlatform;
+use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::app::ZedraApp;
 
@@ -39,23 +42,22 @@ pub extern "C" fn zedra_launch_gpui() {
     // Register the iOS bridge for platform abstraction
     crate::platform_bridge::set_bridge(super::bridge::IosBridge);
 
-    log::info!("Zedra iOS: Creating GPUI application");
+    log::info!("Zedra iOS: Creating GPUI application with IosPlatform");
 
-    Application::new()
-        .with_assets(crate::ZedraAssets)
-        .run(|cx: &mut App| {
-        log::info!("Zedra iOS: Opening main window");
+    let platform: Rc<dyn Platform> = Rc::new(IosPlatform::new());
 
-        cx.open_window(
-            WindowOptions {
-                window_bounds: None,
-                ..Default::default()
-            },
-            |window, cx| cx.new(|cx| ZedraApp::new(window, cx)),
-        )
-        .expect("Failed to open window");
+    let app_cell = App::new_app(
+        platform,
+        Arc::new(crate::ZedraAssets),
+        Arc::new(http_client::BlockedHttpClient),
+    );
 
-        cx.activate(true);
-        log::info!("Zedra iOS: Main window created with ZedraApp");
-    });
+    // IosPlatform::run() is called by GPUI internals — it registers the
+    // finish_launching callback. When iOS calls didFinishLaunching, GPUI
+    // invokes the callback which opens our window.
+    log::info!("Zedra iOS: AppCell created, waiting for didFinishLaunching");
+
+    // Keep the AppCell alive — on iOS the run loop is owned by UIKit,
+    // so we leak the Rc to prevent it from being dropped.
+    std::mem::forget(app_cell);
 }

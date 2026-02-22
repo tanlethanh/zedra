@@ -8,8 +8,8 @@ name = "zedra"
 crate-type = ["cdylib", "staticlib"]
 
 [features]
-android-platform = ["gpui/android"]
-ios-platform = ["gpui/font-kit"]
+android-platform = []
+ios-platform = []
 
 [dependencies]
 gpui = { path = "../../vendor/zed/crates/gpui", default-features = false }
