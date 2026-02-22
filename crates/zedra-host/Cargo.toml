@@ -54,6 +54,9 @@ irpc-iroh.workspace = true
 postcard.workspace = true
 serde_bytes.workspace = true
 
+# Server-side terminal emulation (screen state capture for reconnect)
+vt100.workspace = true
+
 # Workspace crates
 zedra-rpc = { path = "../zedra-rpc" }
 

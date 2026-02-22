@@ -265,12 +265,20 @@ async fn dispatch(
                 None::<tokio::sync::mpsc::Sender<TermOutput>>,
             ));
 
+            // Server-side virtual terminal for screen state capture on reconnect
+            let vterm = Arc::new(std::sync::Mutex::new(
+                vt100::Parser::new(msg.rows, msg.cols, 0),
+            ));
+
             session.terminals.lock().await.insert(
                 id.clone(),
                 TermSession {
                     writer: pty_writer,
                     master,
                     output_sender: output_sender.clone(),
+                    vterm: vterm.clone(),
+                    cols: msg.cols,
+                    rows: msg.rows,
                 },
             );
 
@@ -278,6 +286,7 @@ async fn dispatch(
             // to current TermAttach stream. Survives reconnections.
             let term_id = id.clone();
             let sess_for_reader = session.clone();
+            let vterm_for_reader = vterm.clone();
             tokio::task::spawn_blocking(move || {
                 let mut reader = pty_reader;
                 let mut buf = [0u8; 8192];
@@ -287,6 +296,12 @@ async fn dispatch(
                         Ok(0) => break,
                         Ok(n) => {
                             let data = buf[..n].to_vec();
+
+                            // Feed into server-side virtual terminal
+                            if let Ok(mut vt) = vterm_for_reader.lock() {
+                                vt.process(&data);
+                            }
+
                             let seq = rt.block_on(sess_for_reader.next_backlog_seq());
                             rt.block_on(sess_for_reader.push_backlog_entry(BacklogEntry {
                                 seq,
@@ -331,22 +346,46 @@ async fn dispatch(
                 }
             }
 
-            // Replay backlog
-            let backlog = session.backlog_after(&term_id, last_seq).await;
-            tracing::info!(
-                "TermAttach: id={} last_seq={} backlog_entries={} session={}",
-                term_id, last_seq, backlog.len(), session.id,
-            );
-            for entry in backlog {
-                if irpc_tx
-                    .send(TermOutput {
-                        data: entry.data,
-                        seq: entry.seq,
+            // Screen state restoration: send vt100 screen dump for fresh attaches,
+            // or backlog replay for brief reconnects with known seq position.
+            if last_seq == 0 {
+                // Fresh attach (new client or app restart): send full screen state
+                let screen_dump = {
+                    let terms = session.terminals.lock().await;
+                    terms.get(&term_id).and_then(|term| {
+                        term.vterm.lock().ok().map(|vt| vt.screen().state_formatted())
                     })
-                    .await
-                    .is_err()
-                {
-                    return Ok(());
+                };
+                if let Some(dump) = screen_dump {
+                    if !dump.is_empty() {
+                        let seq = session.next_backlog_seq().await;
+                        tracing::info!(
+                            "TermAttach: id={} sending screen dump ({} bytes) session={}",
+                            term_id, dump.len(), session.id,
+                        );
+                        if irpc_tx.send(TermOutput { data: dump, seq }).await.is_err() {
+                            return Ok(());
+                        }
+                    }
+                }
+            } else {
+                // Reconnect with known position: replay missed backlog entries
+                let backlog = session.backlog_after(&term_id, last_seq).await;
+                tracing::info!(
+                    "TermAttach: id={} last_seq={} backlog_entries={} session={}",
+                    term_id, last_seq, backlog.len(), session.id,
+                );
+                for entry in backlog {
+                    if irpc_tx
+                        .send(TermOutput {
+                            data: entry.data,
+                            seq: entry.seq,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        return Ok(());
+                    }
                 }
             }
 
@@ -402,16 +441,25 @@ async fn dispatch(
         }
 
         ZedraMessage::TermResize(msg) => {
-            let terms = session.terminals.lock().await;
-            let ok = if let Some(term) = terms.get(&msg.id) {
-                term.master
+            let mut terms = session.terminals.lock().await;
+            let ok = if let Some(term) = terms.get_mut(&msg.id) {
+                let pty_ok = term.master
                     .resize(portable_pty::PtySize {
                         rows: msg.rows,
                         cols: msg.cols,
                         pixel_width: 0,
                         pixel_height: 0,
                     })
-                    .is_ok()
+                    .is_ok();
+                if pty_ok {
+                    // Keep vterm in sync with PTY dimensions
+                    if let Ok(mut vt) = term.vterm.lock() {
+                        vt.screen_mut().set_size(msg.rows, msg.cols);
+                    }
+                    term.cols = msg.cols;
+                    term.rows = msg.rows;
+                }
+                pty_ok
             } else {
                 false
             };
@@ -426,8 +474,13 @@ async fn dispatch(
         ZedraMessage::TermList(msg) => {
             let terms = session.terminals.lock().await;
             let terminals = terms
-                .keys()
-                .map(|id| TermListEntry { id: id.clone() })
+                .iter()
+                .map(|(id, term)| TermListEntry {
+                    id: id.clone(),
+                    cols: term.cols,
+                    rows: term.rows,
+                    title: None, // TODO: track via vt100 Callbacks
+                })
                 .collect();
             let _ = msg.tx.send(TermListResult { terminals }).await;
         }
