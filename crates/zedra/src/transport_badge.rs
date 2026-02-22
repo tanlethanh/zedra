@@ -1,8 +1,13 @@
 /// Transport badge: connection type indicator (P2P / Relay / Reconnecting).
 
+use std::sync::Mutex;
+
 use gpui::*;
 
 use crate::theme;
+
+/// Last logged transport state, for change-only logging.
+static LAST_TRANSPORT_STATE: Mutex<Option<String>> = Mutex::new(None);
 
 /// Compute badge label and dot color from session state.
 pub(crate) fn transport_badge_info(
@@ -12,6 +17,13 @@ pub(crate) fn transport_badge_info(
     // Show reconnecting state if a reconnect attempt is in progress
     let attempt = zedra_session::reconnect_attempt();
     if attempt > 0 {
+        let key = format!("reconnecting-{}", attempt);
+        if let Ok(mut last) = LAST_TRANSPORT_STATE.lock() {
+            if last.as_deref() != Some(&key) {
+                log::info!("[PERF] transport: reconnecting attempt={}", attempt);
+                *last = Some(key);
+            }
+        }
         return (format!("Reconnecting... ({})", attempt), theme::ACCENT_RED);
     }
 
@@ -28,6 +40,16 @@ pub(crate) fn transport_badge_info(
         Some(_) => theme::ACCENT_YELLOW,
         None => theme::ACCENT_GREEN,
     };
+
+    // Log on state change only
+    let key = format!("{}-{}", conn_type, latency_ms);
+    if let Ok(mut last) = LAST_TRANSPORT_STATE.lock() {
+        if last.as_deref() != Some(&key) {
+            log::info!("[PERF] transport: {} latency={}ms", conn_type, latency_ms);
+            *last = Some(key);
+        }
+    }
+
     (label, color)
 }
 

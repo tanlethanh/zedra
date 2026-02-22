@@ -62,6 +62,8 @@ pub struct FileExplorer {
     pending_entries: SharedPendingSlot<Vec<FileEntry>>,
     /// Pending children from async fs/list (per-instance, not global)
     pending_children: SharedPendingSlot<(Vec<usize>, Vec<FileEntry>)>,
+    /// Last flattened entry count, for change-only logging
+    last_flat_count: usize,
 }
 
 impl FileExplorer {
@@ -72,6 +74,7 @@ impl FileExplorer {
             remote_loaded: false,
             pending_entries: shared_pending_slot(),
             pending_children: shared_pending_slot(),
+            last_flat_count: 0,
         };
 
         // If there's an active session, load root entries from remote
@@ -295,6 +298,14 @@ impl Render for FileExplorer {
         self.apply_pending_children();
 
         let flat = self.flatten();
+
+        if flat.len() != self.last_flat_count {
+            log::info!(
+                "[PERF] file_explorer: {} entries, remote={}",
+                flat.len(), self.remote_loaded
+            );
+            self.last_flat_count = flat.len();
+        }
 
         let mut list = div().id("file-list").flex().flex_col();
 

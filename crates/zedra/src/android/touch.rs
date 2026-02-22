@@ -204,6 +204,7 @@ impl TouchHandler {
             .unwrap_or_else(|| point(px(0.0), px(0.0)));
 
         if fling_vx.abs() > FLING_THRESHOLD || fling_vy.abs() > FLING_THRESHOLD {
+            log::info!("[PERF] fling: start vel=({:.0}, {:.0})", fling_vx, fling_vy);
             self.fling_state = Some(FlingState {
                 velocity_x: fling_vx,
                 velocity_y: fling_vy,
@@ -234,6 +235,7 @@ impl TouchHandler {
         let vy = fling.velocity_y;
 
         if vx.abs() < FLING_THRESHOLD && vy.abs() < FLING_THRESHOLD {
+            log::info!("[PERF] fling: end");
             platform.dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
                 position: fling.position,
                 delta: ScrollDelta::Pixels(point(px(0.0), px(0.0))),

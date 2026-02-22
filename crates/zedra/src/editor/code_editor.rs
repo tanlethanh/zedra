@@ -213,6 +213,12 @@ impl Render for EditorView {
         // iteration and string allocations are avoided entirely.
         if self.lines_dirty {
             self.rebuild_line_cache();
+            let line_count = self.cached_lines.len();
+            let char_count: usize = self.cached_lines.iter().map(|l| l.text.len()).sum();
+            log::info!(
+                "[PERF] editor: rebuilt cache, {} lines, {} chars",
+                line_count, char_count
+            );
         }
 
         let line_count = self.cached_lines.len();

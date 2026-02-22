@@ -282,6 +282,8 @@ impl Render for DrawerHost {
         // Trigger auto-snap outside the lock
         if let Some(target) = auto_snap_target {
             let width = f32::from(self.width);
+            let action = if target < width * 0.5 { "close" } else { "open" };
+            log::info!("[PERF] drawer: snap {}", action);
             self.start_snap(target, cx);
             if target < width * 0.5 {
                 cx.emit(DrawerEvent::Closed);

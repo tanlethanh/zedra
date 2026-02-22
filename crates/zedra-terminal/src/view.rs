@@ -247,7 +247,14 @@ impl Render for TerminalView {
         // Process any pending SSH/RPC output before rendering.
         // Re-renders are driven by the frame loop (request_frame_forced) when
         // TERMINAL_DATA_PENDING is set, so no cx.notify() loop is needed here.
-        self.process_output();
+        let had_data = self.process_output();
+        if had_data {
+            let size = self.terminal.size();
+            log::info!(
+                "[PERF] terminal: processed data, grid={}x{}",
+                size.columns, size.rows
+            );
+        }
 
         // Adjust terminal rows based on soft keyboard height.
         // The keyboard height is reported in physical pixels by Android WindowInsets.

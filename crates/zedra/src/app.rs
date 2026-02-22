@@ -308,7 +308,7 @@ impl ZedraApp {
                         drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
                     }
                     AppDrawerEvent::DisconnectRequested => {
-                        log::info!("Disconnect requested from Session tab");
+                        log::info!("[PERF] screen: Editor → Home (disconnect)");
                         drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
                         zedra_session::clear_active_session();
                         this.session = None;
@@ -327,7 +327,7 @@ impl ZedraApp {
                         cx.notify();
                     }
                     AppDrawerEvent::NewTerminalRequested => {
-                        log::info!("New terminal requested from drawer");
+                        log::info!("[PERF] terminal create requested, total_views={}", this.terminal_views.len());
                         drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
                         if let Some(session) = zedra_session::active_session() {
                             let (columns, rows, cell_width, line_height) =
@@ -353,7 +353,7 @@ impl ZedraApp {
                             zedra_session::session_runtime().spawn(async move {
                                 match session.terminal_create(cols_u16, rows_u16).await {
                                     Ok(term_id) => {
-                                        log::info!("New terminal created: {}", term_id);
+                                        log::info!("[PERF] terminal created: id={}", term_id);
                                         PENDING_TERMINAL_ID.set(term_id);
                                         zedra_session::signal_terminal_data();
                                     }
@@ -546,6 +546,7 @@ impl ZedraApp {
         let endpoint_short = addr.id.fmt_short().to_string();
         log::info!("QR connect: starting iroh connection to {}", endpoint_short);
 
+        log::info!("[PERF] screen: Home → Editor");
         self.screen = AppScreen::Editor;
 
         let (cols, rows) = self.create_terminal_view(&endpoint_short, window, cx);
@@ -587,6 +588,12 @@ impl Render for ZedraApp {
         // Check for pending remote file content (replaces loading placeholder)
         if self.screen == AppScreen::Editor && !self.editor_showing_project {
             if let Some((filename, content)) = PENDING_FILE_CONTENT.take() {
+                let char_count = content.len();
+                let line_count = content.lines().count();
+                log::info!(
+                    "[PERF] file loaded: {}, {} chars, {} lines",
+                    filename, char_count, line_count
+                );
                 let editor_view = cx.new(|cx| EditorView::new(content, cx));
                 let fname = filename.clone();
                 self.editor_stack.update(cx, |stack, cx| {
