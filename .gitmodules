@@ -2,3 +2,7 @@
 	path = vendor/zed
 	url = https://github.com/tanlethanh/zed.git
 	branch = feat/gpui-android-support
+[submodule "vendor/blade"]
+	path = vendor/blade
+	url = https://github.com/tanlethanh/blade.git
+	branch = vulkan-1.1-compat

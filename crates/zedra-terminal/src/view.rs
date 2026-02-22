@@ -266,11 +266,19 @@ impl Render for TerminalView {
                 if effective_rows != self.last_keyboard_rows {
                     log::info!(
                         "Keyboard resize: kb={}px logical={:.0} kb_rows={} base={} effective={}",
-                        kb_px, kb_logical, kb_rows, self.base_rows, effective_rows
+                        kb_px,
+                        kb_logical,
+                        kb_rows,
+                        self.base_rows,
+                        effective_rows
                     );
                     let size = self.terminal.size();
-                    self.terminal
-                        .resize(size.columns, effective_rows, size.cell_width, size.line_height);
+                    self.terminal.resize(
+                        size.columns,
+                        effective_rows,
+                        size.cell_width,
+                        size.line_height,
+                    );
                     self.last_keyboard_rows = effective_rows;
 
                     // Fire-and-forget remote PTY resize
@@ -279,8 +287,7 @@ impl Render for TerminalView {
                     if let Some(session) = zedra_session::active_session() {
                         if let Some(term_id) = session.terminal_id() {
                             zedra_session::session_runtime().spawn(async move {
-                                if let Err(e) =
-                                    session.terminal_resize(&term_id, cols, rows).await
+                                if let Err(e) = session.terminal_resize(&term_id, cols, rows).await
                                 {
                                     log::warn!("Remote PTY resize failed: {}", e);
                                 }

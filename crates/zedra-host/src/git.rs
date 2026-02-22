@@ -130,11 +130,7 @@ impl GitRepo {
     /// Commit log.
     pub fn log(&self, limit: usize) -> Result<Vec<LogEntry>> {
         let limit_str = format!("-{}", limit);
-        let out = self.git(&[
-            "log",
-            &limit_str,
-            "--format=%H%n%s%n%an%n%at",
-        ])?;
+        let out = self.git(&["log", &limit_str, "--format=%H%n%s%n%an%n%at"])?;
         let lines: Vec<&str> = out.lines().collect();
         let mut entries = Vec::new();
         for chunk in lines.chunks(4) {
@@ -241,9 +237,7 @@ mod tests {
     fn commit_and_log() {
         let (dir, repo) = init_repo();
         std::fs::write(dir.path().join("file.txt"), "content").unwrap();
-        let hash = repo
-            .commit("initial commit", &["file.txt".into()])
-            .unwrap();
+        let hash = repo.commit("initial commit", &["file.txt".into()]).unwrap();
         assert_eq!(hash.len(), 40);
 
         let log = repo.log(10).unwrap();

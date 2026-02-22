@@ -12,7 +12,7 @@ use zedra_host::iroh_listener;
 use zedra_host::rpc_daemon::DaemonState;
 use zedra_host::session_registry::SessionRegistry;
 use zedra_rpc::{methods, RpcClient, Transport};
-use zedra_transport::{IrohTransport, PairingPayload, parse_pairing_uri};
+use zedra_transport::{parse_pairing_uri, IrohTransport, PairingPayload};
 
 const ZEDRA_ALPN: &[u8] = b"zedra/rpc/1";
 
@@ -96,7 +96,10 @@ async fn setup_host(
 async fn connect_client(
     relay_url: iroh::RelayUrl,
     host_endpoint: &iroh::Endpoint,
-) -> anyhow::Result<(RpcClient, tokio::sync::mpsc::Receiver<zedra_rpc::Notification>)> {
+) -> anyhow::Result<(
+    RpcClient,
+    tokio::sync::mpsc::Receiver<zedra_rpc::Notification>,
+)> {
     let client_endpoint = make_endpoint(relay_url).await?;
     wait_online(&client_endpoint).await;
 
@@ -194,10 +197,7 @@ async fn test_iroh_transport_framing() {
         assert_eq!(msg, b"hello iroh transport");
 
         // Send a framed response
-        transport
-            .send(b"echo: hello iroh transport")
-            .await
-            .unwrap();
+        transport.send(b"echo: hello iroh transport").await.unwrap();
 
         // Wait for client to finish reading
         let _ = done_rx.await;
@@ -236,8 +236,7 @@ async fn test_full_rpc_over_iroh() {
         resp.error
     );
 
-    let info: zedra_rpc::SessionInfoResult =
-        serde_json::from_value(resp.result.unwrap()).unwrap();
+    let info: zedra_rpc::SessionInfoResult = serde_json::from_value(resp.result.unwrap()).unwrap();
     assert!(!info.hostname.is_empty());
     assert!(!info.workdir.is_empty());
 }
@@ -258,14 +257,9 @@ async fn test_rpc_terminal_over_relay() {
         )
         .await
         .unwrap();
-    assert!(
-        resp.error.is_none(),
-        "term/create failed: {:?}",
-        resp.error
-    );
+    assert!(resp.error.is_none(), "term/create failed: {:?}", resp.error);
 
-    let result: zedra_rpc::TermCreateResult =
-        serde_json::from_value(resp.result.unwrap()).unwrap();
+    let result: zedra_rpc::TermCreateResult = serde_json::from_value(resp.result.unwrap()).unwrap();
     assert!(result.id.starts_with("term-"));
 
     // Send a command
@@ -286,8 +280,7 @@ async fn test_rpc_terminal_over_relay() {
         .expect("notification channel closed");
     assert_eq!(notif.method, methods::TERM_OUTPUT);
 
-    let output: zedra_rpc::TermOutputNotification =
-        serde_json::from_value(notif.params).unwrap();
+    let output: zedra_rpc::TermOutputNotification = serde_json::from_value(notif.params).unwrap();
     assert_eq!(output.id, result.id);
     assert!(!output.data.is_empty());
 

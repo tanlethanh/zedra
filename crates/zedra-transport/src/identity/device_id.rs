@@ -23,10 +23,7 @@ impl DeviceId {
         material[..32].copy_from_slice(&hash1);
         material[32..35].copy_from_slice(&hash2[..3]);
         // 35 bytes -> ceil(35*8/5) = 56 base32 characters -> 8 groups of 7
-        let encoded = base32::encode(
-            base32::Alphabet::Rfc4648 { padding: false },
-            &material,
-        );
+        let encoded = base32::encode(base32::Alphabet::Rfc4648 { padding: false }, &material);
         let chunks: Vec<&str> = encoded
             .as_bytes()
             .chunks(7)
@@ -162,6 +159,9 @@ mod tests {
     fn parse_rejects_invalid() {
         assert!(DeviceId::parse("too-short").is_err());
         assert!(DeviceId::parse("AAAAAAA-BBBBBBB").is_err()); // only 2 groups
-        assert!(DeviceId::parse("AAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH").is_err()); // group 0 is 6 chars
+        assert!(
+            DeviceId::parse("AAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH")
+                .is_err()
+        ); // group 0 is 6 chars
     }
 }

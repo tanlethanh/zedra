@@ -19,7 +19,7 @@ impl Default for TabBarConfig {
     fn default() -> Self {
         Self {
             height: 56.0,
-            bg_color: hsla(220.0 / 360.0, 0.13, 0.14, 1.0),   // #21252b
+            bg_color: hsla(220.0 / 360.0, 0.13, 0.14, 1.0), // #21252b
             active_color: hsla(207.0 / 360.0, 0.82, 0.66, 1.0), // #61afef
             inactive_color: hsla(220.0 / 360.0, 0.10, 0.44, 1.0), // #5c6370
         }
@@ -98,7 +98,9 @@ impl TabNavigator {
 
     /// Get the active tab's view.
     pub fn active_view(&self) -> Option<&AnyView> {
-        self.tabs.get(self.active_index).and_then(|t| t.view.as_ref())
+        self.tabs
+            .get(self.active_index)
+            .and_then(|t| t.view.as_ref())
     }
 }
 
@@ -155,18 +157,8 @@ impl Render for TabNavigator {
                             this.set_active(idx, window, cx);
                         }),
                     )
-                    .child(
-                        div()
-                            .text_color(color)
-                            .text_xl()
-                            .child(icon),
-                    )
-                    .child(
-                        div()
-                            .text_color(color)
-                            .text_xs()
-                            .child(label),
-                    ),
+                    .child(div().text_color(color).text_xl().child(icon))
+                    .child(div().text_color(color).text_xs().child(label)),
             );
         }
 

@@ -18,9 +18,9 @@ impl Default for HeaderConfig {
     fn default() -> Self {
         Self {
             height: 44.0,
-            bg_color: hsla(0.0, 0.0, 0.055, 1.0),              // #0e0c0c
-            title_color: hsla(0.0, 0.0, 1.0, 1.0),             // white
-            back_color: hsla(0.0, 0.0, 0.79, 1.0),             // #cacaca
+            bg_color: hsla(0.0, 0.0, 0.055, 1.0),  // #0e0c0c
+            title_color: hsla(0.0, 0.0, 1.0, 1.0), // white
+            back_color: hsla(0.0, 0.0, 0.79, 1.0), // #cacaca
             show_header: true,
         }
     }

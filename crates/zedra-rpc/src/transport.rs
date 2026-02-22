@@ -8,9 +8,9 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
-use crate::protocol::{Message, Notification, Request, Response, INTERNAL_ERROR};
+use crate::protocol::{INTERNAL_ERROR, Message, Notification, Request, Response};
 
 // ---------------------------------------------------------------------------
 // Transport trait
@@ -216,11 +216,7 @@ impl RpcClient {
     }
 
     /// Send a notification (no response expected).
-    pub async fn notify(
-        &self,
-        method: impl Into<String>,
-        params: serde_json::Value,
-    ) -> Result<()> {
+    pub async fn notify(&self, method: impl Into<String>, params: serde_json::Value) -> Result<()> {
         let notif = Notification::new(method, params);
         let payload = serde_json::to_vec(&notif)?;
         self.tx
@@ -241,8 +237,11 @@ impl RpcClient {
 // ---------------------------------------------------------------------------
 
 /// Handler function type: takes method + params, returns result or error.
-pub type HandlerFn =
-    Box<dyn Fn(serde_json::Value) -> futures::future::BoxFuture<'static, Result<serde_json::Value>> + Send + Sync>;
+pub type HandlerFn = Box<
+    dyn Fn(serde_json::Value) -> futures::future::BoxFuture<'static, Result<serde_json::Value>>
+        + Send
+        + Sync,
+>;
 
 /// Simple RPC server that dispatches to registered handlers.
 pub struct RpcServer {
@@ -259,10 +258,12 @@ impl RpcServer {
     pub fn register(
         &mut self,
         method: impl Into<String>,
-        handler: impl Fn(serde_json::Value) -> futures::future::BoxFuture<'static, Result<serde_json::Value>>
-            + Send
-            + Sync
-            + 'static,
+        handler: impl Fn(
+            serde_json::Value,
+        ) -> futures::future::BoxFuture<'static, Result<serde_json::Value>>
+        + Send
+        + Sync
+        + 'static,
     ) {
         self.handlers.insert(method.into(), Box::new(handler));
     }
@@ -335,9 +336,7 @@ mod tests {
         let (sr, sw) = tokio::io::split(server_stream);
 
         let mut server = RpcServer::new();
-        server.register("echo", |params| {
-            Box::pin(async move { Ok(params) })
-        });
+        server.register("echo", |params| Box::pin(async move { Ok(params) }));
 
         let server_handle = tokio::spawn(async move {
             let _ = server.serve(sr, sw).await;
@@ -350,10 +349,7 @@ mod tests {
             .unwrap();
 
         assert!(resp.error.is_none());
-        assert_eq!(
-            resp.result.unwrap(),
-            serde_json::json!({"hello": "world"})
-        );
+        assert_eq!(resp.result.unwrap(), serde_json::json!({"hello": "world"}));
 
         server_handle.abort();
     }
@@ -370,12 +366,12 @@ mod tests {
         });
 
         let (client, _notifs) = RpcClient::spawn(cr, cw);
-        let resp = client.call("nonexistent", serde_json::json!({})).await.unwrap();
+        let resp = client
+            .call("nonexistent", serde_json::json!({}))
+            .await
+            .unwrap();
         assert!(resp.error.is_some());
-        assert_eq!(
-            resp.error.unwrap().code,
-            crate::protocol::METHOD_NOT_FOUND
-        );
+        assert_eq!(resp.error.unwrap().code, crate::protocol::METHOD_NOT_FOUND);
 
         server_handle.abort();
     }
@@ -389,9 +385,10 @@ mod tests {
         let (client, _notifs) = RpcClient::spawn_from_channels(incoming_rx, outgoing_tx);
 
         // Send a request via the client
-        let call_handle = tokio::spawn(async move {
-            client.call("test", serde_json::json!({"foo": "bar"})).await
-        });
+        let call_handle =
+            tokio::spawn(
+                async move { client.call("test", serde_json::json!({"foo": "bar"})).await },
+            );
 
         // Read the outgoing payload (the serialized Request)
         let outgoing_payload = outgoing_rx.recv().await.unwrap();
@@ -414,5 +411,4 @@ mod tests {
         assert!(result.error.is_none());
         assert_eq!(result.result.unwrap(), serde_json::json!({"result": "ok"}));
     }
-
 }

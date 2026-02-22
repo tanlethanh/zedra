@@ -24,9 +24,8 @@ pub struct HostStore {
 
 /// Get the config directory path
 pub fn config_dir() -> Result<PathBuf> {
-    let dirs =
-        directories::ProjectDirs::from("dev", "zedra", "zedra-host")
-            .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
+    let dirs = directories::ProjectDirs::from("dev", "zedra", "zedra-host")
+        .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
     let config = dirs.config_dir().to_path_buf();
     std::fs::create_dir_all(&config)?;
     Ok(config)
@@ -98,7 +97,11 @@ pub fn revoke_device(device_id: &str) -> Result<()> {
 /// Find a device by public key
 pub fn find_device_by_key(public_key: &str) -> Result<Option<PairedDevice>> {
     let store = load_store()?;
-    Ok(store.devices.iter().find(|d| d.public_key == public_key).cloned())
+    Ok(store
+        .devices
+        .iter()
+        .find(|d| d.public_key == public_key)
+        .cloned())
 }
 
 /// Update last connected time for a device

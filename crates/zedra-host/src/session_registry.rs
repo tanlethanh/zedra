@@ -158,11 +158,11 @@ impl SessionRegistry {
             allowed_devices: Vec::new(),
         });
 
-        self.sessions.lock().await.insert(id.clone(), session.clone());
-        self.name_index
+        self.sessions
             .lock()
             .await
-            .insert(name.to_string(), id);
+            .insert(id.clone(), session.clone());
+        self.name_index.lock().await.insert(name.to_string(), id);
         session
     }
 
@@ -199,13 +199,11 @@ impl SessionRegistry {
         }
 
         // Sort by name (named first, then unnamed; alphabetical within groups).
-        result.sort_by(|a, b| {
-            match (&a.name, &b.name) {
-                (Some(na), Some(nb)) => na.cmp(nb),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => a.id.cmp(&b.id),
-            }
+        result.sort_by(|a, b| match (&a.name, &b.name) {
+            (Some(na), Some(nb)) => na.cmp(nb),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.id.cmp(&b.id),
         });
 
         result

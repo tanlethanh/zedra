@@ -19,15 +19,14 @@ const ZEDRA_ALPN: &[u8] = b"zedra/rpc/1";
 ///
 /// Returns the endpoint ready for `accept()` calls and QR code generation.
 /// Uses the Zedra relay server for NAT traversal and cross-network connectivity.
-pub async fn create_endpoint(
-    identity: &SharedIdentity,
-) -> Result<iroh::Endpoint> {
-    let relay_url: iroh::RelayUrl = zedra_transport::DEFAULT_RELAY_URL.parse()
-        .map_err(|e| anyhow::anyhow!("invalid relay URL: {}", e))?;
-    tracing::info!("Using relay: {}", relay_url);
+pub async fn create_endpoint(identity: &SharedIdentity) -> Result<iroh::Endpoint> {
+    // let relay_url: iroh::RelayUrl = zedra_transport::DEFAULT_RELAY_URL
+    //     .parse()
+    //     .map_err(|e| anyhow::anyhow!("invalid relay URL: {}", e))?;
+    // tracing::info!("Using relay: {}", relay_url);
 
     let builder = iroh::Endpoint::builder()
-        .relay_mode(iroh::RelayMode::custom([relay_url]))
+        // .relay_mode(iroh::RelayMode::custom([relay_url]))
         .secret_key(identity.iroh_secret_key().clone())
         .alpns(vec![ZEDRA_ALPN.to_vec()]);
 
@@ -36,12 +35,11 @@ pub async fn create_endpoint(
     tracing::info!("iroh endpoint bound: {}", endpoint.id().fmt_short());
 
     // Wait for relay connection so endpoint.addr() includes the relay URL
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        endpoint.online(),
-    ).await {
+    match tokio::time::timeout(std::time::Duration::from_secs(10), endpoint.online()).await {
         Ok(()) => tracing::info!("iroh endpoint online (relay connected)"),
-        Err(_) => tracing::warn!("Timed out waiting for relay connection; continuing with direct addrs only"),
+        Err(_) => tracing::warn!(
+            "Timed out waiting for relay connection; continuing with direct addrs only"
+        ),
     }
 
     tracing::info!("iroh endpoint addr: {:?}", endpoint.addr());
@@ -102,10 +100,7 @@ async fn handle_incoming(
     let conn = accepting.await?;
 
     let remote = conn.remote_id();
-    tracing::info!(
-        "iroh: accepted connection from {}",
-        remote.fmt_short()
-    );
+    tracing::info!("iroh: accepted connection from {}", remote.fmt_short());
 
     // Accept a bidirectional stream for RPC
     let (send, recv) = conn.accept_bi().await?;
@@ -118,10 +113,7 @@ async fn handle_incoming(
 pub fn get_endpoint_info(endpoint: &iroh::Endpoint) -> EndpointQrInfo {
     let addr = endpoint.addr();
     let relay_url = addr.relay_urls().next().map(|u| u.to_string());
-    let direct_addrs: Vec<String> = addr
-        .ip_addrs()
-        .map(|a| a.to_string())
-        .collect();
+    let direct_addrs: Vec<String> = addr.ip_addrs().map(|a| a.to_string()).collect();
 
     EndpointQrInfo {
         endpoint_id: endpoint.id().to_string(),

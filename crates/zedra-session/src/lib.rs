@@ -16,10 +16,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use anyhow::Result;
 
 use zedra_rpc::{
-    methods, FsEntry, FsListParams, FsReadParams, FsReadResult, FsStatParams, FsStatResult,
-    FsWriteParams, GitBranchEntry, GitCommitParams, GitDiffParams, GitDiffResult, GitLogEntry,
-    GitLogParams, GitStatusResult, Response, RpcClient, SessionInfoResult,
-    TermCreateParams, TermCreateResult, TermDataParams, TermOutputNotification, TermResizeParams,
+    FsEntry, FsListParams, FsReadParams, FsReadResult, FsStatParams, FsStatResult, FsWriteParams,
+    GitBranchEntry, GitCommitParams, GitDiffParams, GitDiffResult, GitLogEntry, GitLogParams,
+    GitStatusResult, Response, RpcClient, SessionInfoResult, TermCreateParams, TermCreateResult,
+    TermDataParams, TermOutputNotification, TermResizeParams, methods,
 };
 use zedra_transport::{IrohTransport, PairingPayload};
 
@@ -337,7 +337,8 @@ impl RemoteSession {
 
         // Build iroh endpoint (client side — generates ephemeral key)
         // Use the Zedra relay for NAT traversal and cross-network connectivity
-        let relay_url: iroh::RelayUrl = zedra_transport::DEFAULT_RELAY_URL.parse()
+        let relay_url: iroh::RelayUrl = zedra_transport::DEFAULT_RELAY_URL
+            .parse()
             .map_err(|e| anyhow::anyhow!("invalid relay URL: {}", e))?;
         tracing::info!("Using relay: {}", relay_url);
 
@@ -350,10 +351,7 @@ impl RemoteSession {
 
         // Parse host's EndpointAddr from the pairing payload
         let addr = payload.to_endpoint_addr()?;
-        tracing::info!(
-            "Connecting to host endpoint: {:?}",
-            addr,
-        );
+        tracing::info!("Connecting to host endpoint: {:?}", addr,);
 
         // Connect to host
         let conn = endpoint.connect(addr, b"zedra/rpc/1").await?;
@@ -480,7 +478,9 @@ impl RemoteSession {
                                     let target_buf = {
                                         let mut map = terminal_outputs.lock().unwrap();
                                         map.entry(term_notif.id.clone())
-                                            .or_insert_with(|| Arc::new(Mutex::new(VecDeque::new())))
+                                            .or_insert_with(|| {
+                                                Arc::new(Mutex::new(VecDeque::new()))
+                                            })
                                             .clone()
                                     };
                                     if let Ok(mut buf) = target_buf.lock() {
@@ -517,10 +517,13 @@ impl RemoteSession {
             .unwrap_or((None, None));
 
         let auth_token = stored_auth_token.unwrap_or_else(|| {
-            let token = format!("{:016x}", std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos());
+            let token = format!(
+                "{:016x}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            );
             token
         });
 
@@ -554,14 +557,31 @@ impl RemoteSession {
                             // Process backlog: route missed terminal output to buffers
                             for entry in &resume.backlog {
                                 if let Ok(notif_json) = base64_url::decode(&entry.payload) {
-                                    if let Ok(notif) = serde_json::from_slice::<zedra_rpc::Notification>(&notif_json) {
+                                    if let Ok(notif) =
+                                        serde_json::from_slice::<zedra_rpc::Notification>(
+                                            &notif_json,
+                                        )
+                                    {
                                         if notif.method == methods::TERM_OUTPUT {
-                                            if let Ok(term_notif) = serde_json::from_value::<TermOutputNotification>(notif.params) {
-                                                if let Ok(bytes) = base64_url::decode(&term_notif.data) {
+                                            if let Ok(term_notif) =
+                                                serde_json::from_value::<TermOutputNotification>(
+                                                    notif.params,
+                                                )
+                                            {
+                                                if let Ok(bytes) =
+                                                    base64_url::decode(&term_notif.data)
+                                                {
                                                     let target_buf = {
-                                                        let mut map = session.terminal_outputs.lock().unwrap();
+                                                        let mut map = session
+                                                            .terminal_outputs
+                                                            .lock()
+                                                            .unwrap();
                                                         map.entry(term_notif.id.clone())
-                                                            .or_insert_with(|| Arc::new(Mutex::new(VecDeque::new())))
+                                                            .or_insert_with(|| {
+                                                                Arc::new(
+                                                                    Mutex::new(VecDeque::new()),
+                                                                )
+                                                            })
                                                             .clone()
                                                     };
                                                     if let Ok(mut buf) = target_buf.lock() {
@@ -742,10 +762,7 @@ impl RemoteSession {
 
     /// The session ID assigned by the host (if available).
     pub fn session_id(&self) -> Option<String> {
-        self.session_id
-            .lock()
-            .ok()
-            .and_then(|guard| guard.clone())
+        self.session_id.lock().ok().and_then(|guard| guard.clone())
     }
 
     /// Latest ping RTT in milliseconds (0 = not yet measured).
@@ -1029,7 +1046,11 @@ impl RemoteSession {
 
         // If this was the active terminal, switch to the next available one
         if self.active_terminal_id() == Some(id) {
-            let next = self.terminal_ids.lock().ok().and_then(|ids| ids.first().cloned());
+            let next = self
+                .terminal_ids
+                .lock()
+                .ok()
+                .and_then(|ids| ids.first().cloned());
             if let Ok(mut active) = self.active_terminal_id.lock() {
                 *active = next;
             }
@@ -1053,9 +1074,7 @@ impl RemoteSession {
     // -----------------------------------------------------------------------
 
     /// Extract a typed result from a successful RPC response.
-    fn extract_result<T: serde::de::DeserializeOwned>(
-        resp: Response,
-    ) -> Result<T> {
+    fn extract_result<T: serde::de::DeserializeOwned>(resp: Response) -> Result<T> {
         if let Some(err) = resp.error {
             anyhow::bail!("RPC error {}: {}", err.code, err.message);
         }

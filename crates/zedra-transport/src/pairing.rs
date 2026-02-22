@@ -27,7 +27,9 @@ pub struct PairingPayload {
 impl PairingPayload {
     /// Convert this payload into an iroh `EndpointAddr`.
     pub fn to_endpoint_addr(&self) -> Result<iroh::EndpointAddr> {
-        let endpoint_id: iroh::PublicKey = self.endpoint_id.parse()
+        let endpoint_id: iroh::PublicKey = self
+            .endpoint_id
+            .parse()
             .map_err(|e| anyhow::anyhow!("invalid endpoint_id: {}", e))?;
 
         let mut addr = iroh::EndpointAddr::from(endpoint_id);

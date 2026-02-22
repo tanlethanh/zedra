@@ -55,10 +55,7 @@ pub fn reset_drawer_gesture() {
 
 /// Check whether a drawer pan gesture is currently active.
 pub fn is_drawer_pan_active() -> bool {
-    DRAWER_BRIDGE
-        .lock()
-        .map(|b| b.dragging)
-        .unwrap_or(false)
+    DRAWER_BRIDGE.lock().map(|b| b.dragging).unwrap_or(false)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -248,11 +245,7 @@ impl Render for DrawerHost {
                 } else {
                     let width = f32::from(self.width);
                     // Skip no-op: drawer already closed and swiping further left
-                    let current = self
-                        .drawer_state
-                        .lock()
-                        .map(|s| s.offset)
-                        .unwrap_or(0.0);
+                    let current = self.drawer_state.lock().map(|s| s.offset).unwrap_or(0.0);
                     if !(current <= 0.0 && bridge.pending_dx <= 0.0) {
                         self.snap_target = None;
                         self.snap_started_at = None;
@@ -260,8 +253,7 @@ impl Render for DrawerHost {
                         let new_offset;
                         if let Ok(mut state) = self.drawer_state.lock() {
                             state.is_dragging = true;
-                            state.offset =
-                                (state.offset + bridge.pending_dx).clamp(0.0, width);
+                            state.offset = (state.offset + bridge.pending_dx).clamp(0.0, width);
                             new_offset = state.offset;
                         } else {
                             new_offset = current;
@@ -273,8 +265,7 @@ impl Render for DrawerHost {
                         let velocity = bridge.last_dx;
 
                         if velocity > 0.0
-                            && (new_offset > position_threshold
-                                || velocity > VELOCITY_THRESHOLD)
+                            && (new_offset > position_threshold || velocity > VELOCITY_THRESHOLD)
                         {
                             // Swiping right — auto-open
                             auto_snap_target = Some(width);
@@ -361,8 +352,7 @@ impl Render for DrawerHost {
                             }
                             bridge.dragging = false;
                         }
-                        let current =
-                            this.drawer_state.lock().map(|s| s.offset).unwrap_or(0.0);
+                        let current = this.drawer_state.lock().map(|s| s.offset).unwrap_or(0.0);
                         let width = f32::from(this.width);
                         let last_dx = this.last_drag_dx;
 
@@ -399,47 +389,38 @@ impl Render for DrawerHost {
 
                 // Backdrop — covers full area, tappable to close.
                 // Scroll handling is done by the drawer bridge (not GPUI).
-                let backdrop = div()
-                    .absolute()
-                    .inset_0()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, event: &MouseDownEvent, _window, cx| {
-                            let offset =
-                                this.drawer_state.lock().map(|s| s.offset).unwrap_or(0.0);
-                            if f32::from(event.position.x) < offset {
-                                return;
-                            }
-                            cx.emit(DrawerEvent::BackdropTapped);
-                            this.close(cx);
-                        }),
-                    );
+                let backdrop = div().absolute().inset_0().on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                        let offset = this.drawer_state.lock().map(|s| s.offset).unwrap_or(0.0);
+                        if f32::from(event.position.x) < offset {
+                            return;
+                        }
+                        cx.emit(DrawerEvent::BackdropTapped);
+                        this.close(cx);
+                    }),
+                );
 
                 let backdrop: AnyElement = if animating {
                     let from = snap_from;
                     let target = snap_target.unwrap();
                     backdrop
                         .with_animation(
-                            ElementId::NamedInteger(
-                                "drawer-backdrop-snap".into(),
-                                animation_id,
-                            ),
+                            ElementId::NamedInteger("drawer-backdrop-snap".into(), animation_id),
                             Animation::new(Duration::from_millis(250))
                                 .with_easing(ease_out_quint()),
                             move |elem, delta| {
                                 let o = from + (target - from) * delta;
-                                let opacity = (o / drawer_width * max_opacity)
-                                    .clamp(0.0, max_opacity);
+                                let opacity =
+                                    (o / drawer_width * max_opacity).clamp(0.0, max_opacity);
                                 elem.bg(hsla(0.0, 0.0, 0.0, opacity))
                             },
                         )
                         .into_any_element()
                 } else {
-                    let opacity = (drawer_offset / drawer_width * max_opacity)
-                        .clamp(0.0, max_opacity);
-                    backdrop
-                        .bg(hsla(0.0, 0.0, 0.0, opacity))
-                        .into_any_element()
+                    let opacity =
+                        (drawer_offset / drawer_width * max_opacity).clamp(0.0, max_opacity);
+                    backdrop.bg(hsla(0.0, 0.0, 0.0, opacity)).into_any_element()
                 };
 
                 // Drawer panel — .occlude() prevents events inside the panel
@@ -461,10 +442,7 @@ impl Render for DrawerHost {
                     let target = snap_target.unwrap();
                     panel
                         .with_animation(
-                            ElementId::NamedInteger(
-                                "drawer-panel-snap".into(),
-                                animation_id,
-                            ),
+                            ElementId::NamedInteger("drawer-panel-snap".into(), animation_id),
                             Animation::new(Duration::from_millis(250))
                                 .with_easing(ease_out_quint()),
                             move |elem, delta| {

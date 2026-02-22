@@ -55,10 +55,7 @@ impl Keypair {
     pub fn save(&self, secret_path: &Path) -> Result<()> {
         if let Some(parent) = secret_path.parent() {
             std::fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "failed to create parent directory {}",
-                    parent.display()
-                )
+                format!("failed to create parent directory {}", parent.display())
             })?;
         }
         std::fs::write(secret_path, &self.secret_bytes)
@@ -69,10 +66,7 @@ impl Keypair {
             use std::os::unix::fs::PermissionsExt;
             let perms = std::fs::Permissions::from_mode(0o600);
             std::fs::set_permissions(secret_path, perms).with_context(|| {
-                format!(
-                    "failed to set permissions on {}",
-                    secret_path.display()
-                )
+                format!("failed to set permissions on {}", secret_path.display())
             })?;
         }
 

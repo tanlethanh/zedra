@@ -88,7 +88,13 @@ impl ShellSession {
     }
 
     /// Get a clone of the reader for async I/O
-    pub fn take_reader(self) -> (Box<dyn Read + Send>, Box<dyn Write + Send>, Box<dyn MasterPty + Send>) {
+    pub fn take_reader(
+        self,
+    ) -> (
+        Box<dyn Read + Send>,
+        Box<dyn Write + Send>,
+        Box<dyn MasterPty + Send>,
+    ) {
         (self.reader, self.writer, self.master)
     }
 }
@@ -100,7 +106,11 @@ mod tests {
     #[test]
     fn test_spawn_shell() {
         let session = ShellSession::spawn(80, 24);
-        assert!(session.is_ok(), "Failed to spawn shell: {:?}", session.err());
+        assert!(
+            session.is_ok(),
+            "Failed to spawn shell: {:?}",
+            session.err()
+        );
     }
 
     #[test]
