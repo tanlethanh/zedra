@@ -1,4 +1,4 @@
-/// C FFI bridge for iOS — the equivalent of android_jni.rs
+/// C FFI bridge for iOS — the equivalent of android/jni.rs
 ///
 /// All functions are `extern "C"` with `#[no_mangle]` so cbindgen generates
 /// a C header that Swift can import via the module map.
@@ -11,7 +11,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::sync::Once;
 
-use crate::ios_command_queue::{IosCommand, get_command_sender};
+use super::command_queue::{IosCommand, get_command_sender};
 
 static INIT: Once = Once::new();
 
@@ -19,10 +19,6 @@ static INIT: Once = Once::new();
 // Initialization
 // =============================================================================
 
-/// Initialize the Zedra Rust backend.
-///
-/// Must be called once at app launch (e.g., in SwiftUI App.init()).
-/// Sets up logging via oslog and initializes the session runtime.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_init() {
     INIT.call_once(|| {
@@ -47,18 +43,15 @@ pub extern "C" fn zedra_init() {
             log::error!("PANIC at {}: {}", location, payload);
         }));
 
-        // Initialize the main-thread app state
-        crate::ios_app::init_ios_app();
+        super::app::init_ios_app();
+
+        // Register the iOS bridge for platform abstraction
+        crate::platform_bridge::set_bridge(super::bridge::IosBridge);
 
         log::info!("Zedra iOS initialized");
     });
 }
 
-/// Initialize with screen dimensions and scale factor.
-///
-/// Call after zedra_init() with the device's screen info:
-///   - width/height: screen size in points
-///   - scale: UIScreen.main.scale (e.g. 2.0 or 3.0)
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_init_screen(width: f32, height: f32, scale: f32) {
     let sender = get_command_sender();
@@ -73,12 +66,9 @@ pub extern "C" fn zedra_init_screen(width: f32, height: f32, scale: f32) {
 // Frame Processing (called from CADisplayLink at 60 FPS)
 // =============================================================================
 
-/// Process all pending commands and tick the frame.
-///
-/// Must be called from the main thread (e.g., via CADisplayLink callback).
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_process_frame() {
-    if let Err(e) = crate::ios_app::process_commands_from_queue() {
+    if let Err(e) = super::app::process_commands_from_queue() {
         log::error!("Error processing frame: {:?}", e);
     }
 }
@@ -87,9 +77,6 @@ pub extern "C" fn zedra_process_frame() {
 // Connection
 // =============================================================================
 
-/// Connect to a zedra-host daemon at the given host:port.
-///
-/// The connection is asynchronous. Poll zedra_get_connection_status() to check progress.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_connect(host: *const c_char, port: u16) {
     let host = match unsafe { CStr::from_ptr(host) }.to_str() {
@@ -104,14 +91,12 @@ pub extern "C" fn zedra_connect(host: *const c_char, port: u16) {
     let _ = sender.send(IosCommand::Connect { host, port });
 }
 
-/// Disconnect the active session.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_disconnect() {
     let sender = get_command_sender();
     let _ = sender.send(IosCommand::Disconnect);
 }
 
-/// Pair via QR code data (zedra:// URI).
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_pair_via_qr(data: *const c_char) {
     let qr_data = match unsafe { CStr::from_ptr(data) }.to_str() {
@@ -130,7 +115,6 @@ pub extern "C" fn zedra_pair_via_qr(data: *const c_char) {
 // Terminal I/O
 // =============================================================================
 
-/// Send text input to the active terminal session.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_send_input(text: *const c_char) {
     let text = match unsafe { CStr::from_ptr(text) }.to_str() {
@@ -142,7 +126,6 @@ pub extern "C" fn zedra_send_input(text: *const c_char) {
     let _ = sender.send(IosCommand::SendInput { text });
 }
 
-/// Send a special key event (backspace, enter, tab, escape, arrow keys).
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_send_key(key_name: *const c_char) {
     let key = match unsafe { CStr::from_ptr(key_name) }.to_str() {
@@ -154,13 +137,9 @@ pub extern "C" fn zedra_send_key(key_name: *const c_char) {
     let _ = sender.send(IosCommand::KeyEvent { key_name: key });
 }
 
-/// Get pending terminal output since last call.
-///
-/// Returns a C string that the caller must free with zedra_free_string().
-/// Returns NULL if no output is available.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_get_terminal_output() -> *mut c_char {
-    let output = crate::ios_app::take_terminal_output();
+    let output = super::app::take_terminal_output();
     if output.is_empty() {
         return std::ptr::null_mut();
     }
@@ -173,13 +152,10 @@ pub extern "C" fn zedra_get_terminal_output() -> *mut c_char {
 // Status Queries
 // =============================================================================
 
-/// Get the current connection status.
-///
-/// Returns: 0=disconnected, 1=connecting, 2=connected, 3=error
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_get_connection_status() -> i32 {
-    use crate::ios_app::ConnectionStatus;
-    match crate::ios_app::get_connection_status() {
+    use super::app::ConnectionStatus;
+    match super::app::get_connection_status() {
         ConnectionStatus::Disconnected => 0,
         ConnectionStatus::Connecting => 1,
         ConnectionStatus::Connected => 2,
@@ -187,14 +163,10 @@ pub extern "C" fn zedra_get_connection_status() -> i32 {
     }
 }
 
-/// Get the connection error message (if status == 3).
-///
-/// Returns a C string that the caller must free with zedra_free_string().
-/// Returns NULL if no error.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_get_connection_error() -> *mut c_char {
-    use crate::ios_app::ConnectionStatus;
-    match crate::ios_app::get_connection_status() {
+    use super::app::ConnectionStatus;
+    match super::app::get_connection_status() {
         ConnectionStatus::Error(msg) => CString::new(msg)
             .map(|s| s.into_raw())
             .unwrap_or(std::ptr::null_mut()),
@@ -202,13 +174,9 @@ pub extern "C" fn zedra_get_connection_error() -> *mut c_char {
     }
 }
 
-/// Get the current transport info string (e.g. "LAN · 12ms").
-///
-/// Returns a C string that the caller must free with zedra_free_string().
-/// Returns NULL if no transport info available.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_get_transport_info() -> *mut c_char {
-    let info = crate::ios_app::get_transport_info();
+    let info = super::app::get_transport_info();
     if info.is_empty() {
         return std::ptr::null_mut();
     }
@@ -221,14 +189,12 @@ pub extern "C" fn zedra_get_transport_info() -> *mut c_char {
 // Lifecycle
 // =============================================================================
 
-/// Notify that the app has entered foreground.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_on_resume() {
     let sender = get_command_sender();
     let _ = sender.send(IosCommand::Resume);
 }
 
-/// Notify that the app has entered background.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_on_pause() {
     let sender = get_command_sender();
@@ -239,10 +205,6 @@ pub extern "C" fn zedra_on_pause() {
 // Memory Management
 // =============================================================================
 
-/// Free a string previously returned by Rust.
-///
-/// Must be called for every non-NULL string returned by zedra_get_terminal_output(),
-/// zedra_get_connection_error(), zedra_get_transport_info(), etc.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_free_string(ptr: *mut c_char) {
     if !ptr.is_null() {
@@ -251,20 +213,15 @@ pub extern "C" fn zedra_free_string(ptr: *mut c_char) {
 }
 
 // =============================================================================
-// Touch Input (reserved for future GPUI Metal rendering)
+// Touch Input
 // =============================================================================
 
-/// Forward a touch event to the Rust backend.
-///
-/// action: 0=began, 1=ended, 2=moved, 3=cancelled
-/// x, y: position in points
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_touch_event(action: i32, x: f32, y: f32) {
     let sender = get_command_sender();
     let _ = sender.send(IosCommand::Touch { action, x, y });
 }
 
-/// Notify that the view has been resized.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_view_resized(width: f32, height: f32) {
     let sender = get_command_sender();

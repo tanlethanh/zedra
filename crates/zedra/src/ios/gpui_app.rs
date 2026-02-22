@@ -1,4 +1,4 @@
-/// GPUI-based iOS app — renders via Metal through GPUI's blade renderer.
+/// GPUI-based iOS app — renders via Metal through gpui_ios.
 ///
 /// Launches the full ZedraApp (same UI as Android) with tabs, navigation,
 /// terminal, editor, and transport layer.
@@ -11,7 +11,7 @@
 ///   5. gpui_ios_request_frame()      — called each frame by CADisplayLink
 use gpui::*;
 
-use crate::zedra_app::ZedraApp;
+use crate::app::ZedraApp;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_launch_gpui() {
@@ -35,6 +35,9 @@ pub extern "C" fn zedra_launch_gpui() {
 
         log::error!("PANIC at {}: {}", location, payload);
     }));
+
+    // Register the iOS bridge for platform abstraction
+    crate::platform_bridge::set_bridge(super::bridge::IosBridge);
 
     log::info!("Zedra iOS: Creating GPUI application");
 

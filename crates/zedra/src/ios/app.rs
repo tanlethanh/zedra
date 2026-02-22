@@ -1,12 +1,12 @@
 /// iOS App State — main thread application logic
 ///
 /// Processes commands from the queue and manages session lifecycle.
-/// This is the iOS equivalent of android_app.rs, but without GPUI —
+/// This is the iOS equivalent of android/app.rs, but without GPUI —
 /// the UI is driven by SwiftUI, and this module manages the Rust backend.
 use anyhow::Result;
 use std::sync::Mutex;
 
-use crate::ios_command_queue::IosCommand;
+use super::command_queue::IosCommand;
 
 /// Terminal output buffer that Swift polls each frame
 static TERMINAL_OUTPUT: Mutex<String> = Mutex::new(String::new());
@@ -43,7 +43,6 @@ impl IosApp {
         }
     }
 
-    /// Process a command on the main thread
     pub fn process_command(&mut self, command: IosCommand) -> Result<()> {
         match command {
             IosCommand::Initialize {
@@ -93,8 +92,6 @@ impl IosApp {
 
     fn handle_touch(&mut self, action: i32, x: f32, y: f32) -> Result<()> {
         log::trace!("Touch: action={}, pos=({:.1}, {:.1})", action, x, y);
-        // Touch handling will be used when GPUI Metal rendering is added.
-        // For now, SwiftUI handles all touch events natively.
         Ok(())
     }
 
@@ -125,36 +122,22 @@ impl IosApp {
         log::info!("Connecting to {}:{}...", host, port);
         set_connection_status(ConnectionStatus::Connecting);
 
-        // Calculate terminal dimensions based on screen size
         let cols = ((self.screen_width / 9.0) as u16).clamp(20, 200);
         let rows = ((self.screen_height / 16.0) as u16).clamp(5, 100);
 
-        zedra_session::session_runtime().spawn(async move {
-            log::info!("RemoteSession: connecting to {}:{}...", host, port);
-            match zedra_session::RemoteSession::connect(&host, port).await {
-                Ok(session) => {
-                    log::info!("RemoteSession: connected!");
-                    match session.terminal_create(cols, rows).await {
-                        Ok(term_id) => {
-                            log::info!("Remote terminal created: {}", term_id);
-                        }
-                        Err(e) => {
-                            log::error!("Failed to create remote terminal: {}", e);
-                            set_connection_status(ConnectionStatus::Error(e.to_string()));
-                            return;
-                        }
-                    }
-                    zedra_session::set_active_session(session);
-                    set_connection_status(ConnectionStatus::Connected);
-                    zedra_session::signal_terminal_data();
-                }
-                Err(e) => {
-                    log::error!("RemoteSession connect failed: {}", e);
-                    set_connection_status(ConnectionStatus::Error(e.to_string()));
-                }
-            }
-        });
-
+        // Parse host:port as an iroh endpoint address
+        // For direct connections, we construct the address from the QR pairing flow
+        // For now, log a warning that direct host:port connect is not supported in v2
+        log::warn!(
+            "Direct host:port connection is deprecated in v2. Use QR pairing instead. \
+             Attempted: {}:{}",
+            host,
+            port
+        );
+        set_connection_status(ConnectionStatus::Error(
+            "Direct host:port connect is not supported. Use QR pairing.".to_string(),
+        ));
+        let _ = (cols, rows); // suppress unused warning
         Ok(())
     }
 
@@ -169,19 +152,18 @@ impl IosApp {
         log::info!("QR pairing: {}", &qr_data[..qr_data.len().min(50)]);
         set_connection_status(ConnectionStatus::Connecting);
 
-        match crate::pairing::parse_pairing_uri(&qr_data) {
-            Ok(payload) => {
-                let peer_info = payload.to_peer_info();
-                let hostname = peer_info.hostname.clone();
-                log::info!("QR parsed: hostname={}", hostname);
+        let cols = ((self.screen_width / 9.0) as u16).clamp(20, 200);
+        let rows = ((self.screen_height / 16.0) as u16).clamp(5, 100);
 
-                let cols = ((self.screen_width / 9.0) as u16).clamp(20, 200);
-                let rows = ((self.screen_height / 16.0) as u16).clamp(5, 100);
+        // Parse the zedra:// URI to extract the iroh EndpointAddr
+        match zedra_rpc::pairing::decode_endpoint_addr(&qr_data) {
+            Ok(addr) => {
+                log::info!("QR parsed: endpoint addr decoded");
 
                 zedra_session::session_runtime().spawn(async move {
-                    match zedra_session::RemoteSession::connect_with_peer_info(peer_info).await {
+                    match zedra_session::RemoteSession::connect_with_iroh(addr).await {
                         Ok(session) => {
-                            log::info!("RemoteSession: connected via QR!");
+                            log::info!("RemoteSession: connected via iroh!");
                             match session.terminal_create(cols, rows).await {
                                 Ok(term_id) => {
                                     log::info!("Remote terminal created: {}", term_id);
@@ -197,14 +179,14 @@ impl IosApp {
                             zedra_session::signal_terminal_data();
                         }
                         Err(e) => {
-                            log::error!("RemoteSession QR connect failed: {}", e);
+                            log::error!("RemoteSession iroh connect failed: {}", e);
                             set_connection_status(ConnectionStatus::Error(e.to_string()));
                         }
                     }
                 });
             }
             Err(e) => {
-                log::error!("Failed to parse QR pairing URI: {}", e);
+                log::error!("Failed to decode QR endpoint addr: {}", e);
                 set_connection_status(ConnectionStatus::Error(e.to_string()));
             }
         }
@@ -239,19 +221,21 @@ impl IosApp {
         // Collect terminal output from active session
         if zedra_session::check_and_clear_terminal_data() {
             if let Some(session) = zedra_session::active_session() {
-                let buf = session.output_buffer();
-                if let Ok(mut guard) = buf.lock() {
-                    while let Some(chunk) = guard.pop_front() {
-                        if let Ok(text) = String::from_utf8(chunk) {
-                            append_terminal_output(&text);
+                if let Some(buf) = session.output_buffer_for(
+                    &session.active_terminal_id().unwrap_or_default(),
+                ) {
+                    if let Ok(mut guard) = buf.lock() {
+                        while let Some(chunk) = guard.pop_front() {
+                            if let Ok(text) = String::from_utf8(chunk) {
+                                append_terminal_output(&text);
+                            }
                         }
                     }
                 }
 
-                // Update transport info
-                if let Some(ts) = session.transport_state() {
-                    let latency = session.latency_ms();
-                    let info = format_transport_info(&ts, latency);
+                // Update transport info from session state
+                let info = format_session_info(&session);
+                if !info.is_empty() {
                     set_transport_info(&info);
                 }
             }
@@ -272,7 +256,6 @@ thread_local! {
     static IOS_APP: std::cell::RefCell<Option<IosApp>> = std::cell::RefCell::new(None);
 }
 
-/// Initialize the IosApp on the main thread
 pub fn init_ios_app() {
     IOS_APP.with(|app| {
         if app.borrow().is_none() {
@@ -281,9 +264,8 @@ pub fn init_ios_app() {
     });
 }
 
-/// Process commands from the queue on the main thread (called at 60 FPS via CADisplayLink)
 pub fn process_commands_from_queue() -> Result<()> {
-    let commands = crate::ios_command_queue::drain_commands();
+    let commands = super::command_queue::drain_commands();
 
     IOS_APP.with(|app_cell| {
         let mut app_opt = app_cell.borrow_mut();
@@ -295,7 +277,6 @@ pub fn process_commands_from_queue() -> Result<()> {
                 }
             }
 
-            // Process frame tick
             if let Err(e) = app.handle_frame() {
                 log::error!("Error in frame tick: {}", e);
             }
@@ -349,31 +330,33 @@ pub fn get_transport_info() -> String {
         .unwrap_or_default()
 }
 
-fn format_transport_info(
-    state: &zedra_transport::TransportState,
-    latency_ms: u64,
-) -> String {
-    use zedra_transport::TransportState;
-    let (label, _) = match state {
-        TransportState::Connected { transport_name } => {
-            if transport_name.contains("lan") || transport_name.contains("tcp") {
-                ("LAN", "green")
-            } else if transport_name.contains("tailscale") {
-                ("Tailscale", "blue")
-            } else if transport_name.contains("relay") {
-                ("Relay", "yellow")
+fn format_session_info(session: &zedra_session::RemoteSession) -> String {
+    use zedra_session::SessionState;
+    let state = session.state();
+    let latency = session.latency_ms();
+
+    match state {
+        SessionState::Connected { .. } => {
+            let conn_type = session
+                .connection_info()
+                .map(|ci| {
+                    if ci.is_direct {
+                        "P2P"
+                    } else {
+                        "Relay"
+                    }
+                })
+                .unwrap_or("Connected");
+
+            if latency > 0 {
+                format!("{} · {}ms", conn_type, latency)
             } else {
-                (transport_name.as_str(), "green")
+                conn_type.to_string()
             }
         }
-        TransportState::Discovering => ("Discovering...", "gray"),
-        TransportState::Switching { .. } => ("Switching...", "yellow"),
-        TransportState::Disconnected => ("Disconnected", "red"),
-    };
-
-    if latency_ms > 0 {
-        format!("{} · {}ms", label, latency_ms)
-    } else {
-        label.to_string()
+        SessionState::Connecting => "Connecting...".to_string(),
+        SessionState::Reconnecting { attempt } => format!("Reconnecting ({})", attempt),
+        SessionState::Disconnected => String::new(),
+        SessionState::Error(msg) => format!("Error: {}", msg),
     }
 }
