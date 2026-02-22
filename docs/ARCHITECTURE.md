@@ -22,14 +22,11 @@ Android (zedra)                              Desktop (zedra-host)
 
 ```
 crates/
-  zedra-transport/     Identity, iroh transport, CF Worker discovery, QR pairing
-  zedra-rpc/           Transport trait, JSON-RPC 2.0 framing, RpcClient/RpcServer
-  zedra-host/          Desktop daemon: iroh listener, RPC dispatch, session registry
+  zedra-rpc/           irpc protocol types, QR pairing codec (postcard + base64-url)
+  zedra-host/          Desktop daemon: iroh listener, irpc dispatch, session registry, host identity
   zedra-session/       Mobile client: iroh connection, RPC session, terminal buffers, auto-reconnect
   zedra-terminal/      Terminal emulation (alacritty) + GPUI rendering
-  zedra-editor/        Code editor with tree-sitter syntax highlighting
-  zedra-nav/           Mobile navigation primitives (tabs, stacks, drawer)
-  zedra/               Android cdylib: JNI bridge, GPUI app, touch handling
+  zedra/               Android cdylib: JNI bridge, GPUI app, touch handling, editor, navigation
 
 packages/
   relay-worker/        Cloudflare Worker: endpoint discovery + WebSocket relay
@@ -38,9 +35,7 @@ packages/
 ### Dependency Graph
 
 ```
-zedra-rpc          (Transport trait, RpcClient, framing)
-    ^
-zedra-transport    (IrohTransport, identity, pairing)
+zedra-rpc          (irpc protocol types, QR pairing codec)
     ^
 zedra-session      (RemoteSession, iroh connection, terminal output buffers)
     ^
@@ -48,98 +43,52 @@ zedra-terminal     (TerminalState, TerminalElement, TerminalView)
     ^
 zedra              (Android cdylib, GPUI app, JNI bridge)
 
-zedra-host         (iroh listener, RPC daemon, session registry)
+zedra-host         (iroh listener, irpc RPC daemon, session registry, host identity)
     ^
 zedra-rpc
-zedra-transport
 ```
 
 ---
 
-## Transport Layer (`zedra-transport`)
+## Transport Layer
 
 All connectivity goes through a single iroh Endpoint per device. iroh handles path selection (LAN, hole-punched, relay) internally.
 
-### Identity (`identity/`)
+### Identity (`zedra-host/src/identity.rs`)
 
-Every device has a persistent Ed25519 keypair that serves as both identity and iroh Endpoint secret key.
+The host has a persistent Ed25519 keypair stored at `~/.config/zedra-host/identity.key` (32-byte secret). This key is used directly as the iroh Endpoint secret key. Identity is host-only — the mobile client uses an ephemeral iroh Endpoint.
 
-| Component               | Purpose                                                                        |
-| ----------------------- | ------------------------------------------------------------------------------ |
-| `Keypair`               | Ed25519 keypair stored at `~/.config/zedra-host/identity.key` (32-byte secret) |
-| `DeviceId`              | Human-readable 56-char base32 identifier derived from public key               |
-| `PublicKey`/`SecretKey` | Re-exported from iroh                                                          |
+### Pairing (`zedra-rpc/src/pairing.rs`)
+
+QR code contains a compact binary encoding of the host's `iroh::EndpointAddr`:
 
 ```
-DeviceId format: RLKQ4WE-GLLHZT5-7QFG3G2-VFI3HTG-XFQTPNL-BNVHJ6Q-WDHYQFP-XWIQTAH
-                 (8 groups of 7 chars, SHA-256 of public key, base32-encoded)
+postcard::to_allocvec(&addr) -> base64_url::encode() -> QR code string (~50 bytes)
 ```
 
-### IrohTransport (`iroh_transport.rs`)
+The `EndpointAddr` contains the host's endpoint ID (Ed25519 public key), relay URL, and direct socket addresses. No metadata (hostname, device name) is included — this is discovered post-connection via `GetSessionInfo` RPC.
 
-Adapter wrapping iroh's QUIC bidirectional streams into the `Transport` trait:
-
-- Length-delimited framing: `[4-byte big-endian length][JSON payload]`
-- `into_rpc_channels()` spawns reader/writer tasks, returns mpsc pairs for `RpcClient`
-
-### Pairing (`pairing.rs`)
-
-QR code pairing protocol using `zedra://pair?d=<base64url-json>` URIs:
-
-```json
-{
-  "v": 1,
-  "endpoint_id": "<z-base-32 Ed25519 public key>",
-  "name": "my-laptop",
-  "relay_url": "https://relay.zedra.dev",
-  "addrs": ["192.168.1.100:12345"]
-}
-```
-
-`PairingPayload.to_endpoint_addr()` converts the payload into an iroh `EndpointAddr` for connecting.
+- `encode_endpoint_addr(&EndpointAddr) -> String` — for QR generation
+- `decode_endpoint_addr(&str) -> EndpointAddr` — for QR scanning
 
 ---
 
 ## RPC Layer (`zedra-rpc`)
 
-Transport-agnostic JSON-RPC 2.0 protocol with multiplexed request/response.
+Type-safe RPC using [irpc](https://docs.rs/irpc) with postcard binary serialization over QUIC.
 
-### Transport Trait (`transport.rs`)
+### Protocol (`proto.rs`)
 
-```rust
-#[async_trait]
-pub trait Transport: Send + 'static {
-    async fn send(&mut self, payload: &[u8]) -> Result<()>;
-    async fn recv(&mut self) -> Result<Vec<u8>>;
-    fn name(&self) -> &str;
-}
-```
+Defines `ZedraProto` service with typed request/response pairs:
 
-Each `send`/`recv` handles one complete length-delimited message.
+| Category   | RPC Methods                                                                        |
+| ---------- | ---------------------------------------------------------------------------------- |
+| Session    | `ResumeOrCreate`, `SessionInfo`                                                    |
+| Filesystem | `FsList`, `FsRead`, `FsWrite`, `FsStat`, `FsRemove`, `FsMkdir`                    |
+| Terminal   | `TermCreate`, `TermAttach` (bidi stream), `TermResize`, `TermClose`, `TermList`    |
+| Git        | `GitStatus`, `GitDiff`, `GitLog`, `GitCommit`, `GitBranches`, `GitCheckout`        |
 
-### RpcClient
-
-Multiplexed client with pending-request map:
-
-- `call(method, params) -> Response` -- sends request, waits for matching response by ID
-- `notify(method, params)` -- fire-and-forget notification
-- `spawn(reader, writer)` -- creates client from `AsyncRead`/`AsyncWrite` halves
-- `spawn_from_channels(rx, tx)` -- creates client from mpsc channels (used by session layer)
-
-### Protocol (`protocol.rs`)
-
-Standard JSON-RPC 2.0 messages with domain-specific methods:
-
-| Category   | Methods                                                                           |
-| ---------- | --------------------------------------------------------------------------------- |
-| Filesystem | `fs/list`, `fs/read`, `fs/write`, `fs/stat`, `fs/remove`, `fs/mkdir`              |
-| Terminal   | `terminal/create`, `terminal/data`, `terminal/resize`, `terminal/close`, `terminal/list` |
-| Git        | `git/status`, `git/diff`, `git/log`, `git/commit`, `git/branches`, `git/checkout` |
-| Session    | `session/resume_or_create`, `session/attach`, `session/info`, `session/list`      |
-| LSP        | `lsp/hover`                                                                       |
-| AI         | `ai/prompt`                                                                       |
-
-Notifications: `terminal/output` (streamed from PTY reader).
+Terminal I/O uses bidi streaming (`TermAttach`) — input and output flow concurrently over a single QUIC stream.
 
 ---
 
@@ -150,32 +99,31 @@ Desktop process that listens for incoming iroh connections and dispatches RPC op
 ### Startup Flow (`main.rs`)
 
 ```
-1. Load/generate persistent host identity (Ed25519 keypair)
+1. Load/generate persistent host identity (~/.config/zedra-host/identity.key)
 2. Create named session for working directory
-3. Bind iroh Endpoint
-4. Generate pairing QR code (endpoint ID + relay URL + direct addrs)
+3. Bind iroh Endpoint with host's SecretKey
+4. Generate pairing QR code (compact EndpointAddr: postcard + base64-url)
 5. Spawn session cleanup loop (every 60s, 5-min grace period)
 6. Run iroh accept loop (blocks main thread)
 ```
 
 ### Iroh Listener (`iroh_listener.rs`)
 
-- **ALPN**: `zedra/rpc/1`
-- **Relay**: `RelayMode::custom([DEFAULT_RELAY_URL])` -- uses `relay.zedra.dev` for NAT traversal
-- `create_endpoint()` -- builds iroh Endpoint with host's SecretKey, waits for relay connection (10s timeout)
-- `run_accept_loop()` -- accepts connections, spawns handler per connection
-- `handle_incoming()` -- accepts bidi stream, wraps in `IrohTransport`, passes to RPC dispatch
+- **ALPN**: `zedra/rpc/2`
+- **Relay**: `RelayMode::custom([DEFAULT_RELAY_URL])` — uses `relay.zedra.dev` for NAT traversal
+- `create_endpoint()` — builds iroh Endpoint with host's SecretKey, waits for relay connection (10s timeout)
+- `run_accept_loop()` — accepts connections, spawns handler per connection
+- No ping loop — QUIC native keepalive (5s interval) handles liveness
 
 ### RPC Dispatch (`rpc_daemon.rs`)
 
-`handle_transport_connection(transport, registry, state)` is the transport-agnostic entry point:
+`handle_connection(conn, registry, state)` is the entry point for each iroh connection:
 
-1. First message triggers session binding (`session/resume_or_create` or `session/attach`)
-2. Main loop reads requests, dispatches to handlers, sends responses
-3. Spawns notification forwarder (session backlog -> transport)
-4. Spawns PTY reader tasks for terminal output streaming
-5. On disconnect: `clear_notif_senders()` so PTY readers don't send on dead channel
-6. `terminal/list` handler returns active terminal IDs for reconnect reconciliation
+1. First message must be `ResumeOrCreate` for session binding
+2. Dispatch loop reads typed irpc messages and spawns handlers
+3. `TermAttach` uses bidi streaming — PTY output flows to client via `tx`, input flows from client via `rx`
+4. On disconnect: terminal streams are dropped, session persists for reconnect
+5. `TermList` returns active terminal IDs for reconnect reconciliation
 
 ### Session Registry (`session_registry.rs`)
 
@@ -202,13 +150,8 @@ Named sessions map human-readable names to session IDs for persistent workdir ac
 ### CLI
 
 ```
-zedra-host start [--workdir .] [--relay-url URL] [--no-relay]
-zedra-host devices
-zedra-host revoke <device_id>
-zedra-host session create --name NAME --workdir PATH
-zedra-host session list
-zedra-host session qr
-zedra-host session remove NAME
+zedra-host start [--workdir .] [--json]   # Start daemon, show QR
+zedra-host qr                              # Show pairing QR code
 ```
 
 ---
@@ -220,46 +163,43 @@ Mobile client library for connecting to zedra-host via iroh and issuing RPC call
 ### Connection (`connect_with_iroh`)
 
 ```
-1. Store PairingPayload in PAIRING_PAYLOAD (for reconnect)
+1. Store EndpointAddr in ENDPOINT_ADDR (for reconnect)
 2. Reset USER_DISCONNECT flag
 3. Create ephemeral iroh Endpoint (client side, relay: relay.zedra.dev)
-4. Parse host's EndpointAddr from PairingPayload (includes relay URL)
-5. endpoint.connect(addr, b"zedra/rpc/1")
-   iroh internally: tries direct addrs -> hole-punches -> relay fallback (relay.zedra.dev)
-6. Open bidi stream, wrap in IrohTransport
-7. Convert to RpcClient via into_rpc_channels()
-8. Use persistent terminal output buffers (PERSISTENT_TERMINAL_OUTPUTS)
+4. endpoint.connect(addr, b"zedra/rpc/2")
+   iroh: direct -> hole-punch -> relay
+5. Wrap connection as irpc Client<ZedraProto>
+6. Use persistent terminal output buffers (PERSISTENT_TERMINAL_OUTPUTS)
    so UI views survive reconnect via shared Arc references
-9. session/resume_or_create with SESSION_CREDENTIALS + LAST_NOTIF_SEQ
-10. Process notification backlog (decode base64, route terminal output to buffers)
-11. Spawn notification listener (tracks seq, triggers reconnect on exit)
-12. Spawn ping loop (breaks after 2 consecutive failures)
+7. ResumeOrCreate RPC with SESSION_CREDENTIALS
+8. For each terminal: TermAttach bidi stream (replay missed output, then live I/O)
+9. Spawn path watcher (tracks direct vs relay, RTT)
 ```
+
+No ping loop — QUIC native keepalive handles liveness.
 
 ### Global State (OnceLock singletons)
 
-- `ACTIVE_SESSION` -- current `RemoteSession`
-- `SESSION_RUNTIME` -- dedicated tokio runtime (2 worker threads)
-- `MAIN_THREAD_CALLBACKS` -- deferred work queue for GPUI main thread
-- `TERMINAL_DATA_PENDING` -- atomic flag, signaled by notification listener, polled by GPUI frame loop
+- `ACTIVE_SESSION` — current `RemoteSession`
+- `SESSION_RUNTIME` — dedicated tokio runtime (2 worker threads)
+- `MAIN_THREAD_CALLBACKS` — deferred work queue for GPUI main thread
+- `TERMINAL_DATA_PENDING` — atomic flag, signaled by terminal stream, polled by GPUI frame loop
 
 Reconnect state (persists across `RemoteSession` rebuilds):
 
-- `RECONNECT_ATTEMPT` (AtomicU32) -- current attempt (0 = not reconnecting)
-- `USER_DISCONNECT` (AtomicBool) -- set on user disconnect, prevents auto-reconnect
-- `LAST_NOTIF_SEQ` (AtomicU64) -- highest notification seq processed
-- `PAIRING_PAYLOAD` -- stored for reconnect attempts
-- `SESSION_CREDENTIALS` -- (session_id, auth_token) for session resumption
-- `PERSISTENT_TERMINAL_OUTPUTS` -- shared output buffers that survive reconnect
-- `PERSISTENT_TERMINAL_IDS` -- terminal ID list that survives reconnect
-- `PERSISTENT_ACTIVE_TERMINAL` -- active terminal ID that survives reconnect
+- `RECONNECT_ATTEMPT` (AtomicU32) — current attempt (0 = not reconnecting)
+- `USER_DISCONNECT` (AtomicBool) — set on user disconnect, prevents auto-reconnect
+- `ENDPOINT_ADDR` — stored EndpointAddr for reconnect attempts
+- `SESSION_CREDENTIALS` — (session_id, auth_token) for session resumption
+- `PERSISTENT_TERMINAL_OUTPUTS` — shared output buffers that survive reconnect
+- `PERSISTENT_TERMINAL_IDS` — terminal ID list that survives reconnect
+- `PERSISTENT_ACTIVE_TERMINAL` — active terminal ID that survives reconnect
 
 ### Terminal Output Flow
 
 ```
-Host PTY reader -> terminal/output notification -> IrohTransport
-    -> notification listener -> per-terminal OutputBuffer (persistent Arc)
-    -> LAST_NOTIF_SEQ incremented
+Host PTY reader -> TermAttach bidi stream tx (raw bytes + seq)
+    -> per-terminal OutputBuffer (persistent Arc)
     -> TERMINAL_DATA_PENDING atomic flag
     -> GPUI frame loop polls flag -> drains buffer
     -> TerminalState.advance_bytes() -> re-render
@@ -268,17 +208,17 @@ Host PTY reader -> terminal/output notification -> IrohTransport
 ### Auto-Reconnect Flow
 
 ```
-Connection drops -> notification listener rx.recv() returns None
+Connection drops -> TermAttach stream ends / connection closed
     -> spawn_reconnect()
        Guard: USER_DISCONNECT? abort
        Guard: CAS RECONNECT_ATTEMPT 0->1 (prevent double-reconnect)
        Loop (max 20 attempts, ~5 min matching server grace period):
          1. Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s cap
          2. Signal TERMINAL_DATA_PENDING -> UI shows "Reconnecting... (N)"
-         3. connect_with_iroh(stored PairingPayload)
-            -> reuses persistent output buffers (UI views keep working)
-            -> establish_rpc_session with stored credentials
-            -> server resumes same session, replays backlog
+         3. connect_with_iroh(stored EndpointAddr)
+            -> new irpc Client<ZedraProto> per reconnect
+            -> ResumeOrCreate with stored credentials
+            -> TermAttach for each terminal (replays missed output via last_seq)
          4. On success: set_active_session(), terminal_list() reconcile
          5. On failure: increment attempt, continue
 ```
@@ -320,18 +260,24 @@ GPUI on Android via Vulkan 1.1 with a command queue threading architecture.
 ```
 JNI Thread (any) -> AndroidCommandQueue (crossbeam channel)
                         -> Main Thread drains @ 60 FPS via Choreographer
-                        -> GPUI (single-threaded) -> Blade -> Vulkan
+                        -> GPUI (single-threaded) -> wgpu -> Vulkan
 ```
 
 ### Key Components
 
-| Component     | File                       | Purpose                                                 |
-| ------------- | -------------------------- | ------------------------------------------------------- |
-| JNI Bridge    | `android_jni.rs`           | Java-Rust interface, thread-safe command queue          |
-| Android App   | `android_app.rs`           | Main-thread GPUI state, touch/scroll/key handling       |
-| Command Queue | `android_command_queue.rs` | Crossbeam mpsc channel for JNI decoupling               |
-| Zedra App     | `zedra_app.rs`             | Root view: DrawerHost + TabNavigator + connection state |
-| QR Scanner    | `QRScannerActivity.java`   | Camera-based QR code scanning for pairing               |
+| Component      | File                        | Purpose                                                    |
+| -------------- | --------------------------- | ---------------------------------------------------------- |
+| JNI Bridge     | `android/jni.rs`            | Java-Rust interface, thread-safe command queue             |
+| Android App    | `android/app.rs`            | Main-thread GPUI state, surface/window lifecycle           |
+| Command Queue  | `android/command_queue.rs`  | Crossbeam mpsc channel for JNI decoupling                  |
+| Touch Handler  | `android/touch.rs`          | Tap, scroll, drawer pan, fling momentum                    |
+| Platform Bridge| `platform_bridge.rs`        | PlatformBridge trait (density, keyboard show/hide)         |
+| Zedra App      | `app.rs`                    | Root view: DrawerHost + screens + transport/reconnect badge|
+| App Drawer     | `app_drawer.rs`             | Tabbed sidebar (files, git, terminal, session)             |
+| Gesture Arena  | `mgpui/gesture.rs`          | Pan vs scroll gesture disambiguation                      |
+| Drawer Host    | `mgpui/drawer_host.rs`      | Slide-from-left overlay with snap animation                |
+| Pending Slot   | `pending.rs`                | Generic async→main-thread one-shot channel                 |
+| QR Scanner     | `QRScannerActivity.java`    | Camera-based QR code scanning for pairing                  |
 
 ### Pixel Handling
 
@@ -353,14 +299,14 @@ Window (logical) persists across surface recreation. Renderer (physical) is crea
 
 ```
 Host                                    Mobile
-1. Generate Ed25519 identity
+1. Load/generate Ed25519 identity
 2. Start iroh Endpoint (connects to relay.zedra.dev)
 3. Wait for relay connection (endpoint.online())
 4. Display QR code:
-   zedra://pair?d=<base64url-json>
+   base64url(postcard(EndpointAddr))
+   (~50 bytes, contains endpoint ID + relay URL + direct addrs)
                                         5. Scan QR code
-                                        6. Parse PairingPayload
-                                           (endpoint_id, relay_url, addrs)
+                                        6. decode_endpoint_addr() -> EndpointAddr
 ```
 
 ### Connection (automatic path selection)
@@ -368,39 +314,35 @@ Host                                    Mobile
 ```
 Mobile                                  Host
 1. Create ephemeral iroh Endpoint (relay: relay.zedra.dev)
-2. Parse EndpointAddr from payload (includes relay URL)
-3. endpoint.connect(addr, "zedra/rpc/1")
+2. endpoint.connect(addr, "zedra/rpc/2")
    iroh: direct -> hole-punch -> relay
-                                        4. endpoint.accept()
-                                        5. accept_bi() -> IrohTransport
-4. open_bi() -> IrohTransport
-5. RpcClient multiplexes requests
-6. session/resume_or_create
-                                        7. Create/resume ServerSession
-                                        8. Send backlog (if resuming)
-9. Replay missed terminal output
-10. Connected
+                                        3. endpoint.accept()
+3. Wrap as irpc Client<ZedraProto>
+4. ResumeOrCreate RPC
+                                        5. Create/resume ServerSession
+6. TermAttach bidi stream per terminal
+                                        7. Replay missed output via tx, then live I/O
+8. Connected
 ```
 
 ### Terminal Session Persistence
 
 ```
-Client connects -> session/resume_or_create -> new session
-    terminal/create -> PTY spawned on host
-    terminal/output notifications stream to client
-    LAST_NOTIF_SEQ incremented per notification
+Client connects -> ResumeOrCreate -> new session
+    TermCreate -> PTY spawned on host
+    TermAttach bidi stream: raw PTY output via tx, input via rx
 
 Client disconnects (network drop, app backgrounded)
-    Server: clear_notif_senders() on disconnect
+    Server: TermAttach streams dropped
     PTY keeps running on host
-    Output buffered in notification backlog (seq + payload)
-    Client: notification listener detects dead channel
+    Output buffered in per-terminal backlog (seq + raw bytes)
+    Client: connection/stream ends
     Client: spawn_reconnect() with exponential backoff
 
-Client reconnects -> session/resume_or_create with stored credentials
-    Passes LAST_NOTIF_SEQ to get only missed notifications
-    Host sends backlog entries (seq, base64 payload)
-    Client decodes backlog, routes terminal output to persistent buffers
+Client reconnects -> ResumeOrCreate with stored credentials
+    TermAttach { id, last_seq } for each terminal
+    Host replays entries with seq > last_seq through tx
+    Then switches to live PTY output
     terminal/list verifies server-side terminals still alive
     UI views resume seamlessly (same Arc<OutputBuffer> references)
 ```

@@ -3,7 +3,7 @@
 // Each test spawns a localhost iroh-relay server (TLS with self-signed certs,
 // ephemeral port), creates endpoints pointed at it, and validates the
 // connection + RPC flow. This exercises the full stack: endpoint binding →
-// relay negotiation → QUIC stream → IrohTransport → RPC dispatch.
+// relay negotiation → QUIC stream → irpc dispatch.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,10 +11,8 @@ use std::time::Duration;
 use zedra_host::iroh_listener;
 use zedra_host::rpc_daemon::DaemonState;
 use zedra_host::session_registry::SessionRegistry;
-use zedra_rpc::{methods, RpcClient, Transport};
-use zedra_transport::{parse_pairing_uri, IrohTransport, PairingPayload};
-
-const ZEDRA_ALPN: &[u8] = b"zedra/rpc/1";
+use zedra_rpc::proto::{self, *};
+use zedra_rpc::{decode_endpoint_addr, encode_endpoint_addr};
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -40,7 +38,7 @@ async fn make_endpoint(relay_url: iroh::RelayUrl) -> anyhow::Result<iroh::Endpoi
     let endpoint = iroh::Endpoint::builder()
         .relay_mode(iroh::RelayMode::custom([relay_url]))
         .secret_key(secret_key)
-        .alpns(vec![ZEDRA_ALPN.to_vec()])
+        .alpns(vec![proto::ZEDRA_ALPN.to_vec()])
         .insecure_skip_relay_cert_verify(true)
         .bind()
         .await?;
@@ -92,26 +90,33 @@ async fn setup_host(
     Ok((endpoint, registry, dir))
 }
 
-/// Connect a client to the host via iroh, returning an RPC client.
+/// Connect a client to the host via iroh, returning a typed irpc client.
+///
+/// Performs session binding (ResumeOrCreate) before returning.
 async fn connect_client(
     relay_url: iroh::RelayUrl,
     host_endpoint: &iroh::Endpoint,
-) -> anyhow::Result<(
-    RpcClient,
-    tokio::sync::mpsc::Receiver<zedra_rpc::Notification>,
-)> {
+) -> anyhow::Result<(irpc::Client<ZedraProto>, String)> {
     let client_endpoint = make_endpoint(relay_url).await?;
     wait_online(&client_endpoint).await;
 
     let host_addr = host_endpoint.addr();
-    let conn = client_endpoint.connect(host_addr, ZEDRA_ALPN).await?;
-    let (send, recv) = conn.open_bi().await?;
+    let conn = client_endpoint
+        .connect(host_addr, proto::ZEDRA_ALPN)
+        .await?;
+    let remote = irpc_iroh::IrohRemoteConnection::new(conn);
+    let client = irpc::Client::<ZedraProto>::boxed(remote);
 
-    let transport = IrohTransport::new(send, recv);
-    let (incoming_rx, outgoing_tx) = transport.into_rpc_channels();
-    let (client, notifs) = RpcClient::spawn_from_channels(incoming_rx, outgoing_tx);
+    // Session binding: first message must be ResumeOrCreate
+    let result: ResumeResult = client
+        .rpc(ResumeOrCreateReq {
+            session_id: None,
+            auth_token: "test-token".to_string(),
+            last_notif_seq: 0,
+        })
+        .await?;
 
-    Ok((client, notifs))
+    Ok((client, result.session_id))
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +158,10 @@ async fn test_relay_endpoint_connectivity() {
     });
 
     // Connect ep_b to ep_a
-    let conn = ep_b.connect(ep_a_addr, ZEDRA_ALPN).await.unwrap();
+    let conn = ep_b
+        .connect(ep_a_addr, proto::ZEDRA_ALPN)
+        .await
+        .unwrap();
     let (mut send, mut recv) = conn.open_bi().await.unwrap();
 
     // Send and receive
@@ -168,7 +176,7 @@ async fn test_relay_endpoint_connectivity() {
     accept_handle.await.unwrap();
 }
 
-/// IrohTransport correctly frames messages over real QUIC streams.
+/// irpc correctly serializes and deserializes messages over real QUIC streams.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_iroh_transport_framing() {
     let (_relay, relay_url) = spawn_test_relay().await.unwrap();
@@ -184,112 +192,101 @@ async fn test_iroh_transport_framing() {
 
     let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
 
-    // Server side: accept and echo via IrohTransport
+    // Server side: accept and handle one irpc request
     let server_handle = tokio::spawn(async move {
         let incoming = ep_a_clone.accept().await.expect("no incoming");
         let conn = incoming.accept().unwrap().await.unwrap();
-        let (send, recv) = conn.accept_bi().await.unwrap();
 
-        let mut transport = IrohTransport::new(send, recv);
+        // Read a typed request
+        let msg = irpc_iroh::read_request::<ZedraProto>(&conn)
+            .await
+            .unwrap();
 
-        // Receive a framed message
-        let msg = transport.recv().await.unwrap();
-        assert_eq!(msg, b"hello iroh transport");
+        match msg {
+            Some(ZedraMessage::Heartbeat(hb)) => {
+                let _ = hb.tx.send(HeartbeatResult { ok: true }).await;
+            }
+            other => panic!("expected Heartbeat, got {:?}", other.is_some()),
+        }
 
-        // Send a framed response
-        transport.send(b"echo: hello iroh transport").await.unwrap();
-
-        // Wait for client to finish reading
         let _ = done_rx.await;
     });
 
-    // Client side: connect and send via IrohTransport
-    let conn = ep_b.connect(ep_a_addr, ZEDRA_ALPN).await.unwrap();
-    let (send, recv) = conn.open_bi().await.unwrap();
+    // Client side: connect and send a typed request
+    let conn = ep_b
+        .connect(ep_a_addr, proto::ZEDRA_ALPN)
+        .await
+        .unwrap();
+    let remote = irpc_iroh::IrohRemoteConnection::new(conn);
+    let client = irpc::Client::<ZedraProto>::boxed(remote);
 
-    let mut transport = IrohTransport::new(send, recv);
-    transport.send(b"hello iroh transport").await.unwrap();
-
-    let response = transport.recv().await.unwrap();
-    assert_eq!(response, b"echo: hello iroh transport");
+    let result: HeartbeatResult = client.rpc(HeartbeatReq {}).await.unwrap();
+    assert!(result.ok);
 
     let _ = done_tx.send(());
     server_handle.await.unwrap();
 }
 
-/// Full RPC call over iroh — host runs accept loop, client issues session/info.
+/// Full RPC call over iroh — host runs accept loop, client issues GetSessionInfo.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_full_rpc_over_iroh() {
     let (_relay, relay_url) = spawn_test_relay().await.unwrap();
     let (host_ep, _registry, _dir) = setup_host(relay_url.clone()).await.unwrap();
 
-    let (client, _notifs) = connect_client(relay_url, &host_ep).await.unwrap();
+    let (client, session_id) = connect_client(relay_url, &host_ep).await.unwrap();
+    assert!(!session_id.is_empty());
 
-    let resp = client
-        .call(methods::SESSION_INFO, serde_json::json!({}))
-        .await
-        .unwrap();
-
-    assert!(
-        resp.error.is_none(),
-        "session/info failed: {:?}",
-        resp.error
-    );
-
-    let info: zedra_rpc::SessionInfoResult = serde_json::from_value(resp.result.unwrap()).unwrap();
+    let info: SessionInfoResult = client.rpc(SessionInfoReq {}).await.unwrap();
     assert!(!info.hostname.is_empty());
     assert!(!info.workdir.is_empty());
+    assert_eq!(info.session_id.as_deref(), Some(session_id.as_str()));
 }
 
-/// Terminal creation and output notification over iroh relay.
+/// Terminal creation and I/O over iroh relay using bidi streaming.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_rpc_terminal_over_relay() {
     let (_relay, relay_url) = spawn_test_relay().await.unwrap();
     let (host_ep, _registry, _dir) = setup_host(relay_url.clone()).await.unwrap();
 
-    let (client, mut notifs) = connect_client(relay_url, &host_ep).await.unwrap();
+    let (client, _session_id) = connect_client(relay_url, &host_ep).await.unwrap();
 
     // Create terminal
-    let resp = client
-        .call(
-            methods::TERM_CREATE,
-            serde_json::json!({"cols": 80, "rows": 24}),
-        )
-        .await
-        .unwrap();
-    assert!(resp.error.is_none(), "term/create failed: {:?}", resp.error);
-
-    let result: zedra_rpc::TermCreateResult = serde_json::from_value(resp.result.unwrap()).unwrap();
+    let result: TermCreateResult = client.rpc(TermCreateReq { cols: 80, rows: 24 }).await.unwrap();
     assert!(result.id.starts_with("term-"));
 
-    // Send a command
-    let input = base64_url::encode(b"echo test123\n");
-    let resp = client
-        .call(
-            methods::TERM_DATA,
-            serde_json::json!({"id": result.id, "data": input}),
+    // Attach to terminal via bidi streaming
+    let (input_tx, mut output_rx) = client
+        .bidi_streaming::<TermAttachReq, TermInput, TermOutput>(
+            TermAttachReq {
+                id: result.id.clone(),
+                last_seq: 0,
+            },
+            256,
+            256,
         )
         .await
         .unwrap();
-    assert!(resp.error.is_none(), "term/data failed: {:?}", resp.error);
 
-    // Should receive terminal/output notification
-    let notif = tokio::time::timeout(Duration::from_secs(5), notifs.recv())
-        .await
-        .expect("timed out waiting for terminal output")
-        .expect("notification channel closed");
-    assert_eq!(notif.method, methods::TERM_OUTPUT);
-
-    let output: zedra_rpc::TermOutputNotification = serde_json::from_value(notif.params).unwrap();
-    assert_eq!(output.id, result.id);
-    assert!(!output.data.is_empty());
-
-    // Cleanup
-    let resp = client
-        .call(methods::TERM_CLOSE, serde_json::json!({"id": result.id}))
+    // Send a command
+    input_tx
+        .send(TermInput {
+            data: b"echo test123\n".to_vec(),
+        })
         .await
         .unwrap();
-    assert!(resp.error.is_none());
+
+    // Should receive terminal output (shell prompt + echo output)
+    let output = tokio::time::timeout(Duration::from_secs(5), output_rx.recv())
+        .await
+        .expect("timed out waiting for terminal output");
+    match output {
+        Ok(Some(out)) => assert!(!out.data.is_empty()),
+        other => panic!("expected terminal output, got {:?}", other),
+    }
+
+    // Cleanup
+    let close_result: TermCloseResult = client.rpc(TermCloseReq { id: result.id }).await.unwrap();
+    assert!(close_result.ok);
 }
 
 /// Endpoint addr includes relay URL after going online.
@@ -314,10 +311,10 @@ async fn test_relay_url_in_endpoint_addr() {
     assert_eq!(relay_urls[0].to_string(), relay_url.to_string());
 }
 
-/// PairingPayload round-trip: build from live endpoint, serialize to URI,
-/// parse back, and verify all fields survive the encoding.
+/// EndpointAddr round-trip: encode live endpoint addr, decode back,
+/// verify all fields (id, relay URL, direct addrs) survive the encoding.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_pairing_payload_roundtrip() {
+async fn test_endpoint_addr_roundtrip() {
     let (_relay, relay_url) = spawn_test_relay().await.unwrap();
     let endpoint = make_endpoint(relay_url.clone()).await.unwrap();
 
@@ -326,35 +323,19 @@ async fn test_pairing_payload_roundtrip() {
         .expect("endpoint didn't come online");
 
     let addr = endpoint.addr();
-    let endpoint_id = endpoint.id().to_string();
 
-    // Build PairingPayload from live endpoint info
-    let payload = PairingPayload {
-        v: 1,
-        endpoint_id: endpoint_id.clone(),
-        name: "test-host".to_string(),
-        relay_url: addr.relay_urls().next().map(|u| u.to_string()),
-        addrs: addr.ip_addrs().map(|a| a.to_string()).collect(),
-    };
+    // Encode to compact string
+    let encoded = encode_endpoint_addr(&addr).unwrap();
+    assert!(!encoded.is_empty());
 
-    // Serialize to URI
-    let json = serde_json::to_string(&payload).unwrap();
-    let encoded = base64_url::encode(&json);
-    let uri = format!("zedra://pair?d={}", encoded);
+    // Decode back
+    let decoded = decode_endpoint_addr(&encoded).unwrap();
+    assert_eq!(decoded.id, addr.id);
 
-    // Parse back
-    let parsed = parse_pairing_uri(&uri).unwrap();
-    assert_eq!(parsed.v, 1);
-    assert_eq!(parsed.endpoint_id, endpoint_id);
-    assert_eq!(parsed.name, "test-host");
-    assert_eq!(parsed.relay_url, payload.relay_url);
-
-    // Convert to EndpointAddr and verify it contains the relay URL
-    let parsed_addr = parsed.to_endpoint_addr().unwrap();
-    let parsed_relay_urls: Vec<_> = parsed_addr.relay_urls().collect();
-
+    // Verify relay URL survived round-trip
+    let decoded_relay_urls: Vec<_> = decoded.relay_urls().collect();
     assert!(
-        !parsed_relay_urls.is_empty(),
-        "parsed endpoint addr should contain the relay URL"
+        !decoded_relay_urls.is_empty(),
+        "decoded endpoint addr should contain the relay URL"
     );
 }

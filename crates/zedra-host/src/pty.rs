@@ -61,33 +61,7 @@ impl ShellSession {
         })
     }
 
-    /// Write bytes to the PTY (stdin of the shell)
-    pub fn write(&mut self, data: &[u8]) -> Result<()> {
-        self.writer.write_all(data)?;
-        self.writer.flush()?;
-        Ok(())
-    }
-
-    /// Read bytes from the PTY (stdout/stderr of the shell)
-    pub fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let n = self.reader.read(buf)?;
-        Ok(n)
-    }
-
-    /// Resize the PTY
-    pub fn resize(&self, columns: u16, rows: u16) -> Result<()> {
-        self.master
-            .resize(PtySize {
-                rows,
-                cols: columns,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| anyhow::anyhow!("Failed to resize PTY: {}", e))?;
-        Ok(())
-    }
-
-    /// Get a clone of the reader for async I/O
+    /// Split the session into its raw components for async I/O.
     pub fn take_reader(
         self,
     ) -> (
@@ -115,31 +89,8 @@ mod tests {
 
     #[test]
     fn test_shell_write_read() {
-        let mut session = ShellSession::spawn(80, 24).unwrap();
-
-        // Write a command to the shell
-        session.write(b"echo hello\n").unwrap();
-
-        // Give it a moment to process
-        std::thread::sleep(std::time::Duration::from_millis(200));
-
-        // Read output
-        let mut buf = [0u8; 4096];
-        let n = session.read(&mut buf).unwrap();
-        assert!(n > 0, "Expected some output from shell");
-    }
-
-    #[test]
-    fn test_shell_resize() {
         let session = ShellSession::spawn(80, 24).unwrap();
-        let result = session.resize(120, 40);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_take_reader_returns_all_parts() {
-        let session = ShellSession::spawn(80, 24).unwrap();
-        let (mut reader, mut writer, master) = session.take_reader();
+        let (mut reader, mut writer, _master) = session.take_reader();
 
         // Writer should accept data
         assert!(writer.write_all(b"echo test\n").is_ok());
@@ -151,8 +102,13 @@ mod tests {
         let mut buf = [0u8; 4096];
         let n = reader.read(&mut buf).unwrap();
         assert!(n > 0);
+    }
 
-        // Master should accept resize
+    #[test]
+    fn test_shell_resize() {
+        let session = ShellSession::spawn(80, 24).unwrap();
+        let (_reader, _writer, master) = session.take_reader();
+
         let result = master.resize(PtySize {
             rows: 50,
             cols: 100,

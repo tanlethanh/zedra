@@ -1,7 +1,7 @@
 // zedra-host: Desktop companion daemon for Zedra
 //
 // Provides an RPC daemon that Zedra (Android) connects to for remote terminal,
-// filesystem, git, and AI operations over JSON-RPC.
+// filesystem, git, and AI operations over typed irpc.
 //
 // All connections go through iroh (QUIC/TLS 1.3) — handles LAN, relay, and
 // hole-punched connections through a single Endpoint.
@@ -9,7 +9,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use zedra_host::{identity, iroh_listener, qr, rpc_daemon, session_registry, store};
+use zedra_host::{identity, iroh_listener, qr, rpc_daemon, session_registry};
 
 #[derive(Parser)]
 #[command(name = "zedra", about = "Desktop companion daemon for Zedra")]
@@ -30,40 +30,8 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// List paired devices
-    Devices,
-    /// Revoke a paired device
-    Revoke {
-        /// Device ID to revoke
-        device_id: String,
-    },
-    /// Session management
-    Session {
-        #[command(subcommand)]
-        action: SessionAction,
-    },
-}
-
-#[derive(Subcommand)]
-enum SessionAction {
-    /// Create a named session for a working directory
-    Create {
-        /// Human-readable session name
-        #[arg(short, long)]
-        name: String,
-        /// Working directory for this session
-        #[arg(short, long)]
-        workdir: String,
-    },
-    /// List active sessions
-    List,
     /// Show QR code for pairing
     Qr,
-    /// Remove a named session
-    Remove {
-        /// Session name
-        name: String,
-    },
 }
 
 #[tokio::main]
@@ -111,21 +79,19 @@ async fn main() -> Result<()> {
                 workdir.display()
             );
 
-            let mut state = rpc_daemon::DaemonState::new(workdir.clone());
-            state = state.with_identity(host_identity.clone());
-            let state = std::sync::Arc::new(state);
+            let state = std::sync::Arc::new(rpc_daemon::DaemonState::new(workdir.clone()));
 
             // 1. Bind iroh endpoint
             let endpoint = iroh_listener::create_endpoint(&host_identity).await?;
 
-            // 2. Generate QR code (needs endpoint info)
-            let endpoint_info = iroh_listener::get_endpoint_info(&endpoint);
-            match qr::build_pairing_info(&endpoint_info, &host_identity) {
+            // 2. Generate QR code
+            let addr = endpoint.addr();
+            match qr::build_pairing_info(&addr) {
                 Ok(info) => {
                     if json {
                         qr::print_pairing_json(&info);
                     } else {
-                        qr::generate_pairing_qr(&endpoint_info, &host_identity).ok();
+                        qr::generate_pairing_qr(&addr).ok();
                     }
                 }
                 Err(e) => {
@@ -149,57 +115,14 @@ async fn main() -> Result<()> {
             // 4. Run iroh accept loop (blocks main)
             iroh_listener::run_accept_loop(&endpoint, registry, state).await?;
         }
-        Commands::Devices => {
-            let devices = store::list_devices()?;
-            if devices.is_empty() {
-                println!("No paired devices.");
-            } else {
-                println!("{:<36} {:<20} {:<24}", "ID", "Name", "Paired At");
-                println!("{}", "-".repeat(80));
-                for device in devices {
-                    println!(
-                        "{:<36} {:<20} {:<24}",
-                        device.id, device.name, device.paired_at
-                    );
-                }
+        Commands::Qr => {
+            let host_identity = identity::HostIdentity::load_or_generate()?;
+            let id = std::sync::Arc::new(host_identity);
+            let endpoint = iroh_listener::create_endpoint(&id).await?;
+            if let Err(e) = qr::generate_pairing_qr(&endpoint.addr()) {
+                eprintln!("Failed to generate QR code: {}", e);
             }
         }
-        Commands::Revoke { device_id } => {
-            store::revoke_device(&device_id)?;
-            println!("Device {} revoked.", device_id);
-        }
-        Commands::Session { action } => match action {
-            SessionAction::Create { name, workdir } => {
-                let workdir = std::path::PathBuf::from(workdir)
-                    .canonicalize()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
-                println!("Session '{}' created for {}", name, workdir.display());
-                println!(
-                    "Note: sessions are created in-memory when the daemon starts. \
-                     Use `zedra-host start --workdir {}` to serve this directory.",
-                    workdir.display()
-                );
-            }
-            SessionAction::List => {
-                println!("Sessions are only available while the daemon is running.");
-                println!("Connect a client and use the session/list RPC method,");
-                println!("or check daemon logs for active sessions.");
-            }
-            SessionAction::Qr => {
-                // Load identity and create a temporary endpoint for QR generation.
-                let host_identity = identity::HostIdentity::load_or_generate()?;
-                let id = std::sync::Arc::new(host_identity);
-                let endpoint = iroh_listener::create_endpoint(&id).await?;
-                let endpoint_info = iroh_listener::get_endpoint_info(&endpoint);
-                if let Err(e) = qr::generate_pairing_qr(&endpoint_info, &id) {
-                    eprintln!("Failed to generate QR code: {}", e);
-                }
-            }
-            SessionAction::Remove { name } => {
-                println!("Session '{}' marked for removal.", name);
-                println!("Active sessions are managed by the running daemon.");
-            }
-        },
     }
 
     Ok(())

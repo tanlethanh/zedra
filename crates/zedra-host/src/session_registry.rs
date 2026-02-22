@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
+use zedra_rpc::proto::{BacklogEntry, TermOutput};
 
 /// A server-side session that persists across transport reconnections.
 ///
@@ -34,11 +35,10 @@ pub struct ServerSession {
     pub last_activity: Mutex<Instant>,
     pub terminals: Mutex<HashMap<String, TermSession>>,
     pub next_term_id: Mutex<u64>,
-    pub notification_backlog: Mutex<VecDeque<(u64, Vec<u8>)>>,
+    /// Per-terminal output backlog for replay on TermAttach reconnect.
+    /// Stores raw PTY bytes with sequence numbers and terminal IDs.
+    pub notification_backlog: Mutex<VecDeque<BacklogEntry>>,
     pub next_notif_seq: Mutex<u64>,
-    /// Device IDs allowed to access this session. Empty means all trusted
-    /// devices can access it.
-    pub allowed_devices: Vec<String>,
 }
 
 /// A live terminal session owned by a ServerSession.
@@ -46,11 +46,10 @@ pub struct ServerSession {
 pub struct TermSession {
     pub writer: Box<dyn Write + Send>,
     pub master: Box<dyn portable_pty::MasterPty + Send>,
-    /// Swappable notification sender. Updated on each reconnect so the PTY
-    /// reader can forward output to the current connection's write channel.
-    /// `None` when no connection is active (output is still stored in the
-    /// session's notification backlog).
-    pub notif_sender: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<Vec<u8>>>>>,
+    /// Swappable output sender. Updated on each TermAttach. The PTY reader
+    /// sends TermOutput through this channel, and a bridge task forwards to
+    /// the current irpc stream. `None` when no client is attached.
+    pub output_sender: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<TermOutput>>>>,
 }
 
 /// Summary of a session for listing purposes (no PTY handles).
@@ -66,10 +65,17 @@ pub struct SessionInfo {
 
 /// Registry of active sessions, keyed by session ID.
 /// Also maintains a name → session_id index for named session lookup.
+// Manual Debug impl because inner types contain non-Debug fields (PTY handles).
 pub struct SessionRegistry {
     sessions: Mutex<HashMap<String, Arc<ServerSession>>>,
     /// Index: session name → session ID. Enables fast lookup by name.
     name_index: Mutex<HashMap<String, String>>,
+}
+
+impl std::fmt::Debug for SessionRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionRegistry").finish_non_exhaustive()
+    }
 }
 
 impl SessionRegistry {
@@ -115,7 +121,6 @@ impl SessionRegistry {
             next_term_id: Mutex::new(1),
             notification_backlog: Mutex::new(VecDeque::new()),
             next_notif_seq: Mutex::new(1),
-            allowed_devices: Vec::new(),
         });
         sessions.insert(id, session.clone());
         session
@@ -155,7 +160,6 @@ impl SessionRegistry {
             next_term_id: Mutex::new(1),
             notification_backlog: Mutex::new(VecDeque::new()),
             next_notif_seq: Mutex::new(1),
-            allowed_devices: Vec::new(),
         });
 
         self.sessions
@@ -164,12 +168,6 @@ impl SessionRegistry {
             .insert(id.clone(), session.clone());
         self.name_index.lock().await.insert(name.to_string(), id);
         session
-    }
-
-    /// Look up a session by its unique ID.
-    pub async fn get_by_id(&self, id: &str) -> Option<Arc<ServerSession>> {
-        let sessions = self.sessions.lock().await;
-        sessions.get(id).cloned()
     }
 
     /// Look up a session by its human-readable name.
@@ -207,19 +205,6 @@ impl SessionRegistry {
         });
 
         result
-    }
-
-    /// List session names and workdirs (for coordination server registration).
-    pub async fn list_session_summaries(&self) -> Vec<(String, PathBuf)> {
-        let sessions = self.sessions.lock().await;
-        sessions
-            .values()
-            .filter_map(|s| {
-                let name = s.name.as_ref()?;
-                let workdir = s.workdir.as_ref()?;
-                Some((name.clone(), workdir.clone()))
-            })
-            .collect()
     }
 
     /// Remove a named session by name.
@@ -279,44 +264,41 @@ impl ServerSession {
         format!("term-{}", current)
     }
 
-    /// Add a notification to the backlog (for replay on reconnect).
+    /// Add a backlog entry for terminal output replay on reconnect.
     /// Backlog is capped at 1000 entries; oldest are evicted.
-    pub async fn push_notification(&self, payload: Vec<u8>) {
-        let mut seq = self.next_notif_seq.lock().await;
-        let current_seq = *seq;
-        *seq += 1;
+    pub async fn push_backlog_entry(&self, entry: BacklogEntry) {
         let mut backlog = self.notification_backlog.lock().await;
-        backlog.push_back((current_seq, payload));
+        backlog.push_back(entry);
         while backlog.len() > 1000 {
             backlog.pop_front();
         }
     }
 
-    /// Get notifications after a given sequence number.
-    pub async fn notifications_after(&self, after_seq: u64) -> Vec<(u64, Vec<u8>)> {
+    /// Allocate the next backlog sequence number.
+    pub async fn next_backlog_seq(&self) -> u64 {
+        let mut seq = self.next_notif_seq.lock().await;
+        let current = *seq;
+        *seq += 1;
+        current
+    }
+
+    /// Get backlog entries for a specific terminal after a given sequence number.
+    pub async fn backlog_after(&self, terminal_id: &str, after_seq: u64) -> Vec<BacklogEntry> {
         let backlog = self.notification_backlog.lock().await;
         backlog
             .iter()
-            .filter(|(seq, _)| *seq > after_seq)
+            .filter(|e| e.terminal_id == terminal_id && e.seq > after_seq)
             .cloned()
             .collect()
     }
 
-    /// Update all terminal notification senders to point to a new connection's
-    /// write channel. Called on reconnect so PTY readers forward output to the
-    /// current transport.
-    pub async fn update_notif_senders(&self, sender: tokio::sync::mpsc::Sender<Vec<u8>>) {
+    /// Clear all terminal output senders (e.g. when connection drops).
+    /// PTY readers will continue storing output in the backlog but won't
+    /// attempt to send to a dead channel.
+    pub async fn clear_output_senders(&self) {
         let terms = self.terminals.lock().await;
         for term in terms.values() {
-            *term.notif_sender.lock().unwrap() = Some(sender.clone());
-        }
-    }
-
-    /// Clear all terminal notification senders (e.g. when connection drops).
-    pub async fn clear_notif_senders(&self) {
-        let terms = self.terminals.lock().await;
-        for term in terms.values() {
-            *term.notif_sender.lock().unwrap() = None;
+            *term.output_sender.lock().unwrap() = None;
         }
     }
 
@@ -325,11 +307,6 @@ impl ServerSession {
         *self.last_activity.lock().await = Instant::now();
     }
 
-    /// Check if a device is allowed to access this session.
-    /// If `allowed_devices` is empty, all trusted devices are allowed.
-    pub fn is_device_allowed(&self, device_id: &str) -> bool {
-        self.allowed_devices.is_empty() || self.allowed_devices.iter().any(|d| d == device_id)
-    }
 }
 
 #[cfg(test)]
@@ -380,16 +357,27 @@ mod tests {
         let registry = SessionRegistry::new();
         let session = registry.resume_or_create(None, "tok").await;
 
-        session.push_notification(b"msg1".to_vec()).await;
-        session.push_notification(b"msg2".to_vec()).await;
-        session.push_notification(b"msg3".to_vec()).await;
+        for i in 1..=3 {
+            let seq = session.next_backlog_seq().await;
+            session
+                .push_backlog_entry(BacklogEntry {
+                    seq,
+                    terminal_id: "term-1".to_string(),
+                    data: format!("msg{}", i).into_bytes(),
+                })
+                .await;
+        }
 
-        let after_0 = session.notifications_after(0).await;
+        let after_0 = session.backlog_after("term-1", 0).await;
         assert_eq!(after_0.len(), 3);
 
-        let after_1 = session.notifications_after(1).await;
+        let after_1 = session.backlog_after("term-1", 1).await;
         assert_eq!(after_1.len(), 2);
-        assert_eq!(after_1[0].1, b"msg2");
+        assert_eq!(after_1[0].data, b"msg2");
+
+        // Different terminal ID returns empty
+        let other = session.backlog_after("term-2", 0).await;
+        assert!(other.is_empty());
     }
 
     #[tokio::test]
@@ -398,16 +386,20 @@ mod tests {
         let session = registry.resume_or_create(None, "tok").await;
 
         for i in 0..1050 {
+            let seq = session.next_backlog_seq().await;
             session
-                .push_notification(format!("msg{}", i).into_bytes())
+                .push_backlog_entry(BacklogEntry {
+                    seq,
+                    terminal_id: "term-1".to_string(),
+                    data: format!("msg{}", i).into_bytes(),
+                })
                 .await;
         }
 
         let backlog = session.notification_backlog.lock().await;
         assert_eq!(backlog.len(), 1000);
-        // next_notif_seq starts at 1, so seqs are 1..1050. After capping at
-        // 1000, the first 50 entries (seqs 1..50) are evicted.
-        assert_eq!(backlog.front().unwrap().0, 51);
+        // Seqs 1..1050. After capping at 1000, first 50 are evicted.
+        assert_eq!(backlog.front().unwrap().seq, 51);
     }
 
     #[tokio::test]
@@ -536,46 +528,4 @@ mod tests {
         assert!(registry.get_by_name("old").await.is_none());
     }
 
-    #[tokio::test]
-    async fn list_session_summaries() {
-        let registry = SessionRegistry::new();
-        registry
-            .create_named("proj1", PathBuf::from("/proj1"), "tok")
-            .await;
-        registry
-            .create_named("proj2", PathBuf::from("/proj2"), "tok")
-            .await;
-        registry.resume_or_create(None, "tok").await; // unnamed, excluded
-
-        let summaries = registry.list_session_summaries().await;
-        assert_eq!(summaries.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn device_access_control() {
-        let registry = SessionRegistry::new();
-        let session = registry.resume_or_create(None, "tok").await;
-
-        // Empty allowed_devices → all devices allowed.
-        assert!(session.is_device_allowed("any-device"));
-
-        // Create a session with restricted access.
-        let restricted = Arc::new(ServerSession {
-            id: "restricted".to_string(),
-            auth_token: "tok".to_string(),
-            name: Some("restricted".to_string()),
-            workdir: None,
-            created_at: Instant::now(),
-            last_activity: Mutex::new(Instant::now()),
-            terminals: Mutex::new(HashMap::new()),
-            next_term_id: Mutex::new(1),
-            notification_backlog: Mutex::new(VecDeque::new()),
-            next_notif_seq: Mutex::new(1),
-            allowed_devices: vec!["device-A".to_string(), "device-B".to_string()],
-        });
-
-        assert!(restricted.is_device_allowed("device-A"));
-        assert!(restricted.is_device_allowed("device-B"));
-        assert!(!restricted.is_device_allowed("device-C"));
-    }
 }

@@ -471,19 +471,15 @@ impl AndroidApp {
             &qr_data[..qr_data.len().min(50)]
         );
 
-        // Parse the QR URI into a pairing payload
-        match zedra_rpc::parse_pairing_uri(&qr_data) {
-            Ok(payload) => {
-                log::info!(
-                    "QR parsed: name={}, endpoint_id={}...",
-                    payload.name,
-                    &payload.endpoint_id[..16.min(payload.endpoint_id.len())]
-                );
-                crate::app::set_pending_qr_payload(payload);
+        // Decode the QR data into an iroh EndpointAddr
+        match zedra_rpc::decode_endpoint_addr(&qr_data) {
+            Ok(addr) => {
+                log::info!("QR parsed: endpoint={}", addr.id.fmt_short());
+                crate::app::set_pending_qr_addr(addr);
                 zedra_session::signal_terminal_data();
             }
             Err(e) => {
-                log::error!("Failed to parse QR pairing URI: {}", e);
+                log::error!("Failed to decode QR endpoint address: {}", e);
             }
         }
         Ok(())

@@ -23,6 +23,7 @@ tree-sitter-rust = "0.24"
 zedra-session = { path = "../zedra-session" }
 zedra-terminal = { path = "../zedra-terminal" }
 zedra-rpc = { path = "../zedra-rpc" }
+iroh.workspace = true
 rust-embed = { workspace = true, features = ["debug-embed"] }
 
 [target.'cfg(target_os = "android")'.dependencies]

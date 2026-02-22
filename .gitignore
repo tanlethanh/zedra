@@ -12,3 +12,6 @@ android/build
 local.properties
 
 docs/archive
+
+.env
+!.env.example

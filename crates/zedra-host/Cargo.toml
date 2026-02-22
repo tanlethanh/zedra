@@ -31,8 +31,6 @@ serde_json.workspace = true
 
 # Random/crypto
 rand = "0.8"
-hex.workspace = true
-base64-url.workspace = true
 
 # Filesystem
 directories = "5"
@@ -44,35 +42,32 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # System info
 hostname = "0.4"
 
-# Network interface discovery
-if-addrs = "0.15.0"
-
 # Error handling
 anyhow.workspace = true
 
 # P2P networking
 iroh.workspace = true
 
+# RPC framework
+irpc.workspace = true
+irpc-iroh.workspace = true
+postcard.workspace = true
+serde_bytes.workspace = true
+
 # Workspace crates
 zedra-rpc = { path = "../zedra-rpc" }
-zedra-transport = { path = "../zedra-transport" }
 
 # Session IDs
 uuid = { version = "1", features = ["v4"] }
 
-# Async trait
-async-trait.workspace = true
-
-# Async utilities
-futures.workspace = true
-log.workspace = true
-
 [dev-dependencies]
 tempfile = "3"
-base64-url.workspace = true
 serde_json.workspace = true
 iroh = { workspace = true, features = ["test-utils"] }
 iroh-relay = { workspace = true }
+irpc.workspace = true
+irpc-iroh.workspace = true
+rand = "0.8"
 
 [[test]]
 name = "integration"

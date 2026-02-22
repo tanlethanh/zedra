@@ -14,7 +14,6 @@ use crate::mgpui::{DrawerHost, HeaderConfig, StackNavigator};
 use crate::theme;
 use zedra_session::RemoteSession;
 use zedra_terminal::view::{DisconnectRequested, TerminalView};
-use zedra_rpc::PairingPayload;
 
 // ---------------------------------------------------------------------------
 // AppScreen — which screen is currently displayed
@@ -538,22 +537,22 @@ impl ZedraApp {
         (columns as u16, rows as u16)
     }
 
-    fn connect_with_iroh_payload(
+    fn connect_with_iroh_addr(
         &mut self,
-        payload: PairingPayload,
+        addr: iroh::EndpointAddr,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let hostname = payload.name.clone();
-        log::info!("QR connect: starting iroh connection to {}", hostname);
+        let endpoint_short = addr.id.fmt_short().to_string();
+        log::info!("QR connect: starting iroh connection to {}", endpoint_short);
 
         self.screen = AppScreen::Editor;
 
-        let (cols, rows) = self.create_terminal_view(&hostname, window, cx);
+        let (cols, rows) = self.create_terminal_view(&endpoint_short, window, cx);
 
         zedra_session::session_runtime().spawn(async move {
-            log::info!("RemoteSession: connecting via iroh to {}...", hostname);
-            match RemoteSession::connect_with_iroh(payload).await {
+            log::info!("RemoteSession: connecting via iroh to {}...", endpoint_short);
+            match RemoteSession::connect_with_iroh(addr).await {
                 Ok(session) => {
                     log::info!("RemoteSession: connected via iroh!");
                     match session.terminal_create(cols, rows).await {
@@ -646,9 +645,9 @@ impl Render for ZedraApp {
             });
         }
 
-        // Check for QR-scanned pairing payload
-        if let Some(payload) = PENDING_QR_PAYLOAD.take() {
-            self.connect_with_iroh_payload(payload, window, cx);
+        // Check for QR-scanned endpoint address
+        if let Some(addr) = PENDING_QR_ADDR.take() {
+            self.connect_with_iroh_addr(addr, window, cx);
         }
 
         let screen_content: AnyElement = match self.screen {
@@ -702,10 +701,10 @@ use crate::pending::PendingSlot;
 static PENDING_FILE_CONTENT: PendingSlot<(String, String)> = PendingSlot::new();
 static PENDING_TERMINAL_ID: PendingSlot<String> = PendingSlot::new();
 static PENDING_GIT_DIFF: PendingSlot<(String, String, String)> = PendingSlot::new();
-static PENDING_QR_PAYLOAD: PendingSlot<PairingPayload> = PendingSlot::new();
+static PENDING_QR_ADDR: PendingSlot<iroh::EndpointAddr> = PendingSlot::new();
 
-pub fn set_pending_qr_payload(payload: PairingPayload) {
-    PENDING_QR_PAYLOAD.set(payload);
+pub fn set_pending_qr_addr(addr: iroh::EndpointAddr) {
+    PENDING_QR_ADDR.set(addr);
 }
 
 /// Compute terminal grid dimensions from the current viewport.

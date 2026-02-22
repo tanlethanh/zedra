@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 // ---------------------------------------------------------------------------
@@ -65,10 +65,6 @@ impl GitRepo {
             anyhow::bail!("not a git repository: {}", workdir.display());
         }
         Ok(Self { workdir })
-    }
-
-    pub fn workdir(&self) -> &Path {
-        &self.workdir
     }
 
     fn git(&self, args: &[&str]) -> Result<String> {
