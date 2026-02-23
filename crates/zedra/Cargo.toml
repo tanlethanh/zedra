@@ -38,7 +38,7 @@ ndk = "0.9"
 ndk-context = "0.1"
 
 [target.'cfg(target_os = "ios")'.dependencies]
-gpui_ios = { path = "../../vendor/zed/crates/gpui_ios" }
+gpui_ios = { path = "../../vendor/zed/crates/gpui_ios", features = ["font-kit"] }
 oslog = "0.2"
 
 [build-dependencies]
