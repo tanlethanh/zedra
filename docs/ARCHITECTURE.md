@@ -330,31 +330,44 @@ Mobile                                  Host
 > See `docs/TERMINAL_PERSISTENCE.md` for the full design including server-side
 > `vt100` screen capture, fresh client terminal discovery, and credential persistence.
 
-**Current flow (within same app session):**
+**Server-side screen capture:**
+
+Each `TermSession` holds a `vt100::Parser` that processes every byte from the PTY reader. On reconnect, the server can produce a compact ANSI dump (~2-10 KB) via `screen().state_formatted()` that restores the full terminal screen (contents, colors, cursor, alternate screen, input modes).
+
+**Connection flow:**
 
 ```
-Client connects -> ResumeOrCreate -> new session
-    TermCreate -> PTY spawned on host
+Client connects -> ResumeOrCreate -> new or resumed session
+    If resumed=true:
+        discover_and_attach_terminals() -> TermList -> register + attach discovered terminals
+    TermCreate -> PTY spawned on host (if new session or no existing terminals)
     TermAttach bidi stream: raw PTY output via tx, input via rx
 
+PTY reader loop (server-side, per terminal):
+    Read bytes from PTY
+    -> vterm.process(&bytes)        (maintain virtual screen)
+    -> notification_backlog.push()  (raw bytes for brief reconnects)
+    -> output_sender.send()         (live stream to connected client)
+
 Client disconnects (network drop, app backgrounded)
-    Server: TermAttach streams dropped
+    Server: TermAttach streams dropped, output_sender set to None
     PTY keeps running on host
     Output buffered in per-terminal backlog (seq + raw bytes)
-    Client: connection/stream ends
+    vt100::Parser keeps processing PTY output (screen state always current)
     Client: spawn_reconnect() with exponential backoff
 
-Client reconnects -> ResumeOrCreate with stored credentials
-    TermAttach { id, last_seq } for each terminal
-    Host replays entries with seq > last_seq through tx
+Client reconnects -> ResumeOrCreate with stored credentials -> resumed=true
+    discover_and_attach_terminals():
+        TermList -> get server terminals with metadata (cols, rows, title)
+        Register unknown terminals, remove stale client terminals
+    TermAttach { id, last_seq } for each terminal:
+        last_seq=0 (fresh attach): server sends state_formatted() screen dump
+        last_seq>0 (brief reconnect): server replays backlog entries since last_seq
     Then switches to live PTY output
-    terminal/list verifies server-side terminals still alive
     UI views resume seamlessly (same Arc<OutputBuffer> references)
 ```
 
-**Known gaps:** Fresh client can't discover existing terminals. No screen state
-restoration after long disconnect (blank/garbled terminal). No on-disk credential
-storage for cross-restart resume.
+**Remaining work:** UI integration (create views for discovered terminals instead of always creating new ones), on-disk credential storage for cross-restart resume.
 
 ---
 
