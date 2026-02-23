@@ -12,6 +12,8 @@
 
 #define BG_OVERLAY 1250067
 
+#define BG_SURFACE 920588
+
 #define TEXT_PRIMARY 16777215
 
 #define TEXT_SECONDARY 13290186
@@ -30,6 +32,66 @@
 
 #define ACCENT_RED 14707829
 
+#define FONT_TITLE 22.0
+
+#define FONT_HEADING 14.0
+
+#define FONT_BODY 12.0
+
+#define FONT_DETAIL 10.0
+
+#define ICON_NAV 18.0
+
+#define ICON_HEADER 20.0
+
+#define ICON_FILE 12.0
+
+#define ICON_FILE_DIR 14.0
+
+#define ICON_STATUS 6.0
+
+#define EDITOR_FONT_SIZE 12.0
+
+#define EDITOR_GUTTER_FONT_SIZE 11.0
+
+#define EDITOR_LINE_HEIGHT 15.0
+
+#define EDITOR_GUTTER_WIDTH 36.0
+
+void zedra_init(void);
+
+void zedra_init_screen(float width, float height, float scale);
+
+void zedra_process_frame(void);
+
+void zedra_connect(const char *host, uint16_t port);
+
+void zedra_disconnect(void);
+
+void zedra_pair_via_qr(const char *data);
+
+void zedra_send_input(const char *text);
+
+void zedra_send_key(const char *key_name);
+
+char *zedra_get_terminal_output(void);
+
+int32_t zedra_get_connection_status(void);
+
+char *zedra_get_connection_error(void);
+
+char *zedra_get_transport_info(void);
+
+void zedra_on_resume(void);
+
+void zedra_on_pause(void);
+
+void zedra_free_string(char *ptr);
+
+void zedra_touch_event(int32_t action, float x, float y);
+
+void zedra_view_resized(float width, float height);
+
 extern void *gpui_ios_get_window(void);
 
 extern void gpui_ios_show_keyboard(void *window_ptr);
@@ -37,118 +99,5 @@ extern void gpui_ios_show_keyboard(void *window_ptr);
 extern void gpui_ios_hide_keyboard(void *window_ptr);
 
 void zedra_launch_gpui(void);
-
-/**
- * Initialize the Zedra Rust backend.
- *
- * Must be called once at app launch (e.g., in SwiftUI App.init()).
- * Sets up logging via oslog and initializes the session runtime.
- */
-void zedra_init(void);
-
-/**
- * Initialize with screen dimensions and scale factor.
- *
- * Call after zedra_init() with the device's screen info:
- *   - width/height: screen size in points
- *   - scale: UIScreen.main.scale (e.g. 2.0 or 3.0)
- */
-void zedra_init_screen(float width, float height, float scale);
-
-/**
- * Process all pending commands and tick the frame.
- *
- * Must be called from the main thread (e.g., via CADisplayLink callback).
- */
-void zedra_process_frame(void);
-
-/**
- * Connect to a zedra-host daemon at the given host:port.
- *
- * The connection is asynchronous. Poll zedra_get_connection_status() to check progress.
- */
-void zedra_connect(const char *host, uint16_t port);
-
-/**
- * Disconnect the active session.
- */
-void zedra_disconnect(void);
-
-/**
- * Pair via QR code data (zedra:// URI).
- */
-void zedra_pair_via_qr(const char *data);
-
-/**
- * Send text input to the active terminal session.
- */
-void zedra_send_input(const char *text);
-
-/**
- * Send a special key event (backspace, enter, tab, escape, arrow keys).
- */
-void zedra_send_key(const char *key_name);
-
-/**
- * Get pending terminal output since last call.
- *
- * Returns a C string that the caller must free with zedra_free_string().
- * Returns NULL if no output is available.
- */
-char *zedra_get_terminal_output(void);
-
-/**
- * Get the current connection status.
- *
- * Returns: 0=disconnected, 1=connecting, 2=connected, 3=error
- */
-int32_t zedra_get_connection_status(void);
-
-/**
- * Get the connection error message (if status == 3).
- *
- * Returns a C string that the caller must free with zedra_free_string().
- * Returns NULL if no error.
- */
-char *zedra_get_connection_error(void);
-
-/**
- * Get the current transport info string (e.g. "LAN · 12ms").
- *
- * Returns a C string that the caller must free with zedra_free_string().
- * Returns NULL if no transport info available.
- */
-char *zedra_get_transport_info(void);
-
-/**
- * Notify that the app has entered foreground.
- */
-void zedra_on_resume(void);
-
-/**
- * Notify that the app has entered background.
- */
-void zedra_on_pause(void);
-
-/**
- * Free a string previously returned by Rust.
- *
- * Must be called for every non-NULL string returned by zedra_get_terminal_output(),
- * zedra_get_connection_error(), zedra_get_transport_info(), etc.
- */
-void zedra_free_string(char *ptr);
-
-/**
- * Forward a touch event to the Rust backend.
- *
- * action: 0=began, 1=ended, 2=moved, 3=cancelled
- * x, y: position in points
- */
-void zedra_touch_event(int32_t action, float x, float y);
-
-/**
- * Notify that the view has been resized.
- */
-void zedra_view_resized(float width, float height);
 
 #endif  /* ZEDRA_IOS_H */

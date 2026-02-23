@@ -30,6 +30,7 @@ targets:
       - sdk: CoreText.framework
       - sdk: UIKit.framework
       - sdk: Security.framework
+      - sdk: Network.framework
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
