@@ -58,40 +58,6 @@
 
 #define EDITOR_GUTTER_WIDTH 36.0
 
-void zedra_init(void);
-
-void zedra_init_screen(float width, float height, float scale);
-
-void zedra_process_frame(void);
-
-void zedra_connect(const char *host, uint16_t port);
-
-void zedra_disconnect(void);
-
-void zedra_pair_via_qr(const char *data);
-
-void zedra_send_input(const char *text);
-
-void zedra_send_key(const char *key_name);
-
-char *zedra_get_terminal_output(void);
-
-int32_t zedra_get_connection_status(void);
-
-char *zedra_get_connection_error(void);
-
-char *zedra_get_transport_info(void);
-
-void zedra_on_resume(void);
-
-void zedra_on_pause(void);
-
-void zedra_free_string(char *ptr);
-
-void zedra_touch_event(int32_t action, float x, float y);
-
-void zedra_view_resized(float width, float height);
-
 extern void *gpui_ios_get_window(void);
 
 extern void gpui_ios_show_keyboard(void *window_ptr);
