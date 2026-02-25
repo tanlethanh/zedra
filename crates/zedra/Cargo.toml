@@ -26,6 +26,9 @@ zedra-rpc = { path = "../zedra-rpc" }
 iroh.workspace = true
 rust-embed = { workspace = true, features = ["debug-embed"] }
 
+[features]
+preview = []
+
 [target.'cfg(target_os = "android")'.dependencies]
 gpui_android = { path = "../../vendor/zed/crates/gpui_android" }
 android_logger = "0.15.1"

@@ -327,7 +327,10 @@ impl ZedraApp {
                         cx.notify();
                     }
                     AppDrawerEvent::NewTerminalRequested => {
-                        log::info!("[PERF] terminal create requested, total_views={}", this.terminal_views.len());
+                        log::info!(
+                            "[PERF] terminal create requested, total_views={}",
+                            this.terminal_views.len()
+                        );
                         drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
                         if let Some(session) = zedra_session::active_session() {
                             let (columns, rows, cell_width, line_height) =
@@ -435,7 +438,11 @@ impl ZedraApp {
                             zedra_session::session_runtime().spawn(async move {
                                 match session.git_diff(Some(&path_clone), false).await {
                                     Ok(diff_text) => {
-                                        PENDING_GIT_DIFF.set((path_clone, filename_clone, diff_text));
+                                        PENDING_GIT_DIFF.set((
+                                            path_clone,
+                                            filename_clone,
+                                            diff_text,
+                                        ));
                                         zedra_session::signal_terminal_data();
                                     }
                                     Err(e) => {
@@ -552,7 +559,10 @@ impl ZedraApp {
         let (cols, rows) = self.create_terminal_view(&endpoint_short, window, cx);
 
         zedra_session::session_runtime().spawn(async move {
-            log::info!("RemoteSession: connecting via iroh to {}...", endpoint_short);
+            log::info!(
+                "RemoteSession: connecting via iroh to {}...",
+                endpoint_short
+            );
             match RemoteSession::connect_with_iroh(addr).await {
                 Ok(session) => {
                     log::info!("RemoteSession: connected via iroh!");
@@ -592,7 +602,9 @@ impl Render for ZedraApp {
                 let line_count = content.lines().count();
                 log::info!(
                     "[PERF] file loaded: {}, {} chars, {} lines",
-                    filename, char_count, line_count
+                    filename,
+                    char_count,
+                    line_count
                 );
                 let editor_view = cx.new(|cx| EditorView::new(content, cx));
                 let fname = filename.clone();
@@ -672,13 +684,11 @@ impl Render for ZedraApp {
                     .child(div().flex_1().child(self.drawer_host.clone()));
 
                 // Transport badge (top-right, centered in 48px header)
-                if let Some((label, dot_color)) =
-                    zedra_session::active_session().map(|s| {
-                        let latency = s.latency_ms();
-                        let conn_info = s.connection_info();
-                        crate::transport_badge::transport_badge_info(latency, conn_info.as_ref())
-                    })
-                {
+                if let Some((label, dot_color)) = zedra_session::active_session().map(|s| {
+                    let latency = s.latency_ms();
+                    let conn_info = s.connection_info();
+                    crate::transport_badge::transport_badge_info(latency, conn_info.as_ref())
+                }) {
                     root = root.child(
                         deferred(crate::transport_badge::render_transport_badge(
                             label, dot_color,
@@ -747,4 +757,3 @@ fn compute_terminal_dimensions(window: &mut Window) -> (usize, usize, Pixels, Pi
 
     (columns, rows, cell_width, line_height)
 }
-
