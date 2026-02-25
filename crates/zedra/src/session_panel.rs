@@ -15,7 +15,7 @@ pub fn render_session_tab(cx: &mut Context<crate::app_drawer::AppDrawer>) -> Div
 
     let Some(session) = session else {
         return div()
-            .flex_1()
+            .size_full()
             .flex()
             .items_center()
             .justify_center()
