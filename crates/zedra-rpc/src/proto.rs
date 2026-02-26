@@ -293,6 +293,10 @@ pub struct TermListResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TermListEntry {
     pub id: String,
+    pub cols: u16,
+    pub rows: u16,
+    /// Shell title (from OSC 0/2 escape sequences), if available.
+    pub title: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

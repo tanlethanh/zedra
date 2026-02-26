@@ -40,6 +40,9 @@ irpc-iroh = "0.12"
 postcard = { version = "1", features = ["alloc"] }
 serde_bytes = "0.11"
 
+# Server-side terminal emulation (screen state capture for reconnect)
+vt100 = "0.16"
+
 # Patch blade-graphics to use local version with Android fixes
 [patch.'https://github.com/kvark/blade']
 blade-graphics = { path = "vendor/blade/blade-graphics" }

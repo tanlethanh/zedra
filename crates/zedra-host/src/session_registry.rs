@@ -50,6 +50,13 @@ pub struct TermSession {
     /// sends TermOutput through this channel, and a bridge task forwards to
     /// the current irpc stream. `None` when no client is attached.
     pub output_sender: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<TermOutput>>>>,
+    /// Server-side virtual terminal for screen state capture on reconnect.
+    /// Fed every PTY output byte; `screen().state_formatted()` produces a
+    /// compact ANSI dump (~2-10 KB) that restores the full screen state.
+    pub vterm: Arc<std::sync::Mutex<vt100::Parser>>,
+    /// Terminal dimensions (for TermList metadata).
+    pub cols: u16,
+    pub rows: u16,
 }
 
 /// Summary of a session for listing purposes (no PTY handles).

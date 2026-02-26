@@ -436,12 +436,17 @@ impl RemoteSession {
         });
 
         // Establish RPC session (uses SESSION_CREDENTIALS for reconnect)
-        Self::establish_rpc_session(&session).await;
+        let resumed = Self::establish_rpc_session(&session).await;
 
         // Fetch session info (hostname discovered here, not from QR)
         Self::fetch_session_info(&session, "unknown").await;
 
-        // Re-attach existing terminals on reconnect
+        if resumed {
+            // Resumed existing session: discover server-side terminals and attach
+            Self::discover_and_attach_terminals(&session).await;
+        }
+
+        // Re-attach any client-side terminals not covered by discovery
         Self::reattach_terminals(&session).await;
 
         // Connection watcher: triggers reconnect when QUIC connection closes
@@ -459,7 +464,9 @@ impl RemoteSession {
     ///
     /// On first call, creates a new session. On reconnect, resumes the existing
     /// session using credentials from `SESSION_CREDENTIALS`.
-    async fn establish_rpc_session(session: &Arc<Self>) {
+    ///
+    /// Returns `true` if an existing session was resumed.
+    async fn establish_rpc_session(session: &Arc<Self>) -> bool {
         let (stored_session_id, stored_auth_token) = session_credentials_slot()
             .lock()
             .map(|g| g.clone())
@@ -505,11 +512,14 @@ impl RemoteSession {
                 if let Ok(mut creds) = session_credentials_slot().lock() {
                     *creds = (Some(result.session_id), Some(auth_token));
                 }
+
+                return result.resumed;
             }
             Err(e) => {
                 tracing::warn!("session/resume_or_create failed: {}", e);
             }
         }
+        false
     }
 
     /// Fetch session info from the host and populate the session state.
@@ -637,9 +647,96 @@ impl RemoteSession {
         Ok(())
     }
 
+    /// Discover server-side terminals via TermList and register+attach any
+    /// that the client doesn't already know about.
+    ///
+    /// Called after ResumeOrCreate returns `resumed=true`. This is the key
+    /// method for fresh client terminal recovery — it populates the client's
+    /// terminal ID list and output buffers from server state.
+    async fn discover_and_attach_terminals(session: &Arc<Self>) {
+        let server_terminals = match session.terminal_list().await {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::warn!("terminal discovery failed: {e}");
+                return;
+            }
+        };
+
+        if server_terminals.is_empty() {
+            tracing::info!("discover: no server-side terminals");
+            return;
+        }
+
+        let client_ids = session.terminal_ids();
+        tracing::info!(
+            "discover: server has {} terminals, client knows {}",
+            server_terminals.len(),
+            client_ids.len(),
+        );
+
+        for server_tid in &server_terminals {
+            if client_ids.contains(server_tid) {
+                continue; // Already known, will be handled by reattach_terminals
+            }
+
+            tracing::info!("discover: registering new terminal {}", server_tid);
+
+            // Register per-terminal output buffer
+            if let Ok(mut map) = session.terminal_outputs.lock() {
+                map.entry(server_tid.clone())
+                    .or_insert_with(|| Arc::new(Mutex::new(VecDeque::new())));
+            }
+
+            // Add to terminal IDs list
+            if let Ok(mut ids) = session.terminal_ids.lock() {
+                if !ids.contains(server_tid) {
+                    ids.push(server_tid.clone());
+                }
+            }
+
+            // Set as active if it's the first terminal
+            if client_ids.is_empty() {
+                if let Ok(mut active) = session.active_terminal_id.lock() {
+                    if active.is_none() {
+                        *active = Some(server_tid.clone());
+                    }
+                }
+            }
+
+            // Attach with last_seq=0 (fresh — server sends vt100 screen dump)
+            if let Err(e) = session.attach_terminal(server_tid, 0).await {
+                tracing::warn!("discover: failed to attach terminal {}: {e}", server_tid);
+            }
+        }
+
+        // Remove client-side terminals that no longer exist on the server
+        let stale: Vec<String> = client_ids
+            .iter()
+            .filter(|id| !server_terminals.contains(id))
+            .cloned()
+            .collect();
+        for id in &stale {
+            tracing::info!("discover: removing stale terminal {}", id);
+            if let Ok(mut ids) = session.terminal_ids.lock() {
+                ids.retain(|i| i != id);
+            }
+            if let Ok(mut map) = session.terminal_outputs.lock() {
+                map.remove(id);
+            }
+            if let Ok(mut senders) = session.terminal_input_senders.lock() {
+                senders.remove(id);
+            }
+            if let Ok(mut seqs) = session.terminal_last_seqs.lock() {
+                seqs.remove(id);
+            }
+        }
+    }
+
     /// Re-attach all existing terminals on reconnect.
     ///
     /// Uses stored per-terminal last_seq values to replay missed output.
+    /// Skips terminals that already have an active input sender (attached
+    /// by `discover_and_attach_terminals`).
     async fn reattach_terminals(session: &Arc<Self>) {
         let terminal_ids = session.terminal_ids();
         if terminal_ids.is_empty() {
@@ -648,6 +745,18 @@ impl RemoteSession {
 
         tracing::info!("reattaching {} terminals", terminal_ids.len());
         for id in &terminal_ids {
+            // Skip if already attached (e.g., by discover_and_attach_terminals)
+            let already_attached = session
+                .terminal_input_senders
+                .lock()
+                .ok()
+                .map(|senders| senders.contains_key(id))
+                .unwrap_or(false);
+            if already_attached {
+                tracing::debug!("reattach: skipping {} (already attached)", id);
+                continue;
+            }
+
             let last_seq = session
                 .terminal_last_seqs
                 .lock()
@@ -969,6 +1078,12 @@ impl RemoteSession {
         let result: TermListResult = self.client.rpc(TermListReq {}).await?;
         Ok(result.terminals.into_iter().map(|e| e.id).collect())
     }
+
+    /// List active terminals on the server with full metadata.
+    pub async fn terminal_list_full(&self) -> Result<Vec<TermListEntry>> {
+        let result: TermListResult = self.client.rpc(TermListReq {}).await?;
+        Ok(result.terminals)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1046,22 +1161,12 @@ fn spawn_reconnect() {
 
             match RemoteSession::connect_with_iroh(addr).await {
                 Ok(session) => {
-                    tracing::info!("reconnect: success on attempt {}", attempt);
+                    tracing::info!(
+                        "reconnect: success on attempt {}, terminals={}",
+                        attempt,
+                        session.terminal_ids().len(),
+                    );
                     set_active_session(session.clone());
-
-                    // Verify server-side terminals are still alive
-                    match session.terminal_list().await {
-                        Ok(ids) => {
-                            tracing::info!(
-                                "reconnect: server has {} terminals: {:?}",
-                                ids.len(),
-                                ids,
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!("reconnect: terminal_list failed: {}", e);
-                        }
-                    }
 
                     RECONNECT_ATTEMPT.store(0, Ordering::Release);
                     signal_terminal_data(); // trigger UI refresh

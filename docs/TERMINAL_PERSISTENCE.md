@@ -10,7 +10,7 @@ The host daemon keeps PTY processes running after a client disconnects. But when
 2. **Restore** the visual state of each terminal (screen contents, colors, cursor, alternate screen)
 3. **Resume** live I/O (keystrokes and output streaming)
 
-Currently only (3) works reliably within a single app session. Discovery and state restoration are incomplete.
+Previously only (3) worked reliably within a single app session. Phases 1-2 are now implemented; phase 3 (UI integration) and phase 4 (credential persistence) remain.
 
 ## Current Architecture
 
@@ -39,9 +39,10 @@ ServerSession
 
 **What happens on TermAttach reconnect:**
 1. Server finds the `TermSession` by ID
-2. Replays backlog entries where `seq > last_seq` through the bidi stream
-3. Creates a new tokio channel, sets it as the terminal's `output_sender`
-4. Bridges client input → PTY stdin, PTY output → client stream
+2. If `last_seq == 0` (fresh attach): sends `vt100::Screen::state_formatted()` dump (~2-10 KB)
+3. If `last_seq > 0` (brief reconnect): replays backlog entries where `seq > last_seq`
+4. Creates a new tokio channel, sets it as the terminal's `output_sender`
+5. Bridges client input → PTY stdin, PTY output → client stream
 
 ### Client Side (zedra-session)
 
@@ -64,8 +65,9 @@ LAST_NOTIF_SEQ                → u64
 2. Exponential backoff (1s → 30s cap, 20 attempts max)
 3. Creates new `RemoteSession::connect_with_iroh(stored_addr)`
 4. Sends `ResumeOrCreate` with stored `(session_id, auth_token)`
-5. Calls `reattach_terminals()` — iterates `PERSISTENT_TERMINAL_IDS`, calls `attach_terminal(id, last_seq)` for each
-6. UI terminal views still exist in `app.rs::terminal_views` — they pick up output on next render
+5. If `resumed=true`: calls `discover_and_attach_terminals()` — queries `TermList`, registers unknown terminals with `last_seq=0`, removes stale terminals
+6. Calls `reattach_terminals()` — re-attaches remaining known terminals (skips already-attached ones)
+7. UI terminal views still exist in `app.rs::terminal_views` — they pick up output on next render
 
 ### Protocol (zedra-rpc/proto.rs)
 
@@ -73,7 +75,7 @@ LAST_NOTIF_SEQ                → u64
 ResumeOrCreate  → (session_id?, auth_token, last_notif_seq) → ResumeResult { session_id, resumed }
 TermCreate      → (cols, rows)                               → TermCreateResult { id }
 TermAttach      → (id, last_seq) [bidi: TermInput/TermOutput]
-TermList        → ()                                          → TermListResult { terminals: [{ id }] }
+TermList        → ()                                          → TermListResult { terminals: [{ id, cols, rows, title? }] }
 TermResize      → (id, cols, rows)                            → TermResizeResult { ok }
 TermClose       → (id)                                        → TermCloseResult { ok }
 ```
@@ -86,23 +88,19 @@ TermClose       → (id)                                        → TermCloseRes
 
 ## Gaps
 
-### Gap 1: Fresh client cannot discover existing terminals
+### Gap 1: Fresh client cannot discover existing terminals — ✅ Fixed
 
-After `ResumeOrCreate`, the client never calls `TermList` to discover server-side terminals. A fresh client (app restart, new device) always creates a new terminal instead of resuming existing ones.
+After `ResumeOrCreate`, the client now calls `TermList` to discover server-side terminals. `discover_and_attach_terminals()` registers unknown terminals with output buffers and attaches with `last_seq=0` to trigger vt100 screen dump.
 
-**Where:** `app.rs:556-566` — always calls `terminal_create()` after connect.
+**Fixed in:** `zedra-session/src/lib.rs` — `discover_and_attach_terminals()` called when `resumed=true`.
 
-**Impact:** Old PTYs become orphaned. User loses running sessions.
+### Gap 2: No terminal screen state restoration — ✅ Fixed
 
-### Gap 2: No terminal screen state restoration
+Server-side `vt100::Parser` maintains a virtual terminal per PTY. On reconnect with `last_seq=0`, the server sends `screen().state_formatted()` (~2-10 KB) as the first `TermOutput` message. Client's `alacritty_terminal` processes the dump for instant screen restore.
 
-The backlog stores raw PTY output bytes (capped at 1000 entries, ~8 MB). For a long-running session (e.g., `claude code` running for hours), the backlog overflows. Even if it didn't, replaying megabytes of raw output is slow and can produce garbled results because the ANSI state machine's initial state is lost.
+**Fixed in:** `rpc_daemon.rs` (PTY reader feeds `vterm.process()`, TermAttach sends screen dump), `session_registry.rs` (`vterm` field on `TermSession`).
 
-**Where:** `session_registry.rs` backlog, `rpc_daemon.rs` TermAttach handler.
-
-**Impact:** Reconnecting client sees blank or garbled terminal instead of the current screen.
-
-### Gap 3: No on-disk credential storage
+### Gap 3: No on-disk credential storage — ⬜ Open
 
 `SESSION_CREDENTIALS` is in-memory only. App restart resets it. The client cannot resume the same session after restart.
 
@@ -110,23 +108,25 @@ The backlog stores raw PTY output bytes (capped at 1000 entries, ~8 MB). For a l
 
 **Impact:** App restart = new session = new terminals. Old session's terminals are orphaned until grace period expires.
 
-### Gap 4: TermListEntry lacks metadata
+### Gap 4: TermListEntry lacks metadata — ✅ Fixed
 
-`TermListEntry` only contains `id`. No terminal dimensions, title, or working directory. A fresh client can't build meaningful UI for discovered terminals.
+`TermListEntry` now includes `cols`, `rows`, and `title` (Option). Server tracks terminal dimensions in `TermSession` and returns them in `TermList` responses.
 
-**Where:** `proto.rs:293-296`.
+**Fixed in:** `proto.rs` (added fields), `session_registry.rs` (tracks dims), `rpc_daemon.rs` (returns enriched metadata).
 
-### Gap 5: Reconnect discards terminal_list results
+**Note:** `title` is always `None` — tracking OSC 0/2 title requires implementing `vt100::Callbacks`, which is a future enhancement.
 
-`spawn_reconnect()` calls `terminal_list()` but only logs the result. It doesn't reconcile client-side state with server-side reality.
+### Gap 5: Reconnect discards terminal_list results — ✅ Fixed
 
-**Where:** `zedra-session/src/lib.rs:1053-1063`.
+`connect_with_iroh()` now calls `discover_and_attach_terminals()` after `ResumeOrCreate(resumed=true)`, which queries `TermList` and reconciles client-side state with server-side reality. Stale client terminals are removed.
 
-### Gap 6: ResumeResult.resumed not acted upon
+**Fixed in:** `zedra-session/src/lib.rs` — `discover_and_attach_terminals()`.
 
-The client doesn't branch on whether the session was resumed or newly created. It should: if resumed, list and attach existing terminals; if new, create one.
+### Gap 6: ResumeResult.resumed not acted upon — ✅ Fixed
 
-**Where:** `app.rs:556-566` — unconditionally creates a terminal.
+`establish_rpc_session()` now returns the `resumed` flag. `connect_with_iroh()` branches on it: if resumed, discover and attach existing terminals; if new, proceed to create one.
+
+**Fixed in:** `zedra-session/src/lib.rs` — `establish_rpc_session()` returns `bool`, `connect_with_iroh()` branches on it.
 
 ## Solution: Server-Side Virtual Terminal (`vt100`)
 
@@ -189,35 +189,35 @@ On reconnect (TermAttach):
 
 ## Implementation Plan
 
-### Phase 1: Server-side vt100 parser
+### Phase 1: Server-side vt100 parser ✅ Complete
 
 **Files changed:**
-- `zedra-host/Cargo.toml` — add `vt100 = "0.16"`
-- `session_registry.rs` — add `vterm: Arc<Mutex<vt100::Parser>>` to `TermSession`
-- `rpc_daemon.rs` (TermCreate handler) — initialize vterm with terminal dimensions
-- `rpc_daemon.rs` (PTY reader loop) — feed bytes into `vterm.process(&data)`
-- `rpc_daemon.rs` (TermAttach handler) — send `state_formatted()` as first message
-- `rpc_daemon.rs` (TermResize handler) — resize vterm: `screen_mut().set_size(rows, cols)`
+- `zedra-host/Cargo.toml` — added `vt100 = "0.16"`
+- `session_registry.rs` — added `vterm: Arc<Mutex<vt100::Parser>>`, `cols`, `rows` to `TermSession`
+- `rpc_daemon.rs` (TermCreate handler) — initializes vterm with terminal dimensions
+- `rpc_daemon.rs` (PTY reader loop) — feeds bytes into `vterm.process(&data)` alongside backlog and live stream
+- `rpc_daemon.rs` (TermAttach handler) — dual-path: `last_seq=0` sends `state_formatted()`, `last_seq>0` replays backlog
+- `rpc_daemon.rs` (TermResize handler) — syncs vterm dimensions via `screen_mut().set_size(rows, cols)`
 
-### Phase 2: Terminal discovery on connect
-
-**Files changed:**
-- `proto.rs` — add `cols`, `rows`, `title` to `TermListEntry`
-- `session_registry.rs` — track terminal dimensions; expose terminal metadata
-- `rpc_daemon.rs` (TermList handler) — return enriched metadata
-- `zedra-session/lib.rs` — after `ResumeOrCreate(resumed=true)`, call `terminal_list()`, register and attach all discovered terminals
-- `zedra-session/lib.rs` (reconnect) — use `terminal_list()` to reconcile client vs server state
-
-### Phase 3: UI integration for discovered terminals
+### Phase 2: Terminal discovery on connect ✅ Complete
 
 **Files changed:**
-- `zedra-session/lib.rs` — new `discover_and_attach_terminals()` method that calls `TermList` → registers output buffers → attaches each
+- `proto.rs` — added `cols`, `rows`, `title` to `TermListEntry`
+- `session_registry.rs` — tracks terminal dimensions in `TermSession`
+- `rpc_daemon.rs` (TermList handler) — returns enriched metadata
+- `zedra-session/lib.rs` — `establish_rpc_session()` returns `resumed` flag; `connect_with_iroh()` calls `discover_and_attach_terminals()` when resumed
+- `zedra-session/lib.rs` — `discover_and_attach_terminals()` queries `TermList`, registers unknown terminals, removes stale ones
+- `zedra-session/lib.rs` — `reattach_terminals()` skips already-attached terminals
+
+### Phase 3: UI integration for discovered terminals ⬜ Not started
+
+**Files to change:**
 - `app.rs` — on connect, if session resumed: create views for server terminals instead of calling `terminal_create()`; expose discovered terminal info to UI
 - `terminal_panel.rs` — render discovered terminals with metadata (title, dimensions)
 
-### Phase 4: Credential persistence (optional, cross-restart)
+### Phase 4: Credential persistence (optional, cross-restart) ⬜ Not started
 
-**Files changed:**
+**Files to change:**
 - `zedra-session/lib.rs` — serialize `(session_id, auth_token, endpoint_addr)` to file
 - `app.rs` or Android bridge — load saved credentials on app start; offer "Reconnect to last session" flow
 

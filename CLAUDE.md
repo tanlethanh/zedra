@@ -278,6 +278,9 @@ zedra-rpc
 - Terminal backlog replay: missed output replayed per-terminal via TermAttach bidi stream
 - Reconnecting UI badge: transport indicator shows "Reconnecting... (N)" with red dot during reconnect
 - Connection monitoring: path watcher tracks direct vs relay, RTT, bytes sent/recv
+- Server-side vt100 screen capture: `vt100::Parser` per terminal for instant screen state restoration on reconnect
+- Terminal discovery: `TermList` with enriched metadata (cols, rows, title), client reconciles state on resumed session
+- Dual-path TermAttach: `last_seq=0` sends vt100 screen dump (~2-10 KB), `last_seq>0` replays raw backlog
 
 ## Known Limitations (Technical Debt)
 
@@ -294,12 +297,13 @@ See `docs/TECHNICAL_DEBT.md` for detailed solutions.
    - No pinch-to-zoom or multi-touch gestures yet
    - Solution: Add multi-pointer tracking in `TouchHandler`
 
-3. **Terminal Session Persistence** (High Priority)
-   - PTYs survive disconnect but fresh clients can't discover or resume them
-   - No screen state restoration (blank/garbled terminal after long disconnect)
-   - No on-disk credential storage (app restart = new session)
-   - See `docs/TERMINAL_PERSISTENCE.md` for full analysis and implementation plan
-   - Solution: Server-side `vt100` parser for screen capture + terminal discovery flow
+3. **Terminal Session Persistence** (Partially Resolved)
+   - ✅ Server-side `vt100::Parser` captures screen state per terminal
+   - ✅ Fresh clients discover existing terminals via `TermList` on resumed sessions
+   - ✅ Dual-path TermAttach: vt100 screen dump for fresh attach, backlog replay for brief reconnect
+   - ⬜ UI integration: `app.rs` doesn't yet create views for discovered terminals (always creates new)
+   - ⬜ No on-disk credential storage (app restart = new session)
+   - See `docs/TERMINAL_PERSISTENCE.md` for full analysis and remaining work
 
 4. **Sample Data Only** (Low Priority)
    - Editor shows 4 hardcoded Rust sample files, file explorer shows demo tree
@@ -395,7 +399,8 @@ See `docs/DEBUGGING.md` for complete workflow.
 - **Phase 5**: Navigation + Editor ✅ Complete (tabs, stacks, drawer, syntax editor)
 - **Phase 6**: Transport + Relay ✅ Complete (transport abstraction, CF Worker relay, discovery chain, health monitoring, session persistence)
 - **Phase 6.5**: Session Reconnect ✅ Complete (auto-reconnect with exponential backoff, persistent terminal buffers, backlog replay, reconnecting UI badge)
-- **Phase 7**: Terminal Persistence - Next (server-side vt100 screen capture, fresh client terminal discovery, credential persistence)
+- **Phase 7**: Terminal Persistence ✅ Core Complete (server-side vt100 screen capture, terminal discovery + attach, enriched TermList metadata)
+- **Phase 7.5**: Terminal Persistence UI - Next (UI integration for discovered terminals, on-disk credential persistence for cross-restart resume)
 - **Phase 8**: Production Hardening (momentum scrolling, real file access, multi-touch, E2E encryption)
 
 ## Performance Characteristics
@@ -455,7 +460,8 @@ First successful port of GPUI to Android with:
 - Connection path monitoring with automatic relay → direct P2P upgrade
 - irpc typed RPC: postcard binary serialization, bidi streaming for terminal I/O (no JSON, no base64)
 - Auto-reconnect: exponential backoff, persistent output buffers, per-terminal backlog replay
+- Terminal persistence: server-side vt100 screen capture, terminal discovery on resumed sessions, dual-path TermAttach
 
 ---
 
-**Last Updated**: 2026-02-22
+**Last Updated**: 2026-02-23
