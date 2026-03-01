@@ -9023,6 +9023,7 @@ dependencies = [
  "android_logger",
  "anyhow",
  "cbindgen 0.29.2",
+ "cc",
  "crossbeam-channel",
  "gpui",
  "gpui_android",

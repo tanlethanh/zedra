@@ -31,6 +31,7 @@ targets:
       - sdk: UIKit.framework
       - sdk: Security.framework
       - sdk: Network.framework
+      - sdk: AVFoundation.framework
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES

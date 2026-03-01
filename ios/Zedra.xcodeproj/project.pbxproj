@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		08D7A7222CD291584A0F8E56 /* ZedraQRScanner.m in Sources */ = {isa = PBXBuildFile; fileRef = 3DE7A543A09EE3AF719663D9 /* ZedraQRScanner.m */; };
+		59174DFFDBE71FAD97A1CCB3 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 00F1E4C60CC0F76F94D6404A /* AVFoundation.framework */; };
 		6882E9EA8A4517BE22715D51 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 512091F828A8B43816DA9723 /* CoreGraphics.framework */; };
 		7342A3ACEDA8C57FF9D78060 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E2710A21022C473FA88BF88A /* MetalKit.framework */; };
 		852516EA2D63566F57B5F106 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A6B03B40299B5BEA1C29D4F5 /* Metal.framework */; };
@@ -21,7 +23,9 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		00F1E4C60CC0F76F94D6404A /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
 		33FBCE1A928EAF32E817D1DE /* CoreText.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreText.framework; path = System/Library/Frameworks/CoreText.framework; sourceTree = SDKROOT; };
+		3DE7A543A09EE3AF719663D9 /* ZedraQRScanner.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ZedraQRScanner.m; sourceTree = "<group>"; };
 		47A99A911DFEB67B22FF841B /* Network.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Network.framework; path = System/Library/Frameworks/Network.framework; sourceTree = SDKROOT; };
 		512091F828A8B43816DA9723 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
 		520C816D34F6ED9A97DA79BB /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
@@ -50,6 +54,7 @@
 				C4615C398F2572ED57528BB1 /* UIKit.framework in Frameworks */,
 				C8F576CC1856D853138C29FD /* Security.framework in Frameworks */,
 				980622780D44495907582D63 /* Network.framework in Frameworks */,
+				59174DFFDBE71FAD97A1CCB3 /* AVFoundation.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -76,6 +81,7 @@
 		88F08496A69E4168EB2884D0 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				00F1E4C60CC0F76F94D6404A /* AVFoundation.framework */,
 				63C6681ECC3A80F94D9F1A0A /* CoreFoundation.framework */,
 				512091F828A8B43816DA9723 /* CoreGraphics.framework */,
 				33FBCE1A928EAF32E817D1DE /* CoreText.framework */,
@@ -94,6 +100,7 @@
 			isa = PBXGroup;
 			children = (
 				94CC8ED9DAA6944067FF57DB /* main.m */,
+				3DE7A543A09EE3AF719663D9 /* ZedraQRScanner.m */,
 			);
 			path = Zedra;
 			sourceTree = "<group>";
@@ -158,6 +165,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				08D7A7222CD291584A0F8E56 /* ZedraQRScanner.m in Sources */,
 				C6719995D3E0E4499805BFA7 /* main.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -216,7 +224,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -337,7 +345,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";

@@ -45,3 +45,4 @@ oslog = "0.2"
 
 [build-dependencies]
 cbindgen = "0.29"
+cc = "1"

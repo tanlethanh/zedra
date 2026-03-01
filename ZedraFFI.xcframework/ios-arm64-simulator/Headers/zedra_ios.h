@@ -64,6 +64,19 @@ extern void gpui_ios_show_keyboard(void *window_ptr);
 
 extern void gpui_ios_hide_keyboard(void *window_ptr);
 
+/**
+ * Present the AVFoundation QR scanner (defined in ZedraQRScanner.m).
+ */
+extern void ios_present_qr_scanner(void);
+
+/**
+ * Called from ZedraQRScanner.m after a successful QR scan.
+ *
+ * `qr_string` is a base64-url encoded iroh::EndpointAddr produced by
+ * `zedra_rpc::pairing::encode_endpoint_addr()` on the host side.
+ */
+void zedra_qr_scanner_result(const char *qr_string);
+
 void zedra_launch_gpui(void);
 
 #endif  /* ZEDRA_IOS_H */

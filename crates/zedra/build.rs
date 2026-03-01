@@ -29,6 +29,13 @@ fn main() {
     }
 
     if target.contains("apple-ios") {
+        // Weak stub for ios_present_qr_scanner — lets the cdylib link succeed.
+        // The real ObjC implementation in ZedraQRScanner.m overrides this at Xcode link time.
+        println!("cargo:rerun-if-changed=src/ios_stub.c");
+        cc::Build::new()
+            .file("src/ios_stub.c")
+            .compile("ios_stub");
+
         let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
         cbindgen::Builder::new()
             .with_crate(crate_dir)
