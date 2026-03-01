@@ -7,6 +7,14 @@
 //   4. CADisplayLink                 — drives gpui_ios_request_frame() at 60 FPS
 
 #import <UIKit/UIKit.h>
+#import <unistd.h>
+
+// Synchronous write to stderr — visible in `devicectl device process launch --console`.
+// Use raw write() so it works even if higher-level I/O is not yet set up.
+#define DIAG(msg) do { \
+    const char *_s = "ZEDRA_DIAG: " msg "\n"; \
+    write(STDERR_FILENO, _s, strlen(_s)); \
+} while(0)
 
 // GPUI FFI (from gpui crate)
 extern void* gpui_ios_initialize(void);
@@ -32,36 +40,38 @@ extern void zedra_launch_gpui(void);
 
 - (BOOL)application:(UIApplication *)application
     didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
-    NSLog(@"Zedra: Launching...");
+    DIAG("didFinishLaunching start");
 
     // 1. Initialize GPUI FFI state (sets up IOS_APP_STATE)
     self.gpuiApp = gpui_ios_initialize();
-    NSLog(@"Zedra: GPUI initialized: %p", self.gpuiApp);
+    DIAG("gpui_ios_initialize done");
 
     // 2. Create the GPUI Application and register the window-open callback
+    DIAG("calling zedra_launch_gpui");
     zedra_launch_gpui();
-    NSLog(@"Zedra: GPUI app created");
+    DIAG("zedra_launch_gpui done");
 
     // 3. Invoke the finish-launching callback (opens the Metal window)
+    DIAG("calling gpui_ios_did_finish_launching");
     gpui_ios_did_finish_launching(self.gpuiApp);
-    NSLog(@"Zedra: Finish launching callback invoked");
+    DIAG("gpui_ios_did_finish_launching done");
 
     // 4. Get the GPUI window pointer
     self.gpuiWindow = gpui_ios_get_window();
     if (self.gpuiWindow) {
-        NSLog(@"Zedra: Got GPUI window: %p", self.gpuiWindow);
+        DIAG("got GPUI window, starting CADisplayLink");
 
         // 5. Start CADisplayLink to drive rendering at 60 FPS
         self.displayLink = [CADisplayLink displayLinkWithTarget:self
                                                        selector:@selector(renderFrame)];
         [self.displayLink addToRunLoop:[NSRunLoop mainRunLoop]
                                forMode:NSRunLoopCommonModes];
-        NSLog(@"Zedra: CADisplayLink started");
+        DIAG("CADisplayLink started");
     } else {
-        NSLog(@"Zedra: WARNING — no GPUI window created");
+        DIAG("WARNING: no GPUI window created");
     }
 
-    NSLog(@"Zedra: Launch complete");
+    DIAG("launch complete");
     return YES;
 }
 
@@ -112,7 +122,9 @@ extern void zedra_launch_gpui(void);
 @end
 
 int main(int argc, char * argv[]) {
+    DIAG("main() entered");
     @autoreleasepool {
+        DIAG("calling UIApplicationMain");
         return UIApplicationMain(argc, argv, nil,
                                  NSStringFromClass([ZedraAppDelegate class]));
     }
