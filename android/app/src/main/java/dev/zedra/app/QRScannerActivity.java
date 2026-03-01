@@ -37,6 +37,9 @@ import com.google.mlkit.vision.barcode.BarcodeScanning;
 import com.google.mlkit.vision.barcode.common.Barcode;
 import com.google.mlkit.vision.common.InputImage;
 
+import android.os.Handler;
+import android.os.Looper;
+
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -146,8 +149,13 @@ public class QRScannerActivity extends AppCompatActivity {
             try {
                 ProcessCameraProvider cameraProvider = cameraProviderFuture.get();
 
-                // Preview use case — connect to the PreviewView surface
-                Preview preview = new Preview.Builder().build();
+                // Preview use case — connect to the PreviewView surface.
+                // Use a low resolution to minimize GPU memory consumption;
+                // the camera preview competes with Vulkan for the same shared
+                // memory pool on Mali UMA GPUs.
+                Preview preview = new Preview.Builder()
+                        .setTargetResolution(new Size(640, 480))
+                        .build();
                 preview.setSurfaceProvider(previewView.getSurfaceProvider());
 
                 // Image analysis for QR detection
@@ -203,8 +211,29 @@ public class QRScannerActivity extends AppCompatActivity {
                             // Send to Rust via JNI
                             nativeOnQrCodeScanned(rawValue);
 
-                            // Close scanner
-                            runOnUiThread(this::finish);
+                            // Unbind camera and delay finish() so the camera HAL
+                            // has time to release its DMA-BUF backed GPU buffers.
+                            // On Mali UMA GPUs these buffers share the same memory
+                            // pool as Vulkan; if we finish() immediately the GPUI
+                            // renderer is recreated while camera buffers are still
+                            // live, causing OOM.
+                            runOnUiThread(() -> {
+                                try {
+                                    ProcessCameraProvider.getInstance(this)
+                                            .get().unbindAll();
+                                } catch (Exception e) {
+                                    Log.w(TAG, "Failed to unbind camera", e);
+                                }
+                                // Remove the preview surface immediately to
+                                // trigger SurfaceView destruction.
+                                if (previewView != null && previewView.getParent() != null) {
+                                    ((FrameLayout) previewView.getParent()).removeView(previewView);
+                                }
+                                // Wait for camera DMA-BUF release (~800ms observed
+                                // on Mali-G68 MC4) before finishing the activity.
+                                new Handler(Looper.getMainLooper()).postDelayed(
+                                        () -> finish(), 700);
+                            });
                             break;
                         }
                     }
@@ -219,6 +248,16 @@ public class QRScannerActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        // Unbind camera BEFORE super.onDestroy() so DMA-BUF backed buffers
+        // are released before our GPUI surface is recreated. On Mali's shared
+        // memory GPU, camera preview buffers (~30-50MB) directly compete with
+        // Vulkan allocations, causing OOM if both are active simultaneously.
+        try {
+            ProcessCameraProvider.getInstance(this).get().unbindAll();
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to unbind camera in onDestroy", e);
+        }
+
         super.onDestroy();
         if (cameraExecutor != null) {
             cameraExecutor.shutdown();

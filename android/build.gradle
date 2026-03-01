@@ -69,9 +69,70 @@ dependencies {
     implementation 'androidx.lifecycle:lifecycle-runtime:2.7.0'
 }
 
-task buildRustLib(type: Exec) {
-    workingDir '..'
-    commandLine './scripts/build-android.sh'
+// Resolve adb from Android SDK (Android Studio doesn't inherit shell PATH)
+def adbPath() {
+    def sdkDir = android.sdkDirectory
+    if (sdkDir) {
+        def adb = new File(sdkDir, "platform-tools/adb")
+        if (adb.exists()) return adb.absolutePath
+    }
+    return "adb" // fallback to PATH
 }
 
-preBuild.dependsOn buildRustLib
+// Detect connected device ABI for single-target debug builds
+def detectDeviceAbi() {
+    try {
+        def stdout = new ByteArrayOutputStream()
+        exec {
+            commandLine adbPath(), 'shell', 'getprop', 'ro.product.cpu.abi'
+            standardOutput = stdout
+            errorOutput = new ByteArrayOutputStream()
+            ignoreExitValue = true
+        }
+        def abi = stdout.toString().trim()
+        if (abi) return abi
+    } catch (Exception ignored) {}
+    return null
+}
+
+android.applicationVariants.configureEach { variant ->
+    def taskName = "buildRustLib${variant.name.capitalize()}"
+    def rustTask = tasks.register(taskName, Exec) {
+        workingDir '..'
+        doFirst {
+            def args = ['./scripts/build-android.sh']
+
+            // Define by -Pdebug or debuggable build type
+            def rustDebug = project.hasProperty('debug') || variant.buildType.debuggable
+            if (rustDebug) {
+                args << '--debug'
+            }
+
+            // -Ppreview: enable preview mode
+            if (project.hasProperty('preview')) {
+                args << '--preview'
+            }
+
+            // -PsingleTarget: auto-detect connected device ABI
+            if (project.hasProperty('singleTarget')) {
+                def abi = detectDeviceAbi()
+                if (abi) {
+                    args << "--target=${abi}"
+                    logger.lifecycle("Rust: targeting connected device (${abi})")
+                }
+            }
+
+
+            commandLine args
+        }
+    }
+    variant.preBuildProvider.configure { it.dependsOn(rustTask) }
+}
+
+task launchApp(type: Exec) {
+    dependsOn 'installDebug'
+    commandLine adbPath(), 'shell', 'am', 'start', '-n',
+            "${android.defaultConfig.applicationId}/.MainActivity",
+            '-a', 'android.intent.action.MAIN',
+            '-c', 'android.intent.category.LAUNCHER'
+}

@@ -22,8 +22,8 @@ pub struct AndroidApp {
     platform: Option<Rc<AndroidPlatform>>,
     /// The GPUI AppCell (root context)
     app_cell: Option<Rc<AppCell>>,
-    /// Window handle for the ZedraApp
-    window: Option<WindowHandle<ZedraApp>>,
+    /// Window handle (ZedraApp or PreviewApp depending on `preview` feature)
+    window: Option<AnyWindowHandle>,
     /// Whether a surface is currently available
     surface_available: bool,
     /// Touch input handler (tap detection, scroll/drawer disambiguation, fling)
@@ -215,12 +215,23 @@ impl AndroidApp {
                     ..Default::default()
                 };
 
-                // Open window with ZedraApp view
-                match app.open_window(window_options, |window, cx| {
-                    let view = cx.new(|cx| ZedraApp::new(window, cx));
-                    window.refresh();
-                    view
-                }) {
+                let open_result = if cfg!(feature = "preview") {
+                    app.open_window(window_options, |window, cx| {
+                        let view = cx.new(|cx| crate::app_preview::PreviewApp::new(window, cx));
+                        window.refresh();
+                        view
+                    })
+                    .map(|h| h.into())
+                } else {
+                    app.open_window(window_options, |window, cx| {
+                        let view = cx.new(|cx| crate::app::ZedraApp::new(window, cx));
+                        window.refresh();
+                        view
+                    })
+                    .map(|h| h.into())
+                };
+
+                match open_result {
                     Ok(window_handle) => {
                         self.window = Some(window_handle);
                         log::info!(
@@ -453,10 +464,12 @@ impl AndroidApp {
         );
 
         // Strip the zedra:// URI prefix if present, then decode
-        let payload = qr_data
-            .strip_prefix("zedra://")
-            .unwrap_or(&qr_data);
-        log::info!("QR payload: {} bytes (prefix stripped: {})", payload.len(), qr_data.len() != payload.len());
+        let payload = qr_data.strip_prefix("zedra://").unwrap_or(&qr_data);
+        log::info!(
+            "QR payload: {} bytes (prefix stripped: {})",
+            payload.len(),
+            qr_data.len() != payload.len()
+        );
         match zedra_rpc::decode_endpoint_addr(payload) {
             Ok(addr) => {
                 let relay = addr.relay_urls().next().map(|u| u.to_string());

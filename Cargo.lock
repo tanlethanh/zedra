@@ -9027,6 +9027,7 @@ dependencies = [
  "gpui",
  "gpui_android",
  "gpui_ios",
+ "gpui_wgpu",
  "http_client",
  "iroh",
  "jni",
@@ -9278,15 +9279,3 @@ checksum = "410e9ecef634c709e3831c2cfdb8d9c32164fae1c67496d5b68fff728eec37fe"
 dependencies = [
  "zune-core 0.5.1",
 ]
-
-[[patch.unused]]
-name = "blade-graphics"
-version = "0.7.0"
-
-[[patch.unused]]
-name = "blade-macros"
-version = "0.3.0"
-
-[[patch.unused]]
-name = "blade-util"
-version = "0.3.0"

@@ -8,6 +8,7 @@ target
 .idea
 .gradle
 android/app/libs
+android/android/app/libs
 android/build
 local.properties
 
@@ -15,3 +16,5 @@ docs/archive
 
 .env
 !.env.example
+
+.private

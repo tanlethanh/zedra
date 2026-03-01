@@ -23,14 +23,17 @@ pub mod home_view;
 pub mod app_drawer;
 
 // Extracted drawer tab panels
-pub mod terminal_panel;
 pub mod session_panel;
+pub mod terminal_panel;
 
 // Transport badge (P2P / Relay indicator) + format_bytes utility
 pub mod transport_badge;
 
 // Shared Zedra app (screen navigation + connection)
 pub mod app;
+
+// Standalone preview app for GPU stress-testing
+pub mod app_preview;
 
 // File explorer view
 pub mod file_explorer;
