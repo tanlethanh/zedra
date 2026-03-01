@@ -10,6 +10,7 @@ crate-type = ["cdylib", "staticlib"]
 [features]
 android-platform = []
 ios-platform = []
+preview = []
 
 [dependencies]
 gpui = { path = "../../vendor/zed/crates/gpui", default-features = false }
@@ -29,9 +30,6 @@ zedra-terminal = { path = "../zedra-terminal" }
 zedra-rpc = { path = "../zedra-rpc" }
 iroh.workspace = true
 rust-embed = { workspace = true, features = ["debug-embed"] }
-
-[features]
-preview = []
 
 [target.'cfg(target_os = "android")'.dependencies]
 gpui_android = { path = "../../vendor/zed/crates/gpui_android" }

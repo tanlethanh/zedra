@@ -6,6 +6,10 @@ cd "$(dirname "$0")/.."
 LIB_NAME="zedra"
 FRAMEWORK_NAME="ZedraFFI"
 
+# Match the Xcode project deployment target so the linker doesn't warn about
+# object files built for a newer iOS version than the app being linked.
+export IPHONEOS_DEPLOYMENT_TARGET=26.0
+
 # The crate has crate-type = ["cdylib", "staticlib"]. The cdylib is for Android
 # (JNI .so) and will fail to link on iOS (OpenGL framework not available).
 # The staticlib (.a) is produced before the cdylib linking step, so we allow

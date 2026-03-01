@@ -2,7 +2,7 @@ name: Zedra
 options:
   bundleIdPrefix: dev.zedra
   deploymentTarget:
-    iOS: "16.0"
+    iOS: "26.0"
   generateEmptyDirectories: true
 
 targets:
