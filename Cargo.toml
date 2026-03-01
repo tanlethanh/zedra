@@ -40,12 +40,6 @@ irpc-iroh = "0.12"
 postcard = { version = "1", features = ["alloc"] }
 serde_bytes = "0.11"
 
-# Patch blade-graphics to use local version with Android fixes
-[patch.'https://github.com/kvark/blade']
-blade-graphics = { path = "vendor/blade/blade-graphics" }
-blade-macros = { path = "vendor/blade/blade-macros" }
-blade-util = { path = "vendor/blade/blade-util" }
-
 [profile.release]
 opt-level = 3
 lto = "thin"

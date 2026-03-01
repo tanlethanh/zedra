@@ -31,6 +31,7 @@ preview = []
 
 [target.'cfg(target_os = "android")'.dependencies]
 gpui_android = { path = "../../vendor/zed/crates/gpui_android" }
+gpui_wgpu = { path = "../../vendor/zed/crates/gpui_wgpu" }
 android_logger = "0.15.1"
 jni = "0.21.1"
 ndk = "0.9"
