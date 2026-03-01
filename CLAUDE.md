@@ -231,7 +231,8 @@ packages/relay-worker/              # Cloudflare Worker relay server (relay.zedr
 docs/
   ├── ARCHITECTURE.md           # Design decisions
   ├── DEBUGGING.md              # Debug workflow and tools
-  └── RELAY.md                  # Relay wire protocol + DO topology docs
+  ├── RELAY.md                  # Relay wire protocol + DO topology docs
+  └── IOS_WORKFLOW.md           # iOS build pipeline, FFI patterns, debugging, pitfalls
 ```
 
 ### Dependency Graph
@@ -424,6 +425,7 @@ See `docs/DEBUGGING.md` for complete workflow.
 - Debug workflow and tools: `docs/DEBUGGING.md`
 - Relay wire protocol + DO topology: `docs/RELAY.md`
 - Terminal persistence design: `docs/TERMINAL_PERSISTENCE.md`
+- **iOS development workflow**: `docs/IOS_WORKFLOW.md` — build pipeline, commands, FFI patterns, debugging, pitfalls
 
 ## Performance Testing
 
