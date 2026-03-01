@@ -5,12 +5,9 @@ edition.workspace = true
 
 [dependencies]
 zedra-rpc = { path = "../zedra-rpc" }
-zedra-transport = { path = "../zedra-transport" }
 iroh.workspace = true
+irpc.workspace = true
+irpc-iroh.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "sync"] }
-serde.workspace = true
-serde_json.workspace = true
 anyhow.workspace = true
-log.workspace = true
 tracing.workspace = true
-base64-url.workspace = true

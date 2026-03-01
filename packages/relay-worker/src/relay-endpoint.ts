@@ -42,9 +42,24 @@ const ALARM_INTERVAL_MS = 15_000;
 /** Max jitter added to alarm interval (ms). */
 const ALARM_JITTER_MS = 5_000;
 
+/** TTL for in-memory route cache entries (ms). */
+const ROUTE_CACHE_TTL_MS = 10_000;
+
 export class RelayEndpoint {
   private state: DurableObjectState;
   private env: Env;
+
+  /**
+   * In-memory caches — survive while the DO is awake, lost on hibernation.
+   * Lazily populated from DO storage on first access after wake.
+   * This eliminates per-datagram KV and DO storage reads during active transfer.
+   * See docs/RELAY.md "In-Memory Caching" for architectural rationale.
+   */
+  private _authenticated: boolean | undefined;
+  private _endpointId: Uint8Array | undefined;
+  private _endpointIdHex: string | undefined;
+  private _doName: string | undefined;
+  private _routeCache = new Map<string, { doName: string; cachedAt: number }>();
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -86,6 +101,7 @@ export class RelayEndpoint {
     const doName = url.searchParams.get("do_name");
     if (doName) {
       await this.state.storage.put("do_name", doName);
+      this._doName = doName;
     }
 
     // Generate challenge
@@ -123,8 +139,11 @@ export class RelayEndpoint {
     const { type, offset } = decodeFrameType(buf);
     const body = buf.slice(offset);
 
-    const authenticated =
-      (await this.state.storage.get<boolean>("authenticated")) ?? false;
+    if (this._authenticated === undefined) {
+      this._authenticated =
+        (await this.state.storage.get<boolean>("authenticated")) ?? false;
+    }
+    const authenticated = this._authenticated;
 
     if (!authenticated) {
       await this.handleUnauthenticated(ws, type, body);
@@ -147,8 +166,11 @@ export class RelayEndpoint {
   }
 
   async alarm(): Promise<void> {
-    const authenticated =
-      (await this.state.storage.get<boolean>("authenticated")) ?? false;
+    if (this._authenticated === undefined) {
+      this._authenticated =
+        (await this.state.storage.get<boolean>("authenticated")) ?? false;
+    }
+    const authenticated = this._authenticated;
     const sockets = this.state.getWebSockets("endpoint");
 
     if (sockets.length === 0) {
@@ -182,11 +204,16 @@ export class RelayEndpoint {
       }
     }
 
-    // Refresh KV routing entry
-    const endpointIdHex = await this.state.storage.get<string>(
-      "endpoint_id_hex",
-    );
-    const doName = await this.state.storage.get<string>("do_name");
+    // Refresh KV routing entry (use cached values when available)
+    if (this._endpointIdHex === undefined) {
+      this._endpointIdHex =
+        await this.state.storage.get<string>("endpoint_id_hex");
+    }
+    if (this._doName === undefined) {
+      this._doName = await this.state.storage.get<string>("do_name");
+    }
+    const endpointIdHex = this._endpointIdHex;
+    const doName = this._doName;
     if (endpointIdHex && doName) {
       await this.env.ZEDRA_RELAY_KV.put(
         RELAY_EP_PREFIX + endpointIdHex,
@@ -197,9 +224,7 @@ export class RelayEndpoint {
 
     // Schedule next alarm with jitter
     const jitter = Math.floor(Math.random() * ALARM_JITTER_MS);
-    await this.state.storage.setAlarm(
-      Date.now() + ALARM_INTERVAL_MS + jitter,
-    );
+    await this.state.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS + jitter);
   }
 
   // --- Internal handlers ---
@@ -250,15 +275,18 @@ export class RelayEndpoint {
     const endpointIdHex = hexEncode(auth.publicKey);
 
     await this.state.storage.put("authenticated", true);
-    await this.state.storage.put(
-      "endpoint_id",
-      Array.from(auth.publicKey),
-    );
+    await this.state.storage.put("endpoint_id", Array.from(auth.publicKey));
     await this.state.storage.put("endpoint_id_hex", endpointIdHex);
 
-    // do_name was set during WebSocket upgrade from the router's URL param.
-    // Read it back to register in KV.
-    const doName = await this.state.storage.get<string>("do_name");
+    // Populate in-memory caches (avoids storage reads on subsequent messages)
+    this._authenticated = true;
+    this._endpointId = new Uint8Array(auth.publicKey);
+    this._endpointIdHex = endpointIdHex;
+
+    // do_name was set during WebSocket upgrade (already cached in _doName).
+    // Fall back to storage read if DO hibernated between fetch() and auth.
+    const doName =
+      this._doName ?? (await this.state.storage.get<string>("do_name"));
 
     // Register in KV routing table
     if (doName) {
@@ -277,9 +305,7 @@ export class RelayEndpoint {
 
     // Schedule keepalive alarm
     const jitter = Math.floor(Math.random() * ALARM_JITTER_MS);
-    await this.state.storage.setAlarm(
-      Date.now() + ALARM_INTERVAL_MS + jitter,
-    );
+    await this.state.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS + jitter);
   }
 
   private async handleAuthenticated(
@@ -290,10 +316,12 @@ export class RelayEndpoint {
     switch (type) {
       case FrameType.ClientToRelayDatagram: {
         const { dstId, ecn, data } = decodeClientDatagram(body);
-        const srcIdArr =
-          await this.state.storage.get<number[]>("endpoint_id");
-        if (!srcIdArr) return;
-        const srcId = new Uint8Array(srcIdArr);
+        if (!this._endpointId) {
+          const arr = await this.state.storage.get<number[]>("endpoint_id");
+          if (!arr) return;
+          this._endpointId = new Uint8Array(arr);
+        }
+        const srcId = this._endpointId;
         const frame = encodeRelayToClientDatagram(srcId, ecn, data);
         await this.forwardToEndpoint(ws, dstId, frame);
         break;
@@ -302,10 +330,12 @@ export class RelayEndpoint {
       case FrameType.ClientToRelayDatagramBatch: {
         const { dstId, ecn, segmentSize, data } =
           decodeClientDatagramBatch(body);
-        const srcIdArr =
-          await this.state.storage.get<number[]>("endpoint_id");
-        if (!srcIdArr) return;
-        const srcId = new Uint8Array(srcIdArr);
+        if (!this._endpointId) {
+          const arr = await this.state.storage.get<number[]>("endpoint_id");
+          if (!arr) return;
+          this._endpointId = new Uint8Array(arr);
+        }
+        const srcId = this._endpointId;
         const frame = encodeRelayToClientDatagramBatch(
           srcId,
           ecn,
@@ -345,21 +375,29 @@ export class RelayEndpoint {
   ): Promise<void> {
     const dstHex = hexEncode(dstId);
 
-    // Look up target in KV
-    const routeData = await this.env.ZEDRA_RELAY_KV.get(
-      RELAY_EP_PREFIX + dstHex,
-    );
-    if (!routeData) {
-      // Target not registered
-      senderWs.send(encodeEndpointGone(dstId));
-      return;
+    // Check in-memory route cache before KV lookup
+    const now = Date.now();
+    const cached = this._routeCache.get(dstHex);
+    let routeDoName: string;
+
+    if (cached && now - cached.cachedAt < ROUTE_CACHE_TTL_MS) {
+      routeDoName = cached.doName;
+    } else {
+      const routeData = await this.env.ZEDRA_RELAY_KV.get(
+        RELAY_EP_PREFIX + dstHex,
+      );
+      if (!routeData) {
+        this._routeCache.delete(dstHex);
+        senderWs.send(encodeEndpointGone(dstId));
+        return;
+      }
+      const route = JSON.parse(routeData) as { do_name: string };
+      routeDoName = route.do_name;
+      this._routeCache.set(dstHex, { doName: routeDoName, cachedAt: now });
     }
 
-    const route = JSON.parse(routeData) as { do_name: string };
-
     // Forward via DO-to-DO fetch
-    const targetDoId =
-      this.env.ZEDRA_RELAY_ENDPOINT.idFromName(route.do_name);
+    const targetDoId = this.env.ZEDRA_RELAY_ENDPOINT.idFromName(routeDoName);
     const targetStub = this.env.ZEDRA_RELAY_ENDPOINT.get(targetDoId);
 
     try {
@@ -369,11 +407,13 @@ export class RelayEndpoint {
       });
 
       if (resp.status === 410) {
-        // Target endpoint has no connected client
+        // Target endpoint has no connected client — invalidate cached route
+        this._routeCache.delete(dstHex);
         senderWs.send(encodeEndpointGone(dstId));
       }
     } catch {
       // DO fetch failed — target gone
+      this._routeCache.delete(dstHex);
       senderWs.send(encodeEndpointGone(dstId));
     }
   }
@@ -402,14 +442,18 @@ export class RelayEndpoint {
 
   /** Clean up KV registration and stored state. */
   private async cleanup(): Promise<void> {
-    const endpointIdHex = await this.state.storage.get<string>(
-      "endpoint_id_hex",
-    );
+    const endpointIdHex =
+      await this.state.storage.get<string>("endpoint_id_hex");
     if (endpointIdHex) {
-      await this.env.ZEDRA_RELAY_KV.delete(
-        RELAY_EP_PREFIX + endpointIdHex,
-      );
+      await this.env.ZEDRA_RELAY_KV.delete(RELAY_EP_PREFIX + endpointIdHex);
     }
     await this.state.storage.deleteAll();
+
+    // Clear in-memory caches
+    this._authenticated = undefined;
+    this._endpointId = undefined;
+    this._endpointIdHex = undefined;
+    this._doName = undefined;
+    this._routeCache.clear();
   }
 }

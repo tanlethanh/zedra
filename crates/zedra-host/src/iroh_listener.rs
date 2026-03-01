@@ -1,43 +1,46 @@
-// iroh_listener: accept incoming connections via iroh's unified Endpoint.
+// iroh_listener: accept incoming connections via iroh endpoint.
 //
-// This single listener handles LAN, Tailscale, hole-punched, and relay
-// connections — all through iroh's Endpoint::accept(). No separate TCP
-// or WS listener needed.
+// Uses irpc typed protocol over QUIC. Each connection goes through session
+// binding (first message must be ResumeOrCreate) then enters the dispatch loop.
 
 use anyhow::Result;
 use std::sync::Arc;
 
-use crate::identity::SharedIdentity;
 use crate::rpc_daemon::{self, DaemonState};
 use crate::session_registry::SessionRegistry;
-use zedra_transport::IrohTransport;
+use zedra_rpc::proto::ZEDRA_ALPN;
 
-/// ALPN protocol identifier for Zedra RPC over iroh.
-const ZEDRA_ALPN: &[u8] = b"zedra/rpc/1";
+use crate::identity::SharedIdentity;
 
 /// Create and bind an iroh endpoint with the host's identity.
 ///
-/// Returns the endpoint ready for `accept()` calls and QR code generation.
-pub async fn create_endpoint(
-    identity: &SharedIdentity,
-) -> Result<iroh::Endpoint> {
+/// Returns the endpoint ready for accepting connections and QR code generation.
+pub async fn create_endpoint(identity: &SharedIdentity) -> Result<iroh::Endpoint> {
     let builder = iroh::Endpoint::builder()
-        .relay_mode(iroh::RelayMode::Disabled)
         .secret_key(identity.iroh_secret_key().clone())
         .alpns(vec![ZEDRA_ALPN.to_vec()]);
 
     let endpoint = builder.bind().await?;
 
     tracing::info!("iroh endpoint bound: {}", endpoint.id().fmt_short());
+
+    // Wait for relay connection so endpoint.addr() includes the relay URL
+    match tokio::time::timeout(std::time::Duration::from_secs(10), endpoint.online()).await {
+        Ok(()) => tracing::info!("iroh endpoint online (relay connected)"),
+        Err(_) => tracing::warn!(
+            "Timed out waiting for relay connection; continuing with direct addrs only"
+        ),
+    }
+
     tracing::info!("iroh endpoint addr: {:?}", endpoint.addr());
 
     Ok(endpoint)
 }
 
-/// Run the iroh accept loop on a pre-bound endpoint.
+/// Run the iroh accept loop for incoming connections.
 ///
-/// This is the main blocking call for the daemon — it accepts connections
-/// until the endpoint is closed.
+/// Each connection is dispatched to `handle_connection` which performs session
+/// binding and enters the irpc dispatch loop.
 pub async fn run_accept_loop(
     endpoint: &iroh::Endpoint,
     registry: Arc<SessionRegistry>,
@@ -56,68 +59,32 @@ pub async fn run_accept_loop(
         let state = state.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = handle_incoming(incoming, registry, state).await {
-                tracing::warn!("iroh connection error: {}", e);
+            let accepting = match incoming.accept() {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::warn!("iroh accept error: {}", e);
+                    return;
+                }
+            };
+            let conn = match accepting.await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("iroh connection error: {}", e);
+                    return;
+                }
+            };
+
+            tracing::info!(
+                "Accepted connection from {} (alpn={})",
+                conn.remote_id().fmt_short(),
+                String::from_utf8_lossy(conn.alpn()),
+            );
+
+            if let Err(e) = rpc_daemon::handle_connection(conn, registry, state).await {
+                tracing::warn!("irpc connection error: {}", e);
             }
         });
     }
 
     Ok(())
-}
-
-/// Run the iroh listener — creates endpoint and accepts connections.
-///
-/// Convenience wrapper that combines `create_endpoint` + `run_accept_loop`.
-pub async fn run_iroh_listener(
-    identity: SharedIdentity,
-    registry: Arc<SessionRegistry>,
-    state: Arc<DaemonState>,
-) -> Result<()> {
-    let endpoint = create_endpoint(&identity).await?;
-    run_accept_loop(&endpoint, registry, state).await
-}
-
-/// Handle a single incoming iroh connection.
-async fn handle_incoming(
-    incoming: iroh::endpoint::Incoming,
-    registry: Arc<SessionRegistry>,
-    state: Arc<DaemonState>,
-) -> Result<()> {
-    let accepting = incoming.accept()?;
-    let conn = accepting.await?;
-
-    let remote = conn.remote_id();
-    tracing::info!(
-        "iroh: accepted connection from {}",
-        remote.fmt_short()
-    );
-
-    // Accept a bidirectional stream for RPC
-    let (send, recv) = conn.accept_bi().await?;
-    let transport = IrohTransport::new(send, recv);
-
-    rpc_daemon::handle_transport_connection(Box::new(transport), registry, state).await
-}
-
-/// Get the iroh endpoint's address info for QR code generation.
-pub fn get_endpoint_info(endpoint: &iroh::Endpoint) -> EndpointQrInfo {
-    let addr = endpoint.addr();
-    let relay_url = addr.relay_urls().next().map(|u| u.to_string());
-    let direct_addrs: Vec<String> = addr
-        .ip_addrs()
-        .map(|a| a.to_string())
-        .collect();
-
-    EndpointQrInfo {
-        endpoint_id: endpoint.id().to_string(),
-        relay_url,
-        direct_addrs,
-    }
-}
-
-/// Info needed for QR code generation from an iroh endpoint.
-pub struct EndpointQrInfo {
-    pub endpoint_id: String,
-    pub relay_url: Option<String>,
-    pub direct_addrs: Vec<String>,
 }

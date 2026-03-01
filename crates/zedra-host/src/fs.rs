@@ -60,9 +60,7 @@ impl Filesystem for LocalFs {
                 size: meta.len(),
             });
         }
-        entries.sort_by(|a, b| {
-            b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name))
-        });
+        entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
         Ok(entries)
     }
 

@@ -1,61 +1,69 @@
-// Host identity management for iroh-based transport
+// Host identity: persistent Ed25519 keypair for iroh endpoint.
 //
-// Loads or generates a persistent Ed25519 keypair for the host.
-// The keypair serves as the host's long-term identity and is used
-// directly as the iroh Endpoint secret key.
+// The 32-byte secret key is stored at ~/.config/zedra-host/identity.key
+// and used directly as the iroh Endpoint secret key.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use zedra_transport::identity::{DeviceId, Keypair, PublicKey, SecretKey};
-
-/// Host identity: persistent keypair + derived device ID.
+/// Host identity: a persistent iroh SecretKey.
 pub struct HostIdentity {
-    pub keypair: Keypair,
-    pub device_id: DeviceId,
+    secret: iroh::SecretKey,
 }
 
 impl HostIdentity {
     /// Load or generate the host's persistent identity.
-    ///
-    /// Key is stored at `~/.config/zedra-host/identity.key`.
     pub fn load_or_generate() -> Result<Self> {
         let key_path = identity_key_path()?;
-        let keypair = Keypair::load_or_generate(&key_path)?;
-        let device_id = DeviceId::from_public_key(&keypair.public_key_bytes());
 
-        tracing::info!("Host identity: {}", device_id);
-        tracing::info!("Endpoint ID: {}", keypair.iroh_public_key());
+        let secret = if key_path.exists() {
+            let data = std::fs::read(&key_path)
+                .with_context(|| format!("failed to read identity from {}", key_path.display()))?;
+            if data.len() != 32 {
+                anyhow::bail!(
+                    "invalid identity file: expected 32 bytes, got {}",
+                    data.len()
+                );
+            }
+            let mut bytes = [0u8; 32];
+            bytes.copy_from_slice(&data);
+            iroh::SecretKey::from_bytes(&bytes)
+        } else {
+            let mut bytes = [0u8; 32];
+            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+            let secret = iroh::SecretKey::from_bytes(&bytes);
+            // Save with restricted permissions
+            if let Some(parent) = key_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&key_path, secret.to_bytes())?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))?;
+            }
+            secret
+        };
+
+        tracing::info!("Host endpoint ID: {}", secret.public().fmt_short());
         tracing::debug!("Identity key: {}", key_path.display());
 
-        Ok(Self { keypair, device_id })
-    }
-
-    /// Get the 32-byte Ed25519 public key bytes.
-    pub fn public_key_bytes(&self) -> [u8; 32] {
-        self.keypair.public_key_bytes()
-    }
-
-    /// Get the 32-byte secret key bytes.
-    pub fn secret_key_bytes(&self) -> [u8; 32] {
-        self.keypair.secret_key_bytes()
+        Ok(Self { secret })
     }
 
     /// Get the iroh SecretKey (for Endpoint builder).
-    pub fn iroh_secret_key(&self) -> &SecretKey {
-        self.keypair.iroh_secret_key()
-    }
-
-    /// Get the iroh PublicKey / EndpointId.
-    pub fn iroh_endpoint_id(&self) -> PublicKey {
-        self.keypair.iroh_public_key()
+    pub fn iroh_secret_key(&self) -> &iroh::SecretKey {
+        &self.secret
     }
 }
 
 /// Get the identity key file path (~/.config/zedra-host/identity.key).
 fn identity_key_path() -> Result<PathBuf> {
-    let config = crate::store::config_dir()?;
+    let dirs = directories::ProjectDirs::from("dev", "zedra", "zedra-host")
+        .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
+    let config = dirs.config_dir().to_path_buf();
+    std::fs::create_dir_all(&config)?;
     Ok(config.join("identity.key"))
 }
 

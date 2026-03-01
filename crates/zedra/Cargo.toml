@@ -8,16 +8,10 @@ name = "zedra"
 crate-type = ["cdylib"]
 
 [dependencies]
-gpui = { path = "../../vendor/zed/crates/gpui", features = ["android"] }
+gpui = { path = "../../vendor/zed/crates/gpui", default-features = false }
 http_client = { path = "../../vendor/zed/crates/http_client" }
 anyhow.workspace = true
 log.workspace = true
-
-# Android-specific
-android_logger = "0.15.1"
-jni = "0.21.1"
-ndk = "0.9"
-ndk-context = "0.1"
 crossbeam-channel = "0.5"
 once_cell = "1.19"
 
@@ -28,6 +22,17 @@ tree-sitter-rust = "0.24"
 # Workspace crates
 zedra-session = { path = "../zedra-session" }
 zedra-terminal = { path = "../zedra-terminal" }
-zedra-nav = { path = "../zedra-nav" }
-zedra-transport = { path = "../zedra-transport" }
-rust-embed = { workspace = true }
+zedra-rpc = { path = "../zedra-rpc" }
+iroh.workspace = true
+rust-embed = { workspace = true, features = ["debug-embed"] }
+
+[features]
+preview = []
+
+[target.'cfg(target_os = "android")'.dependencies]
+gpui_android = { path = "../../vendor/zed/crates/gpui_android" }
+gpui_wgpu = { path = "../../vendor/zed/crates/gpui_wgpu" }
+android_logger = "0.15.1"
+jni = "0.21.1"
+ndk = "0.9"
+ndk-context = "0.1"

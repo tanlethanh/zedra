@@ -25,28 +25,20 @@ anyhow = "1"
 log = "0.4.29"
 tracing = { version = "0.1", features = ["log"] }
 
-# Async utilities
-async-trait = "0.1"
-
-# HTTP client
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "json"] }
-
 # Utilities
-futures = "0.3"
-base64 = "0.22"
 base64-url = "3"
-hex = "0.4"
 itertools = "0.14"
 rust-embed = "8"
 
 # P2P networking (iroh)
 iroh = "0.96"
+iroh-relay = { version = "0.96", features = ["server", "test-utils"] }
 
-# Patch blade-graphics to use local version with Android fixes
-[patch.'https://github.com/kvark/blade']
-blade-graphics = { path = "vendor/blade/blade-graphics" }
-blade-macros = { path = "vendor/blade/blade-macros" }
-blade-util = { path = "vendor/blade/blade-util" }
+# RPC framework (irpc)
+irpc = { version = "0.12", features = ["derive", "rpc"] }
+irpc-iroh = "0.12"
+postcard = { version = "1", features = ["alloc"] }
+serde_bytes = "0.11"
 
 [profile.release]
 opt-level = 3

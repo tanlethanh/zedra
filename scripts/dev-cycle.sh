@@ -1,8 +1,19 @@
 #!/bin/bash
 # Automated development cycle: build → install → launch → monitor
-# Usage: ./scripts/dev-cycle.sh
+# Usage: ./scripts/dev-cycle.sh [--preview] [--emulator] [--no-log]
 
 set -e
+
+BUILD_FLAGS=""
+USE_EMULATOR=false
+NO_LOG=false
+for arg in "$@"; do
+    case "$arg" in
+        --preview) BUILD_FLAGS="$BUILD_FLAGS --preview" ;;
+        --emulator) USE_EMULATOR=true ;;
+        --no-log) NO_LOG=true ;;
+    esac
+done
 
 # Color codes
 RED='\033[0;31m'
@@ -29,22 +40,37 @@ if ! adb devices | grep -q "device$"; then
   exit 1
 fi
 
-# Handle multiple devices - prefer physical device over emulator
+# Handle multiple devices
 DEVICE_COUNT=$(adb devices | grep -c "device$" || true)
 if [ "$DEVICE_COUNT" -gt 1 ]; then
-  echo -e "${YELLOW}  Multiple devices detected ($DEVICE_COUNT), selecting physical device...${NC}"
-
-  # Get list of devices, prefer physical (non-emulator) devices
-  PHYSICAL_DEVICE=$(adb devices | grep "device$" | grep -v "emulator" | head -1 | awk '{print $1}')
-
-  if [ -n "$PHYSICAL_DEVICE" ]; then
-    export ANDROID_SERIAL="$PHYSICAL_DEVICE"
-    echo -e "${GREEN}  → Selected physical device: $PHYSICAL_DEVICE${NC}"
+  if $USE_EMULATOR; then
+    echo -e "${YELLOW}  Multiple devices detected ($DEVICE_COUNT), selecting emulator...${NC}"
+    EMU_DEVICE=$(adb devices | grep "device$" | grep "emulator" | head -1 | awk '{print $1}')
+    if [ -n "$EMU_DEVICE" ]; then
+      export ANDROID_SERIAL="$EMU_DEVICE"
+      echo -e "${GREEN}  → Selected emulator: $EMU_DEVICE${NC}"
+    else
+      FIRST_DEVICE=$(adb devices | grep "device$" | head -1 | awk '{print $1}')
+      export ANDROID_SERIAL="$FIRST_DEVICE"
+      echo -e "${YELLOW}  → No emulator found, using: $FIRST_DEVICE${NC}"
+    fi
   else
-    # Fall back to first device if no physical device found
-    FIRST_DEVICE=$(adb devices | grep "device$" | head -1 | awk '{print $1}')
-    export ANDROID_SERIAL="$FIRST_DEVICE"
-    echo -e "${YELLOW}  → No physical device, using: $FIRST_DEVICE${NC}"
+    echo -e "${YELLOW}  Multiple devices detected ($DEVICE_COUNT), selecting physical device...${NC}"
+    PHYSICAL_DEVICE=$(adb devices | grep "device$" | grep -v "emulator" | head -1 | awk '{print $1}')
+    if [ -n "$PHYSICAL_DEVICE" ]; then
+      export ANDROID_SERIAL="$PHYSICAL_DEVICE"
+      echo -e "${GREEN}  → Selected physical device: $PHYSICAL_DEVICE${NC}"
+    else
+      FIRST_DEVICE=$(adb devices | grep "device$" | head -1 | awk '{print $1}')
+      export ANDROID_SERIAL="$FIRST_DEVICE"
+      echo -e "${YELLOW}  → No physical device, using: $FIRST_DEVICE${NC}"
+    fi
+  fi
+elif $USE_EMULATOR; then
+  # Single device — warn if user asked for emulator but it's not one
+  SINGLE_DEVICE=$(adb devices | grep "device$" | head -1 | awk '{print $1}')
+  if ! echo "$SINGLE_DEVICE" | grep -q "emulator"; then
+    echo -e "${YELLOW}⚠ --emulator requested but connected device is not an emulator${NC}"
   fi
 fi
 
@@ -75,9 +101,41 @@ echo ""
 echo -e "${YELLOW}[3/6] Building Rust libraries...${NC}"
 cd "$PROJECT_ROOT"
 
-if ! ./scripts/build-android.sh; then
+CARGO_FEATURES=""
+if echo "$BUILD_FLAGS" | grep -q -- "--preview"; then
+  CARGO_FEATURES="--features preview"
+  echo -e "${BLUE}  Preview mode enabled${NC}"
+fi
+
+# Detect target architecture from the connected device
+DEVICE_ABI=$(adb shell getprop ro.product.cpu.abi | tr -d '\r')
+case "$DEVICE_ABI" in
+  arm64-v8a)   NDK_TARGET="arm64-v8a" ;;
+  armeabi-v7a) NDK_TARGET="armeabi-v7a" ;;
+  x86_64)      NDK_TARGET="x86_64" ;;
+  x86)         NDK_TARGET="x86" ;;
+  *)           NDK_TARGET="arm64-v8a"; echo -e "${YELLOW}⚠ Unknown ABI '$DEVICE_ABI', defaulting to arm64-v8a${NC}" ;;
+esac
+
+echo -e "${BLUE}  Target: $NDK_TARGET (debug)${NC}"
+if ! cargo ndk -t "$NDK_TARGET" -o ./android/app/libs build -p zedra --lib $CARGO_FEATURES; then
   echo -e "${RED}✗ Build failed${NC}"
   exit 1
+fi
+
+# cargo-ndk may not overwrite libs built with different profiles (e.g. release).
+# Explicitly copy the debug .so to ensure the APK gets the latest build.
+case "$NDK_TARGET" in
+  arm64-v8a)   RUST_TARGET="aarch64-linux-android" ;;
+  armeabi-v7a) RUST_TARGET="armv7-linux-androideabi" ;;
+  x86_64)      RUST_TARGET="x86_64-linux-android" ;;
+  x86)         RUST_TARGET="i686-linux-android" ;;
+esac
+SRC="target/$RUST_TARGET/debug/libzedra.so"
+DST="android/app/libs/$NDK_TARGET/libzedra.so"
+if [ -f "$SRC" ] && [ "$SRC" -nt "$DST" ]; then
+  cp "$SRC" "$DST"
+  echo -e "${GREEN}  → Copied fresh lib to $DST${NC}"
 fi
 
 echo -e "${GREEN}✓ Rust build complete${NC}"
@@ -87,7 +145,7 @@ echo ""
 echo -e "${YELLOW}[4/6] Installing APK...${NC}"
 cd "$PROJECT_ROOT/android"
 
-if ! ./gradlew installDebug 2>&1 | grep -E "BUILD SUCCESSFUL|UP-TO-DATE"; then
+if ! ./gradlew installDebug -x buildRustLib 2>&1 | grep -E "BUILD SUCCESSFUL|UP-TO-DATE"; then
   echo -e "${RED}✗ APK installation failed${NC}"
   exit 1
 fi
@@ -119,6 +177,11 @@ else
 fi
 
 echo ""
+
+if $NO_LOG; then
+  echo -e "${GREEN}Done! (logcat skipped with --no-log)${NC}"
+  exit 0
+fi
 
 # Step 6: Monitor logs
 echo -e "${YELLOW}[6/6] Monitoring logs (Ctrl+C to stop)...${NC}"

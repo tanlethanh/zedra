@@ -247,7 +247,14 @@ impl Render for TerminalView {
         // Process any pending SSH/RPC output before rendering.
         // Re-renders are driven by the frame loop (request_frame_forced) when
         // TERMINAL_DATA_PENDING is set, so no cx.notify() loop is needed here.
-        self.process_output();
+        let had_data = self.process_output();
+        if had_data {
+            let size = self.terminal.size();
+            log::info!(
+                "[PERF] terminal: processed data, grid={}x{}",
+                size.columns, size.rows
+            );
+        }
 
         // Adjust terminal rows based on soft keyboard height.
         // The keyboard height is reported in physical pixels by Android WindowInsets.
@@ -266,11 +273,19 @@ impl Render for TerminalView {
                 if effective_rows != self.last_keyboard_rows {
                     log::info!(
                         "Keyboard resize: kb={}px logical={:.0} kb_rows={} base={} effective={}",
-                        kb_px, kb_logical, kb_rows, self.base_rows, effective_rows
+                        kb_px,
+                        kb_logical,
+                        kb_rows,
+                        self.base_rows,
+                        effective_rows
                     );
                     let size = self.terminal.size();
-                    self.terminal
-                        .resize(size.columns, effective_rows, size.cell_width, size.line_height);
+                    self.terminal.resize(
+                        size.columns,
+                        effective_rows,
+                        size.cell_width,
+                        size.line_height,
+                    );
                     self.last_keyboard_rows = effective_rows;
 
                     // Fire-and-forget remote PTY resize
@@ -279,8 +294,7 @@ impl Render for TerminalView {
                     if let Some(session) = zedra_session::active_session() {
                         if let Some(term_id) = session.terminal_id() {
                             zedra_session::session_runtime().spawn(async move {
-                                if let Err(e) =
-                                    session.terminal_resize(&term_id, cols, rows).await
+                                if let Err(e) = session.terminal_resize(&term_id, cols, rows).await
                                 {
                                     log::warn!("Remote PTY resize failed: {}", e);
                                 }

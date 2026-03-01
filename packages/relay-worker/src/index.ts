@@ -42,6 +42,16 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     return jsonResponse({ ok: true });
   }
 
+  // GET /ping — HTTPS probe for iroh net_report (latency measurement)
+  if (method === "GET" && segments.length === 1 && segments[0] === "ping") {
+    return new Response("pong", { status: 200 });
+  }
+
+  // GET /generate_204 — captive portal detection
+  if (method === "GET" && segments.length === 1 && segments[0] === "generate_204") {
+    return new Response(null, { status: 204 });
+  }
+
   // GET /relay — WebSocket upgrade to RelayEndpoint DO
   if (method === "GET" && segments.length === 1 && segments[0] === "relay") {
     const upgradeHeader = request.headers.get("Upgrade");

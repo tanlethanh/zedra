@@ -5,12 +5,16 @@ edition.workspace = true
 
 [dependencies]
 serde.workspace = true
-serde_json.workspace = true
 anyhow.workspace = true
-tokio = { workspace = true, features = ["rt", "net", "io-util", "sync"] }
-futures.workspace = true
-log.workspace = true
-async-trait.workspace = true
+tracing.workspace = true
+iroh.workspace = true
+base64-url.workspace = true
+
+# irpc RPC framework
+irpc.workspace = true
+irpc-iroh.workspace = true
+postcard.workspace = true
+serde_bytes.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
