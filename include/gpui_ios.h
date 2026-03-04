@@ -85,14 +85,6 @@ void gpui_ios_request_frame(void* window_ptr);
 /// window pointer needed for gpui_ios_request_frame().
 void* gpui_ios_get_window(void);
 
-/// Run a demo GPUI application.
-///
-/// This creates a GPUI Application and opens a test window.
-/// Call this from application:didFinishLaunchingWithOptions: to start the demo.
-/// This is an alternative to using gpui_ios_initialize/gpui_ios_did_finish_launching
-/// when you want a self-contained demo.
-void gpui_ios_run_demo(void);
-
 /// Show the software keyboard.
 ///
 /// Call this when a text input field gains focus.

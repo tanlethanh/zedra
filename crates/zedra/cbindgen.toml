@@ -1,2 +1,26 @@
 language = "C"
 include_guard = "ZEDRA_IOS_H"
+
+# Exclude symbols that cbindgen picks up from Rust `unsafe extern "C"` import
+# blocks. These are declarations of ObjC functions that Rust *calls*, not
+# functions that Rust *exports* to ObjC. They don't belong in the public header.
+[export]
+exclude = [
+    "zedra_nslog",
+    "gpui_ios_initialize",
+    "gpui_ios_did_finish_launching",
+    "gpui_ios_will_enter_foreground",
+    "gpui_ios_did_become_active",
+    "gpui_ios_will_resign_active",
+    "gpui_ios_did_enter_background",
+    "gpui_ios_will_terminate",
+    "gpui_ios_get_window",
+    "gpui_ios_request_frame",
+    "gpui_ios_handle_touch",
+    "gpui_ios_handle_text_input",
+    "gpui_ios_handle_key_event",
+    "gpui_ios_show_keyboard",
+    "gpui_ios_hide_keyboard",
+    "gpui_ios_get_ui_window",
+    "ios_present_qr_scanner",
+]

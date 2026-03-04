@@ -12,7 +12,7 @@ targets:
     sources:
       - path: Zedra
     dependencies:
-      - framework: ../ZedraFFI.xcframework
+      - framework: ZedraFFI.xcframework
         embed: false
       # System frameworks required by GPUI (Metal rendering + CoreText)
       - sdk: Metal.framework

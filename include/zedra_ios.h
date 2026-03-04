@@ -58,16 +58,20 @@
 
 #define EDITOR_GUTTER_WIDTH 36.0
 
-extern void *gpui_ios_get_window(void);
-
-extern void gpui_ios_show_keyboard(void *window_ptr);
-
-extern void gpui_ios_hide_keyboard(void *window_ptr);
+/**
+ * Called from Obj-C whenever the screen scale is known (once, at launch).
+ *
+ * Pass `[UIScreen mainScreen].scale`.
+ */
+void zedra_ios_set_screen_scale(float scale);
 
 /**
- * Present the AVFoundation QR scanner (defined in ZedraQRScanner.m).
+ * Called from Obj-C with the current safe area insets in physical pixels
+ * (UIEdgeInsets × UIScreen.scale). Re-called on orientation change.
+ *
+ * `left` and `right` are stored for future use (landscape support).
  */
-extern void ios_present_qr_scanner(void);
+void zedra_ios_set_safe_area_insets(float top, float bottom, float _left, float _right);
 
 /**
  * Called from ZedraQRScanner.m after a successful QR scan.

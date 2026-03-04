@@ -49,12 +49,12 @@ if [ ! -f "target/aarch64-apple-ios-sim/${PROFILE_DIR}/lib${LIB_NAME}.a" ]; then
 fi
 
 echo "==> Creating XCFramework..."
-rm -rf "${FRAMEWORK_NAME}.xcframework"
+rm -rf "ios/${FRAMEWORK_NAME}.xcframework"
 xcodebuild -create-xcframework \
     -library "target/aarch64-apple-ios/${PROFILE_DIR}/lib${LIB_NAME}.a" \
     -headers include/ \
     -library "target/aarch64-apple-ios-sim/${PROFILE_DIR}/lib${LIB_NAME}.a" \
     -headers include/ \
-    -output "${FRAMEWORK_NAME}.xcframework"
+    -output "ios/${FRAMEWORK_NAME}.xcframework"
 
-echo "==> Done! Created ${FRAMEWORK_NAME}.xcframework"
+echo "==> Done! Created ios/${FRAMEWORK_NAME}.xcframework"

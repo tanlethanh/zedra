@@ -12,6 +12,9 @@ android/android/app/libs
 android/build
 local.properties
 
+# iOS — binary build artifacts (rebuilt by scripts/build-ios.sh)
+ios/ZedraFFI.xcframework/**/*.a
+
 docs/archive
 
 .env
