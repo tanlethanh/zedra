@@ -32,7 +32,7 @@
 		63C6681ECC3A80F94D9F1A0A /* CoreFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreFoundation.framework; path = System/Library/Frameworks/CoreFoundation.framework; sourceTree = SDKROOT; };
 		94CC8ED9DAA6944067FF57DB /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
 		A6B03B40299B5BEA1C29D4F5 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
-		B9A9EA625E2ED4114945F081 /* ZedraFFI.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = ZedraFFI.xcframework; path = ../ZedraFFI.xcframework; sourceTree = "<group>"; };
+		B9A9EA625E2ED4114945F081 /* ZedraFFI.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = ZedraFFI.xcframework; sourceTree = "<group>"; };
 		E0368E716FAFC7DC17C3B7B1 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		E2710A21022C473FA88BF88A /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
 		EA19906F43E7BEC9CAB21161 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
@@ -247,7 +247,7 @@
 				DEVELOPMENT_TEAM = 4R7EAZY462;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
-					"\"..\"",
+					"\".\"",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Zedra needs camera access to scan QR codes for pairing";
@@ -279,7 +279,7 @@
 				DEVELOPMENT_TEAM = 4R7EAZY462;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
-					"\"..\"",
+					"\".\"",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Zedra needs camera access to scan QR codes for pairing";

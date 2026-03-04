@@ -1554,19 +1554,6 @@ dependencies = [
 
 [[package]]
 name = "dashmap"
-version = "5.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "978747c1d849a7d2ee5e8adc0159961c48fb7e5db2f06af6723b80123bb53856"
-dependencies = [
- "cfg-if",
- "hashbrown 0.14.5",
- "lock_api",
- "once_cell",
- "parking_lot_core",
-]
-
-[[package]]
-name = "dashmap"
 version = "6.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
@@ -3605,7 +3592,7 @@ dependencies = [
  "bytes",
  "cfg_aliases",
  "clap",
- "dashmap 6.1.0",
+ "dashmap",
  "data-encoding",
  "derive_more 2.1.1",
  "getrandom 0.3.4",
@@ -4757,17 +4744,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f4779c6901a562440c3786d08192c6fbda7c1c2060edd10006b05ee35d10f2d"
 dependencies = [
  "num-traits",
-]
-
-[[package]]
-name = "oslog"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80d2043d1f61d77cb2f4b1f7b7b2295f40507f5f8e9d1c8bf10a1ca5f97a3969"
-dependencies = [
- "cc",
- "dashmap 5.5.3",
- "log",
 ]
 
 [[package]]
@@ -9036,7 +9012,6 @@ dependencies = [
  "ndk",
  "ndk-context",
  "once_cell",
- "oslog",
  "rust-embed",
  "tree-sitter",
  "tree-sitter-rust",

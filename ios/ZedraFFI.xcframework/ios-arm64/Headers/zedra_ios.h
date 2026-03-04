@@ -73,17 +73,6 @@ void zedra_ios_set_screen_scale(float scale);
  */
 void zedra_ios_set_safe_area_insets(float top, float bottom, float _left, float _right);
 
-extern void *gpui_ios_get_window(void);
-
-extern void gpui_ios_show_keyboard(void *window_ptr);
-
-extern void gpui_ios_hide_keyboard(void *window_ptr);
-
-/**
- * Present the AVFoundation QR scanner (defined in ZedraQRScanner.m).
- */
-extern void ios_present_qr_scanner(void);
-
 /**
  * Called from ZedraQRScanner.m after a successful QR scan.
  *
@@ -93,7 +82,5 @@ extern void ios_present_qr_scanner(void);
 void zedra_qr_scanner_result(const char *qr_string);
 
 void zedra_launch_gpui(void);
-
-extern void zedra_nslog(const char *msg);
 
 #endif  /* ZEDRA_IOS_H */
