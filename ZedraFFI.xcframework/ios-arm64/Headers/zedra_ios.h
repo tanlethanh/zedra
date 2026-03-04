@@ -58,6 +58,21 @@
 
 #define EDITOR_GUTTER_WIDTH 36.0
 
+/**
+ * Called from Obj-C whenever the screen scale is known (once, at launch).
+ *
+ * Pass `[UIScreen mainScreen].scale`.
+ */
+void zedra_ios_set_screen_scale(float scale);
+
+/**
+ * Called from Obj-C with the current safe area insets in physical pixels
+ * (UIEdgeInsets × UIScreen.scale). Re-called on orientation change.
+ *
+ * `left` and `right` are stored for future use (landscape support).
+ */
+void zedra_ios_set_safe_area_insets(float top, float bottom, float _left, float _right);
+
 extern void *gpui_ios_get_window(void);
 
 extern void gpui_ios_show_keyboard(void *window_ptr);
@@ -78,5 +93,7 @@ extern void ios_present_qr_scanner(void);
 void zedra_qr_scanner_result(const char *qr_string);
 
 void zedra_launch_gpui(void);
+
+extern void zedra_nslog(const char *msg);
 
 #endif  /* ZEDRA_IOS_H */

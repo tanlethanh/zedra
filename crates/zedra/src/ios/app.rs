@@ -13,10 +13,7 @@ use std::sync::Arc;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_launch_gpui() {
-    oslog::OsLogger::new("dev.zedra.app")
-        .level_filter(log::LevelFilter::Debug)
-        .init()
-        .ok();
+    super::logger::IosLogger::init(log::LevelFilter::Debug);
 
     crate::install_panic_hook();
 

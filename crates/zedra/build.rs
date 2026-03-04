@@ -36,6 +36,14 @@ fn main() {
             .file("src/ios_stub.c")
             .compile("ios_stub");
 
+        // NSLog bridge — routes Rust log output through NSLog so it appears
+        // in idevicesyslog (os_log goes to the unified log, not ASL relay).
+        println!("cargo:rerun-if-changed=src/ios/nslog_bridge.m");
+        cc::Build::new()
+            .file("src/ios/nslog_bridge.m")
+            .flag("-fobjc-arc")
+            .compile("nslog_bridge");
+
         let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
         cbindgen::Builder::new()
             .with_crate(crate_dir)
