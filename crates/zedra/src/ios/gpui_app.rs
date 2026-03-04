@@ -63,11 +63,23 @@ pub extern "C" fn zedra_launch_gpui() {
             ..Default::default()
         };
 
-        match cx.open_window(window_options, |window, cx| {
-            let view = cx.new(|cx| ZedraApp::new(window, cx));
-            window.refresh();
-            view
-        }) {
+        let result: Result<AnyWindowHandle, _> = if cfg!(feature = "preview") {
+            cx.open_window(window_options, |window, cx| {
+                let view = cx.new(|cx| crate::app_preview::PreviewApp::new(window, cx));
+                window.refresh();
+                view
+            })
+            .map(|h| h.into())
+        } else {
+            cx.open_window(window_options, |window, cx| {
+                let view = cx.new(|cx| ZedraApp::new(window, cx));
+                window.refresh();
+                view
+            })
+            .map(|h| h.into())
+        };
+
+        match result {
             Ok(handle) => log::info!("Zedra iOS: Window opened: {:?}", handle),
             Err(err) => log::error!("Zedra iOS: Failed to open window: {:?}", err),
         }
