@@ -13,50 +13,6 @@ pub fn is_drawer_overlay_visible() -> bool {
     DRAWER_OVERLAY_VISIBLE.load(Ordering::Relaxed)
 }
 
-// ---------------------------------------------------------------------------
-// Drawer gesture bridge — android_app.rs writes, DrawerHost reads
-// ---------------------------------------------------------------------------
-// DrawerPan events bypass GPUI scroll dispatch entirely. android_app.rs
-// pushes horizontal deltas here; DrawerHost drains them each render frame.
-// This avoids a full-screen overlay that would intercept content scroll.
-
-struct DrawerGestureBridge {
-    /// Accumulated horizontal delta since last drain
-    pending_dx: f32,
-    /// Most recent individual delta (for snap direction bias)
-    last_dx: f32,
-    /// Whether a drawer pan gesture is currently active
-    dragging: bool,
-}
-
-static DRAWER_BRIDGE: Mutex<DrawerGestureBridge> = Mutex::new(DrawerGestureBridge {
-    pending_dx: 0.0,
-    last_dx: 0.0,
-    dragging: false,
-});
-
-/// Push a horizontal delta from the gesture arena (called from android_app.rs).
-pub fn push_drawer_pan_delta(dx: f32) {
-    if let Ok(mut bridge) = DRAWER_BRIDGE.lock() {
-        bridge.pending_dx += dx;
-        bridge.last_dx = dx;
-        bridge.dragging = true;
-    }
-}
-
-/// Reset the bridge (called from android_app.rs on ACTION_DOWN).
-pub fn reset_drawer_gesture() {
-    if let Ok(mut bridge) = DRAWER_BRIDGE.lock() {
-        bridge.pending_dx = 0.0;
-        bridge.last_dx = 0.0;
-        bridge.dragging = false;
-    }
-}
-
-/// Check whether a drawer pan gesture is currently active.
-pub fn is_drawer_pan_active() -> bool {
-    DRAWER_BRIDGE.lock().map(|b| b.dragging).unwrap_or(false)
-}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DrawerSide {
@@ -222,76 +178,6 @@ impl Render for DrawerHost {
             }
         }
 
-        // Drain pending drawer gesture deltas pushed by android_app.rs.
-        // This runs before reading drawer_state so show_overlay sees the
-        // up-to-date is_dragging flag.
-        //
-        // Auto-snap: when the offset crosses a position threshold (30% of
-        // width) or the per-frame velocity exceeds 6px, the drawer auto-
-        // completes its open/close animation without waiting for finger lift.
-        let mut auto_snap_target: Option<f32> = None;
-        if let Ok(mut bridge) = DRAWER_BRIDGE.lock() {
-            if bridge.pending_dx.abs() > 0.0 {
-                // If a snap animation is already running (e.g. from a
-                // previous auto-snap), discard incoming deltas so the
-                // animation plays to completion undisturbed.
-                if self.snap_target.is_some() {
-                    bridge.pending_dx = 0.0;
-                } else {
-                    let width = f32::from(self.width);
-                    // Skip no-op: drawer already closed and swiping further left
-                    let current = self.drawer_state.lock().map(|s| s.offset).unwrap_or(0.0);
-                    if !(current <= 0.0 && bridge.pending_dx <= 0.0) {
-                        self.snap_target = None;
-                        self.snap_started_at = None;
-                        self.last_drag_dx = bridge.last_dx;
-                        let new_offset;
-                        if let Ok(mut state) = self.drawer_state.lock() {
-                            state.is_dragging = true;
-                            state.offset = (state.offset + bridge.pending_dx).clamp(0.0, width);
-                            new_offset = state.offset;
-                        } else {
-                            new_offset = current;
-                        }
-
-                        // Auto-snap thresholds
-                        const VELOCITY_THRESHOLD: f32 = 6.0; // px/frame
-                        let position_threshold = width * 0.3;
-                        let velocity = bridge.last_dx;
-
-                        if velocity > 0.0
-                            && (new_offset > position_threshold || velocity > VELOCITY_THRESHOLD)
-                        {
-                            // Swiping right — auto-open
-                            auto_snap_target = Some(width);
-                            bridge.dragging = false;
-                        } else if velocity < 0.0
-                            && (new_offset < width - position_threshold
-                                || velocity.abs() > VELOCITY_THRESHOLD)
-                        {
-                            // Swiping left — auto-close
-                            auto_snap_target = Some(0.0);
-                            bridge.dragging = false;
-                        }
-                    }
-                    bridge.pending_dx = 0.0;
-                }
-            }
-        }
-
-        // Trigger auto-snap outside the lock
-        if let Some(target) = auto_snap_target {
-            let width = f32::from(self.width);
-            let action = if target < width * 0.5 { "close" } else { "open" };
-            log::info!("[PERF] drawer: snap {}", action);
-            self.start_snap(target, cx);
-            if target < width * 0.5 {
-                cx.emit(DrawerEvent::Closed);
-            } else {
-                cx.emit(DrawerEvent::Opened);
-            }
-        }
-
         let content = self.content.clone();
         let drawer_view = self.drawer_view.clone();
         let has_drawer = drawer_view.is_some();
@@ -320,11 +206,9 @@ impl Render for DrawerHost {
         div()
             .track_focus(&self.focus_handle)
             .size_full()
-            // Scroll wheel handler: drives drawer open/close via horizontal swipe.
-            // iOS sends ScrollWheel events from pan_gesture_to_scroll; this lets
-            // DrawerHost handle gesture disambiguation directly via GPUI events
-            // instead of a low-level UIKit touch interceptor.
-            // Android uses DRAWER_BRIDGE (drained above) for the same purpose.
+            // Horizontal scroll events drive drawer open/close on both platforms.
+            // iOS pan gestures and Android touch drags both arrive as ScrollWheelEvent;
+            // dx.abs() > dy.abs() selects the drawer path over content scroll.
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
                 if this.snap_target.is_some() {
                     return;
@@ -374,31 +258,13 @@ impl Render for DrawerHost {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    // Check both sources: DrawerState (set during render) and
-                    // the global bridge (set immediately by push_drawer_pan_delta).
-                    let state_dragging = this
+                    let was_dragging = this
                         .drawer_state
                         .lock()
                         .map(|s| s.is_dragging)
                         .unwrap_or(false);
-                    let was_dragging = state_dragging || is_drawer_pan_active();
 
                     if was_dragging {
-                        // Drain any remaining bridge delta before snapping
-                        if let Ok(mut bridge) = DRAWER_BRIDGE.lock() {
-                            if bridge.pending_dx.abs() > 0.0 {
-                                let width = f32::from(this.width);
-                                this.last_drag_dx = bridge.last_dx;
-                                if let Ok(mut state) = this.drawer_state.lock() {
-                                    state.offset =
-                                        (state.offset + bridge.pending_dx).clamp(0.0, width);
-                                }
-                                bridge.pending_dx = 0.0;
-                            } else if bridge.last_dx.abs() > this.last_drag_dx.abs() {
-                                this.last_drag_dx = bridge.last_dx;
-                            }
-                            bridge.dragging = false;
-                        }
                         let current = this.drawer_state.lock().map(|s| s.offset).unwrap_or(0.0);
                         let width = f32::from(this.width);
                         let last_dx = this.last_drag_dx;
@@ -424,10 +290,8 @@ impl Render for DrawerHost {
             )
             // Content — always rendered full width
             .child(content)
-            // Drawer overlay: backdrop + panel (when offset > 0 or animating)
-            // .occlude() on container blocks ALL events from reaching main content.
-            // DrawerPan gestures bypass GPUI scroll dispatch — android_app.rs
-            // pushes deltas to the global DRAWER_BRIDGE, drained above in render.
+            // Drawer overlay: backdrop + panel (when offset > 0 or animating).
+            // .occlude() on the container blocks events from reaching main content.
             .when(show_overlay, |el| {
                 let drawer_view = match drawer_view {
                     Some(v) => v,
@@ -435,7 +299,6 @@ impl Render for DrawerHost {
                 };
 
                 // Backdrop — covers full area, tappable to close.
-                // Scroll handling is done by the drawer bridge (not GPUI).
                 let backdrop = div().absolute().inset_0().on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, event: &MouseDownEvent, _window, cx| {

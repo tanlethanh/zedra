@@ -10,7 +10,6 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use crate::android::command_queue::AndroidCommand;
-use crate::android::touch::TouchHandler;
 use crate::ZedraAssets;
 
 /// Android app state - must only be accessed from the main UI thread
@@ -25,8 +24,6 @@ pub struct AndroidApp {
     window: Option<AnyWindowHandle>,
     /// Whether a surface is currently available
     surface_available: bool,
-    /// Touch input handler (tap detection, scroll/drawer disambiguation, fling)
-    touch: TouchHandler,
 }
 
 impl AndroidApp {
@@ -37,7 +34,6 @@ impl AndroidApp {
             app_cell: None,
             window: None,
             surface_available: false,
-            touch: TouchHandler::new(),
         }
     }
 
@@ -307,13 +303,12 @@ impl AndroidApp {
         Ok(())
     }
 
-    /// Handle touch event — delegates to TouchHandler
+    /// Handle touch event — delegates to AndroidPlatform
     fn handle_touch(&mut self, action: i32, x: f32, y: f32, _pointer_id: i32) -> Result<()> {
-        let platform = match &self.platform {
-            Some(p) => p,
-            None => return Ok(()),
-        };
-        self.touch.handle_touch(action, x, y, platform)
+        if let Some(platform) = &self.platform {
+            platform.handle_touch(action, x, y);
+        }
+        Ok(())
     }
 
     /// Handle key event - convert to GPUI keystroke and dispatch
@@ -369,15 +364,18 @@ impl AndroidApp {
         Ok(())
     }
 
-    /// Handle fling gesture — delegates to TouchHandler
+    /// Handle fling gesture — delegates to AndroidPlatform
     fn handle_fling(&mut self, velocity_x: f32, velocity_y: f32) -> Result<()> {
-        self.touch.handle_fling(velocity_x, velocity_y)
+        if let Some(platform) = &self.platform {
+            platform.handle_fling(velocity_x, velocity_y);
+        }
+        Ok(())
     }
 
-    /// Process active fling — delegates to TouchHandler
+    /// Process active fling — delegates to AndroidPlatform
     fn process_fling(&mut self) {
         if let Some(platform) = &self.platform {
-            self.touch.process_fling(platform);
+            platform.process_fling();
         }
     }
 
@@ -420,7 +418,7 @@ impl AndroidApp {
 
         // Check if terminal has pending data from RPC session
         let terminal_data_pending = zedra_session::check_and_clear_terminal_data();
-        let fling_active = self.touch.has_active_fling();
+        let fling_active = self.platform.as_ref().map_or(false, |p| p.has_active_fling());
 
         // Drain and execute any main-thread callbacks from the session runtime
         for cb in zedra_session::drain_callbacks() {

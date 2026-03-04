@@ -4,7 +4,6 @@ pub mod jni;
 pub mod app;
 pub mod command_queue;
 pub(crate) mod bridge;
-pub(crate) mod touch;
 
 // Legacy JNI stubs (kept for ABI compatibility with existing Java code)
 mod legacy_jni {
