@@ -100,20 +100,8 @@ pub extern "C" fn zedra_qr_scanner_result(qr_string: *const std::ffi::c_char) {
         return;
     }
     let s = unsafe { std::ffi::CStr::from_ptr(qr_string) };
-    let s = match s.to_str() {
-        Ok(v) => v,
-        Err(e) => {
-            log::error!("QR result: invalid UTF-8: {}", e);
-            return;
-        }
-    };
-    match zedra_rpc::pairing::decode_endpoint_addr(s) {
-        Ok(addr) => {
-            log::info!("QR scan: decoded EndpointAddr successfully");
-            crate::app::set_pending_qr_addr(addr);
-        }
-        Err(e) => {
-            log::error!("QR scan: failed to decode EndpointAddr: {}", e);
-        }
+    match s.to_str() {
+        Ok(v) => crate::app::process_qr_result(v),
+        Err(e) => log::error!("QR result: invalid UTF-8: {}", e),
     }
 }

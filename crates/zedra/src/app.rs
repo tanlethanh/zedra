@@ -724,6 +724,49 @@ pub fn set_pending_qr_addr(addr: iroh::EndpointAddr) {
     PENDING_QR_ADDR.set(addr);
 }
 
+/// Open a GPUI window with the correct app view for the current feature flags.
+///
+/// Opens `PreviewApp` when built with `--features preview`, otherwise `ZedraApp`.
+/// Both platforms use this to avoid duplicating the `cfg!(feature = "preview")` branch.
+pub fn open_zedra_window(
+    app: &mut App,
+    window_options: WindowOptions,
+) -> Result<AnyWindowHandle> {
+    if cfg!(feature = "preview") {
+        app.open_window(window_options, |window, cx| {
+            let view = cx.new(|cx| crate::app_preview::PreviewApp::new(window, cx));
+            window.refresh();
+            view
+        })
+        .map(|h| h.into())
+    } else {
+        app.open_window(window_options, |window, cx| {
+            let view = cx.new(|cx| ZedraApp::new(window, cx));
+            window.refresh();
+            view
+        })
+        .map(|h| h.into())
+    }
+}
+
+/// Decode a QR-scanned endpoint address and register it for the next connection attempt.
+///
+/// Accepts the raw QR string with or without a `zedra://` URI prefix.
+/// Called by both the iOS QR scanner callback and the Android intent handler.
+pub fn process_qr_result(qr_data: &str) {
+    let payload = qr_data.strip_prefix("zedra://").unwrap_or(qr_data);
+    match zedra_rpc::pairing::decode_endpoint_addr(payload) {
+        Ok(addr) => {
+            log::info!("QR scan: decoded EndpointAddr successfully");
+            set_pending_qr_addr(addr);
+            zedra_session::signal_terminal_data();
+        }
+        Err(e) => {
+            log::error!("QR scan: failed to decode: {}", e);
+        }
+    }
+}
+
 /// Compute terminal grid dimensions from the current viewport.
 /// Returns `(columns, rows, cell_width, line_height)`.
 fn compute_terminal_dimensions(window: &mut Window) -> (usize, usize, Pixels, Pixels) {

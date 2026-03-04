@@ -3,7 +3,6 @@
 /// Consolidates all platform-specific calls (density, insets, keyboard, QR scanner)
 /// behind a single trait. Android delegates to `android_jni`; the `StubBridge` fallback
 /// lets non-Android targets compile and run `cargo check`.
-
 use std::sync::OnceLock;
 
 pub trait PlatformBridge: Send + Sync + 'static {

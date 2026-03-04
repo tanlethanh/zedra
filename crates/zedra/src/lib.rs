@@ -62,6 +62,26 @@ impl gpui::AssetSource for ZedraAssets {
     }
 }
 
+/// Install a panic hook that logs panics via `log::error!`.
+/// Call this once during platform initialization, after the logger is set up.
+pub fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "Unknown panic".to_string());
+
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown".to_string());
+
+        log::error!("PANIC at {}: {}", location, payload);
+    }));
+}
+
 // --- Android-only modules ---
 
 #[cfg(target_os = "android")]

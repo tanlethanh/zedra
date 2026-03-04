@@ -11,7 +11,6 @@ use std::sync::{Arc, Mutex};
 
 use crate::android::command_queue::AndroidCommand;
 use crate::android::touch::TouchHandler;
-use crate::app::ZedraApp;
 use crate::ZedraAssets;
 
 /// Android app state - must only be accessed from the main UI thread
@@ -215,23 +214,7 @@ impl AndroidApp {
                     ..Default::default()
                 };
 
-                let open_result = if cfg!(feature = "preview") {
-                    app.open_window(window_options, |window, cx| {
-                        let view = cx.new(|cx| crate::app_preview::PreviewApp::new(window, cx));
-                        window.refresh();
-                        view
-                    })
-                    .map(|h| h.into())
-                } else {
-                    app.open_window(window_options, |window, cx| {
-                        let view = cx.new(|cx| crate::app::ZedraApp::new(window, cx));
-                        window.refresh();
-                        view
-                    })
-                    .map(|h| h.into())
-                };
-
-                match open_result {
+                match crate::app::open_zedra_window(&mut app, window_options) {
                     Ok(window_handle) => {
                         self.window = Some(window_handle);
                         log::info!(
@@ -458,35 +441,8 @@ impl AndroidApp {
     }
 
     fn handle_scan_via_qr(&mut self, qr_data: String) -> Result<()> {
-        log::info!(
-            "QR pairing requested: {}",
-            &qr_data[..qr_data.len().min(50)]
-        );
-
-        // Strip the zedra:// URI prefix if present, then decode
-        let payload = qr_data.strip_prefix("zedra://").unwrap_or(&qr_data);
-        log::info!(
-            "QR payload: {} bytes (prefix stripped: {})",
-            payload.len(),
-            qr_data.len() != payload.len()
-        );
-        match zedra_rpc::decode_endpoint_addr(payload) {
-            Ok(addr) => {
-                let relay = addr.relay_urls().next().map(|u| u.to_string());
-                let direct_count = addr.ip_addrs().count();
-                log::info!(
-                    "QR decoded: endpoint={}, relay={}, direct_addrs={}",
-                    addr.id.fmt_short(),
-                    relay.as_deref().unwrap_or("none"),
-                    direct_count,
-                );
-                crate::app::set_pending_qr_addr(addr);
-                zedra_session::signal_terminal_data();
-            }
-            Err(e) => {
-                log::error!("Failed to decode QR endpoint address: {}", e);
-            }
-        }
+        log::info!("QR pairing requested: {}", &qr_data[..qr_data.len().min(50)]);
+        crate::app::process_qr_result(&qr_data);
         Ok(())
     }
 
