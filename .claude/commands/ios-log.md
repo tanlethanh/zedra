@@ -42,9 +42,3 @@ xcrun devicectl device copy from --device 9F0ACED3-EE4F-593D-B15E-93954D93FD94 \
 # Alternative via idevicescreenshot:
 idevicescreenshot /tmp/zedra-screen.png
 ```
-
-## Device IDs
-
-Connected iPad "Tan iPad":
-- devicectl: `9F0ACED3-EE4F-593D-B15E-93954D93FD94`
-- xctrace: `00008132-0019312A3C83001C`
