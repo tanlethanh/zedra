@@ -143,7 +143,7 @@ crates/zedra/
     ios.rs              # Module root: re-exports bridge + gpui_app
     ios/
       bridge.rs         # IosBridge (PlatformBridge impl) + zedra_qr_scanner_result FFI export
-      gpui_app.rs       # zedra_launch_gpui() — creates GPUI app, registers callback
+      app.rs       # zedra_launch_gpui() — creates GPUI app, registers callback
     ios_stub.c          # Weak stub for ios_present_qr_scanner (lets cdylib link)
   build.rs              # Compiles ios_stub.c via cc crate; runs cbindgen for iOS targets
   Cargo.toml            # crate-type = ["cdylib", "staticlib"]
@@ -278,7 +278,7 @@ main() → UIApplicationMain()
        │      (vendor/zed/crates/gpui_ios/src/ios/ffi.rs)
        │
        ├─ 2. zedra_launch_gpui()          → creates GPUI App + IosPlatform
-       │      (crates/zedra/src/ios/gpui_app.rs)
+       │      (crates/zedra/src/ios/app.rs)
        │       ├─ set_bridge(IosBridge)   → registers iOS PlatformBridge
        │       ├─ App::new_app(IosPlatform, ...)
        │       └─ platform.run(callback)  → stores callback in IOS_APP_STATE
@@ -381,7 +381,7 @@ crate::platform_bridge::set_bridge(super::bridge::IosBridge);
 ### ObjC → Rust (calling Rust from ObjC)
 
 1. Add a `#[unsafe(no_mangle)] pub extern "C" fn my_rust_callback(...)` in
-   `crates/zedra/src/ios/bridge.rs` (or `gpui_app.rs`).
+   `crates/zedra/src/ios/bridge.rs` (or `app.rs`).
 2. Declare it in the ObjC file:
    ```objc
    extern void my_rust_callback(const char *data);
