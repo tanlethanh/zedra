@@ -8,10 +8,28 @@
 ///   5. gpui_ios_request_frame()      — called each frame by CADisplayLink
 use gpui::*;
 use gpui_ios::IosPlatform;
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::app::ZedraApp;
+
+// ---------------------------------------------------------------------------
+// Drawer gesture state (per-touch, main-thread only)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Default)]
+struct DrawerGestureState {
+    start_x: f32,
+    accumulated_dx: f32,
+    accumulated_dy: f32,
+    decided: bool,
+    is_drawer_pan: bool,
+}
+
+thread_local! {
+    static DRAWER_GESTURE: RefCell<DrawerGestureState> = RefCell::new(DrawerGestureState::default());
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_launch_gpui() {
@@ -83,6 +101,65 @@ pub extern "C" fn zedra_launch_gpui() {
             Ok(handle) => log::info!("Zedra iOS: Window opened: {:?}", handle),
             Err(err) => log::error!("Zedra iOS: Failed to open window: {:?}", err),
         }
+
+        // Register the drawer gesture interceptor now that the window exists.
+        // The interceptor routes left-edge horizontal swipes (and close-swipes
+        // when the drawer is already open) to the DRAWER_BRIDGE rather than
+        // letting them propagate to GPUI as ScrollWheel events.
+        gpui_ios::ffi::set_touch_interceptor(Box::new(|pos_x, _pos_y, delta_x, delta_y, phase| {
+            use crate::mgpui::{
+                is_drawer_overlay_visible, push_drawer_pan_delta, reset_drawer_gesture,
+            };
+
+            // px from the left edge that triggers a drawer-open swipe
+            const EDGE_ZONE: f32 = 44.0;
+            // total px of movement before committing to a gesture type
+            const DECISION_THRESHOLD: f32 = 6.0;
+
+            DRAWER_GESTURE.with(|cell| {
+                let mut s = cell.borrow_mut();
+                match phase {
+                    0 => {
+                        // Began: record start position, reset gesture decision
+                        *s = DrawerGestureState {
+                            start_x: pos_x,
+                            ..Default::default()
+                        };
+                        reset_drawer_gesture();
+                        false
+                    }
+                    1 => {
+                        // Moved: accumulate and decide gesture type
+                        s.accumulated_dx += delta_x;
+                        s.accumulated_dy += delta_y;
+                        if !s.decided {
+                            let dist = (s.accumulated_dx * s.accumulated_dx
+                                + s.accumulated_dy * s.accumulated_dy)
+                                .sqrt();
+                            if dist >= DECISION_THRESHOLD {
+                                let might_be_drawer =
+                                    s.start_x < EDGE_ZONE || is_drawer_overlay_visible();
+                                let is_horizontal =
+                                    s.accumulated_dx.abs() > s.accumulated_dy.abs();
+                                s.decided = true;
+                                s.is_drawer_pan = might_be_drawer && is_horizontal;
+                            }
+                        }
+                        if s.decided && s.is_drawer_pan {
+                            push_drawer_pan_delta(delta_x);
+                            true // consume: suppress ScrollWheel dispatch
+                        } else {
+                            false
+                        }
+                    }
+                    _ => {
+                        // Ended / Cancelled: reset, let MouseUp through for snap
+                        *s = DrawerGestureState::default();
+                        false
+                    }
+                }
+            })
+        }));
     }));
 
     log::info!("Zedra iOS: Callback registered, waiting for didFinishLaunching");
