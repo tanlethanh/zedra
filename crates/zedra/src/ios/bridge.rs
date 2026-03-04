@@ -1,7 +1,44 @@
 /// iOS implementation of PlatformBridge.
 ///
 /// Provides density, insets, keyboard control, and QR scanner via FFI to UIKit.
+///
+/// Safe area insets and screen scale are pushed from Obj-C via
+/// `zedra_ios_set_safe_area_insets` / `zedra_ios_set_screen_scale` and cached
+/// in atomics, mirroring the Android JNI push model.
 use crate::platform_bridge::PlatformBridge;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// Screen scale factor (e.g. 3.0 for @3x), stored as f32 bits.
+/// Default 3.0 covers most modern iPhones until Obj-C pushes the real value.
+static SCREEN_SCALE: AtomicU32 = AtomicU32::new(f32::to_bits(3.0));
+
+/// Safe area insets in physical pixels (points × scale), matching the Android convention.
+static SAFE_AREA_TOP: AtomicU32 = AtomicU32::new(0);
+static SAFE_AREA_BOTTOM: AtomicU32 = AtomicU32::new(0);
+
+/// Called from Obj-C whenever the screen scale is known (once, at launch).
+///
+/// Pass `[UIScreen mainScreen].scale`.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_set_screen_scale(scale: f32) {
+    SCREEN_SCALE.store(scale.to_bits(), Ordering::Relaxed);
+    log::debug!("iOS screen scale: {}", scale);
+}
+
+/// Called from Obj-C with the current safe area insets in physical pixels
+/// (UIEdgeInsets × UIScreen.scale). Re-called on orientation change.
+///
+/// `left` and `right` are stored for future use (landscape support).
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_set_safe_area_insets(top: f32, bottom: f32, _left: f32, _right: f32) {
+    SAFE_AREA_TOP.store(top as u32, Ordering::Relaxed);
+    SAFE_AREA_BOTTOM.store(bottom as u32, Ordering::Relaxed);
+    log::debug!(
+        "iOS safe area insets: top={}px bottom={}px",
+        top as u32,
+        bottom as u32
+    );
+}
 
 pub struct IosBridge;
 
@@ -15,21 +52,15 @@ unsafe extern "C" {
 
 impl PlatformBridge for IosBridge {
     fn density(&self) -> f32 {
-        // iOS reports scale factor via UIScreen.main.scale
-        // Default to 3.0 for modern iPhones
-        3.0
+        f32::from_bits(SCREEN_SCALE.load(Ordering::Relaxed))
     }
 
     fn system_inset_top(&self) -> u32 {
-        // Safe area top inset (notch/Dynamic Island)
-        // Could read from UIApplication.shared.windows.first?.safeAreaInsets.top
-        // For now return a reasonable default for modern iPhones
-        59
+        SAFE_AREA_TOP.load(Ordering::Relaxed)
     }
 
     fn system_inset_bottom(&self) -> u32 {
-        // Safe area bottom inset (home indicator)
-        34
+        SAFE_AREA_BOTTOM.load(Ordering::Relaxed)
     }
 
     fn keyboard_height(&self) -> u32 {

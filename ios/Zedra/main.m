@@ -20,6 +20,7 @@
 extern void* gpui_ios_initialize(void);
 extern void gpui_ios_did_finish_launching(void* app_ptr);
 extern void* gpui_ios_get_window(void);
+extern void* gpui_ios_get_ui_window(void* window_ptr);
 extern void gpui_ios_request_frame(void* window_ptr);
 extern void gpui_ios_will_enter_foreground(void* app_ptr);
 extern void gpui_ios_did_become_active(void* app_ptr);
@@ -29,6 +30,8 @@ extern void gpui_ios_will_terminate(void* app_ptr);
 
 // Zedra FFI (from zedra-ios crate)
 extern void zedra_launch_gpui(void);
+extern void zedra_ios_set_screen_scale(float scale);
+extern void zedra_ios_set_safe_area_insets(float top, float bottom, float left, float right);
 
 @interface ZedraAppDelegate : UIResponder <UIApplicationDelegate>
 @property (nonatomic, assign) void *gpuiApp;
@@ -37,6 +40,32 @@ extern void zedra_launch_gpui(void);
 @end
 
 @implementation ZedraAppDelegate
+
+/// Push the screen scale factor to Rust once at launch.
+- (void)pushScreenScale {
+    float scale = [UIScreen mainScreen].scale;
+    zedra_ios_set_screen_scale(scale);
+}
+
+/// Push the current safe area insets (in physical pixels) to Rust.
+///
+/// UIEdgeInsets are in points; multiply by screen scale to get physical pixels,
+/// matching the Android convention expected by PlatformBridge.
+/// Must be called after the UIWindow is laid out (deferred on first launch,
+/// then on every orientation change and foreground re-entry).
+- (void)pushSafeAreaInsets {
+    if (!self.gpuiWindow) { return; }
+    UIWindow *uiWindow = (__bridge UIWindow *)gpui_ios_get_ui_window(self.gpuiWindow);
+    if (!uiWindow) { return; }
+    float scale = [UIScreen mainScreen].scale;
+    UIEdgeInsets insets = uiWindow.safeAreaInsets;
+    zedra_ios_set_safe_area_insets(
+        insets.top    * scale,
+        insets.bottom * scale,
+        insets.left   * scale,
+        insets.right  * scale
+    );
+}
 
 - (BOOL)application:(UIApplication *)application
     didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
@@ -71,6 +100,20 @@ extern void zedra_launch_gpui(void);
         DIAG("WARNING: no GPUI window created");
     }
 
+    // 6. Push screen scale (known immediately) and safe area insets.
+    //    Insets require a layout pass first, so defer one run-loop cycle.
+    [self pushScreenScale];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self pushSafeAreaInsets];
+    });
+
+    // Re-push insets on orientation change so landscape insets stay correct.
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(pushSafeAreaInsets)
+               name:UIApplicationDidChangeStatusBarOrientationNotification
+             object:nil];
+
     DIAG("launch complete");
     return YES;
 }
@@ -95,6 +138,8 @@ extern void zedra_launch_gpui(void);
 
 - (void)applicationDidBecomeActive:(UIApplication *)application {
     gpui_ios_did_become_active(self.gpuiApp);
+    // Re-push in case insets changed while backgrounded (e.g. iPad split-screen resize).
+    [self pushSafeAreaInsets];
 }
 
 - (void)applicationWillResignActive:(UIApplication *)application {
