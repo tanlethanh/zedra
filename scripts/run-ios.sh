@@ -8,15 +8,20 @@ SCHEME="Zedra"
 BUNDLE_ID="dev.zedra.app"
 
 usage() {
-    echo "Usage: $0 [sim|device]"
+    echo "Usage: $0 [sim|device] [--preview] [--debug]"
     echo ""
     echo "  sim      Build and run on iOS Simulator (default)"
     echo "  device   Build and install on connected device"
     echo ""
+    echo "  --preview   Enable preview feature flag"
+    echo "  --debug     Use debug profile (faster build, no optimizations)"
+    echo ""
     echo "Examples:"
-    echo "  $0                    # run on simulator"
-    echo "  $0 sim                # run on simulator"
-    echo "  $0 device             # install on connected device"
+    echo "  $0                         # run on simulator (release)"
+    echo "  $0 sim                     # run on simulator (release)"
+    echo "  $0 device                  # install on connected device (release)"
+    echo "  $0 device --preview        # install with preview features"
+    echo "  $0 device --debug          # install debug build"
     exit 1
 }
 
@@ -32,6 +37,20 @@ generate_project() {
 }
 
 MODE="${1:-sim}"
+BUILD_FLAGS=""
+XCODE_CONFIGURATION="Debug"
+
+for arg in "$@"; do
+    case "$arg" in
+        --preview)
+            BUILD_FLAGS="$BUILD_FLAGS --preview"
+            ;;
+        --debug)
+            BUILD_FLAGS="$BUILD_FLAGS --debug"
+            XCODE_CONFIGURATION="Debug"
+            ;;
+    esac
+done
 
 case "$MODE" in
     sim)
@@ -76,7 +95,7 @@ for runtime, devices in data['devices'].items():
 
         # Build Rust libraries
         echo "==> Building Rust for iOS..."
-        ./scripts/build-ios.sh
+        ./scripts/build-ios.sh $BUILD_FLAGS
 
         # Generate Xcode project
         generate_project
@@ -86,11 +105,12 @@ for runtime, devices in data['devices'].items():
         xcodebuild build \
             -project "$PROJECT" \
             -scheme "$SCHEME" \
+            -configuration "$XCODE_CONFIGURATION" \
             -destination "id=$BOOTED_ID" \
             -quiet
 
         # Find the built .app
-        APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData/Zedra-*/Build/Products/Debug-iphonesimulator -name "Zedra.app" -type d 2>/dev/null | head -1)
+        APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData/Zedra-*/Build/Products/${XCODE_CONFIGURATION}-iphonesimulator -name "Zedra.app" -type d 2>/dev/null | head -1)
 
         if [ -z "$APP_PATH" ]; then
             echo "Error: Could not find built .app"
@@ -128,7 +148,7 @@ for runtime, devices in data['devices'].items():
 
         # Build Rust libraries
         echo "==> Building Rust for iOS..."
-        ./scripts/build-ios.sh
+        ./scripts/build-ios.sh $BUILD_FLAGS
 
         # Generate Xcode project
         generate_project
@@ -138,13 +158,14 @@ for runtime, devices in data['devices'].items():
         xcodebuild build \
             -project "$PROJECT" \
             -scheme "$SCHEME" \
+            -configuration "$XCODE_CONFIGURATION" \
             -destination "id=$DEVICE_ID" \
             -allowProvisioningUpdates \
             IPHONEOS_DEPLOYMENT_TARGET="$IPHONEOS_DEPLOYMENT_TARGET" \
             -quiet
 
         # Find the built .app
-        APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData/Zedra-*/Build/Products/Debug-iphoneos -name "Zedra.app" -type d 2>/dev/null | head -1)
+        APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData/Zedra-*/Build/Products/${XCODE_CONFIGURATION}-iphoneos -name "Zedra.app" -type d 2>/dev/null | head -1)
 
         if [ -z "$APP_PATH" ]; then
             echo "Error: Could not find built .app"
