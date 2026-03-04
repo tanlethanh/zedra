@@ -11,13 +11,6 @@ targets:
     platform: iOS
     sources:
       - path: Zedra
-        excludes:
-          # Exclude SwiftUI files — we use Obj-C main.m with GPUI rendering
-          - "ZedraApp.swift"
-          - "ContentView.swift"
-          - "AppState.swift"
-          - "ConnectView.swift"
-          - "TerminalView.swift"
     dependencies:
       - framework: ../ZedraFFI.xcframework
         embed: false
