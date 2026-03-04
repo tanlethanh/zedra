@@ -17,6 +17,12 @@ pub struct InputChanged {
     pub value: String,
 }
 
+/// Event emitted when the user presses Enter/Return to submit the input
+#[derive(Clone, Debug)]
+pub struct InputSubmit {
+    pub value: String,
+}
+
 /// Text input component with Android keyboard integration
 pub struct Input {
     /// Current text value
@@ -102,7 +108,9 @@ impl Input {
                 }
             }
             "enter" => {
-                // Could emit a submit event here - for now, just ignore
+                cx.emit(InputSubmit {
+                    value: self.value.clone(),
+                });
             }
             _ => {
                 // Handle character input
@@ -151,6 +159,7 @@ impl Input {
 }
 
 impl EventEmitter<InputChanged> for Input {}
+impl EventEmitter<InputSubmit> for Input {}
 
 impl Focusable for Input {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {

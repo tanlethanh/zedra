@@ -28,6 +28,8 @@ platform.process_fling()   // called every frame from handle_frame_request
 
 **Drag → ScrollWheel**: On `ACTION_MOVE` past TAP_SLOP, each frame's `(delta_x, delta_y)` in logical pixels is dispatched as `ScrollWheelEvent` with `touch_phase: TouchPhase::Moved`. On `ACTION_UP` after a drag, a zero-delta event with `TouchPhase::Ended` is dispatched, followed by `MouseUp`.
 
+**Fling gating on tap**: `GpuiSurfaceView.java` always forwards velocity to `nativeFlingEvent` when it exceeds 150 px/s. Tap vs drag classification is authoritative in Rust: if `ACTION_UP` is processed as a tap (`is_drag = false`), `handle_touch` clears any stored fling before dispatching `MouseDown + MouseUp`. This prevents spurious scrolling after a fast tap gesture.
+
 **Fling**: When Android's `VelocityTracker` fires (via `nativeFlingEvent`), `handle_fling()` stores the velocity if it exceeds `FLING_THRESHOLD = 50.0` logical px/s. Each frame, `process_fling()` applies frame-rate-independent friction (`0.95^(dt×60)`) and dispatches scroll events until velocity decays below threshold.
 
 ### iOS: `gpui_ios` (`vendor/zed/crates/gpui_ios/src/ios/window.rs`)
@@ -85,6 +87,22 @@ delta = v_new × dt                    // logical pixels this frame
 - Threshold: `50.0` logical px/s — below this, fling ends with a `TouchPhase::Ended` event
 - Typical decay: ~800ms to stop from 500 px/s starting velocity
 
+## Bug Investigations
+
+### TAP_SLOP mismatch — Fixed
+
+Previously `GpuiSurfaceView.java` maintained a duplicate `TAP_SLOP = 12f` (physical px) that gated `nativeFlingEvent` dispatch. On devices with non-integer density (e.g. Mali-G68 at 2.75×), Rust's `TAP_SLOP = 4.0` logical px equates to 11 physical px — below Java's 12px threshold. This caused a gap where Rust classified the gesture as a drag (scrolled) but Java suppressed fling.
+
+**Fix**: Java now always forwards velocity to `nativeFlingEvent`. Rust's `handle_touch(ACTION_UP)` is authoritative: it clears any stored fling before dispatching tap events (`MouseDown + MouseUp`).
+
+### Fling position (ScrollWheelEvent.position) — Not a bug
+
+The `position` field in fling-generated `ScrollWheelEvent`s is captured at fling start (the touch lift-off point) and does not change during the fling. This is correct: GPUI uses `position` only for hit-testing (which element handles the event), and the scrollable container's bounds in window coordinates do not move as the content scrolls. The lift-off position reliably identifies the target element for all fling frames.
+
+### Enter key ignored in `Input` — Fixed
+
+`Input` (`crates/zedra/src/mgpui/input.rs`) silently swallowed `Return`/`Enter` key presses. Now emits `InputSubmit { value }` so callers can subscribe and act on form submission.
+
 ## File Map
 
 | File | Responsibility |
@@ -95,3 +113,4 @@ delta = v_new × dt                    // logical pixels this frame
 | `crates/zedra/src/android/jni.rs` | JNI bridge: `nativeTouchEvent`, `nativeFlingEvent` |
 | `crates/zedra/src/android/app.rs` | Delegates touch/fling commands to platform |
 | `crates/zedra/src/mgpui/drawer_host.rs` | `on_scroll_wheel` handler: drawer ↔ content discrimination |
+| `android/app/src/main/java/dev/zedra/app/GpuiSurfaceView.java` | Forwards raw touch events; velocity tracking via `VelocityTracker` |

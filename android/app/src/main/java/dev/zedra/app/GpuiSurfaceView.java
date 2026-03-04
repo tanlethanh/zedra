@@ -38,12 +38,6 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
     private static final int ACTION_MOVE = 2;
     private static final int ACTION_CANCEL = 3;
 
-    // Touch tracking for tap vs scroll detection
-    private float touchDownX = 0;
-    private float touchDownY = 0;
-    private boolean touchMoved = false;
-    private static final float TAP_SLOP = 12f; // px threshold to distinguish tap from scroll (4dp * 3x density)
-
     // Velocity tracking for fling gestures
     private VelocityTracker velocityTracker = null;
 
@@ -290,9 +284,6 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 action = ACTION_DOWN;
-                touchDownX = event.getX();
-                touchDownY = event.getY();
-                touchMoved = false;
                 // Obtain velocity tracker for fling detection
                 if (velocityTracker == null) {
                     velocityTracker = VelocityTracker.obtain();
@@ -303,8 +294,10 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
                 break;
             case MotionEvent.ACTION_UP:
                 action = ACTION_UP;
-                // Compute fling velocity on touch release
-                if (velocityTracker != null && touchMoved) {
+                // Compute fling velocity on touch release. Tap vs drag classification
+                // is handled in Rust (platform.rs handle_touch), which clears the fling
+                // if the touch was a tap. We always forward velocity here.
+                if (velocityTracker != null) {
                     velocityTracker.addMovement(event);
                     velocityTracker.computeCurrentVelocity(1000); // pixels per second
                     float velX = velocityTracker.getXVelocity();
@@ -318,18 +311,12 @@ public class GpuiSurfaceView extends SurfaceView implements SurfaceHolder.Callba
                 break;
             case MotionEvent.ACTION_MOVE:
                 action = ACTION_MOVE;
-                float dx = event.getX() - touchDownX;
-                float dy = event.getY() - touchDownY;
-                if (dx * dx + dy * dy > TAP_SLOP * TAP_SLOP) {
-                    touchMoved = true;
-                }
                 if (velocityTracker != null) {
                     velocityTracker.addMovement(event);
                 }
                 break;
             case MotionEvent.ACTION_CANCEL:
                 action = ACTION_CANCEL;
-                touchMoved = false;
                 if (velocityTracker != null) {
                     velocityTracker.recycle();
                     velocityTracker = null;
