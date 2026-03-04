@@ -320,6 +320,56 @@ impl Render for DrawerHost {
         div()
             .track_focus(&self.focus_handle)
             .size_full()
+            // Scroll wheel handler: drives drawer open/close via horizontal swipe.
+            // iOS sends ScrollWheel events from pan_gesture_to_scroll; this lets
+            // DrawerHost handle gesture disambiguation directly via GPUI events
+            // instead of a low-level UIKit touch interceptor.
+            // Android uses DRAWER_BRIDGE (drained above) for the same purpose.
+            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+                if this.snap_target.is_some() {
+                    return;
+                }
+                let delta = event.delta.pixel_delta(window.line_height());
+                let dx = f32::from(delta.x);
+                let dy = f32::from(delta.y);
+                if dx.abs() <= dy.abs() {
+                    return;
+                }
+                const EDGE_ZONE: f32 = 44.0;
+                let pos_x = f32::from(event.position.x);
+                let drawer_open =
+                    this.drawer_state.lock().map(|s| s.offset > 0.0).unwrap_or(false);
+                if !drawer_open && pos_x >= EDGE_ZONE {
+                    return;
+                }
+                let width = f32::from(this.width);
+                let current = this.drawer_state.lock().map(|s| s.offset).unwrap_or(0.0);
+                if current <= 0.0 && dx <= 0.0 {
+                    return;
+                }
+                this.last_drag_dx = dx;
+                let new_offset = if let Ok(mut state) = this.drawer_state.lock() {
+                    state.is_dragging = true;
+                    state.offset = (state.offset + dx).clamp(0.0, width);
+                    state.offset
+                } else {
+                    (current + dx).clamp(0.0, width)
+                };
+                const VELOCITY_THRESHOLD: f32 = 6.0;
+                let position_threshold = width * 0.3;
+                if dx > 0.0 && (new_offset > position_threshold || dx > VELOCITY_THRESHOLD) {
+                    this.start_snap(width, cx);
+                    cx.emit(DrawerEvent::Opened);
+                } else if dx < 0.0
+                    && (new_offset < width - position_threshold
+                        || dx.abs() > VELOCITY_THRESHOLD)
+                {
+                    this.start_snap(0.0, cx);
+                    cx.emit(DrawerEvent::Closed);
+                } else {
+                    cx.notify();
+                }
+            }))
             // Mouse up handler: snap drawer on release
             .on_mouse_up(
                 MouseButton::Left,
