@@ -108,7 +108,8 @@ for runtime, devices in data['devices'].items():
 
     device)
         # Find connected device
-        DEVICE_ID=$(xcrun xctrace list devices 2>&1 | grep -E '^\w.+\(\d+\.\d+' | head -1 | grep -oE '[0-9A-F]{8}-[0-9A-F]{16}' || true)
+        DEVICE_LINE=$(xcrun xctrace list devices 2>&1 | grep -E '^\w.+\(\d+\.\d+' | head -1)
+        DEVICE_ID=$(echo "$DEVICE_LINE" | grep -oE '[0-9A-F]{8}-[0-9A-F]{16}' || true)
 
         if [ -z "$DEVICE_ID" ]; then
             echo "Error: No connected iOS device found."
@@ -118,8 +119,12 @@ for runtime, devices in data['devices'].items():
             exit 1
         fi
 
-        DEVICE_NAME=$(xcrun xctrace list devices 2>&1 | grep "$DEVICE_ID" | sed "s/ (.*//")
-        echo "==> Target: $DEVICE_NAME ($DEVICE_ID)"
+        # Detect device OS version and use it as the deployment target so the
+        # Rust build flags and Xcode build settings both match the actual device.
+        DEVICE_OS=$(echo "$DEVICE_LINE" | grep -oE '\([0-9]+\.[0-9]+(\.[0-9]+)?\)' | head -1 | tr -d '()')
+        export IPHONEOS_DEPLOYMENT_TARGET="${DEVICE_OS:-16.0}"
+        DEVICE_NAME=$(echo "$DEVICE_LINE" | sed 's/ (.*//')
+        echo "==> Target: $DEVICE_NAME ($DEVICE_ID) — iOS $IPHONEOS_DEPLOYMENT_TARGET"
 
         # Build Rust libraries
         echo "==> Building Rust for iOS..."
@@ -135,6 +140,7 @@ for runtime, devices in data['devices'].items():
             -scheme "$SCHEME" \
             -destination "id=$DEVICE_ID" \
             -allowProvisioningUpdates \
+            IPHONEOS_DEPLOYMENT_TARGET="$IPHONEOS_DEPLOYMENT_TARGET" \
             -quiet
 
         # Find the built .app

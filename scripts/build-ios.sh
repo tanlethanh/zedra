@@ -6,9 +6,10 @@ cd "$(dirname "$0")/.."
 LIB_NAME="zedra"
 FRAMEWORK_NAME="ZedraFFI"
 
-# Match the Xcode project deployment target so the linker doesn't warn about
-# object files built for a newer iOS version than the app being linked.
-export IPHONEOS_DEPLOYMENT_TARGET=26.0
+# Use the deployment target passed in from run-ios.sh (which detects the
+# connected device's OS version), or fall back to 16.0 when called standalone.
+export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-16.0}"
+echo "==> Deployment target: iOS $IPHONEOS_DEPLOYMENT_TARGET"
 
 # The crate has crate-type = ["cdylib", "staticlib"]. The cdylib is for Android
 # (JNI .so) and will fail to link on iOS (OpenGL framework not available).
