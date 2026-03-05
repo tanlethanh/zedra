@@ -430,8 +430,11 @@ output. Use `idevicesyslog` to see those.
 
 Rust log messages go through `IosLogger` (`crates/zedra/src/ios/logger.rs`), which
 formats them as `[I/W/E/D/T module] message` and calls `zedra_nslog()` — a tiny
-ObjC wrapper around `NSLog()` compiled by `build.rs`. NSLog routes through the
-legacy ASL relay so messages appear in `idevicesyslog`.
+ObjC wrapper around `NSLog()` compiled by `build.rs`. NSLog routes to both the
+legacy ASL relay (for `idevicesyslog` via USB) and the unified log system (for
+`log collect` via wireless).
+
+#### USB (idevicesyslog)
 
 ```bash
 # All Zedra-related logs (Rust + UIKit errors):
@@ -441,9 +444,41 @@ legacy ASL relay so messages appear in `idevicesyslog`.
 /opt/homebrew/bin/idevicesyslog | grep -E '\[I |\[W |\[E |\[D |\[T ' --line-buffered
 ```
 
-**Why not `os_log`?** `os_log` / `oslog` crate routes to the unified logging system,
-which `idevicesyslog` does not capture (it uses the legacy ASL relay). NSLog is
-the only path that reliably appears in `idevicesyslog` output.
+`idevicesyslog` requires a **USB connection** (libimobiledevice protocol).
+
+#### Wireless / CoreDevice (`log collect`)
+
+When the device is paired wirelessly (CoreDevice), use `log collect` instead.
+This requires `sudo` but works over Wi-Fi.
+
+```bash
+# 1. Reproduce the issue, then collect the last 2 minutes of logs
+sudo /usr/bin/log collect \
+  --device-udid EE4FBE5D-5184-57A4-999C-A91373FCDC74 \
+  --last 2m \
+  --output /tmp/zedra.logarchive
+
+# 2. View with process filter and debug level
+/usr/bin/log show /tmp/zedra.logarchive \
+  --predicate 'process == "Zedra"' \
+  --level debug \
+  --style compact
+
+# 3. Narrow to a specific tag (e.g., only touch/drawer logs)
+/usr/bin/log show /tmp/zedra.logarchive \
+  --predicate 'process == "Zedra" AND eventMessage CONTAINS "[touch]"' \
+  --level debug \
+  --style compact
+```
+
+**Key facts:**
+- `log stream` has NO `--device` flag — it cannot stream from iOS devices.
+- `log collect --device-udid` works wirelessly via CoreDevice transport.
+- Device UDID (use `xcrun devicectl list devices` to confirm): `EE4FBE5D-5184-57A4-999C-A91373FCDC74`
+- The `.logarchive` is a binary bundle; view with `log show` or Console.app.
+
+**Why not `os_log`?** The `oslog` crate routes to the unified logging system,
+which `idevicesyslog` does not capture. NSLog is the correct path for our logger.
 
 ### Crash Reports
 
