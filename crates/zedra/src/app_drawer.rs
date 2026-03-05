@@ -243,6 +243,7 @@ impl Render for AppDrawer {
         };
 
         let top_inset = crate::platform_bridge::status_bar_inset();
+        let bottom_inset = crate::platform_bridge::home_indicator_inset().max(10.0);
 
         div()
             .track_focus(&self.focus_handle)
@@ -273,12 +274,13 @@ impl Render for AppDrawer {
             )
             // Tab content
             .child(tab_content)
-            // Footer nav bar — explicit py for balanced padding
+            // Footer nav bar — pt matches visual top padding; pb absorbs home indicator
             .child(
                 div()
                     .flex()
                     .flex_row()
-                    .py(px(10.0))
+                    .pt(px(10.0))
+                    .pb(px(bottom_inset))
                     .justify_center()
                     .gap(px(36.0))
                     .border_t_1()

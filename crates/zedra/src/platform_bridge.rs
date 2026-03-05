@@ -37,6 +37,17 @@ pub fn status_bar_inset() -> f32 {
     }
 }
 
+/// Home indicator / gesture bar bottom inset in logical pixels.
+pub fn home_indicator_inset() -> f32 {
+    let b = bridge();
+    let density = b.density();
+    if density > 0.0 {
+        b.system_inset_bottom() as f32 / density
+    } else {
+        0.0
+    }
+}
+
 /// Fallback bridge for non-Android platforms (and before `set_bridge` is called).
 struct StubBridge;
 
