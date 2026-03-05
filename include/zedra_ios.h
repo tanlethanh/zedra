@@ -75,6 +75,8 @@ void zedra_ios_set_safe_area_insets(float top, float bottom, float _left, float 
 
 extern void *gpui_ios_get_window(void);
 
+extern bool gpui_ios_is_keyboard_visible(void *window_ptr);
+
 extern void gpui_ios_show_keyboard(void *window_ptr);
 
 extern void gpui_ios_hide_keyboard(void *window_ptr);
@@ -91,6 +93,15 @@ extern void ios_present_qr_scanner(void);
  * `zedra_rpc::pairing::encode_endpoint_addr()` on the host side.
  */
 void zedra_qr_scanner_result(const char *qr_string);
+
+/**
+ * Called each frame from main.m before gpui_ios_request_frame.
+ *
+ * Drains main-thread callbacks and checks whether terminal data is pending.
+ * Returns `true` when a forced render is needed (mirrors Android's
+ * `check_and_clear_terminal_data` + `drain_callbacks` in `handle_frame_request`).
+ */
+bool zedra_ios_check_pending_frame(void);
 
 void zedra_launch_gpui(void);
 

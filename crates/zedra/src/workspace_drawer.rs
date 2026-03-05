@@ -15,7 +15,7 @@ pub enum DrawerSection {
 }
 
 #[derive(Clone, Debug)]
-pub enum AppDrawerEvent {
+pub enum WorkspaceDrawerEvent {
     FileSelected(String),
     GitFileSelected(String),
     CloseRequested,
@@ -24,9 +24,9 @@ pub enum AppDrawerEvent {
     TerminalSelected(String),
 }
 
-impl EventEmitter<AppDrawerEvent> for AppDrawer {}
+impl EventEmitter<WorkspaceDrawerEvent> for WorkspaceDrawer {}
 
-pub struct AppDrawer {
+pub struct WorkspaceDrawer {
     file_explorer: Entity<FileExplorer>,
     git_sidebar: Entity<GitSidebar>,
     active_section: DrawerSection,
@@ -37,7 +37,7 @@ pub struct AppDrawer {
     _subscriptions: Vec<Subscription>,
 }
 
-impl AppDrawer {
+impl WorkspaceDrawer {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let file_explorer = cx.new(|cx| FileExplorer::new(cx));
         let git_sidebar = cx.new(|cx| GitSidebar::new(cx));
@@ -47,7 +47,7 @@ impl AppDrawer {
         let sub = cx.subscribe(
             &file_explorer,
             |_this: &mut Self, _emitter, event: &FileSelected, cx| {
-                cx.emit(AppDrawerEvent::FileSelected(event.path.clone()));
+                cx.emit(WorkspaceDrawerEvent::FileSelected(event.path.clone()));
             },
         );
         subscriptions.push(sub);
@@ -55,7 +55,7 @@ impl AppDrawer {
         let sub = cx.subscribe(
             &git_sidebar,
             |_this: &mut Self, _emitter, event: &GitFileSelected, cx| {
-                cx.emit(AppDrawerEvent::GitFileSelected(event.path.clone()));
+                cx.emit(WorkspaceDrawerEvent::GitFileSelected(event.path.clone()));
             },
         );
         subscriptions.push(sub);
@@ -85,7 +85,7 @@ impl AppDrawer {
         self.load_git_status();
     }
 
-    /// Reset state after disconnect so next session triggers fresh loads
+    /// Reset state after disconnect so next session triggers fresh loads.
     pub fn reset_for_disconnect(&mut self, cx: &mut Context<Self>) {
         self.git_loaded = false;
         self.active_terminal_id = None;
@@ -181,7 +181,7 @@ impl AppDrawer {
                 MouseButton::Left,
                 cx.listener(move |this, _event, _window, cx| {
                     if this.active_section == section {
-                        cx.emit(AppDrawerEvent::CloseRequested);
+                        cx.emit(WorkspaceDrawerEvent::CloseRequested);
                     } else {
                         this.set_section(section, cx);
                     }
@@ -204,13 +204,13 @@ impl AppDrawer {
     }
 }
 
-impl Focusable for AppDrawer {
+impl Focusable for WorkspaceDrawer {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
-impl Render for AppDrawer {
+impl Render for WorkspaceDrawer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Check for pending git status from async RPC
         if let Some(state) = self.pending_git_status.take() {
@@ -252,9 +252,9 @@ impl Render for AppDrawer {
             .w_full()
             .h(viewport_h)
             .bg(rgb(theme::BG_PRIMARY))
-            // Status bar spacer (separate from header to avoid h+pt conflict)
+            // Status bar spacer
             .child(div().h(px(top_inset)))
-            // Section header (fixed 48px, no padding)
+            // Section header (fixed 48px)
             .child(
                 div()
                     .h(px(48.0))
@@ -274,7 +274,7 @@ impl Render for AppDrawer {
             )
             // Tab content
             .child(tab_content)
-            // Footer nav bar — pt matches visual top padding; pb absorbs home indicator
+            // Footer nav bar
             .child(
                 div()
                     .flex()

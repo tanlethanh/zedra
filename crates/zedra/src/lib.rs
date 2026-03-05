@@ -19,12 +19,18 @@ pub mod mgpui;
 // Home screen
 pub mod home_view;
 
-// App drawer (header + file tree + footer nav icons)
-pub mod app_drawer;
+// Workspace drawer (tabs: Files / Git / Terminal / Session)
+pub mod workspace_drawer;
 
 // Extracted drawer tab panels
 pub mod session_panel;
 pub mod terminal_panel;
+
+// Per-session workspace view (DrawerHost + WorkspaceContent + WorkspaceDrawer)
+pub mod workspace_view;
+
+// Quick-action right overlay (workspace switcher + home button)
+pub mod quick_action_panel;
 
 // Transport badge (P2P / Relay indicator) + format_bytes utility
 pub mod transport_badge;

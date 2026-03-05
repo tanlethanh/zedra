@@ -11,6 +11,19 @@ use gpui_ios::IosPlatform;
 use std::rc::Rc;
 use std::sync::Arc;
 
+/// Called each frame from main.m before gpui_ios_request_frame.
+///
+/// Drains main-thread callbacks and checks whether terminal data is pending.
+/// Returns `true` when a forced render is needed (mirrors Android's
+/// `check_and_clear_terminal_data` + `drain_callbacks` in `handle_frame_request`).
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_check_pending_frame() -> bool {
+    for cb in zedra_session::drain_callbacks() {
+        cb();
+    }
+    zedra_session::check_and_clear_terminal_data()
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_launch_gpui() {
     super::logger::IosLogger::init(log::LevelFilter::Debug);

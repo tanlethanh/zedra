@@ -1,17 +1,17 @@
-/// Terminal tab panel for the app drawer.
+/// Terminal tab panel for the workspace drawer.
 ///
 /// Lists active terminal sessions with selection and "New Terminal" button.
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use crate::app_drawer::AppDrawerEvent;
+use crate::workspace_drawer::WorkspaceDrawerEvent;
 use crate::theme;
 
-/// Render the terminal tab content for the app drawer.
+/// Render the terminal tab content for the workspace drawer.
 pub fn render_terminal_tab(
     active_terminal_id: Option<&str>,
-    cx: &mut Context<crate::app_drawer::AppDrawer>,
+    cx: &mut Context<crate::workspace_drawer::WorkspaceDrawer>,
 ) -> Div {
     let session = zedra_session::active_session();
 
@@ -63,7 +63,7 @@ pub fn render_terminal_tab(
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |_this, _event, _window, cx| {
-                        cx.emit(AppDrawerEvent::TerminalSelected(tid_clone.clone()));
+                        cx.emit(WorkspaceDrawerEvent::TerminalSelected(tid_clone.clone()));
                     }),
                 )
                 .child(
@@ -108,32 +108,27 @@ pub fn render_terminal_tab(
         }
     }
 
-    // "New Terminal" button at the bottom
-    let new_terminal_btn = div()
-        .id("new-terminal-btn")
-        .mx(px(16.0))
-        .mt(px(16.0))
-        .px(px(12.0))
-        .py(px(8.0))
-        .rounded(px(6.0))
-        .border_1()
-        .border_color(rgb(theme::BORDER_DEFAULT))
-        .text_color(rgb(theme::TEXT_PRIMARY))
-        .text_size(px(theme::FONT_BODY))
-        .cursor_pointer()
-        .hover(|s| s.bg(theme::hover_bg()))
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(|_this, _event, _window, cx| {
-                cx.emit(AppDrawerEvent::NewTerminalRequested);
-            }),
-        )
-        .child(div().flex().justify_center().child("+ New Terminal"));
+    // "New Terminal" inline link — no box, dim text, directly below the list
+    content = content.child(
+        div()
+            .id("new-terminal-btn")
+            .px(px(8.0))
+            .py(px(8.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(theme::hover_bg()))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_this, _event, _window, cx| {
+                    cx.emit(WorkspaceDrawerEvent::NewTerminalRequested);
+                }),
+            )
+            .child(
+                div()
+                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_size(px(theme::FONT_BODY))
+                    .child("+ New Terminal"),
+            ),
+    );
 
-    div()
-        .flex_1()
-        .flex()
-        .flex_col()
-        .child(content)
-        .child(new_terminal_btn)
+    content
 }

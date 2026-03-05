@@ -22,6 +22,7 @@ extern void gpui_ios_did_finish_launching(void* app_ptr);
 extern void* gpui_ios_get_window(void);
 extern void* gpui_ios_get_ui_window(void* window_ptr);
 extern void gpui_ios_request_frame(void* window_ptr);
+extern void gpui_ios_request_frame_forced(void* window_ptr);
 extern void gpui_ios_will_enter_foreground(void* app_ptr);
 extern void gpui_ios_did_become_active(void* app_ptr);
 extern void gpui_ios_will_resign_active(void* app_ptr);
@@ -32,6 +33,7 @@ extern void gpui_ios_will_terminate(void* app_ptr);
 extern void zedra_launch_gpui(void);
 extern void zedra_ios_set_screen_scale(float scale);
 extern void zedra_ios_set_safe_area_insets(float top, float bottom, float left, float right);
+extern bool zedra_ios_check_pending_frame(void);
 
 @interface ZedraAppDelegate : UIResponder <UIApplicationDelegate>
 @property (nonatomic, assign) void *gpuiApp;
@@ -120,7 +122,14 @@ extern void zedra_ios_set_safe_area_insets(float top, float bottom, float left, 
 
 - (void)renderFrame {
     if (self.gpuiWindow) {
-        gpui_ios_request_frame(self.gpuiWindow);
+        // Check for pending terminal data / callbacks (mirrors Android handle_frame_request).
+        // When pending, force a render even if no GPUI views have been explicitly notified,
+        // so terminal output and reconnect state changes appear without requiring interaction.
+        if (zedra_ios_check_pending_frame()) {
+            gpui_ios_request_frame_forced(self.gpuiWindow);
+        } else {
+            gpui_ios_request_frame(self.gpuiWindow);
+        }
     }
 }
 

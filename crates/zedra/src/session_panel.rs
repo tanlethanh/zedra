@@ -1,16 +1,16 @@
-/// Session info panel for the app drawer.
+/// Session info panel for the workspace drawer.
 ///
 /// Displays host info, connection details, endpoints, and disconnect button.
 
 use gpui::*;
 
-use crate::app_drawer::AppDrawerEvent;
+use crate::workspace_drawer::WorkspaceDrawerEvent;
 use crate::theme;
 use crate::transport_badge::format_bytes;
 use zedra_session::SessionState;
 
-/// Render the session tab content for the app drawer.
-pub fn render_session_tab(cx: &mut Context<crate::app_drawer::AppDrawer>) -> Div {
+/// Render the session tab content for the workspace drawer.
+pub fn render_session_tab(cx: &mut Context<crate::workspace_drawer::WorkspaceDrawer>) -> Div {
     let session = zedra_session::active_session();
 
     let Some(session) = session else {
@@ -229,7 +229,7 @@ pub fn render_session_tab(cx: &mut Context<crate::app_drawer::AppDrawer>) -> Div
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(|_this, _event, _window, cx| {
-                cx.emit(AppDrawerEvent::DisconnectRequested);
+                cx.emit(WorkspaceDrawerEvent::DisconnectRequested);
             }),
         )
         .child(div().flex().justify_center().child("Disconnect"));
