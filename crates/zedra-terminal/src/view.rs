@@ -39,6 +39,13 @@ pub struct TerminalView {
     last_keyboard_rows: usize,
     /// Terminal ID for per-terminal buffer routing (None = use legacy global buffer).
     terminal_id: Option<String>,
+    /// Tracks whether the soft keyboard is currently requested as visible.
+    /// Used to toggle: tap shows, tap again hides.
+    keyboard_visible: bool,
+    /// True after mouse_down, cleared by the first scroll_wheel event.
+    /// Keyboard toggle is deferred to mouse_up and only fires if no scroll
+    /// arrived in between (i.e. the gesture was a tap, not a swipe).
+    tap_pending: bool,
 }
 
 impl TerminalView {
@@ -61,6 +68,8 @@ impl TerminalView {
             base_rows: rows,
             last_keyboard_rows: rows,
             terminal_id: None,
+            keyboard_visible: false,
+            tap_pending: false,
         }
     }
 
@@ -318,15 +327,29 @@ impl Render for TerminalView {
             .key_context("Terminal")
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _event, window, cx| {
-                    this.focus_handle.focus(window, cx);
-                    this.request_keyboard(true);
+                cx.listener(|this, _event, window, _cx| {
+                    this.focus_handle.focus(window, _cx);
+                    // Arm the tap — the keyboard toggle fires on mouse_up only if
+                    // no scroll_wheel event arrives first (i.e. it was a tap not a swipe).
+                    this.tap_pending = true;
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _event, _window, _cx| {
+                    if this.tap_pending {
+                        this.tap_pending = false;
+                        this.keyboard_visible = !this.keyboard_visible;
+                        this.request_keyboard(this.keyboard_visible);
+                    }
                 }),
             )
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, _cx| {
                 this.handle_keystroke(&event.keystroke);
             }))
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
+                // Any scroll means this touch is a swipe, not a tap — cancel keyboard toggle.
+                this.tap_pending = false;
                 match event.delta {
                     ScrollDelta::Lines(l) => {
                         // Line-based scroll (e.g. mouse wheel): commit immediately
