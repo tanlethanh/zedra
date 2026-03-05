@@ -390,6 +390,6 @@ impl Render for TerminalView {
                 // Always re-render — sub-line offset changes are visual even without whole-line commits
                 cx.notify();
             }))
-            .child(TerminalElement::new(content, size, self.scroll_offset_px))
+            .child(TerminalElement::new(content, size, self.scroll_offset_px, cx.weak_entity()))
     }
 }

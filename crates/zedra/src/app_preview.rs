@@ -157,13 +157,10 @@ fn create_mock_terminal(window: &mut Window, cx: &mut Context<PreviewApp>) -> En
     let line_height = px(16.0);
     let cell_width = px(9.0);
 
-    let top_inset_px = crate::platform_bridge::status_bar_inset();
-    let available_height = viewport.height - px(top_inset_px + 48.0);
-
     let columns = ((viewport.width / cell_width).floor() as usize)
         .saturating_sub(1)
         .clamp(20, 200);
-    let rows = ((available_height / line_height).floor() as usize).clamp(5, 100);
+    let rows = 24; // initial estimate; TerminalElement resizes to actual bounds on first paint
 
     cx.new(|cx| {
         let mut view = TerminalView::new(columns, rows, cell_width, line_height, cx);

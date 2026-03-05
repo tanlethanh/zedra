@@ -8,7 +8,10 @@ use alacritty_terminal::vte::ansi::{Color as AlacColor, CursorShape, NamedColor}
 use gpui::*;
 use itertools::Itertools;
 
-use crate::{CursorState, IndexedCell, TERMINAL_FONT_FAMILY, TerminalContent, TerminalSize};
+use crate::{
+    CursorState, IndexedCell, TERMINAL_FONT_FAMILY, TerminalContent, TerminalSize,
+    view::TerminalView,
+};
 
 /// Colors for the terminal (One Dark theme)
 struct TermColors;
@@ -255,14 +258,22 @@ pub struct TerminalElement {
     size: TerminalSize,
     /// Sub-line pixel offset for smooth scrolling (applied to grid origin.y)
     scroll_offset_px: f32,
+    /// Weak handle back to the view — used to trigger PTY resize from actual bounds.
+    entity: WeakEntity<TerminalView>,
 }
 
 impl TerminalElement {
-    pub fn new(content: TerminalContent, size: TerminalSize, scroll_offset_px: f32) -> Self {
+    pub fn new(
+        content: TerminalContent,
+        size: TerminalSize,
+        scroll_offset_px: f32,
+        entity: WeakEntity<TerminalView>,
+    ) -> Self {
         Self {
             content,
             size,
             scroll_offset_px,
+            entity,
         }
     }
 
@@ -388,11 +399,10 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let height = self.size.line_height * self.size.rows as f32;
         let style = Style {
             size: gpui::Size {
-                width: relative(1.).into(), // fill parent, center grid in paint
-                height: height.into(),
+                width: relative(1.).into(),
+                height: relative(1.).into(), // fill flex parent; rows derived from actual bounds
             },
             ..Default::default()
         };
@@ -504,6 +514,24 @@ impl Element for TerminalElement {
             cell_width,
             line_height,
         );
+
+        // Resize PTY to match actual element bounds if they changed.
+        let actual_rows = (bounds.size.height / line_height).floor() as usize;
+        let actual_cols = (bounds.size.width / cell_width).floor() as usize;
+        if actual_rows != self.size.rows || actual_cols != self.size.columns {
+            let entity = self.entity.clone();
+            window.defer(cx, move |_window, cx| {
+                let _ = entity.update(cx, |view, cx| {
+                    view.resize(
+                        actual_cols.max(1),
+                        actual_rows.max(1),
+                        cell_width,
+                        line_height,
+                    );
+                    cx.notify();
+                });
+            });
+        }
     }
 }
 

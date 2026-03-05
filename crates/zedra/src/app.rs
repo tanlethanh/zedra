@@ -790,13 +790,11 @@ fn compute_terminal_dimensions(window: &mut Window) -> (usize, usize, Pixels, Pi
         .map(|size| size.width)
         .unwrap_or(px(9.0));
 
-    let top_inset_px = crate::platform_bridge::status_bar_inset();
-    let available_height = viewport.height - px(top_inset_px + 48.0);
-
     let columns = ((viewport.width / cell_width).floor() as usize)
         .saturating_sub(1)
         .clamp(20, 200);
-    let rows = ((available_height / line_height).floor() as usize).clamp(5, 100);
+    // Initial row count; TerminalElement resizes the PTY to actual bounds on first paint.
+    let rows = 24;
 
     (columns, rows, cell_width, line_height)
 }
