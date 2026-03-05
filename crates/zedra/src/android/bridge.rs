@@ -23,6 +23,11 @@ impl PlatformBridge for AndroidBridge {
         crate::android::jni::get_keyboard_height()
     }
 
+    fn is_keyboard_visible(&self) -> bool {
+        // Android tracks keyboard visibility via keyboard_height > 0
+        crate::android::jni::get_keyboard_height() > 0
+    }
+
     fn show_keyboard(&self) {
         crate::android::jni::show_keyboard()
     }

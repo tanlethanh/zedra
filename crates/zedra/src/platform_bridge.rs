@@ -10,6 +10,7 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn system_inset_top(&self) -> u32;
     fn system_inset_bottom(&self) -> u32;
     fn keyboard_height(&self) -> u32;
+    fn is_keyboard_visible(&self) -> bool;
     fn show_keyboard(&self);
     fn hide_keyboard(&self);
     fn launch_qr_scanner(&self);
@@ -64,6 +65,7 @@ impl PlatformBridge for StubBridge {
     fn keyboard_height(&self) -> u32 {
         0
     }
+    fn is_keyboard_visible(&self) -> bool { false }
     fn show_keyboard(&self) {}
     fn hide_keyboard(&self) {}
     fn launch_qr_scanner(&self) {}

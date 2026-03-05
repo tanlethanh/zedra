@@ -44,6 +44,7 @@ pub struct IosBridge;
 
 unsafe extern "C" {
     fn gpui_ios_get_window() -> *mut std::ffi::c_void;
+    fn gpui_ios_is_keyboard_visible(window_ptr: *mut std::ffi::c_void) -> bool;
     fn gpui_ios_show_keyboard(window_ptr: *mut std::ffi::c_void);
     fn gpui_ios_hide_keyboard(window_ptr: *mut std::ffi::c_void);
     /// Present the AVFoundation QR scanner (defined in ZedraQRScanner.m).
@@ -65,6 +66,16 @@ impl PlatformBridge for IosBridge {
 
     fn keyboard_height(&self) -> u32 {
         0
+    }
+
+    fn is_keyboard_visible(&self) -> bool {
+        unsafe {
+            let window = gpui_ios_get_window();
+            if window.is_null() {
+                return false;
+            }
+            gpui_ios_is_keyboard_visible(window)
+        }
     }
 
     fn show_keyboard(&self) {
