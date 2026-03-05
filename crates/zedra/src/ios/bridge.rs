@@ -12,6 +12,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 /// Default 3.0 covers most modern iPhones until Obj-C pushes the real value.
 static SCREEN_SCALE: AtomicU32 = AtomicU32::new(f32::to_bits(3.0));
 
+/// Keyboard height in physical pixels. 0 = hidden.
+/// Updated by UIKeyboardWillShow/WillHide notifications via Obj-C → FFI.
+static KEYBOARD_HEIGHT_PX: AtomicU32 = AtomicU32::new(0);
+
 /// Safe area insets in physical pixels (points × scale), matching the Android convention.
 static SAFE_AREA_TOP: AtomicU32 = AtomicU32::new(0);
 static SAFE_AREA_BOTTOM: AtomicU32 = AtomicU32::new(0);
@@ -22,7 +26,23 @@ static SAFE_AREA_BOTTOM: AtomicU32 = AtomicU32::new(0);
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_set_screen_scale(scale: f32) {
     SCREEN_SCALE.store(scale.to_bits(), Ordering::Relaxed);
+    // Sync display density to zedra-terminal for keyboard-avoiding-view row math.
+    zedra_terminal::set_display_density(scale);
     log::debug!("iOS screen scale: {}", scale);
+}
+
+/// Called from Obj-C when the software keyboard is about to appear or change height.
+///
+/// `height_px` is `endFrame.size.height × UIScreen.scale` (physical pixels).
+/// Call with 0 when the keyboard is dismissed.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_set_keyboard_height(height_px: u32) {
+    KEYBOARD_HEIGHT_PX.store(height_px, Ordering::Relaxed);
+    zedra_terminal::set_keyboard_height(height_px);
+    // Signal a forced render so the terminal resizes immediately on the next
+    // CADisplayLink tick rather than waiting for the next user interaction.
+    zedra_session::signal_terminal_data();
+    log::debug!("iOS keyboard height: {}px", height_px);
 }
 
 /// Called from Obj-C with the current safe area insets in physical pixels
@@ -65,7 +85,7 @@ impl PlatformBridge for IosBridge {
     }
 
     fn keyboard_height(&self) -> u32 {
-        0
+        KEYBOARD_HEIGHT_PX.load(Ordering::Relaxed)
     }
 
     fn is_keyboard_visible(&self) -> bool {

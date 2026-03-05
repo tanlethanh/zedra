@@ -34,6 +34,7 @@ extern void zedra_launch_gpui(void);
 extern void zedra_ios_set_screen_scale(float scale);
 extern void zedra_ios_set_safe_area_insets(float top, float bottom, float left, float right);
 extern bool zedra_ios_check_pending_frame(void);
+extern void zedra_ios_set_keyboard_height(unsigned int height_px);
 
 @interface ZedraAppDelegate : UIResponder <UIApplicationDelegate>
 @property (nonatomic, assign) void *gpuiApp;
@@ -116,8 +117,35 @@ extern bool zedra_ios_check_pending_frame(void);
                name:UIApplicationDidChangeStatusBarOrientationNotification
              object:nil];
 
+    // Track keyboard height for keyboard-avoiding-view (terminal row resize).
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(keyboardWillShow:)
+               name:UIKeyboardWillShowNotification
+             object:nil];
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(keyboardWillHide:)
+               name:UIKeyboardWillHideNotification
+             object:nil];
+
     DIAG("launch complete");
     return YES;
+}
+
+/// Called when the software keyboard is about to appear or change height.
+/// Uses UIKeyboardFrameEndUserInfoKey so we always get the settled keyboard height.
+- (void)keyboardWillShow:(NSNotification *)notification {
+    NSDictionary *info = [notification userInfo];
+    CGRect endFrame = [[info objectForKey:UIKeyboardFrameEndUserInfoKey] CGRectValue];
+    float scale = [UIScreen mainScreen].scale;
+    unsigned int heightPx = (unsigned int)(endFrame.size.height * scale);
+    zedra_ios_set_keyboard_height(heightPx);
+}
+
+/// Called when the software keyboard is about to be dismissed.
+- (void)keyboardWillHide:(NSNotification *)notification {
+    zedra_ios_set_keyboard_height(0);
 }
 
 - (void)renderFrame {

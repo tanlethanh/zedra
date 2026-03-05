@@ -66,6 +66,14 @@
 void zedra_ios_set_screen_scale(float scale);
 
 /**
+ * Called from Obj-C when the software keyboard is about to appear or change height.
+ *
+ * `height_px` is `endFrame.size.height × UIScreen.scale` (physical pixels).
+ * Call with 0 when the keyboard is dismissed.
+ */
+void zedra_ios_set_keyboard_height(uint32_t height_px);
+
+/**
  * Called from Obj-C with the current safe area insets in physical pixels
  * (UIEdgeInsets × UIScreen.scale). Re-called on orientation change.
  *

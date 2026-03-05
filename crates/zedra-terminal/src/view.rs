@@ -18,6 +18,10 @@ pub type OutputBuffer = Arc<Mutex<VecDeque<Vec<u8>>>>;
 /// Callback for requesting keyboard show/hide
 pub type KeyboardRequestFn = Box<dyn Fn(bool) + Send + 'static>;
 
+/// Callback to query whether the soft keyboard is currently visible.
+/// Used to sync local toggle state with actual UIKit/Android state.
+pub type IsKeyboardVisibleFn = Box<dyn Fn() -> bool + Send + 'static>;
+
 /// Event emitted when user requests disconnect
 pub struct DisconnectRequested;
 
@@ -30,6 +34,7 @@ pub struct TerminalView {
     status_text: String,
     focus_handle: FocusHandle,
     keyboard_request: Option<KeyboardRequestFn>,
+    is_keyboard_visible_fn: Option<IsKeyboardVisibleFn>,
     /// Sub-line pixel offset for smooth scrolling. Applied as a visual shift
     /// to the terminal grid; when it exceeds line_height, a whole line is committed.
     scroll_offset_px: f32,
@@ -64,6 +69,7 @@ impl TerminalView {
             status_text: "Disconnected".to_string(),
             focus_handle: cx.focus_handle(),
             keyboard_request: None,
+            is_keyboard_visible_fn: None,
             scroll_offset_px: 0.0,
             base_rows: rows,
             last_keyboard_rows: rows,
@@ -78,10 +84,27 @@ impl TerminalView {
         self.keyboard_request = Some(callback);
     }
 
+    /// Set callback to query whether the keyboard is currently visible.
+    /// When provided, tap-to-toggle reads actual platform state so it stays
+    /// in sync after external dismissals (e.g. tapping the drawer toggle).
+    pub fn set_is_keyboard_visible_fn(&mut self, f: IsKeyboardVisibleFn) {
+        self.is_keyboard_visible_fn = Some(f);
+    }
+
     /// Request keyboard to show
     fn request_keyboard(&self, show: bool) {
         if let Some(ref request) = self.keyboard_request {
             request(show);
+        }
+    }
+
+    /// Read actual keyboard visibility from the platform bridge if available,
+    /// otherwise fall back to cached local state.
+    fn get_keyboard_visible(&self) -> bool {
+        if let Some(ref f) = self.is_keyboard_visible_fn {
+            f()
+        } else {
+            self.keyboard_visible
         }
     }
 
@@ -339,7 +362,10 @@ impl Render for TerminalView {
                 cx.listener(|this, _event, _window, _cx| {
                     if this.tap_pending {
                         this.tap_pending = false;
-                        this.keyboard_visible = !this.keyboard_visible;
+                        // Read actual platform state so external dismissals
+                        // (e.g. drawer open) don't desync the toggle.
+                        let current = this.get_keyboard_visible();
+                        this.keyboard_visible = !current;
                         this.request_keyboard(this.keyboard_visible);
                     }
                 }),

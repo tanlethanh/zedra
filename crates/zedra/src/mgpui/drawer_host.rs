@@ -227,6 +227,8 @@ impl Render for DrawerHost {
                 if !drawer_open && pos_x >= EDGE_ZONE {
                     return;
                 }
+                // Horizontal swipe is driving the drawer — dismiss keyboard.
+                crate::platform_bridge::bridge().hide_keyboard();
                 let width = f32::from(this.width);
                 let current = this.drawer_state.lock().map(|s| s.offset).unwrap_or(0.0);
                 if current <= 0.0 && dx <= 0.0 {
@@ -300,13 +302,24 @@ impl Render for DrawerHost {
                 };
 
                 // Backdrop — covers full area, tappable to close.
+                // When the drawer is closed/closing (offset=0), we return early so
+                // events fall through to the content behind the overlay.
+                // When the drawer is open, stop_propagation() blocks content buttons.
                 let backdrop = div().absolute().inset_0().on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, event: &MouseDownEvent, _window, cx| {
                         let offset = this.drawer_state.lock().map(|s| s.offset).unwrap_or(0.0);
+                        // Drawer closed or closing — let events through to content
+                        if offset <= 0.0 {
+                            return;
+                        }
+                        // Tap inside the panel area — panel's own .occlude() handles it
                         if f32::from(event.position.x) < offset {
                             return;
                         }
+                        // Backdrop tap: block content behind from firing, close drawer
+                        cx.stop_propagation();
+                        crate::platform_bridge::bridge().hide_keyboard();
                         cx.emit(DrawerEvent::BackdropTapped);
                         this.close(cx);
                     }),
@@ -373,7 +386,9 @@ impl Render for DrawerHost {
                         div()
                             .absolute()
                             .inset_0()
-                            .occlude()
+                            // No .occlude() here: during close animation (offset=0, snap_target live)
+                            // we want events to reach content. The backdrop's on_mouse_down calls
+                            // stop_propagation() when the drawer is actually open (offset > 0).
                             .child(backdrop)
                             .child(panel),
                     )

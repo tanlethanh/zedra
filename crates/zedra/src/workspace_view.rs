@@ -144,6 +144,7 @@ impl Render for WorkspaceContent {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
+                                    crate::platform_bridge::bridge().hide_keyboard();
                                     cx.emit(WorkspaceContentEvent::ToggleDrawer);
                                 }),
                             )
@@ -191,6 +192,7 @@ impl Render for WorkspaceContent {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
+                                    crate::platform_bridge::bridge().hide_keyboard();
                                     cx.emit(WorkspaceContentEvent::OpenQuickAction);
                                 }),
                             )
@@ -240,6 +242,7 @@ impl WorkspaceView {
             cx.new(|cx| TerminalView::new(columns, rows, cell_width, line_height, cx));
         terminal_view.update(cx, |view, _cx| {
             view.set_keyboard_request(crate::keyboard::make_keyboard_handler());
+            view.set_is_keyboard_visible_fn(crate::keyboard::make_is_keyboard_visible());
             view.set_status("Connecting...".to_string());
         });
 
@@ -345,6 +348,9 @@ impl WorkspaceView {
                                 terminal_view.update(cx, |view, _cx| {
                                     view.set_keyboard_request(
                                         crate::keyboard::make_keyboard_handler(),
+                                    );
+                                    view.set_is_keyboard_visible_fn(
+                                        crate::keyboard::make_is_keyboard_visible(),
                                     );
                                     view.set_status("Creating terminal...".to_string());
                                 });
