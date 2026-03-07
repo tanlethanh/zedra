@@ -1,31 +1,52 @@
 use gpui::*;
 
 use crate::theme;
+use crate::workspace_store::PersistedWorkspace;
 use crate::workspace_view::WorkspaceSummary;
 
 #[derive(Clone, Debug)]
 pub enum HomeEvent {
     ScanQrTapped,
+    /// Tap on an active (in-memory) workspace card.
     WorkspaceTapped(usize),
+    /// Tap on a saved (persisted, not yet connected) workspace card to reconnect.
+    SavedWorkspaceTapped(usize),
+    /// Long-press / delete a saved workspace. Carries (index, display_name).
+    SavedWorkspaceRemoved(usize, String),
 }
 
 impl EventEmitter<HomeEvent> for HomeView {}
 
 pub struct HomeView {
     workspaces: Vec<WorkspaceSummary>,
+    saved_workspaces: Vec<PersistedWorkspace>,
     focus_handle: FocusHandle,
+    /// Set to true when a long press fires; cleared when the next click resolves.
+    /// Prevents the reconnect action from also firing after a long press.
+    long_press_active: bool,
 }
 
 impl HomeView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             workspaces: Vec::new(),
+            saved_workspaces: Vec::new(),
             focus_handle: cx.focus_handle(),
+            long_press_active: false,
         }
     }
 
     pub fn update_workspaces(&mut self, summaries: Vec<WorkspaceSummary>, cx: &mut Context<Self>) {
         self.workspaces = summaries;
+        cx.notify();
+    }
+
+    pub fn update_saved_workspaces(
+        &mut self,
+        saved: Vec<PersistedWorkspace>,
+        cx: &mut Context<Self>,
+    ) {
+        self.saved_workspaces = saved;
         cx.notify();
     }
 }
@@ -72,15 +93,12 @@ impl Render for HomeView {
 
             for ws in &self.workspaces {
                 let index = ws.index;
-                let status_color = if ws.is_connected {
-                    theme::ACCENT_GREEN
-                } else {
-                    theme::ACCENT_RED
-                };
-                let status_label = if ws.is_connected {
-                    "Connected"
-                } else {
-                    "Disconnected"
+                let (status_label, status_color): (&str, u32) = match &ws.session_state {
+                    zedra_session::SessionState::Connected { .. } => ("Connected", theme::ACCENT_GREEN),
+                    zedra_session::SessionState::Connecting { .. } => ("Connecting\u{2026}", theme::ACCENT_YELLOW),
+                    zedra_session::SessionState::Reconnecting { .. } => ("Reconnecting\u{2026}", theme::ACCENT_YELLOW),
+                    zedra_session::SessionState::Disconnected => ("Disconnected", theme::ACCENT_RED),
+                    zedra_session::SessionState::Error(_) => ("Error", theme::ACCENT_RED),
                 };
                 let path_label = ws
                     .project_path
@@ -158,8 +176,109 @@ impl Render for HomeView {
             content = content.child(cards);
         }
 
+        // Saved workspace cards (persisted, not yet connected)
+        // Filter out any that are already active (matched by endpoint_addr).
+        let active_addrs: Vec<String> = Vec::new(); // Active workspaces don't expose addr yet, show all saved
+        let saved: Vec<_> = self
+            .saved_workspaces
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| !active_addrs.contains(&w.endpoint_addr))
+            .collect();
+
+        if !saved.is_empty() && !has_workspaces {
+            // Section header
+            content = content.child(
+                div()
+                    .mt_4()
+                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_size(px(theme::FONT_DETAIL))
+                    .child("Saved Hosts"),
+            );
+        }
+
+        for (saved_index, ws) in &saved {
+            // Don't show saved cards if there are already active workspace cards
+            // (the user is connected; they'll see the active cards above)
+            if has_workspaces {
+                break;
+            }
+            let saved_index = *saved_index;
+            let display_name = ws.display_name();
+            let label = ws
+                .last_hostname
+                .as_deref()
+                .unwrap_or("Saved host")
+                .to_string();
+            let path_label = ws.project_name().unwrap_or_default().to_string();
+
+            let card = div()
+                .id(SharedString::from(format!("ws-saved-card-{}", saved_index)))
+                .w(px(280.0))
+                .rounded(px(8.0))
+                .bg(rgb(theme::BG_CARD))
+                .border_1()
+                .border_color(rgb(theme::BORDER_SUBTLE))
+                .p(px(12.0))
+                .cursor_pointer()
+                .hover(|s| s.bg(theme::hover_bg()))
+                .active(|s| s.opacity(0.6))
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    if this.long_press_active {
+                        this.long_press_active = false;
+                    } else {
+                        cx.emit(HomeEvent::SavedWorkspaceTapped(saved_index));
+                    }
+                }))
+                .on_long_press(cx.listener(move |this, _event, _window, cx| {
+                    this.long_press_active = true;
+                    cx.emit(HomeEvent::SavedWorkspaceRemoved(saved_index, display_name.clone()));
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(
+                            div()
+                                .w(px(theme::ICON_STATUS))
+                                .h(px(theme::ICON_STATUS))
+                                .rounded(px(3.0))
+                                .bg(rgb(theme::TEXT_MUTED)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_color(rgb(theme::TEXT_PRIMARY))
+                                .text_size(px(theme::FONT_BODY))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(label),
+                        )
+                        .child(
+                            div()
+                                .text_color(rgb(theme::TEXT_MUTED))
+                                .text_size(px(theme::FONT_DETAIL))
+                                .child("Reconnect"),
+                        ),
+                )
+                .children(if path_label.is_empty() {
+                    None
+                } else {
+                    Some(
+                        div()
+                            .mt(px(4.0))
+                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_size(px(theme::FONT_DETAIL))
+                            .child(path_label),
+                    )
+                });
+
+            content = content.child(card);
+        }
+
         // Install guide — shown only when no workspaces (above the connect button)
-        if !has_workspaces {
+        if !has_workspaces && saved.is_empty() {
             content = content.child(
                 div()
                     .w(px(280.0))

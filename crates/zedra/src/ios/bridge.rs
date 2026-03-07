@@ -69,6 +69,20 @@ unsafe extern "C" {
     fn gpui_ios_hide_keyboard(window_ptr: *mut std::ffi::c_void);
     /// Present the AVFoundation QR scanner (defined in ZedraQRScanner.m).
     fn ios_present_qr_scanner();
+    /// Returns the app's Documents directory path (from NSSearchPathForDirectoriesInDomains).
+    fn ios_get_documents_directory() -> *const std::ffi::c_char;
+    /// Present a native UIAlertController with dynamic buttons.
+    /// `labels` and `styles` are parallel arrays of length `button_count`.
+    /// Style values: 0 = default, 1 = cancel, 2 = destructive.
+    /// Result delivered via `zedra_ios_alert_result(callback_id, button_index)`.
+    fn ios_present_alert(
+        callback_id: u32,
+        title: *const std::ffi::c_char,
+        message: *const std::ffi::c_char,
+        button_count: i32,
+        labels: *const *const std::ffi::c_char,
+        styles: *const i32,
+    );
 }
 
 impl PlatformBridge for IosBridge {
@@ -118,6 +132,72 @@ impl PlatformBridge for IosBridge {
 
     fn launch_qr_scanner(&self) {
         unsafe { ios_present_qr_scanner() };
+    }
+
+    fn data_directory(&self) -> Option<String> {
+        unsafe {
+            let ptr = ios_get_documents_directory();
+            if ptr.is_null() {
+                return None;
+            }
+            let cstr = std::ffi::CStr::from_ptr(ptr);
+            let s = cstr.to_str().ok()?.to_string();
+            Some(s)
+        }
+    }
+
+    fn present_alert(
+        &self,
+        id: u32,
+        title: &str,
+        message: &str,
+        buttons: &[crate::platform_bridge::AlertButton],
+    ) {
+        use crate::platform_bridge::AlertButtonStyle;
+        use std::ffi::CString;
+
+        let c_title =
+            CString::new(title).unwrap_or_else(|_| CString::new("").unwrap());
+        let c_message =
+            CString::new(message).unwrap_or_else(|_| CString::new("").unwrap());
+        // Build CString labels and collect raw pointers (kept alive by the Vec).
+        let c_labels: Vec<CString> = buttons
+            .iter()
+            .map(|b| CString::new(b.label.as_str()).unwrap_or_else(|_| CString::new("OK").unwrap()))
+            .collect();
+        let label_ptrs: Vec<*const std::ffi::c_char> =
+            c_labels.iter().map(|s| s.as_ptr()).collect();
+        let styles: Vec<i32> = buttons
+            .iter()
+            .map(|b| match b.style {
+                AlertButtonStyle::Default => 0,
+                AlertButtonStyle::Cancel => 1,
+                AlertButtonStyle::Destructive => 2,
+            })
+            .collect();
+        unsafe {
+            ios_present_alert(
+                id,
+                c_title.as_ptr(),
+                c_message.as_ptr(),
+                buttons.len() as i32,
+                label_ptrs.as_ptr(),
+                styles.as_ptr(),
+            );
+        }
+    }
+}
+
+/// Called from the UIAlertController handler in main.m after the user taps a button.
+///
+/// `callback_id` matches the value passed to `ios_present_alert`.
+/// `button_index` is the 0-based index of the tapped button (matches the `buttons` array
+/// passed to `platform_bridge::show_alert`).
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_alert_result(callback_id: u32, button_index: i32) {
+    if button_index >= 0 {
+        crate::platform_bridge::dispatch_alert_result(callback_id, button_index as usize);
+        zedra_session::signal_terminal_data();
     }
 }
 

@@ -67,12 +67,22 @@ impl ZedraApp {
                 HomeEvent::SavedWorkspaceTapped(index) => {
                     this.reconnect_saved_workspace(*index, window, cx);
                 }
-                HomeEvent::SavedWorkspaceRemoved(index) => {
-                    let saved = workspace_store::load_workspaces();
-                    if let Some(ws) = saved.get(*index) {
-                        workspace_store::remove_workspace(&ws.endpoint_addr);
-                        this.refresh_saved_workspaces(cx);
-                    }
+                HomeEvent::SavedWorkspaceRemoved(index, display_name) => {
+                    let saved_index = *index;
+                    let title = display_name.clone();
+                    crate::platform_bridge::show_alert(
+                        "",
+                        &format!("Remove {} workspace?", title),
+                        vec![
+                            crate::platform_bridge::AlertButton::destructive("Delete"),
+                            crate::platform_bridge::AlertButton::cancel("Cancel"),
+                        ],
+                        move |button_index| {
+                            if button_index == 0 {
+                                PENDING_WORKSPACE_DELETE.set(saved_index);
+                            }
+                        },
+                    );
                 }
             },
         );
@@ -115,7 +125,10 @@ impl ZedraApp {
         // --- Window activation (foreground/background) ---
         let sub = cx.observe_window_activation(window, |this: &mut Self, window, _cx| {
             if window.is_window_active() {
-                log::info!("ZedraApp: window activated, notifying {} workspace(s)", this.workspaces.len());
+                log::info!(
+                    "ZedraApp: window activated, notifying {} workspace(s)",
+                    this.workspaces.len()
+                );
                 for entry in &this.workspaces {
                     zedra_session::notify_foreground_resume(&entry.handle);
                 }
@@ -189,10 +202,7 @@ impl ZedraApp {
 
         match zedra_rpc::pairing::decode_endpoint_addr(&ws.endpoint_addr) {
             Ok(addr) => {
-                log::info!(
-                    "Reconnecting to saved workspace: {}",
-                    addr.id.fmt_short()
-                );
+                log::info!("Reconnecting to saved workspace: {}", addr.id.fmt_short());
                 // Pre-load credentials into the session handle after connection
                 let session_id = ws.session_id.clone();
                 let auth_token = ws.auth_token.clone();
@@ -267,9 +277,7 @@ impl ZedraApp {
                         };
                         // Update active handle after workspace removal
                         if let Some(idx) = this.active_workspace {
-                            zedra_session::set_active_handle(
-                                this.workspaces[idx].handle.clone(),
-                            );
+                            zedra_session::set_active_handle(this.workspaces[idx].handle.clone());
                         } else {
                             zedra_session::clear_active_handle();
                         }
@@ -312,7 +320,10 @@ impl ZedraApp {
             match RemoteSession::connect_with_iroh(addr, &handle_for_connect).await {
                 Ok(session) => {
                     log::info!("RemoteSession: connected via iroh!");
-                    match session.terminal_create(cols_u16, rows_u16, &handle_for_connect).await {
+                    match session
+                        .terminal_create(cols_u16, rows_u16, &handle_for_connect)
+                        .await
+                    {
                         Ok(term_id) => {
                             log::info!("Remote terminal created: {}", term_id);
                             pending_term_id.set(term_id);
@@ -344,6 +355,15 @@ impl Render for ZedraApp {
         // Check for QR-scanned endpoint address
         if let Some(addr) = PENDING_QR_ADDR.take() {
             self.connect_with_iroh_addr(addr, window, cx);
+        }
+
+        // Check for workspace delete confirmed via native action sheet
+        if let Some(index) = PENDING_WORKSPACE_DELETE.take() {
+            let saved = workspace_store::load_workspaces();
+            if let Some(ws) = saved.get(index) {
+                workspace_store::remove_workspace(&ws.endpoint_addr);
+                self.refresh_saved_workspaces(cx);
+            }
         }
 
         // Periodically persist workspace state (~every 5 seconds)
@@ -416,6 +436,7 @@ impl Render for ZedraApp {
 use crate::pending::PendingSlot;
 
 static PENDING_QR_ADDR: PendingSlot<iroh::EndpointAddr> = PendingSlot::new();
+static PENDING_WORKSPACE_DELETE: PendingSlot<usize> = PendingSlot::new();
 
 pub fn set_pending_qr_addr(addr: iroh::EndpointAddr) {
     PENDING_QR_ADDR.set(addr);

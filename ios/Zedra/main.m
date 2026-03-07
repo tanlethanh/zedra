@@ -35,6 +35,88 @@ extern void zedra_ios_set_screen_scale(float scale);
 extern void zedra_ios_set_safe_area_insets(float top, float bottom, float left, float right);
 extern bool zedra_ios_check_pending_frame(void);
 extern void zedra_ios_set_keyboard_height(unsigned int height_px);
+extern void zedra_ios_alert_result(unsigned int callback_id, int button_index);
+
+// Called from Rust to present a native UIAlertController with dynamic buttons.
+// `labels` and `styles` are parallel arrays of length `button_count`.
+// Style values: 0 = default, 1 = cancel, 2 = destructive.
+// Result delivered via zedra_ios_alert_result(callback_id, button_index).
+void ios_present_alert(
+    unsigned int callback_id,
+    const char *title,
+    const char *message,
+    int button_count,
+    const char **labels,
+    const int *styles)
+{
+    // Copy all strings to NSString before the async dispatch (C pointers may be freed).
+    NSString *titleStr = (title && title[0]) ? [NSString stringWithUTF8String:title] : nil;
+    NSString *messageStr = (message && message[0]) ? [NSString stringWithUTF8String:message] : nil;
+    NSMutableArray<NSString *> *labelArr = [NSMutableArray arrayWithCapacity:button_count];
+    NSMutableArray<NSNumber *> *styleArr = [NSMutableArray arrayWithCapacity:button_count];
+    for (int i = 0; i < button_count; i++) {
+        NSString *lbl = (labels && labels[i]) ? [NSString stringWithUTF8String:labels[i]] : @"OK";
+        [labelArr addObject:lbl];
+        [styleArr addObject:@(styles ? styles[i] : 0)];
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Walk connected scenes to find the key window's root view controller.
+        UIViewController *vc = nil;
+        for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+            for (UIWindow *win in ((UIWindowScene *)scene).windows) {
+                if (win.isKeyWindow) {
+                    vc = win.rootViewController;
+                    break;
+                }
+            }
+            if (vc) break;
+        }
+        // Ascend to the topmost presented controller so the alert appears on top.
+        while (vc.presentedViewController) {
+            vc = vc.presentedViewController;
+        }
+        if (!vc) return;
+
+        UIAlertController *alert = [UIAlertController
+            alertControllerWithTitle:titleStr
+            message:messageStr
+            preferredStyle:UIAlertControllerStyleAlert];
+
+        for (int i = 0; i < button_count; i++) {
+            UIAlertActionStyle actionStyle;
+            switch ([styleArr[i] intValue]) {
+                case 1:  actionStyle = UIAlertActionStyleCancel;      break;
+                case 2:  actionStyle = UIAlertActionStyleDestructive; break;
+                default: actionStyle = UIAlertActionStyleDefault;     break;
+            }
+            int captured_i = i;
+            unsigned int captured_id = callback_id;
+            [alert addAction:[UIAlertAction
+                actionWithTitle:labelArr[i]
+                style:actionStyle
+                handler:^(UIAlertAction *action) {
+                    zedra_ios_alert_result(captured_id, captured_i);
+                }]];
+        }
+
+        [vc presentViewController:alert animated:YES completion:nil];
+    });
+}
+
+// Returns the app's Documents directory as a C string (static buffer).
+// Called from Rust via FFI to determine where to persist workspace data.
+const char* ios_get_documents_directory(void) {
+    static char buf[1024];
+    NSArray *paths = NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES);
+    if (paths.count == 0) return NULL;
+    const char *cstr = [paths[0] UTF8String];
+    if (!cstr) return NULL;
+    strlcpy(buf, cstr, sizeof(buf));
+    return buf;
+}
 
 @interface ZedraAppDelegate : UIResponder <UIApplicationDelegate>
 @property (nonatomic, assign) void *gpuiApp;

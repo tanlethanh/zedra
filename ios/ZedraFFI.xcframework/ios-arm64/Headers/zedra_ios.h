@@ -95,6 +95,33 @@ extern void gpui_ios_hide_keyboard(void *window_ptr);
 extern void ios_present_qr_scanner(void);
 
 /**
+ * Returns the app's Documents directory path (from NSSearchPathForDirectoriesInDomains).
+ */
+extern const char *ios_get_documents_directory(void);
+
+/**
+ * Present a native UIAlertController with dynamic buttons.
+ * `labels` and `styles` are parallel arrays of length `button_count`.
+ * Style values: 0 = default, 1 = cancel, 2 = destructive.
+ * Result delivered via `zedra_ios_alert_result(callback_id, button_index)`.
+ */
+extern void ios_present_alert(uint32_t callback_id,
+                              const char *title,
+                              const char *message,
+                              int32_t button_count,
+                              const char *const *labels,
+                              const int32_t *styles);
+
+/**
+ * Called from the UIAlertController handler in main.m after the user taps a button.
+ *
+ * `callback_id` matches the value passed to `ios_present_alert`.
+ * `button_index` is the 0-based index of the tapped button (matches the `buttons` array
+ * passed to `platform_bridge::show_alert`).
+ */
+void zedra_ios_alert_result(uint32_t callback_id, int32_t button_index);
+
+/**
  * Called from ZedraQRScanner.m after a successful QR scan.
  *
  * `qr_string` is a base64-url encoded iroh::EndpointAddr produced by

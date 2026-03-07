@@ -3,7 +3,87 @@
 /// Consolidates all platform-specific calls (density, insets, keyboard, QR scanner)
 /// behind a single trait. Android delegates to `android_jni`; the `StubBridge` fallback
 /// lets non-Android targets compile and run `cargo check`.
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, OnceLock};
+
+// ---------------------------------------------------------------------------
+// Native alert API
+// ---------------------------------------------------------------------------
+
+/// Style hint for a button in a native alert dialog.
+#[derive(Clone, Copy, Debug)]
+pub enum AlertButtonStyle {
+    Default,
+    Cancel,
+    Destructive,
+}
+
+/// A button to display in a native alert dialog.
+pub struct AlertButton {
+    pub label: String,
+    pub style: AlertButtonStyle,
+}
+
+impl AlertButton {
+    pub fn default(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            style: AlertButtonStyle::Default,
+        }
+    }
+    pub fn cancel(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            style: AlertButtonStyle::Cancel,
+        }
+    }
+    pub fn destructive(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            style: AlertButtonStyle::Destructive,
+        }
+    }
+}
+
+static NEXT_ALERT_ID: AtomicU32 = AtomicU32::new(1);
+static ALERT_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(usize) + Send>>>> =
+    OnceLock::new();
+
+fn alert_callbacks() -> &'static Mutex<HashMap<u32, Box<dyn FnOnce(usize) + Send>>> {
+    ALERT_CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Present a native alert dialog with the given title, message, and buttons.
+///
+/// `on_result` is called (off the GPUI thread) with the index of the tapped button.
+/// Use a `PendingSlot` or similar if you need to update GPUI state in response.
+pub fn show_alert(
+    title: &str,
+    message: &str,
+    buttons: Vec<AlertButton>,
+    on_result: impl FnOnce(usize) + Send + 'static,
+) {
+    let id = NEXT_ALERT_ID.fetch_add(1, Ordering::Relaxed);
+    alert_callbacks()
+        .lock()
+        .unwrap()
+        .insert(id, Box::new(on_result));
+    bridge().present_alert(id, title, message, &buttons);
+}
+
+/// Called from platform code after the user taps a button.
+/// Dispatches the stored callback and removes it from the registry.
+pub fn dispatch_alert_result(callback_id: u32, button_index: usize) {
+    let cb = alert_callbacks().lock().unwrap().remove(&callback_id);
+    if let Some(cb) = cb {
+        cb(button_index);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PlatformBridge trait
+// ---------------------------------------------------------------------------
 
 pub trait PlatformBridge: Send + Sync + 'static {
     fn density(&self) -> f32;
@@ -14,6 +94,15 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn show_keyboard(&self);
     fn hide_keyboard(&self);
     fn launch_qr_scanner(&self);
+    /// Returns the app's writable data directory for persisting workspace state.
+    /// On iOS: Documents directory. On Android: internal files directory.
+    fn data_directory(&self) -> Option<String> {
+        None
+    }
+    /// Display a native alert dialog.
+    /// The platform implementation should present the dialog and call
+    /// `platform_bridge::dispatch_alert_result(id, button_index)` when the user responds.
+    fn present_alert(&self, _id: u32, _title: &str, _message: &str, _buttons: &[AlertButton]) {}
 }
 
 static BRIDGE: OnceLock<Box<dyn PlatformBridge>> = OnceLock::new();
@@ -65,7 +154,9 @@ impl PlatformBridge for StubBridge {
     fn keyboard_height(&self) -> u32 {
         0
     }
-    fn is_keyboard_visible(&self) -> bool { false }
+    fn is_keyboard_visible(&self) -> bool {
+        false
+    }
     fn show_keyboard(&self) {}
     fn hide_keyboard(&self) {}
     fn launch_qr_scanner(&self) {}

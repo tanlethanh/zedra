@@ -8,20 +8,22 @@ SCHEME="Zedra"
 BUNDLE_ID="dev.zedra.app"
 
 usage() {
-    echo "Usage: $0 [sim|device] [--preview] [--debug]"
+    echo "Usage: $0 [sim|device] [--preview] [--debug] [--device-id <UDID>]"
     echo ""
     echo "  sim      Build and run on iOS Simulator (default)"
     echo "  device   Build and install on connected device"
     echo ""
-    echo "  --preview   Enable preview feature flag"
-    echo "  --debug     Use debug profile (faster build, no optimizations)"
+    echo "  --preview             Enable preview feature flag"
+    echo "  --debug               Use debug profile (faster build, no optimizations)"
+    echo "  --device-id <UDID>    Target a specific device by UDID (overrides auto-detect)"
     echo ""
     echo "Examples:"
-    echo "  $0                         # run on simulator (release)"
-    echo "  $0 sim                     # run on simulator (release)"
-    echo "  $0 device                  # install on connected device (release)"
-    echo "  $0 device --preview        # install with preview features"
-    echo "  $0 device --debug          # install debug build"
+    echo "  $0                                        # run on simulator (release)"
+    echo "  $0 sim                                    # run on simulator (release)"
+    echo "  $0 device                                 # install on first connected device"
+    echo "  $0 device --device-id 00008140-001234     # install on specific device"
+    echo "  $0 device --preview                       # install with preview features"
+    echo "  $0 device --debug                         # install debug build"
     exit 1
 }
 
@@ -39,9 +41,12 @@ generate_project() {
 MODE="${1:-sim}"
 BUILD_FLAGS=""
 XCODE_CONFIGURATION="Debug"
+FORCED_DEVICE_ID=""
 
-for arg in "$@"; do
-    case "$arg" in
+args=("$@")
+i=0
+while [ $i -lt ${#args[@]} ]; do
+    case "${args[$i]}" in
         --preview)
             BUILD_FLAGS="$BUILD_FLAGS --preview"
             ;;
@@ -49,7 +54,12 @@ for arg in "$@"; do
             BUILD_FLAGS="$BUILD_FLAGS --debug"
             XCODE_CONFIGURATION="Debug"
             ;;
+        --device-id)
+            i=$((i + 1))
+            FORCED_DEVICE_ID="${args[$i]}"
+            ;;
     esac
+    i=$((i + 1))
 done
 
 case "$MODE" in
@@ -127,16 +137,29 @@ for runtime, devices in data['devices'].items():
         ;;
 
     device)
-        # Find connected device
-        DEVICE_LINE=$(xcrun xctrace list devices 2>&1 | grep -E '^\w.+\(\d+\.\d+' | head -1)
-        DEVICE_ID=$(echo "$DEVICE_LINE" | grep -oE '[0-9A-F]{8}-[0-9A-F]{16}' || true)
+        if [ -n "$FORCED_DEVICE_ID" ]; then
+            # Resolve name and OS from the forced UDID
+            DEVICE_LINE=$(xcrun xctrace list devices 2>&1 | grep "$FORCED_DEVICE_ID" | head -1)
+            if [ -z "$DEVICE_LINE" ]; then
+                echo "Error: Device with UDID '$FORCED_DEVICE_ID' not found."
+                echo ""
+                echo "Available devices:"
+                xcrun xctrace list devices 2>&1 | grep -E '^\w.+\(\d+\.\d+'
+                exit 1
+            fi
+            DEVICE_ID="$FORCED_DEVICE_ID"
+        else
+            # Auto-detect first connected device
+            DEVICE_LINE=$(xcrun xctrace list devices 2>&1 | grep -E '^\w.+\(\d+\.\d+' | head -1)
+            DEVICE_ID=$(echo "$DEVICE_LINE" | grep -oE '[0-9A-F]{8}-[0-9A-F]{16}' || true)
 
-        if [ -z "$DEVICE_ID" ]; then
-            echo "Error: No connected iOS device found."
-            echo ""
-            echo "Available devices:"
-            xcrun xctrace list devices 2>&1 | grep -E '^\w.+\(\d+\.\d+'
-            exit 1
+            if [ -z "$DEVICE_ID" ]; then
+                echo "Error: No connected iOS device found."
+                echo ""
+                echo "Available devices:"
+                xcrun xctrace list devices 2>&1 | grep -E '^\w.+\(\d+\.\d+'
+                exit 1
+            fi
         fi
 
         # Detect device OS version and use it as the deployment target so the

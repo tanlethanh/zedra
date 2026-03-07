@@ -1,7 +1,14 @@
-// Weak stub for ios_present_qr_scanner.
+// Weak stubs for Obj-C functions called from Rust on iOS.
 //
 // Purpose: allows the Rust cdylib to link without errors when targeting iOS.
-// The real implementation is in ios/Zedra/ZedraQRScanner.m and is linked by Xcode.
-// Because this is __attribute__((weak)), the linker always prefers the strong
-// ObjC definition at Xcode link time.
+// Real implementations live in Xcode Obj-C sources and override these at Xcode link time.
+// __attribute__((weak)) ensures the linker always prefers the strong Obj-C definition.
 __attribute__((weak)) void ios_present_qr_scanner(void) {}
+__attribute__((weak)) const char* ios_get_documents_directory(void) { return 0; }
+__attribute__((weak)) void ios_present_alert(
+    unsigned int callback_id,
+    const char *title,
+    const char *message,
+    int button_count,
+    const char **labels,
+    const int *styles) {}
