@@ -85,6 +85,14 @@ impl WorkspaceDrawer {
         self.load_git_status();
     }
 
+    /// Called when this workspace becomes active.
+    /// Reloads the file explorer from the new session and clears stale git data.
+    pub fn on_activate(&mut self, cx: &mut Context<Self>) {
+        self.git_loaded = false;
+        self.file_explorer.update(cx, |fe, cx| fe.reload(cx));
+        cx.notify();
+    }
+
     /// Reset state after disconnect so next session triggers fresh loads.
     pub fn reset_for_disconnect(&mut self, cx: &mut Context<Self>) {
         self.git_loaded = false;

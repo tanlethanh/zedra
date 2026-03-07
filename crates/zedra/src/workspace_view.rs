@@ -554,10 +554,10 @@ impl WorkspaceView {
     }
 
     /// Called when this workspace becomes the active workspace.
-    /// Notifies session-dependent child entities to re-render with the updated global session.
+    /// Notifies session-dependent children to re-render and reloads the file explorer.
     pub fn on_activate(&mut self, cx: &mut Context<Self>) {
         self.workspace_content.update(cx, |_, cx| cx.notify());
-        self.workspace_drawer.update(cx, |_, cx| cx.notify());
+        self.workspace_drawer.update(cx, |drawer, cx| drawer.on_activate(cx));
         cx.notify();
     }
 

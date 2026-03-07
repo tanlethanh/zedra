@@ -90,6 +90,17 @@ impl FileExplorer {
         cx.notify();
     }
 
+    /// Reload the root directory from the currently active session.
+    /// Used when switching workspaces so the explorer reflects the new session.
+    pub fn reload(&mut self, cx: &mut Context<Self>) {
+        self.remote_loaded = false;
+        // Clear any in-flight pending results from the old session.
+        let _ = self.pending_entries.take();
+        let _ = self.pending_children.take();
+        self.try_load_remote_root(cx);
+        cx.notify();
+    }
+
     /// Attempt to load the root directory listing from the active remote session
     fn try_load_remote_root(&mut self, _cx: &mut Context<Self>) {
         let session = match zedra_session::active_session() {
