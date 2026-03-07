@@ -192,7 +192,7 @@ crates/
           ├── rpc_daemon.rs     # irpc RPC dispatch, TermAttach bidi streaming
           ├── session_registry.rs # Persistent sessions with terminal ownership
           ├── iroh_listener.rs  # iroh Endpoint creation + accept loop
-          ├── identity.rs       # Persistent Ed25519 host identity (~/.config/zedra-host/)
+          ├── identity.rs       # Persistent Ed25519 host identity (~/.config/zedra/)
           ├── qr.rs             # QR code generation (terminal + JSON output)
           ├── fs.rs             # Filesystem RPC handlers (list, read, write, stat, remove, mkdir)
           ├── git.rs            # Git RPC handlers (status, diff, log, commit, branches, checkout)

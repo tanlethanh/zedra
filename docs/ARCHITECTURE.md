@@ -56,7 +56,7 @@ All connectivity goes through a single iroh Endpoint per device. iroh handles pa
 
 ### Identity (`zedra-host/src/identity.rs`)
 
-The host has a persistent Ed25519 keypair stored at `~/.config/zedra-host/identity.key` (32-byte secret). This key is used directly as the iroh Endpoint secret key. Identity is host-only — the mobile client uses an ephemeral iroh Endpoint.
+The host has a persistent Ed25519 keypair stored at `~/.config/zedra/workspaces/<hash>/identity.key` (32-byte secret, per-workspace) or `~/.config/zedra/identity.key` (base identity for `zedra qr` without `--workdir`). Each `zedra-host start --workdir` gets its own identity so multiple instances on the same machine have distinct iroh NodeIds. The key is used directly as the iroh Endpoint secret key. Identity is host-only — the mobile client uses an ephemeral iroh Endpoint.
 
 ### Pairing (`zedra-rpc/src/pairing.rs`)
 
@@ -99,7 +99,7 @@ Desktop process that listens for incoming iroh connections and dispatches RPC op
 ### Startup Flow (`main.rs`)
 
 ```
-1. Load/generate persistent host identity (~/.config/zedra-host/identity.key)
+1. Load/generate per-workspace host identity (~/.config/zedra/workspaces/<hash>/identity.key)
 2. Create named session for working directory
 3. Bind iroh Endpoint with host's SecretKey
 4. Generate pairing QR code (compact EndpointAddr: postcard + base64-url)

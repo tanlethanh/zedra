@@ -9,7 +9,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use zedra_host::{identity, iroh_listener, qr, rpc_daemon, session_registry};
+use zedra_host::{identity, iroh_listener, qr, rpc_daemon, session_registry, workspace_lock};
 
 #[derive(Parser)]
 #[command(name = "zedra", about = "Desktop companion daemon for Zedra")]
@@ -31,7 +31,21 @@ enum Commands {
         json: bool,
     },
     /// Show QR code for pairing
-    Qr,
+    Qr {
+        /// Working directory (uses per-workspace identity when specified)
+        #[arg(short, long)]
+        workdir: Option<String>,
+    },
+    /// Stop a running daemon and release its workspace lock
+    Stop {
+        /// Working directory of the daemon to stop
+        #[arg(short, long, default_value = ".")]
+        workdir: String,
+
+        /// Seconds to wait for clean exit before sending SIGKILL
+        #[arg(long, default_value = "5")]
+        grace: u64,
+    },
 }
 
 #[tokio::main]
@@ -54,8 +68,15 @@ async fn main() -> Result<()> {
             tracing::info!("Starting zedra-host (iroh transport)");
             tracing::info!("Serving workdir: {}", workdir.display());
 
-            // Load or generate persistent host identity
-            let host_identity = match identity::HostIdentity::load_or_generate() {
+            // Acquire workspace lock — prevents two instances from running
+            // against the same directory (same identity key = relay conflict).
+            let _lock = workspace_lock::acquire(&workdir)?;
+            tracing::info!("Acquired workspace lock for {}", workdir.display());
+
+            // Load or generate per-workspace host identity.
+            // Each workdir gets its own iroh NodeId so multiple instances
+            // on the same machine don't conflict on the relay.
+            let host_identity = match identity::HostIdentity::load_or_generate_for_workdir(&workdir) {
                 Ok(id) => std::sync::Arc::new(id),
                 Err(e) => {
                     anyhow::bail!("Failed to load host identity: {}", e);
@@ -115,8 +136,53 @@ async fn main() -> Result<()> {
             // 4. Run iroh accept loop (blocks main)
             iroh_listener::run_accept_loop(&endpoint, registry, state).await?;
         }
-        Commands::Qr => {
-            let host_identity = identity::HostIdentity::load_or_generate()?;
+        Commands::Stop { workdir, grace } => {
+            let workdir = std::path::PathBuf::from(&workdir)
+                .canonicalize()
+                .unwrap_or_else(|_| std::path::PathBuf::from(&workdir));
+
+            // Print info about what we're about to stop before killing it.
+            match workspace_lock::read_lock_info(&workdir)? {
+                None => {
+                    eprintln!("No running zedra-host found for: {}", workdir.display());
+                    std::process::exit(1);
+                }
+                Some(info) => {
+                    if !workspace_lock::is_process_alive(info.pid) {
+                        eprintln!(
+                            "Process {} is already gone (stale lock). Cleaning up.",
+                            info.pid
+                        );
+                    } else {
+                        eprintln!(
+                            "Stopping zedra-host:\n\
+                             \n\
+                             \x20 PID:     {}\n\
+                             \x20 Workdir: {}\n\
+                             \x20 Host:    {}\n\
+                             \x20 Started: {}\n",
+                            info.pid,
+                            info.workdir,
+                            info.hostname,
+                            info.running_for(),
+                        );
+                    }
+                }
+            }
+
+            workspace_lock::kill_and_unlock(&workdir, grace)?;
+            eprintln!("Done.");
+        }
+
+        Commands::Qr { workdir } => {
+            let host_identity = if let Some(ref dir) = workdir {
+                let workdir = std::path::PathBuf::from(dir)
+                    .canonicalize()
+                    .unwrap_or_else(|_| std::path::PathBuf::from(dir));
+                identity::HostIdentity::load_or_generate_for_workdir(&workdir)?
+            } else {
+                identity::HostIdentity::load_or_generate()?
+            };
             let id = std::sync::Arc::new(host_identity);
             let endpoint = iroh_listener::create_endpoint(&id).await?;
             if let Err(e) = qr::generate_pairing_qr(&endpoint.addr()) {

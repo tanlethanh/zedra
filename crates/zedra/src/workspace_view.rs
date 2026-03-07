@@ -1,6 +1,6 @@
 // WorkspaceView — one per session, owns all workspace state.
 // Contains: DrawerHost (left drawer) + WorkspaceContent (header + swappable main view)
-// Session access goes through zedra_session::active_session() (global for now).
+// Session access goes through the per-workspace SessionHandle.
 
 use gpui::*;
 
@@ -10,6 +10,7 @@ use crate::mgpui::DrawerHost;
 use crate::pending::{shared_pending_slot, SharedPendingSlot};
 use crate::theme;
 use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
+use zedra_session::SessionHandle;
 use zedra_terminal::view::{DisconnectRequested, TerminalView};
 
 // ---------------------------------------------------------------------------
@@ -94,25 +95,47 @@ impl Render for WorkspaceContent {
         let top_inset = crate::platform_bridge::status_bar_inset();
         let title = self.header_title.clone();
 
-        // Project name shown dimly above the main title (sourced from active session)
-        let project_name: Option<SharedString> =
-            zedra_session::active_session().and_then(|session| {
-                match session.state() {
+        // Network badge from active session state + handle reconnect fields
+        let (reconnect_attempt, reconnect_reason, next_retry_secs) =
+            zedra_session::active_handle().map_or(
+                (0, zedra_session::ReconnectReason::ConnectionLost, 0),
+                |h| (h.reconnect_attempt(), h.reconnect_reason(), h.next_retry_secs()),
+            );
+        let badge: Option<(String, String, u32)> =
+            zedra_session::active_session().map(|session| {
+                let state = session.state();
+                let latency = session.latency_ms();
+                let conn_info = session.connection_info();
+                let (label, color) = crate::transport_badge::transport_badge_info(
+                    &state,
+                    reconnect_attempt,
+                    &reconnect_reason,
+                    next_retry_secs,
+                    latency,
+                    conn_info.as_ref(),
+                );
+                // Project name for subtitle
+                let project = match &state {
                     zedra_session::SessionState::Connected { workdir, .. }
                         if !workdir.is_empty() =>
                     {
-                        Some(
-                            workdir
-                                .rsplit('/')
-                                .next()
-                                .unwrap_or(&workdir)
-                                .to_string()
-                                .into(),
-                        )
+                        workdir
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(workdir)
+                            .to_string()
                     }
-                    _ => None,
-                }
+                    _ => String::new(),
+                };
+                (project, label, color)
             });
+
+        let project_name = badge
+            .as_ref()
+            .and_then(|(p, _, _)| if p.is_empty() { None } else { Some(SharedString::from(p.clone())) });
+        let badge_element = badge.map(|(_, label, color)| {
+            crate::transport_badge::render_transport_badge(label, color)
+        });
 
         div()
             .size_full()
@@ -155,7 +178,7 @@ impl Render for WorkspaceContent {
                                     .child("\u{2630}"),
                             ),
                     )
-                    // Title area (flex-1, centered): optional project name above main title
+                    // Title area (flex-1, centered): project name + title + network badge
                     .child(
                         div().flex_1().flex().items_center().justify_center().child(
                             div()
@@ -174,7 +197,8 @@ impl Render for WorkspaceContent {
                                         .text_size(px(theme::FONT_BODY))
                                         .font_weight(FontWeight::MEDIUM)
                                         .child(title),
-                                ),
+                                )
+                                .children(badge_element),
                         ),
                     )
                     // ⚡ quick-action toggle
@@ -216,6 +240,8 @@ pub struct WorkspaceView {
     drawer_host: Entity<DrawerHost>,
     workspace_content: Entity<WorkspaceContent>,
     workspace_drawer: Entity<WorkspaceDrawer>,
+    /// Per-workspace session state (shared with async tasks).
+    pub session_handle: SessionHandle,
     /// (terminal_id, view entity) pairs in creation order.
     pub terminal_views: Vec<(String, Entity<TerminalView>)>,
     pub active_terminal_id: Option<String>,
@@ -229,7 +255,7 @@ pub struct WorkspaceView {
 impl EventEmitter<WorkspaceEvent> for WorkspaceView {}
 
 impl WorkspaceView {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(session_handle: SessionHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
 
         let pending_file: SharedPendingSlot<(String, String)> = shared_pending_slot();
@@ -251,7 +277,7 @@ impl WorkspaceView {
             &terminal_view,
             |this: &mut WorkspaceView, _terminal, _event: &DisconnectRequested, cx| {
                 log::info!("DisconnectRequested from terminal view");
-                zedra_session::clear_active_session();
+                this.session_handle.clear_session();
                 this.terminal_views.clear();
                 this.active_terminal_id = None;
                 cx.emit(WorkspaceEvent::Disconnected);
@@ -325,7 +351,7 @@ impl WorkspaceView {
                         WorkspaceDrawerEvent::DisconnectRequested => {
                             log::info!("DisconnectRequested from session panel");
                             drawer_host_clone.update(cx, |host, cx| host.close(cx));
-                            zedra_session::clear_active_session();
+                            this.session_handle.clear_session();
                             this.terminal_views.clear();
                             this.active_terminal_id = None;
                             workspace_drawer_clone.update(cx, |drawer, cx| {
@@ -365,8 +391,9 @@ impl WorkspaceView {
                                     .push(("__pending__".to_string(), terminal_view));
 
                                 let ptid = pending_terminal_id_clone.clone();
+                                let handle_for_create = this.session_handle.clone();
                                 zedra_session::session_runtime().spawn(async move {
-                                    match session.terminal_create(cols_u16, rows_u16).await {
+                                    match session.terminal_create(cols_u16, rows_u16, &handle_for_create).await {
                                         Ok(term_id) => {
                                             log::info!("terminal created: id={}", term_id);
                                             ptid.set(term_id);
@@ -479,6 +506,7 @@ impl WorkspaceView {
             drawer_host,
             workspace_content,
             workspace_drawer,
+            session_handle,
             terminal_views: initial_terminals,
             active_terminal_id: None,
             pending_terminal_id,

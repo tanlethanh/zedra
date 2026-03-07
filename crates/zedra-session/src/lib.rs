@@ -3,14 +3,17 @@
 // Uses irpc typed RPC over iroh QUIC streams. Terminal I/O uses bidi streaming
 // (TermAttach) for efficient binary data transfer without base64 encoding.
 //
-// Bridges async RPC calls to the GPUI main thread using a global-state pattern
-// (OutputBuffer, AtomicBool signaling, OnceLock singletons).
+// Per-workspace state is held in `SessionHandle`. Each workspace gets its own
+// handle, so multiple concurrent connections don't conflict. A global "active
+// handle" is maintained for backward-compat rendering code that reads session
+// state during the main-thread frame loop (only the active workspace is rendered).
 //
 // Usage:
-//   1. Call RemoteSession::connect_with_iroh(addr) on the session runtime
-//   2. Store the result via set_active_session()
-//   3. Main thread polls check_and_clear_terminal_data() each frame
-//   4. Main thread drains drain_callbacks() each frame for deferred work
+//   1. Create a SessionHandle for the workspace
+//   2. Call RemoteSession::connect_with_iroh(addr, &handle)
+//   3. Call set_active_handle(handle) when switching workspaces
+//   4. Main thread polls check_and_clear_terminal_data() each frame
+//   5. Main thread drains drain_callbacks() each frame for deferred work
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -39,7 +42,10 @@ pub type MainCallback = Box<dyn FnOnce() + Send + 'static>;
 #[derive(Clone, Debug)]
 pub enum SessionState {
     Disconnected,
-    Connecting,
+    Connecting {
+        /// Human-readable phase: "Creating endpoint", "QUIC handshake", etc.
+        phase: String,
+    },
     Connected {
         hostname: String,
         username: String,
@@ -55,8 +61,20 @@ pub enum SessionState {
     },
     Reconnecting {
         attempt: u32,
+        reason: ReconnectReason,
+        /// Seconds until next attempt (0 = attempting now).
+        next_retry_secs: u64,
     },
     Error(String),
+}
+
+/// Why a reconnect was triggered.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReconnectReason {
+    /// QUIC connection closed (transport failure, timeout).
+    ConnectionLost,
+    /// App returned to foreground after iOS suspension.
+    AppForegrounded,
 }
 
 /// Metadata about the iroh connection path (direct P2P vs relay).
@@ -66,6 +84,8 @@ pub struct ConnectionInfo {
     pub is_direct: bool,
     /// Selected path address (IP:port or relay URL)
     pub remote_addr: String,
+    /// Relay hostname when path is relayed (e.g. "relay.zedra.dev"), None if direct.
+    pub relay_url: Option<String>,
     /// Remote endpoint ID (short form)
     pub endpoint_id: String,
     /// Our local endpoint ID (short form)
@@ -83,7 +103,200 @@ pub struct ConnectionInfo {
 }
 
 // ---------------------------------------------------------------------------
-// Global state
+// SessionHandle — per-workspace state container
+// ---------------------------------------------------------------------------
+
+/// Per-workspace session state. Each workspace owns one of these.
+///
+/// Wraps shared state that persists across reconnects: terminal output
+/// buffers, terminal IDs, endpoint address, credentials, and reconnect
+/// state. Clonable (Arc-based).
+#[derive(Clone)]
+pub struct SessionHandle(Arc<SessionHandleInner>);
+
+struct SessionHandleInner {
+    session: Mutex<Option<Arc<RemoteSession>>>,
+    endpoint_addr: Mutex<Option<iroh::EndpointAddr>>,
+    credentials: Mutex<(Option<String>, Option<String>)>,
+    terminal_outputs: TerminalOutputMap,
+    terminal_ids: Arc<Mutex<Vec<String>>>,
+    active_terminal: Arc<Mutex<Option<String>>>,
+    reconnect_attempt: AtomicU32,
+    reconnect_reason: Mutex<ReconnectReason>,
+    user_disconnect: AtomicBool,
+    skip_next_backoff: AtomicBool,
+    /// Seconds until the next reconnect attempt (updated by the reconnect loop).
+    next_retry_secs: AtomicU64,
+    last_notif_seq: AtomicU64,
+}
+
+impl SessionHandle {
+    /// Create a new, empty session handle for a workspace.
+    pub fn new() -> Self {
+        Self(Arc::new(SessionHandleInner {
+            session: Mutex::new(None),
+            endpoint_addr: Mutex::new(None),
+            credentials: Mutex::new((None, None)),
+            terminal_outputs: Arc::new(Mutex::new(HashMap::new())),
+            terminal_ids: Arc::new(Mutex::new(Vec::new())),
+            active_terminal: Arc::new(Mutex::new(None)),
+            reconnect_attempt: AtomicU32::new(0),
+            reconnect_reason: Mutex::new(ReconnectReason::ConnectionLost),
+            user_disconnect: AtomicBool::new(false),
+            skip_next_backoff: AtomicBool::new(false),
+            next_retry_secs: AtomicU64::new(0),
+            last_notif_seq: AtomicU64::new(0),
+        }))
+    }
+
+    /// Get the current remote session (if connected).
+    pub fn session(&self) -> Option<Arc<RemoteSession>> {
+        self.0.session.lock().ok()?.clone()
+    }
+
+    /// Store a newly-connected session.
+    pub fn set_session(&self, session: Arc<RemoteSession>) {
+        if let Ok(mut slot) = self.0.session.lock() {
+            *slot = Some(session);
+            tracing::info!("SessionHandle: session set");
+        }
+    }
+
+    /// Clear the session (user-initiated disconnect).
+    ///
+    /// Sets `user_disconnect` to prevent automatic reconnect attempts.
+    pub fn clear_session(&self) {
+        self.0.user_disconnect.store(true, Ordering::Release);
+        if let Ok(mut slot) = self.0.session.lock() {
+            *slot = None;
+            tracing::info!("SessionHandle: session cleared (user disconnect)");
+        }
+    }
+
+    /// Current reconnect attempt number (0 = not reconnecting).
+    pub fn reconnect_attempt(&self) -> u32 {
+        self.0.reconnect_attempt.load(Ordering::Relaxed)
+    }
+
+    /// Whether a reconnect is currently in progress.
+    pub fn is_reconnecting(&self) -> bool {
+        self.reconnect_attempt() > 0
+    }
+
+    /// Why the current reconnect was triggered.
+    pub fn reconnect_reason(&self) -> ReconnectReason {
+        self.0
+            .reconnect_reason
+            .lock()
+            .map(|r| r.clone())
+            .unwrap_or(ReconnectReason::ConnectionLost)
+    }
+
+    /// Seconds until the next reconnect attempt (0 = attempting now).
+    pub fn next_retry_secs(&self) -> u64 {
+        self.0.next_retry_secs.load(Ordering::Relaxed)
+    }
+
+    /// Store an endpoint address for use during automatic reconnect.
+    pub fn store_endpoint_addr(&self, addr: iroh::EndpointAddr) {
+        if let Ok(mut slot) = self.0.endpoint_addr.lock() {
+            *slot = Some(addr);
+        }
+    }
+
+    /// Get the stored endpoint address (if any).
+    pub fn endpoint_addr(&self) -> Option<iroh::EndpointAddr> {
+        self.0.endpoint_addr.lock().ok()?.clone()
+    }
+
+    /// Get the stored credentials (session_id, auth_token).
+    pub fn credentials_pub(&self) -> (Option<String>, Option<String>) {
+        self.credentials()
+    }
+
+    /// Store credentials from persisted workspace data (for session resumption).
+    pub fn store_credentials_pub(&self, session_id: Option<String>, auth_token: Option<String>) {
+        self.store_credentials(session_id, auth_token);
+    }
+
+    /// Send terminal input to the remote host via the active session.
+    ///
+    /// Sends raw bytes through the TermAttach bidi stream's input channel.
+    /// Returns `true` if the data was successfully enqueued.
+    pub fn send_terminal_input(&self, data: Vec<u8>) -> bool {
+        let session = match self.session() {
+            Some(s) => s,
+            None => return false,
+        };
+
+        let term_id = match session.active_terminal_id() {
+            Some(id) => id,
+            None => return false,
+        };
+
+        let sender = {
+            let senders = match session.terminal_input_senders.lock() {
+                Ok(s) => s,
+                Err(_) => return false,
+            };
+            match senders.get(&term_id) {
+                Some(tx) => tx.clone(),
+                None => return false,
+            }
+        };
+
+        match sender.try_send(data) {
+            Ok(()) => true,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                tracing::warn!("terminal input channel full");
+                true
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                tracing::warn!("terminal input channel closed");
+                false
+            }
+        }
+    }
+
+    // --- Internal accessors used by RemoteSession ---
+
+    fn terminal_outputs(&self) -> TerminalOutputMap {
+        self.0.terminal_outputs.clone()
+    }
+
+    fn terminal_ids_slot(&self) -> Arc<Mutex<Vec<String>>> {
+        self.0.terminal_ids.clone()
+    }
+
+    fn active_terminal_slot(&self) -> Arc<Mutex<Option<String>>> {
+        self.0.active_terminal.clone()
+    }
+
+    fn credentials(&self) -> (Option<String>, Option<String>) {
+        self.0
+            .credentials
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or((None, None))
+    }
+
+    fn store_credentials(&self, session_id: Option<String>, auth_token: Option<String>) {
+        if let Ok(mut creds) = self.0.credentials.lock() {
+            *creds = (session_id, auth_token);
+        }
+    }
+
+    fn last_notif_seq(&self) -> u64 {
+        self.0.last_notif_seq.load(Ordering::Relaxed)
+    }
+
+    fn update_last_notif_seq(&self, seq: u64) {
+        self.0.last_notif_seq.fetch_max(seq, Ordering::Release);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Global state (shared across all workspaces)
 // ---------------------------------------------------------------------------
 
 /// Atomic flag: set by the terminal output pump when TermOutput arrives.
@@ -93,82 +306,69 @@ pub static TERMINAL_DATA_PENDING: AtomicBool = AtomicBool::new(false);
 /// Dedicated tokio runtime for session I/O (2 worker threads).
 static SESSION_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
-/// Singleton slot for the currently-active remote session.
-static ACTIVE_SESSION: OnceLock<Mutex<Option<Arc<RemoteSession>>>> = OnceLock::new();
-
 /// Queue of callbacks to be drained and executed on the main thread.
 static MAIN_THREAD_CALLBACKS: OnceLock<Mutex<VecDeque<MainCallback>>> = OnceLock::new();
 
+/// The currently-active workspace's session handle.
+///
+/// Swapped by `set_active_handle()` when the user switches workspaces.
+/// Read by backward-compat functions (`active_session()`, `reconnect_attempt()`,
+/// `send_terminal_input()`) during the render frame.
+static ACTIVE_HANDLE: OnceLock<Mutex<Option<SessionHandle>>> = OnceLock::new();
+
+fn active_handle_slot() -> &'static Mutex<Option<SessionHandle>> {
+    ACTIVE_HANDLE.get_or_init(|| Mutex::new(None))
+}
+
+/// Set which workspace's handle is currently active.
+///
+/// Call this when the user switches workspaces so that backward-compat
+/// rendering code (which calls `active_session()`) reads the right session.
+pub fn set_active_handle(handle: SessionHandle) {
+    if let Ok(mut slot) = active_handle_slot().lock() {
+        *slot = Some(handle);
+    }
+}
+
+/// Get the currently-active workspace's handle.
+pub fn active_handle() -> Option<SessionHandle> {
+    active_handle_slot().lock().ok()?.clone()
+}
+
+/// Clear the active handle (e.g. when the last workspace is closed).
+pub fn clear_active_handle() {
+    if let Ok(mut slot) = active_handle_slot().lock() {
+        *slot = None;
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Reconnect state (persists across RemoteSession rebuilds)
+// Backward-compat global functions
 // ---------------------------------------------------------------------------
 
-/// Current reconnect attempt number (0 = not reconnecting).
-static RECONNECT_ATTEMPT: AtomicU32 = AtomicU32::new(0);
-
-/// Set on user-initiated disconnect to prevent automatic reconnect.
-static USER_DISCONNECT: AtomicBool = AtomicBool::new(false);
-
-/// Highest notification seq successfully processed (for backlog resumption).
-static LAST_NOTIF_SEQ: AtomicU64 = AtomicU64::new(0);
-
-/// Stored endpoint address for reconnect attempts.
-static ENDPOINT_ADDR: OnceLock<Mutex<Option<iroh::EndpointAddr>>> = OnceLock::new();
-
-/// (session_id, auth_token) preserved across RemoteSession rebuilds.
-static SESSION_CREDENTIALS: OnceLock<Mutex<(Option<String>, Option<String>)>> = OnceLock::new();
-
-/// Shared terminal output buffers that survive reconnect.
-static PERSISTENT_TERMINAL_OUTPUTS: OnceLock<TerminalOutputMap> = OnceLock::new();
-
-/// Terminal ID list that survives reconnect.
-static PERSISTENT_TERMINAL_IDS: OnceLock<Arc<Mutex<Vec<String>>>> = OnceLock::new();
-
-/// Active terminal ID that survives reconnect.
-static PERSISTENT_ACTIVE_TERMINAL: OnceLock<Arc<Mutex<Option<String>>>> = OnceLock::new();
-
-fn endpoint_addr_slot() -> &'static Mutex<Option<iroh::EndpointAddr>> {
-    ENDPOINT_ADDR.get_or_init(|| Mutex::new(None))
+/// Retrieve the active session (delegates to active handle).
+pub fn active_session() -> Option<Arc<RemoteSession>> {
+    active_handle()?.session()
 }
 
-fn session_credentials_slot() -> &'static Mutex<(Option<String>, Option<String>)> {
-    SESSION_CREDENTIALS.get_or_init(|| Mutex::new((None, None)))
-}
-
-fn persistent_terminal_outputs() -> TerminalOutputMap {
-    PERSISTENT_TERMINAL_OUTPUTS
-        .get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
-        .clone()
-}
-
-fn persistent_terminal_ids() -> Arc<Mutex<Vec<String>>> {
-    PERSISTENT_TERMINAL_IDS
-        .get_or_init(|| Arc::new(Mutex::new(Vec::new())))
-        .clone()
-}
-
-fn persistent_active_terminal() -> Arc<Mutex<Option<String>>> {
-    PERSISTENT_ACTIVE_TERMINAL
-        .get_or_init(|| Arc::new(Mutex::new(None)))
-        .clone()
-}
-
-/// Current reconnect attempt number (0 = not reconnecting).
+/// Current reconnect attempt for the active handle (0 = not reconnecting).
 pub fn reconnect_attempt() -> u32 {
-    RECONNECT_ATTEMPT.load(Ordering::Relaxed)
+    active_handle().map_or(0, |h| h.reconnect_attempt())
 }
 
-/// Whether a reconnect is currently in progress.
+/// Whether a reconnect is in progress for the active handle.
 pub fn is_reconnecting() -> bool {
     reconnect_attempt() > 0
 }
 
-/// Store an endpoint address for use during automatic reconnect.
-pub fn store_endpoint_addr(addr: iroh::EndpointAddr) {
-    if let Ok(mut slot) = endpoint_addr_slot().lock() {
-        *slot = Some(addr);
-    }
+/// Send terminal input via the active handle.
+pub fn send_terminal_input(data: Vec<u8>) -> bool {
+    active_handle().map_or(false, |h| h.send_terminal_input(data))
 }
+
+// ---------------------------------------------------------------------------
+// Shared global utilities (not per-workspace)
+// ---------------------------------------------------------------------------
 
 /// Get (or lazily create) the session tokio runtime.
 pub fn session_runtime() -> &'static tokio::runtime::Runtime {
@@ -182,39 +382,8 @@ pub fn session_runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
-fn active_session_slot() -> &'static Mutex<Option<Arc<RemoteSession>>> {
-    ACTIVE_SESSION.get_or_init(|| Mutex::new(None))
-}
-
 fn callback_queue() -> &'static Mutex<VecDeque<MainCallback>> {
     MAIN_THREAD_CALLBACKS.get_or_init(|| Mutex::new(VecDeque::new()))
-}
-
-/// Store a newly-connected session as the global active session.
-pub fn set_active_session(session: Arc<RemoteSession>) {
-    if let Ok(mut slot) = active_session_slot().lock() {
-        *slot = Some(session);
-        tracing::info!("Active remote session set");
-    }
-}
-
-/// Retrieve the active session (if any).
-pub fn active_session() -> Option<Arc<RemoteSession>> {
-    if let Ok(slot) = active_session_slot().lock() {
-        return slot.clone();
-    }
-    None
-}
-
-/// Clear the active session (user-initiated disconnect).
-///
-/// Sets `USER_DISCONNECT` to prevent automatic reconnect attempts.
-pub fn clear_active_session() {
-    USER_DISCONNECT.store(true, Ordering::Release);
-    if let Ok(mut slot) = active_session_slot().lock() {
-        *slot = None;
-        tracing::info!("Active remote session cleared (user disconnect)");
-    }
 }
 
 /// Signal that terminal data is available (called from output pump).
@@ -243,44 +412,37 @@ pub fn drain_callbacks() -> VecDeque<MainCallback> {
     }
 }
 
-/// Send terminal input to the remote host via the active session.
+// ---------------------------------------------------------------------------
+// Foreground resume
+// ---------------------------------------------------------------------------
+
+/// Notify that the app has returned to the foreground after being backgrounded.
 ///
-/// Sends raw bytes through the TermAttach bidi stream's input channel.
-/// Returns `true` if the data was successfully enqueued.
-pub fn send_terminal_input(data: Vec<u8>) -> bool {
-    let session = match active_session() {
-        Some(s) => s,
-        None => return false,
-    };
-
-    let term_id = match session.active_terminal_id() {
-        Some(id) => id,
-        None => return false,
-    };
-
-    let sender = {
-        let senders = match session.terminal_input_senders.lock() {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-        match senders.get(&term_id) {
-            Some(tx) => tx.clone(),
-            None => return false,
-        }
-    };
-
-    // Non-blocking send from main thread
-    match sender.try_send(data) {
-        Ok(()) => true,
-        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-            tracing::warn!("terminal input channel full");
-            true
-        }
-        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-            tracing::warn!("terminal input channel closed");
-            false
-        }
+/// On iOS, backgrounding suspends the process which kills UDP sockets. This
+/// sets a flag to skip the next reconnect backoff delay and, if no reconnect
+/// loop is already running, starts one immediately.
+pub fn notify_foreground_resume(handle: &SessionHandle) {
+    if handle.0.user_disconnect.load(Ordering::Acquire) {
+        return;
     }
+
+    // No stored endpoint → nothing to reconnect to
+    if handle.0.endpoint_addr.lock().ok().and_then(|g| g.clone()).is_none() {
+        return;
+    }
+
+    if let Ok(mut reason) = handle.0.reconnect_reason.lock() {
+        *reason = ReconnectReason::AppForegrounded;
+    }
+    handle.0.skip_next_backoff.store(true, Ordering::Release);
+
+    if handle.is_reconnecting() {
+        tracing::info!("foreground_resume: reconnect in progress, flagged to skip backoff");
+        return;
+    }
+
+    tracing::info!("foreground_resume: triggering immediate reconnect");
+    spawn_reconnect(handle.clone());
 }
 
 // ---------------------------------------------------------------------------
@@ -300,13 +462,16 @@ pub struct RemoteSession {
     client: irpc::Client<ZedraProto>,
     state: Arc<Mutex<SessionState>>,
     /// Per-terminal output buffers (populated by TermAttach output pump).
+    /// Shared with the SessionHandle so they persist across reconnects.
     terminal_outputs: TerminalOutputMap,
     /// All terminal IDs created on this session, in creation order.
+    /// Shared with the SessionHandle.
     terminal_ids: Arc<Mutex<Vec<String>>>,
     /// Which terminal currently receives input from send_terminal_input().
+    /// Shared with the SessionHandle.
     active_terminal_id: Arc<Mutex<Option<String>>>,
     /// Per-terminal input senders (tokio channels bridged to TermAttach streams).
-    terminal_input_senders: Arc<Mutex<HashMap<String, tokio::sync::mpsc::Sender<Vec<u8>>>>>,
+    pub(crate) terminal_input_senders: Arc<Mutex<HashMap<String, tokio::sync::mpsc::Sender<Vec<u8>>>>>,
     /// Per-terminal last-seen seq numbers (for reconnect replay).
     terminal_last_seqs: Arc<Mutex<HashMap<String, u64>>>,
     session_id: Arc<Mutex<Option<String>>>,
@@ -324,24 +489,34 @@ impl RemoteSession {
     /// relay fallback, and TLS 1.3 encryption. Terminal I/O uses TermAttach
     /// bidi streaming for efficient binary transfer.
     ///
-    /// On first connect, creates fresh persistent state. On reconnect, reuses
-    /// existing terminal output buffers and IDs so UI views survive.
-    pub async fn connect_with_iroh(addr: iroh::EndpointAddr) -> Result<Arc<Self>> {
+    /// State is stored in the provided `SessionHandle` so it persists across
+    /// reconnects and doesn't conflict with other workspaces.
+    pub async fn connect_with_iroh(
+        addr: iroh::EndpointAddr,
+        handle: &SessionHandle,
+    ) -> Result<Arc<Self>> {
         // Store endpoint address for future reconnect attempts
-        store_endpoint_addr(addr.clone());
+        handle.store_endpoint_addr(addr.clone());
 
         // Reset user disconnect flag (we're intentionally connecting)
-        USER_DISCONNECT.store(false, Ordering::Release);
+        handle.0.user_disconnect.store(false, Ordering::Release);
 
         tracing::info!(
             "RemoteSession: connecting via iroh (endpoint: {})",
             addr.id.fmt_short(),
         );
 
+        // Fresh per-connection state — track phases as we progress
+        let state = Arc::new(Mutex::new(SessionState::Connecting {
+            phase: "Creating endpoint".into(),
+        }));
+        signal_terminal_data();
+
         // Build iroh endpoint (client side — generates ephemeral key)
         let relay_url: iroh::RelayUrl = DEFAULT_RELAY_URL
             .parse()
             .map_err(|e| anyhow::anyhow!("invalid relay URL: {}", e))?;
+        let relay_host = relay_url.host_str().unwrap_or(DEFAULT_RELAY_URL).to_string();
         tracing::info!("Using relay: {}", relay_url);
 
         let endpoint = iroh::Endpoint::builder()
@@ -351,11 +526,25 @@ impl RemoteSession {
             .await?;
         tracing::info!("iroh client endpoint bound: {}", endpoint.id().fmt_short());
 
+        if let Ok(mut s) = state.lock() {
+            *s = SessionState::Connecting {
+                phase: format!("QUIC handshake via {}", relay_host),
+            };
+        }
+        signal_terminal_data();
+
         tracing::info!("Connecting to host endpoint: {:?}", addr);
 
         // Connect to host
         let conn = endpoint.connect(addr, ZEDRA_ALPN).await?;
         tracing::info!("iroh: connected to {}", conn.remote_id().fmt_short());
+
+        if let Ok(mut s) = state.lock() {
+            *s = SessionState::Connecting {
+                phase: "Establishing RPC session".into(),
+            };
+        }
+        signal_terminal_data();
 
         // Extract connection info before creating irpc client
         let local_eid = endpoint.id().fmt_short().to_string();
@@ -368,13 +557,11 @@ impl RemoteSession {
         let remote = irpc_iroh::IrohRemoteConnection::new(conn);
         let client = irpc::Client::<ZedraProto>::boxed(remote);
 
-        // Use persistent state for terminal outputs/IDs so UI views survive reconnect
-        let terminal_outputs = persistent_terminal_outputs();
-        let terminal_ids = persistent_terminal_ids();
-        let active_terminal_id = persistent_active_terminal();
+        // Use per-workspace state from the handle so terminal views survive reconnect
+        let terminal_outputs = handle.terminal_outputs();
+        let terminal_ids = handle.terminal_ids_slot();
+        let active_terminal_id = handle.active_terminal_slot();
 
-        // Fresh per-connection state
-        let state = Arc::new(Mutex::new(SessionState::Connecting));
         let latency_ms = Arc::new(AtomicU64::new(0));
         let connection_info: Arc<Mutex<Option<ConnectionInfo>>> = Arc::new(Mutex::new(None));
 
@@ -384,15 +571,18 @@ impl RemoteSession {
             let mut paths = conn_for_paths.paths();
             let info_slot = connection_info.clone();
             let remote_eid = remote_eid.clone();
+            let relay_host_for_watcher = relay_host.clone();
             tokio::spawn(async move {
                 loop {
                     let path_list = paths.get();
                     let selected = path_list.iter().find(|p| p.is_selected());
                     if let Some(path) = selected {
                         let stats = path.stats();
+                        let is_direct = path.is_ip();
                         let info = ConnectionInfo {
-                            is_direct: path.is_ip(),
+                            is_direct,
                             remote_addr: format!("{:?}", path.remote_addr()),
+                            relay_url: if is_direct { None } else { Some(relay_host_for_watcher.clone()) },
                             endpoint_id: remote_eid.clone(),
                             local_endpoint_id: local_eid.clone(),
                             num_paths: path_list.len(),
@@ -435,20 +625,25 @@ impl RemoteSession {
             connection_info,
         });
 
-        // Establish RPC session (uses SESSION_CREDENTIALS for reconnect)
-        Self::establish_rpc_session(&session).await;
+        // Establish RPC session (uses handle's credentials for reconnect)
+        Self::establish_rpc_session(&session, handle).await;
 
         // Fetch session info (hostname discovered here, not from QR)
         Self::fetch_session_info(&session, "unknown").await;
 
         // Re-attach existing terminals on reconnect
-        Self::reattach_terminals(&session).await;
+        Self::reattach_terminals(&session, handle).await;
 
-        // Connection watcher: triggers reconnect when QUIC connection closes
+        // Connection watcher: triggers reconnect when QUIC connection closes.
+        // Uses a clone of the handle so reconnect targets the right workspace.
+        let handle_for_watcher = handle.clone();
         tokio::spawn(async move {
             conn_for_watcher.closed().await;
             tracing::info!("iroh connection closed, triggering reconnect");
-            spawn_reconnect();
+            if let Ok(mut reason) = handle_for_watcher.0.reconnect_reason.lock() {
+                *reason = ReconnectReason::ConnectionLost;
+            }
+            spawn_reconnect(handle_for_watcher);
         });
 
         tracing::info!("RemoteSession: connected via iroh to {}", remote_eid);
@@ -458,12 +653,9 @@ impl RemoteSession {
     /// Establish an RPC session on the host via ResumeOrCreate.
     ///
     /// On first call, creates a new session. On reconnect, resumes the existing
-    /// session using credentials from `SESSION_CREDENTIALS`.
-    async fn establish_rpc_session(session: &Arc<Self>) {
-        let (stored_session_id, stored_auth_token) = session_credentials_slot()
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or((None, None));
+    /// session using credentials from the SessionHandle.
+    async fn establish_rpc_session(session: &Arc<Self>, handle: &SessionHandle) {
+        let (stored_session_id, stored_auth_token) = handle.credentials();
 
         let auth_token = stored_auth_token.unwrap_or_else(|| {
             format!(
@@ -482,7 +674,7 @@ impl RemoteSession {
             .rpc(ResumeOrCreateReq {
                 session_id: session_id_to_resume,
                 auth_token: auth_token.clone(),
-                last_notif_seq: LAST_NOTIF_SEQ.load(Ordering::Relaxed),
+                last_notif_seq: handle.last_notif_seq(),
             })
             .await
         {
@@ -501,10 +693,8 @@ impl RemoteSession {
                     *token_slot = Some(auth_token.clone());
                 }
 
-                // Persist credentials for future reconnects
-                if let Ok(mut creds) = session_credentials_slot().lock() {
-                    *creds = (Some(result.session_id), Some(auth_token));
-                }
+                // Persist credentials in the handle for future reconnects
+                handle.store_credentials(Some(result.session_id), Some(auth_token));
             }
             Err(e) => {
                 tracing::warn!("session/resume_or_create failed: {}", e);
@@ -564,7 +754,7 @@ impl RemoteSession {
     /// Spawns two bridge tasks:
     /// - Input bridge: reads from a tokio channel, forwards to irpc TermInput stream
     /// - Output pump: reads TermOutput from irpc stream, pushes to OutputBuffer
-    async fn attach_terminal(&self, id: &str, last_seq: u64) -> Result<()> {
+    async fn attach_terminal(&self, id: &str, last_seq: u64, handle: &SessionHandle) -> Result<()> {
         let (irpc_input_tx, mut irpc_output_rx) = self
             .client
             .bidi_streaming::<TermAttachReq, TermInput, TermOutput>(
@@ -599,6 +789,7 @@ impl RemoteSession {
         let terminal_id = id.to_string();
         let outputs = self.terminal_outputs.clone();
         let seqs = self.terminal_last_seqs.clone();
+        let handle_for_pump = handle.clone();
         tokio::spawn(async move {
             loop {
                 match irpc_output_rx.recv().await {
@@ -607,7 +798,7 @@ impl RemoteSession {
                         if let Ok(mut seq_map) = seqs.lock() {
                             seq_map.insert(terminal_id.clone(), output.seq);
                         }
-                        LAST_NOTIF_SEQ.fetch_max(output.seq, Ordering::Release);
+                        handle_for_pump.update_last_notif_seq(output.seq);
 
                         // Route to per-terminal buffer
                         let target_buf = {
@@ -640,13 +831,14 @@ impl RemoteSession {
     /// Re-attach all existing terminals on reconnect.
     ///
     /// Uses stored per-terminal last_seq values to replay missed output.
-    async fn reattach_terminals(session: &Arc<Self>) {
+    async fn reattach_terminals(session: &Arc<Self>, handle: &SessionHandle) {
         let terminal_ids = session.terminal_ids();
         if terminal_ids.is_empty() {
             return;
         }
 
         tracing::info!("reattaching {} terminals", terminal_ids.len());
+
         for id in &terminal_ids {
             let last_seq = session
                 .terminal_last_seqs
@@ -655,7 +847,7 @@ impl RemoteSession {
                 .and_then(|map| map.get(id).copied())
                 .unwrap_or(0);
 
-            if let Err(e) = session.attach_terminal(id, last_seq).await {
+            if let Err(e) = session.attach_terminal(id, last_seq, handle).await {
                 tracing::warn!("failed to reattach terminal {}: {e}", id);
             }
         }
@@ -858,7 +1050,7 @@ impl RemoteSession {
     /// Create a new terminal on the remote host.
     /// Registers a per-terminal output buffer, attaches via bidi streaming,
     /// and sets as active if first terminal.
-    pub async fn terminal_create(&self, cols: u16, rows: u16) -> Result<String> {
+    pub async fn terminal_create(&self, cols: u16, rows: u16, handle: &SessionHandle) -> Result<String> {
         let result: TermCreateResult = self.client.rpc(TermCreateReq { cols, rows }).await?;
 
         // Register per-terminal output buffer
@@ -884,7 +1076,7 @@ impl RemoteSession {
         }
 
         // Attach to the terminal via bidi streaming
-        self.attach_terminal(&result.id, 0).await?;
+        self.attach_terminal(&result.id, 0, handle).await?;
 
         tracing::info!("Terminal created with id: {}", result.id);
         Ok(result.id)
@@ -972,25 +1164,27 @@ impl RemoteSession {
 }
 
 // ---------------------------------------------------------------------------
-// Automatic reconnect
+// Automatic reconnect (per-workspace)
 // ---------------------------------------------------------------------------
 
 /// Spawn a background task that attempts to reconnect after transport failure.
 ///
 /// Guards:
-/// - Does nothing if `USER_DISCONNECT` is set (user initiated disconnect)
-/// - CAS on `RECONNECT_ATTEMPT` prevents concurrent reconnect loops
+/// - Does nothing if `user_disconnect` is set on the handle
+/// - CAS on `reconnect_attempt` prevents concurrent reconnect loops
 ///
 /// Uses exponential backoff (1s, 2s, 4s, 8s, 16s, 30s cap) with a maximum
 /// of ~20 attempts (~5 minutes, matching the server's session grace period).
-fn spawn_reconnect() {
-    if USER_DISCONNECT.load(Ordering::Acquire) {
+fn spawn_reconnect(handle: SessionHandle) {
+    if handle.0.user_disconnect.load(Ordering::Acquire) {
         tracing::info!("spawn_reconnect: skipping, user disconnect in progress");
         return;
     }
 
-    // CAS: only one reconnect loop at a time
-    if RECONNECT_ATTEMPT
+    // CAS: only one reconnect loop at a time per handle
+    if handle
+        .0
+        .reconnect_attempt
         .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)
         .is_err()
     {
@@ -1003,7 +1197,7 @@ fn spawn_reconnect() {
         let mut attempt = 1u32;
 
         loop {
-            if USER_DISCONNECT.load(Ordering::Acquire) {
+            if handle.0.user_disconnect.load(Ordering::Acquire) {
                 tracing::info!("reconnect: user disconnect during reconnect, aborting");
                 break;
             }
@@ -1016,27 +1210,45 @@ fn spawn_reconnect() {
                 break;
             }
 
-            RECONNECT_ATTEMPT.store(attempt, Ordering::Release);
-            signal_terminal_data(); // trigger UI refresh to show "Reconnecting..."
+            handle.0.reconnect_attempt.store(attempt, Ordering::Release);
 
             // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s cap
             let delay_secs = std::cmp::min(1u64 << (attempt - 1), 30);
-            tracing::info!(
-                "reconnect: attempt {} of {} (backoff {}s)",
-                attempt,
-                max_attempts,
-                delay_secs,
-            );
-            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+            let skip_backoff = handle.0.skip_next_backoff.swap(false, Ordering::AcqRel);
+            let next_retry_secs = if skip_backoff { 0 } else { delay_secs };
+            handle.0.next_retry_secs.store(next_retry_secs, Ordering::Release);
+            signal_terminal_data(); // trigger UI refresh to show "Reconnecting..."
+
+            if skip_backoff {
+                tracing::info!(
+                    "reconnect: attempt {} of {} (skipping {}s backoff — foreground resume)",
+                    attempt, max_attempts, delay_secs,
+                );
+            } else {
+                tracing::info!(
+                    "reconnect: attempt {} of {} (backoff {}s)",
+                    attempt, max_attempts, delay_secs,
+                );
+                // Tick down next_retry_secs each second for live UI updates
+                for remaining in (1..=delay_secs).rev() {
+                    handle.0.next_retry_secs.store(remaining, Ordering::Release);
+                    signal_terminal_data();
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    if handle.0.user_disconnect.load(Ordering::Acquire) {
+                        break;
+                    }
+                }
+                handle.0.next_retry_secs.store(0, Ordering::Release);
+            }
 
             // Check again after sleep
-            if USER_DISCONNECT.load(Ordering::Acquire) {
+            if handle.0.user_disconnect.load(Ordering::Acquire) {
                 tracing::info!("reconnect: user disconnect during backoff, aborting");
                 break;
             }
 
-            // Get stored endpoint address
-            let addr = match endpoint_addr_slot().lock().ok().and_then(|g| g.clone()) {
+            // Get stored endpoint address from this handle
+            let addr = match handle.0.endpoint_addr.lock().ok().and_then(|g| g.clone()) {
                 Some(a) => a,
                 None => {
                     tracing::error!("reconnect: no stored endpoint address, aborting");
@@ -1044,10 +1256,10 @@ fn spawn_reconnect() {
                 }
             };
 
-            match RemoteSession::connect_with_iroh(addr).await {
+            match RemoteSession::connect_with_iroh(addr, &handle).await {
                 Ok(session) => {
                     tracing::info!("reconnect: success on attempt {}", attempt);
-                    set_active_session(session.clone());
+                    handle.set_session(session.clone());
 
                     // Verify server-side terminals are still alive
                     match session.terminal_list().await {
@@ -1063,7 +1275,10 @@ fn spawn_reconnect() {
                         }
                     }
 
-                    RECONNECT_ATTEMPT.store(0, Ordering::Release);
+                    handle
+                        .0
+                        .reconnect_attempt
+                        .store(0, Ordering::Release);
                     signal_terminal_data(); // trigger UI refresh
                     return; // success — don't fall through to reset below
                 }
@@ -1075,7 +1290,7 @@ fn spawn_reconnect() {
         }
 
         // Gave up or aborted
-        RECONNECT_ATTEMPT.store(0, Ordering::Release);
+        handle.0.reconnect_attempt.store(0, Ordering::Release);
         signal_terminal_data();
     });
 }

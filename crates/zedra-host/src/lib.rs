@@ -8,3 +8,4 @@ pub mod pty;
 pub mod qr;
 pub mod rpc_daemon;
 pub mod session_registry;
+pub mod workspace_lock;

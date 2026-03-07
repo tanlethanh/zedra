@@ -6,8 +6,9 @@ use gpui::*;
 use crate::home_view::{HomeEvent, HomeView};
 use crate::quick_action_panel::{QuickActionEvent, QuickActionPanel};
 use crate::theme;
+use crate::workspace_store;
 use crate::workspace_view::{WorkspaceEvent, WorkspaceView, compute_terminal_dimensions};
-use zedra_session::RemoteSession;
+use zedra_session::{RemoteSession, SessionHandle};
 
 // ---------------------------------------------------------------------------
 // AppScreen
@@ -25,6 +26,7 @@ enum AppScreen {
 
 struct WorkspaceEntry {
     view: Entity<WorkspaceView>,
+    handle: SessionHandle,
 }
 
 // ---------------------------------------------------------------------------
@@ -61,6 +63,16 @@ impl ZedraApp {
                 }
                 HomeEvent::WorkspaceTapped(index) => {
                     this.switch_to_workspace(*index, window, cx);
+                }
+                HomeEvent::SavedWorkspaceTapped(index) => {
+                    this.reconnect_saved_workspace(*index, window, cx);
+                }
+                HomeEvent::SavedWorkspaceRemoved(index) => {
+                    let saved = workspace_store::load_workspaces();
+                    if let Some(ws) = saved.get(*index) {
+                        workspace_store::remove_workspace(&ws.endpoint_addr);
+                        this.refresh_saved_workspaces(cx);
+                    }
                 }
             },
         );
@@ -100,7 +112,18 @@ impl ZedraApp {
         );
         subscriptions.push(sub);
 
-        Self {
+        // --- Window activation (foreground/background) ---
+        let sub = cx.observe_window_activation(window, |this: &mut Self, window, _cx| {
+            if window.is_window_active() {
+                log::info!("ZedraApp: window activated, notifying {} workspace(s)", this.workspaces.len());
+                for entry in &this.workspaces {
+                    zedra_session::notify_foreground_resume(&entry.handle);
+                }
+            }
+        });
+        subscriptions.push(sub);
+
+        let app = Self {
             screen: AppScreen::Home,
             home_view,
             workspaces: Vec::new(),
@@ -109,14 +132,81 @@ impl ZedraApp {
             quick_action_open: false,
             render_count: 0,
             _subscriptions: subscriptions,
-        }
+        };
+
+        // Load saved workspaces from disk and show in HomeView
+        app.refresh_saved_workspaces(cx);
+
+        app
     }
 
     fn switch_to_workspace(&mut self, index: usize, _window: &mut Window, cx: &mut Context<Self>) {
         if index < self.workspaces.len() {
             self.active_workspace = Some(index);
             self.screen = AppScreen::Workspace;
+            // Set the active session handle so backward-compat rendering code
+            // (active_session(), reconnect_attempt(), etc.) reads the right workspace.
+            zedra_session::set_active_handle(self.workspaces[index].handle.clone());
             cx.notify();
+        }
+    }
+
+    fn refresh_saved_workspaces(&self, cx: &mut Context<Self>) {
+        let saved = workspace_store::load_workspaces();
+        self.home_view.update(cx, |hv, cx| {
+            hv.update_saved_workspaces(saved, cx);
+        });
+    }
+
+    fn persist_current_workspaces(&self) {
+        let persisted: Vec<_> = self
+            .workspaces
+            .iter()
+            .filter_map(|entry| workspace_store::snapshot_from_handle(&entry.handle))
+            .collect();
+        if !persisted.is_empty() {
+            // Upsert each workspace (preserves saved workspaces we're not connected to)
+            for ws in persisted {
+                workspace_store::upsert_workspace(ws);
+            }
+        }
+    }
+
+    fn reconnect_saved_workspace(
+        &mut self,
+        saved_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let saved = workspace_store::load_workspaces();
+        let ws = match saved.get(saved_index) {
+            Some(ws) => ws.clone(),
+            None => {
+                log::error!("Saved workspace index {} out of range", saved_index);
+                return;
+            }
+        };
+
+        match zedra_rpc::pairing::decode_endpoint_addr(&ws.endpoint_addr) {
+            Ok(addr) => {
+                log::info!(
+                    "Reconnecting to saved workspace: {}",
+                    addr.id.fmt_short()
+                );
+                // Pre-load credentials into the session handle after connection
+                let session_id = ws.session_id.clone();
+                let auth_token = ws.auth_token.clone();
+                self.connect_with_iroh_addr(addr, window, cx);
+                // Pre-load saved credentials into the newest workspace's handle
+                if let Some(entry) = self.workspaces.last() {
+                    entry.handle.store_credentials_pub(session_id, auth_token);
+                }
+            }
+            Err(e) => {
+                log::error!("Failed to decode saved endpoint addr: {}", e);
+                workspace_store::remove_workspace(&ws.endpoint_addr);
+                self.refresh_saved_workspaces(cx);
+            }
         }
     }
 
@@ -129,8 +219,12 @@ impl ZedraApp {
         let endpoint_short = addr.id.fmt_short().to_string();
         log::info!("QR connect: starting iroh connection to {}", endpoint_short);
 
+        // Create a per-workspace session handle
+        let session_handle = SessionHandle::new();
+
         // Create the workspace view (creates its own terminal view + pending slots)
-        let workspace_view = cx.new(|cx| WorkspaceView::new(window, cx));
+        let handle_for_view = session_handle.clone();
+        let workspace_view = cx.new(|cx| WorkspaceView::new(handle_for_view, window, cx));
 
         // Grab the workspace's pending_terminal_id so async task can write to it
         let pending_term_id = workspace_view.read(cx).pending_terminal_id.clone();
@@ -171,6 +265,14 @@ impl ZedraApp {
                         } else {
                             AppScreen::Workspace
                         };
+                        // Update active handle after workspace removal
+                        if let Some(idx) = this.active_workspace {
+                            zedra_session::set_active_handle(
+                                this.workspaces[idx].handle.clone(),
+                            );
+                        } else {
+                            zedra_session::clear_active_handle();
+                        }
                         let summaries: Vec<_> = this
                             .workspaces
                             .iter()
@@ -180,6 +282,8 @@ impl ZedraApp {
                         home_view_clone.update(cx, |hv, cx| {
                             hv.update_workspaces(summaries, cx);
                         });
+                        // Refresh saved workspaces in HomeView after disconnect
+                        this.refresh_saved_workspaces(cx);
                         cx.notify();
                     }
                 }
@@ -187,28 +291,35 @@ impl ZedraApp {
         );
         self._subscriptions.push(sub);
 
-        self.workspaces.push(WorkspaceEntry { view: workspace_view });
+        self.workspaces.push(WorkspaceEntry {
+            view: workspace_view,
+            handle: session_handle.clone(),
+        });
         self.active_workspace = Some(self.workspaces.len() - 1);
         self.screen = AppScreen::Workspace;
 
-        // Connect asynchronously
+        // Set this workspace as the active handle for backward-compat globals
+        zedra_session::set_active_handle(session_handle.clone());
+
+        // Connect asynchronously using the workspace's handle
+        let handle_for_connect = session_handle.clone();
         let endpoint_display = endpoint_short.clone();
         zedra_session::session_runtime().spawn(async move {
             log::info!(
                 "RemoteSession: connecting via iroh to {}...",
                 endpoint_display
             );
-            match RemoteSession::connect_with_iroh(addr).await {
+            match RemoteSession::connect_with_iroh(addr, &handle_for_connect).await {
                 Ok(session) => {
                     log::info!("RemoteSession: connected via iroh!");
-                    match session.terminal_create(cols_u16, rows_u16).await {
+                    match session.terminal_create(cols_u16, rows_u16, &handle_for_connect).await {
                         Ok(term_id) => {
                             log::info!("Remote terminal created: {}", term_id);
                             pending_term_id.set(term_id);
                         }
                         Err(e) => log::error!("Failed to create remote terminal: {}", e),
                     }
-                    zedra_session::set_active_session(session);
+                    handle_for_connect.set_session(session);
                     zedra_session::signal_terminal_data();
                 }
                 Err(e) => {
@@ -233,6 +344,11 @@ impl Render for ZedraApp {
         // Check for QR-scanned endpoint address
         if let Some(addr) = PENDING_QR_ADDR.take() {
             self.connect_with_iroh_addr(addr, window, cx);
+        }
+
+        // Periodically persist workspace state (~every 5 seconds)
+        if self.render_count % 300 == 100 && !self.workspaces.is_empty() {
+            self.persist_current_workspaces();
         }
 
         // Update workspace summaries in HomeView and QuickActionPanel
@@ -306,10 +422,7 @@ pub fn set_pending_qr_addr(addr: iroh::EndpointAddr) {
 }
 
 /// Open a GPUI window with the correct app view for the current feature flags.
-pub fn open_zedra_window(
-    app: &mut App,
-    window_options: WindowOptions,
-) -> Result<AnyWindowHandle> {
+pub fn open_zedra_window(app: &mut App, window_options: WindowOptions) -> Result<AnyWindowHandle> {
     if cfg!(feature = "preview") {
         app.open_window(window_options, |window, cx| {
             let view = cx.new(|cx| crate::app_preview::PreviewApp::new(window, cx));

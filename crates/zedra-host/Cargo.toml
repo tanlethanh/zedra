@@ -42,6 +42,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # System info
 hostname = "0.4"
 
+# Unix process signaling (for workspace lock PID check)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Error handling
 anyhow.workspace = true
 
