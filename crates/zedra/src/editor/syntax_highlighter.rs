@@ -1,64 +1,205 @@
 use std::ops::Range;
 
-use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator, Tree};
+use tree_sitter::{Language as TSLanguage, Parser, Query, QueryCursor, StreamingIterator, Tree};
 
-/// Highlight queries for Rust, embedded from vendor/zed's language definitions.
-const RUST_HIGHLIGHTS_SCM: &str =
+const RUST_HIGHLIGHTS: &str =
     include_str!("../../../../vendor/zed/crates/languages/src/rust/highlights.scm");
+const PYTHON_HIGHLIGHTS: &str =
+    include_str!("../../../../vendor/zed/crates/languages/src/python/highlights.scm");
+const GO_HIGHLIGHTS: &str =
+    include_str!("../../../../vendor/zed/crates/languages/src/go/highlights.scm");
+const JAVASCRIPT_HIGHLIGHTS: &str =
+    include_str!("../../../../vendor/zed/crates/languages/src/javascript/highlights.scm");
+const TYPESCRIPT_HIGHLIGHTS: &str =
+    include_str!("../../../../vendor/zed/crates/languages/src/typescript/highlights.scm");
+const TSX_HIGHLIGHTS: &str =
+    include_str!("../../../../vendor/zed/crates/languages/src/tsx/highlights.scm");
+const C_HIGHLIGHTS: &str =
+    include_str!("../../../../vendor/zed/crates/languages/src/c/highlights.scm");
+const CPP_HIGHLIGHTS: &str =
+    include_str!("../../../../vendor/zed/crates/languages/src/cpp/highlights.scm");
+const CSS_HIGHLIGHTS: &str =
+    include_str!("../../../../vendor/zed/crates/languages/src/css/highlights.scm");
+const JSON_HIGHLIGHTS: &str =
+    include_str!("../../../../vendor/zed/crates/languages/src/json/highlights.scm");
+const YAML_HIGHLIGHTS: &str =
+    include_str!("../../../../vendor/zed/crates/languages/src/yaml/highlights.scm");
+const BASH_HIGHLIGHTS: &str =
+    include_str!("../../../../vendor/zed/crates/languages/src/bash/highlights.scm");
+const MARKDOWN_HIGHLIGHTS: &str =
+    include_str!("../../../../vendor/zed/crates/languages/src/markdown/highlights.scm");
+
+/// Supported programming languages for syntax highlighting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Language {
+    Rust,
+    Python,
+    Go,
+    JavaScript,
+    TypeScript,
+    Tsx,
+    C,
+    Cpp,
+    Css,
+    Json,
+    Yaml,
+    Bash,
+    Markdown,
+    PlainText,
+}
+
+impl Language {
+    /// Detect language from filename extension.
+    pub fn from_filename(filename: &str) -> Self {
+        let ext = filename.rsplit('.').next().unwrap_or("");
+        match ext.to_lowercase().as_str() {
+            "rs" => Language::Rust,
+            "py" | "pyi" | "pyw" => Language::Python,
+            "go" => Language::Go,
+            "js" | "mjs" | "cjs" => Language::JavaScript,
+            "ts" | "mts" | "cts" => Language::TypeScript,
+            "tsx" => Language::Tsx,
+            "jsx" => Language::JavaScript,
+            "c" | "h" => Language::C,
+            "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" => Language::Cpp,
+            "css" => Language::Css,
+            "json" | "jsonc" => Language::Json,
+            "yaml" | "yml" => Language::Yaml,
+            "sh" | "bash" | "zsh" => Language::Bash,
+            "md" | "markdown" => Language::Markdown,
+            _ => Language::PlainText,
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Language::Rust => "Rust",
+            Language::Python => "Python",
+            Language::Go => "Go",
+            Language::JavaScript => "JavaScript",
+            Language::TypeScript => "TypeScript",
+            Language::Tsx => "TSX",
+            Language::C => "C",
+            Language::Cpp => "C++",
+            Language::Css => "CSS",
+            Language::Json => "JSON",
+            Language::Yaml => "YAML",
+            Language::Bash => "Bash",
+            Language::Markdown => "Markdown",
+            Language::PlainText => "Plain Text",
+        }
+    }
+
+    fn grammar_and_query(&self) -> Option<(TSLanguage, &'static str)> {
+        match self {
+            Language::Rust => Some((tree_sitter_rust::LANGUAGE.into(), RUST_HIGHLIGHTS)),
+            Language::Python => Some((tree_sitter_python::LANGUAGE.into(), PYTHON_HIGHLIGHTS)),
+            Language::Go => Some((tree_sitter_go::LANGUAGE.into(), GO_HIGHLIGHTS)),
+            Language::JavaScript => Some((
+                tree_sitter_javascript::LANGUAGE.into(),
+                JAVASCRIPT_HIGHLIGHTS,
+            )),
+            Language::TypeScript => Some((
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+                TYPESCRIPT_HIGHLIGHTS,
+            )),
+            Language::Tsx => {
+                Some((tree_sitter_typescript::LANGUAGE_TSX.into(), TSX_HIGHLIGHTS))
+            }
+            Language::C => Some((tree_sitter_c::LANGUAGE.into(), C_HIGHLIGHTS)),
+            Language::Cpp => Some((tree_sitter_cpp::LANGUAGE.into(), CPP_HIGHLIGHTS)),
+            Language::Css => Some((tree_sitter_css::LANGUAGE.into(), CSS_HIGHLIGHTS)),
+            Language::Json => Some((tree_sitter_json::LANGUAGE.into(), JSON_HIGHLIGHTS)),
+            Language::Yaml => Some((tree_sitter_yaml::LANGUAGE.into(), YAML_HIGHLIGHTS)),
+            Language::Bash => Some((tree_sitter_bash::LANGUAGE.into(), BASH_HIGHLIGHTS)),
+            Language::Markdown => {
+                Some((tree_sitter_md::LANGUAGE.into(), MARKDOWN_HIGHLIGHTS))
+            }
+            Language::PlainText => None,
+        }
+    }
+}
 
 /// Wraps tree-sitter parsing and highlight query execution.
 pub struct Highlighter {
-    parser: Parser,
-    query: Query,
+    parser: Option<Parser>,
+    query: Option<Query>,
     tree: Option<Tree>,
+    language: Language,
 }
 
 impl Highlighter {
-    /// Create a highlighter for the given language and query source.
-    pub fn new(language: Language, query_source: &str) -> Result<Self, tree_sitter::QueryError> {
-        let mut parser = Parser::new();
-        parser
-            .set_language(&language)
-            .expect("language version mismatch");
-        let query = Query::new(&language, query_source)?;
-        Ok(Self {
-            parser,
-            query,
-            tree: None,
-        })
+    /// Create a highlighter for the specified language.
+    pub fn new(language: Language) -> Self {
+        match language.grammar_and_query() {
+            Some((ts_lang, query_source)) => {
+                let mut parser = Parser::new();
+                parser
+                    .set_language(&ts_lang)
+                    .expect("language version mismatch");
+
+                match Query::new(&ts_lang, query_source) {
+                    Ok(query) => Self {
+                        parser: Some(parser),
+                        query: Some(query),
+                        tree: None,
+                        language,
+                    },
+                    Err(e) => {
+                        log::warn!("Failed to parse highlight query for {:?}: {}", language, e);
+                        Self {
+                            parser: None,
+                            query: None,
+                            tree: None,
+                            language,
+                        }
+                    }
+                }
+            }
+            None => Self {
+                parser: None,
+                query: None,
+                tree: None,
+                language,
+            },
+        }
     }
 
     /// Create a highlighter configured for Rust syntax.
     pub fn rust() -> Self {
-        Self::new(tree_sitter_rust::LANGUAGE.into(), RUST_HIGHLIGHTS_SCM)
-            .expect("built-in Rust highlight query should be valid")
+        Self::new(Language::Rust)
+    }
+
+    /// Create a highlighter based on filename extension.
+    pub fn from_filename(filename: &str) -> Self {
+        Self::new(Language::from_filename(filename))
+    }
+
+    pub fn language(&self) -> Language {
+        self.language
     }
 
     /// Parse the full source text, storing the resulting tree for queries.
-    /// When parsing different source texts (like individual diff lines), we
-    /// don't reuse the old tree to avoid stale node references.
     pub fn parse(&mut self, source: &str) {
-        // Always create a fresh parse to avoid issues with stale tree references
-        // when parsing unrelated snippets (like individual diff lines)
-        self.tree = self.parser.parse(source, None);
+        if let Some(ref mut parser) = self.parser {
+            self.tree = parser.parse(source, self.tree.as_ref());
+        }
     }
 
     /// Return highlight spans for the given byte range of the source.
     ///
-    /// Each span is `(byte_range, capture_name)` where `capture_name` is the
-    /// tree-sitter query capture (e.g. `"keyword"`, `"function"`, `"type"`).
+    /// Each span is `(byte_range, capture_name)`.
     pub fn highlights<'a>(
         &'a self,
         source: &'a str,
         range: Range<usize>,
     ) -> Vec<(Range<usize>, &'a str)> {
-        let tree = match &self.tree {
-            Some(tree) => tree,
-            None => return Vec::new(),
+        let (tree, query) = match (&self.tree, &self.query) {
+            (Some(tree), Some(query)) => (tree, query),
+            _ => return Vec::new(),
         };
 
         let source_len = source.len();
-        // Clamp the requested range to source bounds
         let safe_range = range.start.min(source_len)..range.end.min(source_len);
         if safe_range.is_empty() {
             return Vec::new();
@@ -68,15 +209,13 @@ impl Highlighter {
         cursor.set_byte_range(safe_range.clone());
 
         let mut result = Vec::new();
-        let mut matches = cursor.matches(&self.query, tree.root_node(), source.as_bytes());
+        let mut matches = cursor.matches(query, tree.root_node(), source.as_bytes());
         while let Some(query_match) = matches.next() {
             for capture in query_match.captures {
-                let capture_name = &self.query.capture_names()[capture.index as usize];
+                let capture_name = &query.capture_names()[capture.index as usize];
                 let node_range = capture.node.byte_range();
-                // Clamp node range to source bounds to prevent out-of-bounds access
                 let clamped_start = node_range.start.min(source_len);
                 let clamped_end = node_range.end.min(source_len);
-                // Only include captures that overlap our requested range and have valid bounds
                 if clamped_start < clamped_end
                     && clamped_start < safe_range.end
                     && clamped_end > safe_range.start
@@ -86,7 +225,6 @@ impl Highlighter {
             }
         }
 
-        // Sort by start position, then by longest span first (outer captures first)
         result.sort_by(|a, b| a.0.start.cmp(&b.0.start).then(b.0.end.cmp(&a.0.end)));
         result
     }

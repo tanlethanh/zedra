@@ -4,19 +4,14 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use super::syntax_highlighter::Highlighter;
+use super::syntax_highlighter::{Highlighter, Language};
 use super::syntax_theme::SyntaxTheme;
 use super::text_buffer::Buffer;
 
-use crate::theme;
+use crate::theme::{EditorColors, LanguageColors, EDITOR_FONT_SIZE, EDITOR_GUTTER_WIDTH,
+    EDITOR_LINE_HEIGHT};
 
-const LINE_HEIGHT: f32 = theme::EDITOR_LINE_HEIGHT;
-const GUTTER_WIDTH: f32 = theme::EDITOR_GUTTER_WIDTH;
-const FONT_SIZE: f32 = theme::EDITOR_FONT_SIZE;
-const GUTTER_FONT_SIZE: f32 = theme::EDITOR_GUTTER_FONT_SIZE;
-
-/// Cached per-line data (text, line number, syntax highlights).
-/// Recomputed only when the buffer content changes, NOT on every scroll frame.
+/// Cached per-line data. Recomputed only when the buffer changes, not on scroll.
 struct CachedLine {
     text: String,
     number: String,
@@ -27,14 +22,12 @@ struct CachedLine {
 pub struct EditorView {
     buffer: Buffer,
     highlighter: Highlighter,
-    theme: SyntaxTheme,
+    syntax_theme: SyntaxTheme,
+    colors: EditorColors,
     cursor_offset: usize,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
-    /// Cached line data shared with the uniform_list closure via Rc.
-    /// Only rebuilt when the buffer content changes.
     cached_lines: Rc<Vec<CachedLine>>,
-    /// Whether cached_lines needs rebuilding.
     lines_dirty: bool,
 }
 
@@ -42,11 +35,22 @@ impl EditorView {
     pub fn new(content: String, cx: &mut App) -> Self {
         let mut highlighter = Highlighter::rust();
         highlighter.parse(&content);
+        Self::build(content, highlighter, cx)
+    }
 
+    /// Create with automatic language detection from filename.
+    pub fn with_filename(content: String, filename: &str, cx: &mut App) -> Self {
+        let mut highlighter = Highlighter::from_filename(filename);
+        highlighter.parse(&content);
+        Self::build(content, highlighter, cx)
+    }
+
+    fn build(content: String, highlighter: Highlighter, cx: &mut App) -> Self {
         Self {
             buffer: Buffer::new(content),
             highlighter,
-            theme: SyntaxTheme::default_dark(),
+            syntax_theme: SyntaxTheme::default(),
+            colors: EditorColors::default(),
             cursor_offset: 0,
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
@@ -63,23 +67,29 @@ impl EditorView {
         self.lines_dirty = true;
     }
 
-    /// Rebuild the cached line data from the buffer and highlighter.
+    pub fn language(&self) -> Language {
+        self.highlighter.language()
+    }
+
     fn rebuild_line_cache(&mut self) {
-        let line_count = self.buffer.line_count();
-        let lines: Vec<CachedLine> = (0..line_count)
+        let lines: Vec<CachedLine> = (0..self.buffer.line_count())
             .map(|line| CachedLine {
                 text: self.buffer.line_text(line).to_string(),
-                number: format!("{:>4}", line + 1),
+                number: format!("{}", line + 1),
                 highlights: self.line_highlights(line),
             })
             .collect();
+        log::info!(
+            "[PERF] editor: rebuilt cache, {} lines, {} chars",
+            lines.len(),
+            lines.iter().map(|l| l.text.len()).sum::<usize>()
+        );
         self.cached_lines = Rc::new(lines);
         self.lines_dirty = false;
     }
 
     fn move_cursor_left(&mut self) {
         if self.cursor_offset > 0 {
-            // Move back one character (handle UTF-8 properly)
             let text = self.buffer.text();
             self.cursor_offset = text[..self.cursor_offset]
                 .char_indices()
@@ -156,47 +166,97 @@ impl EditorView {
         }
     }
 
-    /// Compute syntax highlights for a single line, with byte ranges relative
-    /// to the start of that line's text (stripping trailing newline).
-    /// Ranges are sorted and non-overlapping (required by GPUI's compute_runs).
+    /// Compute syntax highlights for a single line. Ranges are sorted and
+    /// non-overlapping (required by GPUI's compute_runs).
     fn line_highlights(&self, line: usize) -> Vec<(Range<usize>, HighlightStyle)> {
         let byte_range = self.buffer.line_byte_range(line);
         let source = self.buffer.text();
         let line_text = self.buffer.line_text(line);
-
-        let raw_highlights = self.highlighter.highlights(source, byte_range.clone());
         let line_start = byte_range.start;
         let line_end = line_start + line_text.len();
 
-        let mut result: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
-        for (span_range, capture_name) in &raw_highlights {
-            if let Some(style) = self.theme.get(capture_name) {
-                let start = span_range.start.max(line_start) - line_start;
-                let end = span_range.end.min(line_end) - line_start;
-                if start < end {
-                    result.push((start..end, style));
-                }
-            }
-        }
+        let mut result: Vec<(Range<usize>, HighlightStyle)> = self
+            .highlighter
+            .highlights(source, byte_range)
+            .iter()
+            .filter_map(|(span, name)| {
+                self.syntax_theme.get(name).map(|style| {
+                    let start = span.start.max(line_start) - line_start;
+                    let end = span.end.min(line_end) - line_start;
+                    (start..end, style)
+                })
+            })
+            .filter(|(r, _)| !r.is_empty())
+            .collect();
 
-        // Sort by start position, then by shorter range (more specific captures win)
         result.sort_by(|a, b| a.0.start.cmp(&b.0.start).then(a.0.len().cmp(&b.0.len())));
 
-        // Remove overlaps: for each byte position, keep only the first (most specific) highlight
+        // Remove overlaps — keep first (most specific) highlight at each position.
         let mut merged: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
         let mut cursor = 0usize;
         for (range, style) in result {
             if range.start >= cursor {
-                merged.push((range.clone(), style));
                 cursor = range.end;
-            } else if range.start < cursor && range.end > cursor {
-                // Partially overlapping: trim the start
+                merged.push((range, style));
+            } else if range.end > cursor {
                 merged.push((cursor..range.end, style));
                 cursor = range.end;
             }
-            // Fully overlapping ranges are skipped
         }
         merged
+    }
+
+    fn render_status_bar(&self) -> impl IntoElement {
+        let language = self.highlighter.language();
+        let (cursor_row, cursor_col) = self.buffer.offset_to_point(self.cursor_offset);
+        let lang_name: SharedString = language.display_name().into();
+        let position: SharedString =
+            format!("Ln {}, Col {}", cursor_row + 1, cursor_col + 1).into();
+        let line_count: SharedString = format!("{} lines", self.buffer.line_count()).into();
+
+        let c = &self.colors;
+        let badge_color = LanguageColors::for_language(language.display_name());
+
+        div()
+            .h(px(22.0))
+            .w_full()
+            .bg(c.status_bar_bg)
+            .border_t_1()
+            .border_color(c.border_subtle)
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .px(px(10.0))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .px(px(5.0))
+                            .py(px(1.0))
+                            .rounded(px(3.0))
+                            .bg(badge_color)
+                            .text_color(gpui::rgb(0xffffff))
+                            .text_size(px(9.0))
+                            .child(lang_name),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(9.0))
+                            .text_color(c.status_bar_text)
+                            .child(line_count),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(9.0))
+                    .text_color(c.status_bar_text)
+                    .child(position),
+            )
     }
 }
 
@@ -208,149 +268,148 @@ impl Focusable for EditorView {
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Rebuild line cache only when buffer content changed.
-        // During scroll, this is skipped — the expensive tree-sitter highlight
-        // iteration and string allocations are avoided entirely.
         if self.lines_dirty {
             self.rebuild_line_cache();
-            let line_count = self.cached_lines.len();
-            let char_count: usize = self.cached_lines.iter().map(|l| l.text.len()).sum();
-            log::info!(
-                "[PERF] editor: rebuilt cache, {} lines, {} chars",
-                line_count, char_count
-            );
         }
 
         let line_count = self.cached_lines.len();
-
-        // Cursor position is cheap to compute per frame.
         let (cursor_row, cursor_col) = self.buffer.offset_to_point(self.cursor_offset);
-
-        // Rc clone is cheap — just a reference count bump.
         let cached_lines = self.cached_lines.clone();
+        let c = &self.colors;
 
         let text_style = {
             let mut style = window.text_style();
-            style.color = rgb(0xabb2bf).into();
-            style.font_size = px(FONT_SIZE).into();
+            style.color = c.text_primary;
+            style.font_size = px(EDITOR_FONT_SIZE).into();
             style
         };
+
+        let bg_current_line = c.bg_current_line;
+        let bg_gutter = c.bg_gutter;
+        let border_subtle = c.border_subtle;
+        let text_gutter = c.text_gutter;
+        let text_gutter_active = c.text_gutter_active;
+        let cursor_color = c.cursor;
 
         div()
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0x0e0c0c))
+            .bg(c.bg)
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                let keystroke = &event.keystroke;
-                let handled = match keystroke.key.as_str() {
-                    "backspace" => {
-                        this.backspace();
-                        true
-                    }
-                    "delete" => {
-                        this.delete_forward();
-                        true
-                    }
-                    "enter" => {
-                        this.insert_newline();
-                        true
-                    }
-                    "left" => {
-                        this.move_cursor_left();
-                        true
-                    }
-                    "right" => {
-                        this.move_cursor_right();
-                        true
-                    }
-                    "up" => {
-                        this.move_cursor_up();
-                        true
-                    }
-                    "down" => {
-                        this.move_cursor_down();
-                        true
-                    }
+                let k = &event.keystroke;
+                let handled = match k.key.as_str() {
+                    "backspace" => { this.backspace(); true }
+                    "delete"    => { this.delete_forward(); true }
+                    "enter"     => { this.insert_newline(); true }
+                    "left"      => { this.move_cursor_left(); true }
+                    "right"     => { this.move_cursor_right(); true }
+                    "up"        => { this.move_cursor_up(); true }
+                    "down"      => { this.move_cursor_down(); true }
                     _ => false,
                 };
                 if !handled {
-                    if let Some(ref key_char) = keystroke.key_char {
-                        if !keystroke.modifiers.control
-                            && !keystroke.modifiers.alt
-                            && !keystroke.modifiers.platform
-                        {
-                            this.insert_char(key_char);
+                    if let Some(ref ch) = k.key_char {
+                        if !k.modifiers.control && !k.modifiers.alt && !k.modifiers.platform {
+                            this.insert_char(ch);
                         }
                     }
                 }
                 cx.notify();
             }))
             .child(
-                uniform_list("editor-lines", line_count, {
-                    let text_style = text_style.clone();
-                    move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
-                        range
-                            .map(|line| {
-                                let cached = &cached_lines[line];
-                                let show_cursor = cursor_row == line;
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_row()
+                    .overflow_hidden()
+                    // Gutter separator panel
+                    .child(
+                        div()
+                            .w(px(EDITOR_GUTTER_WIDTH))
+                            .h_full()
+                            .bg(bg_gutter)
+                            .border_r_1()
+                            .border_color(border_subtle),
+                    )
+                    // Scrollable code area
+                    .child(div().flex_1().bg(c.bg).child(
+                        uniform_list("editor-lines", line_count, {
+                            let text_style = text_style.clone();
+                            move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
+                                range
+                                    .map(|line| {
+                                        let cached = &cached_lines[line];
+                                        let is_current = line == cursor_row;
 
-                                let styled_text = if cached.text.is_empty() {
-                                    StyledText::new(" ")
-                                        .with_default_highlights(&text_style, Vec::new())
-                                } else {
-                                    StyledText::new(cached.text.clone()).with_default_highlights(
-                                        &text_style,
-                                        cached.highlights.clone(),
-                                    )
-                                };
-
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .h(px(LINE_HEIGHT))
-                                    .child(
-                                        div()
-                                            .w(px(GUTTER_WIDTH))
-                                            .h(px(LINE_HEIGHT))
-                                            .flex()
-                                            .items_center()
-                                            .justify_end()
-                                            .pr_2()
-                                            .text_color(hsla(0.0, 0.0, 0.83, 0.3))
-                                            .text_size(px(GUTTER_FONT_SIZE))
-                                            .child(cached.number.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .h(px(LINE_HEIGHT))
-                                            .flex()
-                                            .items_center()
-                                            .text_size(px(FONT_SIZE))
-                                            .relative()
-                                            .when(show_cursor, |this| {
-                                                let char_width = FONT_SIZE * 0.6;
-                                                let cursor_x = cursor_col as f32 * char_width;
-                                                this.child(
-                                                    div()
-                                                        .absolute()
-                                                        .left(px(cursor_x))
-                                                        .top(px(0.0))
-                                                        .w(px(2.0))
-                                                        .h(px(LINE_HEIGHT))
-                                                        .bg(rgb(0x528bff)),
+                                        let styled = if cached.text.is_empty() {
+                                            StyledText::new(" ")
+                                                .with_default_highlights(&text_style, vec![])
+                                        } else {
+                                            StyledText::new(cached.text.clone())
+                                                .with_default_highlights(
+                                                    &text_style,
+                                                    cached.highlights.clone(),
                                                 )
-                                            })
-                                            .child(styled_text),
-                                    )
-                            })
-                            .collect()
-                    }
-                })
-                .track_scroll(&self.scroll_handle)
-                .flex_1(),
+                                        };
+
+                                        div()
+                                            .w_full()
+                                            .h(px(EDITOR_LINE_HEIGHT))
+                                            .flex()
+                                            .flex_row()
+                                            .when(is_current, |el| el.bg(bg_current_line))
+                                            // Line number
+                                            .child(
+                                                div()
+                                                    .w(px(EDITOR_GUTTER_WIDTH))
+                                                    .h(px(EDITOR_LINE_HEIGHT))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_end()
+                                                    .pr(px(8.0))
+                                                    .text_color(if is_current {
+                                                        text_gutter_active
+                                                    } else {
+                                                        text_gutter
+                                                    })
+                                                    .text_size(px(EDITOR_FONT_SIZE - 1.0))
+                                                    .child(cached.number.clone()),
+                                            )
+                                            // Code content
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .h(px(EDITOR_LINE_HEIGHT))
+                                                    .pl(px(4.0))
+                                                    .flex()
+                                                    .items_center()
+                                                    .relative()
+                                                    .when(is_current, |el| {
+                                                        let x = cursor_col as f32
+                                                            * (EDITOR_FONT_SIZE * 0.6);
+                                                        el.child(
+                                                            div()
+                                                                .absolute()
+                                                                .left(px(4.0 + x))
+                                                                .top(px(2.0))
+                                                                .w(px(2.0))
+                                                                .h(px(EDITOR_LINE_HEIGHT - 4.0))
+                                                                .rounded(px(1.0))
+                                                                .bg(cursor_color),
+                                                        )
+                                                    })
+                                                    .child(styled),
+                                            )
+                                    })
+                                    .collect()
+                            }
+                        })
+                        .track_scroll(&self.scroll_handle)
+                        .size_full(),
+                    )),
             )
+            .child(self.render_status_bar())
     }
 }

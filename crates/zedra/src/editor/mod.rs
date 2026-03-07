@@ -6,3 +6,5 @@ pub mod git_sidebar;
 pub mod syntax_highlighter;
 pub mod syntax_theme;
 pub mod text_buffer;
+
+pub use syntax_highlighter::Language;
