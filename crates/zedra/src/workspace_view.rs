@@ -246,6 +246,9 @@ pub struct WorkspaceView {
     pub active_terminal_id: Option<String>,
     /// Written by ZedraApp after async terminal_create returns.
     pub pending_terminal_id: SharedPendingSlot<String>,
+    /// Written by ZedraApp when an existing session is resumed with server-side terminals.
+    /// Carries the full list of terminal IDs to attach; replaces the placeholder terminal.
+    pub pending_existing_terminals: SharedPendingSlot<Vec<String>>,
     pending_file: SharedPendingSlot<(String, String)>,
     pending_git_diff: SharedPendingSlot<(String, String, String)>,
     _subscriptions: Vec<Subscription>,
@@ -260,6 +263,7 @@ impl WorkspaceView {
         let pending_file: SharedPendingSlot<(String, String)> = shared_pending_slot();
         let pending_git_diff: SharedPendingSlot<(String, String, String)> = shared_pending_slot();
         let pending_terminal_id: SharedPendingSlot<String> = shared_pending_slot();
+        let pending_existing_terminals: SharedPendingSlot<Vec<String>> = shared_pending_slot();
 
         // Create initial terminal view
         let (columns, rows, cell_width, line_height) = compute_terminal_dimensions(window);
@@ -504,6 +508,7 @@ impl WorkspaceView {
             terminal_views: initial_terminals,
             active_terminal_id: None,
             pending_terminal_id,
+            pending_existing_terminals,
             pending_file,
             pending_git_diff,
             _subscriptions: subscriptions,
@@ -561,7 +566,47 @@ impl WorkspaceView {
 }
 
 impl Render for WorkspaceView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Drain pending existing terminals (cold-start session resume).
+        // Replaces the placeholder "__pending__" terminal with views for each resumed terminal.
+        if let Some(existing_ids) = self.pending_existing_terminals.take() {
+            if !existing_ids.is_empty() {
+                self.terminal_views.clear();
+
+                let (columns, rows, cell_width, line_height) = compute_terminal_dimensions(window);
+                for id in &existing_ids {
+                    let terminal_view =
+                        cx.new(|cx| TerminalView::new(columns, rows, cell_width, line_height, cx));
+                    terminal_view.update(cx, |view, _cx| {
+                        view.set_keyboard_request(crate::keyboard::make_keyboard_handler());
+                        view.set_is_keyboard_visible_fn(
+                            crate::keyboard::make_is_keyboard_visible(),
+                        );
+                        view.set_terminal_id(id.clone());
+                        view.set_connected(true);
+                        view.set_status("Resumed".to_string());
+                    });
+                    self.terminal_views.push((id.clone(), terminal_view));
+                }
+
+                // Show the first terminal and mark it active
+                if let Some((first_id, first_view)) = self.terminal_views.first() {
+                    let first_id = first_id.clone();
+                    let first_view = first_view.clone();
+                    self.workspace_content.update(cx, |content, cx| {
+                        content.set_main_view(first_view.into(), "Terminal", cx);
+                    });
+                    self.active_terminal_id = Some(first_id.clone());
+                    if let Some(session) = zedra_session::active_session() {
+                        session.set_active_terminal(&first_id);
+                    }
+                    self.workspace_drawer.update(cx, |drawer, cx| {
+                        drawer.set_active_terminal(Some(first_id), cx);
+                    });
+                }
+            }
+        }
+
         // Drain pending file content → swap main view to EditorView
         if let Some((filename, content)) = self.pending_file.take() {
             let editor_view = cx.new(|cx| EditorView::new(content, cx));

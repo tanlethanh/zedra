@@ -1179,6 +1179,43 @@ impl RemoteSession {
         let result: TermListResult = self.client.rpc(TermListReq {}).await?;
         Ok(result.terminals.into_iter().map(|e| e.id).collect())
     }
+
+    /// Attach to an existing terminal on the server (for cold-start session resume).
+    ///
+    /// Registers the terminal in the session's ID list and output buffer, then
+    /// starts the bidi streaming pump. Uses `last_seq=0` to replay all available
+    /// backlog output from the server.
+    pub async fn terminal_attach_existing(&self, id: &str, handle: &SessionHandle) -> Result<()> {
+        // Register per-terminal output buffer
+        {
+            let mut map = self.terminal_outputs.lock().unwrap();
+            map.entry(id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(VecDeque::new())));
+        }
+
+        // Append to terminal IDs list (if not already present)
+        let is_first = {
+            let mut ids = self.terminal_ids.lock().unwrap();
+            let first = ids.is_empty();
+            if !ids.contains(&id.to_string()) {
+                ids.push(id.to_string());
+            }
+            first
+        };
+
+        // Set as active if it's the first terminal
+        if is_first {
+            if let Ok(mut active) = self.active_terminal_id.lock() {
+                *active = Some(id.to_string());
+            }
+        }
+
+        // Attach to the terminal via bidi streaming (last_seq=0 for full backlog replay)
+        self.attach_terminal(id, 0, handle).await?;
+
+        tracing::info!("Terminal attached (existing) id: {}", id);
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------

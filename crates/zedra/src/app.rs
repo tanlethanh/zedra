@@ -236,8 +236,10 @@ impl ZedraApp {
         let handle_for_view = session_handle.clone();
         let workspace_view = cx.new(|cx| WorkspaceView::new(handle_for_view, window, cx));
 
-        // Grab the workspace's pending_terminal_id so async task can write to it
+        // Grab pending slots so the async task can signal the UI
         let pending_term_id = workspace_view.read(cx).pending_terminal_id.clone();
+        let pending_existing_terminals =
+            workspace_view.read(cx).pending_existing_terminals.clone();
 
         // Compute terminal dimensions for the async terminal_create call
         let (cols, rows, _, _) = compute_terminal_dimensions(window);
@@ -320,16 +322,70 @@ impl ZedraApp {
             match RemoteSession::connect_with_iroh(addr, &handle_for_connect).await {
                 Ok(session) => {
                     log::info!("RemoteSession: connected via iroh!");
-                    match session
-                        .terminal_create(cols_u16, rows_u16, &handle_for_connect)
-                        .await
-                    {
-                        Ok(term_id) => {
-                            log::info!("Remote terminal created: {}", term_id);
-                            pending_term_id.set(term_id);
+
+                    // Check for existing server-side terminals (session resume case).
+                    // If found, attach them and restore the UI; otherwise create a new terminal.
+                    match session.terminal_list().await {
+                        Ok(server_ids) if !server_ids.is_empty() => {
+                            log::info!(
+                                "Session resumed: attaching {} existing terminal(s)",
+                                server_ids.len()
+                            );
+                            let mut attached = Vec::new();
+                            for id in &server_ids {
+                                match session
+                                    .terminal_attach_existing(id, &handle_for_connect)
+                                    .await
+                                {
+                                    Ok(()) => attached.push(id.clone()),
+                                    Err(e) => {
+                                        log::warn!("Failed to attach terminal {}: {}", id, e)
+                                    }
+                                }
+                            }
+                            if !attached.is_empty() {
+                                pending_existing_terminals.set(attached);
+                            } else {
+                                // All attaches failed — fall back to creating a new terminal
+                                match session
+                                    .terminal_create(cols_u16, rows_u16, &handle_for_connect)
+                                    .await
+                                {
+                                    Ok(term_id) => pending_term_id.set(term_id),
+                                    Err(e) => {
+                                        log::error!("Failed to create remote terminal: {}", e)
+                                    }
+                                }
+                            }
                         }
-                        Err(e) => log::error!("Failed to create remote terminal: {}", e),
+                        Ok(_) => {
+                            // No existing terminals (new session) — create one
+                            match session
+                                .terminal_create(cols_u16, rows_u16, &handle_for_connect)
+                                .await
+                            {
+                                Ok(term_id) => {
+                                    log::info!("Remote terminal created: {}", term_id);
+                                    pending_term_id.set(term_id);
+                                }
+                                Err(e) => log::error!("Failed to create remote terminal: {}", e),
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("terminal_list failed ({}), creating new terminal", e);
+                            match session
+                                .terminal_create(cols_u16, rows_u16, &handle_for_connect)
+                                .await
+                            {
+                                Ok(term_id) => {
+                                    log::info!("Remote terminal created: {}", term_id);
+                                    pending_term_id.set(term_id);
+                                }
+                                Err(e) => log::error!("Failed to create remote terminal: {}", e),
+                            }
+                        }
                     }
+
                     handle_for_connect.set_session(session);
                     zedra_session::signal_terminal_data();
                 }
