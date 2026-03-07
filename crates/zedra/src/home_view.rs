@@ -82,16 +82,22 @@ impl Render for HomeView {
                     .child("Zedra"),
             );
 
-        // Workspace cards (when sessions exist)
-        if has_workspaces {
-            let mut cards = div()
-                .mt_4()
-                .w(px(280.0))
-                .flex()
-                .flex_col()
-                .gap(px(8.0));
+        // Unified list: active workspaces not in the saved list appear first,
+        // then saved workspaces — replaced by the active card if currently connected.
+        let mut cards = div()
+            .mt_4()
+            .w(px(280.0))
+            .flex()
+            .flex_col()
+            .gap(px(8.0));
+        let mut any_cards = false;
 
-            for ws in &self.workspaces {
+        // 1. Active workspaces with no saved match (brand-new unsaved connections)
+        for ws in &self.workspaces {
+            let matched = ws.endpoint_addr_encoded.as_deref().map_or(false, |addr| {
+                self.saved_workspaces.iter().any(|sw| sw.endpoint_addr == addr)
+            });
+            if !matched {
                 let index = ws.index;
                 let (status_label, status_color): (&str, u32) = match &ws.session_state {
                     zedra_session::SessionState::Connected { .. } => ("Connected", theme::ACCENT_GREEN),
@@ -100,185 +106,83 @@ impl Render for HomeView {
                     zedra_session::SessionState::Disconnected => ("Disconnected", theme::ACCENT_RED),
                     zedra_session::SessionState::Error(_) => ("Error", theme::ACCENT_RED),
                 };
-                let path_label = ws
-                    .project_path
-                    .as_deref()
-                    .unwrap_or("Workspace")
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or("Workspace")
-                    .to_string();
-                let term_label = if ws.terminal_count == 0 {
-                    "No terminals".to_string()
-                } else if ws.terminal_count == 1 {
-                    "1 terminal".to_string()
-                } else {
-                    format!("{} terminals", ws.terminal_count)
-                };
-
-                let card = div()
-                    .id(SharedString::from(format!("ws-home-card-{}", index)))
-                    .w_full()
-                    .rounded(px(8.0))
-                    .bg(rgb(theme::BG_CARD))
-                    .border_1()
-                    .border_color(rgb(theme::BORDER_SUBTLE))
-                    .p(px(12.0))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme::hover_bg()))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |_this, _event, _window, cx| {
-                            cx.emit(HomeEvent::WorkspaceTapped(index));
-                        }),
-                    )
-                    // Header row: status dot + path name
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(6.0))
-                            .child(
-                                div()
-                                    .w(px(theme::ICON_STATUS))
-                                    .h(px(theme::ICON_STATUS))
-                                    .rounded(px(3.0))
-                                    .bg(rgb(status_color)),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_color(rgb(theme::TEXT_PRIMARY))
-                                    .text_size(px(theme::FONT_BODY))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(path_label),
-                            )
-                            .child(
-                                div()
-                                    .text_color(rgb(status_color))
-                                    .text_size(px(theme::FONT_DETAIL))
-                                    .child(status_label),
-                            ),
-                    )
-                    // Terminal count
-                    .child(
-                        div()
-                            .mt(px(4.0))
-                            .text_color(rgb(theme::TEXT_MUTED))
-                            .text_size(px(theme::FONT_DETAIL))
-                            .child(term_label),
-                    );
-
-                cards = cards.child(card);
+                let path_label = ws.project_path.as_deref().unwrap_or("Workspace").rsplit('/').next().unwrap_or("Workspace").to_string();
+                let term_label = if ws.terminal_count == 1 { "1 terminal".to_string() } else { format!("{} terminals", ws.terminal_count) };
+                cards = cards.child(active_workspace_card(index, path_label, status_label, status_color, term_label, cx));
+                any_cards = true;
             }
+        }
 
+        // 2. Saved workspaces — show active card if connected, reconnect card otherwise
+        for (saved_index, sw) in self.saved_workspaces.iter().enumerate() {
+            let active = self.workspaces.iter().find(|ws| {
+                ws.endpoint_addr_encoded.as_deref() == Some(sw.endpoint_addr.as_str())
+            });
+            if let Some(ws) = active {
+                let index = ws.index;
+                let (status_label, status_color): (&str, u32) = match &ws.session_state {
+                    zedra_session::SessionState::Connected { .. } => ("Connected", theme::ACCENT_GREEN),
+                    zedra_session::SessionState::Connecting { .. } => ("Connecting\u{2026}", theme::ACCENT_YELLOW),
+                    zedra_session::SessionState::Reconnecting { .. } => ("Reconnecting\u{2026}", theme::ACCENT_YELLOW),
+                    zedra_session::SessionState::Disconnected => ("Disconnected", theme::ACCENT_RED),
+                    zedra_session::SessionState::Error(_) => ("Error", theme::ACCENT_RED),
+                };
+                let path_label = ws.project_path.as_deref().unwrap_or("Workspace").rsplit('/').next().unwrap_or("Workspace").to_string();
+                let term_label = if ws.terminal_count == 1 { "1 terminal".to_string() } else { format!("{} terminals", ws.terminal_count) };
+                cards = cards.child(active_workspace_card(index, path_label, status_label, status_color, term_label, cx));
+            } else {
+                let display_name = sw.display_name();
+                let label = sw.last_hostname.as_deref().unwrap_or("Saved host").to_string();
+                let path_label = sw.project_name().unwrap_or_default().to_string();
+                cards = cards.child(
+                    div()
+                        .id(SharedString::from(format!("ws-saved-card-{}", saved_index)))
+                        .w_full()
+                        .rounded(px(8.0))
+                        .bg(rgb(theme::BG_CARD))
+                        .border_1()
+                        .border_color(rgb(theme::BORDER_SUBTLE))
+                        .p(px(12.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::hover_bg()))
+                        .active(|s| s.opacity(0.6))
+                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                            if this.long_press_active {
+                                this.long_press_active = false;
+                            } else {
+                                cx.emit(HomeEvent::SavedWorkspaceTapped(saved_index));
+                            }
+                        }))
+                        .on_long_press(cx.listener(move |this, _event, _window, cx| {
+                            this.long_press_active = true;
+                            cx.emit(HomeEvent::SavedWorkspaceRemoved(saved_index, display_name.clone()));
+                        }))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.0))
+                                .child(div().w(px(theme::ICON_STATUS)).h(px(theme::ICON_STATUS)).rounded(px(3.0)).bg(rgb(theme::TEXT_MUTED)))
+                                .child(div().flex_1().text_color(rgb(theme::TEXT_PRIMARY)).text_size(px(theme::FONT_BODY)).font_weight(FontWeight::MEDIUM).child(label))
+                                .child(div().text_color(rgb(theme::TEXT_MUTED)).text_size(px(theme::FONT_DETAIL)).child("Reconnect")),
+                        )
+                        .children(if path_label.is_empty() {
+                            None
+                        } else {
+                            Some(div().mt(px(4.0)).text_color(rgb(theme::TEXT_MUTED)).text_size(px(theme::FONT_DETAIL)).child(path_label))
+                        }),
+                );
+            }
+            any_cards = true;
+        }
+
+        if any_cards {
             content = content.child(cards);
         }
 
-        // Saved workspace cards (persisted, not yet connected)
-        // Filter out any that are already active (matched by endpoint_addr).
-        let active_addrs: Vec<String> = Vec::new(); // Active workspaces don't expose addr yet, show all saved
-        let saved: Vec<_> = self
-            .saved_workspaces
-            .iter()
-            .enumerate()
-            .filter(|(_, w)| !active_addrs.contains(&w.endpoint_addr))
-            .collect();
-
-        if !saved.is_empty() && !has_workspaces {
-            // Section header
-            content = content.child(
-                div()
-                    .mt_4()
-                    .text_color(rgb(theme::TEXT_MUTED))
-                    .text_size(px(theme::FONT_DETAIL))
-                    .child("Saved Hosts"),
-            );
-        }
-
-        for (saved_index, ws) in &saved {
-            // Don't show saved cards if there are already active workspace cards
-            // (the user is connected; they'll see the active cards above)
-            if has_workspaces {
-                break;
-            }
-            let saved_index = *saved_index;
-            let display_name = ws.display_name();
-            let label = ws
-                .last_hostname
-                .as_deref()
-                .unwrap_or("Saved host")
-                .to_string();
-            let path_label = ws.project_name().unwrap_or_default().to_string();
-
-            let card = div()
-                .id(SharedString::from(format!("ws-saved-card-{}", saved_index)))
-                .w(px(280.0))
-                .rounded(px(8.0))
-                .bg(rgb(theme::BG_CARD))
-                .border_1()
-                .border_color(rgb(theme::BORDER_SUBTLE))
-                .p(px(12.0))
-                .cursor_pointer()
-                .hover(|s| s.bg(theme::hover_bg()))
-                .active(|s| s.opacity(0.6))
-                .on_click(cx.listener(move |this, _event, _window, cx| {
-                    if this.long_press_active {
-                        this.long_press_active = false;
-                    } else {
-                        cx.emit(HomeEvent::SavedWorkspaceTapped(saved_index));
-                    }
-                }))
-                .on_long_press(cx.listener(move |this, _event, _window, cx| {
-                    this.long_press_active = true;
-                    cx.emit(HomeEvent::SavedWorkspaceRemoved(saved_index, display_name.clone()));
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(6.0))
-                        .child(
-                            div()
-                                .w(px(theme::ICON_STATUS))
-                                .h(px(theme::ICON_STATUS))
-                                .rounded(px(3.0))
-                                .bg(rgb(theme::TEXT_MUTED)),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_color(rgb(theme::TEXT_PRIMARY))
-                                .text_size(px(theme::FONT_BODY))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(label),
-                        )
-                        .child(
-                            div()
-                                .text_color(rgb(theme::TEXT_MUTED))
-                                .text_size(px(theme::FONT_DETAIL))
-                                .child("Reconnect"),
-                        ),
-                )
-                .children(if path_label.is_empty() {
-                    None
-                } else {
-                    Some(
-                        div()
-                            .mt(px(4.0))
-                            .text_color(rgb(theme::TEXT_MUTED))
-                            .text_size(px(theme::FONT_DETAIL))
-                            .child(path_label),
-                    )
-                });
-
-            content = content.child(card);
-        }
-
-        // Install guide — shown only when no workspaces (above the connect button)
-        if !has_workspaces && saved.is_empty() {
+        // Install guide — shown only when there are no workspaces and no saved hosts
+        if !has_workspaces && self.saved_workspaces.is_empty() {
             content = content.child(
                 div()
                     .w(px(280.0))
@@ -362,4 +266,41 @@ impl Render for HomeView {
             .justify_center()
             .child(content)
     }
+}
+
+fn active_workspace_card(
+    index: usize,
+    path_label: String,
+    status_label: &'static str,
+    status_color: u32,
+    term_label: String,
+    cx: &mut Context<HomeView>,
+) -> impl IntoElement {
+    div()
+        .id(SharedString::from(format!("ws-home-card-{}", index)))
+        .w_full()
+        .rounded(px(8.0))
+        .bg(rgb(theme::BG_CARD))
+        .border_1()
+        .border_color(rgb(theme::BORDER_SUBTLE))
+        .p(px(12.0))
+        .cursor_pointer()
+        .hover(|s| s.bg(theme::hover_bg()))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |_this, _event, _window, cx| {
+                cx.emit(HomeEvent::WorkspaceTapped(index));
+            }),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .child(div().w(px(theme::ICON_STATUS)).h(px(theme::ICON_STATUS)).rounded(px(3.0)).bg(rgb(status_color)))
+                .child(div().flex_1().text_color(rgb(theme::TEXT_PRIMARY)).text_size(px(theme::FONT_BODY)).font_weight(FontWeight::MEDIUM).child(path_label))
+                .child(div().text_color(rgb(status_color)).text_size(px(theme::FONT_DETAIL)).child(status_label)),
+        )
+        .child(div().mt(px(4.0)).text_color(rgb(theme::TEXT_MUTED)).text_size(px(theme::FONT_DETAIL)).child(term_label))
 }

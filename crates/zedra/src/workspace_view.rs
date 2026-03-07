@@ -26,6 +26,8 @@ pub struct WorkspaceSummary {
     pub terminal_count: usize,
     /// Actual terminal IDs (excluding pending slots), used for direct navigation.
     pub terminal_ids: Vec<String>,
+    /// base64-url encoded endpoint address, used to match against saved workspaces.
+    pub endpoint_addr_encoded: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -536,6 +538,10 @@ impl WorkspaceView {
             .map(|(id, _)| id.clone())
             .collect();
         let terminal_count = terminal_ids.len();
+        let endpoint_addr_encoded = self
+            .session_handle
+            .endpoint_addr()
+            .and_then(|addr| zedra_rpc::pairing::encode_endpoint_addr(&addr).ok());
         WorkspaceSummary {
             index,
             project_path,
@@ -543,7 +549,16 @@ impl WorkspaceView {
             session_state: state,
             terminal_count,
             terminal_ids,
+            endpoint_addr_encoded,
         }
+    }
+
+    /// Called when this workspace becomes the active workspace.
+    /// Notifies session-dependent child entities to re-render with the updated global session.
+    pub fn on_activate(&mut self, cx: &mut Context<Self>) {
+        self.workspace_content.update(cx, |_, cx| cx.notify());
+        self.workspace_drawer.update(cx, |_, cx| cx.notify());
+        cx.notify();
     }
 
     /// Switch the main view to a specific terminal by ID.

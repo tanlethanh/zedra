@@ -160,6 +160,11 @@ impl ZedraApp {
             // Set the active session handle so backward-compat rendering code
             // (active_session(), reconnect_attempt(), etc.) reads the right workspace.
             zedra_session::set_active_handle(self.workspaces[index].handle.clone());
+            // Notify the workspace's content and drawer so they re-render with the
+            // updated global session (badge, terminal list, session info).
+            self.workspaces[index].view.update(cx, |ws, cx| {
+                ws.on_activate(cx);
+            });
             cx.notify();
         }
     }
