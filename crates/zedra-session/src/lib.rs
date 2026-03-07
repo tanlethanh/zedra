@@ -1247,7 +1247,7 @@ fn spawn_reconnect(handle: SessionHandle) {
         return;
     }
 
-    tokio::spawn(async move {
+    session_runtime().spawn(async move {
         let max_attempts = 20u32;
         let mut attempt = 1u32;
 
