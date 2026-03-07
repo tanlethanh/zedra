@@ -17,6 +17,7 @@
 } while(0)
 
 // GPUI FFI (from gpui crate)
+extern void gpui_ios_set_keyboard_accessory_view(void* view_ptr);
 extern void* gpui_ios_initialize(void);
 extern void gpui_ios_did_finish_launching(void* app_ptr);
 extern void* gpui_ios_get_window(void);
@@ -30,6 +31,7 @@ extern void gpui_ios_did_enter_background(void* app_ptr);
 extern void gpui_ios_will_terminate(void* app_ptr);
 
 // Zedra FFI (from zedra-ios crate)
+extern void zedra_ios_send_key_input(const char* key);
 extern void zedra_launch_gpui(void);
 extern void zedra_ios_set_screen_scale(float scale);
 extern void zedra_ios_set_safe_area_insets(float top, float bottom, float left, float right);
@@ -118,10 +120,15 @@ const char* ios_get_documents_directory(void) {
     return buf;
 }
 
+/// Key names indexed by button tag (matches order in setupKeyboardAccessoryView).
+static const char *kAccessoryKeyNames[] = {"tab", "left", "down", "up", "right", "enter"};
+
 @interface ZedraAppDelegate : UIResponder <UIApplicationDelegate>
 @property (nonatomic, assign) void *gpuiApp;
 @property (nonatomic, assign) void *gpuiWindow;
 @property (nonatomic, strong) CADisplayLink *displayLink;
+/// Toolbar shown above the software keyboard with terminal shortcut keys.
+@property (nonatomic, strong) UIToolbar *keyboardAccessoryBar;
 @end
 
 @implementation ZedraAppDelegate
@@ -174,6 +181,9 @@ const char* ios_get_documents_directory(void) {
     self.gpuiWindow = gpui_ios_get_window();
     if (self.gpuiWindow) {
         DIAG("got GPUI window, starting CADisplayLink");
+
+        // Set up the keyboard accessory bar (shortcut keys above the software keyboard).
+        [self setupKeyboardAccessoryView];
 
         // 5. Start CADisplayLink to drive rendering at 60 FPS
         self.displayLink = [CADisplayLink displayLinkWithTarget:self
@@ -228,6 +238,57 @@ const char* ios_get_documents_directory(void) {
 /// Called when the software keyboard is about to be dismissed.
 - (void)keyboardWillHide:(NSNotification *)notification {
     zedra_ios_set_keyboard_height(0);
+}
+
+/// Create a UIToolbar with 6 shortcut keys and register it as the keyboard accessory view.
+///
+/// The toolbar is attached above the software keyboard whenever the GPUI Metal view
+/// becomes first responder. Button taps are routed to Rust via zedra_ios_send_key_input.
+- (void)setupKeyboardAccessoryView {
+    CGFloat width = [UIScreen mainScreen].bounds.size.width;
+    UIToolbar *toolbar = [[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, width, 44)];
+
+    // Use the system chrome material — the same background the iOS keyboard uses.
+    // configureWithDefaultBackground() applies a UIBlurEffect that automatically
+    // adapts to light/dark mode, producing a seamless join with the keyboard.
+    UIToolbarAppearance *appearance = [[UIToolbarAppearance alloc] init];
+    [appearance configureWithDefaultBackground];
+    toolbar.standardAppearance = appearance;
+    toolbar.scrollEdgeAppearance = appearance;
+    toolbar.compactAppearance = appearance;
+
+    // Use the primary label color so buttons read well on both light and dark keyboards.
+    toolbar.tintColor = [UIColor labelColor];
+
+    NSArray<NSString *> *labels = @[@"Tab", @"←", @"↓", @"↑", @"→", @"⏎"];
+
+    UIBarButtonItem *flex = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace
+        target:nil action:nil];
+
+    NSMutableArray<UIBarButtonItem *> *items = [NSMutableArray array];
+    for (NSInteger i = 0; i < (NSInteger)labels.count; i++) {
+        if (i > 0) [items addObject:flex];
+        UIBarButtonItem *btn = [[UIBarButtonItem alloc]
+            initWithTitle:labels[i]
+            style:UIBarButtonItemStylePlain
+            target:self
+            action:@selector(keyboardShortcutTapped:)];
+        btn.tag = i;
+        [items addObject:btn];
+    }
+
+    toolbar.items = items;
+    self.keyboardAccessoryBar = toolbar;
+    gpui_ios_set_keyboard_accessory_view((__bridge void *)toolbar);
+}
+
+/// Handles taps on keyboard shortcut buttons; sends the corresponding escape sequence.
+- (void)keyboardShortcutTapped:(UIBarButtonItem *)sender {
+    NSInteger idx = sender.tag;
+    if (idx >= 0 && idx < 6) {
+        zedra_ios_send_key_input(kAccessoryKeyNames[idx]);
+    }
 }
 
 - (void)renderFrame {

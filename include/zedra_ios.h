@@ -122,6 +122,14 @@ extern void ios_present_alert(uint32_t callback_id,
 void zedra_ios_alert_result(uint32_t callback_id, int32_t button_index);
 
 /**
+ * Called from the native keyboard accessory bar when a shortcut key button is tapped.
+ *
+ * `key` is one of: "tab", "left", "down", "up", "right", "enter".
+ * Maps the name to the corresponding terminal escape sequence and sends it via the active session.
+ */
+void zedra_ios_send_key_input(const char *key);
+
+/**
  * Called from ZedraQRScanner.m after a successful QR scan.
  *
  * `qr_string` is a base64-url encoded iroh::EndpointAddr produced by

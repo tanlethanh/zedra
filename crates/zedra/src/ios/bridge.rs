@@ -201,6 +201,34 @@ pub extern "C" fn zedra_ios_alert_result(callback_id: u32, button_index: i32) {
     }
 }
 
+/// Called from the native keyboard accessory bar when a shortcut key button is tapped.
+///
+/// `key` is one of: "tab", "left", "down", "up", "right", "enter".
+/// Maps the name to the corresponding terminal escape sequence and sends it via the active session.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
+    if key.is_null() {
+        return;
+    }
+    let key_name = unsafe {
+        match std::ffi::CStr::from_ptr(key).to_str() {
+            Ok(s) => s,
+            Err(_) => return,
+        }
+    };
+    let bytes: &[u8] = match key_name {
+        "tab"   => b"\x09",
+        "left"  => b"\x1b[D",
+        "down"  => b"\x1b[B",
+        "up"    => b"\x1b[A",
+        "right" => b"\x1b[C",
+        "enter" => b"\r",
+        _ => return,
+    };
+    zedra_session::send_terminal_input(bytes.to_vec());
+    zedra_session::signal_terminal_data();
+}
+
 /// Called from ZedraQRScanner.m after a successful QR scan.
 ///
 /// `qr_string` is a base64-url encoded iroh::EndpointAddr produced by
