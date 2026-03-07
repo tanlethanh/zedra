@@ -28,6 +28,9 @@ static KEYBOARD_HEIGHT: AtomicU32 = AtomicU32::new(0);
 static SYSTEM_INSET_TOP: AtomicU32 = AtomicU32::new(0);
 static SYSTEM_INSET_BOTTOM: AtomicU32 = AtomicU32::new(0);
 
+// Global storage for the app's internal files directory
+static FILES_DIR: Mutex<Option<String>> = Mutex::new(None);
+
 /// Get the stored display density
 pub fn get_density() -> f32 {
     *DISPLAY_DENSITY.lock().unwrap()
@@ -46,6 +49,11 @@ pub fn get_system_inset_top() -> u32 {
 /// Get the system navigation bar inset in physical pixels
 pub fn get_system_inset_bottom() -> u32 {
     SYSTEM_INSET_BOTTOM.load(Ordering::Relaxed)
+}
+
+/// Get the app's internal files directory (set during gpuiInit).
+pub fn get_files_dir() -> Option<String> {
+    FILES_DIR.lock().ok()?.clone()
 }
 
 /// Get the stored NativeWindow (must be called from main thread)
@@ -111,6 +119,23 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_gpuiInit(
             return 0;
         }
     };
+
+    // Fetch and store the app's internal files directory
+    {
+        let files_dir_obj = env.call_method(&activity, "getFilesDir", "()Ljava/io/File;", &[]);
+        if let Ok(jni::objects::JValueGen::Object(file_obj)) = files_dir_obj {
+            let path_obj =
+                env.call_method(&file_obj, "getAbsolutePath", "()Ljava/lang/String;", &[]);
+            if let Ok(jni::objects::JValueGen::Object(path_str)) = path_obj {
+                let jstr = jni::objects::JString::from(path_str);
+                if let Ok(path) = env.get_string(&jstr) {
+                    let path: String = path.into();
+                    log::info!("Files dir: {}", path);
+                    *FILES_DIR.lock().unwrap() = Some(path);
+                }
+            }
+        }
+    }
 
     // Create the platform handle
     let handle = Arc::new(AndroidPlatformHandle {

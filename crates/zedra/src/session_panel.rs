@@ -1,12 +1,11 @@
 /// Session info panel for the workspace drawer.
 ///
 /// Displays host info, connection details, endpoints, and disconnect button.
-
 use gpui::*;
 
-use crate::workspace_drawer::WorkspaceDrawerEvent;
 use crate::theme;
 use crate::transport_badge::format_bytes;
+use crate::workspace_drawer::WorkspaceDrawerEvent;
 use zedra_session::SessionState;
 
 /// Render the session tab content for the workspace drawer.
@@ -33,7 +32,7 @@ pub fn render_session_tab(cx: &mut Context<crate::workspace_drawer::WorkspaceDra
 
     let (status_label, status_color) = match &state {
         SessionState::Connected { .. } => ("Connected", theme::ACCENT_GREEN),
-        SessionState::Connecting => ("Connecting...", theme::ACCENT_YELLOW),
+        SessionState::Connecting { .. } => ("Connecting...", theme::ACCENT_YELLOW),
         SessionState::Reconnecting { .. } => ("Reconnecting...", theme::ACCENT_YELLOW),
         SessionState::Disconnected => ("Disconnected", theme::ACCENT_RED),
         SessionState::Error(_) => ("Error", theme::ACCENT_RED),

@@ -1,9 +1,9 @@
 use gpui::*;
 
-use crate::file_explorer::{FileExplorer, FileSelected};
-use crate::editor::git_sidebar::{GitFileSelected, GitSidebar};
 use crate::editor::git_sidebar::{GitFileEntry, GitFileStatus, GitRepoState};
-use crate::pending::{shared_pending_slot, SharedPendingSlot};
+use crate::editor::git_sidebar::{GitFileSelected, GitSidebar};
+use crate::file_explorer::{FileExplorer, FileSelected};
+use crate::pending::{SharedPendingSlot, shared_pending_slot};
 use crate::theme;
 
 #[derive(Clone, Copy, Debug, PartialEq)]

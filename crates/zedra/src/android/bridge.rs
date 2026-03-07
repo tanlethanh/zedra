@@ -39,4 +39,8 @@ impl PlatformBridge for AndroidBridge {
     fn launch_qr_scanner(&self) {
         crate::android::jni::launch_qr_scanner()
     }
+
+    fn data_directory(&self) -> Option<String> {
+        crate::android::jni::get_files_dir()
+    }
 }

@@ -34,8 +34,7 @@ impl PreviewApp {
         let editor = cx.new(|cx| EditorView::new(content, cx));
 
         // --- WorkspaceContent (header + swappable main view) ---
-        let workspace_content =
-            cx.new(|cx| WorkspaceContent::new(editor.into(), "preview.rs", cx));
+        let workspace_content = cx.new(|cx| WorkspaceContent::new(editor.into(), "preview.rs", cx));
 
         // --- DrawerHost wrapping WorkspaceContent ---
         let drawer_host = cx.new(|cx| DrawerHost::new(workspace_content.clone().into(), cx));
@@ -45,20 +44,18 @@ impl PreviewApp {
         let sub = cx.subscribe_in(
             &workspace_content,
             window,
-            move |_this: &mut Self,
-                  _emitter,
-                  event: &WorkspaceContentEvent,
-                  _window,
-                  cx| match event {
-                WorkspaceContentEvent::ToggleDrawer => {
-                    if drawer_host_for_toggle.read(cx).is_open() {
-                        drawer_host_for_toggle.update(cx, |host, cx| host.close(cx));
-                    } else {
-                        drawer_host_for_toggle.update(cx, |host, cx| host.open(cx));
+            move |_this: &mut Self, _emitter, event: &WorkspaceContentEvent, _window, cx| {
+                match event {
+                    WorkspaceContentEvent::ToggleDrawer => {
+                        if drawer_host_for_toggle.read(cx).is_open() {
+                            drawer_host_for_toggle.update(cx, |host, cx| host.close(cx));
+                        } else {
+                            drawer_host_for_toggle.update(cx, |host, cx| host.open(cx));
+                        }
                     }
-                }
-                WorkspaceContentEvent::OpenQuickAction => {
-                    // No-op in preview mode
+                    WorkspaceContentEvent::OpenQuickAction => {
+                        // No-op in preview mode
+                    }
                 }
             },
         );
@@ -147,10 +144,7 @@ impl Render for PreviewApp {
 }
 
 /// Create a mock terminal pre-filled with realistic output.
-fn create_mock_terminal(
-    window: &mut Window,
-    cx: &mut Context<PreviewApp>,
-) -> Entity<TerminalView> {
+fn create_mock_terminal(window: &mut Window, cx: &mut Context<PreviewApp>) -> Entity<TerminalView> {
     let viewport = window.viewport_size();
     let line_height = px(16.0);
     let cell_width = px(9.0);

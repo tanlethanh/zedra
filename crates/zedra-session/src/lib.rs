@@ -197,6 +197,24 @@ impl SessionHandle {
         self.0.next_retry_secs.load(Ordering::Relaxed)
     }
 
+    /// Effective session state for UI display.
+    ///
+    /// Reconnect state from the handle's atomics takes priority over the
+    /// underlying session state (which is not updated by the reconnect loop).
+    pub fn state(&self) -> SessionState {
+        let attempt = self.reconnect_attempt();
+        if attempt > 0 {
+            return SessionState::Reconnecting {
+                attempt,
+                reason: self.reconnect_reason(),
+                next_retry_secs: self.next_retry_secs(),
+            };
+        }
+        self.session()
+            .map(|s| s.state())
+            .unwrap_or(SessionState::Disconnected)
+    }
+
     /// Store an endpoint address for use during automatic reconnect.
     pub fn store_endpoint_addr(&self, addr: iroh::EndpointAddr) {
         if let Ok(mut slot) = self.0.endpoint_addr.lock() {

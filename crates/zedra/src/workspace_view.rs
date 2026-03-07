@@ -7,7 +7,7 @@ use gpui::*;
 use crate::editor::code_editor::EditorView;
 use crate::editor::git_diff_view::GitDiffView;
 use crate::mgpui::DrawerHost;
-use crate::pending::{shared_pending_slot, SharedPendingSlot};
+use crate::pending::{SharedPendingSlot, shared_pending_slot};
 use crate::theme;
 use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
 use zedra_session::SessionHandle;
@@ -22,6 +22,7 @@ pub struct WorkspaceSummary {
     pub index: usize,
     pub project_path: Option<String>,
     pub is_connected: bool,
+    pub session_state: zedra_session::SessionState,
     pub terminal_count: usize,
     /// Actual terminal IDs (excluding pending slots), used for direct navigation.
     pub terminal_ids: Vec<String>,
@@ -58,11 +59,7 @@ pub struct WorkspaceContent {
 }
 
 impl WorkspaceContent {
-    pub fn new(
-        main_view: AnyView,
-        title: impl Into<SharedString>,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(main_view: AnyView, title: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         Self {
             main_view,
             header_title: title.into(),
@@ -96,46 +93,48 @@ impl Render for WorkspaceContent {
         let title = self.header_title.clone();
 
         // Network badge from active session state + handle reconnect fields
-        let (reconnect_attempt, reconnect_reason, next_retry_secs) =
-            zedra_session::active_handle().map_or(
+        let (reconnect_attempt, reconnect_reason, next_retry_secs) = zedra_session::active_handle()
+            .map_or(
                 (0, zedra_session::ReconnectReason::ConnectionLost, 0),
-                |h| (h.reconnect_attempt(), h.reconnect_reason(), h.next_retry_secs()),
+                |h| {
+                    (
+                        h.reconnect_attempt(),
+                        h.reconnect_reason(),
+                        h.next_retry_secs(),
+                    )
+                },
             );
-        let badge: Option<(String, String, u32)> =
-            zedra_session::active_session().map(|session| {
-                let state = session.state();
-                let latency = session.latency_ms();
-                let conn_info = session.connection_info();
-                let (label, color) = crate::transport_badge::transport_badge_info(
-                    &state,
-                    reconnect_attempt,
-                    &reconnect_reason,
-                    next_retry_secs,
-                    latency,
-                    conn_info.as_ref(),
-                );
-                // Project name for subtitle
-                let project = match &state {
-                    zedra_session::SessionState::Connected { workdir, .. }
-                        if !workdir.is_empty() =>
-                    {
-                        workdir
-                            .rsplit('/')
-                            .next()
-                            .unwrap_or(workdir)
-                            .to_string()
-                    }
-                    _ => String::new(),
-                };
-                (project, label, color)
-            });
-
-        let project_name = badge
-            .as_ref()
-            .and_then(|(p, _, _)| if p.is_empty() { None } else { Some(SharedString::from(p.clone())) });
-        let badge_element = badge.map(|(_, label, color)| {
-            crate::transport_badge::render_transport_badge(label, color)
+        let badge: Option<(String, String, u32)> = zedra_session::active_session().map(|session| {
+            let state = session.state();
+            let latency = session.latency_ms();
+            let conn_info = session.connection_info();
+            let (label, color) = crate::transport_badge::transport_badge_info(
+                &state,
+                reconnect_attempt,
+                &reconnect_reason,
+                next_retry_secs,
+                latency,
+                conn_info.as_ref(),
+            );
+            // Project name for subtitle
+            let project = match &state {
+                zedra_session::SessionState::Connected { workdir, .. } if !workdir.is_empty() => {
+                    workdir.rsplit('/').next().unwrap_or(workdir).to_string()
+                }
+                _ => String::new(),
+            };
+            (project, label, color)
         });
+
+        let project_name = badge.as_ref().and_then(|(p, _, _)| {
+            if p.is_empty() {
+                None
+            } else {
+                Some(SharedString::from(p.clone()))
+            }
+        });
+        let badge_element = badge
+            .map(|(_, label, color)| crate::transport_badge::render_transport_badge(label, color));
 
         div()
             .size_full()
@@ -289,8 +288,8 @@ impl WorkspaceView {
         let initial_terminals = vec![("__pending__".to_string(), terminal_view.clone())];
 
         // WorkspaceContent with terminal as initial main view
-        let workspace_content = cx
-            .new(|cx| WorkspaceContent::new(terminal_view.into(), "Terminal", cx));
+        let workspace_content =
+            cx.new(|cx| WorkspaceContent::new(terminal_view.into(), "Terminal", cx));
 
         // WorkspaceDrawer
         let workspace_drawer = cx.new(|cx| WorkspaceDrawer::new(cx));
@@ -393,7 +392,10 @@ impl WorkspaceView {
                                 let ptid = pending_terminal_id_clone.clone();
                                 let handle_for_create = this.session_handle.clone();
                                 zedra_session::session_runtime().spawn(async move {
-                                    match session.terminal_create(cols_u16, rows_u16, &handle_for_create).await {
+                                    match session
+                                        .terminal_create(cols_u16, rows_u16, &handle_for_create)
+                                        .await
+                                    {
                                         Ok(term_id) => {
                                             log::info!("terminal created: id={}", term_id);
                                             ptid.set(term_id);
@@ -431,8 +433,7 @@ impl WorkspaceView {
                             drawer_host_clone.update(cx, |host, cx| host.close(cx));
                             if !path.is_empty() {
                                 let path = path.clone();
-                                let filename =
-                                    path.rsplit('/').next().unwrap_or(&path).to_string();
+                                let filename = path.rsplit('/').next().unwrap_or(&path).to_string();
                                 if let Some(session) = zedra_session::active_session() {
                                     let filename_clone = filename.clone();
                                     let pfile = pending_file_clone.clone();
@@ -443,11 +444,7 @@ impl WorkspaceView {
                                                 zedra_session::signal_terminal_data();
                                             }
                                             Err(e) => {
-                                                log::error!(
-                                                    "fs/read failed for {}: {}",
-                                                    path,
-                                                    e
-                                                );
+                                                log::error!("fs/read failed for {}: {}", path, e);
                                             }
                                         }
                                     });
@@ -457,8 +454,7 @@ impl WorkspaceView {
                         WorkspaceDrawerEvent::GitFileSelected(path) => {
                             drawer_host_clone.update(cx, |host, cx| host.close(cx));
                             let path = path.clone();
-                            let filename =
-                                path.rsplit('/').next().unwrap_or(&path).to_string();
+                            let filename = path.rsplit('/').next().unwrap_or(&path).to_string();
                             if let Some(session) = zedra_session::active_session() {
                                 let path_clone = path.clone();
                                 let filename_clone = filename.clone();
@@ -481,9 +477,7 @@ impl WorkspaceView {
                             } else {
                                 // Fallback: sample data
                                 let diffs = crate::editor::git_diff_view::sample_diffs();
-                                if let Some(diff) =
-                                    diffs.into_iter().find(|d| d.new_path == path)
-                                {
+                                if let Some(diff) = diffs.into_iter().find(|d| d.new_path == path) {
                                     let diff_view =
                                         cx.new(|cx| GitDiffView::new(diff, path.clone(), cx));
                                     workspace_content_clone.update(cx, |content, cx| {
@@ -518,19 +512,17 @@ impl WorkspaceView {
 
     /// Returns a summary of this workspace for HomeView / QuickActionPanel.
     pub fn summary(&self, index: usize) -> WorkspaceSummary {
-        let session = zedra_session::active_session();
-        let (is_connected, project_path) = if let Some(s) = &session {
-            let state = s.state();
-            let connected = matches!(state, zedra_session::SessionState::Connected { .. });
-            let path = match &state {
-                zedra_session::SessionState::Connected { workdir, .. } => {
-                    if workdir.is_empty() { None } else { Some(workdir.clone()) }
+        let state = self.session_handle.state();
+        let is_connected = matches!(state, zedra_session::SessionState::Connected { .. });
+        let project_path = match &state {
+            zedra_session::SessionState::Connected { workdir, .. } => {
+                if workdir.is_empty() {
+                    None
+                } else {
+                    Some(workdir.clone())
                 }
-                _ => None,
-            };
-            (connected, path)
-        } else {
-            (false, None)
+            }
+            _ => None,
         };
         let terminal_ids: Vec<String> = self
             .terminal_views
@@ -543,6 +535,7 @@ impl WorkspaceView {
             index,
             project_path,
             is_connected,
+            session_state: state,
             terminal_count,
             terminal_ids,
         }
