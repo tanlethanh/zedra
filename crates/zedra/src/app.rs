@@ -3,7 +3,8 @@
 
 use gpui::*;
 
-use crate::home_view::{HomeEvent, HomeView};
+use crate::home_view::{HomeEvent, HomeView, HomeWorkspaceItem};
+use crate::workspace_store::PersistedWorkspace;
 use crate::quick_action_panel::{QuickActionEvent, QuickActionPanel};
 use crate::theme;
 use crate::workspace_store;
@@ -37,6 +38,7 @@ pub struct ZedraApp {
     screen: AppScreen,
     home_view: Entity<HomeView>,
     workspaces: Vec<WorkspaceEntry>,
+    saved_workspaces: Vec<PersistedWorkspace>,
     active_workspace: Option<usize>,
     quick_action: Entity<QuickActionPanel>,
     quick_action_open: bool,
@@ -67,8 +69,9 @@ impl ZedraApp {
                 HomeEvent::SavedWorkspaceTapped(index) => {
                     this.reconnect_saved_workspace(*index, window, cx);
                 }
-                HomeEvent::SavedWorkspaceRemoved(index, display_name) => {
-                    let saved_index = *index;
+                HomeEvent::WorkspaceRemoved(saved_index, ws_index_opt, display_name) => {
+                    let saved_index = *saved_index;
+                    let ws_index_opt = *ws_index_opt;
                     let title = display_name.clone();
                     crate::platform_bridge::show_alert(
                         "",
@@ -79,7 +82,7 @@ impl ZedraApp {
                         ],
                         move |button_index| {
                             if button_index == 0 {
-                                PENDING_WORKSPACE_DELETE.set(saved_index);
+                                PENDING_WORKSPACE_DELETE.set((saved_index, ws_index_opt));
                             }
                         },
                     );
@@ -136,10 +139,11 @@ impl ZedraApp {
         });
         subscriptions.push(sub);
 
-        let app = Self {
+        let mut app = Self {
             screen: AppScreen::Home,
             home_view,
             workspaces: Vec::new(),
+            saved_workspaces: Vec::new(),
             active_workspace: None,
             quick_action,
             quick_action_open: false,
@@ -147,8 +151,8 @@ impl ZedraApp {
             _subscriptions: subscriptions,
         };
 
-        // Load saved workspaces from disk and show in HomeView
-        app.refresh_saved_workspaces(cx);
+        // Load saved workspaces from disk
+        app.refresh_saved_workspaces();
 
         app
     }
@@ -169,11 +173,8 @@ impl ZedraApp {
         }
     }
 
-    fn refresh_saved_workspaces(&self, cx: &mut Context<Self>) {
-        let saved = workspace_store::load_workspaces();
-        self.home_view.update(cx, |hv, cx| {
-            hv.update_saved_workspaces(saved, cx);
-        });
+    fn refresh_saved_workspaces(&mut self) {
+        self.saved_workspaces = workspace_store::load_workspaces();
     }
 
     fn persist_current_workspaces(&self) {
@@ -220,7 +221,7 @@ impl ZedraApp {
             Err(e) => {
                 log::error!("Failed to decode saved endpoint addr: {}", e);
                 workspace_store::remove_workspace(&ws.endpoint_addr);
-                self.refresh_saved_workspaces(cx);
+                self.refresh_saved_workspaces();
             }
         }
     }
@@ -253,7 +254,7 @@ impl ZedraApp {
 
         // Subscribe to workspace events
         let workspace_index = self.workspaces.len();
-        let home_view_clone = self.home_view.clone();
+        let _home_view_clone = self.home_view.clone();
         let sub = cx.subscribe_in(
             &workspace_view,
             window,
@@ -288,17 +289,8 @@ impl ZedraApp {
                         } else {
                             zedra_session::clear_active_handle();
                         }
-                        let summaries: Vec<_> = this
-                            .workspaces
-                            .iter()
-                            .enumerate()
-                            .map(|(i, e)| e.view.read(cx).summary(i))
-                            .collect();
-                        home_view_clone.update(cx, |hv, cx| {
-                            hv.update_workspaces(summaries, cx);
-                        });
-                        // Refresh saved workspaces in HomeView after disconnect
-                        this.refresh_saved_workspaces(cx);
+                        // Refresh saved workspaces; render() will rebuild the unified home list
+                        this.refresh_saved_workspaces();
                         cx.notify();
                     }
                 }
@@ -419,12 +411,20 @@ impl Render for ZedraApp {
         }
 
         // Check for workspace delete confirmed via native action sheet
-        if let Some(index) = PENDING_WORKSPACE_DELETE.take() {
+        if let Some((saved_index, ws_index_opt)) = PENDING_WORKSPACE_DELETE.take() {
             let saved = workspace_store::load_workspaces();
-            if let Some(ws) = saved.get(index) {
+            if let Some(ws) = saved.get(saved_index) {
                 workspace_store::remove_workspace(&ws.endpoint_addr);
-                self.refresh_saved_workspaces(cx);
             }
+            // Also disconnect the active workspace if it is currently connected
+            if let Some(ws_index) = ws_index_opt {
+                if ws_index < self.workspaces.len() {
+                    self.workspaces[ws_index].view.update(cx, |ws_view: &mut WorkspaceView, cx| {
+                        ws_view.disconnect(cx);
+                    });
+                }
+            }
+            self.refresh_saved_workspaces();
         }
 
         // Periodically persist workspace state (~every 5 seconds)
@@ -432,15 +432,44 @@ impl Render for ZedraApp {
             self.persist_current_workspaces();
         }
 
-        // Update workspace summaries in HomeView and QuickActionPanel
+        // Build workspace summaries for QuickActionPanel and the unified home list
         let summaries: Vec<_> = self
             .workspaces
             .iter()
             .enumerate()
             .map(|(i, e)| e.view.read(cx).summary(i))
             .collect();
+
+        // Build unified home items: saved list drives order; unmatched active go first
+        let mut matched_ws = vec![false; summaries.len()];
+        let mut items: Vec<HomeWorkspaceItem> = Vec::new();
+        for (saved_idx, sw) in self.saved_workspaces.iter().enumerate() {
+            if let Some((ws_idx, summary)) = summaries.iter().enumerate().find(|(_, s)| {
+                s.endpoint_addr_encoded.as_deref() == Some(sw.endpoint_addr.as_str())
+            }) {
+                matched_ws[ws_idx] = true;
+                items.push(HomeWorkspaceItem {
+                    active: Some((ws_idx, summary.clone())),
+                    saved: Some((saved_idx, sw.clone())),
+                });
+            } else {
+                items.push(HomeWorkspaceItem {
+                    active: None,
+                    saved: Some((saved_idx, sw.clone())),
+                });
+            }
+        }
+        for (ws_idx, summary) in summaries.iter().enumerate() {
+            if !matched_ws[ws_idx] {
+                items.insert(0, HomeWorkspaceItem {
+                    active: Some((ws_idx, summary.clone())),
+                    saved: None,
+                });
+            }
+        }
+
         self.home_view.update(cx, |hv, cx| {
-            hv.update_workspaces(summaries.clone(), cx);
+            hv.update_items(items, cx);
         });
         self.quick_action.update(cx, |qa, cx| {
             qa.update_workspaces(summaries, cx);
@@ -497,7 +526,7 @@ impl Render for ZedraApp {
 use crate::pending::PendingSlot;
 
 static PENDING_QR_ADDR: PendingSlot<iroh::EndpointAddr> = PendingSlot::new();
-static PENDING_WORKSPACE_DELETE: PendingSlot<usize> = PendingSlot::new();
+static PENDING_WORKSPACE_DELETE: PendingSlot<(usize, Option<usize>)> = PendingSlot::new();
 
 pub fn set_pending_qr_addr(addr: iroh::EndpointAddr) {
     PENDING_QR_ADDR.set(addr);

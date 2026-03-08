@@ -561,6 +561,15 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    /// Programmatically disconnect this workspace (e.g. user deleted a saved workspace).
+    pub fn disconnect(&mut self, cx: &mut Context<Self>) {
+        self.session_handle.clear_session();
+        self.terminal_views.clear();
+        self.active_terminal_id = None;
+        cx.emit(WorkspaceEvent::Disconnected);
+        cx.notify();
+    }
+
     /// Switch the main view to a specific terminal by ID.
     pub fn switch_to_terminal(&mut self, terminal_id: &str, cx: &mut Context<Self>) {
         if let Some((_, view)) = self.terminal_views.iter().find(|(id, _)| id == terminal_id) {
