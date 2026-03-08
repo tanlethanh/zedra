@@ -21,14 +21,14 @@ pub enum HomeEvent {
     WorkspaceTapped(usize),
     /// Tap on a saved-only workspace card to reconnect. Carries saved_index.
     SavedWorkspaceTapped(usize),
-    /// Long-press / delete. Carries (saved_index, workspace_index_opt, display_name).
-    WorkspaceRemoved(usize, Option<usize>, String),
+    /// Long-press / delete. Carries the item index into HomeView::items.
+    WorkspaceRemoved(usize),
 }
 
 impl EventEmitter<HomeEvent> for HomeView {}
 
 pub struct HomeView {
-    items: Vec<HomeWorkspaceItem>,
+    pub items: Vec<HomeWorkspaceItem>,
     focus_handle: FocusHandle,
 }
 
@@ -78,10 +78,9 @@ impl Render for HomeView {
         if !self.items.is_empty() {
             let mut cards = div().mt_4().w(px(280.0)).flex().flex_col().gap(px(8.0));
 
-            for item in &self.items {
+            for (item_idx, item) in self.items.iter().enumerate() {
                 let card = match (&item.active, &item.saved) {
-                    (Some((ws_idx, summary)), saved_opt) => {
-                        // Connected workspace (with optional delete if also saved)
+                    (Some((ws_idx, summary)), _) => {
                         let index = *ws_idx;
                         let (status_label, status_color): (&str, u32) = match &summary.session_state
                         {
@@ -112,32 +111,19 @@ impl Render for HomeView {
                         } else {
                             format!("{} terminals", summary.terminal_count)
                         };
-                        let delete_info = saved_opt
-                            .as_ref()
-                            .map(|(si, sw)| (*si, Some(index), sw.display_name()));
                         active_workspace_card(
-                            index,
-                            path_label,
-                            status_label,
-                            status_color,
-                            term_label,
-                            delete_info,
-                            cx,
+                            item_idx, index, path_label, status_label, status_color, term_label, cx,
                         )
                         .into_any_element()
                     }
-                    (None, Some((saved_index, sw))) => {
-                        // Saved-only: reconnect card
-                        let saved_index = *saved_index;
-                        let display_name = sw.display_name();
+                    (None, Some((_, sw))) => {
                         let label = sw
                             .last_hostname
                             .as_deref()
                             .unwrap_or("Saved host")
                             .to_string();
                         let path_label = sw.project_name().unwrap_or_default().to_string();
-                        saved_workspace_card(saved_index, label, path_label, display_name, cx)
-                            .into_any_element()
+                        saved_workspace_card(item_idx, label, path_label, cx).into_any_element()
                     }
                     (None, None) => div().into_any_element(),
                 };
@@ -235,16 +221,15 @@ impl Render for HomeView {
 }
 
 fn active_workspace_card(
+    item_idx: usize,
     index: usize,
     path_label: String,
     status_label: &'static str,
     status_color: u32,
     term_label: String,
-    // (saved_index, workspace_index, display_name) — present when this card is also saved.
-    delete_info: Option<(usize, Option<usize>, String)>,
     cx: &mut Context<HomeView>,
 ) -> impl IntoElement {
-    let card = div()
+    div()
         .id(SharedString::from(format!("ws-home-card-{}", index)))
         .w_full()
         .rounded(px(8.0))
@@ -257,21 +242,11 @@ fn active_workspace_card(
         .active(|s| s.opacity(0.6))
         .on_click(cx.listener(move |_this, _event, _window, cx| {
             cx.emit(HomeEvent::WorkspaceTapped(index));
-        }));
-
-    let card = if let Some((saved_index, ws_index_opt, display_name)) = delete_info {
-        card.on_long_press(cx.listener(move |_this, _event, _window, cx| {
-            cx.emit(HomeEvent::WorkspaceRemoved(
-                saved_index,
-                ws_index_opt,
-                display_name.clone(),
-            ));
         }))
-    } else {
-        card
-    };
-
-    card.child(
+        .on_long_press(cx.listener(move |_this, _event, _window, cx| {
+            cx.emit(HomeEvent::WorkspaceRemoved(item_idx));
+        }))
+        .child(
         div()
             .flex()
             .flex_row()
@@ -309,14 +284,13 @@ fn active_workspace_card(
 }
 
 fn saved_workspace_card(
-    saved_index: usize,
+    item_idx: usize,
     label: String,
     path_label: String,
-    display_name: String,
     cx: &mut Context<HomeView>,
 ) -> impl IntoElement {
     div()
-        .id(SharedString::from(format!("ws-saved-card-{}", saved_index)))
+        .id(SharedString::from(format!("ws-saved-card-{}", item_idx)))
         .w_full()
         .rounded(px(8.0))
         .bg(rgb(theme::BG_CARD))
@@ -326,15 +300,15 @@ fn saved_workspace_card(
         .cursor_pointer()
         .hover(|s| s.bg(theme::hover_bg()))
         .active(|s| s.opacity(0.6))
-        .on_click(cx.listener(move |_this, _event, _window, cx| {
-            cx.emit(HomeEvent::SavedWorkspaceTapped(saved_index));
+        .on_click(cx.listener(move |this, _event, _window, cx| {
+            if let Some(item) = this.items.get(item_idx) {
+                if let Some((saved_index, _)) = &item.saved {
+                    cx.emit(HomeEvent::SavedWorkspaceTapped(*saved_index));
+                }
+            }
         }))
         .on_long_press(cx.listener(move |_this, _event, _window, cx| {
-            cx.emit(HomeEvent::WorkspaceRemoved(
-                saved_index,
-                None,
-                display_name.clone(),
-            ));
+            cx.emit(HomeEvent::WorkspaceRemoved(item_idx));
         }))
         .child(
             div()
