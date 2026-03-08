@@ -1,4 +1,23 @@
-Stream and analyze logs from the connected iPad running Zedra.
+Stream and analyze logs from a connected iOS device running Zedra.
+
+## Device selection
+
+The device preference is scoped to this Claude Code session using `$PPID`:
+
+```bash
+PREF_FILE="/tmp/zedra-ios-device-$PPID"
+cat "$PREF_FILE" 2>/dev/null
+```
+
+If no preference is saved, enumerate physical devices and ask the user to pick one
+(same flow as `/ios-dev`). Use `xcrun xctrace list devices` (not `devicectl`) — it
+returns the libimobiledevice-format UDIDs required by `run-ios.sh` and `idevicesyslog`.
+Then save the choice:
+```bash
+echo "<UDID>|<Name>" > "$PREF_FILE"
+```
+
+Pass `--select-device` to ignore the saved preference and re-prompt.
 
 ## Log format
 
@@ -12,24 +31,24 @@ Level prefix: `[I` = Info, `[W` = Warn, `[E` = Error, `[D` = Debug, `[T` = Trace
 
 Stream all Zedra-related logs (Rust NSLog + UIKit):
 ```
-/opt/homebrew/bin/idevicesyslog | grep -E 'Zedra\[|zedra\[|\[I |\[W |\[E |\[D |panic|PANIC|crash|CRASH|NSException|Terminating' --line-buffered
+/opt/homebrew/bin/idevicesyslog -u <UDID> | grep -E 'Zedra\[|zedra\[|\[I |\[W |\[E |\[D |panic|PANIC|crash|CRASH|NSException|Terminating' --line-buffered
 ```
 
 Rust-only logs (strips UIKit noise):
 ```
-/opt/homebrew/bin/idevicesyslog | grep -E '\[I |\[W |\[E |\[D |\[T ' --line-buffered
+/opt/homebrew/bin/idevicesyslog -u <UDID> | grep -E '\[I |\[W |\[E |\[D |\[T ' --line-buffered
 ```
 
 Stream everything (unfiltered, verbose):
 ```
-/opt/homebrew/bin/idevicesyslog
+/opt/homebrew/bin/idevicesyslog -u <UDID>
 ```
 
 ## Crash analysis
 
 After a crash, fetch the crash report from the device:
 ```
-xcrun devicectl device copy from --device 9F0ACED3-EE4F-593D-B15E-93954D93FD94 \
+xcrun devicectl device copy from --device <UDID> \
   "/var/mobile/Library/Logs/CrashReporter/" /tmp/ios-crashes/
 ls -lt /tmp/ios-crashes/ | head -5
 ```
@@ -44,14 +63,14 @@ idevicecrashreport -e /tmp/ios-crashes/
 Captures stderr directly from the process — useful when the app crashes before NSLog is set up
 (e.g. before `zedra_launch_gpui()` runs). The DIAG() macro in main.m writes to stderr.
 ```
-xcrun devicectl device process launch --console --device 9F0ACED3-EE4F-593D-B15E-93954D93FD94 dev.zedra.app
+xcrun devicectl device process launch --console --device <UDID> dev.zedra.app
 ```
 
 ## Screenshot (visual verification)
 
 Take a screenshot from the device and pull to local machine:
 ```
-xcrun devicectl device copy from --device 9F0ACED3-EE4F-593D-B15E-93954D93FD94 \
+xcrun devicectl device copy from --device <UDID> \
   /tmp/zedra-screen.png /tmp/zedra-screen.png
 # Alternative via idevicescreenshot:
 idevicescreenshot /tmp/zedra-screen.png
