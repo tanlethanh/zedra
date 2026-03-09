@@ -522,12 +522,21 @@ impl Element for TerminalElement {
             let entity = self.entity.clone();
             window.defer(cx, move |_window, cx| {
                 let _ = entity.update(cx, |view, cx| {
-                    view.resize(
-                        actual_cols.max(1),
-                        actual_rows.max(1),
-                        cell_width,
-                        line_height,
-                    );
+                    let size = view.terminal_size();
+                    // When the soft keyboard is open it shrinks the terminal rows intentionally.
+                    // The element bounds don't account for the keyboard, so actual_rows reflects
+                    // the full height. Clamp to the current (keyboard-adjusted) row count to
+                    // avoid fighting the keyboard resize in render().
+                    let new_rows = if crate::get_keyboard_height() > 0 {
+                        actual_rows.max(1).min(size.rows)
+                    } else {
+                        actual_rows.max(1)
+                    };
+                    let new_cols = actual_cols.max(1);
+                    if size.rows == new_rows && size.columns == new_cols {
+                        return;
+                    }
+                    view.resize(new_cols, new_rows, cell_width, line_height);
                     cx.notify();
                 });
             });
