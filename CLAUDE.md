@@ -144,7 +144,7 @@ crates/
   │       └── view.rs           # TerminalView + GPUI Render
   ├── zedra-rpc/                # irpc protocol types + QR pairing codec
   │   └── src/
-  │       ├── lib.rs            # Re-exports, DEFAULT_RELAY_URL
+  │       ├── lib.rs            # Re-exports
   │       ├── proto.rs          # irpc protocol enum (ZedraProto) + request/response types
   │       └── pairing.rs        # EndpointAddr encode/decode (postcard + base64-url)
   ├── zedra-session/            # Mobile client: iroh connection, RPC, auto-reconnect
@@ -268,12 +268,10 @@ zedra-rpc
 - Code editor: syntax-highlighted Rust code with tree-sitter, cursor, and virtual scrolling
 - File preview grid: card-based file browser that opens editor views
 - Remote terminal: connection form with RPC session (zedra-session + zedra-terminal)
-- iroh transport: QUIC/TLS 1.3 with automatic NAT traversal and relay fallback
+- iroh transport: QUIC/TLS 1.3, direct P2P (RelayMode::Disabled — LAN/routable IPs only)
 - irpc typed RPC: postcard binary serialization, bidi streaming for terminal I/O
 - QR pairing: compact postcard+base64-url EndpointAddr encoding (~50 bytes)
-- Cross-network connectivity: relay.zedra.dev (Cloudflare Worker, iroh-compatible relay protocol)
-- Automatic path selection: iroh handles direct → hole-punch → relay internally
-- Path upgrade: relay → direct P2P when hole-punch succeeds
+- Connection monitoring: path watcher tracks RTT, bytes sent/recv
 - Session persistence: server-side SessionRegistry with terminal PTY survival across reconnects
 - Client-side auto-reconnect: exponential backoff (1s–30s), persistent terminal output buffers survive reconnect
 - Terminal backlog replay: missed output replayed per-terminal via TermAttach bidi stream
@@ -394,7 +392,7 @@ See `docs/DEBUGGING.md` for complete workflow.
 - **Phase 3**: Dynamic Configuration ✅ Complete (DisplayMetrics via JNI)
 - **Phase 4**: Input Integration ✅ Complete (touch→scroll, keyboard, tap detection)
 - **Phase 5**: Navigation + Editor ✅ Complete (tabs, stacks, drawer, syntax editor)
-- **Phase 6**: Transport + Relay ✅ Complete (transport abstraction, CF Worker relay, discovery chain, health monitoring, session persistence)
+- **Phase 6**: Transport ✅ Complete (iroh QUIC direct P2P, irpc typed RPC, session persistence, health monitoring)
 - **Phase 6.5**: Session Reconnect ✅ Complete (auto-reconnect with exponential backoff, persistent terminal buffers, backlog replay, reconnecting UI badge)
 - **Phase 7**: Terminal Persistence - Next (server-side vt100 screen capture, fresh client terminal discovery, credential persistence)
 - **Phase 8**: Production Hardening (momentum scrolling, real file access, multi-touch, E2E encryption)
@@ -452,9 +450,8 @@ First successful port of GPUI to Android with:
 - Full touch input (tap + scroll) with IME keyboard support
 - Mobile navigation (tabs, stacks, drawer)
 - Syntax-highlighted code editor with tree-sitter
-- iroh transport: QUIC/TLS 1.3 with automatic path selection (direct, hole-punch, relay)
-- Cross-network relay: iroh-compatible CF Worker relay at relay.zedra.dev
-- Connection path monitoring with automatic relay → direct P2P upgrade
+- iroh transport: QUIC/TLS 1.3 direct P2P (RelayMode::Disabled)
+- Connection path monitoring with RTT and byte stats
 - irpc typed RPC: postcard binary serialization, bidi streaming for terminal I/O (no JSON, no base64)
 - Auto-reconnect: exponential backoff, persistent output buffers, per-terminal backlog replay
 

@@ -6,6 +6,9 @@
 pub mod pairing;
 pub mod proto;
 
-pub use pairing::{decode_endpoint_addr, encode_endpoint_addr};
+pub use pairing::{
+    ZedraPairingTicket,
+    decode_endpoint_addr, encode_endpoint_addr,
+    compute_registration_hmac, verify_registration_hmac,
+};
 
-pub const DEFAULT_RELAY_URL: &str = "https://relay.zedra.dev";

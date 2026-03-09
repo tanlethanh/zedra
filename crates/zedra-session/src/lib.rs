@@ -15,14 +15,16 @@
 //   4. Main thread polls check_and_clear_terminal_data() each frame
 //   5. Main thread drains drain_callbacks() each frame for deferred work
 
+pub mod signer;
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::Result;
 
+use crate::signer::ClientSigner;
 use zedra_rpc::proto::*;
-use zedra_rpc::DEFAULT_RELAY_URL;
 
 // ---------------------------------------------------------------------------
 // Type aliases
@@ -65,6 +67,9 @@ pub enum SessionState {
         /// Seconds until next attempt (0 = attempting now).
         next_retry_secs: u64,
     },
+    /// All reconnect attempts exhausted (10 attempts, ~3 min total).
+    /// User must explicitly retry or re-scan QR if credentials changed.
+    HostUnreachable,
     Error(String),
 }
 
@@ -117,7 +122,8 @@ pub struct SessionHandle(Arc<SessionHandleInner>);
 struct SessionHandleInner {
     session: Mutex<Option<Arc<RemoteSession>>>,
     endpoint_addr: Mutex<Option<iroh::EndpointAddr>>,
-    credentials: Mutex<(Option<String>, Option<String>)>,
+    /// Session ID used in AuthProveReq to reattach to the right session on reconnect.
+    session_id_cred: Mutex<Option<String>>,
     terminal_outputs: TerminalOutputMap,
     terminal_ids: Arc<Mutex<Vec<String>>>,
     active_terminal: Arc<Mutex<Option<String>>>,
@@ -127,7 +133,14 @@ struct SessionHandleInner {
     skip_next_backoff: AtomicBool,
     /// Seconds until the next reconnect attempt (updated by the reconnect loop).
     next_retry_secs: AtomicU64,
-    last_notif_seq: AtomicU64,
+    /// Client signing key for PKI auth (challenge response on every connection).
+    signer: Mutex<Option<Arc<dyn ClientSigner>>>,
+    /// Host's Ed25519 public key (EndpointId). Used to verify challenge signatures.
+    endpoint_id: Mutex<Option<iroh::PublicKey>>,
+    /// One-use pairing ticket from QR scan, consumed on first authenticate() call.
+    pending_ticket: Mutex<Option<zedra_rpc::ZedraPairingTicket>>,
+    /// Set after all reconnect attempts are exhausted.
+    host_unreachable: AtomicBool,
 }
 
 impl SessionHandle {
@@ -136,7 +149,7 @@ impl SessionHandle {
         Self(Arc::new(SessionHandleInner {
             session: Mutex::new(None),
             endpoint_addr: Mutex::new(None),
-            credentials: Mutex::new((None, None)),
+            session_id_cred: Mutex::new(None),
             terminal_outputs: Arc::new(Mutex::new(HashMap::new())),
             terminal_ids: Arc::new(Mutex::new(Vec::new())),
             active_terminal: Arc::new(Mutex::new(None)),
@@ -145,8 +158,51 @@ impl SessionHandle {
             user_disconnect: AtomicBool::new(false),
             skip_next_backoff: AtomicBool::new(false),
             next_retry_secs: AtomicU64::new(0),
-            last_notif_seq: AtomicU64::new(0),
+            signer: Mutex::new(None),
+            endpoint_id: Mutex::new(None),
+            pending_ticket: Mutex::new(None),
+            host_unreachable: AtomicBool::new(false),
         }))
+    }
+
+    /// Set the client signing key for PKI auth.
+    /// Must be called before `connect_with_ticket` or after construction for reconnect.
+    pub fn set_signer(&self, signer: Arc<dyn ClientSigner>) {
+        if let Ok(mut slot) = self.0.signer.lock() {
+            *slot = Some(signer);
+        }
+    }
+
+    /// Retrieve the stored signer (if set).
+    pub fn signer(&self) -> Option<Arc<dyn ClientSigner>> {
+        self.0.signer.lock().ok()?.clone()
+    }
+
+    /// Store the host's EndpointId for verifying challenge signatures on reconnect.
+    pub fn store_endpoint_id(&self, id: iroh::PublicKey) {
+        if let Ok(mut slot) = self.0.endpoint_id.lock() {
+            *slot = Some(id);
+        }
+    }
+
+    /// Get the stored host EndpointId.
+    pub fn stored_endpoint_id(&self) -> Option<iroh::PublicKey> {
+        self.0.endpoint_id.lock().ok()?.clone()
+    }
+
+    /// Whether the host is considered permanently unreachable (all attempts exhausted).
+    pub fn is_host_unreachable(&self) -> bool {
+        self.0.host_unreachable.load(Ordering::Relaxed)
+    }
+
+    /// Store a one-use pairing ticket from a QR scan.
+    ///
+    /// Consumed by the next `connect_with_iroh` call (Register step). After
+    /// the first successful Register the slot is cleared and never used again.
+    pub fn set_pending_ticket(&self, ticket: zedra_rpc::ZedraPairingTicket) {
+        if let Ok(mut slot) = self.0.pending_ticket.lock() {
+            *slot = Some(ticket);
+        }
     }
 
     /// Get the current remote session (if connected).
@@ -210,6 +266,9 @@ impl SessionHandle {
                 next_retry_secs: self.next_retry_secs(),
             };
         }
+        if self.is_host_unreachable() {
+            return SessionState::HostUnreachable;
+        }
         self.session()
             .map(|s| s.state())
             .unwrap_or(SessionState::Disconnected)
@@ -227,14 +286,14 @@ impl SessionHandle {
         self.0.endpoint_addr.lock().ok()?.clone()
     }
 
-    /// Get the stored credentials (session_id, auth_token).
-    pub fn credentials_pub(&self) -> (Option<String>, Option<String>) {
+    /// Get the stored session ID (used in AuthProveReq on reconnect).
+    pub fn credentials_pub(&self) -> Option<String> {
         self.credentials()
     }
 
-    /// Store credentials from persisted workspace data (for session resumption).
-    pub fn store_credentials_pub(&self, session_id: Option<String>, auth_token: Option<String>) {
-        self.store_credentials(session_id, auth_token);
+    /// Store the session ID from persisted workspace data (for session resumption).
+    pub fn store_credentials_pub(&self, session_id: Option<String>) {
+        self.store_credentials(session_id);
     }
 
     /// Send terminal input to the remote host via the active session.
@@ -290,26 +349,14 @@ impl SessionHandle {
         self.0.active_terminal.clone()
     }
 
-    fn credentials(&self) -> (Option<String>, Option<String>) {
-        self.0
-            .credentials
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or((None, None))
+    fn credentials(&self) -> Option<String> {
+        self.0.session_id_cred.lock().ok()?.clone()
     }
 
-    fn store_credentials(&self, session_id: Option<String>, auth_token: Option<String>) {
-        if let Ok(mut creds) = self.0.credentials.lock() {
-            *creds = (session_id, auth_token);
+    fn store_credentials(&self, session_id: Option<String>) {
+        if let Ok(mut slot) = self.0.session_id_cred.lock() {
+            *slot = session_id;
         }
-    }
-
-    fn last_notif_seq(&self) -> u64 {
-        self.0.last_notif_seq.load(Ordering::Relaxed)
-    }
-
-    fn update_last_notif_seq(&self, seq: u64) {
-        self.0.last_notif_seq.fetch_max(seq, Ordering::Release);
     }
 }
 
@@ -445,7 +492,14 @@ pub fn notify_foreground_resume(handle: &SessionHandle) {
     }
 
     // No stored endpoint → nothing to reconnect to
-    if handle.0.endpoint_addr.lock().ok().and_then(|g| g.clone()).is_none() {
+    if handle
+        .0
+        .endpoint_addr
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .is_none()
+    {
         return;
     }
 
@@ -489,11 +543,11 @@ pub struct RemoteSession {
     /// Shared with the SessionHandle.
     active_terminal_id: Arc<Mutex<Option<String>>>,
     /// Per-terminal input senders (tokio channels bridged to TermAttach streams).
-    pub(crate) terminal_input_senders: Arc<Mutex<HashMap<String, tokio::sync::mpsc::Sender<Vec<u8>>>>>,
+    pub(crate) terminal_input_senders:
+        Arc<Mutex<HashMap<String, tokio::sync::mpsc::Sender<Vec<u8>>>>>,
     /// Per-terminal last-seen seq numbers (for reconnect replay).
     terminal_last_seqs: Arc<Mutex<HashMap<String, u64>>>,
     session_id: Arc<Mutex<Option<String>>>,
-    auth_token: Arc<Mutex<Option<String>>>,
     /// Latest ping RTT in milliseconds (0 = not yet measured).
     latency_ms: Arc<AtomicU64>,
     /// Connection path metadata (direct vs relay), updated by watcher task.
@@ -513,8 +567,9 @@ impl RemoteSession {
         addr: iroh::EndpointAddr,
         handle: &SessionHandle,
     ) -> Result<Arc<Self>> {
-        // Store endpoint address for future reconnect attempts
+        // Store endpoint address and host pubkey for future reconnect attempts
         handle.store_endpoint_addr(addr.clone());
+        handle.store_endpoint_id(addr.id);
 
         // Reset user disconnect flag (we're intentionally connecting)
         handle.0.user_disconnect.store(false, Ordering::Release);
@@ -530,15 +585,10 @@ impl RemoteSession {
         }));
         signal_terminal_data();
 
-        // Build iroh endpoint (client side — generates ephemeral key)
-        let relay_url: iroh::RelayUrl = DEFAULT_RELAY_URL
-            .parse()
-            .map_err(|e| anyhow::anyhow!("invalid relay URL: {}", e))?;
-        let relay_host = relay_url.host_str().unwrap_or(DEFAULT_RELAY_URL).to_string();
-        tracing::info!("Using relay: {}", relay_url);
-
+        // Build iroh endpoint (client side — generates ephemeral key).
+        // Relay-free: direct P2P only (same LAN or routable IPs).
         let endpoint = iroh::Endpoint::builder()
-            .relay_mode(iroh::RelayMode::custom([relay_url]))
+            .relay_mode(iroh::RelayMode::Disabled)
             .alpns(vec![ZEDRA_ALPN.to_vec()])
             .bind()
             .await?;
@@ -546,7 +596,7 @@ impl RemoteSession {
 
         if let Ok(mut s) = state.lock() {
             *s = SessionState::Connecting {
-                phase: format!("QUIC handshake via {}", relay_host),
+                phase: "QUIC handshake (direct P2P)".into(),
             };
         }
         signal_terminal_data();
@@ -589,7 +639,6 @@ impl RemoteSession {
             let mut paths = conn_for_paths.paths();
             let info_slot = connection_info.clone();
             let remote_eid = remote_eid.clone();
-            let relay_host_for_watcher = relay_host.clone();
             tokio::spawn(async move {
                 loop {
                     let path_list = paths.get();
@@ -600,7 +649,7 @@ impl RemoteSession {
                         let info = ConnectionInfo {
                             is_direct,
                             remote_addr: format!("{:?}", path.remote_addr()),
-                            relay_url: if is_direct { None } else { Some(relay_host_for_watcher.clone()) },
+                            relay_url: None,
                             endpoint_id: remote_eid.clone(),
                             local_endpoint_id: local_eid.clone(),
                             num_paths: path_list.len(),
@@ -638,13 +687,54 @@ impl RemoteSession {
             terminal_input_senders: Arc::new(Mutex::new(HashMap::new())),
             terminal_last_seqs: Arc::new(Mutex::new(HashMap::new())),
             session_id: Arc::new(Mutex::new(None)),
-            auth_token: Arc::new(Mutex::new(None)),
             latency_ms,
             connection_info,
         });
 
-        // Establish RPC session (uses handle's credentials for reconnect)
-        Self::establish_rpc_session(&session, handle).await;
+        // PKI authentication (Register on first connect; Auth+Prove on reconnect).
+        //
+        // The pending_ticket is set by `set_pending_ticket()` before connecting
+        // when a QR code was scanned. On reconnect the slot is empty and we use
+        // the stored session_id with Ed25519 challenge-response only.
+        {
+            let ticket = handle
+                .0
+                .pending_ticket
+                .lock()
+                .ok()
+                .and_then(|mut g| g.take());
+            let stored_session_id = handle.credentials();
+            match handle.signer() {
+                Some(signer) => {
+                    // Safe: we called handle.store_endpoint_id(addr.id) above
+                    let endpoint_id = handle
+                        .stored_endpoint_id()
+                        .expect("endpoint_id stored just above");
+                    match Self::authenticate(
+                        &session.client,
+                        ticket.as_ref(),
+                        signer.as_ref(),
+                        &endpoint_id,
+                        stored_session_id.as_deref(),
+                    )
+                    .await
+                    {
+                        Ok(sid) => {
+                            if let Ok(mut slot) = session.session_id.lock() {
+                                *slot = Some(sid.clone());
+                            }
+                            handle.store_credentials(Some(sid));
+                        }
+                        Err(e) => {
+                            tracing::warn!("PKI auth failed: {}", e);
+                        }
+                    }
+                }
+                None => {
+                    tracing::warn!("No signer on handle — skipping PKI auth (will fail RPC calls)");
+                }
+            }
+        }
 
         // Fetch session info (hostname discovered here, not from QR)
         Self::fetch_session_info(&session, "unknown").await;
@@ -668,55 +758,89 @@ impl RemoteSession {
         Ok(session)
     }
 
-    /// Establish an RPC session on the host via ResumeOrCreate.
+    /// Perform PKI authentication on the established QUIC connection.
     ///
-    /// On first call, creates a new session. On reconnect, resumes the existing
-    /// session using credentials from the SessionHandle.
-    async fn establish_rpc_session(session: &Arc<Self>, handle: &SessionHandle) {
-        let (stored_session_id, stored_auth_token) = handle.credentials();
+    /// First connection (ticket provided):
+    ///   Register → Authenticate → AuthProve
+    ///
+    /// Reconnect (ticket = None, uses stored session_id):
+    ///   Authenticate → AuthProve
+    ///
+    /// Returns the authenticated session_id on success.
+    async fn authenticate(
+        client: &irpc::Client<ZedraProto>,
+        ticket: Option<&zedra_rpc::ZedraPairingTicket>,
+        signer: &dyn ClientSigner,
+        endpoint_id: &iroh::PublicKey,
+        session_id: Option<&str>,
+    ) -> Result<String> {
+        use ed25519_dalek::{Verifier, VerifyingKey};
+        use std::time::{SystemTime, UNIX_EPOCH};
 
-        let auth_token = stored_auth_token.unwrap_or_else(|| {
-            format!(
-                "{:016x}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-            )
-        });
+        let client_pubkey = signer.pubkey();
 
-        let session_id_to_resume = stored_session_id.or_else(|| session.session_id());
+        // Step 1: Register (first connection only)
+        if let Some(t) = ticket {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let hmac =
+                zedra_rpc::compute_registration_hmac(&t.handshake_key, &client_pubkey, timestamp);
+            match client
+                .rpc(RegisterReq {
+                    client_pubkey,
+                    timestamp,
+                    hmac,
+                    slot_session_id: t.session_id.clone(),
+                })
+                .await?
+            {
+                RegisterResult::Ok => {
+                    tracing::info!("PKI: registered with host, session={}", t.session_id);
+                }
+                other => {
+                    return Err(anyhow::anyhow!("register failed: {:?}", other));
+                }
+            }
+        }
 
-        match session
-            .client
-            .rpc(ResumeOrCreateReq {
-                session_id: session_id_to_resume,
-                auth_token: auth_token.clone(),
-                last_notif_seq: handle.last_notif_seq(),
-            })
-            .await
+        // Step 2: Authenticate — get nonce + host signature
+        let challenge: AuthChallengeResult = client.rpc(AuthReq { client_pubkey }).await?;
+
+        // Verify host signature before trusting the nonce
         {
-            Ok(result) => {
+            let vk_bytes = endpoint_id.as_bytes();
+            let vk = VerifyingKey::from_bytes(vk_bytes)
+                .map_err(|e| anyhow::anyhow!("invalid host pubkey: {e}"))?;
+            let sig = ed25519_dalek::Signature::from_bytes(&challenge.host_signature);
+            vk.verify(&challenge.nonce, &sig)
+                .map_err(|_| anyhow::anyhow!("host challenge signature invalid"))?;
+        }
+
+        // Step 3: AuthProve — sign the nonce, specify target session
+        let client_signature = signer.sign(&challenge.nonce);
+        let attach_session_id = ticket
+            .map(|t| t.session_id.clone())
+            .or_else(|| session_id.map(|s| s.to_string()))
+            .unwrap_or_default();
+
+        match client
+            .rpc(AuthProveReq {
+                nonce: challenge.nonce,
+                client_signature,
+                session_id: attach_session_id.clone(),
+            })
+            .await?
+        {
+            AuthProveResult::Ok => {
                 tracing::info!(
-                    "RPC session {}: id={}",
-                    if result.resumed { "resumed" } else { "created" },
-                    result.session_id,
+                    "PKI: authenticated, attached to session {}",
+                    attach_session_id
                 );
-
-                // Store in instance fields
-                if let Ok(mut id_slot) = session.session_id.lock() {
-                    *id_slot = Some(result.session_id.clone());
-                }
-                if let Ok(mut token_slot) = session.auth_token.lock() {
-                    *token_slot = Some(auth_token.clone());
-                }
-
-                // Persist credentials in the handle for future reconnects
-                handle.store_credentials(Some(result.session_id), Some(auth_token));
+                Ok(attach_session_id)
             }
-            Err(e) => {
-                tracing::warn!("session/resume_or_create failed: {}", e);
-            }
+            other => Err(anyhow::anyhow!("auth prove failed: {:?}", other)),
         }
     }
 
@@ -772,7 +896,12 @@ impl RemoteSession {
     /// Spawns two bridge tasks:
     /// - Input bridge: reads from a tokio channel, forwards to irpc TermInput stream
     /// - Output pump: reads TermOutput from irpc stream, pushes to OutputBuffer
-    async fn attach_terminal(&self, id: &str, last_seq: u64, handle: &SessionHandle) -> Result<()> {
+    async fn attach_terminal(
+        &self,
+        id: &str,
+        last_seq: u64,
+        _handle: &SessionHandle,
+    ) -> Result<()> {
         let (irpc_input_tx, mut irpc_output_rx) = self
             .client
             .bidi_streaming::<TermAttachReq, TermInput, TermOutput>(
@@ -807,7 +936,6 @@ impl RemoteSession {
         let terminal_id = id.to_string();
         let outputs = self.terminal_outputs.clone();
         let seqs = self.terminal_last_seqs.clone();
-        let handle_for_pump = handle.clone();
         tokio::spawn(async move {
             loop {
                 match irpc_output_rx.recv().await {
@@ -816,8 +944,6 @@ impl RemoteSession {
                         if let Ok(mut seq_map) = seqs.lock() {
                             seq_map.insert(terminal_id.clone(), output.seq);
                         }
-                        handle_for_pump.update_last_notif_seq(output.seq);
-
                         // Route to per-terminal buffer
                         let target_buf = {
                             let mut map = outputs.lock().unwrap();
@@ -947,11 +1073,24 @@ impl RemoteSession {
         self.connection_info.lock().ok().and_then(|g| g.clone())
     }
 
-    /// Send a heartbeat RPC and measure the round-trip time.
+    /// Send a Ping RPC and measure the round-trip time.
     pub async fn ping(&self) -> Result<u64> {
-        let start = std::time::Instant::now();
-        let _: HeartbeatResult = self.client.rpc(HeartbeatReq {}).await?;
-        let rtt_ms = start.elapsed().as_millis() as u64;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let result: PongResult = self
+            .client
+            .rpc(PingReq {
+                timestamp_ms: now_ms,
+            })
+            .await?;
+        let after_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let rtt_ms = after_ms.saturating_sub(result.timestamp_ms);
         self.latency_ms.store(rtt_ms, Ordering::Relaxed);
         Ok(rtt_ms)
     }
@@ -1068,7 +1207,12 @@ impl RemoteSession {
     /// Create a new terminal on the remote host.
     /// Registers a per-terminal output buffer, attaches via bidi streaming,
     /// and sets as active if first terminal.
-    pub async fn terminal_create(&self, cols: u16, rows: u16, handle: &SessionHandle) -> Result<String> {
+    pub async fn terminal_create(
+        &self,
+        cols: u16,
+        rows: u16,
+        handle: &SessionHandle,
+    ) -> Result<String> {
         let result: TermCreateResult = self.client.rpc(TermCreateReq { cols, rows }).await?;
 
         // Register per-terminal output buffer
@@ -1134,10 +1278,7 @@ impl RemoteSession {
             .active_terminal_id()
             .ok_or_else(|| anyhow::anyhow!("no active terminal to close"))?;
 
-        let _: TermCloseResult = self
-            .client
-            .rpc(TermCloseReq { id: id.clone() })
-            .await?;
+        let _: TermCloseResult = self.client.rpc(TermCloseReq { id: id.clone() }).await?;
 
         // Remove input sender
         if let Ok(mut senders) = self.terminal_input_senders.lock() {
@@ -1248,7 +1389,7 @@ fn spawn_reconnect(handle: SessionHandle) {
     }
 
     session_runtime().spawn(async move {
-        let max_attempts = 20u32;
+        let max_attempts = 10u32;
         let mut attempt = 1u32;
 
         loop {
@@ -1271,18 +1412,25 @@ fn spawn_reconnect(handle: SessionHandle) {
             let delay_secs = std::cmp::min(1u64 << (attempt - 1), 30);
             let skip_backoff = handle.0.skip_next_backoff.swap(false, Ordering::AcqRel);
             let next_retry_secs = if skip_backoff { 0 } else { delay_secs };
-            handle.0.next_retry_secs.store(next_retry_secs, Ordering::Release);
+            handle
+                .0
+                .next_retry_secs
+                .store(next_retry_secs, Ordering::Release);
             signal_terminal_data(); // trigger UI refresh to show "Reconnecting..."
 
             if skip_backoff {
                 tracing::info!(
                     "reconnect: attempt {} of {} (skipping {}s backoff — foreground resume)",
-                    attempt, max_attempts, delay_secs,
+                    attempt,
+                    max_attempts,
+                    delay_secs,
                 );
             } else {
                 tracing::info!(
                     "reconnect: attempt {} of {} (backoff {}s)",
-                    attempt, max_attempts, delay_secs,
+                    attempt,
+                    max_attempts,
+                    delay_secs,
                 );
                 // Tick down next_retry_secs each second for live UI updates
                 for remaining in (1..=delay_secs).rev() {
@@ -1330,10 +1478,7 @@ fn spawn_reconnect(handle: SessionHandle) {
                         }
                     }
 
-                    handle
-                        .0
-                        .reconnect_attempt
-                        .store(0, Ordering::Release);
+                    handle.0.reconnect_attempt.store(0, Ordering::Release);
                     signal_terminal_data(); // trigger UI refresh
                     return; // success — don't fall through to reset below
                 }
@@ -1346,6 +1491,14 @@ fn spawn_reconnect(handle: SessionHandle) {
 
         // Gave up or aborted
         handle.0.reconnect_attempt.store(0, Ordering::Release);
+        // If we exhausted all attempts (not user-initiated abort), mark unreachable
+        if !handle.0.user_disconnect.load(Ordering::Acquire) && attempt > max_attempts {
+            tracing::warn!(
+                "reconnect: {} attempts exhausted, marking host unreachable",
+                max_attempts
+            );
+            handle.0.host_unreachable.store(true, Ordering::Release);
+        }
         signal_terminal_data();
     });
 }
