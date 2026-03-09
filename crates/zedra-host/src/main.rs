@@ -112,7 +112,7 @@ async fn main() -> Result<()> {
                     if json {
                         qr::print_pairing_json(&info);
                     } else {
-                        qr::generate_pairing_qr(&addr).ok();
+                        qr::generate_pairing_qr(&ticket, &endpoint).ok();
                     }
                 }
                 Err(e) => {

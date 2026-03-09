@@ -1,77 +1,44 @@
-Stream and analyze logs from a connected iOS device running Zedra.
+Stream and analyze logs from a USB-connected iOS device running Zedra.
 
-## Device selection
-
-The device preference is scoped to this Claude Code session using `$PPID`:
+## Run the script
 
 ```bash
-PREF_FILE="/tmp/zedra-ios-device-$PPID"
-cat "$PREF_FILE" 2>/dev/null
+./scripts/ios-log.sh [--filter <pattern>] [--select-device]
 ```
 
-If no preference is saved, enumerate physical devices and ask the user to pick one
-(same flow as `/ios-dev`). Use `xcrun xctrace list devices` (not `devicectl`) — it
-returns the libimobiledevice-format UDIDs required by `run-ios.sh` and `idevicesyslog`.
-Then save the choice:
-```bash
-echo "<UDID>|<Name>" > "$PREF_FILE"
-```
+Always uses `idevicesyslog` over USB — no sudo required.
 
-Pass `--select-device` to ignore the saved preference and re-prompt.
+- `--filter <pattern>` — extra grep pattern on top of the default Zedra filter
+- `--select-device` — ignore saved device pref and re-prompt
+
+**Device preference** is session-scoped (`/tmp/zedra-ios-device-$PPID`, shared with `/ios-dev`).
+The script handles selection automatically — read the pref file, prompt if missing, save choice.
 
 ## Log format
 
-Rust logs are routed through NSLog via `IosLogger` (src/ios/logger.rs) and appear as:
+Rust logs via `IosLogger` (NSLog):
 ```
 Mar  4 17:42:55 Zedra(Zedra.debug.dylib)[PID] <Notice>: [I zedra::module] message
 ```
-Level prefix: `[I` = Info, `[W` = Warn, `[E` = Error, `[D` = Debug, `[T` = Trace.
-
-## Live log streaming
-
-Stream all Zedra-related logs (Rust NSLog + UIKit):
-```
-/opt/homebrew/bin/idevicesyslog -u <UDID> | grep -E 'Zedra\[|zedra\[|\[I |\[W |\[E |\[D |panic|PANIC|crash|CRASH|NSException|Terminating' --line-buffered
-```
-
-Rust-only logs (strips UIKit noise):
-```
-/opt/homebrew/bin/idevicesyslog -u <UDID> | grep -E '\[I |\[W |\[E |\[D |\[T ' --line-buffered
-```
-
-Stream everything (unfiltered, verbose):
-```
-/opt/homebrew/bin/idevicesyslog -u <UDID>
-```
+Level prefix: `[I`=Info `[W`=Warn `[E`=Error `[D`=Debug `[T`=Trace
 
 ## Crash analysis
 
-After a crash, fetch the crash report from the device:
-```
+Fetch crash report from device:
+```bash
 xcrun devicectl device copy from --device <UDID> \
   "/var/mobile/Library/Logs/CrashReporter/" /tmp/ios-crashes/
-ls -lt /tmp/ios-crashes/ | head -5
+# or:
+/opt/homebrew/bin/idevicecrashreport -e /tmp/ios-crashes/
 ```
 
-Or use `idevicecrashreport` if available:
-```
-idevicecrashreport -e /tmp/ios-crashes/
-```
-
-## Launch with stderr capture (good for early startup crashes)
-
-Captures stderr directly from the process — useful when the app crashes before NSLog is set up
-(e.g. before `zedra_launch_gpui()` runs). The DIAG() macro in main.m writes to stderr.
-```
+Early startup crashes (before NSLog is set up) — capture stderr directly:
+```bash
 xcrun devicectl device process launch --console --device <UDID> dev.zedra.app
 ```
 
-## Screenshot (visual verification)
+## Screenshot
 
-Take a screenshot from the device and pull to local machine:
-```
-xcrun devicectl device copy from --device <UDID> \
-  /tmp/zedra-screen.png /tmp/zedra-screen.png
-# Alternative via idevicescreenshot:
-idevicescreenshot /tmp/zedra-screen.png
+```bash
+/opt/homebrew/bin/idevicescreenshot /tmp/zedra-screen.png
 ```
