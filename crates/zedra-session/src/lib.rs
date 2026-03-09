@@ -586,10 +586,12 @@ impl RemoteSession {
         signal_terminal_data();
 
         // Build iroh endpoint (client side — generates ephemeral key).
-        // Relay-free: direct P2P only (same LAN or routable IPs).
+        // No relay. pkarr resolver allows discovering the host's direct IPs
+        // by pubkey alone via dns.iroh.link, enabling cross-network connections.
         let endpoint = iroh::Endpoint::builder()
             .relay_mode(iroh::RelayMode::Disabled)
             .alpns(vec![ZEDRA_ALPN.to_vec()])
+            .address_lookup(iroh::address_lookup::PkarrResolver::n0_dns())
             .bind()
             .await?;
         tracing::info!("iroh client endpoint bound: {}", endpoint.id().fmt_short());

@@ -16,11 +16,13 @@ use crate::identity::SharedIdentity;
 ///
 /// Returns the endpoint ready for accepting connections and QR code generation.
 pub async fn create_endpoint(identity: &SharedIdentity) -> Result<iroh::Endpoint> {
-    // Relay-free: direct P2P only (same LAN or routable IPs).
+    // No relay. Publish direct IPs via pkarr (dns.iroh.link) so clients can
+    // discover this host by pubkey alone across networks.
     let endpoint = iroh::Endpoint::builder()
         .secret_key(identity.iroh_secret_key().clone())
         .alpns(vec![ZEDRA_ALPN.to_vec()])
         .relay_mode(iroh::RelayMode::Disabled)
+        .address_lookup(iroh::address_lookup::PkarrPublisher::n0_dns())
         .bind()
         .await?;
 
