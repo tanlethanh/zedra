@@ -6,8 +6,13 @@ edition.workspace = true
 [dependencies]
 zedra-rpc = { path = "../zedra-rpc" }
 iroh.workspace = true
+iroh-relay.workspace = true
 irpc.workspace = true
 irpc-iroh.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "sync"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "sync", "time"] }
 anyhow.workspace = true
 tracing.workspace = true
+ed25519-dalek.workspace = true
+rand.workspace = true
+hmac.workspace = true
+sha2.workspace = true

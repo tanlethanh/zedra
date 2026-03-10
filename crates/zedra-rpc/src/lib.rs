@@ -12,3 +12,7 @@ pub use pairing::{
     compute_registration_hmac, verify_registration_hmac,
 };
 
+/// Self-hosted relay URL (Singapore, ap-southeast-1).
+/// Used by both host and client to avoid n0's default relay latency.
+pub const ZEDRA_RELAY_URL: &str = "https://sg1.relay.zedra.dev";
+

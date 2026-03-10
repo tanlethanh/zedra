@@ -30,7 +30,8 @@ serde.workspace = true
 serde_json.workspace = true
 
 # Random/crypto
-rand = "0.8"
+rand.workspace = true
+ed25519-dalek.workspace = true
 
 # Filesystem
 directories = "5"
@@ -51,6 +52,7 @@ anyhow.workspace = true
 
 # P2P networking
 iroh.workspace = true
+iroh-relay.workspace = true
 
 # RPC framework
 irpc.workspace = true
@@ -68,7 +70,6 @@ uuid = { version = "1", features = ["v4"] }
 tempfile = "3"
 serde_json.workspace = true
 iroh = { workspace = true, features = ["test-utils"] }
-iroh-relay = { workspace = true }
 irpc.workspace = true
 irpc-iroh.workspace = true
 rand = "0.8"

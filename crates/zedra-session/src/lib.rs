@@ -586,10 +586,14 @@ impl RemoteSession {
         signal_terminal_data();
 
         // Build iroh endpoint (client side — generates ephemeral key).
-        // No relay. pkarr resolver allows discovering the host's direct IPs
-        // by pubkey alone via dns.iroh.link, enabling cross-network connections.
+        // Use the self-hosted Singapore relay for low-latency fallback.
+        let relay_url: iroh::RelayUrl = zedra_rpc::ZEDRA_RELAY_URL.parse().expect("valid relay url");
+        let relay_map = iroh::RelayMap::from_iter([iroh::RelayConfig {
+            url: relay_url,
+            quic: Some(iroh_relay::RelayQuicConfig::default()), // QUIC addr discovery on port 7842
+        }]);
         let endpoint = iroh::Endpoint::builder()
-            .relay_mode(iroh::RelayMode::Disabled)
+            .relay_mode(iroh::RelayMode::Custom(relay_map))
             .alpns(vec![ZEDRA_ALPN.to_vec()])
             .address_lookup(iroh::address_lookup::PkarrResolver::n0_dns())
             .bind()

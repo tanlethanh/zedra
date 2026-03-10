@@ -1,0 +1,13 @@
+# iroh-relay configuration for Zedra self-hosted relay (sg1.relay.zedra.dev)
+
+http_bind_addr = "[::]:80"
+enable_relay = true
+enable_quic_addr_discovery = true
+enable_metrics = false
+
+[tls]
+cert_mode = "LetsEncrypt"
+hostname = "sg1.relay.zedra.dev"
+contact = "admin@zedra.dev"
+prod_tls = true
+cert_dir = "/data/certs"
