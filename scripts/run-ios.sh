@@ -8,19 +8,21 @@ SCHEME="Zedra"
 BUNDLE_ID="dev.zedra.app"
 
 usage() {
-    echo "Usage: $0 [sim|device] [--preview] [--debug] [--device-id <UDID>]"
+    echo "Usage: $0 [sim|device] [--preview] [--debug] [--device-id <UDID>] [--select-device]"
     echo ""
     echo "  sim      Build and run on iOS Simulator (default)"
     echo "  device   Build and install on connected device"
     echo ""
-    echo "  --preview             Enable preview feature flag"
-    echo "  --debug               Use debug profile (faster build, no optimizations)"
-    echo "  --device-id <UDID>    Target a specific device by UDID (overrides auto-detect)"
+    echo "  --preview               Enable preview feature flag"
+    echo "  --debug                 Use debug profile (faster build, no optimizations)"
+    echo "  --device-id <UDID>      Target a specific device by UDID (skips selection)"
+    echo "  --select-device         Ignore saved device preference and re-prompt"
     echo ""
     echo "Examples:"
     echo "  $0                                        # run on simulator (release)"
     echo "  $0 sim                                    # run on simulator (release)"
-    echo "  $0 device                                 # install on first connected device"
+    echo "  $0 device                                 # install on saved/selected device"
+    echo "  $0 device --select-device                 # re-prompt for device"
     echo "  $0 device --device-id 00008140-001234     # install on specific device"
     echo "  $0 device --preview                       # install with preview features"
     echo "  $0 device --debug                         # install debug build"
@@ -42,6 +44,8 @@ MODE="${1:-sim}"
 BUILD_FLAGS=""
 XCODE_CONFIGURATION="Debug"
 FORCED_DEVICE_ID=""
+SELECT_DEVICE=false
+PREF_FILE="/tmp/zedra-ios-device-$PPID"
 
 args=("$@")
 i=0
@@ -57,6 +61,9 @@ while [ $i -lt ${#args[@]} ]; do
         --device-id)
             i=$((i + 1))
             FORCED_DEVICE_ID="${args[$i]}"
+            ;;
+        --select-device)
+            SELECT_DEVICE=true
             ;;
     esac
     i=$((i + 1))
@@ -137,8 +144,11 @@ for runtime, devices in data['devices'].items():
         ;;
 
     device)
+        DEVICE_ID=""
+        DEVICE_LINE=""
+
         if [ -n "$FORCED_DEVICE_ID" ]; then
-            # Resolve name and OS from the forced UDID
+            # Explicit --device-id takes priority, resolve name/OS from it
             DEVICE_LINE=$(xcrun xctrace list devices 2>&1 | grep "$FORCED_DEVICE_ID" | head -1)
             if [ -z "$DEVICE_LINE" ]; then
                 echo "Error: Device with UDID '$FORCED_DEVICE_ID' not found."
@@ -149,16 +159,53 @@ for runtime, devices in data['devices'].items():
             fi
             DEVICE_ID="$FORCED_DEVICE_ID"
         else
-            # Auto-detect first connected device
-            DEVICE_LINE=$(xcrun xctrace list devices 2>&1 | grep -E '^\w.+\(\d+\.\d+' | head -1)
-            DEVICE_ID=$(echo "$DEVICE_LINE" | grep -oE '[0-9A-F]{8}-[0-9A-F]{16}' || true)
+            # Check session-scoped pref file (shared with ios-log.sh)
+            if [ "$SELECT_DEVICE" = false ] && [ -f "$PREF_FILE" ]; then
+                IFS='|' read -r DEVICE_ID DEVICE_NAME_SAVED < "$PREF_FILE"
+                DEVICE_LINE=$(xcrun xctrace list devices 2>&1 | grep "$DEVICE_ID" | head -1)
+                if [ -z "$DEVICE_LINE" ]; then
+                    echo "Warning: Saved device $DEVICE_ID not found, re-prompting..."
+                    DEVICE_ID=""
+                else
+                    echo "==> Using saved device: $DEVICE_NAME_SAVED ($DEVICE_ID)"
+                fi
+            fi
 
+            # Interactive selection if no device yet
             if [ -z "$DEVICE_ID" ]; then
-                echo "Error: No connected iOS device found."
+                DEVICE_LINES=$(xcrun xctrace list devices 2>&1 | grep -E '^\w.+\(\d+\.\d+' | grep -v Simulator)
+                if [ -z "$DEVICE_LINES" ]; then
+                    echo "Error: No connected iOS device found." >&2
+                    exit 1
+                fi
+
                 echo ""
-                echo "Available devices:"
-                xcrun xctrace list devices 2>&1 | grep -E '^\w.+\(\d+\.\d+'
-                exit 1
+                echo "Connected iOS devices:"
+                i=1
+                while IFS= read -r line; do
+                    echo "  $i. $line"
+                    i=$((i + 1))
+                done <<< "$DEVICE_LINES"
+                echo ""
+
+                COUNT=$(echo "$DEVICE_LINES" | wc -l | tr -d ' ')
+                if [ "$COUNT" -eq 1 ]; then
+                    CHOICE=1
+                    echo "==> Auto-selecting only device."
+                else
+                    read -rp "Select device [1-$COUNT]: " CHOICE
+                fi
+
+                SELECTED_LINE=$(echo "$DEVICE_LINES" | sed -n "${CHOICE}p")
+                if [ -z "$SELECTED_LINE" ]; then
+                    echo "Error: Invalid selection." >&2
+                    exit 1
+                fi
+
+                DEVICE_ID=$(echo "$SELECTED_LINE" | grep -oE '\([A-F0-9a-f-]{25,}\)' | tail -1 | tr -d '()')
+                DEVICE_NAME_SAVED=$(echo "$SELECTED_LINE" | sed 's/ ([^)]*) ([^)]*)$//' | sed 's/ ([^)]*)$//')
+                DEVICE_LINE="$SELECTED_LINE"
+                echo "$DEVICE_ID|$DEVICE_NAME_SAVED" > "$PREF_FILE"
             fi
         fi
 
