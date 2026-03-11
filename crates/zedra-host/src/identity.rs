@@ -78,6 +78,34 @@ impl HostIdentity {
     pub fn iroh_secret_key(&self) -> &iroh::SecretKey {
         &self.secret
     }
+
+    /// The host's public EndpointId (Ed25519 public key).
+    /// Encoded in the QR ticket so clients can verify host challenge signatures.
+    pub fn endpoint_id(&self) -> iroh::PublicKey {
+        self.secret.public()
+    }
+
+    /// Sign `data` with the host's iroh SecretKey (Ed25519).
+    /// Used to prove host identity in the Authenticate challenge.
+    pub fn sign_challenge(&self, data: &[u8]) -> [u8; 64] {
+        self.secret.sign(data).to_bytes()
+    }
+}
+
+/// Returns the per-workspace config directory:
+/// `~/.config/zedra/workspaces/<hash>/`
+///
+/// Exported so other modules can co-locate their persistent state alongside
+/// the identity key without duplicating the hash logic.
+pub fn workspace_config_dir(workdir: &Path) -> Result<PathBuf> {
+    let workdir_str = workdir.to_string_lossy();
+    let hash = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        workdir_str.hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    };
+    Ok(zedra_config_dir()?.join("workspaces").join(hash))
 }
 
 /// Returns `~/.config/zedra/` as the config root on all platforms.

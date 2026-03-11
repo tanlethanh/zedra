@@ -40,7 +40,9 @@ pub(crate) fn transport_badge_info(
     }
 
     match state {
-        SessionState::Disconnected => ("Disconnected".into(), theme::ACCENT_RED),
+        SessionState::Disconnected | SessionState::HostUnreachable => {
+            ("Disconnected".into(), theme::ACCENT_RED)
+        }
         SessionState::Connecting { phase } => (
             format!("Connecting\u{2026} {}", phase),
             theme::ACCENT_YELLOW,

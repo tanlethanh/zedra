@@ -4,10 +4,10 @@
 use gpui::*;
 
 use crate::home_view::{HomeEvent, HomeView, HomeWorkspaceItem};
-use crate::workspace_store::PersistedWorkspace;
 use crate::quick_action_panel::{QuickActionEvent, QuickActionPanel};
 use crate::theme;
 use crate::workspace_store;
+use crate::workspace_store::PersistedWorkspace;
 use crate::workspace_view::{WorkspaceEvent, WorkspaceView, compute_terminal_dimensions};
 use zedra_session::{RemoteSession, SessionHandle};
 
@@ -46,6 +46,24 @@ pub struct ZedraApp {
     _subscriptions: Vec<Subscription>,
 }
 
+/// Load (or generate) the persistent client Ed25519 signing key.
+///
+/// The key is stored in `<data_dir>/zedra/client.key` with 0o600 permissions.
+/// Returns `None` if the data directory is unavailable (no platform bridge).
+fn load_client_signer() -> Option<std::sync::Arc<dyn zedra_session::signer::ClientSigner>> {
+    let data_dir = crate::platform_bridge::bridge().data_directory()?;
+    let key_path = std::path::PathBuf::from(data_dir)
+        .join("zedra")
+        .join("client.key");
+    match zedra_session::signer::FileClientSigner::load_or_generate(&key_path) {
+        Ok(signer) => Some(std::sync::Arc::new(signer)),
+        Err(e) => {
+            log::error!("Failed to load client signing key: {}", e);
+            None
+        }
+    }
+}
+
 impl ZedraApp {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Load JetBrains Mono font for all UI text
@@ -74,7 +92,9 @@ impl ZedraApp {
                     if let Some(item) = item {
                         let saved_index_opt = item.saved.as_ref().map(|(si, _)| *si);
                         let ws_index_opt = item.active.as_ref().map(|(wi, _)| *wi);
-                        let title = item.active.as_ref()
+                        let title = item
+                            .active
+                            .as_ref()
                             .and_then(|(_, s)| s.project_path.as_deref())
                             .unwrap_or("Workspace")
                             .rsplit('/')
@@ -186,10 +206,14 @@ impl ZedraApp {
         self.saved_workspaces = workspace_store::load_workspaces();
         log::info!("Saved workspaces: {}", self.saved_workspaces.len());
         let items = self.build_home_items(&[]);
-        self.home_view.update(cx, |hv, cx| hv.update_items(items, cx));
+        self.home_view
+            .update(cx, |hv, cx| hv.update_items(items, cx));
     }
 
-    fn build_home_items(&self, summaries: &[crate::workspace_view::WorkspaceSummary]) -> Vec<HomeWorkspaceItem> {
+    fn build_home_items(
+        &self,
+        summaries: &[crate::workspace_view::WorkspaceSummary],
+    ) -> Vec<HomeWorkspaceItem> {
         let mut matched_ws = vec![false; summaries.len()];
         let mut items: Vec<HomeWorkspaceItem> = Vec::new();
         for (saved_idx, sw) in self.saved_workspaces.iter().enumerate() {
@@ -210,10 +234,13 @@ impl ZedraApp {
         }
         for (ws_idx, summary) in summaries.iter().enumerate() {
             if !matched_ws[ws_idx] {
-                items.insert(0, HomeWorkspaceItem {
-                    active: Some((ws_idx, summary.clone())),
-                    saved: None,
-                });
+                items.insert(
+                    0,
+                    HomeWorkspaceItem {
+                        active: Some((ws_idx, summary.clone())),
+                        saved: None,
+                    },
+                );
             }
         }
         items
@@ -251,14 +278,7 @@ impl ZedraApp {
         match zedra_rpc::pairing::decode_endpoint_addr(&ws.endpoint_addr) {
             Ok(addr) => {
                 log::info!("Reconnecting to saved workspace: {}", addr.id.fmt_short());
-                // Pre-load credentials into the session handle after connection
-                let session_id = ws.session_id.clone();
-                let auth_token = ws.auth_token.clone();
-                self.connect_with_iroh_addr(addr, window, cx);
-                // Pre-load saved credentials into the newest workspace's handle
-                if let Some(entry) = self.workspaces.last() {
-                    entry.handle.store_credentials_pub(session_id, auth_token);
-                }
+                self.connect_with_iroh_addr(addr, ws.session_id.clone(), window, cx);
             }
             Err(e) => {
                 log::error!("Failed to decode saved endpoint addr: {}", e);
@@ -268,9 +288,30 @@ impl ZedraApp {
         }
     }
 
+    /// Connect after scanning a QR pairing ticket.
+    ///
+    /// Extracts the EndpointAddr from the ticket, creates the workspace, then
+    /// stores the ticket (for one-use Register) and signer on the handle.
+    fn connect_with_pairing_ticket(
+        &mut self,
+        ticket: zedra_rpc::ZedraPairingTicket,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let addr = iroh::EndpointAddr::from(ticket.endpoint_id);
+        self.connect_with_iroh_addr(addr, None, window, cx);
+        // Store the ticket and signer on the just-created handle
+        if let Some(entry) = self.workspaces.last() {
+            entry.handle.set_pending_ticket(ticket);
+            // Signer is already set inside connect_with_iroh_addr, but set again
+            // to be explicit (idempotent with same key)
+        }
+    }
+
     fn connect_with_iroh_addr(
         &mut self,
         addr: iroh::EndpointAddr,
+        session_id: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -280,14 +321,26 @@ impl ZedraApp {
         // Create a per-workspace session handle
         let session_handle = SessionHandle::new();
 
+        // Load and store the client signing key for PKI auth
+        if let Some(signer) = load_client_signer() {
+            session_handle.set_signer(signer);
+        } else {
+            log::warn!("connect: no client signer available — PKI auth will be skipped");
+        }
+
+        // Store session ID BEFORE persist and BEFORE spawning the async task.
+        // This ensures the async task reads the correct session_id when calling
+        // handle.session_id() inside connect_with_iroh, and that
+        // persist_current_workspaces() doesn't wipe the saved session_id from disk.
+        session_handle.store_session_id(session_id);
+
         // Create the workspace view (creates its own terminal view + pending slots)
         let handle_for_view = session_handle.clone();
         let workspace_view = cx.new(|cx| WorkspaceView::new(handle_for_view, window, cx));
 
         // Grab pending slots so the async task can signal the UI
         let pending_term_id = workspace_view.read(cx).pending_terminal_id.clone();
-        let pending_existing_terminals =
-            workspace_view.read(cx).pending_existing_terminals.clone();
+        let pending_existing_terminals = workspace_view.read(cx).pending_existing_terminals.clone();
 
         // Compute terminal dimensions for the async terminal_create call
         let (cols, rows, _, _) = compute_terminal_dimensions(window);
@@ -452,9 +505,9 @@ impl Render for ZedraApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.render_count += 1;
 
-        // Check for QR-scanned endpoint address
-        if let Some(addr) = PENDING_QR_ADDR.take() {
-            self.connect_with_iroh_addr(addr, window, cx);
+        // Check for QR-scanned pairing ticket
+        if let Some(ticket) = PENDING_QR_TICKET.take() {
+            self.connect_with_pairing_ticket(ticket, window, cx);
         }
 
         // Check for workspace delete confirmed via native action sheet
@@ -468,9 +521,11 @@ impl Render for ZedraApp {
             // Also disconnect the active workspace if it is currently connected
             if let Some(ws_index) = ws_index_opt {
                 if ws_index < self.workspaces.len() {
-                    self.workspaces[ws_index].view.update(cx, |ws_view: &mut WorkspaceView, cx| {
-                        ws_view.disconnect(cx);
-                    });
+                    self.workspaces[ws_index]
+                        .view
+                        .update(cx, |ws_view: &mut WorkspaceView, cx| {
+                            ws_view.disconnect(cx);
+                        });
                 }
             }
             self.refresh_saved_workspaces(cx);
@@ -554,11 +609,11 @@ impl Render for ZedraApp {
 
 use crate::pending::PendingSlot;
 
-static PENDING_QR_ADDR: PendingSlot<iroh::EndpointAddr> = PendingSlot::new();
+static PENDING_QR_TICKET: PendingSlot<zedra_rpc::ZedraPairingTicket> = PendingSlot::new();
 static PENDING_WORKSPACE_DELETE: PendingSlot<(Option<usize>, Option<usize>)> = PendingSlot::new();
 
-pub fn set_pending_qr_addr(addr: iroh::EndpointAddr) {
-    PENDING_QR_ADDR.set(addr);
+pub fn set_pending_qr_ticket(ticket: zedra_rpc::ZedraPairingTicket) {
+    PENDING_QR_TICKET.set(ticket);
 }
 
 /// Open a GPUI window with the correct app view for the current feature flags.
@@ -580,17 +635,20 @@ pub fn open_zedra_window(app: &mut App, window_options: WindowOptions) -> Result
     }
 }
 
-/// Decode a QR-scanned endpoint address and register it for the next connection attempt.
+/// Decode a QR-scanned pairing ticket and register it for the next connection attempt.
 pub fn process_qr_result(qr_data: &str) {
-    let payload = qr_data.strip_prefix("zedra://").unwrap_or(qr_data);
-    match zedra_rpc::pairing::decode_endpoint_addr(payload) {
-        Ok(addr) => {
-            log::info!("QR scan: decoded EndpointAddr successfully");
-            set_pending_qr_addr(addr);
+    match zedra_rpc::ZedraPairingTicket::from_qr_url(qr_data) {
+        Ok(ticket) => {
+            log::info!(
+                "QR scan: decoded pairing ticket (session={}, endpoint={})",
+                ticket.session_id,
+                ticket.endpoint_id.fmt_short(),
+            );
+            set_pending_qr_ticket(ticket);
             zedra_session::signal_terminal_data();
         }
         Err(e) => {
-            log::error!("QR scan: failed to decode: {}", e);
+            log::error!("QR scan: failed to decode ticket: {}", e);
         }
     }
 }

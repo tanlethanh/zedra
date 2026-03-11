@@ -149,7 +149,8 @@ crates/
   │       └── pairing.rs        # EndpointAddr encode/decode (postcard + base64-url)
   ├── zedra-session/            # Mobile client: iroh connection, RPC, auto-reconnect
   │   └── src/
-  │       └── lib.rs            # RemoteSession, terminal buffers, reconnect state
+  │       ├── lib.rs            # RemoteSession, terminal buffers, reconnect state
+  │       └── signer.rs         # ClientSigner trait + FileClientSigner (Ed25519 app key)
   ├── zedra/                    # Android cdylib (final binary crate)
   │   ├── build.rs
   │   └── src/
@@ -188,9 +189,10 @@ crates/
   │       └── theme.rs          # Color constants and theme helpers
   └── zedra-host/               # Desktop host daemon
       └── src/
-          ├── main.rs           # CLI: start (daemon) + qr (pairing)
-          ├── rpc_daemon.rs     # irpc RPC dispatch, TermAttach bidi streaming
-          ├── session_registry.rs # Persistent sessions with terminal ownership
+          ├── main.rs           # CLI: start (daemon) + client + stop
+          ├── client.rs         # `zedra client` — local RTT test client (PKI auth + ping loop)
+          ├── rpc_daemon.rs     # irpc RPC dispatch, PKI auth phase, TermAttach bidi streaming
+          ├── session_registry.rs # PKI sessions: ACLs, pairing slots, persistence, active client
           ├── iroh_listener.rs  # iroh Endpoint creation + accept loop
           ├── identity.rs       # Persistent Ed25519 host identity (~/.config/zedra/)
           ├── qr.rs             # QR code generation (terminal + JSON output)
@@ -271,12 +273,18 @@ zedra-rpc
 - iroh transport: QUIC/TLS 1.3, direct P2P (RelayMode::Disabled — LAN/routable IPs only)
 - irpc typed RPC: postcard binary serialization, bidi streaming for terminal I/O
 - QR pairing: compact postcard+base64-url EndpointAddr encoding (~50 bytes)
-- Connection monitoring: path watcher tracks RTT, bytes sent/recv
+- Connection monitoring: path watcher tracks direct vs relay, RTT, bytes sent/recv (2s polling fallback)
 - Session persistence: server-side SessionRegistry with terminal PTY survival across reconnects
 - Client-side auto-reconnect: exponential backoff (1s–30s), persistent terminal output buffers survive reconnect
 - Terminal backlog replay: missed output replayed per-terminal via TermAttach bidi stream
 - Reconnecting UI badge: transport indicator shows "Reconnecting... (N)" with red dot during reconnect
-- Connection monitoring: path watcher tracks direct vs relay, RTT, bytes sent/recv
+- PKI authentication: QR encodes `ZedraPairingTicket` (endpoint_id + handshake_key + session_id); first pairing via HMAC-SHA256; reconnects via Ed25519 challenge-response; `auth_token` fully removed
+- Per-session ACLs: each session tracks authorized client pubkeys; exclusive single-client ownership (one active client per session)
+- Session state persistence: `sessions.json` survives daemon restarts; authorized pubkeys restored on reload
+- Ping/Pong RTT: `Ping { timestamp_ms }` replaces `Heartbeat`; host echoes timestamp for RTT measurement
+- PTY output coalescing: buffered chunks merged before relay send, separate output task decouples slow sends from input
+- `zedra client` CLI: connects to running daemon via pre-authorized key, measures relay vs P2P RTT with statistics
+- `HostUnreachable` state: after 10 failed reconnect attempts; shown in home screen and session panel
 
 ## Known Limitations (Technical Debt)
 
@@ -394,7 +402,8 @@ See `docs/DEBUGGING.md` for complete workflow.
 - **Phase 5**: Navigation + Editor ✅ Complete (tabs, stacks, drawer, syntax editor)
 - **Phase 6**: Transport ✅ Complete (iroh QUIC direct P2P, irpc typed RPC, session persistence, health monitoring)
 - **Phase 6.5**: Session Reconnect ✅ Complete (auto-reconnect with exponential backoff, persistent terminal buffers, backlog replay, reconnecting UI badge)
-- **Phase 7**: Terminal Persistence - Next (server-side vt100 screen capture, fresh client terminal discovery, credential persistence)
+- **Phase 6.7**: PKI Authentication ✅ Complete (ZedraPairingTicket QR, HMAC registration, Ed25519 challenge-response, per-session ACLs, session persistence, `zedra client` CLI)
+- **Phase 7**: Terminal Persistence - Next (server-side vt100 screen capture, fresh client terminal discovery, on-disk credential storage)
 - **Phase 8**: Production Hardening (momentum scrolling, real file access, multi-touch, E2E encryption)
 
 ## Performance Characteristics

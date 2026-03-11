@@ -24,7 +24,6 @@ pub fn render_session_tab(cx: &mut Context<crate::workspace_drawer::WorkspaceDra
     };
 
     let state = session.state();
-    let latency = session.latency_ms();
     let session_id = session
         .session_id()
         .unwrap_or_else(|| "\u{2014}".to_string());
@@ -35,6 +34,7 @@ pub fn render_session_tab(cx: &mut Context<crate::workspace_drawer::WorkspaceDra
         SessionState::Connecting { .. } => ("Connecting...", theme::ACCENT_YELLOW),
         SessionState::Reconnecting { .. } => ("Reconnecting...", theme::ACCENT_YELLOW),
         SessionState::Disconnected => ("Disconnected", theme::ACCENT_RED),
+        SessionState::HostUnreachable => ("Unreachable", theme::ACCENT_RED),
         SessionState::Error(_) => ("Error", theme::ACCENT_RED),
     };
 
@@ -160,13 +160,8 @@ pub fn render_session_tab(cx: &mut Context<crate::workspace_drawer::WorkspaceDra
             .child(info_row("Protocol", ci.protocol.clone()))
             .child(info_row("Remote Address", ci.remote_addr.clone()));
 
-        let rtt_ms = if ci.path_rtt_ms > 0 {
-            ci.path_rtt_ms
-        } else {
-            latency
-        };
-        if rtt_ms > 0 {
-            content = content.child(info_row("RTT", format!("{}ms", rtt_ms)));
+        if ci.path_rtt_ms > 0 {
+            content = content.child(info_row("RTT", format!("{}ms", ci.path_rtt_ms)));
         }
 
         content = content.child(info_row("Paths", format!("{}", ci.num_paths)));
@@ -181,10 +176,6 @@ pub fn render_session_tab(cx: &mut Context<crate::workspace_drawer::WorkspaceDra
                 ),
             ));
         }
-    } else if latency > 0 {
-        content = content
-            .child(section_header("CONNECTION"))
-            .child(info_row("RTT", format!("{}ms", latency)));
     }
 
     // --- Endpoints section ---

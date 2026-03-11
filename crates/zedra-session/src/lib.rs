@@ -114,7 +114,7 @@ pub struct ConnectionInfo {
 /// Per-workspace session state. Each workspace owns one of these.
 ///
 /// Wraps shared state that persists across reconnects: terminal output
-/// buffers, terminal IDs, endpoint address, credentials, and reconnect
+/// buffers, terminal IDs, endpoint address, session ID, and reconnect
 /// state. Clonable (Arc-based).
 #[derive(Clone)]
 pub struct SessionHandle(Arc<SessionHandleInner>);
@@ -123,10 +123,10 @@ struct SessionHandleInner {
     session: Mutex<Option<Arc<RemoteSession>>>,
     endpoint_addr: Mutex<Option<iroh::EndpointAddr>>,
     /// Session ID used in AuthProveReq to reattach to the right session on reconnect.
-    session_id_cred: Mutex<Option<String>>,
+    stored_session_id: Mutex<Option<String>>,
     terminal_outputs: TerminalOutputMap,
     terminal_ids: Arc<Mutex<Vec<String>>>,
-    active_terminal: Arc<Mutex<Option<String>>>,
+    active_terminal_id: Arc<Mutex<Option<String>>>,
     reconnect_attempt: AtomicU32,
     reconnect_reason: Mutex<ReconnectReason>,
     user_disconnect: AtomicBool,
@@ -149,10 +149,10 @@ impl SessionHandle {
         Self(Arc::new(SessionHandleInner {
             session: Mutex::new(None),
             endpoint_addr: Mutex::new(None),
-            session_id_cred: Mutex::new(None),
+            stored_session_id: Mutex::new(None),
             terminal_outputs: Arc::new(Mutex::new(HashMap::new())),
             terminal_ids: Arc::new(Mutex::new(Vec::new())),
-            active_terminal: Arc::new(Mutex::new(None)),
+            active_terminal_id: Arc::new(Mutex::new(None)),
             reconnect_attempt: AtomicU32::new(0),
             reconnect_reason: Mutex::new(ReconnectReason::ConnectionLost),
             user_disconnect: AtomicBool::new(false),
@@ -287,13 +287,15 @@ impl SessionHandle {
     }
 
     /// Get the stored session ID (used in AuthProveReq on reconnect).
-    pub fn credentials_pub(&self) -> Option<String> {
-        self.credentials()
+    pub fn session_id(&self) -> Option<String> {
+        self.0.stored_session_id.lock().ok()?.clone()
     }
 
     /// Store the session ID from persisted workspace data (for session resumption).
-    pub fn store_credentials_pub(&self, session_id: Option<String>) {
-        self.store_credentials(session_id);
+    pub fn store_session_id(&self, session_id: Option<String>) {
+        if let Ok(mut slot) = self.0.stored_session_id.lock() {
+            *slot = session_id;
+        }
     }
 
     /// Send terminal input to the remote host via the active session.
@@ -345,19 +347,10 @@ impl SessionHandle {
         self.0.terminal_ids.clone()
     }
 
-    fn active_terminal_slot(&self) -> Arc<Mutex<Option<String>>> {
-        self.0.active_terminal.clone()
+    fn active_terminal_id_slot(&self) -> Arc<Mutex<Option<String>>> {
+        self.0.active_terminal_id.clone()
     }
 
-    fn credentials(&self) -> Option<String> {
-        self.0.session_id_cred.lock().ok()?.clone()
-    }
-
-    fn store_credentials(&self, session_id: Option<String>) {
-        if let Ok(mut slot) = self.0.session_id_cred.lock() {
-            *slot = session_id;
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -634,28 +627,38 @@ impl RemoteSession {
         // Use per-workspace state from the handle so terminal views survive reconnect
         let terminal_outputs = handle.terminal_outputs();
         let terminal_ids = handle.terminal_ids_slot();
-        let active_terminal_id = handle.active_terminal_slot();
+        let active_terminal_id = handle.active_terminal_id_slot();
 
         let latency_ms = Arc::new(AtomicU64::new(0));
         let connection_info: Arc<Mutex<Option<ConnectionInfo>>> = Arc::new(Mutex::new(None));
 
-        // Spawn path watcher to track direct vs relay connection
+        // Spawn path watcher to track direct vs relay connection.
+        // Refreshes on path changes OR every 2s so RTT/bytes stay current.
         {
             use iroh::Watcher;
             let mut paths = conn_for_paths.paths();
             let info_slot = connection_info.clone();
             let remote_eid = remote_eid.clone();
             tokio::spawn(async move {
+                let mut paths_watcher_active = true;
                 loop {
                     let path_list = paths.get();
                     let selected = path_list.iter().find(|p| p.is_selected());
                     if let Some(path) = selected {
                         let stats = path.stats();
                         let is_direct = path.is_ip();
+                        let (remote_addr, relay_url) = match path.remote_addr() {
+                            iroh::TransportAddr::Ip(addr) => (addr.to_string(), None),
+                            iroh::TransportAddr::Relay(url) => {
+                                let host = url.host_str().unwrap_or(url.as_str()).to_string();
+                                (host.clone(), Some(host))
+                            }
+                            _ => (format!("{:?}", path.remote_addr()), None),
+                        };
                         let info = ConnectionInfo {
                             is_direct,
-                            remote_addr: format!("{:?}", path.remote_addr()),
-                            relay_url: None,
+                            remote_addr,
+                            relay_url,
                             endpoint_id: remote_eid.clone(),
                             local_endpoint_id: local_eid.clone(),
                             num_paths: path_list.len(),
@@ -675,10 +678,24 @@ impl RemoteSession {
                         if let Ok(mut slot) = info_slot.lock() {
                             *slot = Some(info);
                         }
+                        // Notify the main-thread frame loop so GPUI re-renders the session panel.
+                        signal_terminal_data();
                     }
-                    if paths.updated().await.is_err() {
-                        tracing::debug!("iroh path watcher disconnected");
-                        break;
+                    // Wake on path change or every 2s (keeps RTT/bytes fresh).
+                    // If paths.updated() closes (iroh 0.96 closes the watcher after first
+                    // notification), fall back to sleep-only polling for the rest of the session.
+                    if paths_watcher_active {
+                        tokio::select! {
+                            res = paths.updated() => {
+                                if res.is_err() {
+                                    tracing::debug!("iroh path watcher subscription closed — switching to sleep-only polling");
+                                    paths_watcher_active = false;
+                                }
+                            }
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
+                        }
+                    } else {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     }
                 }
             });
@@ -709,7 +726,7 @@ impl RemoteSession {
                 .lock()
                 .ok()
                 .and_then(|mut g| g.take());
-            let stored_session_id = handle.credentials();
+            let stored_session_id = handle.session_id();
             match handle.signer() {
                 Some(signer) => {
                     // Safe: we called handle.store_endpoint_id(addr.id) above
@@ -729,7 +746,7 @@ impl RemoteSession {
                             if let Ok(mut slot) = session.session_id.lock() {
                                 *slot = Some(sid.clone());
                             }
-                            handle.store_credentials(Some(sid));
+                            handle.store_session_id(Some(sid));
                         }
                         Err(e) => {
                             tracing::warn!("PKI auth failed: {}", e);
@@ -1042,11 +1059,6 @@ impl RemoteSession {
             .lock()
             .ok()
             .and_then(|guard| guard.clone())
-    }
-
-    /// Backward-compat alias for `active_terminal_id()`.
-    pub fn terminal_id(&self) -> Option<String> {
-        self.active_terminal_id()
     }
 
     /// List all terminal IDs in creation order.

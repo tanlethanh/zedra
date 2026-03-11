@@ -96,6 +96,9 @@ impl Render for HomeView {
                             zedra_session::SessionState::Disconnected => {
                                 ("Disconnected", theme::ACCENT_RED)
                             }
+                            zedra_session::SessionState::HostUnreachable => {
+                                ("Unreachable", theme::ACCENT_RED)
+                            }
                             zedra_session::SessionState::Error(_) => ("Error", theme::ACCENT_RED),
                         };
                         let path_label = summary

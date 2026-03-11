@@ -1,8 +1,11 @@
 // irpc protocol definition for Zedra RPC.
 //
-// Replaces the JSON-RPC 2.0 protocol with typed, binary-serialized (postcard)
-// messages over iroh QUIC streams. Each variant maps to an RPC method with
-// typed request/response pairs.
+// Typed, binary-serialized (postcard) messages over iroh QUIC streams.
+//
+// Connection lifecycle:
+//   First pairing:   Register → Authenticate → AuthProve → (RPC calls)
+//   Reconnect:       Authenticate → AuthProve → (RPC calls)
+//   Health:          Ping → Pong (every 2s, foreground only)
 
 use irpc::channel::{mpsc, oneshot};
 use irpc::rpc_requests;
@@ -15,12 +18,32 @@ use serde::{Deserialize, Serialize};
 #[rpc_requests(message = ZedraMessage)]
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ZedraProto {
-    // -- Session --
-    #[rpc(tx = oneshot::Sender<ResumeResult>)]
-    ResumeOrCreate(ResumeOrCreateReq),
+    // -- Auth (pre-session, must come before any RPC) --
 
-    #[rpc(tx = oneshot::Sender<HeartbeatResult>)]
-    Heartbeat(HeartbeatReq),
+    /// First pairing only: register a new client by proving QR possession.
+    /// Must be sent before Authenticate on the very first connection.
+    #[rpc(tx = oneshot::Sender<RegisterResult>)]
+    Register(RegisterReq),
+
+    /// Every connection: request a challenge from the host.
+    /// Host generates a nonce, signs it with its iroh key, returns both.
+    /// Client must verify host_signature before sending AuthProve.
+    #[rpc(tx = oneshot::Sender<AuthChallengeResult>)]
+    Authenticate(AuthReq),
+
+    /// Every connection: prove client identity by signing the challenge nonce.
+    /// Also specifies which session to attach to.
+    #[rpc(tx = oneshot::Sender<AuthProveResult>)]
+    AuthProve(AuthProveReq),
+
+    // -- Health / RTT --
+
+    /// Ping the host. Host echoes timestamp_ms back for RTT measurement.
+    /// Sent every 2s (foreground only). 5 consecutive misses = reconnect.
+    #[rpc(tx = oneshot::Sender<PongResult>)]
+    Ping(PingReq),
+
+    // -- Session --
 
     #[rpc(tx = oneshot::Sender<SessionInfoResult>)]
     GetSessionInfo(SessionInfoReq),
@@ -95,32 +118,170 @@ pub enum ZedraProto {
 // ALPN protocol identifier
 // ---------------------------------------------------------------------------
 
-pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/2";
+pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/3";
+
+// ---------------------------------------------------------------------------
+// Serde helper for [u8; 64] (serde supports arrays only up to size 32 by default)
+// ---------------------------------------------------------------------------
+
+mod bytes64 {
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(val: &[u8; 64], s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeTuple;
+        let mut seq = s.serialize_tuple(64)?;
+        for byte in val.iter() {
+            seq.serialize_element(byte)?;
+        }
+        seq.end()
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 64], D::Error> {
+        use serde::de::{Error, SeqAccess, Visitor};
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = [u8; 64];
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "exactly 64 bytes")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<[u8; 64], A::Error> {
+                let mut arr = [0u8; 64];
+                for (i, b) in arr.iter_mut().enumerate() {
+                    *b = seq
+                        .next_element()?
+                        .ok_or_else(|| A::Error::invalid_length(i, &self))?;
+                }
+                Ok(arr)
+            }
+        }
+        d.deserialize_tuple(64, V)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Auth types
+// ---------------------------------------------------------------------------
+
+/// RegisterClient request — first pairing only.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RegisterReq {
+    /// Client's Ed25519 application public key (32 bytes).
+    /// This is a SEPARATE key from the iroh transport key.
+    pub client_pubkey: [u8; 32],
+    /// Unix timestamp in seconds. Host rejects if |now - timestamp| > 60s.
+    pub timestamp: u64,
+    /// HMAC-SHA256(handshake_key, client_pubkey || timestamp_le_bytes).
+    /// Proves the sender physically scanned the QR (has the handshake_key).
+    pub hmac: [u8; 32],
+    /// The session ID from the QR ticket (used to look up the pairing slot).
+    pub slot_session_id: String,
+}
+
+/// Result of a RegisterClient attempt.
+#[derive(Debug, Serialize, Deserialize)]
+pub enum RegisterResult {
+    /// Registration accepted. Client pubkey stored in authorized list and
+    /// added to the session ACL. Proceed to Authenticate.
+    Ok,
+    /// Handshake slot already consumed by another device.
+    /// Client should prompt: "This QR has already been used.
+    /// Ask the host to run `zedra qr` to generate a new one."
+    HandshakeConsumed,
+    /// HMAC did not verify. Wrong key or tampered packet.
+    InvalidHandshake,
+    /// Timestamp outside ±60s window. Clock skew or replay attempt.
+    StaleTimestamp,
+    /// No pairing slot found for this session. QR may have expired (>10 min).
+    SlotNotFound,
+}
+
+/// Authenticate request — sent on every connection (including after Register).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuthReq {
+    /// Client's Ed25519 application public key (32 bytes).
+    pub client_pubkey: [u8; 32],
+}
+
+/// Challenge issued by the host in response to Authenticate.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuthChallengeResult {
+    /// 32-byte random nonce generated fresh per connection.
+    pub nonce: [u8; 32],
+    /// Ed25519 signature of the nonce by the host's iroh SecretKey.
+    /// Client MUST verify this using the stored EndpointId before signing
+    /// the response — proves this challenge came from the real host.
+    #[serde(with = "bytes64")]
+    pub host_signature: [u8; 64],
+}
+
+/// AuthProve request — client signs the challenge nonce to prove identity.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuthProveReq {
+    /// Echo of the nonce from AuthChallengeResult.
+    pub nonce: [u8; 32],
+    /// Ed25519 signature of the nonce by the client's application SecretKey.
+    #[serde(with = "bytes64")]
+    pub client_signature: [u8; 64],
+    /// The session ID the client wants to attach to.
+    pub session_id: String,
+}
+
+/// Result of an AuthProve attempt.
+#[derive(Debug, Serialize, Deserialize)]
+pub enum AuthProveResult {
+    /// Authentication succeeded and session attached. RPC calls may proceed.
+    Ok,
+    /// Client pubkey not in host's authorized list. Must re-pair via QR.
+    Unauthorized,
+    /// Client pubkey not in this session's ACL. Must pair via QR for this session.
+    NotInSessionAcl,
+    /// Another client is currently attached to this session.
+    /// Use `zedra detach --session-id <id>` on the host to transfer ownership.
+    SessionOccupied,
+    /// Session ID not found. Session may have been removed or host restarted.
+    SessionNotFound,
+    /// The client_signature did not verify against the stored pubkey.
+    InvalidSignature,
+}
+
+// ---------------------------------------------------------------------------
+// Ping / Pong
+// ---------------------------------------------------------------------------
+
+/// Sent by the client every 2 seconds (foreground only).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PingReq {
+    /// Client's Unix timestamp in milliseconds.
+    /// Echoed back in PongResult so the client can compute RTT = now - timestamp_ms.
+    pub timestamp_ms: u64,
+}
+
+/// Host echoes the timestamp for RTT measurement.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PongResult {
+    pub timestamp_ms: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Session close reasons (sent as QUIC APPLICATION_CLOSE before disconnect)
+// ---------------------------------------------------------------------------
+
+/// Reason codes for host-initiated connection close.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[repr(u32)]
+pub enum SessionCloseReason {
+    /// Host operator ran `zedra detach --session-id <id>`.
+    /// Active client receives this so the UI can show "Session taken over"
+    /// rather than a generic connection drop.
+    SessionTakenOver = 1,
+    /// Host process is shutting down cleanly (SIGTERM / `zedra stop`).
+    /// Client should show "Host disconnected" briefly then auto-reconnect.
+    HostShutdown = 2,
+}
 
 // ---------------------------------------------------------------------------
 // Session types
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ResumeOrCreateReq {
-    pub session_id: Option<String>,
-    pub auth_token: String,
-    pub last_notif_seq: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ResumeResult {
-    pub session_id: String,
-    pub resumed: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct HeartbeatReq {}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct HeartbeatResult {
-    pub ok: bool,
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SessionInfoReq {}
@@ -153,12 +314,14 @@ pub struct SessionListEntry {
     pub terminal_count: usize,
     pub uptime_secs: u64,
     pub idle_secs: u64,
+    /// Whether another client is currently attached to this session.
+    pub is_occupied: bool,
 }
 
+/// Switch to a named session after authentication.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SessionSwitchReq {
     pub session_name: String,
-    pub auth_token: String,
     pub last_notif_seq: u64,
 }
 
@@ -445,17 +608,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn term_input_serde_roundtrip() {
-        let input = TermInput {
-            data: b"hello world".to_vec(),
-        };
-        let encoded = postcard::to_allocvec(&input).unwrap();
-        let decoded: TermInput = postcard::from_bytes(&encoded).unwrap();
-        assert_eq!(decoded.data, b"hello world");
-    }
-
-    #[test]
-    fn term_output_serde_roundtrip() {
+    fn term_output_roundtrip() {
         let output = TermOutput {
             data: b"prompt$ ".to_vec(),
             seq: 42,
@@ -467,44 +620,38 @@ mod tests {
     }
 
     #[test]
-    fn resume_or_create_roundtrip() {
-        let req = ResumeOrCreateReq {
-            session_id: Some("abc-123".to_string()),
-            auth_token: "tok".to_string(),
-            last_notif_seq: 99,
+    fn register_req_roundtrip() {
+        let req = RegisterReq {
+            client_pubkey: [1u8; 32],
+            timestamp: 1_700_000_000,
+            hmac: [2u8; 32],
+            slot_session_id: "sess-123".to_string(),
         };
         let encoded = postcard::to_allocvec(&req).unwrap();
-        let decoded: ResumeOrCreateReq = postcard::from_bytes(&encoded).unwrap();
-        assert_eq!(decoded.session_id.as_deref(), Some("abc-123"));
-        assert_eq!(decoded.last_notif_seq, 99);
+        let decoded: RegisterReq = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded.client_pubkey, [1u8; 32]);
+        assert_eq!(decoded.timestamp, 1_700_000_000);
+        assert_eq!(decoded.slot_session_id, "sess-123");
     }
 
     #[test]
-    fn fs_entry_roundtrip() {
-        let entry = FsEntry {
-            name: "main.rs".to_string(),
-            path: "/src/main.rs".to_string(),
-            is_dir: false,
-            size: 1024,
+    fn auth_prove_req_roundtrip() {
+        let req = AuthProveReq {
+            nonce: [3u8; 32],
+            client_signature: [4u8; 64],
+            session_id: "sess-abc".to_string(),
         };
-        let encoded = postcard::to_allocvec(&entry).unwrap();
-        let decoded: FsEntry = postcard::from_bytes(&encoded).unwrap();
-        assert_eq!(decoded.name, "main.rs");
-        assert!(!decoded.is_dir);
+        let encoded = postcard::to_allocvec(&req).unwrap();
+        let decoded: AuthProveReq = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded.nonce, [3u8; 32]);
+        assert_eq!(decoded.session_id, "sess-abc");
     }
 
     #[test]
-    fn git_status_roundtrip() {
-        let status = GitStatusResult {
-            branch: "main".to_string(),
-            entries: vec![GitStatusEntry {
-                path: "src/lib.rs".to_string(),
-                status: "modified".to_string(),
-            }],
-        };
-        let encoded = postcard::to_allocvec(&status).unwrap();
-        let decoded: GitStatusResult = postcard::from_bytes(&encoded).unwrap();
-        assert_eq!(decoded.branch, "main");
-        assert_eq!(decoded.entries.len(), 1);
+    fn ping_roundtrip() {
+        let req = PingReq { timestamp_ms: 9_999_999 };
+        let encoded = postcard::to_allocvec(&req).unwrap();
+        let decoded: PingReq = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded.timestamp_ms, 9_999_999);
     }
 }

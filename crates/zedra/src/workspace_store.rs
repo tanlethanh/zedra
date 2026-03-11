@@ -16,8 +16,6 @@ pub struct PersistedWorkspace {
     pub endpoint_addr: String,
     /// RPC session ID (assigned by zedra-host, enables PTY resumption).
     pub session_id: Option<String>,
-    /// RPC auth token (proves identity across reconnects).
-    pub auth_token: Option<String>,
     /// Last known remote working directory (display only).
     pub last_project_path: Option<String>,
     /// Last known remote hostname (display only).
@@ -157,7 +155,6 @@ pub fn upsert_workspace(entry: PersistedWorkspace) {
         .find(|w| w.endpoint_addr == entry.endpoint_addr)
     {
         existing.session_id = entry.session_id;
-        existing.auth_token = entry.auth_token;
         if entry.last_project_path.is_some() {
             existing.last_project_path = entry.last_project_path;
         }
@@ -175,7 +172,7 @@ pub fn upsert_workspace(entry: PersistedWorkspace) {
 pub fn snapshot_from_handle(handle: &zedra_session::SessionHandle) -> Option<PersistedWorkspace> {
     let addr = handle.endpoint_addr()?;
     let encoded = zedra_rpc::pairing::encode_endpoint_addr(&addr).ok()?;
-    let (session_id, auth_token) = handle.credentials_pub();
+    let session_id = handle.session_id();
 
     let (project_path, hostname) = if let Some(session) = handle.session() {
         match session.state() {
@@ -198,7 +195,6 @@ pub fn snapshot_from_handle(handle: &zedra_session::SessionHandle) -> Option<Per
     Some(PersistedWorkspace {
         endpoint_addr: encoded,
         session_id,
-        auth_token,
         last_project_path: project_path,
         last_hostname: hostname,
         created_at: std::time::SystemTime::now()

@@ -1,12 +1,14 @@
-// QR code generation for device pairing (iroh)
+// QR code generation for device pairing.
 //
-// Encodes the host's EndpointAddr as a compact postcard+base64-url string.
-// Hostname and other metadata are discovered post-connection via GetSessionInfo.
+// Encodes a ZedraPairingTicket (endpoint_id + handshake_key + session_id) as a
+// compact postcard+base32 string embedded in a `zedra://` URL.
+// The host's IP/relay information is obtained at connect time via pkarr resolution.
 
 use anyhow::Result;
 use qrcode::render::unicode;
 use qrcode::{EcLevel, QrCode};
 use serde::Serialize;
+use zedra_rpc::ZedraPairingTicket;
 
 /// Machine-readable startup output for `--json` mode.
 #[derive(Serialize)]
@@ -21,18 +23,25 @@ pub struct StartupInfo {
 }
 
 /// Build the pairing info (QR string, metadata) without printing anything.
-pub fn build_pairing_info(addr: &iroh::EndpointAddr) -> Result<StartupInfo> {
+pub fn build_pairing_info(
+    ticket: &ZedraPairingTicket,
+    endpoint: &iroh::Endpoint,
+) -> Result<StartupInfo> {
     let hostname = gethostname();
-    let endpoint_id = addr.id.to_string();
+    let endpoint_id = ticket.endpoint_id.to_string();
+
+    // Routing info from live endpoint (for display/debug; not embedded in ticket)
+    let addr = endpoint.addr();
     let relay_url = addr.relay_urls().next().map(|u| u.to_string());
     let direct_addrs: Vec<String> = addr.ip_addrs().map(|a| a.to_string()).collect();
 
-    let pairing_code = format!("zedra://{}", zedra_rpc::encode_endpoint_addr(addr)?);
+    let pairing_code = ticket.to_qr_url()?;
 
     tracing::info!(
-        "QR pairing code: {} bytes, endpoint={}, relay={}, direct_addrs={}",
+        "QR pairing code: {} bytes, endpoint={}, session={}, relay={}, direct_addrs={}",
         pairing_code.len(),
         &endpoint_id[..16.min(endpoint_id.len())],
+        ticket.session_id,
         relay_url.as_deref().unwrap_or("none"),
         direct_addrs.len(),
     );
@@ -51,9 +60,9 @@ pub fn build_pairing_info(addr: &iroh::EndpointAddr) -> Result<StartupInfo> {
     })
 }
 
-/// Generate and display a pairing QR code for iroh-based connections.
-pub fn generate_pairing_qr(addr: &iroh::EndpointAddr) -> Result<()> {
-    let info = build_pairing_info(addr)?;
+/// Generate and display a pairing QR code.
+pub fn generate_pairing_qr(ticket: &ZedraPairingTicket, endpoint: &iroh::Endpoint) -> Result<()> {
+    let info = build_pairing_info(ticket, endpoint)?;
     print_pairing_info(&info);
     Ok(())
 }
@@ -66,7 +75,10 @@ fn print_pairing_info(info: &StartupInfo) {
     println!();
     println!("  Scan this QR code with the Zedra app to pair this device.");
     println!("  Host: {}", info.host);
-    println!("  Endpoint: {}", &info.endpoint_id[..16]);
+    println!(
+        "  Endpoint: {}",
+        &info.endpoint_id[..16.min(info.endpoint_id.len())]
+    );
     if let Some(ref relay) = info.relay_url {
         println!("  Relay: {}", relay);
     }
@@ -92,7 +104,6 @@ fn render_qr_compact(code: &QrCode) -> String {
         .build()
 }
 
-/// Get local hostname
 fn gethostname() -> String {
     hostname::get()
         .ok()

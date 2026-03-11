@@ -12,25 +12,30 @@ use zedra_rpc::proto::ZEDRA_ALPN;
 
 use crate::identity::SharedIdentity;
 
-/// Build a relay map pointing at the self-hosted Zedra relay (Singapore).
-fn zedra_relay_map() -> iroh::RelayMap {
-    let url: iroh::RelayUrl = zedra_rpc::ZEDRA_RELAY_URL.parse().expect("valid relay url");
-    iroh::RelayMap::from_iter([iroh::RelayConfig {
+/// Build a relay map from the given URL.
+fn relay_map_from_url(url_str: &str) -> Result<iroh::RelayMap> {
+    let url: iroh::RelayUrl = url_str.parse()?;
+    Ok(iroh::RelayMap::from_iter([iroh::RelayConfig {
         url,
         quic: Some(iroh_relay::RelayQuicConfig::default()), // QUIC addr discovery on port 7842
-    }])
+    }]))
 }
 
 /// Create and bind an iroh endpoint with the host's identity.
 ///
+/// `relay_url` overrides the default relay; falls back to `ZEDRA_RELAY_URL`.
 /// Returns the endpoint ready for accepting connections and QR code generation.
-pub async fn create_endpoint(identity: &SharedIdentity) -> Result<iroh::Endpoint> {
-    // Use the self-hosted Singapore relay for low-latency fallback.
-    // pkarr still publishes the host's address for direct connection attempts.
+pub async fn create_endpoint(
+    identity: &SharedIdentity,
+    relay_url: Option<&str>,
+) -> Result<iroh::Endpoint> {
+    let relay_mode = iroh::RelayMode::Custom(
+        relay_map_from_url(relay_url.unwrap_or(zedra_rpc::ZEDRA_RELAY_URL))?
+    );
     let endpoint = iroh::Endpoint::builder()
         .secret_key(identity.iroh_secret_key().clone())
         .alpns(vec![ZEDRA_ALPN.to_vec()])
-        .relay_mode(iroh::RelayMode::Custom(zedra_relay_map()))
+        .relay_mode(relay_mode)
         .address_lookup(iroh::address_lookup::PkarrPublisher::n0_dns())
         .bind()
         .await?;

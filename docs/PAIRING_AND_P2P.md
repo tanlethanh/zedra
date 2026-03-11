@@ -1,16 +1,23 @@
 # Pairing & P2P Design
 
-This document covers the current QR pairing system, its security gaps, the
-public-key authentication scheme replacing it, pkarr/DNS signaling for
-internet-scale P2P, and the full path to relay-free connectivity.
+> **Status (2026-03-11):** Phase 1 PKI authentication is fully implemented.
+> Sections 1–2 document the old system that has been replaced.
+> Sections 5–6 describe the current implementation.
+> Section 10 lists completed and pending work.
+
+This document covers the QR pairing system, its security model, pkarr/DNS
+signaling for internet-scale P2P, and the full path to relay-free connectivity.
 
 ---
 
-## 1. Current QR Pairing System
+## 1. Old QR Pairing System (Replaced by Phase 1)
 
-### What the QR code contains today
+> **This section describes the pre-Phase-1 system. It has been replaced.**
+> See Section 5 for the current implementation.
 
-The QR payload is `zedra://<base64url(postcard(EndpointAddr))>`.
+### What the QR code contained
+
+The QR payload was `zedra://<base64url(postcard(EndpointAddr))>`.
 
 `EndpointAddr` is an iroh-base type containing:
 
@@ -76,7 +83,7 @@ two problems:
 
 ---
 
-## 2. Security Vulnerabilities in the Current Design
+## 2. Security Vulnerabilities in the Old Design (Fixed by Phase 1)
 
 | Severity | Issue |
 |----------|-------|
@@ -185,9 +192,11 @@ let conn = endpoint.connect(addr, ZEDRA_ALPN).await?;
 
 ---
 
-## 5. Public Key Authentication Scheme
+## 5. Public Key Authentication Scheme (Implemented)
 
-This replaces the current shared-secret / timestamp token model entirely.
+This replaces the old shared-secret / timestamp token model. **Fully
+implemented as of 2026-03-11.** See `zedra-rpc/src/proto.rs` and
+`crates/zedra-host/src/rpc_daemon.rs` for the live code.
 
 ### Design overview
 
@@ -624,48 +633,49 @@ key), so only the IP lookup result changes.
 
 ## 10. Implementation Plan
 
-### Phase 1 — Relay-free + public key authentication
+### Phase 1 — Relay + public key authentication ✅ COMPLETE (2026-03-11)
 
-**zedra-rpc:**
+**zedra-rpc:** ✅
 
-1. Define `ZedraPairingTicket { endpoint_id, handshake_key, session_id }`
-   in `pairing.rs`, implementing `Ticket` (postcard + base32, `"zedra"` prefix)
-2. Define `RegisterClient`, `RegisterClientResult`, `AuthChallenge`,
-   `AuthResponse`, `SessionCloseReason` in `proto.rs`
+1. ✅ `ZedraPairingTicket { endpoint_id, handshake_key, session_id }` in
+   `pairing.rs` (postcard + BASE32LOWER, `"zedra"` prefix; QR URL `zedra://zedra<b32>`)
+2. ✅ `RegisterReq/Result`, `AuthReq`, `AuthChallengeResult`, `AuthProveReq/Result`,
+   `PingReq/PongResult`, `SessionCloseReason` in `proto.rs`; ALPN bumped to `zedra/rpc/3`
+3. ✅ `compute_registration_hmac` / `verify_registration_hmac` (HMAC-SHA256)
 
-**zedra-host:**
+**zedra-host:** ✅
 
-3. `identity.rs`: expose `iroh_secret_key()` for signing challenges
-4. `session_registry.rs`:
-   - `Session` gains `acl: Vec<[u8; 32]>` and `active_client: Option<[u8; 32]>`
-   - Implement `register_client()`: HMAC verify → consume slot → add pubkey to
-     global list and session ACL
-   - Implement `issue_challenge()` / `verify_response()`: nonce generation,
-     host signature, client signature verification
-   - Implement `attach()`: check global list + session ACL + exclusive ownership
-   - Implement `force_detach()`: send `SessionTakenOver` close reason, clear
-     `active_client`
-   - Persist `authorized_clients` to `~/.config/zedra/authorized_clients.json`
-5. `rpc_daemon.rs`: replace `ResumeOrCreate` auth_token flow with challenge-
-   response on every connection; route `RegisterClient` on fresh connections
-6. `iroh_listener.rs`: configure `RelayMode::Disabled` + `PkarrPublisher`
-7. `main.rs`: remove hardcoded `"auto"` token; update CLI with `clients`,
-   `revoke`, `detach`, `sessions`, `session acl` subcommands
+4. ✅ `identity.rs`: `endpoint_id()`, `sign_challenge()`, `workspace_config_dir()` exported
+5. ✅ `session_registry.rs`: per-session ACLs, `active_client`, `PairingSlot`, pairing
+   slot lifecycle, `attach_client` / `detach_client`, `find_session_for_client`,
+   `force_detach`, JSON persistence (`sessions.json` via `load_or_new` / `save`)
+6. ✅ `rpc_daemon.rs`: Register → Authenticate → AuthProve auth phase on every connection;
+   `DaemonState` holds `identity`; `detach_client` on disconnect; PTY output coalescing;
+   separate output task for high-latency relay paths
+7. ✅ `iroh_listener.rs`: `relay_url: Option<&str>` param; keeps `RelayMode::Custom` with
+   self-hosted relay + pkarr publisher
+8. ✅ `main.rs`: `zedra client` subcommand; `--relay-url` flag for `zedra start`; pairing
+   slot created at startup; CLI client key pre-authorized; `host-info.json` written
+9. ✅ `client.rs` (new): local RTT test client — reads `host-info.json`, authenticates,
+   runs ping loop with relay vs P2P statistics
 
-**zedra-session:**
+**zedra-session:** ✅
 
-8. Add `ClientSigner` trait and `FileClientSigner` impl in new `signer.rs`
-9. On first launch: generate Ed25519 keypair, persist to device storage
-10. `connect_with_ticket()`: configure `PkarrResolver::n0_dns()`, connect with
-    id-only `EndpointAddr`, send `RegisterClient` as first message
-11. `reconnect()`: complete `AuthChallenge` / `AuthResponse` exchange before
-    any RPC calls; verify `host_signature` against stored `endpoint_id`
-12. Handle `SessionOccupied` and `SessionTakenOver` close reason in UI
-13. Implement ping/pong loop (2s interval, foreground only, 5-miss threshold)
-14. Implement reconnect state machine: Reconnecting (10 attempts, exponential
-    backoff) → Host Unreachable; invalidate pkarr cache on each attempt
-15. Transport badge: display RTT from pong timestamps; show attempt count
-    during Reconnecting; show "Host unreachable" in terminal state
+10. ✅ `signer.rs` (new): `ClientSigner` trait + `FileClientSigner` (file-backed Ed25519)
+11. ✅ Keypair generated on first launch, persisted to `<data_dir>/zedra/client.key`
+12. ✅ `connect_with_ticket()` path: signer stored on handle; Register → Authenticate →
+    AuthProve on first pairing; Authenticate → AuthProve on reconnect
+13. ✅ `HostUnreachable` state after 10 failed reconnect attempts; shown in home/session/badge
+14. ✅ Ping/pong loop (2s interval); RTT from `path_rtt_ms` (path watcher, 2s fallback polling)
+15. ✅ `relay_url` properly extracted from `TransportAddr::Relay`; `signal_terminal_data()` on
+    path change so session panel re-renders
+
+**Remaining / not yet implemented:**
+
+- `zedra detach --session-id <id>` CLI subcommand (force-detach API exists in registry)
+- `SessionTakenOver` / `HostShutdown` QUIC APPLICATION_CLOSE codes sent to clients
+- `zedra sessions`, `zedra clients`, `zedra revoke` management CLI subcommands
+- Hardware-backed `ClientSigner` (Android Keystore, iOS Secure Enclave)
 
 ### Phase 2 — Self-hosted pkarr + encrypted address records
 
