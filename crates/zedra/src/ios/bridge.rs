@@ -203,7 +203,7 @@ pub extern "C" fn zedra_ios_alert_result(callback_id: u32, button_index: i32) {
 
 /// Called from the native keyboard accessory bar when a shortcut key button is tapped.
 ///
-/// `key` is one of: "tab", "left", "down", "up", "right", "enter".
+/// `key` is one of: "escape", "tab", "left", "down", "up", "right", "enter".
 /// Maps the name to the corresponding terminal escape sequence and sends it via the active session.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
@@ -217,6 +217,7 @@ pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
         }
     };
     let bytes: &[u8] = match key_name {
+        "escape" => b"\x1b",
         "tab"   => b"\x09",
         "left"  => b"\x1b[D",
         "down"  => b"\x1b[B",

@@ -121,7 +121,7 @@ const char* ios_get_documents_directory(void) {
 }
 
 /// Key names indexed by button tag (matches order in setupKeyboardAccessoryView).
-static const char *kAccessoryKeyNames[] = {"tab", "left", "down", "up", "right", "enter"};
+static const char *kAccessoryKeyNames[] = {"escape", "tab", "left", "down", "up", "right", "enter"};
 
 @interface ZedraAppDelegate : UIResponder <UIApplicationDelegate>
 @property (nonatomic, assign) void *gpuiApp;
@@ -260,7 +260,7 @@ static const char *kAccessoryKeyNames[] = {"tab", "left", "down", "up", "right",
     // Use the primary label color so buttons read well on both light and dark keyboards.
     toolbar.tintColor = [UIColor labelColor];
 
-    NSArray<NSString *> *labels = @[@"Tab", @"←", @"↓", @"↑", @"→", @"⏎"];
+    NSArray<NSString *> *labels = @[@"Esc", @"Tab", @"←", @"↓", @"↑", @"→", @"⏎"];
 
     UIBarButtonItem *flex = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace
@@ -286,7 +286,7 @@ static const char *kAccessoryKeyNames[] = {"tab", "left", "down", "up", "right",
 /// Handles taps on keyboard shortcut buttons; sends the corresponding escape sequence.
 - (void)keyboardShortcutTapped:(UIBarButtonItem *)sender {
     NSInteger idx = sender.tag;
-    if (idx >= 0 && idx < 6) {
+    if (idx >= 0 && idx < 7) {
         zedra_ios_send_key_input(kAccessoryKeyNames[idx]);
     }
 }
