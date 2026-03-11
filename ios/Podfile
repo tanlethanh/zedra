@@ -1,0 +1,7 @@
+platform :ios, '16.0'
+use_frameworks! :linkage => :static
+
+target 'Zedra' do
+  pod 'FirebaseAnalytics'
+  pod 'FirebaseCrashlytics'
+end

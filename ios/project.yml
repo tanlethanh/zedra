@@ -25,6 +25,12 @@ targets:
       - sdk: Security.framework
       - sdk: Network.framework
       - sdk: AVFoundation.framework
+    postBuildScripts:
+      - name: "Firebase Crashlytics dSYM Upload"
+        script: "${PODS_ROOT}/FirebaseCrashlytics/run"
+        inputFiles:
+          - "${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}"
+          - "$(SRCROOT)/$(BUILT_PRODUCTS_DIR)/$(INFOPLIST_PATH)"
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -36,7 +42,8 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_NSCameraUsageDescription: "Zedra needs camera access to scan QR codes for pairing"
+        # $(inherited): include CocoaPods linker flags (Firebase etc.)
         # -ObjC: Force-load all ObjC classes/categories from static libs
         # -all_load: Ensure all symbols (including GPUI FFI) are included
-        OTHER_LDFLAGS: ["-ObjC", "-all_load"]
+        OTHER_LDFLAGS: ["$(inherited)", "-ObjC", "-all_load"]
         CLANG_ENABLE_OBJC_ARC: YES

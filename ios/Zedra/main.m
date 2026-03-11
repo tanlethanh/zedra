@@ -33,6 +33,9 @@ extern void gpui_ios_will_terminate(void* app_ptr);
 // Zedra FFI (from zedra-ios crate)
 extern void zedra_ios_send_key_input(const char* key);
 extern void zedra_launch_gpui(void);
+
+// Firebase bridge (from ZedraFirebase.m, compiled into app target)
+extern void zedra_firebase_initialize(void);
 extern void zedra_ios_set_screen_scale(float scale);
 extern void zedra_ios_set_safe_area_insets(float top, float bottom, float left, float right);
 extern bool zedra_ios_check_pending_frame(void);
@@ -162,6 +165,10 @@ static const char *kAccessoryKeyNames[] = {"escape", "tab", "left", "down", "up"
 - (BOOL)application:(UIApplication *)application
     didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     DIAG("didFinishLaunching start");
+
+    // 0. Configure Firebase before any other SDK or GPUI initialization
+    zedra_firebase_initialize();
+    DIAG("zedra_firebase_initialize done");
 
     // 1. Initialize GPUI FFI state (sets up IOS_APP_STATE)
     self.gpuiApp = gpui_ios_initialize();
