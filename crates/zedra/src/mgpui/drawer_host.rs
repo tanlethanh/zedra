@@ -220,7 +220,6 @@ impl Render for DrawerHost {
                 let pos_x = f32::from(event.position.x);
                 let drawer_open =
                     this.drawer_state.lock().map(|s| s.offset > 0.0).unwrap_or(false);
-                log::debug!("[drawer] scroll: pos_x={:.1} dx={:.1} dy={:.1} open={}", pos_x, dx, dy, drawer_open);
                 if dx.abs() <= dy.abs() {
                     return;
                 }
