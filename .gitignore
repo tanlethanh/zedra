@@ -11,9 +11,17 @@ android/app/libs
 android/android/app/libs
 android/build
 local.properties
+google-services.json
+*.keystore
+!android/debug.keystore
 
 # iOS — binary build artifacts (rebuilt by scripts/build-ios.sh)
 ios/ZedraFFI.xcframework/**/*.a
+GoogleService-Info.plist
+
+# CocoaPods — generated artifacts, not committed (Podfile.lock IS committed)
+ios/Pods/
+ios/Zedra.xcworkspace/
 
 docs/archive
 
