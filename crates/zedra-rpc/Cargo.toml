@@ -9,6 +9,9 @@ anyhow.workspace = true
 tracing.workspace = true
 iroh.workspace = true
 base64-url.workspace = true
+data-encoding.workspace = true
+hmac.workspace = true
+sha2.workspace = true
 
 # irpc RPC framework
 irpc.workspace = true
