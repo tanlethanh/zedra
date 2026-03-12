@@ -9,24 +9,28 @@ SCHEME="Zedra"
 BUNDLE_ID="dev.zedra.app"
 
 usage() {
-    echo "Usage: $0 [sim|device] [--preview] [--debug] [--device-id <UDID>] [--select-device]"
+    echo "Usage: $0 [sim|device] [--no-build] [--preview] [--debug] [--device-id <UDID>] [--select-device] [--launch-url <URL>]"
     echo ""
     echo "  sim      Build and run on iOS Simulator (default)"
     echo "  device   Build and install on connected device"
     echo ""
+    echo "  --no-build              Skip build, just install and launch (uses last build)"
     echo "  --preview               Enable preview feature flag"
     echo "  --debug                 Use debug profile (faster build, no optimizations)"
     echo "  --device-id <UDID>      Target a specific device by UDID (skips selection)"
     echo "  --select-device         Ignore saved device preference and re-prompt"
+    echo "  --launch-url <URL>      Open the app with a deep link URL (e.g. zedra://...)"
     echo ""
     echo "Examples:"
     echo "  $0                                        # run on simulator (release)"
     echo "  $0 sim                                    # run on simulator (release)"
+    echo "  $0 sim --no-build                         # launch on simulator without building"
     echo "  $0 device                                 # install on saved/selected device"
     echo "  $0 device --select-device                 # re-prompt for device"
     echo "  $0 device --device-id 00008140-001234     # install on specific device"
     echo "  $0 device --preview                       # install with preview features"
     echo "  $0 device --debug                         # install debug build"
+    echo "  $0 device --no-build --launch-url 'zedra://connect?ticket=...'  # relaunch with URL"
     exit 1
 }
 
@@ -62,6 +66,8 @@ BUILD_FLAGS=""
 XCODE_CONFIGURATION="Debug"
 FORCED_DEVICE_ID=""
 SELECT_DEVICE=false
+LAUNCH_URL=""
+NO_BUILD=false
 PREF_FILE="/tmp/zedra-ios-device-$PPID"
 
 args=("$@")
@@ -81,6 +87,13 @@ while [ $i -lt ${#args[@]} ]; do
             ;;
         --select-device)
             SELECT_DEVICE=true
+            ;;
+        --launch-url)
+            i=$((i + 1))
+            LAUNCH_URL="${args[$i]}"
+            ;;
+        --no-build)
+            NO_BUILD=true
             ;;
     esac
     i=$((i + 1))
@@ -127,36 +140,43 @@ for runtime, devices in data['devices'].items():
 " 2>/dev/null)
         echo "==> Target: $SIM_NAME ($BOOTED_ID)"
 
-        # Build Rust libraries
-        echo "==> Building Rust for iOS..."
-        ./scripts/build-ios.sh $BUILD_FLAGS
+        if [ "$NO_BUILD" = false ]; then
+            # Build Rust libraries
+            echo "==> Building Rust for iOS..."
+            ./scripts/build-ios.sh $BUILD_FLAGS
 
-        # Generate Xcode project
-        generate_project
+            # Generate Xcode project
+            generate_project
 
-        # Build app
-        echo "==> Building app..."
-        xcodebuild build \
-            $(xcode_target_flags) \
-            -scheme "$SCHEME" \
-            -configuration "$XCODE_CONFIGURATION" \
-            -destination "id=$BOOTED_ID" \
-            -quiet
+            # Build app
+            echo "==> Building app..."
+            xcodebuild build \
+                $(xcode_target_flags) \
+                -scheme "$SCHEME" \
+                -configuration "$XCODE_CONFIGURATION" \
+                -destination "id=$BOOTED_ID" \
+                -quiet
 
-        # Find the built .app
-        APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData/Zedra-*/Build/Products/${XCODE_CONFIGURATION}-iphonesimulator -name "Zedra.app" -type d 2>/dev/null | head -1)
+            # Find the built .app
+            APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData/Zedra-*/Build/Products/${XCODE_CONFIGURATION}-iphonesimulator -name "Zedra.app" -type d 2>/dev/null | head -1)
 
-        if [ -z "$APP_PATH" ]; then
-            echo "Error: Could not find built .app"
-            exit 1
+            if [ -z "$APP_PATH" ]; then
+                echo "Error: Could not find built .app"
+                exit 1
+            fi
+
+            # Install
+            echo "==> Installing..."
+            xcrun simctl install "$BOOTED_ID" "$APP_PATH"
         fi
 
-        # Install and launch
-        echo "==> Installing..."
-        xcrun simctl install "$BOOTED_ID" "$APP_PATH"
         echo "==> Launching..."
         open -a Simulator
         xcrun simctl launch "$BOOTED_ID" "$BUNDLE_ID"
+        if [ -n "$LAUNCH_URL" ]; then
+            echo "==> Opening URL: $LAUNCH_URL"
+            xcrun simctl openurl "$BOOTED_ID" "$LAUNCH_URL"
+        fi
         echo "==> Running on $SIM_NAME"
         ;;
 
@@ -233,38 +253,45 @@ for runtime, devices in data['devices'].items():
         DEVICE_NAME=$(echo "$DEVICE_LINE" | sed 's/ (.*//')
         echo "==> Target: $DEVICE_NAME ($DEVICE_ID) — iOS $IPHONEOS_DEPLOYMENT_TARGET"
 
-        # Build Rust libraries
-        echo "==> Building Rust for iOS..."
-        ./scripts/build-ios.sh $BUILD_FLAGS
+        if [ "$NO_BUILD" = false ]; then
+            # Build Rust libraries
+            echo "==> Building Rust for iOS..."
+            ./scripts/build-ios.sh $BUILD_FLAGS
 
-        # Generate Xcode project
-        generate_project
+            # Generate Xcode project
+            generate_project
 
-        # Build app for device
-        echo "==> Building app..."
-        xcodebuild build \
-            $(xcode_target_flags) \
-            -scheme "$SCHEME" \
-            -configuration "$XCODE_CONFIGURATION" \
-            -destination "id=$DEVICE_ID" \
-            -allowProvisioningUpdates \
-            IPHONEOS_DEPLOYMENT_TARGET="$IPHONEOS_DEPLOYMENT_TARGET" \
-            -quiet
+            # Build app for device
+            echo "==> Building app..."
+            xcodebuild build \
+                $(xcode_target_flags) \
+                -scheme "$SCHEME" \
+                -configuration "$XCODE_CONFIGURATION" \
+                -destination "id=$DEVICE_ID" \
+                -allowProvisioningUpdates \
+                IPHONEOS_DEPLOYMENT_TARGET="$IPHONEOS_DEPLOYMENT_TARGET" \
+                -quiet
 
-        # Find the built .app
-        APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData/Zedra-*/Build/Products/${XCODE_CONFIGURATION}-iphoneos -name "Zedra.app" -type d 2>/dev/null | head -1)
+            # Find the built .app
+            APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData/Zedra-*/Build/Products/${XCODE_CONFIGURATION}-iphoneos -name "Zedra.app" -type d 2>/dev/null | head -1)
 
-        if [ -z "$APP_PATH" ]; then
-            echo "Error: Could not find built .app"
-            exit 1
+            if [ -z "$APP_PATH" ]; then
+                echo "Error: Could not find built .app"
+                exit 1
+            fi
+
+            # Install on device
+            echo "==> Installing on $DEVICE_NAME..."
+            xcrun devicectl device install app --device "$DEVICE_ID" "$APP_PATH"
         fi
 
-        # Install on device
-        echo "==> Installing on $DEVICE_NAME..."
-        xcrun devicectl device install app --device "$DEVICE_ID" "$APP_PATH"
-
         echo "==> Launching..."
-        xcrun devicectl device process launch --device "$DEVICE_ID" "$BUNDLE_ID"
+        if [ -n "$LAUNCH_URL" ]; then
+            echo "==> Opening URL: $LAUNCH_URL"
+            xcrun devicectl device process launch --device "$DEVICE_ID" --payload-url "$LAUNCH_URL" "$BUNDLE_ID"
+        else
+            xcrun devicectl device process launch --device "$DEVICE_ID" "$BUNDLE_ID"
+        fi
 
         echo "==> Running on $DEVICE_NAME"
         ;;
