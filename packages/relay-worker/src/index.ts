@@ -62,8 +62,9 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     }
 
     const host = url.searchParams.get("host");
-    if (!host || !/^[0-9a-f]{64}$/.test(host)) {
-      return errorResponse("Missing or invalid ?host parameter (expected 64-char hex)", 400);
+    // Accept base64url-encoded 32-byte key (43 chars, no padding).
+    if (!host || !/^[A-Za-z0-9_-]{43}$/.test(host)) {
+      return errorResponse("Missing or invalid ?host parameter (expected 43-char base64url)", 400);
     }
 
     const stub = env.ZEDRA_RELAY_ROOM.get(

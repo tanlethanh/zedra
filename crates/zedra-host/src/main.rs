@@ -137,8 +137,20 @@ async fn main() -> Result<()> {
                 host_identity.clone(),
             ));
 
-            // 1. Bind iroh endpoint
-            let endpoint = iroh_listener::create_endpoint(&host_identity, relay_url.as_deref()).await?;
+            // 1. Bind iroh endpoint.
+            //    For relay.zedra.dev (CF Worker) append ?host=<base64url(pubkey)> so the
+            //    Worker routes both host and client into the same RelayRoom DO. iroh's
+            //    relay client preserves query params when constructing the WebSocket URL.
+            //    EC2 iroh-relay and other relays ignore unknown query parameters, but we
+            //    only add the param when actually talking to the CF Worker.
+            let base_relay_url = relay_url.as_deref().unwrap_or(zedra_rpc::ZEDRA_RELAY_URL);
+            let endpoint_relay_url = if is_cf_worker_relay(base_relay_url) {
+                let host_b64 = base64_url::encode(host_identity.endpoint_id().as_bytes());
+                format!("{}?host={}", base_relay_url, host_b64)
+            } else {
+                base_relay_url.to_string()
+            };
+            let endpoint = iroh_listener::create_endpoint(&host_identity, Some(&endpoint_relay_url)).await?;
 
             // Pre-authorize the persistent CLI client key so `zedra client` can
             // connect without QR pairing. The key is generated once per workspace.
@@ -153,10 +165,9 @@ async fn main() -> Result<()> {
                 }
 
                 // Write host-info.json for `zedra client` auto-discovery.
-                let relay_url_str = relay_url
-                    .as_deref()
-                    .unwrap_or(zedra_rpc::ZEDRA_RELAY_URL)
-                    .to_string();
+                // Use endpoint_relay_url so `zedra client --relay-only` connects
+                // to the same RelayRoom DO as the host (when using CF Worker relay).
+                let relay_url_str = endpoint_relay_url.clone();
                 let host_info = zedra_client::HostInfo {
                     endpoint_id: host_identity.endpoint_id().to_string(),
                     session_id: session.id.clone(),
@@ -231,4 +242,17 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Returns true if the relay URL points to the Cloudflare Worker relay (relay.zedra.dev).
+/// Only the CF Worker uses the ?host= room-routing mechanism.
+fn is_cf_worker_relay(url: &str) -> bool {
+    // Strip scheme, then check the host portion is exactly "relay.zedra.dev".
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    rest == "relay.zedra.dev"
+        || rest.starts_with("relay.zedra.dev/")
+        || rest.starts_with("relay.zedra.dev?")
 }
