@@ -187,7 +187,11 @@ export interface ClientAuthPayload {
 
 /**
  * Decode ClientAuth body (postcard format).
- * Body layout: [32B pubkey][varint(64)=0x40][64B signature]
+ * Body layout: [32B pubkey][varint sigLen][sigLen bytes signature]
+ *
+ * The signature field uses #[serde(with = "serde_bytes")] which causes postcard
+ * to encode it as serialize_bytes: varint(len) + raw bytes.
+ * For a 64-byte signature: varint = 0x40 (1 byte), so body = 32 + 1 + 64 = 97 bytes.
  */
 export function decodeClientAuth(body: Uint8Array): ClientAuthPayload {
   if (body.length < 97) {
@@ -196,18 +200,8 @@ export function decodeClientAuth(body: Uint8Array): ClientAuthPayload {
     );
   }
   const publicKey = body.slice(0, 32);
-  // Decode varint for signature length
   const { value: sigLen, bytesRead } = decodePostcardVarint(body, 32);
-  if (sigLen !== 64) {
-    throw new Error(`Expected signature length 64, got ${sigLen}`);
-  }
-  const sigOffset = 32 + bytesRead;
-  const signature = body.slice(sigOffset, sigOffset + 64);
-  if (signature.length !== 64) {
-    throw new Error(
-      `Signature truncated: ${signature.length} bytes, need 64`,
-    );
-  }
+  const signature = body.slice(32 + bytesRead, 32 + bytesRead + sigLen);
   return { publicKey, signature };
 }
 

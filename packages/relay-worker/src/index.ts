@@ -52,34 +52,30 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     return new Response(null, { status: 204 });
   }
 
-  // GET /relay — WebSocket upgrade to RelayEndpoint DO
+  // GET /relay?host=<hostEndpointIdHex> — WebSocket upgrade to RelayRoom DO.
+  //
+  // Both host and clients use the same URL (?host=<hex>), landing in the same
+  // DO. CF places the DO nearest to whoever connects first (the host).
   if (method === "GET" && segments.length === 1 && segments[0] === "relay") {
-    const upgradeHeader = request.headers.get("Upgrade");
-    if (upgradeHeader !== "websocket") {
+    if (request.headers.get("Upgrade") !== "websocket") {
       return errorResponse("Expected WebSocket upgrade", 426);
     }
 
-    // Each connection gets a unique DO (keyed by a random name).
-    // After handshake, the DO registers itself in KV by endpoint public key.
-    const doName = "conn:" + crypto.randomUUID();
-    const doId = env.ZEDRA_RELAY_ENDPOINT.idFromName(doName);
-    const stub = env.ZEDRA_RELAY_ENDPOINT.get(doId);
+    const host = url.searchParams.get("host");
+    if (!host || !/^[0-9a-f]{64}$/.test(host)) {
+      return errorResponse("Missing or invalid ?host parameter (expected 64-char hex)", 400);
+    }
 
-    // Pass the DO name so the DO can register itself in KV
-    const doUrl = new URL(request.url);
-    doUrl.searchParams.set("do_name", doName);
-
-    return stub.fetch(
-      new Request(doUrl.toString(), {
-        headers: request.headers,
-      }),
+    const stub = env.ZEDRA_RELAY_ROOM.get(
+      env.ZEDRA_RELAY_ROOM.idFromName(`room:${host}`),
     );
+    return stub.fetch(request);
   }
 
   return errorResponse("Not found", 404);
 }
 
-export { RelayEndpoint } from "./relay-endpoint";
+export { RelayRoom } from "./relay-room";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
