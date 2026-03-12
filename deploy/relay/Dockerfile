@@ -1,8 +1,18 @@
 FROM rust:1.89-slim-bookworm AS builder
 
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y pkg-config libssl-dev git && rm -rf /var/lib/apt/lists/*
 
-RUN cargo install iroh-relay --version 0.96.1 --features server --locked
+# Build from iroh main which includes the TCP_NODELAY fix (PR #3995, commit 82e0695).
+# The fix will ship as v0.98 on crates.io. Once published, switch to:
+#   cargo install iroh-relay --version 0.98 --features server --locked
+# We clone the workspace and build from source because `cargo install --git`
+# fails on unpublished workspace dependencies (noq ^0.16.1).
+RUN git clone --depth 1 https://github.com/n0-computer/iroh.git /build/iroh \
+    && cd /build/iroh \
+    && git fetch origin 82e06959335f1ddbb6c53487395294c6388563f2 --depth 1 \
+    && git checkout 82e06959335f1ddbb6c53487395294c6388563f2 \
+    && cargo build --release -p iroh-relay --features server \
+    && cp target/release/iroh-relay /usr/local/bin/iroh-relay
 
 FROM debian:bookworm-slim
 
