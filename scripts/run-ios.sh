@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PROJECT="ios/Zedra.xcodeproj"
+WORKSPACE="ios/Zedra.xcworkspace"
 SCHEME="Zedra"
 BUNDLE_ID="dev.zedra.app"
 
@@ -29,7 +30,7 @@ usage() {
     exit 1
 }
 
-# Generate Xcode project from project.yml if needed
+# Generate Xcode project from project.yml, then run pod install if a Podfile exists
 generate_project() {
     if ! command -v xcodegen &>/dev/null; then
         echo "Error: xcodegen not found. Install with: brew install xcodegen"
@@ -37,7 +38,23 @@ generate_project() {
     fi
 
     echo "==> Generating Xcode project..."
-    cd ios && xcodegen generate && cd ..
+    cd ios && xcodegen generate
+
+    if [ -f "Podfile" ]; then
+        echo "==> Running pod install..."
+        pod install --silent
+    fi
+
+    cd ..
+}
+
+# Returns the right xcodebuild target flags: workspace if available, else project
+xcode_target_flags() {
+    if [ -d "$WORKSPACE" ]; then
+        echo "-workspace $WORKSPACE"
+    else
+        echo "-project $PROJECT"
+    fi
 }
 
 MODE="${1:-sim}"
@@ -120,7 +137,7 @@ for runtime, devices in data['devices'].items():
         # Build app
         echo "==> Building app..."
         xcodebuild build \
-            -project "$PROJECT" \
+            $(xcode_target_flags) \
             -scheme "$SCHEME" \
             -configuration "$XCODE_CONFIGURATION" \
             -destination "id=$BOOTED_ID" \
@@ -226,7 +243,7 @@ for runtime, devices in data['devices'].items():
         # Build app for device
         echo "==> Building app..."
         xcodebuild build \
-            -project "$PROJECT" \
+            $(xcode_target_flags) \
             -scheme "$SCHEME" \
             -configuration "$XCODE_CONFIGURATION" \
             -destination "id=$DEVICE_ID" \

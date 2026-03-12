@@ -38,6 +38,9 @@ pub mod transport_badge;
 // General deeplink handling (zedra:// URL scheme)
 pub mod deeplink;
 
+// Firebase Analytics + Crashlytics (platform-agnostic API)
+pub mod analytics;
+
 // Shared Zedra app (screen navigation + connection)
 pub mod app;
 
@@ -91,6 +94,12 @@ pub fn install_panic_hook() {
             .unwrap_or_else(|| "unknown".to_string());
 
         log::error!("PANIC at {}: {}", location, payload);
+
+        // Forward to Crashlytics as a non-fatal event.
+        // In release builds (panic = "abort") this line is never reached —
+        // the native abort signal is captured directly by the Crashlytics NDK
+        // / iOS crash handler as a fatal crash with a full native stack trace.
+        crate::analytics::record_panic(&payload, &location);
     }));
 }
 
