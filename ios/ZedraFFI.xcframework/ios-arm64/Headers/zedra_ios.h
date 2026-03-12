@@ -124,16 +124,20 @@ void zedra_ios_alert_result(uint32_t callback_id, int32_t button_index);
 /**
  * Called from the native keyboard accessory bar when a shortcut key button is tapped.
  *
- * `key` is one of: "tab", "left", "down", "up", "right", "enter".
+ * `key` is one of: "escape", "tab", "left", "down", "up", "right", "enter".
  * Maps the name to the corresponding terminal escape sequence and sends it via the active session.
  */
 void zedra_ios_send_key_input(const char *key);
 
 /**
+ * Called from main.m when the app is opened via a zedra:// URL.
+ */
+void zedra_deeplink_received(const char *url);
+
+/**
  * Called from ZedraQRScanner.m after a successful QR scan.
  *
- * `qr_string` is a base64-url encoded iroh::EndpointAddr produced by
- * `zedra_rpc::pairing::encode_endpoint_addr()` on the host side.
+ * Routes through the unified deeplink path (same as system URL intents).
  */
 void zedra_qr_scanner_result(const char *qr_string);
 
@@ -149,5 +153,18 @@ bool zedra_ios_check_pending_frame(void);
 void zedra_launch_gpui(void);
 
 extern void zedra_nslog(const char *msg);
+
+extern void zedra_log_event(const char *name,
+                            const char *const *keys,
+                            const char *const *values,
+                            int count);
+
+extern void zedra_record_error(const char *message, const char *file, int line);
+
+extern void zedra_record_panic(const char *message, const char *location);
+
+extern void zedra_set_user_id(const char *user_id);
+
+extern void zedra_set_custom_key(const char *key, const char *value);
 
 #endif  /* ZEDRA_IOS_H */
