@@ -288,6 +288,31 @@ impl ZedraApp {
         }
     }
 
+    fn handle_deeplink(
+        &mut self,
+        action: crate::deeplink::DeeplinkAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::deeplink::DeeplinkAction;
+        match action {
+            DeeplinkAction::Pair(ticket) => {
+                log::info!("Deeplink: pair action");
+                self.connect_with_pairing_ticket(ticket, window, cx);
+            }
+            DeeplinkAction::Connect {
+                endpoint_addr,
+                session_id,
+            } => {
+                log::info!("Deeplink: connect to {}", endpoint_addr);
+                match zedra_rpc::pairing::decode_endpoint_addr(&endpoint_addr) {
+                    Ok(addr) => self.connect_with_iroh_addr(addr, session_id, window, cx),
+                    Err(e) => log::error!("Deeplink: invalid endpoint addr: {}", e),
+                }
+            }
+        }
+    }
+
     /// Connect after scanning a QR pairing ticket.
     ///
     /// Extracts the EndpointAddr from the ticket, creates the workspace, then
@@ -505,9 +530,9 @@ impl Render for ZedraApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.render_count += 1;
 
-        // Check for QR-scanned pairing ticket
-        if let Some(ticket) = PENDING_QR_TICKET.take() {
-            self.connect_with_pairing_ticket(ticket, window, cx);
+        // Check for deeplink actions (QR scan, tapped URLs, NFC, etc.)
+        if let Some(action) = crate::deeplink::take_pending() {
+            self.handle_deeplink(action, window, cx);
         }
 
         // Check for workspace delete confirmed via native action sheet
@@ -609,12 +634,7 @@ impl Render for ZedraApp {
 
 use crate::pending::PendingSlot;
 
-static PENDING_QR_TICKET: PendingSlot<zedra_rpc::ZedraPairingTicket> = PendingSlot::new();
 static PENDING_WORKSPACE_DELETE: PendingSlot<(Option<usize>, Option<usize>)> = PendingSlot::new();
-
-pub fn set_pending_qr_ticket(ticket: zedra_rpc::ZedraPairingTicket) {
-    PENDING_QR_TICKET.set(ticket);
-}
 
 /// Open a GPUI window with the correct app view for the current feature flags.
 pub fn open_zedra_window(app: &mut App, window_options: WindowOptions) -> Result<AnyWindowHandle> {
@@ -635,20 +655,3 @@ pub fn open_zedra_window(app: &mut App, window_options: WindowOptions) -> Result
     }
 }
 
-/// Decode a QR-scanned pairing ticket and register it for the next connection attempt.
-pub fn process_qr_result(qr_data: &str) {
-    match zedra_rpc::ZedraPairingTicket::from_qr_url(qr_data) {
-        Ok(ticket) => {
-            log::info!(
-                "QR scan: decoded pairing ticket (session={}, endpoint={})",
-                ticket.session_id,
-                ticket.endpoint_id.fmt_short(),
-            );
-            set_pending_qr_ticket(ticket);
-            zedra_session::signal_terminal_data();
-        }
-        Err(e) => {
-            log::error!("QR scan: failed to decode ticket: {}", e);
-        }
-    }
-}

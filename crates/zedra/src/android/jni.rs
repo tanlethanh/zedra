@@ -565,9 +565,35 @@ pub extern "system" fn Java_dev_zedra_app_QRScannerActivity_nativeOnQrCodeScanne
 
     log::info!("QR code scanned: {}", &qr_data[..qr_data.len().min(50)]);
 
-    // Send pairing command to queue
+    // Route through the unified deeplink path
     let sender = get_command_sender();
-    let _ = sender.send(AndroidCommand::PairViaQr { qr_data });
+    let _ = sender.send(AndroidCommand::Deeplink { url: qr_data });
+}
+
+/// Deeplink received callback
+///
+/// Called when the app is opened via a zedra:// URL (system intent)
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeDeeplinkReceived(
+    mut env: JNIEnv,
+    _class: JClass,
+    url: jni::objects::JString,
+) {
+    let deeplink_url: String = match env.get_string(&url) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            log::error!("Failed to get deeplink URL string: {:?}", e);
+            return;
+        }
+    };
+
+    log::info!(
+        "Deeplink received: {}",
+        &deeplink_url[..deeplink_url.len().min(80)]
+    );
+
+    let sender = get_command_sender();
+    let _ = sender.send(AndroidCommand::Deeplink { url: deeplink_url });
 }
 
 /// Fling event callback

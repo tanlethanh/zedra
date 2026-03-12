@@ -5,6 +5,7 @@ import androidx.core.splashscreen.SplashScreen;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
@@ -95,6 +96,7 @@ public class MainActivity extends AppCompatActivity {
     private static native void gpuiResume(long handle);
     private static native void gpuiPause(long handle);
     private static native float getDisplayDensity(Object activity);
+    private static native void nativeDeeplinkReceived(String url);
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -156,7 +158,27 @@ public class MainActivity extends AppCompatActivity {
         // Request focus for input events
         surfaceView.requestFocus();
 
+        // Check if we were launched via a deeplink intent
+        handleDeeplinkIntent(getIntent());
+
         Log.d(TAG, "onCreate completed");
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        handleDeeplinkIntent(intent);
+    }
+
+    private void handleDeeplinkIntent(Intent intent) {
+        if (intent == null) return;
+        if (Intent.ACTION_VIEW.equals(intent.getAction())) {
+            Uri uri = intent.getData();
+            if (uri != null) {
+                Log.d(TAG, "Deeplink received: " + uri.toString());
+                nativeDeeplinkReceived(uri.toString());
+            }
+        }
     }
 
     @Override

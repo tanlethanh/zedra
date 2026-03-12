@@ -230,10 +230,25 @@ pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
     zedra_session::signal_terminal_data();
 }
 
+/// Called from main.m when the app is opened via a zedra:// URL.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_deeplink_received(url: *const std::ffi::c_char) {
+    if url.is_null() {
+        return;
+    }
+    let s = unsafe { std::ffi::CStr::from_ptr(url) };
+    match s.to_str() {
+        Ok(v) => match crate::deeplink::parse(v) {
+            Ok(action) => crate::deeplink::enqueue(action),
+            Err(e) => log::error!("Invalid deeplink URL: {}", e),
+        },
+        Err(e) => log::error!("Deeplink: invalid UTF-8: {}", e),
+    }
+}
+
 /// Called from ZedraQRScanner.m after a successful QR scan.
 ///
-/// `qr_string` is a base64-url encoded iroh::EndpointAddr produced by
-/// `zedra_rpc::pairing::encode_endpoint_addr()` on the host side.
+/// Routes through the unified deeplink path (same as system URL intents).
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_qr_scanner_result(qr_string: *const std::ffi::c_char) {
     if qr_string.is_null() {
@@ -241,7 +256,10 @@ pub extern "C" fn zedra_qr_scanner_result(qr_string: *const std::ffi::c_char) {
     }
     let s = unsafe { std::ffi::CStr::from_ptr(qr_string) };
     match s.to_str() {
-        Ok(v) => crate::app::process_qr_result(v),
+        Ok(v) => match crate::deeplink::parse(v) {
+            Ok(action) => crate::deeplink::enqueue(action),
+            Err(e) => log::error!("QR scan: invalid deeplink: {}", e),
+        },
         Err(e) => log::error!("QR result: invalid UTF-8: {}", e),
     }
 }

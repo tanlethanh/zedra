@@ -38,6 +38,7 @@ extern void zedra_ios_set_safe_area_insets(float top, float bottom, float left, 
 extern bool zedra_ios_check_pending_frame(void);
 extern void zedra_ios_set_keyboard_height(unsigned int height_px);
 extern void zedra_ios_alert_result(unsigned int callback_id, int button_index);
+extern void zedra_deeplink_received(const char* url);
 
 // Called from Rust to present a native UIAlertController with dynamic buttons.
 // `labels` and `styles` are parallel arrays of length `button_count`.
@@ -302,6 +303,16 @@ static const char *kAccessoryKeyNames[] = {"escape", "tab", "left", "down", "up"
             gpui_ios_request_frame(self.gpuiWindow);
         }
     }
+}
+
+- (BOOL)application:(UIApplication *)app
+            openURL:(NSURL *)url
+            options:(NSDictionary<UIApplicationOpenURLOptionsKey, id> *)options {
+    NSString *urlString = [url absoluteString];
+    if (urlString) {
+        zedra_deeplink_received([urlString UTF8String]);
+    }
+    return YES;
 }
 
 - (void)applicationWillEnterForeground:(UIApplication *)application {

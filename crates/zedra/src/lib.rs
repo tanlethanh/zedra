@@ -35,6 +35,9 @@ pub mod quick_action_panel;
 // Transport badge (P2P / Relay indicator) + format_bytes utility
 pub mod transport_badge;
 
+// General deeplink handling (zedra:// URL scheme)
+pub mod deeplink;
+
 // Shared Zedra app (screen navigation + connection)
 pub mod app;
 

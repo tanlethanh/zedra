@@ -64,13 +64,13 @@ impl AndroidApp {
             AndroidCommand::Pause => self.handle_pause(),
             AndroidCommand::Destroy => self.handle_destroy(),
             AndroidCommand::RequestFrame => self.handle_frame_request(),
-            AndroidCommand::PairViaQr { qr_data } => self.handle_scan_via_qr(qr_data),
             AndroidCommand::ConnectToHost { host_id } => self.handle_connect_to_host(host_id),
             AndroidCommand::Fling {
                 velocity_x,
                 velocity_y,
             } => self.handle_fling(velocity_x, velocity_y),
             AndroidCommand::KeyboardHeightChanged { height } => self.handle_keyboard_height(height),
+            AndroidCommand::Deeplink { url } => self.handle_deeplink_url(url),
         }
     }
 
@@ -438,9 +438,12 @@ impl AndroidApp {
         Ok(())
     }
 
-    fn handle_scan_via_qr(&mut self, qr_data: String) -> Result<()> {
-        log::info!("QR pairing requested: {}", &qr_data[..qr_data.len().min(50)]);
-        crate::app::process_qr_result(&qr_data);
+    fn handle_deeplink_url(&mut self, url: String) -> Result<()> {
+        log::info!("Deeplink received: {}", &url[..url.len().min(80)]);
+        match crate::deeplink::parse(&url) {
+            Ok(action) => crate::deeplink::enqueue(action),
+            Err(e) => log::error!("Invalid deeplink URL: {}", e),
+        }
         Ok(())
     }
 

@@ -25,6 +25,11 @@ targets:
       - sdk: Security.framework
       - sdk: Network.framework
       - sdk: AVFoundation.framework
+    info:
+      properties:
+        CFBundleURLTypes:
+          - CFBundleURLSchemes: [zedra]
+            CFBundleURLName: dev.zedra.app
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
