@@ -284,7 +284,8 @@ impl Render for TerminalView {
             let size = self.terminal.size();
             log::info!(
                 "[PERF] terminal: processed data, grid={}x{}",
-                size.columns, size.rows
+                size.columns,
+                size.rows
             );
         }
 
@@ -324,7 +325,7 @@ impl Render for TerminalView {
                     let cols = size.columns as u16;
                     let rows = effective_rows as u16;
                     if let Some(session) = zedra_session::active_session() {
-                        if let Some(term_id) = session.terminal_id() {
+                        if let Some(term_id) = session.active_terminal_id() {
                             zedra_session::session_runtime().spawn(async move {
                                 if let Err(e) = session.terminal_resize(&term_id, cols, rows).await
                                 {
@@ -439,6 +440,11 @@ impl Render for TerminalView {
                 // Always re-render — sub-line offset changes are visual even without whole-line commits
                 cx.notify();
             }))
-            .child(TerminalElement::new(content, size, self.scroll_offset_px, cx.weak_entity()))
+            .child(TerminalElement::new(
+                content,
+                size,
+                self.scroll_offset_px,
+                cx.weak_entity(),
+            ))
     }
 }
