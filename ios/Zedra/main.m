@@ -40,6 +40,7 @@ extern void zedra_ios_set_screen_scale(float scale);
 extern void zedra_ios_set_safe_area_insets(float top, float bottom, float left, float right);
 extern bool zedra_ios_check_pending_frame(void);
 extern void zedra_ios_set_keyboard_height(unsigned int height_px);
+extern void gpui_ios_set_software_keyboard_visible(bool visible);
 extern void zedra_ios_alert_result(unsigned int callback_id, int button_index);
 extern void zedra_deeplink_received(const char* url);
 
@@ -241,11 +242,17 @@ static const char *kAccessoryKeyNames[] = {"escape", "tab", "left", "down", "up"
     float scale = [UIScreen mainScreen].scale;
     unsigned int heightPx = (unsigned int)(endFrame.size.height * scale);
     zedra_ios_set_keyboard_height(heightPx);
+    gpui_ios_set_software_keyboard_visible(true);
+    // Reload input views on the first responder so inputAccessoryView is re-queried
+    // and the toolbar appears now that the flag is set.
+    [[UIApplication sharedApplication] sendAction:@selector(reloadInputViews)
+                                               to:nil from:nil forEvent:nil];
 }
 
 /// Called when the software keyboard is about to be dismissed.
 - (void)keyboardWillHide:(NSNotification *)notification {
     zedra_ios_set_keyboard_height(0);
+    gpui_ios_set_software_keyboard_visible(false);
 }
 
 /// Create a UIToolbar with 6 shortcut keys and register it as the keyboard accessory view.
