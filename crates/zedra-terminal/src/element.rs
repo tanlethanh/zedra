@@ -260,6 +260,8 @@ pub struct TerminalElement {
     scroll_offset_px: f32,
     /// Weak handle back to the view — used to trigger PTY resize from actual bounds.
     entity: WeakEntity<TerminalView>,
+    /// Whether the terminal view is currently focused (controls cursor blink).
+    focused: bool,
 }
 
 impl TerminalElement {
@@ -268,12 +270,14 @@ impl TerminalElement {
         size: TerminalSize,
         scroll_offset_px: f32,
         entity: WeakEntity<TerminalView>,
+        focused: bool,
     ) -> Self {
         Self {
             content,
             size,
             scroll_offset_px,
             entity,
+            focused,
         }
     }
 
@@ -513,6 +517,7 @@ impl Element for TerminalElement {
             layout.content.grid_cols,
             cell_width,
             line_height,
+            self.focused,
         );
 
         // Resize PTY to match actual element bounds if they changed.
@@ -553,6 +558,7 @@ fn paint_cursor(
     grid_cols: usize,
     cell_width: Pixels,
     line_height: Pixels,
+    focused: bool,
 ) {
     let col = cursor.point.column.0 as i32;
     let line = cursor.point.line.0 + display_offset;
@@ -567,13 +573,17 @@ fn paint_cursor(
         return;
     }
 
+    // Focused: full opacity. Unfocused: dim ghost cursor at 30%.
+    let opacity = if focused { 1.0f32 } else { 0.3f32 };
+
     // Cursor uses floor for position (following Zed's shape_cursor)
     let cursor_origin = point(
         (origin.x + col as f32 * cell_width).floor(),
         (origin.y + line as f32 * line_height).floor(),
     );
 
-    let cursor_color: Hsla = rgb(TermColors::CURSOR).into();
+    let mut cursor_color: Hsla = rgb(TermColors::CURSOR).into();
+    cursor_color.a = opacity;
 
     // Cursor width uses ceil (following Zed)
     let cursor_width = cell_width.ceil();

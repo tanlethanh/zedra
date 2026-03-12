@@ -275,7 +275,7 @@ impl Focusable for TerminalView {
 impl gpui::EventEmitter<DisconnectRequested> for TerminalView {}
 
 impl Render for TerminalView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Process any pending SSH/RPC output before rendering.
         // Re-renders are driven by the frame loop (request_frame_forced) when
         // TERMINAL_DATA_PENDING is set, so no cx.notify() loop is needed here.
@@ -445,6 +445,7 @@ impl Render for TerminalView {
                 size,
                 self.scroll_offset_px,
                 cx.weak_entity(),
+                self.focus_handle.is_focused(window),
             ))
     }
 }
