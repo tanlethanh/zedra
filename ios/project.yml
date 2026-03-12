@@ -26,6 +26,7 @@ targets:
       - sdk: Network.framework
       - sdk: AVFoundation.framework
     info:
+      path: Zedra/Info.plist
       properties:
         CFBundleURLTypes:
           - CFBundleURLSchemes: [zedra]
