@@ -809,7 +809,7 @@ impl RemoteSession {
                 .unwrap_or_default()
                 .as_secs();
             let hmac =
-                zedra_rpc::compute_registration_hmac(&t.handshake_key, &client_pubkey, timestamp);
+                zedra_rpc::compute_registration_hmac(&t.handshake_secret, &client_pubkey, timestamp);
             match client
                 .rpc(RegisterReq {
                     client_pubkey,

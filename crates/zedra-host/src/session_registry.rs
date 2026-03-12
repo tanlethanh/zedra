@@ -22,13 +22,13 @@ use zedra_rpc::proto::{BacklogEntry, TermOutput};
 
 /// A one-use registration slot created when `zedra qr` is run.
 ///
-/// The host stores the random `handshake_key` locally. The QR ticket carries
-/// the same key for the client to produce an HMAC. On first use the slot is
+/// The host stores the random `handshake_secret` locally. The QR ticket carries
+/// the same secret for the client to produce an HMAC. On first use the slot is
 /// consumed; the client pubkey is added to the session ACL.
 #[derive(Clone)]
 pub struct PairingSlot {
-    /// Random 32-byte key embedded in the QR ticket.
-    pub handshake_key: [u8; 32],
+    /// Random 16-byte secret embedded in the QR ticket.
+    pub handshake_secret: [u8; 16],
     /// Session the new client should be added to.
     pub session_id: String,
     /// When this slot expires (10 minutes after creation).
@@ -302,7 +302,7 @@ impl SessionRegistry {
         }
         drop(name_index);
 
-        let id = uuid::Uuid::new_v4().to_string();
+        let id = zedra_rpc::generate_session_id();
         let session = Arc::new(ServerSession::new(id.clone(), Some(name.to_string()), Some(workdir)));
 
         self.sessions.lock().await.insert(id.clone(), session.clone());
@@ -530,9 +530,9 @@ impl SessionRegistry {
 
     /// Store a new one-use pairing slot for a session.
     /// Replaces any existing slot for the same session_id.
-    pub async fn add_pairing_slot(&self, session_id: &str, handshake_key: [u8; 32]) {
+    pub async fn add_pairing_slot(&self, session_id: &str, handshake_secret: [u8; 16]) {
         let slot = PairingSlot {
-            handshake_key,
+            handshake_secret,
             session_id: session_id.to_string(),
             expires_at: Instant::now() + Duration::from_secs(600), // 10 min
         };
@@ -737,13 +737,13 @@ mod tests {
     async fn pairing_slot_roundtrip() {
         let registry = SessionRegistry::new();
         let session = registry.create_named("s1", PathBuf::from("/s1")).await;
-        let key = [42u8; 32];
+        let key = [42u8; 16];
 
         registry.add_pairing_slot(&session.id, key).await;
 
         match registry.consume_pairing_slot(&session.id).await {
             ConsumeSlotResult::Active(slot) => {
-                assert_eq!(slot.handshake_key, key);
+                assert_eq!(slot.handshake_secret, key);
                 assert_eq!(slot.session_id, session.id);
             }
             _ => panic!("expected Active"),
@@ -755,7 +755,7 @@ mod tests {
         let registry = SessionRegistry::new();
         let session = registry.create_named("s1", PathBuf::from("/s1")).await;
 
-        registry.add_pairing_slot(&session.id, [1u8; 32]).await;
+        registry.add_pairing_slot(&session.id, [1u8; 16]).await;
         // First consume
         let _ = registry.consume_pairing_slot(&session.id).await;
         // Second consume should get Consumed

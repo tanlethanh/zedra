@@ -192,7 +192,7 @@ async fn handle_register(
         ConsumeSlotResult::Active(slot) => {
             // Verify HMAC (slot is already consumed regardless of outcome)
             if !zedra_rpc::verify_registration_hmac(
-                &slot.handshake_key,
+                &slot.handshake_secret,
                 &msg.client_pubkey,
                 msg.timestamp,
                 &msg.hmac,

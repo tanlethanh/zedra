@@ -114,7 +114,7 @@ async fn connect_client(
     let session = registry
         .create_named("test", std::path::PathBuf::from("/tmp/test"))
         .await;
-    let handshake_key: [u8; 32] = rand::random();
+    let handshake_key: [u8; 16] = rand::random();
     registry.add_pairing_slot(&session.id, handshake_key).await;
     // Pre-authorize client so Authenticate can proceed even if Register fails
     // (in tests we always register, so this is belt-and-suspenders)
@@ -435,7 +435,7 @@ async fn test_register_bad_hmac_rejected() {
     let session = registry
         .create_named("test", std::path::PathBuf::from("/tmp"))
         .await;
-    let handshake_key: [u8; 32] = rand::random();
+    let handshake_key: [u8; 16] = rand::random();
     registry.add_pairing_slot(&session.id, handshake_key).await;
 
     let client_endpoint = make_endpoint(relay_url).await.unwrap();

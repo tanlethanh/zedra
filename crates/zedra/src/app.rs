@@ -296,19 +296,9 @@ impl ZedraApp {
     ) {
         use crate::deeplink::DeeplinkAction;
         match action {
-            DeeplinkAction::Pair(ticket) => {
-                log::info!("Deeplink: pair action");
+            DeeplinkAction::Connect(ticket) => {
+                log::info!("Deeplink: connect action");
                 self.connect_with_pairing_ticket(ticket, window, cx);
-            }
-            DeeplinkAction::Connect {
-                endpoint_addr,
-                session_id,
-            } => {
-                log::info!("Deeplink: connect to {}", endpoint_addr);
-                match zedra_rpc::pairing::decode_endpoint_addr(&endpoint_addr) {
-                    Ok(addr) => self.connect_with_iroh_addr(addr, session_id, window, cx),
-                    Err(e) => log::error!("Deeplink: invalid endpoint addr: {}", e),
-                }
             }
         }
     }

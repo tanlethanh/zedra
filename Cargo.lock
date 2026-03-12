@@ -2958,6 +2958,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
+name = "hex"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
 name = "hexf-parse"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9271,7 +9277,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "uuid",
  "zedra-rpc",
 ]
 
@@ -9281,12 +9286,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64-url",
- "data-encoding",
+ "hex",
  "hmac",
  "iroh",
  "irpc",
  "irpc-iroh",
  "postcard",
+ "rand 0.8.5",
  "serde",
  "serde_bytes",
  "sha2 0.10.9",

@@ -1,7 +1,7 @@
 // QR code generation for device pairing.
 //
-// Encodes a ZedraPairingTicket (endpoint_id + handshake_key + session_id) as a
-// compact postcard+base32 string embedded in a `zedra://` URL.
+// Encodes a ZedraPairingTicket (endpoint_id + handshake_secret + session_id) as a
+// compact postcard+base64url string embedded in a `zedra://connect?ticket=` URL.
 // The host's IP/relay information is obtained at connect time via pkarr resolution.
 
 use anyhow::Result;
@@ -18,7 +18,7 @@ pub struct StartupInfo {
     pub endpoint_id: String,
     pub relay_url: Option<String>,
     pub direct_addrs: Vec<String>,
-    pub pairing_code: String,
+    pub pairing_url: String,
     pub qr_code: String,
 }
 
@@ -35,19 +35,19 @@ pub fn build_pairing_info(
     let relay_url = addr.relay_urls().next().map(|u| u.to_string());
     let direct_addrs: Vec<String> = addr.ip_addrs().map(|a| a.to_string()).collect();
 
-    let pairing_code = ticket.to_qr_url()?;
+    let pairing_url = ticket.to_pairing_url()?;
 
     tracing::info!(
         "QR pairing code: {} bytes, endpoint={}, session={}, relay={}, direct_addrs={}",
-        pairing_code.len(),
+        pairing_url.len(),
         &endpoint_id[..16.min(endpoint_id.len())],
         ticket.session_id,
         relay_url.as_deref().unwrap_or("none"),
         direct_addrs.len(),
     );
 
-    let code = QrCode::with_error_correction_level(pairing_code.as_bytes(), EcLevel::L)?;
-    let qr_string = render_qr_compact(&code);
+    let code = QrCode::with_error_correction_level(pairing_url.as_bytes(), EcLevel::L)?;
+    let qr_code = render_qr_compact(&code);
 
     Ok(StartupInfo {
         status: "ready".to_string(),
@@ -55,8 +55,8 @@ pub fn build_pairing_info(
         endpoint_id,
         relay_url,
         direct_addrs,
-        pairing_code,
-        qr_code: qr_string,
+        pairing_url,
+        qr_code,
     })
 }
 
@@ -85,6 +85,7 @@ fn print_pairing_info(info: &StartupInfo) {
     println!("  Direct addrs: {}", info.direct_addrs.len());
     println!();
     println!("{}", info.qr_code);
+    println!("{}", info.pairing_url);
     println!();
 }
 

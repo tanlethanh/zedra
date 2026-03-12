@@ -123,12 +123,12 @@ async fn main() -> Result<()> {
             );
 
             // Create a one-use pairing slot and encode as QR ticket
-            let handshake_key: [u8; 32] = rand::random();
-            registry.add_pairing_slot(&session.id, handshake_key).await;
+            let handshake_secret: [u8; 16] = rand::random();
+            registry.add_pairing_slot(&session.id, handshake_secret).await;
 
             let ticket = ZedraPairingTicket {
                 endpoint_id: host_identity.endpoint_id(),
-                handshake_key,
+                handshake_secret,
                 session_id: session.id.clone(),
             };
 

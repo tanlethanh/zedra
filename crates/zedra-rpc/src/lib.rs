@@ -10,6 +10,7 @@ pub use pairing::{
     ZedraPairingTicket,
     decode_endpoint_addr, encode_endpoint_addr,
     compute_registration_hmac, verify_registration_hmac,
+    generate_session_id,
 };
 
 /// Self-hosted relay URL (Singapore, ap-southeast-1).
