@@ -228,12 +228,9 @@ pub fn render_session_tab(
         .text_size(px(theme::FONT_BODY))
         .cursor_pointer()
         .hover(|s| s.bg(gpui::hsla(0.0, 0.6, 0.5, 0.1)))
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(|_this, _event, _window, cx| {
-                cx.emit(WorkspaceDrawerEvent::DisconnectRequested);
-            }),
-        )
+        .on_click(cx.listener(|_this, _event, _window, cx| {
+            cx.emit(WorkspaceDrawerEvent::DisconnectRequested);
+        }))
         .child(div().flex().justify_center().child("Disconnect"));
 
     content = content.child(disconnect_button).child(div().h(px(16.0)));

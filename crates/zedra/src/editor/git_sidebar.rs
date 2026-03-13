@@ -172,6 +172,7 @@ impl GitSidebar {
         let action_label = action_label.map(|s| s.to_string());
 
         div()
+            .id(section_idx)
             .flex()
             .flex_row()
             .items_center()
@@ -180,12 +181,9 @@ impl GitSidebar {
             .px_2()
             .cursor_pointer()
             .hover(|s| s.bg(hsla(0.0, 0.0, 1.0, 0.05)))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.toggle_section(section_idx, cx);
-                }),
-            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.toggle_section(section_idx, cx);
+            }))
             .child(
                 div()
                     .flex()
@@ -237,6 +235,7 @@ impl GitSidebar {
         let deletions = file.deletions;
 
         div()
+            .id(SharedString::from(path.clone()))
             .flex()
             .flex_row()
             .items_center()
@@ -246,7 +245,7 @@ impl GitSidebar {
             .cursor_pointer()
             .rounded(px(3.0))
             .hover(|s| s.bg(hsla(0.0, 0.0, 1.0, 0.05)))
-            .on_mouse_down(MouseButton::Left, {
+            .on_click({
                 let path = path.clone();
                 cx.listener(move |_this, _, _, cx| {
                     cx.emit(GitFileSelected { path: path.clone() });

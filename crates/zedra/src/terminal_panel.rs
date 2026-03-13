@@ -59,12 +59,9 @@ pub fn render_terminal_tab(
                 .cursor_pointer()
                 .hover(|s| s.bg(theme::hover_bg()))
                 .when(is_active, |s| s.bg(theme::hover_bg()))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |_this, _event, _window, cx| {
-                        cx.emit(WorkspaceDrawerEvent::TerminalSelected(tid_clone.clone()));
-                    }),
-                )
+                .on_click(cx.listener(move |_this, _event, _window, cx| {
+                    cx.emit(WorkspaceDrawerEvent::TerminalSelected(tid_clone.clone()));
+                }))
                 .child(
                     svg()
                         .path("icons/terminal.svg")
@@ -115,12 +112,9 @@ pub fn render_terminal_tab(
             .py(px(8.0))
             .cursor_pointer()
             .hover(|s| s.bg(theme::hover_bg()))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|_this, _event, _window, cx| {
-                    cx.emit(WorkspaceDrawerEvent::NewTerminalRequested);
-                }),
-            )
+            .on_click(cx.listener(|_this, _event, _window, cx| {
+                cx.emit(WorkspaceDrawerEvent::NewTerminalRequested);
+            }))
             .child(
                 div()
                     .text_color(rgb(theme::TEXT_MUTED))
