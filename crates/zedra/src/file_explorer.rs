@@ -328,7 +328,7 @@ impl Render for FileExplorer {
 
         let mut list = div().id("file-list").flex().flex_col();
 
-        for entry in flat {
+        for (flat_idx, entry) in flat.into_iter().enumerate() {
             let indent = entry.depth as f32 * 16.0;
             let text_color = if entry.is_dir {
                 rgb(0xffffff) // white for dirs
@@ -369,6 +369,7 @@ impl Render for FileExplorer {
 
             list = list.child(
                 div()
+                    .id(flat_idx)
                     .flex()
                     .flex_row()
                     .items_center()
@@ -378,17 +379,14 @@ impl Render for FileExplorer {
                     .pr(px(8.0))
                     .cursor_pointer()
                     .hover(|s| s.bg(hsla(0.0, 0.0, 1.0, 0.05)))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            if is_dir {
-                                this.toggle_dir(&index_path, cx);
-                            } else {
-                                let path = this.full_path_for(&index_path_for_path);
-                                cx.emit(FileSelected { path });
-                            }
-                        }),
-                    )
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        if is_dir {
+                            this.toggle_dir(&index_path, cx);
+                        } else {
+                            let path = this.full_path_for(&index_path_for_path);
+                            cx.emit(FileSelected { path });
+                        }
+                    }))
                     .child(icon_element)
                     .child(
                         div()
