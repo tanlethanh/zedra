@@ -3,10 +3,15 @@
 /// Creates the closure used by `TerminalView::set_keyboard_request()`.
 pub fn make_keyboard_handler() -> Box<dyn Fn(bool) + Send> {
     Box::new(|show| {
-        if show && crate::mgpui::is_drawer_overlay_visible() {
+        let drawer_visible = crate::mgpui::is_drawer_overlay_visible();
+        log::info!("[KB] keyboard_handler show={} drawer_visible={}", show, drawer_visible);
+        if show && drawer_visible {
+            log::info!("[KB] keyboard_handler: suppressed — drawer is open");
             return;
         }
         let bridge = crate::platform_bridge::bridge();
+        let currently_visible = bridge.is_keyboard_visible();
+        log::info!("[KB] keyboard_handler: currently_visible={} → calling {}", currently_visible, if show { "show" } else { "hide" });
         if show {
             bridge.show_keyboard();
         } else {

@@ -132,8 +132,8 @@ static const char *kAccessoryKeyNames[] = {"escape", "tab", "left", "down", "up"
 @property (nonatomic, assign) void *gpuiApp;
 @property (nonatomic, assign) void *gpuiWindow;
 @property (nonatomic, strong) CADisplayLink *displayLink;
-/// Toolbar shown above the software keyboard with terminal shortcut keys.
-@property (nonatomic, strong) UIToolbar *keyboardAccessoryBar;
+/// Bar shown above the software keyboard with terminal shortcut keys.
+@property (nonatomic, strong) UIView *keyboardAccessoryBar;
 @end
 
 @implementation ZedraAppDelegate
@@ -237,69 +237,63 @@ static const char *kAccessoryKeyNames[] = {"escape", "tab", "left", "down", "up"
 /// Called when the software keyboard is about to appear or change height.
 /// Uses UIKeyboardFrameEndUserInfoKey so we always get the settled keyboard height.
 - (void)keyboardWillShow:(NSNotification *)notification {
+    NSLog(@"[KB] keyboardWillShow received");
     NSDictionary *info = [notification userInfo];
     CGRect endFrame = [[info objectForKey:UIKeyboardFrameEndUserInfoKey] CGRectValue];
     float scale = [UIScreen mainScreen].scale;
     unsigned int heightPx = (unsigned int)(endFrame.size.height * scale);
+    NSLog(@"[KB] keyboardWillShow height=%.0f px=%u", endFrame.size.height, heightPx);
     zedra_ios_set_keyboard_height(heightPx);
     gpui_ios_set_software_keyboard_visible(true);
-    // Reload input views on the first responder so inputAccessoryView is re-queried
-    // and the toolbar appears now that the flag is set.
-    [[UIApplication sharedApplication] sendAction:@selector(reloadInputViews)
-                                               to:nil from:nil forEvent:nil];
+    // NOTE: do NOT call reloadInputViews here — it re-triggers keyboardWillShow,
+    // creating an infinite loop that prevents the keyboard from ever being dismissed.
 }
 
 /// Called when the software keyboard is about to be dismissed.
 - (void)keyboardWillHide:(NSNotification *)notification {
+    NSLog(@"[KB] keyboardWillHide received");
     zedra_ios_set_keyboard_height(0);
     gpui_ios_set_software_keyboard_visible(false);
 }
 
-/// Create a UIToolbar with 6 shortcut keys and register it as the keyboard accessory view.
+/// Create a transparent UIView with UIButtons as the keyboard accessory bar.
 ///
-/// The toolbar is attached above the software keyboard whenever the GPUI Metal view
-/// becomes first responder. Button taps are routed to Rust via zedra_ios_send_key_input.
+/// Attached above the software keyboard whenever the GPUI Metal view becomes first
+/// responder. Button taps are routed to Rust via zedra_ios_send_key_input.
 - (void)setupKeyboardAccessoryView {
     CGFloat width = [UIScreen mainScreen].bounds.size.width;
-    UIToolbar *toolbar = [[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, width, 44)];
+    CGFloat height = 44.0;
 
-    // Use the system chrome material — the same background the iOS keyboard uses.
-    // configureWithDefaultBackground() applies a UIBlurEffect that automatically
-    // adapts to light/dark mode, producing a seamless join with the keyboard.
-    UIToolbarAppearance *appearance = [[UIToolbarAppearance alloc] init];
-    [appearance configureWithDefaultBackground];
-    toolbar.standardAppearance = appearance;
-    toolbar.scrollEdgeAppearance = appearance;
-    toolbar.compactAppearance = appearance;
+    UIView *bar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, height)];
+    bar.backgroundColor = [UIColor clearColor];
 
-    // Use the primary label color so buttons read well on both light and dark keyboards.
-    toolbar.tintColor = [UIColor labelColor];
+    // Hairline top border as a subtle separator above the keyboard.
+    UIView *border = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 0.33)];
+    border.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.12];
+    [bar addSubview:border];
 
     NSArray<NSString *> *labels = @[@"Esc", @"Tab", @"←", @"↓", @"↑", @"→", @"⏎"];
+    NSInteger count = (NSInteger)labels.count;
+    CGFloat btnWidth = width / count;
 
-    UIBarButtonItem *flex = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace
-        target:nil action:nil];
-
-    NSMutableArray<UIBarButtonItem *> *items = [NSMutableArray array];
-    for (NSInteger i = 0; i < (NSInteger)labels.count; i++) {
-        if (i > 0) [items addObject:flex];
-        UIBarButtonItem *btn = [[UIBarButtonItem alloc]
-            initWithTitle:labels[i]
-            style:UIBarButtonItemStylePlain
-            target:self
-            action:@selector(keyboardShortcutTapped:)];
+    for (NSInteger i = 0; i < count; i++) {
+        UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+        btn.frame = CGRectMake(btnWidth * i, 0, btnWidth, height);
+        [btn setTitle:labels[i] forState:UIControlStateNormal];
+        btn.titleLabel.font = [UIFont systemFontOfSize:16.0];
+        [btn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
         btn.tag = i;
-        [items addObject:btn];
+        [btn addTarget:self action:@selector(keyboardShortcutTapped:)
+      forControlEvents:UIControlEventTouchUpInside];
+        [bar addSubview:btn];
     }
 
-    toolbar.items = items;
-    self.keyboardAccessoryBar = toolbar;
-    gpui_ios_set_keyboard_accessory_view((__bridge void *)toolbar);
+    self.keyboardAccessoryBar = bar;
+    gpui_ios_set_keyboard_accessory_view((__bridge void *)bar);
 }
 
 /// Handles taps on keyboard shortcut buttons; sends the corresponding escape sequence.
-- (void)keyboardShortcutTapped:(UIBarButtonItem *)sender {
+- (void)keyboardShortcutTapped:(UIButton *)sender {
     NSInteger idx = sender.tag;
     if (idx >= 0 && idx < 7) {
         zedra_ios_send_key_input(kAccessoryKeyNames[idx]);
