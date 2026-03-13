@@ -8,8 +8,15 @@
 ///   5. gpui_ios_request_frame()      — called each frame by CADisplayLink
 use gpui::*;
 use gpui_ios::IosPlatform;
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
+
+thread_local! {
+    /// Kept alive so window.refresh() can be called from zedra_ios_check_pending_frame.
+    static IOS_APP_CELL: RefCell<Option<Rc<AppCell>>> = const { RefCell::new(None) };
+    static IOS_WINDOW: RefCell<Option<AnyWindowHandle>> = const { RefCell::new(None) };
+}
 
 /// Called each frame from main.m before gpui_ios_request_frame.
 ///
@@ -18,10 +25,24 @@ use std::sync::Arc;
 /// `check_and_clear_terminal_data` + `drain_callbacks` in `handle_frame_request`).
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_check_pending_frame() -> bool {
-    for cb in zedra_session::drain_callbacks() {
+    let callbacks = zedra_session::drain_callbacks();
+    let had_callbacks = !callbacks.is_empty();
+    for cb in callbacks {
         cb();
     }
-    zedra_session::check_and_clear_terminal_data()
+    // When PTY data arrived, call window.refresh() so all views re-render.
+    // gpui_ios_request_frame_forced() bypasses the window-level dirty gate but does NOT
+    // bypass GPUI's per-view render cache — without refresh(), TerminalView::render()
+    // is skipped because dirty_views is empty and window.refreshing is false.
+    if had_callbacks {
+        let app_cell = IOS_APP_CELL.with(|c| c.borrow().clone());
+        let window = IOS_WINDOW.with(|w| w.borrow().clone());
+        if let (Some(app_cell), Some(window)) = (app_cell, window) {
+            let mut app_borrow = app_cell.borrow_mut();
+            let _ = window.update(&mut **app_borrow, |_, window, _| window.refresh());
+        }
+    }
+    had_callbacks
 }
 
 #[unsafe(no_mangle)]
@@ -58,13 +79,18 @@ pub extern "C" fn zedra_launch_gpui() {
         };
 
         match crate::app::open_zedra_window(cx, window_options) {
-            Ok(handle) => log::info!("Zedra iOS: Window opened: {:?}", handle),
+            Ok(handle) => {
+                log::info!("Zedra iOS: Window opened: {:?}", handle);
+                IOS_WINDOW.with(|w| *w.borrow_mut() = Some(handle));
+            }
             Err(err) => log::error!("Zedra iOS: Failed to open window: {:?}", err),
         }
     }));
 
     log::info!("Zedra iOS: Callback registered, waiting for didFinishLaunching");
 
-    // Keep the AppCell alive — UIKit owns the run loop on iOS.
-    std::mem::forget(app_cell);
+    // Store the AppCell in a thread-local so window.refresh() can be called from
+    // zedra_ios_check_pending_frame(). UIKit owns the run loop on iOS; keeping it
+    // in a thread-local (rather than std::mem::forget) lets us access it each frame.
+    IOS_APP_CELL.with(|cell| *cell.borrow_mut() = Some(app_cell));
 }

@@ -382,6 +382,10 @@ impl AndroidApp {
     /// Handle keyboard height change — trigger a re-render so TerminalView picks up the new height
     fn handle_keyboard_height(&mut self, height: u32) -> Result<()> {
         log::info!("Keyboard height changed: {}px", height);
+        if let (Some(app_cell), Some(window)) = (&self.app_cell, self.window) {
+            let mut borrow = app_cell.borrow_mut();
+            let _ = window.update(&mut **borrow, |_, window, _| window.refresh());
+        }
         if let Some(ref platform) = self.platform {
             platform.request_frame_forced();
         }
@@ -416,19 +420,31 @@ impl AndroidApp {
         // Process active fling momentum scrolling
         self.process_fling();
 
-        // Check if terminal has pending data from RPC session
-        let terminal_data_pending = zedra_session::check_and_clear_terminal_data();
         let fling_active = self.platform.as_ref().map_or(false, |p| p.has_active_fling());
 
-        // Drain and execute any main-thread callbacks from the session runtime
-        for cb in zedra_session::drain_callbacks() {
+        // Drain and execute any main-thread callbacks from the session runtime.
+        // Non-empty drain means something signaled a forced render (terminal data, etc.).
+        let callbacks = zedra_session::drain_callbacks();
+        let callbacks_pending = !callbacks.is_empty();
+        for cb in callbacks {
             cb();
+        }
+
+        // When PTY data arrived, call window.refresh() so all views re-render.
+        // request_frame_forced() bypasses the window-level dirty gate but does NOT
+        // bypass GPUI's per-view render cache — without refresh(), TerminalView::render()
+        // is skipped because dirty_views is empty and window.refreshing is false.
+        if callbacks_pending {
+            if let (Some(app_cell), Some(window)) = (&self.app_cell, self.window) {
+                let mut borrow = app_cell.borrow_mut();
+                let _ = window.update(&mut **borrow, |_, window, _| window.refresh());
+            }
         }
 
         // Request frames on all windows via the AndroidPlatform
         // This triggers GPUI's rendering pipeline
         if let Some(ref platform) = self.platform {
-            if terminal_data_pending || fling_active {
+            if callbacks_pending || fling_active {
                 // Force render when terminal data is pending or fling is active
                 platform.request_frame_forced();
             } else {
