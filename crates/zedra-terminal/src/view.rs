@@ -62,11 +62,8 @@ pub struct TerminalView {
     base_rows: usize,
     /// Last keyboard-adjusted row count to avoid redundant resizes
     last_keyboard_rows: usize,
-    /// Tracks whether the soft keyboard is currently requested as visible.
-    /// Used to toggle: tap shows, tap again hides.
-    keyboard_visible: bool,
     /// Position recorded on mouse_down; cleared on mouse_up.
-    /// Keyboard toggle fires in mouse_up only when the finger displacement
+    /// Keyboard show fires in mouse_up only when the finger displacement
     /// is within tap slop (i.e. the gesture was a tap, not a swipe).
     mouse_down_pos: Option<Point<Pixels>>,
 }
@@ -93,7 +90,6 @@ impl TerminalView {
             scroll_offset_px: 0.0,
             base_rows: rows,
             last_keyboard_rows: rows,
-            keyboard_visible: false,
             mouse_down_pos: None,
         }
     }
@@ -114,16 +110,6 @@ impl TerminalView {
     fn request_keyboard(&self, show: bool) {
         if let Some(ref request) = self.keyboard_request {
             request(show);
-        }
-    }
-
-    /// Read actual keyboard visibility from the platform bridge if available,
-    /// otherwise fall back to cached local state.
-    fn get_keyboard_visible(&self) -> bool {
-        if let Some(ref f) = self.is_keyboard_visible_fn {
-            f()
-        } else {
-            self.keyboard_visible
         }
     }
 
@@ -310,6 +296,7 @@ impl Render for TerminalView {
                         self.base_rows,
                         effective_rows
                     );
+
                     let size = self.terminal.size();
                     self.terminal.resize(
                         size.columns,
@@ -354,11 +341,8 @@ impl Render for TerminalView {
                         let dx = ((event.position.x - down.x) / px(1.0)) as f32;
                         let dy = ((event.position.y - down.y) / px(1.0)) as f32;
                         if dx.abs() < 10.0 && dy.abs() < 10.0 {
-                            // Read actual platform state so external dismissals
-                            // (e.g. drawer open) don't desync the toggle.
-                            let current = this.get_keyboard_visible();
-                            this.keyboard_visible = !current;
-                            this.request_keyboard(this.keyboard_visible);
+                            let current = this.is_keyboard_visible_fn.as_ref().map_or(false, |f| f());
+                            this.request_keyboard(!current);
                         }
                     }
                 }),

@@ -216,6 +216,12 @@ pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
             Err(_) => return,
         }
     };
+    if key_name == "dismiss_keyboard" {
+        crate::platform_bridge::bridge().hide_keyboard();
+        zedra_session::push_callback(Box::new(|| {}));
+        return;
+    }
+
     let bytes: &[u8] = match key_name {
         "escape" => b"\x1b",
         "tab"   => b"\x09",
