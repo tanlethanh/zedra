@@ -34,6 +34,7 @@ pub struct WorkspaceDrawer {
     pending_git_status: SharedPendingSlot<GitRepoState>,
     git_loaded: bool,
     active_terminal_id: Option<String>,
+    session_handle: Option<zedra_session::SessionHandle>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -68,6 +69,7 @@ impl WorkspaceDrawer {
             pending_git_status: shared_pending_slot(),
             git_loaded: false,
             active_terminal_id: None,
+            session_handle: None,
             _subscriptions: subscriptions,
         }
     }
@@ -93,6 +95,15 @@ impl WorkspaceDrawer {
         cx.notify();
     }
 
+    /// Provide the current workspace's session handle.
+    ///
+    /// Called by `WorkspaceView::on_activate` so the drawer can access
+    /// session data (git status, terminal list, connection info) without globals.
+    pub fn set_session_handle(&mut self, handle: zedra_session::SessionHandle, cx: &mut Context<Self>) {
+        self.session_handle = Some(handle.clone());
+        self.file_explorer.update(cx, |fe, cx| fe.set_session_handle(handle, cx));
+    }
+
     /// Reset state after disconnect so next session triggers fresh loads.
     pub fn reset_for_disconnect(&mut self, cx: &mut Context<Self>) {
         self.git_loaded = false;
@@ -110,13 +121,14 @@ impl WorkspaceDrawer {
         if self.git_loaded {
             return;
         }
-        let Some(session) = zedra_session::active_session() else {
-            return;
+        let handle = match self.session_handle.as_ref() {
+            Some(h) if h.is_connected() => h.clone(),
+            _ => return,
         };
         self.git_loaded = true;
         let pending = self.pending_git_status.clone();
         zedra_session::session_runtime().spawn(async move {
-            match session.git_status().await {
+            match handle.git_status().await {
                 Ok(result) => {
                     let mut staged = Vec::new();
                     let mut unstaged = Vec::new();
@@ -141,7 +153,7 @@ impl WorkspaceDrawer {
                     };
 
                     pending.set(repo_state);
-                    zedra_session::signal_terminal_data();
+                    zedra_session::push_callback(Box::new(|| {}));
                 }
                 Err(e) => {
                     log::error!("git_status RPC failed: {}", e);
@@ -204,11 +216,15 @@ impl WorkspaceDrawer {
     }
 
     fn render_terminal_tab(&self, cx: &mut Context<Self>) -> Div {
-        crate::terminal_panel::render_terminal_tab(self.active_terminal_id.as_deref(), cx)
+        crate::terminal_panel::render_terminal_tab(
+            self.session_handle.as_ref(),
+            self.active_terminal_id.as_deref(),
+            cx,
+        )
     }
 
     fn render_session_tab(&self, cx: &mut Context<Self>) -> Div {
-        crate::session_panel::render_session_tab(cx)
+        crate::session_panel::render_session_tab(self.session_handle.as_ref(), cx)
     }
 }
 

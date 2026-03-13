@@ -9,4 +9,3 @@ alacritty_terminal.workspace = true
 log.workspace = true
 itertools.workspace = true
 
-zedra-session = { path = "../zedra-session" }

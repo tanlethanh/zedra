@@ -34,15 +34,15 @@
 
 #define FONT_TITLE 22.0
 
-#define FONT_HEADING 14.0
+#define FONT_HEADING 13.0
 
 #define FONT_BODY 12.0
 
-#define FONT_DETAIL 10.0
+#define FONT_DETAIL 12.0
 
 #define ICON_NAV 18.0
 
-#define ICON_HEADER 20.0
+#define ICON_HEADER 18.0
 
 #define ICON_FILE 12.0
 

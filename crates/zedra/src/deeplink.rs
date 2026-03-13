@@ -45,7 +45,7 @@ pub fn parse(url: &str) -> Result<DeeplinkAction> {
 /// Enqueue a parsed deeplink action for consumption on the next render frame.
 pub fn enqueue(action: DeeplinkAction) {
     PENDING_DEEPLINK.set(action);
-    zedra_session::signal_terminal_data();
+    zedra_session::push_callback(Box::new(|| {}));
 }
 
 /// Take the pending deeplink action (called from `ZedraApp::render`).

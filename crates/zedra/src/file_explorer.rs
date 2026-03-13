@@ -64,6 +64,7 @@ pub struct FileExplorer {
     pending_children: SharedPendingSlot<(Vec<usize>, Vec<FileEntry>)>,
     /// Last flattened entry count, for change-only logging
     last_flat_count: usize,
+    session_handle: Option<zedra_session::SessionHandle>,
 }
 
 impl FileExplorer {
@@ -75,12 +76,19 @@ impl FileExplorer {
             pending_entries: shared_pending_slot(),
             pending_children: shared_pending_slot(),
             last_flat_count: 0,
+            session_handle: None,
         };
 
         // If there's an active session, load root entries from remote
         explorer.try_load_remote_root(cx);
 
         explorer
+    }
+
+    /// Set the session handle so the explorer can make RPC calls.
+    pub fn set_session_handle(&mut self, handle: zedra_session::SessionHandle, cx: &mut Context<Self>) {
+        self.session_handle = Some(handle);
+        self.try_load_remote_root(cx);
     }
 
     /// Reset to demo data (e.g. after disconnect)
@@ -103,9 +111,9 @@ impl FileExplorer {
 
     /// Attempt to load the root directory listing from the active remote session
     fn try_load_remote_root(&mut self, _cx: &mut Context<Self>) {
-        let session = match zedra_session::active_session() {
-            Some(s) => s,
-            None => return,
+        let handle = match self.session_handle.as_ref() {
+            Some(h) if h.is_connected() => h.clone(),
+            _ => return,
         };
 
         self.entries = vec![FileEntry {
@@ -120,7 +128,7 @@ impl FileExplorer {
 
         let pending = self.pending_entries.clone();
         zedra_session::session_runtime().spawn(async move {
-            match session.fs_list(".").await {
+            match handle.fs_list(".").await {
                 Ok(entries) => {
                     let file_entries: Vec<FileEntry> = entries
                         .into_iter()
@@ -134,7 +142,7 @@ impl FileExplorer {
                         .collect();
 
                     pending.set(file_entries);
-                    zedra_session::signal_terminal_data(); // trigger re-render
+                    zedra_session::push_callback(Box::new(|| {}));
                 }
                 Err(e) => {
                     log::error!("fs/list failed: {}", e);
@@ -146,7 +154,7 @@ impl FileExplorer {
                         children: Vec::new(),
                         loading: false,
                     }]);
-                    zedra_session::signal_terminal_data();
+                    zedra_session::push_callback(Box::new(|| {}));
                 }
             }
         });
@@ -161,9 +169,9 @@ impl FileExplorer {
 
     /// Load children for a directory at the given index path from remote
     fn load_remote_children(&mut self, index_path: &[usize], cx: &mut Context<Self>) {
-        let session = match zedra_session::active_session() {
-            Some(s) => s,
-            None => return,
+        let handle = match self.session_handle.as_ref() {
+            Some(h) if h.is_connected() => h.clone(),
+            _ => return,
         };
 
         // Get the full path of the directory to list
@@ -183,7 +191,7 @@ impl FileExplorer {
         let pending = self.pending_children.clone();
 
         zedra_session::session_runtime().spawn(async move {
-            match session.fs_list(&dir_path).await {
+            match handle.fs_list(&dir_path).await {
                 Ok(entries) => {
                     let file_entries: Vec<FileEntry> = entries
                         .into_iter()
@@ -197,7 +205,7 @@ impl FileExplorer {
                         .collect();
 
                     pending.set((path_for_entries, file_entries));
-                    zedra_session::signal_terminal_data();
+                    zedra_session::push_callback(Box::new(|| {}));
                 }
                 Err(e) => {
                     log::error!("fs/list for {:?} failed: {}", dir_path, e);
@@ -300,7 +308,7 @@ impl Focusable for FileExplorer {
 impl Render for FileExplorer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // If a session appeared after construction, load remote root
-        if !self.remote_loaded && zedra_session::active_session().is_some() {
+        if !self.remote_loaded && self.session_handle.as_ref().map_or(false, |h| h.is_connected()) {
             self.try_load_remote_root(cx);
         }
 

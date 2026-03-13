@@ -1,5 +1,0 @@
-module ZedraFFI {
-    header "zedra_ios.h"
-    header "gpui_ios.h"
-    export *
-}

@@ -3,38 +3,58 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::*;
 
 use crate::element::TerminalElement;
 use crate::{TerminalSize, TerminalState};
 
-/// Callback for sending bytes to the SSH channel
+/// Callback for sending bytes to the remote PTY.
 pub type SendBytesFn = Box<dyn Fn(Vec<u8>) + Send + 'static>;
 
-/// Thread-safe buffer for receiving SSH output
+/// Thread-safe buffer for receiving PTY output.
 pub type OutputBuffer = Arc<Mutex<VecDeque<Vec<u8>>>>;
 
-/// Callback for requesting keyboard show/hide
+/// Callback for requesting keyboard show/hide.
 pub type KeyboardRequestFn = Box<dyn Fn(bool) + Send + 'static>;
 
 /// Callback to query whether the soft keyboard is currently visible.
 /// Used to sync local toggle state with actual UIKit/Android state.
 pub type IsKeyboardVisibleFn = Box<dyn Fn() -> bool + Send + 'static>;
 
+/// Callback invoked when the terminal grid is resized (columns × rows).
+/// Lets the caller relay the new size to the remote PTY without the terminal
+/// view knowing anything about sessions or RPC.
+pub type ResizeFn = Box<dyn Fn(u16, u16) + Send + 'static>;
+
 /// Event emitted when user requests disconnect
 pub struct DisconnectRequested;
 
-/// Terminal view that implements GPUI's Render trait
+/// Terminal view that implements GPUI's Render trait.
+///
+/// Self-contained: it holds its own `TerminalState` (the emulator grid),
+/// an `OutputBuffer` to drain each frame, and three optional callbacks:
+///   - `send_bytes` — forward keystroke bytes to the backend PTY
+///   - `keyboard_request` — show/hide the soft keyboard
+///   - `resize_fn` — notify the backend when the grid dimensions change
+///
+/// The view knows nothing about sessions, RPC, or global context. All
+/// backend wiring is the caller's responsibility.
 pub struct TerminalView {
     terminal: TerminalState,
     send_bytes: Option<SendBytesFn>,
     output_buffer: OutputBuffer,
+    /// Set when wired to a `RemoteTerminal`; gates `process_output()` on each frame.
+    needs_render: Option<Arc<AtomicBool>>,
     connected: bool,
     status_text: String,
     focus_handle: FocusHandle,
     keyboard_request: Option<KeyboardRequestFn>,
     is_keyboard_visible_fn: Option<IsKeyboardVisibleFn>,
+    /// Called when the effective grid size changes (keyboard resize or viewport change).
+    /// Receives `(cols, rows)` so the backend can relay the new PTY size.
+    resize_fn: Option<ResizeFn>,
     /// Sub-line pixel offset for smooth scrolling. Applied as a visual shift
     /// to the terminal grid; when it exceeds line_height, a whole line is committed.
     scroll_offset_px: f32,
@@ -42,15 +62,13 @@ pub struct TerminalView {
     base_rows: usize,
     /// Last keyboard-adjusted row count to avoid redundant resizes
     last_keyboard_rows: usize,
-    /// Terminal ID for per-terminal buffer routing (None = use legacy global buffer).
-    terminal_id: Option<String>,
     /// Tracks whether the soft keyboard is currently requested as visible.
     /// Used to toggle: tap shows, tap again hides.
     keyboard_visible: bool,
-    /// True after mouse_down, cleared by the first scroll_wheel event.
-    /// Keyboard toggle is deferred to mouse_up and only fires if no scroll
-    /// arrived in between (i.e. the gesture was a tap, not a swipe).
-    tap_pending: bool,
+    /// Position recorded on mouse_down; cleared on mouse_up.
+    /// Keyboard toggle fires in mouse_up only when the finger displacement
+    /// is within tap slop (i.e. the gesture was a tap, not a swipe).
+    mouse_down_pos: Option<Point<Pixels>>,
 }
 
 impl TerminalView {
@@ -65,17 +83,18 @@ impl TerminalView {
             terminal: TerminalState::new(columns, rows, cell_width, line_height),
             send_bytes: None,
             output_buffer: Arc::new(Mutex::new(VecDeque::new())),
+            needs_render: None,
             connected: false,
             status_text: "Disconnected".to_string(),
             focus_handle: cx.focus_handle(),
             keyboard_request: None,
             is_keyboard_visible_fn: None,
+            resize_fn: None,
             scroll_offset_px: 0.0,
             base_rows: rows,
             last_keyboard_rows: rows,
-            terminal_id: None,
             keyboard_visible: false,
-            tap_pending: false,
+            mouse_down_pos: None,
         }
     }
 
@@ -113,53 +132,31 @@ impl TerminalView {
         self.output_buffer.clone()
     }
 
-    /// Replace the output buffer (used to wire in the session's buffer)
-    pub fn set_output_buffer(&mut self, buffer: OutputBuffer) {
+    /// Wire in the session's output buffer and render-signal flag.
+    pub fn set_output_buffer(&mut self, buffer: OutputBuffer, needs_render: Arc<AtomicBool>) {
         self.output_buffer = buffer;
+        self.needs_render = Some(needs_render);
     }
 
-    /// Set the terminal ID for per-terminal buffer routing.
-    pub fn set_terminal_id(&mut self, id: String) {
-        self.terminal_id = Some(id);
+    /// Set the callback invoked when the effective grid size changes.
+    ///
+    /// Called with `(cols, rows)` after a keyboard-height-induced resize.
+    /// Use this to relay the new PTY size to the remote backend.
+    pub fn set_resize_fn(&mut self, f: ResizeFn) {
+        self.resize_fn = Some(f);
     }
 
-    /// Get the terminal ID (if set).
-    pub fn terminal_id(&self) -> Option<&str> {
-        self.terminal_id.as_deref()
-    }
-
-    /// Process any pending output from SSH or RPC session
-    /// Returns true if any data was processed
+    /// Drain the output buffer and feed bytes into the terminal emulator.
+    /// Returns true if any data was processed.
     fn process_output(&mut self) -> bool {
         let mut had_data = false;
         let mut total_bytes = 0usize;
 
-        // Check local buffer (SSH path)
         if let Ok(mut buffer) = self.output_buffer.try_lock() {
             while let Some(data) = buffer.pop_front() {
                 total_bytes += data.len();
                 self.terminal.advance_bytes(&data);
                 had_data = true;
-            }
-        }
-
-        // Check per-terminal or active RPC session buffer
-        if let Some(session) = zedra_session::active_session() {
-            let session_buf = if let Some(ref tid) = self.terminal_id {
-                // Per-terminal buffer: read only this terminal's output
-                session.output_buffer_for(tid)
-            } else {
-                // Legacy path: use the global active buffer
-                Some(session.output_buffer())
-            };
-            if let Some(buf) = session_buf {
-                if let Ok(mut buffer) = buf.try_lock() {
-                    while let Some(data) = buffer.pop_front() {
-                        total_bytes += data.len();
-                        self.terminal.advance_bytes(&data);
-                        had_data = true;
-                    }
-                }
             }
         }
 
@@ -240,11 +237,8 @@ impl TerminalView {
         self.send_bytes_to_remote(bytes);
     }
 
-    /// Send bytes to the remote host via RPC session or callback fallback.
+    /// Forward bytes to the remote PTY via the `send_bytes` callback.
     fn send_bytes_to_remote(&self, bytes: Vec<u8>) {
-        if zedra_session::send_terminal_input(bytes.clone()) {
-            return;
-        }
         if let Some(ref send) = self.send_bytes {
             send(bytes);
         }
@@ -276,10 +270,14 @@ impl gpui::EventEmitter<DisconnectRequested> for TerminalView {}
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Process any pending SSH/RPC output before rendering.
-        // Re-renders are driven by the frame loop (request_frame_forced) when
-        // TERMINAL_DATA_PENDING is set, so no cx.notify() loop is needed here.
-        let had_data = self.process_output();
+        // Process pending PTY output. When `needs_render` is set (wired to a
+        // `RemoteTerminal`), only process if the pump signaled new data; the flag
+        // is cleared atomically here so the pump can set it again immediately.
+        let should_process = self
+            .needs_render
+            .as_ref()
+            .map_or(true, |nr| nr.swap(false, Ordering::AcqRel));
+        let had_data = if should_process { self.process_output() } else { false };
         if had_data {
             let size = self.terminal.size();
             log::info!(
@@ -321,18 +319,11 @@ impl Render for TerminalView {
                     );
                     self.last_keyboard_rows = effective_rows;
 
-                    // Fire-and-forget remote PTY resize
+                    // Notify the backend of the new PTY size via the resize callback.
                     let cols = size.columns as u16;
                     let rows = effective_rows as u16;
-                    if let Some(session) = zedra_session::active_session() {
-                        if let Some(term_id) = session.active_terminal_id() {
-                            zedra_session::session_runtime().spawn(async move {
-                                if let Err(e) = session.terminal_resize(&term_id, cols, rows).await
-                                {
-                                    log::warn!("Remote PTY resize failed: {}", e);
-                                }
-                            });
-                        }
+                    if let Some(ref resize) = self.resize_fn {
+                        resize(cols, rows);
                     }
                 }
             }
@@ -351,23 +342,24 @@ impl Render for TerminalView {
             .key_context("Terminal")
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _event, window, _cx| {
+                cx.listener(|this, event: &MouseDownEvent, window, _cx| {
                     this.focus_handle.focus(window, _cx);
-                    // Arm the tap — the keyboard toggle fires on mouse_up only if
-                    // no scroll_wheel event arrives first (i.e. it was a tap not a swipe).
-                    this.tap_pending = true;
+                    this.mouse_down_pos = Some(event.position);
                 }),
             )
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _event, _window, _cx| {
-                    if this.tap_pending {
-                        this.tap_pending = false;
-                        // Read actual platform state so external dismissals
-                        // (e.g. drawer open) don't desync the toggle.
-                        let current = this.get_keyboard_visible();
-                        this.keyboard_visible = !current;
-                        this.request_keyboard(this.keyboard_visible);
+                cx.listener(|this, event: &MouseUpEvent, _window, _cx| {
+                    if let Some(down) = this.mouse_down_pos.take() {
+                        let dx = ((event.position.x - down.x) / px(1.0)) as f32;
+                        let dy = ((event.position.y - down.y) / px(1.0)) as f32;
+                        if dx.abs() < 10.0 && dy.abs() < 10.0 {
+                            // Read actual platform state so external dismissals
+                            // (e.g. drawer open) don't desync the toggle.
+                            let current = this.get_keyboard_visible();
+                            this.keyboard_visible = !current;
+                            this.request_keyboard(this.keyboard_visible);
+                        }
                     }
                 }),
             )
@@ -375,8 +367,6 @@ impl Render for TerminalView {
                 this.handle_keystroke(&event.keystroke);
             }))
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
-                // Any scroll means this touch is a swipe, not a tap — cancel keyboard toggle.
-                this.tap_pending = false;
                 match event.delta {
                     ScrollDelta::Lines(l) => {
                         // Line-based scroll (e.g. mouse wheel): commit immediately

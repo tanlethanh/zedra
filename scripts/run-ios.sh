@@ -9,27 +9,28 @@ SCHEME="Zedra"
 BUNDLE_ID="dev.zedra.app"
 
 usage() {
-    echo "Usage: $0 [sim|device] [--no-build] [--preview] [--debug] [--device-id <UDID>] [--select-device] [--launch-url <URL>]"
+    echo "Usage: $0 [sim|device] [--no-build] [--release] [--preview] [--device-id <UDID>] [--select-device] [--launch-url <URL>]"
     echo ""
     echo "  sim      Build and run on iOS Simulator (default)"
     echo "  device   Build and install on connected device"
     echo ""
     echo "  --no-build              Skip build, just install and launch (uses last build)"
+    echo "  --release               Use release profile (default is debug)"
     echo "  --preview               Enable preview feature flag"
-    echo "  --debug                 Use debug profile (faster build, no optimizations)"
     echo "  --device-id <UDID>      Target a specific device by UDID (skips selection)"
     echo "  --select-device         Ignore saved device preference and re-prompt"
     echo "  --launch-url <URL>      Open the app with a deep link URL (e.g. zedra://...)"
     echo ""
     echo "Examples:"
-    echo "  $0                                        # run on simulator (release)"
-    echo "  $0 sim                                    # run on simulator (release)"
+    echo "  $0                                        # run on simulator (debug)"
+    echo "  $0 sim                                    # run on simulator (debug)"
+    echo "  $0 sim --release                          # run on simulator (release)"
     echo "  $0 sim --no-build                         # launch on simulator without building"
     echo "  $0 device                                 # install on saved/selected device"
     echo "  $0 device --select-device                 # re-prompt for device"
     echo "  $0 device --device-id 00008140-001234     # install on specific device"
     echo "  $0 device --preview                       # install with preview features"
-    echo "  $0 device --debug                         # install debug build"
+    echo "  $0 device --release                       # install release build"
     echo "  $0 device --no-build --launch-url 'zedra://connect?ticket=...'  # relaunch with URL"
     exit 1
 }
@@ -77,9 +78,9 @@ while [ $i -lt ${#args[@]} ]; do
         --preview)
             BUILD_FLAGS="$BUILD_FLAGS --preview"
             ;;
-        --debug)
-            BUILD_FLAGS="$BUILD_FLAGS --debug"
-            XCODE_CONFIGURATION="Debug"
+        --release)
+            BUILD_FLAGS="$BUILD_FLAGS --release"
+            XCODE_CONFIGURATION="Release"
             ;;
         --device-id)
             i=$((i + 1))
@@ -141,9 +142,9 @@ for runtime, devices in data['devices'].items():
         echo "==> Target: $SIM_NAME ($BOOTED_ID)"
 
         if [ "$NO_BUILD" = false ]; then
-            # Build Rust libraries
+            # Build Rust libraries (simulator target only)
             echo "==> Building Rust for iOS..."
-            ./scripts/build-ios.sh $BUILD_FLAGS
+            ./scripts/build-ios.sh $BUILD_FLAGS --sim
 
             # Generate Xcode project
             generate_project
@@ -164,6 +165,9 @@ for runtime, devices in data['devices'].items():
                 echo "Error: Could not find built .app"
                 exit 1
             fi
+
+            # Kill running app before install
+            xcrun simctl terminate "$BOOTED_ID" "$BUNDLE_ID" 2>/dev/null || true
 
             # Install
             echo "==> Installing..."
@@ -254,9 +258,9 @@ for runtime, devices in data['devices'].items():
         echo "==> Target: $DEVICE_NAME ($DEVICE_ID) — iOS $IPHONEOS_DEPLOYMENT_TARGET"
 
         if [ "$NO_BUILD" = false ]; then
-            # Build Rust libraries
+            # Build Rust libraries (device target only)
             echo "==> Building Rust for iOS..."
-            ./scripts/build-ios.sh $BUILD_FLAGS
+            ./scripts/build-ios.sh $BUILD_FLAGS --device
 
             # Generate Xcode project
             generate_project
@@ -279,6 +283,9 @@ for runtime, devices in data['devices'].items():
                 echo "Error: Could not find built .app"
                 exit 1
             fi
+
+            # Kill running app before install to avoid install-over-running-process issues
+            xcrun devicectl device process terminate --device "$DEVICE_ID" --bundle-id "$BUNDLE_ID" 2>/dev/null || true
 
             # Install on device
             echo "==> Installing on $DEVICE_NAME..."

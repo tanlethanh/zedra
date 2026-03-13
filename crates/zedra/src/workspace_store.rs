@@ -174,22 +174,12 @@ pub fn snapshot_from_handle(handle: &zedra_session::SessionHandle) -> Option<Per
     let encoded = zedra_rpc::pairing::encode_endpoint_addr(&addr).ok()?;
     let session_id = handle.session_id();
 
-    let (project_path, hostname) = if let Some(session) = handle.session() {
-        match session.state() {
-            zedra_session::SessionState::Connected {
-                workdir, hostname, ..
-            } => {
-                let wp = if workdir.is_empty() {
-                    None
-                } else {
-                    Some(workdir)
-                };
-                (wp, Some(hostname))
-            }
-            _ => (None, None),
+    let (project_path, hostname) = match handle.state() {
+        zedra_session::SessionState::Connected { workdir, hostname, .. } => {
+            let wp = if workdir.is_empty() { None } else { Some(workdir) };
+            (wp, Some(hostname))
         }
-    } else {
-        (None, None)
+        _ => (None, None),
     };
 
     Some(PersistedWorkspace {

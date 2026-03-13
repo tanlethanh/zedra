@@ -41,7 +41,7 @@ pub extern "C" fn zedra_ios_set_keyboard_height(height_px: u32) {
     zedra_terminal::set_keyboard_height(height_px);
     // Signal a forced render so the terminal resizes immediately on the next
     // CADisplayLink tick rather than waiting for the next user interaction.
-    zedra_session::signal_terminal_data();
+    zedra_session::push_callback(Box::new(|| {}));
     log::debug!("iOS keyboard height: {}px", height_px);
 }
 
@@ -197,7 +197,7 @@ impl PlatformBridge for IosBridge {
 pub extern "C" fn zedra_ios_alert_result(callback_id: u32, button_index: i32) {
     if button_index >= 0 {
         crate::platform_bridge::dispatch_alert_result(callback_id, button_index as usize);
-        zedra_session::signal_terminal_data();
+        zedra_session::push_callback(Box::new(|| {}));
     }
 }
 
@@ -226,8 +226,8 @@ pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
         "enter" => b"\r",
         _ => return,
     };
-    zedra_session::send_terminal_input(bytes.to_vec());
-    zedra_session::signal_terminal_data();
+    crate::active_terminal::send_to_active(bytes.to_vec());
+    zedra_session::push_callback(Box::new(|| {}));
 }
 
 /// Called from main.m when the app is opened via a zedra:// URL.

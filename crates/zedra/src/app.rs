@@ -9,7 +9,7 @@ use crate::theme;
 use crate::workspace_store;
 use crate::workspace_store::PersistedWorkspace;
 use crate::workspace_view::{WorkspaceEvent, WorkspaceView, compute_terminal_dimensions};
-use zedra_session::{RemoteSession, SessionHandle};
+use zedra_session::SessionHandle;
 
 // ---------------------------------------------------------------------------
 // AppScreen
@@ -162,7 +162,7 @@ impl ZedraApp {
                     this.workspaces.len()
                 );
                 for entry in &this.workspaces {
-                    zedra_session::notify_foreground_resume(&entry.handle);
+                    entry.handle.notify_foreground_resume();
                 }
             }
         });
@@ -190,9 +190,6 @@ impl ZedraApp {
         if index < self.workspaces.len() {
             self.active_workspace = Some(index);
             self.screen = AppScreen::Workspace;
-            // Set the active session handle so backward-compat rendering code
-            // (active_session(), reconnect_attempt(), etc.) reads the right workspace.
-            zedra_session::set_active_handle(self.workspaces[index].handle.clone());
             // Notify the workspace's content and drawer so they re-render with the
             // updated global session (badge, terminal list, session info).
             self.workspaces[index].view.update(cx, |ws, cx| {
@@ -347,7 +344,7 @@ impl ZedraApp {
         // This ensures the async task reads the correct session_id when calling
         // handle.session_id() inside connect_with_iroh, and that
         // persist_current_workspaces() doesn't wipe the saved session_id from disk.
-        session_handle.store_session_id(session_id);
+        session_handle.set_session_id(session_id);
 
         // Create the workspace view (creates its own terminal view + pending slots)
         let handle_for_view = session_handle.clone();
@@ -393,12 +390,6 @@ impl ZedraApp {
                         } else {
                             AppScreen::Workspace
                         };
-                        // Update active handle after workspace removal
-                        if let Some(idx) = this.active_workspace {
-                            zedra_session::set_active_handle(this.workspaces[idx].handle.clone());
-                        } else {
-                            zedra_session::clear_active_handle();
-                        }
                         // Refresh saved workspaces; render() will rebuild the unified home list
                         this.refresh_saved_workspaces(cx);
                         cx.notify();
@@ -415,11 +406,12 @@ impl ZedraApp {
         self.active_workspace = Some(self.workspaces.len() - 1);
         self.screen = AppScreen::Workspace;
 
-        // Set this workspace as the active handle for backward-compat globals
-        zedra_session::set_active_handle(session_handle.clone());
-
         // Store endpoint addr synchronously so persist_current_workspaces can snapshot it now.
-        session_handle.store_endpoint_addr(addr.clone());
+        session_handle.set_endpoint_addr(addr.clone());
+        // Notify UI of state changes from background tasks (no GPUI handles captured).
+        session_handle.set_state_notifier(|| {
+            zedra_session::push_callback(Box::new(|| {}));
+        });
         // Save immediately so the workspace survives a quick app-quit before the next
         // periodic persist tick (render_count % 300 == 100).
         self.persist_current_workspaces();
@@ -428,17 +420,14 @@ impl ZedraApp {
         let handle_for_connect = session_handle.clone();
         let endpoint_display = endpoint_short.clone();
         zedra_session::session_runtime().spawn(async move {
-            log::info!(
-                "RemoteSession: connecting via iroh to {}...",
-                endpoint_display
-            );
-            match RemoteSession::connect_with_iroh(addr, &handle_for_connect).await {
-                Ok(session) => {
-                    log::info!("RemoteSession: connected via iroh!");
+            log::info!("connecting via iroh to {}...", endpoint_display);
+            match handle_for_connect.connect(addr).await {
+                Ok(()) => {
+                    log::info!("connected via iroh!");
 
                     // Check for existing server-side terminals (session resume case).
                     // If found, attach them and restore the UI; otherwise create a new terminal.
-                    match session.terminal_list().await {
+                    match handle_for_connect.terminal_list().await {
                         Ok(server_ids) if !server_ids.is_empty() => {
                             log::info!(
                                 "Session resumed: attaching {} existing terminal(s)",
@@ -446,10 +435,7 @@ impl ZedraApp {
                             );
                             let mut attached = Vec::new();
                             for id in &server_ids {
-                                match session
-                                    .terminal_attach_existing(id, &handle_for_connect)
-                                    .await
-                                {
+                                match handle_for_connect.terminal_attach_existing(id).await {
                                     Ok(()) => attached.push(id.clone()),
                                     Err(e) => {
                                         log::warn!("Failed to attach terminal {}: {}", id, e)
@@ -460,10 +446,7 @@ impl ZedraApp {
                                 pending_existing_terminals.set(attached);
                             } else {
                                 // All attaches failed — fall back to creating a new terminal
-                                match session
-                                    .terminal_create(cols_u16, rows_u16, &handle_for_connect)
-                                    .await
-                                {
+                                match handle_for_connect.terminal_create(cols_u16, rows_u16).await {
                                     Ok(term_id) => pending_term_id.set(term_id),
                                     Err(e) => {
                                         log::error!("Failed to create remote terminal: {}", e)
@@ -473,10 +456,7 @@ impl ZedraApp {
                         }
                         Ok(_) => {
                             // No existing terminals (new session) — create one
-                            match session
-                                .terminal_create(cols_u16, rows_u16, &handle_for_connect)
-                                .await
-                            {
+                            match handle_for_connect.terminal_create(cols_u16, rows_u16).await {
                                 Ok(term_id) => {
                                     log::info!("Remote terminal created: {}", term_id);
                                     pending_term_id.set(term_id);
@@ -486,10 +466,7 @@ impl ZedraApp {
                         }
                         Err(e) => {
                             log::warn!("terminal_list failed ({}), creating new terminal", e);
-                            match session
-                                .terminal_create(cols_u16, rows_u16, &handle_for_connect)
-                                .await
-                            {
+                            match handle_for_connect.terminal_create(cols_u16, rows_u16).await {
                                 Ok(term_id) => {
                                     log::info!("Remote terminal created: {}", term_id);
                                     pending_term_id.set(term_id);
@@ -499,17 +476,16 @@ impl ZedraApp {
                         }
                     }
 
-                    handle_for_connect.set_session(session);
-                    // Persist again now that the session is Connected and has hostname/workdir.
+                    // Persist now that the session is Connected and has hostname/workdir.
                     if let Some(snapshot) =
                         workspace_store::snapshot_from_handle(&handle_for_connect)
                     {
                         workspace_store::upsert_workspace(snapshot);
                     }
-                    zedra_session::signal_terminal_data();
+                    zedra_session::push_callback(Box::new(|| {}));
                 }
                 Err(e) => {
-                    log::error!("RemoteSession iroh connect failed: {}", e);
+                    log::error!("iroh connect failed: {}", e);
                 }
             }
         });
@@ -644,4 +620,3 @@ pub fn open_zedra_window(app: &mut App, window_options: WindowOptions) -> Result
         .map(|h| h.into())
     }
 }
-

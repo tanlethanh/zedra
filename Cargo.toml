@@ -48,6 +48,13 @@ irpc-iroh = "0.12"
 postcard = { version = "1", features = ["alloc"] }
 serde_bytes = "0.11"
 
+[profile.dev]
+# Line tables only (not full debuginfo) — faster to generate and link.
+# Full debug info (the default) is rarely needed for iOS iteration.
+debug = 1
+# Faster linking: avoid running dsymutil on macOS
+split-debuginfo = "unpacked"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

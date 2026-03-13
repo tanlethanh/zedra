@@ -35,6 +35,9 @@ pub mod quick_action_panel;
 // Transport badge (P2P / Relay indicator) + format_bytes utility
 pub mod transport_badge;
 
+// Active terminal input routing for platform FFI bridges
+pub mod active_terminal;
+
 // General deeplink handling (zedra:// URL scheme)
 pub mod deeplink;
 

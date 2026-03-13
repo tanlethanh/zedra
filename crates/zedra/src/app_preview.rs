@@ -34,7 +34,14 @@ impl PreviewApp {
         let editor = cx.new(|cx| EditorView::new(content, cx));
 
         // --- WorkspaceContent (header + swappable main view) ---
-        let workspace_content = cx.new(|cx| WorkspaceContent::new(editor.into(), "preview.rs", cx));
+        let workspace_content = cx.new(|cx| {
+            WorkspaceContent::new(
+                editor.into(),
+                "preview.rs",
+                zedra_session::SessionHandle::new(),
+                cx,
+            )
+        });
 
         // --- DrawerHost wrapping WorkspaceContent ---
         let drawer_host = cx.new(|cx| DrawerHost::new(workspace_content.clone().into(), cx));

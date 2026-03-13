@@ -23,13 +23,13 @@ pub const ACCENT_RED: u32 = 0xe06c75;
 
 // Font sizes (pixels) — change these to scale all UI text
 pub const FONT_TITLE: f32 = 22.0; // App main title ("Zedra")
-pub const FONT_HEADING: f32 = 14.0; // Section headings, dialog titles
+pub const FONT_HEADING: f32 = 13.0; // Section headings, dialog titles
 pub const FONT_BODY: f32 = 12.0; // Standard UI text: labels, buttons, file names, values
-pub const FONT_DETAIL: f32 = 10.0; // Small metadata, code previews, badges
+pub const FONT_DETAIL: f32 = 12.0; // Small metadata, code previews, badges
 
 // Icon sizes (pixels)
 pub const ICON_NAV: f32 = 18.0; // Drawer nav bar icons
-pub const ICON_HEADER: f32 = 20.0; // Header logo / action icons
+pub const ICON_HEADER: f32 = 18.0; // Header logo / action icons
 pub const ICON_FILE: f32 = 12.0; // File tree icons
 pub const ICON_FILE_DIR: f32 = 14.0; // Directory icons (slightly larger than file)
 pub const ICON_STATUS: f32 = 6.0; // Status dots (connected/disconnected)

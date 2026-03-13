@@ -9,10 +9,11 @@ use crate::workspace_drawer::WorkspaceDrawerEvent;
 use zedra_session::SessionState;
 
 /// Render the session tab content for the workspace drawer.
-pub fn render_session_tab(cx: &mut Context<crate::workspace_drawer::WorkspaceDrawer>) -> Div {
-    let session = zedra_session::active_session();
-
-    let Some(session) = session else {
+pub fn render_session_tab(
+    handle: Option<&zedra_session::SessionHandle>,
+    cx: &mut Context<crate::workspace_drawer::WorkspaceDrawer>,
+) -> Div {
+    let Some(handle) = handle else {
         return div()
             .size_full()
             .flex()
@@ -23,11 +24,22 @@ pub fn render_session_tab(cx: &mut Context<crate::workspace_drawer::WorkspaceDra
             .child("No active session");
     };
 
-    let state = session.state();
-    let session_id = session
+    let state = handle.state();
+    if matches!(state, SessionState::Disconnected) {
+        return div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_color(rgb(theme::TEXT_MUTED))
+            .text_size(px(theme::FONT_BODY))
+            .child("No active session");
+    }
+
+    let session_id = handle
         .session_id()
         .unwrap_or_else(|| "\u{2014}".to_string());
-    let conn_info = session.connection_info();
+    let conn_info = handle.connection_info();
 
     let (status_label, status_color) = match &state {
         SessionState::Connected { .. } => ("Connected", theme::ACCENT_GREEN),

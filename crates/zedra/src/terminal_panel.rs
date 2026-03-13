@@ -10,12 +10,11 @@ use crate::theme;
 
 /// Render the terminal tab content for the workspace drawer.
 pub fn render_terminal_tab(
+    handle: Option<&zedra_session::SessionHandle>,
     active_terminal_id: Option<&str>,
     cx: &mut Context<crate::workspace_drawer::WorkspaceDrawer>,
 ) -> Div {
-    let session = zedra_session::active_session();
-
-    let Some(session) = session else {
+    let Some(handle) = handle else {
         return div()
             .flex_1()
             .flex()
@@ -26,7 +25,7 @@ pub fn render_terminal_tab(
             .child("No active session");
     };
 
-    let terminal_ids = session.terminal_ids();
+    let terminal_ids = handle.terminal_ids();
     let active_id = active_terminal_id.map(|s| s.to_string());
 
     let mut content = div().px(px(16.0)).pt(px(12.0)).flex().flex_col().flex_1();
