@@ -86,6 +86,9 @@ impl PreviewApp {
                   window: &mut Window,
                   cx: &mut Context<PreviewApp>| {
                 match event {
+                    WorkspaceDrawerEvent::GoHome => {
+                        // Go Home screen
+                    }
                     WorkspaceDrawerEvent::CloseRequested => {
                         drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
                     }
@@ -115,6 +118,7 @@ impl PreviewApp {
                     WorkspaceDrawerEvent::TerminalSelected(_) => {
                         drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
                     }
+                    WorkspaceDrawerEvent::TerminalDeleteRequested(_) => {}
                 }
             },
         );

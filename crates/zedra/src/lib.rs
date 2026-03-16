@@ -24,6 +24,7 @@ pub mod workspace_drawer;
 
 // Extracted drawer tab panels
 pub mod session_panel;
+pub mod terminal_card;
 pub mod terminal_panel;
 
 // Per-session workspace view (DrawerHost + WorkspaceContent + WorkspaceDrawer)

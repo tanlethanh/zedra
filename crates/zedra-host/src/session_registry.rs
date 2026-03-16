@@ -69,12 +69,22 @@ pub struct ServerSession {
     pub active_client: Mutex<Option<[u8; 32]>>,
 }
 
+/// Guards the swappable PTY output sender against stale cleanup.
+///
+/// `gen` is incremented each time a new TermAttach installs a sender.
+/// Cleanup code compares its captured generation before clearing to avoid
+/// clobbering a sender that was installed by a newer TermAttach connection.
+pub struct OutputSenderSlot {
+    pub gen: u64,
+    pub sender: Option<tokio::sync::mpsc::Sender<TermOutput>>,
+}
+
 /// A live terminal session owned by a ServerSession.
 pub struct TermSession {
     pub writer: Box<dyn Write + Send>,
     pub master: Box<dyn portable_pty::MasterPty + Send>,
     /// Swappable output sender. Updated on each TermAttach.
-    pub output_sender: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<TermOutput>>>>,
+    pub output_sender: Arc<std::sync::Mutex<OutputSenderSlot>>,
 }
 
 /// Summary of a session for listing purposes.
@@ -653,7 +663,7 @@ impl ServerSession {
     pub async fn clear_output_senders(&self) {
         let terms = self.terminals.lock().await;
         for term in terms.values() {
-            *term.output_sender.lock().unwrap() = None;
+            term.output_sender.lock().unwrap().sender = None;
         }
     }
 

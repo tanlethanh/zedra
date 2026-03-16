@@ -9,7 +9,7 @@ use crate::pending::{SharedPendingSlot, shared_pending_slot};
 use crate::platform_bridge::status_bar_inset;
 use crate::theme;
 use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
-use zedra_session::{SessionHandle, SessionState};
+use zedra_session::SessionHandle;
 use zedra_terminal::view::{DisconnectRequested, TerminalView};
 
 /// Published to HomeView and QuickActionPanel.
@@ -22,12 +22,15 @@ pub struct WorkspaceSummary {
     pub terminal_count: usize,
     /// Excludes `__pending__` slots; used for direct terminal navigation.
     pub terminal_ids: Vec<String>,
+    /// The currently focused terminal ID, if any.
+    pub active_terminal_id: Option<String>,
     /// base64-url encoded endpoint address for matching saved workspaces.
     pub endpoint_addr_encoded: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 pub enum WorkspaceEvent {
+    GoHome,
     OpenQuickAction,
     Disconnected,
 }
@@ -86,17 +89,13 @@ impl Render for WorkspaceContent {
         let top_inset = status_bar_inset();
         let title = self.header_title.clone();
 
-        let state = self.session_handle.state();
-        let project_name: Option<SharedString> = match &state {
-            SessionState::Connected { workdir, .. } if !workdir.is_empty() => Some(
-                workdir
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(workdir)
-                    .to_string()
-                    .into(),
-            ),
-            _ => None,
+        let project_name: Option<SharedString> = {
+            let name = self.session_handle.project_name();
+            if name.is_empty() {
+                None
+            } else {
+                Some(name.into())
+            }
         };
 
         div()
@@ -111,7 +110,6 @@ impl Render for WorkspaceContent {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .px(px(8.0))
                     .border_b_1()
                     .border_color(rgb(theme::BORDER_SUBTLE))
                     .child(
@@ -122,9 +120,7 @@ impl Render for WorkspaceContent {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(6.0))
                             .cursor_pointer()
-                            .hover(|s| s.bg(theme::hover_bg()))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
@@ -133,10 +129,10 @@ impl Render for WorkspaceContent {
                                 }),
                             )
                             .child(
-                                div()
-                                    .text_color(rgb(theme::TEXT_PRIMARY))
-                                    .text_size(px(theme::ICON_HEADER))
-                                    .child("\u{2630}"),
+                                svg()
+                                    .path("icons/menu.svg")
+                                    .size(px(16.0))
+                                    .text_color(rgb(theme::TEXT_SECONDARY)),
                             ),
                     )
                     .child(
@@ -168,9 +164,7 @@ impl Render for WorkspaceContent {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(6.0))
                             .cursor_pointer()
-                            .hover(|s| s.bg(theme::hover_bg()))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
@@ -179,10 +173,10 @@ impl Render for WorkspaceContent {
                                 }),
                             )
                             .child(
-                                div()
-                                    .text_color(rgb(theme::TEXT_PRIMARY))
-                                    .text_size(px(theme::ICON_HEADER))
-                                    .child("\u{26a1}"),
+                                svg()
+                                    .path("icons/package.svg")
+                                    .size(px(18.0))
+                                    .text_color(rgb(theme::TEXT_SECONDARY)),
                             ),
                     ),
             )
@@ -204,6 +198,8 @@ pub struct WorkspaceView {
     pub pending_existing_terminals: SharedPendingSlot<Vec<String>>,
     pending_file: SharedPendingSlot<(String, String)>,
     pending_git_diff: SharedPendingSlot<(String, String, String)>,
+    /// Set by the native alert callback when user confirms terminal deletion.
+    pending_terminal_delete: SharedPendingSlot<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -300,6 +296,10 @@ impl WorkspaceView {
                       window: &mut Window,
                       cx: &mut Context<WorkspaceView>| {
                     match event {
+                        WorkspaceDrawerEvent::GoHome => {
+                            drawer_host_clone.update(cx, |host, cx| host.close(cx));
+                            cx.emit(WorkspaceEvent::GoHome);
+                        }
                         WorkspaceDrawerEvent::CloseRequested => {
                             drawer_host_clone.update(cx, |host, cx| host.close(cx));
                         }
@@ -326,20 +326,14 @@ impl WorkspaceView {
                                 TerminalView::new(columns, rows, cell_width, line_height, cx)
                             });
                             terminal_view.update(cx, |view, _cx| {
-                                view.set_keyboard_request(
-                                    crate::keyboard::make_keyboard_handler(),
-                                );
+                                view.set_keyboard_request(crate::keyboard::make_keyboard_handler());
                                 view.set_is_keyboard_visible_fn(
                                     crate::keyboard::make_is_keyboard_visible(),
                                 );
                                 view.set_status("Creating terminal...".to_string());
                             });
                             workspace_content_clone.update(cx, |content, cx| {
-                                content.set_main_view(
-                                    terminal_view.clone().into(),
-                                    "Terminal",
-                                    cx,
-                                );
+                                content.set_main_view(terminal_view.clone().into(), "Terminal", cx);
                             });
                             this.terminal_views
                                 .push(("__pending__".to_string(), terminal_view));
@@ -401,6 +395,30 @@ impl WorkspaceView {
                                 });
                             }
                         }
+                        WorkspaceDrawerEvent::TerminalDeleteRequested(tid) => {
+                            let tid = tid.clone();
+                            let index = this
+                                .terminal_views
+                                .iter()
+                                .position(|(id, _)| id == &tid)
+                                .map(|i| i + 1)
+                                .unwrap_or(1);
+                            let pending = this.pending_terminal_delete.clone();
+                            crate::platform_bridge::show_alert(
+                                "",
+                                &format!("Delete Terminal {}?", index),
+                                vec![
+                                    crate::platform_bridge::AlertButton::destructive("Delete"),
+                                    crate::platform_bridge::AlertButton::cancel("Cancel"),
+                                ],
+                                move |button_index| {
+                                    if button_index == 0 {
+                                        pending.set(tid.clone());
+                                        zedra_session::push_callback(Box::new(|| {}));
+                                    }
+                                },
+                            );
+                        }
                         WorkspaceDrawerEvent::GitFileSelected(path) => {
                             drawer_host_clone.update(cx, |host, cx| host.close(cx));
                             let path = path.clone();
@@ -457,6 +475,7 @@ impl WorkspaceView {
             pending_existing_terminals,
             pending_file,
             pending_git_diff,
+            pending_terminal_delete: shared_pending_slot(),
             _subscriptions: subscriptions,
         }
     }
@@ -493,6 +512,7 @@ impl WorkspaceView {
             session_state: state,
             terminal_count,
             terminal_ids,
+            active_terminal_id: self.active_terminal_id.clone(),
             endpoint_addr_encoded,
         }
     }
@@ -566,8 +586,7 @@ impl Render for WorkspaceView {
                             let handle = handle_rs.clone();
                             let tid_async = tid_rs.clone();
                             zedra_session::session_runtime().spawn(async move {
-                                if let Err(e) =
-                                    handle.terminal_resize(&tid_async, cols, rows).await
+                                if let Err(e) = handle.terminal_resize(&tid_async, cols, rows).await
                                 {
                                     log::warn!("Remote PTY resize failed: {}", e);
                                 }
@@ -576,6 +595,24 @@ impl Render for WorkspaceView {
                         view.set_connected(true);
                         view.set_status("Resumed".to_string());
                     });
+                    // Send the current terminal dimensions to the server PTY immediately.
+                    // The server-side PTY still has the dimensions from the last session;
+                    // syncing them now ensures zsh redraws at the correct column width and
+                    // prevents line-wrapping artifacts on the first keypress.
+                    {
+                        let cols_u16 = columns as u16;
+                        let rows_u16 = rows as u16;
+                        let handle_resize = handle.clone();
+                        let tid_resize = id.clone();
+                        zedra_session::session_runtime().spawn(async move {
+                            if let Err(e) = handle_resize
+                                .terminal_resize(&tid_resize, cols_u16, rows_u16)
+                                .await
+                            {
+                                log::warn!("Initial resize on session resume failed: {}", e);
+                            }
+                        });
+                    }
                     self.terminal_views.push((id.clone(), terminal_view));
                 }
 
@@ -648,9 +685,7 @@ impl Render for WorkspaceView {
                         let handle = handle_rs.clone();
                         let tid_async = tid_rs.clone();
                         zedra_session::session_runtime().spawn(async move {
-                            if let Err(e) =
-                                handle.terminal_resize(&tid_async, cols, rows).await
-                            {
+                            if let Err(e) = handle.terminal_resize(&tid_async, cols, rows).await {
                                 log::warn!("Remote PTY resize failed: {}", e);
                             }
                         });
@@ -666,6 +701,46 @@ impl Render for WorkspaceView {
             self.workspace_drawer.update(cx, |drawer, cx| {
                 drawer.set_active_terminal(Some(term_id), cx);
             });
+        }
+
+        if let Some(tid) = self.pending_terminal_delete.take() {
+            let was_active = self.active_terminal_id.as_deref() == Some(tid.as_str());
+            self.terminal_views.retain(|(id, _)| id != &tid);
+
+            let handle = self.session_handle.clone();
+            let tid_close = tid.clone();
+            zedra_session::session_runtime().spawn(async move {
+                if let Err(e) = handle.terminal_close(&tid_close).await {
+                    log::error!("terminal_close failed: {}", e);
+                }
+            });
+
+            if was_active {
+                if let Some((new_id, new_view)) = self.terminal_views.first() {
+                    let new_id = new_id.clone();
+                    let new_view = new_view.clone();
+                    self.workspace_content.update(cx, |content, cx| {
+                        content.set_main_view(new_view.into(), "Terminal", cx);
+                    });
+                    self.active_terminal_id = Some(new_id.clone());
+                    if let Some(t) = self.session_handle.terminal(&new_id) {
+                        crate::active_terminal::set_active_input(t.make_input_fn());
+                    }
+                    self.workspace_drawer.update(cx, |drawer, cx| {
+                        drawer.set_active_terminal(Some(new_id), cx);
+                    });
+                } else {
+                    self.active_terminal_id = None;
+                    self.workspace_drawer.update(cx, |drawer, cx| {
+                        drawer.set_active_terminal(None, cx);
+                    });
+                }
+            } else {
+                let current = self.active_terminal_id.clone();
+                self.workspace_drawer.update(cx, |drawer, cx| {
+                    drawer.set_active_terminal(current, cx);
+                });
+            }
         }
 
         div().size_full().child(self.drawer_host.clone())

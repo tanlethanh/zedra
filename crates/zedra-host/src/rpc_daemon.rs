@@ -103,9 +103,13 @@ pub async fn handle_connection(
         }
     }
 
-    // Cleanup on disconnect
+    // Cleanup on disconnect.
+    // clear_output_senders() is intentionally NOT called here: the TermAttach
+    // cleanup above guards its None-set with a generation check, and the PTY
+    // reader task self-heals by clearing a dead sender on the next write attempt.
+    // Calling it here would race with a concurrent new TermAttach and silence
+    // the new client's output.
     registry.detach_client(&session.id, client_pubkey).await;
-    session.clear_output_senders().await;
 
     tracing::info!(
         "Connection closed: session={} (session stays alive in registry)",
@@ -372,10 +376,12 @@ async fn dispatch(
                 .unwrap_or_else(|| "unknown".to_string());
             let username = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
             let workdir = state.workdir.to_string_lossy().into_owned();
+            let home_dir = std::env::var("HOME").ok();
             let _ = msg.tx.send(SessionInfoResult {
                 hostname,
                 workdir,
                 username,
+                home_dir,
                 session_id: Some(session.id.clone()),
                 os: Some(std::env::consts::OS.to_string()),
                 arch: Some(std::env::consts::ARCH.to_string()),
@@ -487,7 +493,7 @@ async fn dispatch(
             );
 
             let output_sender = Arc::new(std::sync::Mutex::new(
-                None::<tokio::sync::mpsc::Sender<TermOutput>>,
+                crate::session_registry::OutputSenderSlot { gen: 0, sender: None },
             ));
 
             session.terminals.lock().await.insert(
@@ -522,14 +528,15 @@ async fn dispatch(
                                 s
                             });
 
-                            let sender = output_sender.lock().unwrap().clone();
+                            let sender: Option<tokio::sync::mpsc::Sender<TermOutput>> =
+                                output_sender.lock().unwrap().sender.clone();
                             if let Some(tx) = sender {
                                 // Block when the channel is full rather than
                                 // dropping data. This propagates backpressure to
                                 // the shell via kernel TTY flow control, matching
                                 // SSH semantics — no output is ever silently lost.
                                 if rt.block_on(tx.send(TermOutput { data, seq })).is_err() {
-                                    *output_sender.lock().unwrap() = None;
+                                    output_sender.lock().unwrap().sender = None;
                                 }
                             }
                         }
@@ -573,14 +580,21 @@ async fn dispatch(
                 }
             }
 
-            // Set up bridge
+            // Set up bridge.
+            // Capture the generation we install so cleanup can guard against
+            // clobbering a sender installed by a concurrent newer TermAttach.
             let (bridge_tx, mut bridge_rx) = tokio::sync::mpsc::channel::<TermOutput>(256);
-            {
+            let my_sender_gen: u64 = {
                 let terms = session.terminals.lock().await;
                 if let Some(term) = terms.get(&term_id) {
-                    *term.output_sender.lock().unwrap() = Some(bridge_tx);
+                    let mut slot = term.output_sender.lock().unwrap();
+                    slot.gen = slot.gen.wrapping_add(1);
+                    slot.sender = Some(bridge_tx);
+                    slot.gen
+                } else {
+                    0
                 }
-            }
+            };
 
             let session_for_input = session.clone();
             let term_id_for_input = term_id.clone();
@@ -623,10 +637,16 @@ async fn dispatch(
 
             output_task.abort();
 
+            // Only clear output_sender if it still belongs to this TermAttach.
+            // A concurrent newer TermAttach may have already replaced the sender;
+            // clearing it unconditionally would silence that client's output.
             {
                 let terms = session.terminals.lock().await;
                 if let Some(term) = terms.get(&term_id) {
-                    *term.output_sender.lock().unwrap() = None;
+                    let mut slot = term.output_sender.lock().unwrap();
+                    if slot.gen == my_sender_gen {
+                        slot.sender = None;
+                    }
                 }
             }
         }

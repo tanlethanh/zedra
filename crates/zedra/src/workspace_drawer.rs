@@ -5,6 +5,7 @@ use crate::editor::git_sidebar::{GitFileSelected, GitSidebar};
 use crate::file_explorer::{FileExplorer, FileSelected};
 use crate::pending::{SharedPendingSlot, shared_pending_slot};
 use crate::theme;
+use zedra_session::SessionState;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DrawerSection {
@@ -16,12 +17,14 @@ pub enum DrawerSection {
 
 #[derive(Clone, Debug)]
 pub enum WorkspaceDrawerEvent {
+    GoHome,
     FileSelected(String),
     GitFileSelected(String),
     CloseRequested,
     DisconnectRequested,
     NewTerminalRequested,
     TerminalSelected(String),
+    TerminalDeleteRequested(String),
 }
 
 impl EventEmitter<WorkspaceDrawerEvent> for WorkspaceDrawer {}
@@ -99,9 +102,14 @@ impl WorkspaceDrawer {
     ///
     /// Called by `WorkspaceView::on_activate` so the drawer can access
     /// session data (git status, terminal list, connection info) without globals.
-    pub fn set_session_handle(&mut self, handle: zedra_session::SessionHandle, cx: &mut Context<Self>) {
+    pub fn set_session_handle(
+        &mut self,
+        handle: zedra_session::SessionHandle,
+        cx: &mut Context<Self>,
+    ) {
         self.session_handle = Some(handle.clone());
-        self.file_explorer.update(cx, |fe, cx| fe.set_session_handle(handle, cx));
+        self.file_explorer
+            .update(cx, |fe, cx| fe.set_session_handle(handle, cx));
     }
 
     /// Reset state after disconnect so next session triggers fresh loads.
@@ -166,12 +174,67 @@ impl WorkspaceDrawer {
         self.active_section
     }
 
-    fn section_title(&self) -> &'static str {
+    fn project_name(&self) -> String {
+        self.session_handle
+            .as_ref()
+            .map(|h| h.project_name())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "zedra".to_string())
+    }
+
+    fn tab_subtitle(&self, cx: &App) -> String {
         match self.active_section {
-            DrawerSection::Files => "Files",
-            DrawerSection::Git => "Source Control",
-            DrawerSection::Terminal => "Terminal",
-            DrawerSection::Session => "Session",
+            DrawerSection::Files => {
+                let wd = self
+                    .session_handle
+                    .as_ref()
+                    .map(|h| h.workdir())
+                    .unwrap_or_default();
+                if wd.is_empty() {
+                    return String::new();
+                }
+                let home = self
+                    .session_handle
+                    .as_ref()
+                    .map(|h| h.home_dir())
+                    .unwrap_or_default();
+                if !home.is_empty() {
+                    if let Some(rest) = wd.strip_prefix(&home) {
+                        return format!("~{rest}");
+                    }
+                }
+                wd
+            }
+            DrawerSection::Git => {
+                let branch = self.git_sidebar.read(cx).branch();
+                if branch.is_empty() {
+                    "git".to_string()
+                } else {
+                    branch.into()
+                }
+            }
+            DrawerSection::Terminal => "terminals".into(),
+            DrawerSection::Session => {
+                let state = self.session_handle.as_ref().map(|h| h.state());
+                let status = match &state {
+                    Some(SessionState::Connected { .. }) => "Connected",
+                    Some(SessionState::Connecting { .. }) => "Connecting",
+                    Some(SessionState::Reconnecting { .. }) => "Reconnecting",
+                    Some(SessionState::HostUnreachable) => "Unreachable",
+                    Some(SessionState::Error(_)) => "Error",
+                    Some(SessionState::Disconnected) | None => "Disconnected",
+                };
+                let ci = self
+                    .session_handle
+                    .as_ref()
+                    .and_then(|h| h.connection_info());
+                let mode = match &ci {
+                    Some(ci) if ci.is_direct => "P2P",
+                    Some(_) => "Relay",
+                    None => "...",
+                };
+                format!("{status} - {mode}")
+            }
         }
     }
 
@@ -242,7 +305,15 @@ impl Render for WorkspaceDrawer {
                 .update(cx, |sidebar, cx| sidebar.set_repo_state(state, cx));
         }
 
-        let title = self.section_title();
+        let project_name = self.project_name();
+        let tab_subtitle = self.tab_subtitle(cx);
+        let status_color = match self.session_handle.as_ref().map(|h| h.state()) {
+            Some(SessionState::Connected { .. }) => theme::ACCENT_GREEN,
+            Some(SessionState::Connecting { .. } | SessionState::Reconnecting { .. }) => {
+                theme::ACCENT_YELLOW
+            }
+            _ => theme::ACCENT_RED,
+        };
         let viewport_h = window.viewport_size().height;
 
         let tab_content: AnyElement = match self.active_section {
@@ -285,15 +356,65 @@ impl Render for WorkspaceDrawer {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .px(px(16.0))
                     .border_b_1()
                     .border_color(rgb(theme::BORDER_SUBTLE))
                     .child(
                         div()
-                            .text_color(rgb(theme::TEXT_SECONDARY))
-                            .text_size(px(theme::FONT_HEADING))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(title),
+                            .id("drawer-home-icon")
+                            .w(px(38.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|_this, _event, _window, cx| {
+                                    cx.emit(WorkspaceDrawerEvent::GoHome);
+                                }),
+                            )
+                            .child(
+                                svg()
+                                    .path("icons/logo.svg")
+                                    .size(px(theme::ICON_LOGO))
+                                    .text_color(rgb(theme::TEXT_PRIMARY)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .child(
+                                div()
+                                    .id("project_name")
+                                    .text_color(rgb(theme::TEXT_SECONDARY))
+                                    .text_size(px(theme::FONT_BODY))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(project_name),
+                            )
+                            .child(
+                                div()
+                                    .id("tab_title")
+                                    .text_color(rgb(theme::TEXT_MUTED))
+                                    .text_size(px(theme::FONT_BODY))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(tab_subtitle),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w(px(38.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .w(px(6.0))
+                                    .h(px(6.0))
+                                    .rounded(px(3.0))
+                                    .bg(rgb(status_color)),
+                            ),
                     ),
             )
             // Tab content

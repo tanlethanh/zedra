@@ -3,6 +3,7 @@
 
 use gpui::*;
 
+use crate::terminal_card::{TerminalCardProps, render_terminal_card};
 use crate::theme;
 use crate::workspace_view::WorkspaceSummary;
 
@@ -52,18 +53,6 @@ impl Render for QuickActionPanel {
 
         let workspaces = self.workspaces.clone();
 
-        // Full-screen backdrop (tap outside panel → close)
-        let backdrop = div()
-            .absolute()
-            .inset_0()
-            .bg(hsla(0.0, 0.0, 0.0, 0.4))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|_this, _event, _window, cx| {
-                    cx.emit(QuickActionEvent::Close);
-                }),
-            );
-
         // Right panel
         let mut panel = div()
             .absolute()
@@ -71,6 +60,7 @@ impl Render for QuickActionPanel {
             .bottom_0()
             .right_0()
             .w(panel_width)
+            .max_w(px(400.0))
             .bg(rgb(theme::BG_PRIMARY))
             .border_l_1()
             .border_color(rgb(theme::BORDER_SUBTLE))
@@ -79,57 +69,16 @@ impl Render for QuickActionPanel {
             .occlude()
             // Status bar spacer
             .child(div().h(px(top_inset)))
-            // Panel header: [× close] [Workspaces title] [home icon]
+            // Panel header
             .child(
                 div()
-                    .h(px(48.0))
+                    // !!!!!!!!!! should be 48px
+                    .h(px(44.0))
                     .flex()
                     .flex_row()
                     .items_center()
-                    .px(px(8.0))
                     .border_b_1()
                     .border_color(rgb(theme::BORDER_SUBTLE))
-                    // × close button
-                    .child(
-                        div()
-                            .id("quick-action-close")
-                            .w(px(36.0))
-                            .h(px(36.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(6.0))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme::hover_bg()))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|_this, _event, _window, cx| {
-                                    cx.emit(QuickActionEvent::Close);
-                                }),
-                            )
-                            .child(
-                                div()
-                                    .text_color(rgb(theme::TEXT_PRIMARY))
-                                    .text_size(px(theme::FONT_HEADING))
-                                    .child("\u{00d7}"),
-                            ),
-                    )
-                    // Title
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .items_center()
-                            .px(px(8.0))
-                            .child(
-                                div()
-                                    .text_color(rgb(theme::TEXT_SECONDARY))
-                                    .text_size(px(theme::FONT_BODY))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child("Workspaces"),
-                            ),
-                    )
-                    // Home icon (right side of header, no label)
                     .child(
                         div()
                             .id("quick-action-home-icon")
@@ -138,9 +87,7 @@ impl Render for QuickActionPanel {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(6.0))
                             .cursor_pointer()
-                            .hover(|s| s.bg(theme::hover_bg()))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
@@ -150,8 +97,41 @@ impl Render for QuickActionPanel {
                             .child(
                                 svg()
                                     .path("icons/logo.svg")
-                                    .size(px(theme::ICON_NAV))
-                                    .text_color(rgb(theme::TEXT_PRIMARY)),
+                                    .size(px(theme::ICON_LOGO))
+                                    .text_color(rgb(theme::TEXT_SECONDARY)),
+                            ),
+                    )
+                    // Title
+                    .child(
+                        div().flex_1().flex().flex_col().child(
+                            div()
+                                .text_color(rgb(theme::TEXT_SECONDARY))
+                                .text_size(px(theme::FONT_BODY))
+                                .text_center()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child("Workspaces"),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .id("quick-action-close")
+                            .w(px(36.0))
+                            .h(px(36.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|_this, _event, _window, cx| {
+                                    cx.emit(QuickActionEvent::Close);
+                                }),
+                            )
+                            .child(
+                                svg()
+                                    .path("icons/x.svg")
+                                    .size(px(16.0))
+                                    .text_color(rgb(theme::TEXT_SECONDARY)),
                             ),
                     ),
             );
@@ -226,38 +206,23 @@ impl Render for QuickActionPanel {
                         .child("No terminals"),
                 );
             } else {
-                // Terminal preview boxes
+                panel = panel.gap_1();
                 for (i, tid) in ws.terminal_ids.iter().enumerate() {
-                    let tid = tid.clone();
-                    let display_name = format!("Terminal {}", i + 1);
+                    let tid_click = tid.clone();
+                    let is_active = ws.active_terminal_id.as_deref() == Some(tid.as_str());
 
-                    panel = panel.child(
-                        div()
-                            .id(SharedString::from(format!("term-{}-{}", index, i)))
-                            .mx(px(16.0))
-                            .mb(px(6.0))
-                            .px(px(12.0))
-                            .py(px(8.0))
-                            .rounded(px(6.0))
-                            .bg(rgb(theme::BG_CARD))
-                            .border_1()
-                            .border_color(rgb(theme::BORDER_SUBTLE))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme::hover_bg()).border_color(rgb(theme::BORDER_DEFAULT)))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |_this, _event, _window, cx| {
-                                    cx.emit(QuickActionEvent::SwitchToTerminal(index, tid.clone()));
-                                }),
-                            )
-                            .child(
-                                div()
-                                    .font_family(zedra_terminal::TERMINAL_FONT_FAMILY)
-                                    .text_color(rgb(theme::TEXT_SECONDARY))
-                                    .text_size(px(theme::FONT_DETAIL))
-                                    .child(display_name),
-                            ),
-                    );
+                    let card = render_terminal_card(TerminalCardProps {
+                        id: format!("{}-{}", index, tid),
+                        index: i + 1,
+                        is_active,
+                    })
+                    .on_click(cx.listener(
+                        move |_this, _event, _window, cx| {
+                            cx.emit(QuickActionEvent::SwitchToTerminal(index, tid_click.clone()));
+                        },
+                    ));
+
+                    panel = panel.child(card);
                 }
             }
 
@@ -266,7 +231,7 @@ impl Render for QuickActionPanel {
                 div()
                     .h(px(1.0))
                     .mx(px(16.0))
-                    .mt(px(4.0))
+                    .mt(px(6.0))
                     .bg(rgb(theme::BORDER_SUBTLE)),
             );
         }
@@ -283,15 +248,8 @@ impl Render for QuickActionPanel {
         }
 
         // Spacer + bottom inset
-        panel = panel
-            .child(div().flex_1())
-            .child(div().h(px(bottom_inset)));
+        panel = panel.child(div().flex_1()).child(div().h(px(bottom_inset)));
 
-        div()
-            .track_focus(&self.focus_handle)
-            .absolute()
-            .inset_0()
-            .child(backdrop)
-            .child(panel)
+        panel.track_focus(&self.focus_handle)
     }
 }

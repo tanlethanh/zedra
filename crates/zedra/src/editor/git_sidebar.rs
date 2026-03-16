@@ -22,23 +22,13 @@ pub enum GitFileStatus {
 }
 
 impl GitFileStatus {
-    pub fn color(&self) -> Hsla {
-        match self {
-            Self::Modified => rgb(0xe5c07b).into(),
-            Self::Added => rgb(0x98c379).into(),
-            Self::Deleted => rgb(0xe06c75).into(),
-            Self::Renamed => rgb(0x61afef).into(),
-            Self::Untracked => rgb(0x808080).into(),
-        }
-    }
-
     pub fn icon(&self) -> &'static str {
         match self {
             Self::Modified => "M",
             Self::Added => "A",
             Self::Deleted => "D",
             Self::Renamed => "R",
-            Self::Untracked => "?",
+            Self::Untracked => "U",
         }
     }
 
@@ -90,7 +80,12 @@ impl GitRepoState {
     pub fn sample() -> Self {
         Self {
             branch: "main".to_string(),
-            staged_files: vec![GitFileEntry::new("src/lib.rs", GitFileStatus::Modified, 12, 3)],
+            staged_files: vec![GitFileEntry::new(
+                "src/lib.rs",
+                GitFileStatus::Modified,
+                12,
+                3,
+            )],
             unstaged_files: vec![GitFileEntry::new(
                 "src/main.rs",
                 GitFileStatus::Modified,
@@ -147,6 +142,10 @@ impl GitSidebar {
         }
     }
 
+    pub fn branch(&self) -> &str {
+        &self.repo_state.branch
+    }
+
     pub fn set_repo_state(&mut self, state: GitRepoState, cx: &mut Context<Self>) {
         self.repo_state = state;
         cx.notify();
@@ -164,12 +163,11 @@ impl GitSidebar {
         title: &str,
         count: usize,
         section_idx: usize,
-        action_label: Option<&str>,
+        _action_label: Option<&str>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let is_expanded = self.section_expanded[section_idx];
         let title = title.to_string();
-        let action_label = action_label.map(|s| s.to_string());
 
         div()
             .id(section_idx)
@@ -178,7 +176,7 @@ impl GitSidebar {
             .items_center()
             .justify_between()
             .h(px(28.0))
-            .px_2()
+            .px(px(theme::DRAWER_PADDING))
             .cursor_pointer()
             .hover(|s| s.bg(hsla(0.0, 0.0, 1.0, 0.05)))
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -189,42 +187,33 @@ impl GitSidebar {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap_2()
+                    .gap_1()
                     .child(
-                        div()
-                            .text_color(rgb(0x505050))
-                            .text_size(px(theme::FONT_DETAIL))
-                            .child(if is_expanded { "v" } else { ">" }),
+                        svg()
+                            .path(if is_expanded {
+                                "icons/chevron-down.svg"
+                            } else {
+                                "icons/chevron-right.svg"
+                            })
+                            .size(px(theme::FONT_DETAIL))
+                            .text_color(rgb(theme::TEXT_MUTED))
+                            .left(px(-2.0)),
                     )
                     .child(
                         div()
-                            .text_color(rgb(0xcacaca))
-                            .text_size(px(11.0))
+                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_size(px(theme::FONT_DETAIL))
                             .font_weight(FontWeight::MEDIUM)
                             .child(title),
-                    )
-                    .child(
-                        div()
-                            .px_1()
-                            .rounded(px(8.0))
-                            .bg(rgb(0x252525))
-                            .text_color(rgb(0xcacaca))
-                            .text_size(px(theme::FONT_DETAIL))
-                            .child(count.to_string()),
                     ),
             )
-            .when_some(action_label, |el, label| {
-                el.child(
-                    div()
-                        .px_2()
-                        .py_px()
-                        .rounded(px(3.0))
-                        .text_color(rgb(0x505050))
-                        .text_size(px(theme::FONT_DETAIL))
-                        .hover(|s| s.bg(rgb(0x252525)).text_color(rgb(0xcacaca)))
-                        .child(label),
-                )
-            })
+            .child(
+                div()
+                    .px_1()
+                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_size(px(theme::FONT_DETAIL))
+                    .child(count.to_string()),
+            )
     }
 
     fn render_file_entry(&self, file: &GitFileEntry, cx: &mut Context<Self>) -> impl IntoElement {
@@ -240,11 +229,10 @@ impl GitSidebar {
             .flex_row()
             .items_center()
             .justify_between()
-            .h(px(26.0))
-            .px_2()
+            .h(px(28.0))
+            .px(px(theme::DRAWER_PADDING))
             .cursor_pointer()
-            .rounded(px(3.0))
-            .hover(|s| s.bg(hsla(0.0, 0.0, 1.0, 0.05)))
+            // .hover(|s| s.bg(hsla(0.0, 0.0, 1.0, 0.05)))
             .on_click({
                 let path = path.clone();
                 cx.listener(move |_this, _, _, cx| {
@@ -256,18 +244,18 @@ impl GitSidebar {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap_2()
+                    .gap_1()
                     .overflow_hidden()
                     .child(
                         div()
                             .w(px(ICON_SIZE))
-                            .text_color(status.color())
-                            .text_size(px(11.0))
+                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_size(px(theme::FONT_BODY))
                             .child(status.icon()),
                     )
                     .child(
                         div()
-                            .text_color(rgb(0xcacaca))
+                            .text_color(rgb(theme::TEXT_SECONDARY))
                             .text_size(px(theme::FONT_BODY))
                             .overflow_hidden()
                             .child(filename),
@@ -283,76 +271,17 @@ impl GitSidebar {
                     .when(insertions > 0, |s| {
                         s.child(
                             div()
-                                .text_color(rgb(0x98c379))
+                                .text_color(rgb(theme::TEXT_MUTED))
                                 .child(format!("+{}", insertions)),
                         )
                     })
                     .when(deletions > 0, |s| {
                         s.child(
                             div()
-                                .text_color(rgb(0xe06c75))
+                                .text_color(rgb(theme::TEXT_MUTED))
                                 .child(format!("-{}", deletions)),
                         )
                     }),
-            )
-    }
-
-    fn render_commit_section(&self) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .p_2()
-            .gap_2()
-            .border_b_1()
-            .border_color(rgb(0x1a1a1a))
-            .child(
-                div()
-                    .h(px(60.0))
-                    .px_2()
-                    .py_1()
-                    .bg(rgb(0x131313))
-                    .rounded(px(4.0))
-                    .border_1()
-                    .border_color(rgb(0x252525))
-                    .text_color(rgb(0x505050))
-                    .text_size(px(theme::FONT_BODY))
-                    .child("Commit message..."),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .h(px(28.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .bg(rgb(0x252525))
-                            .rounded(px(4.0))
-                            .text_color(rgb(0xcacaca))
-                            .text_size(px(theme::FONT_BODY))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(rgb(0x303030)))
-                            .child("Commit"),
-                    )
-                    .child(
-                        div()
-                            .w(px(60.0))
-                            .h(px(28.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .bg(rgb(0x61afef))
-                            .rounded(px(4.0))
-                            .text_color(rgb(0x0e0c0c))
-                            .text_size(px(theme::FONT_BODY))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(rgb(0x71bfff)))
-                            .child("Push"),
-                    ),
             )
     }
 }
@@ -365,7 +294,7 @@ impl Focusable for GitSidebar {
 
 impl Render for GitSidebar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let branch = self.repo_state.branch.clone();
+        // let branch = self.repo_state.branch.clone();
 
         // Pre-compute entries
         let staged_entries: Vec<AnyElement> = self
@@ -387,10 +316,9 @@ impl Render for GitSidebar {
             .map(|f| self.render_file_entry(f, cx).into_any_element())
             .collect();
 
-        let commit_section = self.render_commit_section().into_any_element();
         let staged_header = self
             .render_section_header(
-                "STAGED CHANGES",
+                "Staged changes",
                 self.repo_state.total_staged(),
                 0,
                 Some("-"),
@@ -399,7 +327,7 @@ impl Render for GitSidebar {
             .into_any_element();
         let unstaged_header = self
             .render_section_header(
-                "CHANGES",
+                "Changes",
                 self.repo_state.total_unstaged(),
                 1,
                 Some("+"),
@@ -408,7 +336,7 @@ impl Render for GitSidebar {
             .into_any_element();
         let untracked_header = self
             .render_section_header(
-                "UNTRACKED",
+                "Untracked",
                 self.repo_state.total_untracked(),
                 2,
                 Some("+"),
@@ -426,32 +354,6 @@ impl Render for GitSidebar {
             .flex_col()
             .size_full()
             .bg(rgb(0x0e0c0c))
-            // Branch header
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .h(px(36.0))
-                    .px_3()
-                    .gap_2()
-                    .border_b_1()
-                    .border_color(rgb(0x1a1a1a))
-                    .child(
-                        div()
-                            .text_color(rgb(0x61afef))
-                            .text_size(px(theme::FONT_DETAIL))
-                            .child("*"),
-                    )
-                    .child(
-                        div()
-                            .text_color(rgb(0xcacaca))
-                            .text_size(px(theme::FONT_DETAIL))
-                            .child(branch),
-                    ),
-            )
-            // Commit section
-            .child(commit_section)
             // File sections (scrollable)
             .child(
                 div()

@@ -21,6 +21,9 @@ pub const ACCENT_BLUE: u32 = 0x61afef;
 pub const ACCENT_YELLOW: u32 = 0xe5c07b;
 pub const ACCENT_RED: u32 = 0xe06c75;
 
+// Spacing
+pub const DRAWER_PADDING: f32 = 12.0; // Horizontal padding for drawer tab content
+
 // Font sizes (pixels) — change these to scale all UI text
 pub const FONT_TITLE: f32 = 22.0; // App main title ("Zedra")
 pub const FONT_HEADING: f32 = 13.0; // Section headings, dialog titles
@@ -28,6 +31,7 @@ pub const FONT_BODY: f32 = 12.0; // Standard UI text: labels, buttons, file name
 pub const FONT_DETAIL: f32 = 12.0; // Small metadata, code previews, badges
 
 // Icon sizes (pixels)
+pub const ICON_LOGO: f32 = 20.0;
 pub const ICON_NAV: f32 = 18.0; // Drawer nav bar icons
 pub const ICON_HEADER: f32 = 18.0; // Header logo / action icons
 pub const ICON_FILE: f32 = 12.0; // File tree icons

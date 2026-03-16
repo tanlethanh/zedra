@@ -296,6 +296,7 @@ pub struct SessionInfoResult {
     pub arch: Option<String>,
     pub os_version: Option<String>,
     pub host_version: Option<String>,
+    pub home_dir: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

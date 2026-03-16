@@ -28,6 +28,7 @@ pub enum SessionState {
         hostname: String,
         username: String,
         workdir: String,
+        home_dir: String,
         os: String,
         arch: String,
         os_version: String,
@@ -75,6 +76,22 @@ struct SessionHandleInner {
     // Connection state (replaced on each new connect)
     client: Mutex<Option<irpc::Client<ZedraProto>>>,
     session_state: Mutex<SessionState>,
+    /// Monotonically increasing counter bumped on every call to `connect()`.
+    /// Each connection watcher captures its value at creation time and skips
+    /// `spawn_reconnect()` if the counter has advanced — meaning a newer
+    /// connection already superseded this one.  This prevents the stale watcher
+    /// from a still-alive old connection triggering a spurious second reconnect
+    /// cycle after foreground-resume has already successfully re-established.
+    conn_generation: AtomicU64,
+    /// Last hostname/workdir/project-name seen in a successful Connected state.
+    /// Updated on every successful connect; never cleared on disconnect so the
+    /// UI can show the project name even while Reconnecting.
+    workdir: Mutex<String>,
+    hostname: Mutex<String>,
+    home_dir: Mutex<String>,
+    /// Precomputed last path component of `workdir` (e.g. "zedra").
+    /// Stored so callers never have to split a path string to display the name.
+    project_name: Mutex<String>,
     connection_info: Arc<Mutex<Option<ConnectionInfo>>>,
     latency_ms: Arc<AtomicU64>,
 
@@ -102,6 +119,11 @@ impl SessionHandle {
             pending_ticket: Mutex::new(None),
             client: Mutex::new(None),
             session_state: Mutex::new(SessionState::Disconnected),
+            conn_generation: AtomicU64::new(0),
+            workdir: Mutex::new(String::new()),
+            hostname: Mutex::new(String::new()),
+            home_dir: Mutex::new(String::new()),
+            project_name: Mutex::new(String::new()),
             connection_info: Arc::new(Mutex::new(None)),
             latency_ms: Arc::new(AtomicU64::new(0)),
             reconnect_attempt: AtomicU32::new(0),
@@ -322,12 +344,54 @@ impl SessionHandle {
     // Connect / reconnect
     // -----------------------------------------------------------------------
 
+    /// Workdir and hostname from the last successful connect, or empty string if
+    /// we have never connected.  Safe to call at any time including during Reconnecting.
+    pub fn workdir(&self) -> String {
+        self.0
+            .workdir
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn home_dir(&self) -> String {
+        self.0
+            .home_dir
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn hostname(&self) -> String {
+        self.0
+            .hostname
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    /// Last path component of the remote working directory (e.g. `"zedra"`).
+    /// Precomputed and stored on every successful connect so callers never need
+    /// to split the workdir string themselves.  Returns an empty string before
+    /// the first successful connection.
+    pub fn project_name(&self) -> String {
+        self.0
+            .project_name
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
     /// Establish a QUIC/iroh connection to `addr` and run PKI auth.
     /// Updates internal state (session_state, client, terminals) in place.
     pub async fn connect(&self, addr: iroh::EndpointAddr) -> Result<()> {
         self.set_endpoint_addr(addr.clone());
         self.set_endpoint_id(addr.id);
         self.0.user_disconnect.store(false, Ordering::Release);
+
+        // Bump the connection generation so any watcher still alive from a
+        // previous connection will recognise it is stale and skip reconnect.
+        let my_gen = self.0.conn_generation.fetch_add(1, Ordering::AcqRel) + 1;
 
         tracing::info!(
             "SessionHandle: connecting via iroh (endpoint: {})",
@@ -490,6 +554,19 @@ impl SessionHandle {
         let handle_for_watcher = self.clone();
         tokio::spawn(async move {
             conn_for_watcher.closed().await;
+            // Only trigger a reconnect if this is still the active connection.
+            // If conn_generation has advanced, a newer connect() call already
+            // superseded this one — firing spawn_reconnect() here would cause a
+            // spurious second reconnect cycle that interrupts input and briefly
+            // clears the project name from the header.
+            let current_gen = handle_for_watcher.0.conn_generation.load(Ordering::Acquire);
+            if current_gen != my_gen {
+                tracing::debug!(
+                    "stale connection closed (gen={} current={}), skipping reconnect",
+                    my_gen, current_gen,
+                );
+                return;
+            }
             tracing::info!("iroh connection closed, triggering reconnect");
             if let Ok(mut reason) = handle_for_watcher.0.reconnect_reason.lock() {
                 *reason = ReconnectReason::ConnectionLost;
@@ -597,11 +674,33 @@ impl SessionHandle {
                         }
                     }
                 }
+                // Cache for UI display during future Reconnecting states.
+                if !info.hostname.is_empty() {
+                    if let Ok(mut h) = self.0.hostname.lock() {
+                        *h = info.hostname.clone();
+                    }
+                }
+                if !info.workdir.is_empty() {
+                    let project = info.workdir.rsplit('/').next().unwrap_or(&info.workdir).to_string();
+                    if let Ok(mut w) = self.0.workdir.lock() {
+                        *w = info.workdir.clone();
+                    }
+                    if let Ok(mut p) = self.0.project_name.lock() {
+                        *p = project;
+                    }
+                }
+                let home_dir = info.home_dir.unwrap_or_default();
+                if !home_dir.is_empty() {
+                    if let Ok(mut h) = self.0.home_dir.lock() {
+                        *h = home_dir.clone();
+                    }
+                }
                 if let Ok(mut s) = self.0.session_state.lock() {
                     *s = SessionState::Connected {
                         hostname: info.hostname,
                         username: info.username,
                         workdir: info.workdir,
+                        home_dir,
                         os: info.os.unwrap_or_default(),
                         arch: info.arch.unwrap_or_default(),
                         os_version: info.os_version.unwrap_or_default(),
@@ -616,6 +715,7 @@ impl SessionHandle {
                         hostname: fallback_hostname.to_string(),
                         username: String::new(),
                         workdir: String::new(),
+                        home_dir: String::new(),
                         os: String::new(),
                         arch: String::new(),
                         os_version: String::new(),
@@ -660,9 +760,30 @@ impl SessionHandle {
         let last_seq = terminal.last_seq();
         let terminal_pump = terminal.clone();
         tokio::spawn(async move {
+            let mut first_msg = true;
             loop {
                 match irpc_output_rx.recv().await {
                     Ok(Some(output)) => {
+                        // On the first message, detect a backlog gap: if the oldest
+                        // available seq is ahead of what we last processed, entries
+                        // were evicted from the 1000-entry cap and the VTE processor
+                        // state is inconsistent with the incoming bytes.  Inject a
+                        // terminal reset so the emulator starts clean rather than
+                        // misinterpreting a stream that begins mid-escape-sequence.
+                        if first_msg {
+                            first_msg = false;
+                            if last_seq > 0 && output.seq > last_seq + 1 {
+                                tracing::warn!(
+                                    "terminal {}: backlog gap detected (last_seq={} first_recv_seq={}), injecting reset",
+                                    terminal_pump.id, last_seq, output.seq,
+                                );
+                                if let Ok(mut buf) = terminal_pump.output.lock() {
+                                    // RIS (Reset to Initial State) — clears screen and
+                                    // all modes so the subsequent backlog renders cleanly.
+                                    buf.push_back(b"\x1bc".to_vec());
+                                }
+                            }
+                        }
                         terminal_pump.update_seq(output.seq);
                         if let Ok(mut buf) = terminal_pump.output.lock() {
                             buf.push_back(output.data);
@@ -985,6 +1106,19 @@ impl SessionHandle {
     pub async fn terminal_list(&self) -> Result<Vec<String>> {
         let result: TermListResult = self.client()?.rpc(TermListReq {}).await?;
         Ok(result.terminals.into_iter().map(|e| e.id).collect())
+    }
+
+    /// Close a terminal on the server and remove it from the local list.
+    pub async fn terminal_close(&self, id: &str) -> Result<()> {
+        let _: TermCloseResult = self
+            .client()?
+            .rpc(TermCloseReq { id: id.to_string() })
+            .await?;
+        if let Ok(mut terms) = self.0.terminals.lock() {
+            terms.retain(|t| t.id != id);
+        }
+        tracing::info!("Terminal closed: {}", id);
+        Ok(())
     }
 
     /// Attach to a pre-existing server terminal (cold-start session resume).

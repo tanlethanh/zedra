@@ -1,6 +1,6 @@
 use gpui::*;
 
-use crate::pending::{shared_pending_slot, SharedPendingSlot};
+use crate::pending::{SharedPendingSlot, shared_pending_slot};
 use crate::theme;
 
 #[derive(Clone, Debug)]
@@ -86,7 +86,11 @@ impl FileExplorer {
     }
 
     /// Set the session handle so the explorer can make RPC calls.
-    pub fn set_session_handle(&mut self, handle: zedra_session::SessionHandle, cx: &mut Context<Self>) {
+    pub fn set_session_handle(
+        &mut self,
+        handle: zedra_session::SessionHandle,
+        cx: &mut Context<Self>,
+    ) {
         self.session_handle = Some(handle);
         self.try_load_remote_root(cx);
     }
@@ -308,7 +312,12 @@ impl Focusable for FileExplorer {
 impl Render for FileExplorer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // If a session appeared after construction, load remote root
-        if !self.remote_loaded && self.session_handle.as_ref().map_or(false, |h| h.is_connected()) {
+        if !self.remote_loaded
+            && self
+                .session_handle
+                .as_ref()
+                .map_or(false, |h| h.is_connected())
+        {
             self.try_load_remote_root(cx);
         }
 
@@ -321,7 +330,8 @@ impl Render for FileExplorer {
         if flat.len() != self.last_flat_count {
             log::info!(
                 "[PERF] file_explorer: {} entries, remote={}",
-                flat.len(), self.remote_loaded
+                flat.len(),
+                self.remote_loaded
             );
             self.last_flat_count = flat.len();
         }
@@ -357,13 +367,13 @@ impl Render for FileExplorer {
                 svg()
                     .path(icon_path)
                     .size(icon_size)
-                    .text_color(rgb(theme::TEXT_SECONDARY))
+                    .text_color(rgb(theme::TEXT_MUTED))
                     .into_any_element()
             } else {
                 svg()
                     .path("icons/file.svg")
                     .size(px(theme::ICON_FILE))
-                    .text_color(rgb(0x808080))
+                    .text_color(rgb(theme::TEXT_MUTED))
                     .into_any_element()
             };
 

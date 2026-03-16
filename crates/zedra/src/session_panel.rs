@@ -41,15 +41,6 @@ pub fn render_session_tab(
         .unwrap_or_else(|| "\u{2014}".to_string());
     let conn_info = handle.connection_info();
 
-    let (status_label, status_color) = match &state {
-        SessionState::Connected { .. } => ("Connected", theme::ACCENT_GREEN),
-        SessionState::Connecting { .. } => ("Connecting...", theme::ACCENT_YELLOW),
-        SessionState::Reconnecting { .. } => ("Reconnecting...", theme::ACCENT_YELLOW),
-        SessionState::Disconnected => ("Disconnected", theme::ACCENT_RED),
-        SessionState::HostUnreachable => ("Unreachable", theme::ACCENT_RED),
-        SessionState::Error(_) => ("Error", theme::ACCENT_RED),
-    };
-
     let (hostname, username, workdir, os, arch, os_version, host_version) = match &state {
         SessionState::Connected {
             hostname,
@@ -59,6 +50,7 @@ pub fn render_session_tab(
             arch,
             os_version,
             host_version,
+            ..
         } => (
             hostname.clone(),
             username.clone(),
@@ -71,37 +63,12 @@ pub fn render_session_tab(
         _ => Default::default(),
     };
 
-    // --- Status banner ---
-
-    let mut content = div().px(px(16.0)).pt(px(12.0)).flex().flex_col().child(
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(6.0))
-            .pb(px(10.0))
-            .border_b_1()
-            .border_color(rgb(theme::BORDER_SUBTLE))
-            .child(
-                div()
-                    .w(px(theme::ICON_STATUS))
-                    .h(px(theme::ICON_STATUS))
-                    .rounded(px(3.0))
-                    .bg(rgb(status_color)),
-            )
-            .child(
-                div()
-                    .text_color(rgb(theme::TEXT_PRIMARY))
-                    .text_size(px(theme::FONT_BODY))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(status_label),
-            ),
-    );
-
     // --- Host section ---
 
-    content = content
-        .child(section_header("HOST"))
+    let mut content = div()
+        .px(px(theme::DRAWER_PADDING))
+        .flex()
+        .flex_col()
         .child(info_row("Hostname", hostname));
     if !username.is_empty() {
         content = content.child(info_row("User", username));
@@ -136,14 +103,14 @@ pub fn render_session_tab(
             theme::ACCENT_YELLOW
         };
 
-        content = content.child(section_header("CONNECTION")).child(
+        content = content.child(
             div()
                 .py(px(4.0))
                 .child(
                     div()
                         .text_color(rgb(theme::TEXT_MUTED))
                         .text_size(px(theme::FONT_DETAIL))
-                        .child("Type"),
+                        .child("Connection"),
                 )
                 .child(
                     div()
@@ -194,16 +161,13 @@ pub fn render_session_tab(
 
     if let Some(ci) = &conn_info {
         content = content
-            .child(section_header("ENDPOINTS"))
             .child(info_row("Local", ci.local_endpoint_id.clone()))
             .child(info_row("Remote", ci.endpoint_id.clone()));
     }
 
     // --- Session section ---
 
-    content = content
-        .child(section_header("SESSION"))
-        .child(info_row("Session ID", session_id));
+    content = content.child(info_row("Session ID", session_id));
 
     if let SessionState::Error(msg) = &state {
         content = content.child(
@@ -217,7 +181,6 @@ pub fn render_session_tab(
 
     let disconnect_button = div()
         .id("session-disconnect-btn")
-        .mx(px(16.0))
         .mt(px(16.0))
         .px(px(12.0))
         .py(px(8.0))
@@ -250,23 +213,8 @@ fn info_row(label: &'static str, value: String) -> Div {
         .child(
             div()
                 .mt(px(1.0))
-                .text_color(rgb(theme::TEXT_PRIMARY))
+                .text_color(rgb(theme::TEXT_SECONDARY))
                 .text_size(px(theme::FONT_BODY))
                 .child(value),
-        )
-}
-
-fn section_header(label: &'static str) -> Div {
-    div()
-        .pt(px(10.0))
-        .pb(px(4.0))
-        .border_b_1()
-        .border_color(rgb(theme::BORDER_SUBTLE))
-        .child(
-            div()
-                .text_color(rgb(theme::TEXT_SECONDARY))
-                .text_size(px(theme::FONT_DETAIL))
-                .font_weight(FontWeight::MEDIUM)
-                .child(label),
         )
 }
