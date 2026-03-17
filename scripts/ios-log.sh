@@ -6,6 +6,7 @@
 #
 # Options:
 #   --filter <pattern>   Additional grep pattern on top of default Zedra filter
+#   --with-native        Include native logs
 #   --select-device      Ignore saved device preference and re-prompt
 #   --simulator          Stream logs from a booted simulator instead of a physical device
 #
@@ -18,6 +19,7 @@
 set -euo pipefail
 
 FILTER=""
+WITH_NATIVE=false
 SELECT_DEVICE=false
 SIMULATOR=false
 PREF_FILE="/tmp/zedra-ios-device-$PPID"
@@ -29,6 +31,8 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --filter)
             FILTER="$2"; shift 2 ;;
+        --with-native)
+            WITH_NATIVE=true; shift ;;
         --select-device)
             SELECT_DEVICE=true; shift ;;
         --simulator)
@@ -169,6 +173,12 @@ fi
 GREP_PATTERN='\[I |\[W |\[E |\[D |panic|PANIC|crash|CRASH|NSException|Terminating'
 if [[ -n "$FILTER" ]]; then
     GREP_PATTERN="$GREP_PATTERN|$FILTER"
+fi
+
+if [[ "$WITH_NATIVE" == true ]]; then
+    # Native logs: include level prefixes
+    echo "==> Including native logs"
+    GREP_PATTERN="$GREP_PATTERN|<I|<W|<E|<D"
 fi
 
 echo "==> Streaming logs from $DEVICE_NAME (Ctrl-C to stop)..."
