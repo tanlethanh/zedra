@@ -55,7 +55,14 @@ pub struct GitFileEntry {
 
 impl GitFileEntry {
     pub fn new(path: &str, status: GitFileStatus, insertions: usize, deletions: usize) -> Self {
-        let filename = path.rsplit('/').next().unwrap_or(path).to_string();
+        let is_dir = path.ends_with('/');
+        let trimmed = path.trim_end_matches('/');
+        let name = trimmed.rsplit('/').next().unwrap_or(trimmed);
+        let filename = if is_dir {
+            format!("{}/", name)
+        } else {
+            name.to_string()
+        };
         Self {
             path: path.to_string(),
             filename,
