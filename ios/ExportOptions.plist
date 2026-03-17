@@ -12,7 +12,7 @@
     <string>app-store</string>
 
     <key>teamID</key>
-    <string>4R7EAZY462</string>
+    <string>GHV27CNR5U</string>
 
     <!-- Strip bitcode — Bitcode upload is deprecated since Xcode 14.
          Apple no longer accepts apps with bitcode enabled. -->

@@ -44,7 +44,7 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         PRODUCT_BUNDLE_IDENTIFIER: dev.zedra.app
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: 4R7EAZY462
+        DEVELOPMENT_TEAM: GHV27CNR5U
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_NSCameraUsageDescription: "Zedra needs camera access to scan QR codes for pairing"
