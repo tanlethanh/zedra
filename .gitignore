@@ -28,4 +28,17 @@ docs/archive
 .env
 !.env.example
 
+# Credential and key files
+*.pem
+*.key
+*.p12
+*.mobileprovision
+*.cer
+credentials.json
+secrets.json
+
+# Explicit credential paths (belt-and-suspenders alongside glob rules above)
+android/.env
+ios/Zedra/GoogleService-Info.plist
+
 .private
