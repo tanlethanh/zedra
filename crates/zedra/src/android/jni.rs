@@ -7,7 +7,8 @@ use ndk::native_window::NativeWindow;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Once};
 
-use crate::android::command_queue::{AndroidCommand, get_command_sender};
+use crate::{install_panic_hook};
+use crate::android::{app, command_queue::{AndroidCommand, get_command_sender}};
 
 // Global storage for JavaVM to enable Rust→Java callbacks
 static JVM: Mutex<Option<Arc<JavaVM>>> = Mutex::new(None);
@@ -76,7 +77,7 @@ fn init_logging() {
                 .with_tag("zedra"),
         );
 
-        crate::install_panic_hook();
+        install_panic_hook();
     });
 }
 
@@ -168,7 +169,7 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_gpuiInitMainThread(
     _class: JClass,
 ) {
     log::info!("gpuiInitMainThread called - initializing thread-local AndroidApp");
-    crate::android::app::init_android_app();
+    app::init_android_app();
 }
 
 /// Process commands from the queue on the main thread
@@ -180,7 +181,7 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_gpuiProcessCommands(
     _class: JClass,
 ) {
     // Process all pending commands
-    if let Err(e) = crate::android::app::process_commands_from_queue() {
+    if let Err(e) = app::process_commands_from_queue() {
         log::error!("Error processing commands: {:?}", e);
     }
 }
@@ -195,7 +196,7 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_gpuiProcessCriticalComman
     _class: JClass,
 ) {
     log::info!("Processing critical commands immediately");
-    if let Err(e) = crate::android::app::process_commands_from_queue() {
+    if let Err(e) = app::process_commands_from_queue() {
         log::error!("Error processing critical commands: {:?}", e);
     }
 }
@@ -284,7 +285,7 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeProcessSurfaceCo
     _env: JNIEnv,
     _class: JClass,
 ) {
-    if let Err(e) = crate::android::app::process_commands_from_queue() {
+    if let Err(e) = app::process_commands_from_queue() {
         log::error!("Error processing surface commands: {:?}", e);
     }
 }
@@ -710,20 +711,22 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeImeInput(
 // Public Rust API for keyboard control (Rust → Java callbacks)
 // =============================================================================
 
+/// Wrap `f` in `catch_unwind` and log any panic as an error.
+///
+/// Prevents Rust panics from propagating through the JNI boundary (undefined
+/// behaviour if a Rust panic unwinds into C/Java frames).
+fn jni_call(name: &'static str, f: impl FnOnce() + std::panic::UnwindSafe) {
+    if let Err(e) = std::panic::catch_unwind(f) {
+        log::error!("Panic in {}: {:?}", name, e);
+    }
+}
+
 /// Show the Android soft keyboard
 ///
 /// Call this when a text input gains focus
 pub fn show_keyboard() {
     log::info!("show_keyboard() called");
-
-    // Wrap in catch_unwind to prevent panics from crossing JNI boundary
-    let result = std::panic::catch_unwind(|| {
-        show_keyboard_inner();
-    });
-
-    if let Err(e) = result {
-        log::error!("Panic in show_keyboard: {:?}", e);
-    }
+    jni_call("show_keyboard", show_keyboard_inner);
 }
 
 fn show_keyboard_inner() {
@@ -787,14 +790,7 @@ fn show_keyboard_inner() {
 /// Call this to open the camera for QR code scanning
 pub fn launch_qr_scanner() {
     log::info!("launch_qr_scanner() called");
-
-    let result = std::panic::catch_unwind(|| {
-        launch_qr_scanner_inner();
-    });
-
-    if let Err(e) = result {
-        log::error!("Panic in launch_qr_scanner: {:?}", e);
-    }
+    jni_call("launch_qr_scanner", launch_qr_scanner_inner);
 }
 
 fn launch_qr_scanner_inner() {
@@ -851,15 +847,7 @@ fn launch_qr_scanner_inner() {
 /// Call this when a text input loses focus
 pub fn hide_keyboard() {
     log::info!("hide_keyboard() called");
-
-    // Wrap in catch_unwind to prevent panics from crossing JNI boundary
-    let result = std::panic::catch_unwind(|| {
-        hide_keyboard_inner();
-    });
-
-    if let Err(e) = result {
-        log::error!("Panic in hide_keyboard: {:?}", e);
-    }
+    jni_call("hide_keyboard", hide_keyboard_inner);
 }
 
 fn hide_keyboard_inner() {
