@@ -9,6 +9,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::platform_bridge;
+
 /// Serialized workspace entry persisted to disk.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PersistedWorkspace {
@@ -55,7 +57,7 @@ const STORE_FILE: &str = "workspaces.json";
 
 /// Returns the full path to the workspace store file, creating the directory if needed.
 fn store_path() -> Option<PathBuf> {
-    let data_dir = crate::platform_bridge::bridge().data_directory()?;
+    let data_dir = platform_bridge::bridge().data_directory()?;
     let dir = PathBuf::from(data_dir).join(STORE_DIR);
     if !dir.exists() {
         if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -174,13 +176,11 @@ pub fn snapshot_from_handle(handle: &zedra_session::SessionHandle) -> Option<Per
     let encoded = zedra_rpc::pairing::encode_endpoint_addr(&addr).ok()?;
     let session_id = handle.session_id();
 
-    let (project_path, hostname) = match handle.state() {
-        zedra_session::SessionState::Connected { workdir, hostname, .. } => {
-            let wp = if workdir.is_empty() { None } else { Some(workdir) };
-            (wp, Some(hostname))
-        }
-        _ => (None, None),
-    };
+    // Use cached workdir/hostname — available even during Reconnecting or Error states.
+    let workdir = handle.workdir();
+    let hostname = handle.hostname();
+    let project_path = if workdir.is_empty() { None } else { Some(workdir) };
+    let hostname = if hostname.is_empty() { None } else { Some(hostname) };
 
     Some(PersistedWorkspace {
         endpoint_addr: encoded,

@@ -12,7 +12,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use crate::theme;
+use crate::{fonts, theme};
 
 /// Props that describe how a single terminal card should be rendered.
 pub struct TerminalCardProps {
@@ -69,7 +69,7 @@ pub fn render_terminal_card(props: TerminalCardProps) -> Stateful<Div> {
         .child(
             div()
                 .flex_1()
-                .font_family(crate::fonts::MONO_FONT_FAMILY)
+                .font_family(fonts::MONO_FONT_FAMILY)
                 .text_color(if is_active {
                     rgb(theme::TEXT_PRIMARY)
                 } else {

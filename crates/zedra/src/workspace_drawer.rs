@@ -4,7 +4,9 @@ use crate::editor::git_sidebar::{GitFileEntry, GitFileStatus, GitRepoState};
 use crate::editor::git_sidebar::{GitFileSelected, GitSidebar};
 use crate::file_explorer::{FileExplorer, FileSelected};
 use crate::pending::{SharedPendingSlot, shared_pending_slot};
+use crate::platform_bridge;
 use crate::theme;
+use crate::{session_panel, terminal_panel};
 use zedra_session::SessionState;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -38,6 +40,7 @@ pub struct WorkspaceDrawer {
     git_loaded: bool,
     active_terminal_id: Option<String>,
     session_handle: Option<zedra_session::SessionHandle>,
+    /// Held to keep GPUI event subscriptions alive; dropped when the view is dropped.
     _subscriptions: Vec<Subscription>,
 }
 
@@ -83,11 +86,6 @@ impl WorkspaceDrawer {
             self.load_git_status();
         }
         cx.notify();
-    }
-
-    pub fn refresh_git(&mut self, _cx: &mut Context<Self>) {
-        self.git_loaded = false;
-        self.load_git_status();
     }
 
     /// Called when this workspace becomes active.
@@ -179,7 +177,7 @@ impl WorkspaceDrawer {
             .as_ref()
             .map(|h| h.project_name())
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "zedra".to_string())
+            .unwrap_or_default()
     }
 
     fn tab_subtitle(&self, cx: &App) -> String {
@@ -279,7 +277,7 @@ impl WorkspaceDrawer {
     }
 
     fn render_terminal_tab(&self, cx: &mut Context<Self>) -> Div {
-        crate::terminal_panel::render_terminal_tab(
+        terminal_panel::render_terminal_tab(
             self.session_handle.as_ref(),
             self.active_terminal_id.as_deref(),
             cx,
@@ -287,7 +285,7 @@ impl WorkspaceDrawer {
     }
 
     fn render_session_tab(&self, cx: &mut Context<Self>) -> Div {
-        crate::session_panel::render_session_tab(self.session_handle.as_ref(), cx)
+        session_panel::render_session_tab(self.session_handle.as_ref(), cx)
     }
 }
 
@@ -337,8 +335,8 @@ impl Render for WorkspaceDrawer {
                 .into_any_element(),
         };
 
-        let top_inset = crate::platform_bridge::status_bar_inset();
-        let bottom_inset = crate::platform_bridge::home_indicator_inset().max(10.0);
+        let top_inset = platform_bridge::status_bar_inset();
+        let bottom_inset = platform_bridge::home_indicator_inset().max(10.0);
 
         div()
             .track_focus(&self.focus_handle)
@@ -352,7 +350,7 @@ impl Render for WorkspaceDrawer {
             // Section header (fixed 48px)
             .child(
                 div()
-                    .h(px(48.0))
+                    .h(px(theme::HEADER_HEIGHT))
                     .flex()
                     .flex_row()
                     .items_center()
@@ -361,7 +359,7 @@ impl Render for WorkspaceDrawer {
                     .child(
                         div()
                             .id("drawer-home-icon")
-                            .w(px(38.0))
+                            .w(px(theme::DRAWER_ICON_ZONE))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -404,7 +402,7 @@ impl Render for WorkspaceDrawer {
                     )
                     .child(
                         div()
-                            .w(px(38.0))
+                            .w(px(theme::DRAWER_ICON_ZONE))
                             .flex()
                             .items_center()
                             .justify_center()

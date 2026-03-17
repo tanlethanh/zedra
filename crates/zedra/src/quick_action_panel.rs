@@ -3,6 +3,7 @@
 
 use gpui::*;
 
+use crate::platform_bridge;
 use crate::terminal_card::{TerminalCardProps, render_terminal_card};
 use crate::theme;
 use crate::workspace_view::WorkspaceSummary;
@@ -45,8 +46,8 @@ impl Focusable for QuickActionPanel {
 impl Render for QuickActionPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let viewport = window.viewport_size();
-        let top_inset = crate::platform_bridge::status_bar_inset();
-        let bottom_inset = crate::platform_bridge::home_indicator_inset().max(10.0);
+        let top_inset = platform_bridge::status_bar_inset();
+        let bottom_inset = platform_bridge::home_indicator_inset().max(10.0);
 
         // Panel width: ~75% of viewport
         let panel_width = viewport.width * 0.75;

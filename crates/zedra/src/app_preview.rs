@@ -10,6 +10,7 @@
 use gpui::*;
 
 use crate::editor::code_editor::EditorView;
+use crate::fonts;
 use crate::mgpui::DrawerHost;
 use crate::theme;
 use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
@@ -25,7 +26,7 @@ pub struct PreviewApp {
 
 impl PreviewApp {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        crate::fonts::load_fonts(window);
+        fonts::load_fonts(window);
 
         let mut subscriptions = Vec::new();
 
@@ -142,7 +143,7 @@ impl Render for PreviewApp {
 
         div()
             .size_full()
-            .font_family(crate::fonts::MONO_FONT_FAMILY)
+            .font_family(fonts::MONO_FONT_FAMILY)
             .child(
                 div()
                     .size_full()

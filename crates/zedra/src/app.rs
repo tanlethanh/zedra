@@ -3,7 +3,10 @@
 
 use gpui::*;
 
+use crate::deeplink::{self, DeeplinkAction};
+use crate::fonts;
 use crate::home_view::{HomeEvent, HomeView, HomeWorkspaceItem};
+use crate::platform_bridge::{self, AlertButton};
 use crate::quick_action_panel::{QuickActionEvent, QuickActionPanel};
 use crate::theme;
 use crate::workspace_store;
@@ -28,6 +31,12 @@ enum AppScreen {
 struct WorkspaceEntry {
     view: Entity<WorkspaceView>,
     handle: SessionHandle,
+}
+
+impl PartialEq for WorkspaceEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.view == other.view
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -57,7 +66,7 @@ pub struct ZedraApp {
 /// The key is stored in `<data_dir>/zedra/client.key` with 0o600 permissions.
 /// Returns `None` if the data directory is unavailable (no platform bridge).
 fn load_client_signer() -> Option<std::sync::Arc<dyn zedra_session::signer::ClientSigner>> {
-    let data_dir = crate::platform_bridge::bridge().data_directory()?;
+    let data_dir = platform_bridge::bridge().data_directory()?;
     let key_path = std::path::PathBuf::from(data_dir)
         .join("zedra")
         .join("client.key");
@@ -92,7 +101,7 @@ impl ZedraApp {
 
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Load JetBrains Mono font for all UI text
-        crate::fonts::load_fonts(window);
+        fonts::load_fonts(window);
 
         let mut subscriptions = Vec::new();
 
@@ -104,7 +113,7 @@ impl ZedraApp {
             |this: &mut Self, _emitter, event: &HomeEvent, window, cx| match event {
                 HomeEvent::ScanQrTapped => {
                     log::info!("Home: Scan QR tapped");
-                    crate::platform_bridge::bridge().launch_qr_scanner();
+                    platform_bridge::bridge().launch_qr_scanner();
                 }
                 HomeEvent::WorkspaceTapped(index) => {
                     this.switch_to_workspace(*index, window, cx);
@@ -126,12 +135,12 @@ impl ZedraApp {
                             .next()
                             .unwrap_or("Workspace")
                             .to_string();
-                        crate::platform_bridge::show_alert(
+                        platform_bridge::show_alert(
                             "",
                             &format!("Remove {} workspace?", title),
                             vec![
-                                crate::platform_bridge::AlertButton::destructive("Delete"),
-                                crate::platform_bridge::AlertButton::cancel("Cancel"),
+                                AlertButton::destructive("Delete"),
+                                AlertButton::cancel("Cancel"),
                             ],
                             move |button_index| {
                                 if button_index == 0 {
@@ -290,8 +299,7 @@ impl ZedraApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let saved = workspace_store::load_workspaces();
-        let ws = match saved.get(saved_index) {
+        let ws = match self.saved_workspaces.get(saved_index) {
             Some(ws) => ws.clone(),
             None => {
                 log::error!("Saved workspace index {} out of range", saved_index);
@@ -314,11 +322,10 @@ impl ZedraApp {
 
     fn handle_deeplink(
         &mut self,
-        action: crate::deeplink::DeeplinkAction,
+        action: DeeplinkAction,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        use crate::deeplink::DeeplinkAction;
         match action {
             DeeplinkAction::Connect(ticket) => {
                 log::info!("Deeplink: connect action");
@@ -387,8 +394,7 @@ impl ZedraApp {
         let rows_u16 = rows as u16;
 
         // Subscribe to workspace events
-        let workspace_index = self.workspaces.len();
-        let _home_view_clone = self.home_view.clone();
+        let view_entity = workspace_view.clone();
         let sub = cx.subscribe_in(
             &workspace_view,
             window,
@@ -406,10 +412,8 @@ impl ZedraApp {
                         this.open_quick_action(cx);
                     }
                     WorkspaceEvent::Disconnected => {
-                        log::info!("Workspace {} disconnected", workspace_index);
-                        if workspace_index < this.workspaces.len() {
-                            this.workspaces.remove(workspace_index);
-                        }
+                        this.workspaces.retain(|e| e.view != view_entity);
+                        log::info!("Workspace disconnected; {} remaining", this.workspaces.len());
                         this.active_workspace = if this.workspaces.is_empty() {
                             None
                         } else {
@@ -527,7 +531,7 @@ impl Render for ZedraApp {
         self.render_count += 1;
 
         // Check for deeplink actions (QR scan, tapped URLs, NFC, etc.)
-        if let Some(action) = crate::deeplink::take_pending() {
+        if let Some(action) = deeplink::take_pending() {
             self.handle_deeplink(action, window, cx);
         }
 
@@ -612,7 +616,7 @@ impl Render for ZedraApp {
 
         let mut root = div()
             .size_full()
-            .font_family(crate::fonts::MONO_FONT_FAMILY)
+            .font_family(fonts::MONO_FONT_FAMILY)
             .child(screen_content);
 
         // Clear completed close animations

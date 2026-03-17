@@ -5,27 +5,19 @@ use gpui::*;
 
 use crate::theme;
 use crate::transport_badge::format_bytes;
-use crate::workspace_drawer::WorkspaceDrawerEvent;
+use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
 use zedra_session::SessionState;
 
 /// Render the session tab content for the workspace drawer.
 pub fn render_session_tab(
     handle: Option<&zedra_session::SessionHandle>,
-    cx: &mut Context<crate::workspace_drawer::WorkspaceDrawer>,
+    cx: &mut Context<WorkspaceDrawer>,
 ) -> Div {
-    let Some(handle) = handle else {
-        return div()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_color(rgb(theme::TEXT_MUTED))
-            .text_size(px(theme::FONT_BODY))
-            .child("No active session");
-    };
-
-    let state = handle.state();
-    if matches!(state, SessionState::Disconnected) {
+    let is_empty = handle.is_none()
+        || handle
+            .as_ref()
+            .map_or(false, |h| matches!(h.state(), SessionState::Disconnected));
+    if is_empty {
         return div()
             .size_full()
             .flex()
@@ -35,6 +27,8 @@ pub fn render_session_tab(
             .text_size(px(theme::FONT_BODY))
             .child("No active session");
     }
+    let handle = handle.unwrap();
+    let state = handle.state();
 
     let session_id = handle
         .session_id()

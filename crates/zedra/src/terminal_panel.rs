@@ -7,13 +7,13 @@ use gpui::*;
 
 use crate::terminal_card::{TerminalCardProps, render_terminal_card};
 use crate::theme;
-use crate::workspace_drawer::WorkspaceDrawerEvent;
+use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
 
 /// Render the terminal tab content for the workspace drawer.
 pub fn render_terminal_tab(
     handle: Option<&zedra_session::SessionHandle>,
     active_terminal_id: Option<&str>,
-    cx: &mut Context<crate::workspace_drawer::WorkspaceDrawer>,
+    cx: &mut Context<WorkspaceDrawer>,
 ) -> Div {
     let Some(handle) = handle else {
         return div()
