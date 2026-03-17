@@ -69,7 +69,7 @@ pub fn render_terminal_card(props: TerminalCardProps) -> Stateful<Div> {
         .child(
             div()
                 .flex_1()
-                .font_family(zedra_terminal::TERMINAL_FONT_FAMILY)
+                .font_family(crate::fonts::MONO_FONT_FAMILY)
                 .text_color(if is_active {
                     rgb(theme::TEXT_PRIMARY)
                 } else {

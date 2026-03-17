@@ -3,7 +3,6 @@ pub mod keys;
 pub mod view;
 
 use std::borrow::Cow;
-use std::sync::Once;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 // Global keyboard height in physical pixels, set by the JNI layer.
@@ -34,26 +33,9 @@ pub fn get_display_density() -> f32 {
     DISPLAY_DENSITY_X100.load(Ordering::Relaxed) as f32 / 100.0
 }
 
-/// JetBrains Mono NL (No Ligatures) - embedded terminal font
-pub static JETBRAINS_MONO_REGULAR: &[u8] = include_bytes!("../assets/JetBrainsMonoNL-Regular.ttf");
-
-/// The font family name for the embedded terminal font
-pub const TERMINAL_FONT_FAMILY: &str = "JetBrains Mono NL";
-
-static FONT_LOADED: Once = Once::new();
-
-/// Load the embedded JetBrains Mono font into GPUI's text system.
-/// This should be called once during app initialization.
-pub fn load_terminal_font(window: &mut gpui::Window) {
-    FONT_LOADED.call_once(|| {
-        let text_system = window.text_system();
-        if let Err(e) = text_system.add_fonts(vec![Cow::Borrowed(JETBRAINS_MONO_REGULAR)]) {
-            log::error!("Failed to load terminal font: {:?}", e);
-        } else {
-            log::info!("Loaded JetBrains Mono NL terminal font");
-        }
-    });
-}
+/// The font family name for the embedded terminal font.
+/// The font bytes and loader live in the `zedra` crate (`fonts` module).
+pub const MONO_FONT_FAMILY: &str = "JetBrainsMonoNL Nerd Font Mono";
 
 use alacritty_terminal::event::{Event as AlacTermEvent, EventListener};
 use alacritty_terminal::grid::Dimensions;

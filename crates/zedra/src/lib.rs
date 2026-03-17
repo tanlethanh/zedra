@@ -10,6 +10,9 @@ pub mod keyboard;
 // Shared color constants (Figma palette)
 pub mod theme;
 
+// Embedded fonts
+pub mod fonts;
+
 // Editor: text buffer, syntax highlighting, code editor view
 pub mod editor;
 

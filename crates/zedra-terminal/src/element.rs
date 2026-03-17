@@ -9,8 +9,7 @@ use gpui::*;
 use itertools::Itertools;
 
 use crate::{
-    CursorState, IndexedCell, TERMINAL_FONT_FAMILY, TerminalContent, TerminalSize,
-    view::TerminalView,
+    CursorState, IndexedCell, MONO_FONT_FAMILY, TerminalContent, TerminalSize, view::TerminalView,
 };
 
 /// Colors for the terminal (One Dark theme)
@@ -425,9 +424,12 @@ impl Element for TerminalElement {
     ) -> Self::PrepaintState {
         // Use JetBrains Mono NL - embedded monospace font (loaded once at app init)
         let font = Font {
-            family: TERMINAL_FONT_FAMILY.into(),
+            family: MONO_FONT_FAMILY.into(),
             features: FontFeatures::default(),
             fallbacks: Some(FontFallbacks::from_fonts(vec![
+                "Noto Sans Symbols 2".to_string(),
+                "Apple Symbols".to_string(),
+                "Menlo".to_string(),
                 "Droid Sans Mono".to_string(),
                 "monospace".to_string(),
             ])),

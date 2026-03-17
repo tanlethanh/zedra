@@ -92,7 +92,7 @@ impl ZedraApp {
 
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Load JetBrains Mono font for all UI text
-        zedra_terminal::load_terminal_font(window);
+        crate::fonts::load_fonts(window);
 
         let mut subscriptions = Vec::new();
 
@@ -612,7 +612,7 @@ impl Render for ZedraApp {
 
         let mut root = div()
             .size_full()
-            .font_family(zedra_terminal::TERMINAL_FONT_FAMILY)
+            .font_family(crate::fonts::MONO_FONT_FAMILY)
             .child(screen_content);
 
         // Clear completed close animations

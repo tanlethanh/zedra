@@ -753,10 +753,10 @@ pub fn compute_terminal_dimensions(window: &mut Window) -> (usize, usize, Pixels
     let viewport = window.viewport_size();
     let line_height = px(16.0);
 
-    zedra_terminal::load_terminal_font(window);
+    crate::fonts::load_fonts(window);
 
     let font = gpui::Font {
-        family: zedra_terminal::TERMINAL_FONT_FAMILY.into(),
+        family: crate::fonts::MONO_FONT_FAMILY.into(),
         features: gpui::FontFeatures::default(),
         fallbacks: None,
         weight: gpui::FontWeight::NORMAL,

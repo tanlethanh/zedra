@@ -25,7 +25,7 @@ pub struct PreviewApp {
 
 impl PreviewApp {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        zedra_terminal::load_terminal_font(window);
+        crate::fonts::load_fonts(window);
 
         let mut subscriptions = Vec::new();
 
@@ -142,7 +142,7 @@ impl Render for PreviewApp {
 
         div()
             .size_full()
-            .font_family(zedra_terminal::TERMINAL_FONT_FAMILY)
+            .font_family(crate::fonts::MONO_FONT_FAMILY)
             .child(
                 div()
                     .size_full()
