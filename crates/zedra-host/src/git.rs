@@ -158,17 +158,27 @@ impl GitRepo {
     }
 
     /// Checkout a branch.
+    ///
+    /// Branch names are validated against a safe character set before use,
+    /// and `--` is inserted to prevent flag injection.
     pub fn checkout(&self, branch: &str) -> Result<()> {
-        self.git(&["checkout", branch])?;
+        anyhow::ensure!(
+            is_safe_ref(branch),
+            "invalid branch name: {:?}",
+            branch
+        );
+        self.git(&["checkout", "--", branch])?;
         Ok(())
     }
 
     /// Stage files and commit.
+    ///
+    /// `--` is inserted before all user-supplied paths to prevent flag injection.
     pub fn commit(&self, message: &str, paths: &[String]) -> Result<String> {
         if paths.is_empty() {
             anyhow::bail!("no paths to commit");
         }
-        let mut add_args: Vec<&str> = vec!["add"];
+        let mut add_args: Vec<&str> = vec!["add", "--"];
         for p in paths {
             add_args.push(p.as_str());
         }
@@ -177,6 +187,17 @@ impl GitRepo {
         let out = self.git(&["rev-parse", "HEAD"])?;
         Ok(out.trim().to_string())
     }
+}
+
+/// Validate a git ref name (branch, tag) against a safe character set.
+///
+/// Allows alphanumerics, `/`, `_`, `.`, `-`. Rejects anything that could be
+/// interpreted as a flag (leading `-`) or shell metacharacter.
+fn is_safe_ref(s: &str) -> bool {
+    !s.is_empty()
+        && !s.starts_with('-')
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '.' | '-'))
 }
 
 #[cfg(test)]
