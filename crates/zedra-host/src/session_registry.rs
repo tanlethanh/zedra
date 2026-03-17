@@ -289,8 +289,36 @@ impl SessionRegistry {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Err(e) = tokio::fs::write(path, json).await {
-            tracing::warn!("Failed to write sessions file {}: {}", path.display(), e);
+        // Write atomically: write to a temp file with 0o600 permissions, then rename.
+        // Prevents a mid-write crash from corrupting the sessions file.
+        // 0o600 is set at creation to avoid a TOCTOU window.
+        let tmp_path = path.with_extension("json.tmp");
+        let write_result = {
+            #[cfg(unix)]
+            {
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&tmp_path)
+                    .and_then(|mut f| f.write_all(json.as_bytes()))
+                    .map_err(|e| e)
+            }
+            #[cfg(not(unix))]
+            {
+                std::fs::write(&tmp_path, json.as_bytes())
+            }
+        };
+        if let Err(e) = write_result {
+            tracing::warn!("Failed to write sessions temp file {}: {}", tmp_path.display(), e);
+            return;
+        }
+        if let Err(e) = tokio::fs::rename(&tmp_path, path).await {
+            tracing::warn!("Failed to rename sessions file: {}", e);
+            let _ = tokio::fs::remove_file(&tmp_path).await;
         }
     }
 
