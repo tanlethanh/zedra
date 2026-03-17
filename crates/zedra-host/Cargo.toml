@@ -33,6 +33,7 @@ serde_json.workspace = true
 rand.workspace = true
 ed25519-dalek.workspace = true
 base64-url.workspace = true
+sha2.workspace = true
 
 # Filesystem
 directories = "5"

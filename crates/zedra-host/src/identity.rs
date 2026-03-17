@@ -59,12 +59,7 @@ impl HostIdentity {
             if let Some(parent) = key_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(key_path, secret.to_bytes())?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))?;
-            }
+            write_secret_file(key_path, &secret.to_bytes())?;
             secret
         };
 
@@ -98,13 +93,7 @@ impl HostIdentity {
 /// Exported so other modules can co-locate their persistent state alongside
 /// the identity key without duplicating the hash logic.
 pub fn workspace_config_dir(workdir: &Path) -> Result<PathBuf> {
-    let workdir_str = workdir.to_string_lossy();
-    let hash = {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        workdir_str.hash(&mut hasher);
-        format!("{:016x}", hasher.finish())
-    };
+    let hash = stable_path_hash(&workdir.to_string_lossy());
     Ok(zedra_config_dir()?.join("workspaces").join(hash))
 }
 
@@ -129,18 +118,48 @@ fn base_identity_key_path() -> Result<PathBuf> {
 /// Uses a stable hash of the canonical workdir path as the directory name:
 /// `~/.config/zedra/workspaces/<hash>/identity.key`
 fn workspace_key_path(workdir: &Path) -> Result<PathBuf> {
-    let workdir_str = workdir.to_string_lossy();
-    let hash = {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        workdir_str.hash(&mut hasher);
-        format!("{:016x}", hasher.finish())
-    };
+    let hash = stable_path_hash(&workdir.to_string_lossy());
     let path = zedra_config_dir()?
         .join("workspaces")
         .join(&hash)
         .join("identity.key");
     Ok(path)
+}
+
+/// Write secret bytes to `path` with restricted permissions (0o600).
+///
+/// On Unix, uses `OpenOptions::mode()` to set permissions atomically at
+/// file creation, eliminating the TOCTOU window between write and chmod.
+/// On non-Unix platforms falls back to write + set_permissions.
+pub fn write_secret_file(path: &Path, data: &[u8]) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(data)?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, data)?;
+    }
+    Ok(())
+}
+
+/// Stable hash of a path string using SHA-256, truncated to 16 hex chars.
+///
+/// Replaces `DefaultHasher` which is explicitly not stable across Rust versions.
+/// A toolchain upgrade with DefaultHasher could change the output and orphan
+/// all existing identity keys and sessions.
+fn stable_path_hash(path_str: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(path_str.as_bytes());
+    format!("{:016x}", u64::from_le_bytes(digest[..8].try_into().unwrap()))
 }
 
 /// Shared host identity, passed through the daemon.
