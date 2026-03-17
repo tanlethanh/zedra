@@ -29,6 +29,9 @@ static KEYBOARD_HEIGHT: AtomicU32 = AtomicU32::new(0);
 static SYSTEM_INSET_TOP: AtomicU32 = AtomicU32::new(0);
 static SYSTEM_INSET_BOTTOM: AtomicU32 = AtomicU32::new(0);
 
+// Guard against gpuiDestroy being called more than once (would double-free the Arc).
+static DESTROYED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 // Global storage for the app's internal files directory
 static FILES_DIR: Mutex<Option<String>> = Mutex::new(None);
 
@@ -223,7 +226,14 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_gpuiDestroy(
         log::error!("Failed to send Destroy command: {:?}", e);
     }
 
-    // Reconstruct and drop the Arc
+    // Guard against double-free: Arc::from_raw on the same pointer twice is UB.
+    if DESTROYED.swap(true, Ordering::SeqCst) {
+        log::warn!("gpuiDestroy called more than once — skipping Arc drop");
+        return;
+    }
+
+    // SAFETY: `handle` was produced by Arc::into_raw in gpuiCreate and has not
+    // been reconstructed before (DESTROYED flag ensures single call).
     unsafe {
         let _ = Arc::from_raw(handle as *const AndroidPlatformHandle);
     }
