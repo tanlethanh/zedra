@@ -5,7 +5,9 @@
 /// Safe area insets and screen scale are pushed from Obj-C via
 /// `zedra_ios_set_safe_area_insets` / `zedra_ios_set_screen_scale` and cached
 /// in atomics, mirroring the Android JNI push model.
-use crate::platform_bridge::PlatformBridge;
+use crate::active_terminal;
+use crate::deeplink;
+use crate::platform_bridge::{self, AlertButton, AlertButtonStyle, PlatformBridge};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Screen scale factor (e.g. 3.0 for @3x), stored as f32 bits.
@@ -151,9 +153,8 @@ impl PlatformBridge for IosBridge {
         id: u32,
         title: &str,
         message: &str,
-        buttons: &[crate::platform_bridge::AlertButton],
+        buttons: &[AlertButton],
     ) {
-        use crate::platform_bridge::AlertButtonStyle;
         use std::ffi::CString;
 
         let c_title =
@@ -196,9 +197,19 @@ impl PlatformBridge for IosBridge {
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_alert_result(callback_id: u32, button_index: i32) {
     if button_index >= 0 {
-        crate::platform_bridge::dispatch_alert_result(callback_id, button_index as usize);
+        platform_bridge::dispatch_alert_result(callback_id, button_index as usize);
         zedra_session::push_callback(Box::new(|| {}));
     }
+}
+
+/// Called from the native app delegate when the app enters the background.
+///
+/// Drops any unacknowledged alert callbacks so closures captured in them
+/// (e.g. `PendingSlot` clones) are released and do not accumulate.
+/// Wire this to `applicationDidEnterBackground` in `main.m`.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_app_did_enter_background() {
+    platform_bridge::clear_pending_alerts();
 }
 
 /// Called from the native keyboard accessory bar when a shortcut key button is tapped.
@@ -217,7 +228,7 @@ pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
         }
     };
     if key_name == "dismiss_keyboard" {
-        crate::platform_bridge::bridge().hide_keyboard();
+        platform_bridge::bridge().hide_keyboard();
         zedra_session::push_callback(Box::new(|| {}));
         return;
     }
@@ -232,7 +243,7 @@ pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
         "enter" => b"\r",
         _ => return,
     };
-    crate::active_terminal::send_to_active(bytes.to_vec());
+    active_terminal::send_to_active(bytes.to_vec());
     zedra_session::push_callback(Box::new(|| {}));
 }
 
@@ -244,8 +255,8 @@ pub extern "C" fn zedra_deeplink_received(url: *const std::ffi::c_char) {
     }
     let s = unsafe { std::ffi::CStr::from_ptr(url) };
     match s.to_str() {
-        Ok(v) => match crate::deeplink::parse(v) {
-            Ok(action) => crate::deeplink::enqueue(action),
+        Ok(v) => match deeplink::parse(v) {
+            Ok(action) => deeplink::enqueue(action),
             Err(e) => log::error!("Invalid deeplink URL: {}", e),
         },
         Err(e) => log::error!("Deeplink: invalid UTF-8: {}", e),
@@ -262,8 +273,8 @@ pub extern "C" fn zedra_qr_scanner_result(qr_string: *const std::ffi::c_char) {
     }
     let s = unsafe { std::ffi::CStr::from_ptr(qr_string) };
     match s.to_str() {
-        Ok(v) => match crate::deeplink::parse(v) {
-            Ok(action) => crate::deeplink::enqueue(action),
+        Ok(v) => match deeplink::parse(v) {
+            Ok(action) => deeplink::enqueue(action),
             Err(e) => log::error!("QR scan: invalid deeplink: {}", e),
         },
         Err(e) => log::error!("QR result: invalid UTF-8: {}", e),

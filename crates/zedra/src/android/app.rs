@@ -9,7 +9,8 @@ use jni::{JavaVM, objects::GlobalRef};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use crate::android::command_queue::AndroidCommand;
+use crate::android::{bridge::AndroidBridge, command_queue, command_queue::AndroidCommand, jni};
+use crate::{app, deeplink, platform_bridge};
 use crate::ZedraAssets;
 
 /// Android app state - must only be accessed from the main UI thread
@@ -132,11 +133,11 @@ impl AndroidApp {
         let platform = Rc::new(android_platform);
 
         // Register the AndroidBridge as the global PlatformBridge before anything reads density.
-        crate::platform_bridge::set_bridge(crate::android::bridge::AndroidBridge);
+        platform_bridge::set_bridge(AndroidBridge);
 
         // Set the actual display scale from Android DisplayMetrics before opening any windows.
         // The platform defaults to 3.0 but the actual device density may differ (e.g. 2.75).
-        let density = crate::platform_bridge::bridge().density();
+        let density = platform_bridge::bridge().density();
         platform.set_display_scale(density);
         log::info!("Set platform display_scale to {}", density);
 
@@ -186,7 +187,7 @@ impl AndroidApp {
                 // Use actual screen dimensions from native window and display density
                 let screen_width_px = width as f32;
                 let screen_height_px = height as f32;
-                let scale = crate::platform_bridge::bridge().density();
+                let scale = platform_bridge::bridge().density();
                 log::info!(
                     "Window dimensions: {}x{} physical, scale={}, logical={}x{}",
                     screen_width_px,
@@ -210,7 +211,7 @@ impl AndroidApp {
                     ..Default::default()
                 };
 
-                match crate::app::open_zedra_window(&mut app, window_options) {
+                match app::open_zedra_window(&mut app, window_options) {
                     Ok(window_handle) => {
                         self.window = Some(window_handle);
                         log::info!(
@@ -235,7 +236,7 @@ impl AndroidApp {
         log::info!("[TIMING] Starting native window attachment...");
 
         if let Some(platform) = &self.platform {
-            if let Some(native_window) = crate::android::jni::take_native_window() {
+            if let Some(native_window) = jni::take_native_window() {
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     platform.attach_native_window(native_window)
                 })) {
@@ -401,6 +402,7 @@ impl AndroidApp {
     /// Handle app pause
     fn handle_pause(&mut self) -> Result<()> {
         log::info!("App paused");
+        platform_bridge::clear_pending_alerts();
         Ok(())
     }
 
@@ -456,8 +458,8 @@ impl AndroidApp {
 
     fn handle_deeplink_url(&mut self, url: String) -> Result<()> {
         log::info!("Deeplink received: {}", &url[..url.len().min(80)]);
-        match crate::deeplink::parse(&url) {
-            Ok(action) => crate::deeplink::enqueue(action),
+        match deeplink::parse(&url) {
+            Ok(action) => deeplink::enqueue(action),
             Err(e) => log::error!("Invalid deeplink URL: {}", e),
         }
         Ok(())
@@ -544,7 +546,7 @@ fn android_keycode_to_keystroke(key_code: i32, unicode: i32) -> Option<Keystroke
 /// Process commands from the queue on the main thread
 /// Called by Choreographer at 60 FPS
 pub fn process_commands_from_queue() -> Result<()> {
-    let commands = crate::android::command_queue::drain_commands();
+    let commands = command_queue::drain_commands();
 
     ANDROID_APP.with(|app_cell| {
         let mut app_opt = app_cell.borrow_mut();

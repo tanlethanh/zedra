@@ -81,6 +81,21 @@ pub fn dispatch_alert_result(callback_id: u32, button_index: usize) {
     }
 }
 
+/// Discard all pending alert callbacks without invoking them.
+///
+/// Call this when the app enters the background or is paused, so closures
+/// captured in the callbacks (e.g. `PendingSlot` clones) are released and
+/// do not accumulate over a long session.
+pub fn clear_pending_alerts() {
+    if let Ok(mut map) = alert_callbacks().lock() {
+        let count = map.len();
+        map.clear();
+        if count > 0 {
+            log::debug!("clear_pending_alerts: dropped {} unacknowledged alert(s)", count);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // PlatformBridge trait
 // ---------------------------------------------------------------------------

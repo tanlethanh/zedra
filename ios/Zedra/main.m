@@ -32,6 +32,7 @@ extern void gpui_ios_will_terminate(void* app_ptr);
 
 // Zedra FFI (from zedra-ios crate)
 extern void zedra_ios_send_key_input(const char* key);
+extern void zedra_ios_app_did_enter_background(void);
 extern void zedra_launch_gpui(void);
 
 // Firebase bridge (from ZedraFirebase.m, compiled into app target)
@@ -344,6 +345,7 @@ static const char *kAccessoryKeyNames[] = {"escape", "tab", "left", "down", "up"
 
 - (void)applicationDidEnterBackground:(UIApplication *)application {
     gpui_ios_did_enter_background(self.gpuiApp);
+    zedra_ios_app_did_enter_background();
 
     // Pause display link to save power
     if (self.displayLink) {
