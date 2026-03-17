@@ -20,8 +20,6 @@
 
 #define TEXT_MUTED 5263440
 
-#define BORDER_ACTIVE TEXT_PRIMARY
-
 #define BORDER_DEFAULT 5263440
 
 #define BORDER_SUBTLE 1710618
@@ -43,6 +41,8 @@
 #define FONT_BODY 12.0
 
 #define FONT_DETAIL 12.0
+
+#define ICON_LOGO 20.0
 
 #define ICON_NAV 18.0
 
