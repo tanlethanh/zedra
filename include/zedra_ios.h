@@ -34,6 +34,30 @@
 
 #define DRAWER_PADDING 12.0
 
+#define SPACING_SM 8.0
+
+#define SPACING_MD 12.0
+
+#define SPACING_LG 16.0
+
+#define DRAWER_WIDTH 293.0
+
+#define HEADER_HEIGHT 48.0
+
+#define HOME_CARD_WIDTH 280.0
+
+#define HEADER_BUTTON_SIZE 42.0
+
+#define DRAWER_ICON_ZONE 38.0
+
+#define TERMINAL_LINE_HEIGHT 16.0
+
+#define DRAWER_EDGE_ZONE 44.0
+
+#define DRAWER_VELOCITY_THRESHOLD 6.0
+
+#define ANIMATION_DURATION_MS 250
+
 #define FONT_TITLE 22.0
 
 #define FONT_HEADING 13.0
@@ -124,6 +148,15 @@ extern void ios_present_alert(uint32_t callback_id,
  * passed to `platform_bridge::show_alert`).
  */
 void zedra_ios_alert_result(uint32_t callback_id, int32_t button_index);
+
+/**
+ * Called from the native app delegate when the app enters the background.
+ *
+ * Drops any unacknowledged alert callbacks so closures captured in them
+ * (e.g. `PendingSlot` clones) are released and do not accumulate.
+ * Wire this to `applicationDidEnterBackground` in `main.m`.
+ */
+void zedra_ios_app_did_enter_background(void);
 
 /**
  * Called from the native keyboard accessory bar when a shortcut key button is tapped.
