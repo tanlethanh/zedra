@@ -38,19 +38,34 @@ detect_platform() {
     os="$(uname -s)"
     arch="$(uname -m)"
 
+    # Normalize
     case "$os" in
         Darwin) os="apple-darwin" ;;
         Linux)  os="unknown-linux-gnu" ;;
         *)      echo "Error: unsupported OS: $os"; exit 1 ;;
     esac
-
     case "$arch" in
-        x86_64|amd64)  arch="x86_64" ;;
         arm64|aarch64) arch="aarch64" ;;
+        x86_64|amd64)  arch="x86_64" ;;
         *)             echo "Error: unsupported architecture: $arch"; exit 1 ;;
     esac
 
-    echo "${arch}-${os}"
+    target="${arch}-${os}"
+
+    # Check against supported targets
+    case "$target" in
+        aarch64-apple-darwin) ;;
+        *)
+            echo "Error: pre-built binaries are not available for ${target}."
+            echo "Supported: aarch64-apple-darwin (Apple Silicon Mac)"
+            echo ""
+            echo "To build from source:"
+            echo "  cargo install --git https://github.com/tanlethanh/zedra zedra-host"
+            exit 1
+            ;;
+    esac
+
+    echo "$target"
 }
 
 # --- Version resolution ---
