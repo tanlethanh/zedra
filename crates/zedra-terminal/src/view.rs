@@ -48,6 +48,8 @@ pub struct TerminalView {
     /// Set when wired to a `RemoteTerminal`; gates `process_output()` on each frame.
     needs_render: Option<Arc<AtomicBool>>,
     connected: bool,
+    /// Human-readable status (e.g. "Connected", "Resuming"). Not yet rendered;
+    /// future: display as a translucent overlay when `!connected`.
     status_text: String,
     focus_handle: FocusHandle,
     keyboard_request: Option<KeyboardRequestFn>,
@@ -252,6 +254,7 @@ impl Focusable for TerminalView {
     }
 }
 
+// Retained for future use: will be emitted when the PTY output stream closes.
 impl gpui::EventEmitter<DisconnectRequested> for TerminalView {}
 
 impl Render for TerminalView {

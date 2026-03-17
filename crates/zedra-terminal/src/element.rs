@@ -12,62 +12,83 @@ use crate::{
     CursorState, IndexedCell, MONO_FONT_FAMILY, TerminalContent, TerminalSize, view::TerminalView,
 };
 
-/// Colors for the terminal (One Dark theme)
-struct TermColors;
+/// Per-terminal color palette. Construct with `TerminalTheme::one_dark()` for the default
+/// One Dark palette, or supply custom values for alternative themes.
+pub struct TerminalTheme {
+    pub background: u32,
+    pub foreground: u32,
+    pub cursor: u32,
+    pub black: u32,
+    pub red: u32,
+    pub green: u32,
+    pub yellow: u32,
+    pub blue: u32,
+    pub magenta: u32,
+    pub cyan: u32,
+    pub white: u32,
+    pub bright_black: u32,
+    pub bright_red: u32,
+    pub bright_green: u32,
+    pub bright_yellow: u32,
+    pub bright_blue: u32,
+    pub bright_magenta: u32,
+    pub bright_cyan: u32,
+    pub bright_white: u32,
+}
 
-impl TermColors {
-    const BACKGROUND: u32 = 0x0e0c0c;
-    const FOREGROUND: u32 = 0xabb2bf;
-    const CURSOR: u32 = 0x528bff;
+impl TerminalTheme {
+    pub fn one_dark() -> Self {
+        Self {
+            background: 0x0e0c0c,
+            foreground: 0xabb2bf,
+            cursor: 0x528bff,
+            black: 0x282c34,
+            red: 0xe06c75,
+            green: 0x98c379,
+            yellow: 0xe5c07b,
+            blue: 0x61afef,
+            magenta: 0xc678dd,
+            cyan: 0x56b6c2,
+            white: 0xabb2bf,
+            bright_black: 0x5c6370,
+            bright_red: 0xe06c75,
+            bright_green: 0x98c379,
+            bright_yellow: 0xe5c07b,
+            bright_blue: 0x61afef,
+            bright_magenta: 0xc678dd,
+            bright_cyan: 0x56b6c2,
+            bright_white: 0xffffff,
+        }
+    }
 
-    // ANSI standard colors
-    const BLACK: u32 = 0x282c34;
-    const RED: u32 = 0xe06c75;
-    const GREEN: u32 = 0x98c379;
-    const YELLOW: u32 = 0xe5c07b;
-    const BLUE: u32 = 0x61afef;
-    const MAGENTA: u32 = 0xc678dd;
-    const CYAN: u32 = 0x56b6c2;
-    const WHITE: u32 = 0xabb2bf;
-
-    // Bright variants
-    const BRIGHT_BLACK: u32 = 0x5c6370;
-    const BRIGHT_RED: u32 = 0xe06c75;
-    const BRIGHT_GREEN: u32 = 0x98c379;
-    const BRIGHT_YELLOW: u32 = 0xe5c07b;
-    const BRIGHT_BLUE: u32 = 0x61afef;
-    const BRIGHT_MAGENTA: u32 = 0xc678dd;
-    const BRIGHT_CYAN: u32 = 0x56b6c2;
-    const BRIGHT_WHITE: u32 = 0xffffff;
-
-    fn named_color(color: NamedColor) -> Hsla {
+    fn named_color(&self, color: NamedColor) -> Hsla {
         let hex = match color {
-            NamedColor::Black => Self::BLACK,
-            NamedColor::Red => Self::RED,
-            NamedColor::Green => Self::GREEN,
-            NamedColor::Yellow => Self::YELLOW,
-            NamedColor::Blue => Self::BLUE,
-            NamedColor::Magenta => Self::MAGENTA,
-            NamedColor::Cyan => Self::CYAN,
-            NamedColor::White => Self::WHITE,
-            NamedColor::BrightBlack => Self::BRIGHT_BLACK,
-            NamedColor::BrightRed => Self::BRIGHT_RED,
-            NamedColor::BrightGreen => Self::BRIGHT_GREEN,
-            NamedColor::BrightYellow => Self::BRIGHT_YELLOW,
-            NamedColor::BrightBlue => Self::BRIGHT_BLUE,
-            NamedColor::BrightMagenta => Self::BRIGHT_MAGENTA,
-            NamedColor::BrightCyan => Self::BRIGHT_CYAN,
-            NamedColor::BrightWhite => Self::BRIGHT_WHITE,
-            NamedColor::Foreground => Self::FOREGROUND,
-            NamedColor::Background => Self::BACKGROUND,
-            _ => Self::FOREGROUND,
+            NamedColor::Black => self.black,
+            NamedColor::Red => self.red,
+            NamedColor::Green => self.green,
+            NamedColor::Yellow => self.yellow,
+            NamedColor::Blue => self.blue,
+            NamedColor::Magenta => self.magenta,
+            NamedColor::Cyan => self.cyan,
+            NamedColor::White => self.white,
+            NamedColor::BrightBlack => self.bright_black,
+            NamedColor::BrightRed => self.bright_red,
+            NamedColor::BrightGreen => self.bright_green,
+            NamedColor::BrightYellow => self.bright_yellow,
+            NamedColor::BrightBlue => self.bright_blue,
+            NamedColor::BrightMagenta => self.bright_magenta,
+            NamedColor::BrightCyan => self.bright_cyan,
+            NamedColor::BrightWhite => self.bright_white,
+            NamedColor::Foreground => self.foreground,
+            NamedColor::Background => self.background,
+            _ => self.foreground,
         };
         rgb(hex).into()
     }
 
-    fn convert_color(color: &AlacColor) -> Hsla {
+    pub fn convert_color(&self, color: &AlacColor) -> Hsla {
         match color {
-            AlacColor::Named(named) => Self::named_color(*named),
+            AlacColor::Named(named) => self.named_color(*named),
             AlacColor::Spec(rgb_color) => {
                 let r = rgb_color.r as u32;
                 let g = rgb_color.g as u32;
@@ -95,7 +116,7 @@ impl TermColors {
                         15 => NamedColor::BrightWhite,
                         _ => NamedColor::Foreground,
                     };
-                    Self::named_color(named)
+                    self.named_color(named)
                 } else if *index < 232 {
                     // 216-color cube (indices 16-231)
                     let idx = *index as u32 - 16;
@@ -287,6 +308,7 @@ impl TerminalElement {
         cells: &[IndexedCell],
         display_offset: i32,
         grid_rows: usize,
+        theme: &TerminalTheme,
     ) -> (Vec<LayoutRect>, Vec<BatchedTextRun>) {
         let mut batched_runs: Vec<BatchedTextRun> = Vec::new();
         let mut rects: Vec<LayoutRect> = Vec::new();
@@ -317,8 +339,8 @@ impl TerminalElement {
                     mem::swap(&mut fg, &mut bg);
                 }
 
-                let fg_color = TermColors::convert_color(&fg);
-                let bg_color = TermColors::convert_color(&bg);
+                let fg_color = theme.convert_color(&fg);
+                let bg_color = theme.convert_color(&bg);
 
                 // Collect background rectangles (skip default background)
                 if !matches!(bg, AlacColor::Named(NamedColor::Background)) {
@@ -481,14 +503,17 @@ impl Element for TerminalElement {
             bounds.origin.y + px(self.scroll_offset_px),
         );
 
+        let theme = TerminalTheme::one_dark();
+
         // Draw terminal background
-        window.paint_quad(fill(bounds, rgb(TermColors::BACKGROUND)));
+        window.paint_quad(fill(bounds, rgb(theme.background)));
 
         // Layout the grid (batch text runs, collect background rects)
         let (rects, batched_runs) = Self::layout_grid(
             &layout.content.cells,
             layout.content.display_offset as i32,
             layout.content.grid_rows,
+            &theme,
         );
 
         // Paint background rectangles first
@@ -520,6 +545,7 @@ impl Element for TerminalElement {
             cell_width,
             line_height,
             self.focused,
+            &theme,
         );
 
         // Resize PTY to match actual element bounds if they changed.
@@ -561,6 +587,7 @@ fn paint_cursor(
     cell_width: Pixels,
     line_height: Pixels,
     focused: bool,
+    theme: &TerminalTheme,
 ) {
     let col = cursor.point.column.0 as i32;
     let line = cursor.point.line.0 + display_offset;
@@ -584,7 +611,7 @@ fn paint_cursor(
         (origin.y + line as f32 * line_height).floor(),
     );
 
-    let mut cursor_color: Hsla = rgb(TermColors::CURSOR).into();
+    let mut cursor_color: Hsla = rgb(theme.cursor).into();
     cursor_color.a = opacity;
 
     // Cursor width uses ceil (following Zed)
