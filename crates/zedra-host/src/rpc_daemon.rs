@@ -12,9 +12,44 @@ use crate::pty::ShellSession;
 use crate::session_registry::{AttachResult, ConsumeSlotResult, ServerSession, SessionRegistry, TermSession};
 use anyhow::Result;
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zedra_rpc::proto::*;
+
+/// Resolve `user_path` relative to `workdir`, then verify the canonical path
+/// stays inside `workdir`. Rejects absolute paths, `..` escapes, and symlinks
+/// that point outside the jail.
+fn resolve_path(workdir: &Path, user_path: &str) -> Result<PathBuf> {
+    // Reject empty paths
+    anyhow::ensure!(!user_path.is_empty(), "empty path");
+    let joined = workdir.join(user_path);
+    let resolved = joined
+        .canonicalize()
+        .or_else(|_| {
+            // File may not exist yet (e.g. FsWrite to a new path).
+            // Walk up to the first existing ancestor and canonicalize that.
+            let mut base = joined.as_path();
+            while let Some(parent) = base.parent() {
+                if parent.exists() {
+                    let canon = parent.canonicalize()?;
+                    // Reconstruct: canon + the non-existing tail
+                    let tail = joined.strip_prefix(parent).unwrap_or(base);
+                    return Ok(canon.join(tail));
+                }
+                base = parent;
+            }
+            anyhow::bail!("could not resolve path");
+        })?;
+    let jail = workdir.canonicalize()?;
+    anyhow::ensure!(
+        resolved.starts_with(&jail),
+        "path {} escapes workspace {}",
+        resolved.display(),
+        jail.display(),
+    );
+    Ok(resolved)
+}
 
 /// Shared state for RPC handlers.
 pub struct DaemonState {
@@ -325,7 +360,10 @@ async fn finish_auth(
 
     match attach_result {
         AttachResult::Ok => {
-            let session = registry.get(&resolved_session_id).await.unwrap();
+            let Some(session) = registry.get(&resolved_session_id).await else {
+                let _ = tx.send(AuthProveResult::SessionNotFound).await;
+                anyhow::bail!("session {} vanished after attach", resolved_session_id);
+            };
             let _ = tx.send(AuthProveResult::Ok).await;
             Ok((session, client_pubkey))
         }
@@ -408,10 +446,13 @@ async fn dispatch(
         }
 
         ZedraMessage::SwitchSession(msg) => {
-            // Client is already authenticated; only check global authorization
-            // and that the target session exists.
+            // Verify the client is authorized in the target session's ACL,
+            // not just globally. This prevents a client from switching to a
+            // session it was never paired with.
             match registry.get_by_name(&msg.session_name).await {
-                Some(target) if registry.is_globally_authorized(&client_pubkey).await => {
+                Some(target)
+                    if target.acl.lock().await.contains(&client_pubkey) =>
+                {
                     target.touch().await;
                     let workdir = target
                         .workdir
@@ -430,7 +471,14 @@ async fn dispatch(
 
         // -- Filesystem --
         ZedraMessage::FsList(msg) => {
-            let path = state.workdir.join(&msg.path);
+            let path = match resolve_path(&state.workdir, &msg.path) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("FsList: rejected path {:?}: {}", msg.path, e);
+                    drop(msg.tx);
+                    return Ok(());
+                }
+            };
             match state.fs.list(&path) {
                 Ok(entries) => {
                     let entries = entries
@@ -449,7 +497,14 @@ async fn dispatch(
         }
 
         ZedraMessage::FsRead(msg) => {
-            let path = state.workdir.join(&msg.path);
+            let path = match resolve_path(&state.workdir, &msg.path) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("FsRead: rejected path {:?}: {}", msg.path, e);
+                    drop(msg.tx);
+                    return Ok(());
+                }
+            };
             match state.fs.read(&path) {
                 Ok(content) => {
                     let _ = msg.tx.send(FsReadResult { content }).await;
@@ -459,13 +514,27 @@ async fn dispatch(
         }
 
         ZedraMessage::FsWrite(msg) => {
-            let path = state.workdir.join(&msg.path);
+            let path = match resolve_path(&state.workdir, &msg.path) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("FsWrite: rejected path {:?}: {}", msg.path, e);
+                    let _ = msg.tx.send(FsWriteResult { ok: false }).await;
+                    return Ok(());
+                }
+            };
             let ok = state.fs.write(&path, &msg.content).is_ok();
             let _ = msg.tx.send(FsWriteResult { ok }).await;
         }
 
         ZedraMessage::FsStat(msg) => {
-            let path = state.workdir.join(&msg.path);
+            let path = match resolve_path(&state.workdir, &msg.path) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("FsStat: rejected path {:?}: {}", msg.path, e);
+                    drop(msg.tx);
+                    return Ok(());
+                }
+            };
             match state.fs.stat(&path) {
                 Ok(stat) => {
                     let _ = msg.tx.send(FsStatResult {
@@ -482,6 +551,16 @@ async fn dispatch(
         // -- Terminal --
         ZedraMessage::TermCreate(msg) => {
             session.touch().await;
+
+            const MAX_TERMINALS_PER_SESSION: usize = 16;
+            if session.terminals.lock().await.len() >= MAX_TERMINALS_PER_SESSION {
+                tracing::warn!(
+                    "TermCreate: session {} has {} terminals, limit {}",
+                    session.id, MAX_TERMINALS_PER_SESSION, MAX_TERMINALS_PER_SESSION
+                );
+                drop(msg.tx);
+                return Ok(());
+            }
 
             let shell = ShellSession::spawn(msg.cols, msg.rows)?;
             let (pty_reader, pty_writer, master) = shell.take_reader();
@@ -718,7 +797,7 @@ async fn dispatch(
             match GitRepo::open(&state.workdir) {
                 Ok(repo) => {
                     let entries = repo
-                        .log(msg.limit.unwrap_or(20))
+                        .log(msg.limit.unwrap_or(20).min(500))
                         .unwrap_or_default()
                         .into_iter()
                         .map(|e| GitLogEntry {
@@ -773,7 +852,12 @@ async fn dispatch(
 
         // -- AI --
         ZedraMessage::AiPrompt(msg) => {
-            let output = std::process::Command::new("claude")
+            // Resolve the Claude binary path. Prefer an explicit absolute path
+            // from the environment to avoid executing a malicious `claude` binary
+            // that might appear earlier in $PATH.
+            let claude_bin = std::env::var("ZEDRA_CLAUDE_BIN")
+                .unwrap_or_else(|_| "claude".to_string());
+            let output = std::process::Command::new(&claude_bin)
                 .args(["--print", &msg.prompt])
                 .current_dir(&state.workdir)
                 .output();
@@ -799,7 +883,14 @@ async fn dispatch(
 
         // -- LSP --
         ZedraMessage::LspDiagnostics(msg) => {
-            let full_path = state.workdir.join(&msg.path);
+            let full_path = match resolve_path(&state.workdir, &msg.path) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("LspDiagnostics: rejected path {:?}: {}", msg.path, e);
+                    drop(msg.tx);
+                    return Ok(());
+                }
+            };
             let diagnostics = run_lsp_check(&full_path)
                 .into_iter()
                 .map(|d| LspDiagnostic {
