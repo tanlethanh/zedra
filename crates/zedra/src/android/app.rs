@@ -91,8 +91,12 @@ impl AndroidApp {
         // Extract owned values from Arc
         let extract_start = std::time::Instant::now();
         let jvm_owned = Arc::try_unwrap(jvm).unwrap_or_else(|arc| {
-            // If Arc has multiple references, we need to work around JavaVM not being Clone
-            log::warn!("JVM Arc has multiple references");
+            // If Arc has multiple references, we need to work around JavaVM not being Clone.
+            // SAFETY: JavaVM is a thin JNI handle (pointer + vtable pointer). The JVM process
+            // outlives the Rust side, so bitwise copying the handle does not create a
+            // dangling pointer. The original Arc continues to keep the JVM alive; the copy
+            // here is used only for platform initialization and is not dropped independently.
+            log::warn!("JVM Arc has multiple references — bitwise-copying handle");
             unsafe { std::ptr::read(&*arc) }
         });
 
@@ -345,7 +349,7 @@ impl AndroidApp {
             None => return Ok(()),
         };
 
-        log::debug!("IME text: {}", text);
+        log::debug!("IME text: {} char(s)", text.chars().count());
 
         // Dispatch each character as a key event
         for ch in text.chars() {

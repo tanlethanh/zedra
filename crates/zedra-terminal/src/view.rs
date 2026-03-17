@@ -199,11 +199,8 @@ impl TerminalView {
 
     /// Handle a keystroke, converting to escape sequence and sending via SSH or RPC session
     fn handle_keystroke(&mut self, keystroke: &Keystroke) {
-        log::debug!("Terminal keystroke: {:?}", keystroke);
-
         // Try to convert keystroke to terminal escape sequence
         if let Some(bytes) = self.terminal.try_keystroke(keystroke) {
-            log::debug!("Sending escape sequence: {:?}", bytes);
             self.send_bytes_to_remote(bytes);
         } else if let Some(ref key_char) = keystroke.key_char {
             // For plain characters, send the character directly
@@ -212,7 +209,6 @@ impl TerminalView {
                 && !keystroke.modifiers.platform
             {
                 let bytes = key_char.as_bytes().to_vec();
-                log::debug!("Sending character: {:?}", bytes);
                 self.send_bytes_to_remote(bytes);
             }
         }
@@ -220,7 +216,6 @@ impl TerminalView {
 
     /// Handle IME text input
     pub fn handle_ime_text(&mut self, text: &str) {
-        log::debug!("Terminal IME text: {}", text);
         let bytes = text.as_bytes().to_vec();
         self.send_bytes_to_remote(bytes);
     }
