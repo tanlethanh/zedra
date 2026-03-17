@@ -24,6 +24,28 @@ pub trait ClientSigner: Send + Sync {
     fn sign(&self, data: &[u8]) -> [u8; 64];
 }
 
+/// Write `data` to `path` with 0o600 permissions set atomically at creation
+/// (Unix), eliminating the TOCTOU window between write and chmod.
+fn write_secret_file(path: &std::path::Path, data: &[u8]) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(data)?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, data)?;
+    }
+    Ok(())
+}
+
 /// File-backed client signer.
 ///
 /// Stores the raw 32-byte Ed25519 secret key on disk with 0o600 permissions.
@@ -55,15 +77,7 @@ impl FileClientSigner {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(path, signing_key.to_bytes())?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(
-                    path,
-                    std::fs::Permissions::from_mode(0o600),
-                )?;
-            }
+            write_secret_file(path, &signing_key.to_bytes())?;
             tracing::info!("Generated new client key at {}", path.display());
             signing_key
         };
