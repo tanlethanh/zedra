@@ -106,7 +106,7 @@ pub fn install_panic_hook() {
         // In release builds (panic = "abort") this line is never reached —
         // the native abort signal is captured directly by the Crashlytics NDK
         // / iOS crash handler as a fatal crash with a full native stack trace.
-        crate::analytics::record_panic(&payload, &location);
+        analytics::record_panic(&payload, &location);
     }));
 }
 

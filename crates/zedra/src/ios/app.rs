@@ -8,6 +8,8 @@
 ///   5. gpui_ios_request_frame()      — called each frame by CADisplayLink
 use gpui::*;
 use gpui_ios::IosPlatform;
+
+use crate::{app, install_panic_hook, platform_bridge, ZedraAssets};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -49,9 +51,9 @@ pub extern "C" fn zedra_ios_check_pending_frame() -> bool {
 pub extern "C" fn zedra_launch_gpui() {
     super::logger::IosLogger::init(log::LevelFilter::Debug);
 
-    crate::install_panic_hook();
+    install_panic_hook();
 
-    crate::platform_bridge::set_bridge(super::bridge::IosBridge);
+    platform_bridge::set_bridge(super::bridge::IosBridge);
 
     log::info!("Zedra iOS: Creating GPUI application with IosPlatform");
 
@@ -59,7 +61,7 @@ pub extern "C" fn zedra_launch_gpui() {
 
     let app_cell = App::new_app(
         platform.clone(),
-        Arc::new(crate::ZedraAssets),
+        Arc::new(ZedraAssets),
         Arc::new(http_client::BlockedHttpClient),
     );
 
@@ -78,7 +80,7 @@ pub extern "C" fn zedra_launch_gpui() {
             ..Default::default()
         };
 
-        match crate::app::open_zedra_window(cx, window_options) {
+        match app::open_zedra_window(cx, window_options) {
             Ok(handle) => {
                 log::info!("Zedra iOS: Window opened: {:?}", handle);
                 IOS_WINDOW.with(|w| *w.borrow_mut() = Some(handle));

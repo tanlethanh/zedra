@@ -9,15 +9,20 @@
 //   crate::analytics::record_error("connection refused");
 //   crate::analytics::set_user_id(&session_id);
 
+#[cfg(target_os = "android")]
+use crate::android::analytics as android_analytics;
+#[cfg(target_os = "ios")]
+use crate::ios::analytics as ios_analytics;
+
 /// Log a named event with optional key-value parameters.
 ///
 /// Event names must be ≤ 40 characters (Firebase Analytics limit).
 /// Parameter keys must be ≤ 24 characters; values ≤ 100 characters.
 pub fn log_event(name: &str, params: &[(&str, &str)]) {
     #[cfg(target_os = "android")]
-    crate::android::analytics::log_event(name, params);
+    android_analytics::log_event(name, params);
     #[cfg(target_os = "ios")]
-    crate::ios::analytics::log_event(name, params);
+    ios_analytics::log_event(name, params);
     let _ = (name, params);
 }
 
@@ -27,9 +32,9 @@ pub fn log_event(name: &str, params: &[(&str, &str)]) {
 /// RPC errors, parse failures) that are worth tracking without crashing.
 pub fn record_error(message: &str) {
     #[cfg(target_os = "android")]
-    crate::android::analytics::record_error(message, "", 0);
+    android_analytics::record_error(message, "", 0);
     #[cfg(target_os = "ios")]
-    crate::ios::analytics::record_error(message, "", 0);
+    ios_analytics::record_error(message, "", 0);
     let _ = message;
 }
 
@@ -40,9 +45,9 @@ pub fn record_error(message: &str) {
 /// crash handler captures the abort signal directly as a fatal crash.
 pub fn record_panic(message: &str, location: &str) {
     #[cfg(target_os = "android")]
-    crate::android::analytics::record_panic(message, location);
+    android_analytics::record_panic(message, location);
     #[cfg(target_os = "ios")]
-    crate::ios::analytics::record_panic(message, location);
+    ios_analytics::record_panic(message, location);
     let _ = (message, location);
 }
 
@@ -52,8 +57,8 @@ pub fn record_panic(message: &str, location: &str) {
 /// Pass an empty string to clear the association.
 pub fn set_user_id(id: &str) {
     #[cfg(target_os = "android")]
-    crate::android::analytics::set_user_id(id);
+    android_analytics::set_user_id(id);
     #[cfg(target_os = "ios")]
-    crate::ios::analytics::set_user_id(id);
+    ios_analytics::set_user_id(id);
     let _ = id;
 }
