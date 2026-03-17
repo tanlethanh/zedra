@@ -53,3 +53,4 @@ targets:
         # -all_load: Ensure all symbols (including GPUI FFI) are included
         OTHER_LDFLAGS: ["$(inherited)", "-ObjC", "-all_load"]
         CLANG_ENABLE_OBJC_ARC: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
