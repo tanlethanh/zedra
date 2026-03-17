@@ -8,13 +8,17 @@
    version = "0.2.0"
    ```
 
-2. Commit and tag:
+2. Commit, tag, and push:
    ```bash
    git add Cargo.toml
    git commit -m "chore: release v0.2.0"
+   git push origin main
    git tag v0.2.0
-   git push origin main --tags
+   git push origin v0.2.0
    ```
+
+   > **Do not use `git push --tags`** — this repo has 400+ tags pulled from the
+   > upstream zed remote. Pushing them all would fail with HTTP 400.
 
 Pushing the tag triggers `.github/workflows/release.yml`, which:
 - Builds `zedra` for macOS arm64/x86_64 and Linux x86_64/aarch64
