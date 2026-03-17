@@ -5,7 +5,7 @@
 ///
 /// Architecture: JNI Thread → Command Queue → Main UI Thread → GPUI App
 use anyhow::Result;
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use crossbeam_channel::{Receiver, Sender, bounded};
 use jni::{JavaVM, objects::GlobalRef};
 use std::sync::{Arc, Mutex};
 
@@ -63,17 +63,25 @@ pub struct AndroidCommandQueue {
 }
 
 impl AndroidCommandQueue {
-    /// Create a new command queue
+    /// Create a new command queue. Bounded at 512 entries to prevent OOM under
+    /// sustained touch/scroll input when the main thread is slow to drain.
     pub fn new() -> Self {
-        let (sender, receiver) = unbounded();
+        let (sender, receiver) = bounded(512);
         Self { sender, receiver }
     }
 
-    /// Send a command from any thread (JNI callbacks)
+    /// Send a command from any thread (JNI callbacks).
+    /// Drops the command with a warning if the queue is full (backpressure).
     pub fn send(&self, command: AndroidCommand) -> Result<()> {
-        self.sender
-            .send(command)
-            .map_err(|e| anyhow::anyhow!("Failed to send command: {}", e))
+        self.sender.try_send(command).map_err(|e| match e {
+            crossbeam_channel::TrySendError::Full(cmd) => {
+                log::warn!("command queue full, dropping {:?}", cmd);
+                anyhow::anyhow!("command queue full")
+            }
+            crossbeam_channel::TrySendError::Disconnected(cmd) => {
+                anyhow::anyhow!("command queue disconnected, dropping {:?}", cmd)
+            }
+        })
     }
 
     /// Drain all pending commands on the main thread
