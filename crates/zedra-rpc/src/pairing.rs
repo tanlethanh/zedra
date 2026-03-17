@@ -76,9 +76,9 @@ impl ZedraPairingTicket {
     }
 }
 
-/// Generate a short random session ID (8 hex chars = 4 bytes = 2^32 IDs).
+/// Generate a random session ID (32 hex chars = 16 bytes = 2^128 IDs).
 pub fn generate_session_id() -> String {
-    let bytes: [u8; 4] = rand::random();
+    let bytes: [u8; 16] = rand::random();
     hex::encode(bytes)
 }
 
@@ -189,9 +189,9 @@ mod tests {
     }
 
     #[test]
-    fn generate_session_id_is_8_hex_chars() {
+    fn generate_session_id_is_32_hex_chars() {
         let id = generate_session_id();
-        assert_eq!(id.len(), 8);
+        assert_eq!(id.len(), 32);
         assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
