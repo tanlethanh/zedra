@@ -46,7 +46,7 @@ targets:
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: 4R7EAZY462
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_NSCameraUsageDescription: "Zedra needs camera access to scan QR codes for pairing"
         # $(inherited): include CocoaPods linker flags (Firebase etc.)
         # -ObjC: Force-load all ObjC classes/categories from static libs
