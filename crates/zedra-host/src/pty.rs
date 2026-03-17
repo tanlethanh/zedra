@@ -34,7 +34,19 @@ impl ShellSession {
         let mut cmd = CommandBuilder::new(&shell);
         cmd.arg("-l"); // Login shell
 
-        // Set terminal type
+        // Build a sanitized environment: start clean, allow only safe variables.
+        // This prevents daemon secrets (AWS keys, tokens, etc.) from leaking into shells.
+        cmd.env_clear();
+        let allowed = [
+            "HOME", "PATH", "SHELL", "TERM", "LANG", "USER", "LOGNAME",
+            "COLORTERM", "XDG_RUNTIME_DIR",
+        ];
+        for key in &allowed {
+            if let Ok(val) = std::env::var(key) {
+                cmd.env(key, val);
+            }
+        }
+        // Always set a known-good TERM; override any inherited value.
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
 
