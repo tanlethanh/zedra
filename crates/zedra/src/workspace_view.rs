@@ -2,15 +2,21 @@
 
 use gpui::*;
 
+use crate::active_terminal;
 use crate::editor::code_editor::EditorView;
-use crate::editor::git_diff_view::GitDiffView;
+use crate::editor::git_diff_view::{FileDiff, GitDiffView, parse_unified_diff};
+use crate::fonts;
+use crate::keyboard;
 use crate::mgpui::DrawerHost;
 use crate::pending::{SharedPendingSlot, shared_pending_slot};
-use crate::platform_bridge::status_bar_inset;
+use crate::platform_bridge::{self, AlertButton, status_bar_inset};
 use crate::theme;
 use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
 use zedra_session::SessionHandle;
 use zedra_terminal::view::{DisconnectRequested, TerminalView};
+
+/// Sentinel terminal ID used before the server assigns a real ID.
+const PENDING_TERMINAL_ID: &str = "__pending__";
 
 /// Published to HomeView and QuickActionPanel.
 #[derive(Clone, Debug)]
@@ -106,7 +112,7 @@ impl Render for WorkspaceContent {
             .child(div().h(px(top_inset)))
             .child(
                 div()
-                    .h(px(48.0))
+                    .h(px(theme::HEADER_HEIGHT))
                     .flex()
                     .flex_row()
                     .items_center()
@@ -115,8 +121,8 @@ impl Render for WorkspaceContent {
                     .child(
                         div()
                             .id("drawer-toggle-btn")
-                            .w(px(42.0))
-                            .h(px(42.0))
+                            .w(px(theme::HEADER_BUTTON_SIZE))
+                            .h(px(theme::HEADER_BUTTON_SIZE))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -124,7 +130,7 @@ impl Render for WorkspaceContent {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
-                                    crate::platform_bridge::bridge().hide_keyboard();
+                                    platform_bridge::bridge().hide_keyboard();
                                     cx.emit(WorkspaceContentEvent::ToggleDrawer);
                                 }),
                             )
@@ -159,8 +165,8 @@ impl Render for WorkspaceContent {
                     .child(
                         div()
                             .id("quick-action-btn")
-                            .w(px(42.0))
-                            .h(px(42.0))
+                            .w(px(theme::HEADER_BUTTON_SIZE))
+                            .h(px(theme::HEADER_BUTTON_SIZE))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -168,7 +174,7 @@ impl Render for WorkspaceContent {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
-                                    crate::platform_bridge::bridge().hide_keyboard();
+                                    platform_bridge::bridge().hide_keyboard();
                                     cx.emit(WorkspaceContentEvent::OpenQuickAction);
                                 }),
                             )
@@ -188,18 +194,20 @@ pub struct WorkspaceView {
     drawer_host: Entity<DrawerHost>,
     workspace_content: Entity<WorkspaceContent>,
     workspace_drawer: Entity<WorkspaceDrawer>,
-    pub session_handle: SessionHandle,
-    /// `(terminal_id, view)` pairs in creation order; pending slots use `"__pending__"`.
-    pub terminal_views: Vec<(String, Entity<TerminalView>)>,
+    session_handle: SessionHandle,
+    /// `(terminal_id, view)` pairs in creation order; pending slots use `PENDING_TERMINAL_ID`.
+    terminal_views: Vec<(String, Entity<TerminalView>)>,
     pub active_terminal_id: Option<String>,
     /// Filled by ZedraApp after `terminal_create` resolves.
     pub pending_terminal_id: SharedPendingSlot<String>,
     /// Filled by ZedraApp on session resume with existing server-side terminal IDs.
     pub pending_existing_terminals: SharedPendingSlot<Vec<String>>,
     pending_file: SharedPendingSlot<(String, String)>,
-    pending_git_diff: SharedPendingSlot<(String, String, String)>,
+    pending_git_diff: SharedPendingSlot<(String, FileDiff)>,
     /// Set by the native alert callback when user confirms terminal deletion.
     pending_terminal_delete: SharedPendingSlot<String>,
+    /// Terminal IDs whose initial resize RPC has completed; used to set connected=true.
+    pending_terminal_ready: SharedPendingSlot<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -210,16 +218,18 @@ impl WorkspaceView {
         let mut subscriptions = Vec::new();
 
         let pending_file: SharedPendingSlot<(String, String)> = shared_pending_slot();
-        let pending_git_diff: SharedPendingSlot<(String, String, String)> = shared_pending_slot();
+        let pending_git_diff: SharedPendingSlot<(String, FileDiff)> =
+            shared_pending_slot();
         let pending_terminal_id: SharedPendingSlot<String> = shared_pending_slot();
         let pending_existing_terminals: SharedPendingSlot<Vec<String>> = shared_pending_slot();
+        let pending_terminal_ready: SharedPendingSlot<String> = shared_pending_slot();
 
         let (columns, rows, cell_width, line_height) = compute_terminal_dimensions(window);
         let terminal_view =
             cx.new(|cx| TerminalView::new(columns, rows, cell_width, line_height, cx));
         terminal_view.update(cx, |view, _cx| {
-            view.set_keyboard_request(crate::keyboard::make_keyboard_handler());
-            view.set_is_keyboard_visible_fn(crate::keyboard::make_is_keyboard_visible());
+            view.set_keyboard_request(keyboard::make_keyboard_handler());
+            view.set_is_keyboard_visible_fn(keyboard::make_is_keyboard_visible());
             view.set_status("Connecting...".to_string());
         });
 
@@ -227,16 +237,12 @@ impl WorkspaceView {
             &terminal_view,
             |this: &mut WorkspaceView, _terminal, _event: &DisconnectRequested, cx| {
                 log::info!("DisconnectRequested from terminal view");
-                this.session_handle.clear_session();
-                this.terminal_views.clear();
-                this.active_terminal_id = None;
-                cx.emit(WorkspaceEvent::Disconnected);
-                cx.notify();
+                this.disconnect(cx);
             },
         );
         subscriptions.push(sub);
 
-        let initial_terminals = vec![("__pending__".to_string(), terminal_view.clone())];
+        let initial_terminals = vec![(PENDING_TERMINAL_ID.to_string(), terminal_view.clone())];
 
         let workspace_content = cx.new(|cx| {
             WorkspaceContent::new(terminal_view.into(), "Terminal", session_handle.clone(), cx)
@@ -306,14 +312,10 @@ impl WorkspaceView {
                         WorkspaceDrawerEvent::DisconnectRequested => {
                             log::info!("DisconnectRequested from session panel");
                             drawer_host_clone.update(cx, |host, cx| host.close(cx));
-                            this.session_handle.clear_session();
-                            this.terminal_views.clear();
-                            this.active_terminal_id = None;
                             workspace_drawer_clone.update(cx, |drawer, cx| {
                                 drawer.reset_for_disconnect(cx);
                             });
-                            cx.emit(WorkspaceEvent::Disconnected);
-                            cx.notify();
+                            this.disconnect(cx);
                         }
                         WorkspaceDrawerEvent::NewTerminalRequested => {
                             drawer_host_clone.update(cx, |host, cx| host.close(cx));
@@ -326,9 +328,9 @@ impl WorkspaceView {
                                 TerminalView::new(columns, rows, cell_width, line_height, cx)
                             });
                             terminal_view.update(cx, |view, _cx| {
-                                view.set_keyboard_request(crate::keyboard::make_keyboard_handler());
+                                view.set_keyboard_request(keyboard::make_keyboard_handler());
                                 view.set_is_keyboard_visible_fn(
-                                    crate::keyboard::make_is_keyboard_visible(),
+                                    keyboard::make_is_keyboard_visible(),
                                 );
                                 view.set_status("Creating terminal...".to_string());
                             });
@@ -336,7 +338,7 @@ impl WorkspaceView {
                                 content.set_main_view(terminal_view.clone().into(), "Terminal", cx);
                             });
                             this.terminal_views
-                                .push(("__pending__".to_string(), terminal_view));
+                                .push((PENDING_TERMINAL_ID.to_string(), terminal_view));
 
                             let handle = this.session_handle.clone();
                             let ptid = pending_terminal_id_clone.clone();
@@ -357,22 +359,7 @@ impl WorkspaceView {
                         WorkspaceDrawerEvent::TerminalSelected(tid) => {
                             drawer_host_clone.update(cx, |host, cx| host.close(cx));
                             let tid = tid.clone();
-                            if let Some((_id, view)) =
-                                this.terminal_views.iter().find(|(id, _)| id == &tid)
-                            {
-                                let view = view.clone();
-                                workspace_content_clone.update(cx, |content, cx| {
-                                    content.set_main_view(view.into(), "Terminal", cx);
-                                });
-                                this.active_terminal_id = Some(tid.clone());
-                                if let Some(t) = this.session_handle.terminal(&tid) {
-                                    crate::active_terminal::set_active_input(t.make_input_fn());
-                                }
-                                workspace_drawer_clone.update(cx, |drawer, cx| {
-                                    drawer.set_active_terminal(Some(tid), cx);
-                                });
-                            }
-                            cx.notify();
+                            this.switch_to_terminal(&tid, cx);
                         }
                         WorkspaceDrawerEvent::FileSelected(path) => {
                             drawer_host_clone.update(cx, |host, cx| host.close(cx));
@@ -404,12 +391,12 @@ impl WorkspaceView {
                                 .map(|i| i + 1)
                                 .unwrap_or(1);
                             let pending = this.pending_terminal_delete.clone();
-                            crate::platform_bridge::show_alert(
+                            platform_bridge::show_alert(
                                 "",
                                 &format!("Delete Terminal {}?", index),
                                 vec![
-                                    crate::platform_bridge::AlertButton::destructive("Delete"),
-                                    crate::platform_bridge::AlertButton::cancel("Cancel"),
+                                    AlertButton::destructive("Delete"),
+                                    AlertButton::cancel("Cancel"),
                                 ],
                                 move |button_index| {
                                     if button_index == 0 {
@@ -431,7 +418,16 @@ impl WorkspaceView {
                                 zedra_session::session_runtime().spawn(async move {
                                     match handle.git_diff(Some(&path_clone), false).await {
                                         Ok(diff_text) => {
-                                            pgit.set((path_clone, filename_clone, diff_text));
+                                            let diffs = parse_unified_diff(&diff_text);
+                                            let diff = diffs
+                                                .into_iter()
+                                                .find(|d| d.new_path == path_clone)
+                                                .unwrap_or(FileDiff {
+                                                    old_path: path_clone.clone(),
+                                                    new_path: path_clone.clone(),
+                                                    hunks: Vec::new(),
+                                                });
+                                            pgit.set((filename_clone, diff));
                                             zedra_session::push_callback(Box::new(|| {}));
                                         }
                                         Err(e) => {
@@ -444,18 +440,7 @@ impl WorkspaceView {
                                     }
                                 });
                             } else {
-                                let diffs = crate::editor::git_diff_view::sample_diffs();
-                                if let Some(diff) = diffs.into_iter().find(|d| d.new_path == path) {
-                                    let diff_view =
-                                        cx.new(|cx| GitDiffView::new(diff, path.clone(), cx));
-                                    workspace_content_clone.update(cx, |content, cx| {
-                                        content.set_main_view(
-                                            diff_view.into(),
-                                            format!("Diff: {}", filename),
-                                            cx,
-                                        );
-                                    });
-                                }
+                                log::warn!("git diff requested while disconnected, ignoring");
                             }
                         }
                     }
@@ -476,6 +461,7 @@ impl WorkspaceView {
             pending_file,
             pending_git_diff,
             pending_terminal_delete: shared_pending_slot(),
+            pending_terminal_ready,
             _subscriptions: subscriptions,
         }
     }
@@ -484,20 +470,12 @@ impl WorkspaceView {
     pub fn summary(&self, index: usize) -> WorkspaceSummary {
         let state = self.session_handle.state();
         let is_connected = matches!(state, zedra_session::SessionState::Connected { .. });
-        let project_path = match &state {
-            zedra_session::SessionState::Connected { workdir, .. } => {
-                if workdir.is_empty() {
-                    None
-                } else {
-                    Some(workdir.clone())
-                }
-            }
-            _ => None,
-        };
+        let workdir = self.session_handle.workdir();
+        let project_path = if workdir.is_empty() { None } else { Some(workdir) };
         let terminal_ids: Vec<String> = self
             .terminal_views
             .iter()
-            .filter(|(id, _)| id != "__pending__")
+            .filter(|(id, _)| id != PENDING_TERMINAL_ID)
             .map(|(id, _)| id.clone())
             .collect();
         let terminal_count = terminal_ids.len();
@@ -538,6 +516,43 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    /// Wire a TerminalView to the session: output buffer, send bytes, resize fn, and status.
+    ///
+    /// Call this whenever a real terminal ID has been assigned and the view needs to be
+    /// connected to the remote PTY. The keyboard callbacks are set here too.
+    fn wire_terminal_view(
+        view: &Entity<TerminalView>,
+        handle: &SessionHandle,
+        tid: &str,
+        status: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let terminal = handle.terminal(tid);
+        let handle_clone = handle.clone();
+        let tid_clone = tid.to_string();
+        view.update(cx, |v, _cx| {
+            v.set_keyboard_request(keyboard::make_keyboard_handler());
+            v.set_is_keyboard_visible_fn(keyboard::make_is_keyboard_visible());
+            if let Some(ref t) = terminal {
+                v.set_output_buffer(t.output.clone(), t.needs_render.clone());
+                v.set_send_bytes(t.make_input_fn());
+            }
+            let h = handle_clone.clone();
+            let t = tid_clone.clone();
+            v.set_resize_fn(Box::new(move |cols, rows| {
+                let h2 = h.clone();
+                let t2 = t.clone();
+                zedra_session::session_runtime().spawn(async move {
+                    if let Err(e) = h2.terminal_resize(&t2, cols, rows).await {
+                        log::warn!("Remote PTY resize failed: {}", e);
+                    }
+                });
+            }));
+            v.set_connected(true);
+            v.set_status(status.to_string());
+        });
+    }
+
     /// Switch the main view to a specific terminal by ID.
     pub fn switch_to_terminal(&mut self, terminal_id: &str, cx: &mut Context<Self>) {
         if let Some((_, view)) = self.terminal_views.iter().find(|(id, _)| id == terminal_id) {
@@ -548,7 +563,7 @@ impl WorkspaceView {
             });
             self.active_terminal_id = Some(tid.clone());
             if let Some(t) = self.session_handle.terminal(&tid) {
-                crate::active_terminal::set_active_input(t.make_input_fn());
+                active_terminal::set_active_input(t.make_input_fn());
             }
             self.workspace_drawer.update(cx, |drawer, cx| {
                 drawer.set_active_terminal(Some(tid), cx);
@@ -565,70 +580,40 @@ impl Render for WorkspaceView {
                 self.terminal_views.clear();
 
                 let (columns, rows, cell_width, line_height) = compute_terminal_dimensions(window);
+                let cols_u16 = columns as u16;
+                let rows_u16 = rows as u16;
                 for id in &existing_ids {
                     let terminal_view =
                         cx.new(|cx| TerminalView::new(columns, rows, cell_width, line_height, cx));
-                    let terminal = self.session_handle.terminal(id);
-                    let handle = self.session_handle.clone();
-                    let tid = id.clone();
-                    terminal_view.update(cx, |view, _cx| {
-                        view.set_keyboard_request(crate::keyboard::make_keyboard_handler());
-                        view.set_is_keyboard_visible_fn(
-                            crate::keyboard::make_is_keyboard_visible(),
-                        );
-                        if let Some(ref t) = terminal {
-                            view.set_output_buffer(t.output.clone(), t.needs_render.clone());
-                            view.set_send_bytes(t.make_input_fn());
+                    // Wire but keep disconnected until resize RPC confirms dimensions.
+                    Self::wire_terminal_view(
+                        &terminal_view,
+                        &self.session_handle,
+                        id,
+                        "Resuming",
+                        cx,
+                    );
+                    terminal_view.update(cx, |v, _cx| v.set_connected(false));
+                    // Sync terminal dimensions to server PTY; mark connected on success.
+                    let handle_resize = self.session_handle.clone();
+                    let tid_resize = id.clone();
+                    let ready_slot = self.pending_terminal_ready.clone();
+                    zedra_session::session_runtime().spawn(async move {
+                        if let Err(e) = handle_resize
+                            .terminal_resize(&tid_resize, cols_u16, rows_u16)
+                            .await
+                        {
+                            log::warn!("Initial resize on session resume failed: {}", e);
                         }
-                        let handle_rs = handle.clone();
-                        let tid_rs = tid.clone();
-                        view.set_resize_fn(Box::new(move |cols, rows| {
-                            let handle = handle_rs.clone();
-                            let tid_async = tid_rs.clone();
-                            zedra_session::session_runtime().spawn(async move {
-                                if let Err(e) = handle.terminal_resize(&tid_async, cols, rows).await
-                                {
-                                    log::warn!("Remote PTY resize failed: {}", e);
-                                }
-                            });
-                        }));
-                        view.set_connected(true);
-                        view.set_status("Resumed".to_string());
+                        ready_slot.set(tid_resize);
+                        zedra_session::push_callback(Box::new(|| {}));
                     });
-                    // Send the current terminal dimensions to the server PTY immediately.
-                    // The server-side PTY still has the dimensions from the last session;
-                    // syncing them now ensures zsh redraws at the correct column width and
-                    // prevents line-wrapping artifacts on the first keypress.
-                    {
-                        let cols_u16 = columns as u16;
-                        let rows_u16 = rows as u16;
-                        let handle_resize = handle.clone();
-                        let tid_resize = id.clone();
-                        zedra_session::session_runtime().spawn(async move {
-                            if let Err(e) = handle_resize
-                                .terminal_resize(&tid_resize, cols_u16, rows_u16)
-                                .await
-                            {
-                                log::warn!("Initial resize on session resume failed: {}", e);
-                            }
-                        });
-                    }
                     self.terminal_views.push((id.clone(), terminal_view));
                 }
 
-                if let Some((first_id, first_view)) = self.terminal_views.first() {
+                if let Some((first_id, _)) = self.terminal_views.first() {
                     let first_id = first_id.clone();
-                    let first_view = first_view.clone();
-                    self.workspace_content.update(cx, |content, cx| {
-                        content.set_main_view(first_view.into(), "Terminal", cx);
-                    });
-                    self.active_terminal_id = Some(first_id.clone());
-                    if let Some(t) = self.session_handle.terminal(&first_id) {
-                        crate::active_terminal::set_active_input(t.make_input_fn());
-                    }
-                    self.workspace_drawer.update(cx, |drawer, cx| {
-                        drawer.set_active_terminal(Some(first_id), cx);
-                    });
+                    self.switch_to_terminal(&first_id, cx);
                 }
             }
         }
@@ -641,22 +626,9 @@ impl Render for WorkspaceView {
             });
         }
 
-        if let Some((path, filename, diff_text)) = self.pending_git_diff.take() {
-            let diffs = crate::editor::git_diff_view::parse_unified_diff(&diff_text);
-            let diff = diffs
-                .into_iter()
-                .find(|d| d.new_path == path)
-                .unwrap_or_else(|| {
-                    crate::editor::git_diff_view::parse_unified_diff(&diff_text)
-                        .into_iter()
-                        .next()
-                        .unwrap_or(crate::editor::git_diff_view::FileDiff {
-                            old_path: path.clone(),
-                            new_path: path.clone(),
-                            hunks: Vec::new(),
-                        })
-                });
-            let diff_view = cx.new(|cx| GitDiffView::new(diff, path.clone(), cx));
+        if let Some((filename, diff)) = self.pending_git_diff.take() {
+            let path = diff.new_path.clone();
+            let diff_view = cx.new(|cx| GitDiffView::new(diff, path, cx));
             let title = format!("Diff: {}", filename);
             self.workspace_content.update(cx, |c, cx| {
                 c.set_main_view(diff_view.into(), title, cx);
@@ -668,39 +640,13 @@ impl Render for WorkspaceView {
                 .terminal_views
                 .iter_mut()
                 .rev()
-                .find(|(id, _)| id == "__pending__")
+                .find(|(id, _)| id == PENDING_TERMINAL_ID)
             {
                 entry.0 = term_id.clone();
-                let terminal = self.session_handle.terminal(&term_id);
-                let handle = self.session_handle.clone();
-                let tid = term_id.clone();
-                entry.1.update(cx, |view, _cx| {
-                    if let Some(ref t) = terminal {
-                        view.set_output_buffer(t.output.clone(), t.needs_render.clone());
-                        view.set_send_bytes(t.make_input_fn());
-                    }
-                    let handle_rs = handle.clone();
-                    let tid_rs = tid.clone();
-                    view.set_resize_fn(Box::new(move |cols, rows| {
-                        let handle = handle_rs.clone();
-                        let tid_async = tid_rs.clone();
-                        zedra_session::session_runtime().spawn(async move {
-                            if let Err(e) = handle.terminal_resize(&tid_async, cols, rows).await {
-                                log::warn!("Remote PTY resize failed: {}", e);
-                            }
-                        });
-                    }));
-                    view.set_connected(true);
-                    view.set_status("Connected".to_string());
-                });
+                let view = entry.1.clone();
+                Self::wire_terminal_view(&view, &self.session_handle, &term_id, "Connected", cx);
             }
-            self.active_terminal_id = Some(term_id.clone());
-            if let Some(t) = self.session_handle.terminal(&term_id) {
-                crate::active_terminal::set_active_input(t.make_input_fn());
-            }
-            self.workspace_drawer.update(cx, |drawer, cx| {
-                drawer.set_active_terminal(Some(term_id), cx);
-            });
+            self.switch_to_terminal(&term_id, cx);
         }
 
         if let Some(tid) = self.pending_terminal_delete.take() {
@@ -716,29 +662,24 @@ impl Render for WorkspaceView {
             });
 
             if was_active {
-                if let Some((new_id, new_view)) = self.terminal_views.first() {
+                if let Some((new_id, _)) = self.terminal_views.first() {
                     let new_id = new_id.clone();
-                    let new_view = new_view.clone();
-                    self.workspace_content.update(cx, |content, cx| {
-                        content.set_main_view(new_view.into(), "Terminal", cx);
-                    });
-                    self.active_terminal_id = Some(new_id.clone());
-                    if let Some(t) = self.session_handle.terminal(&new_id) {
-                        crate::active_terminal::set_active_input(t.make_input_fn());
-                    }
-                    self.workspace_drawer.update(cx, |drawer, cx| {
-                        drawer.set_active_terminal(Some(new_id), cx);
-                    });
+                    self.switch_to_terminal(&new_id, cx);
                 } else {
                     self.active_terminal_id = None;
                     self.workspace_drawer.update(cx, |drawer, cx| {
                         drawer.set_active_terminal(None, cx);
                     });
                 }
-            } else {
-                let current = self.active_terminal_id.clone();
-                self.workspace_drawer.update(cx, |drawer, cx| {
-                    drawer.set_active_terminal(current, cx);
+            }
+        }
+
+        // Mark resumed terminals connected once their initial resize RPC completes.
+        if let Some(tid) = self.pending_terminal_ready.take() {
+            if let Some((_, view)) = self.terminal_views.iter().find(|(id, _)| id == &tid) {
+                view.update(cx, |v, _cx| {
+                    v.set_connected(true);
+                    v.set_status("Connected".to_string());
                 });
             }
         }
@@ -749,14 +690,18 @@ impl Render for WorkspaceView {
 
 /// Compute terminal grid dimensions from the current viewport.
 /// Returns `(columns, rows, cell_width, line_height)`.
+///
+/// Calls `load_fonts()` to ensure the monospace font is registered with the
+/// GPUI text system before measuring glyph advance width. This is a no-op
+/// after the first call — `load_fonts` is idempotent.
 pub fn compute_terminal_dimensions(window: &mut Window) -> (usize, usize, Pixels, Pixels) {
     let viewport = window.viewport_size();
     let line_height = px(16.0);
 
-    crate::fonts::load_fonts(window);
+    fonts::load_fonts(window);
 
     let font = gpui::Font {
-        family: crate::fonts::MONO_FONT_FAMILY.into(),
+        family: fonts::MONO_FONT_FAMILY.into(),
         features: gpui::FontFeatures::default(),
         fallbacks: None,
         weight: gpui::FontWeight::NORMAL,
@@ -773,7 +718,9 @@ pub fn compute_terminal_dimensions(window: &mut Window) -> (usize, usize, Pixels
     let columns = ((viewport.width / cell_width).floor() as usize)
         .saturating_sub(1)
         .clamp(20, 200);
-    let rows = 24;
+    let rows = ((viewport.height / line_height).floor() as usize)
+        .saturating_sub(1)
+        .clamp(5, 200);
 
     (columns, rows, cell_width, line_height)
 }
