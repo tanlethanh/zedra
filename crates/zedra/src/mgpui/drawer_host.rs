@@ -1,9 +1,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+
+use crate::{platform_bridge, theme};
 
 /// Global flag: true when any drawer overlay is visible.
 /// Used to suppress input (e.g. keyboard) behind the overlay.
@@ -65,7 +66,7 @@ pub struct DrawerHost {
     backdrop_opacity: f32,
     focus_handle: FocusHandle,
     // Gesture + animation state
-    drawer_state: Arc<Mutex<DrawerState>>,
+    drawer_state: DrawerState,
     /// Animation start offset
     snap_from: f32,
     /// Animation target offset (None = no animation in progress)
@@ -84,10 +85,10 @@ impl DrawerHost {
             content,
             drawer_view: None,
             side: DrawerSide::Left,
-            width: px(293.0),
+            width: px(theme::DRAWER_WIDTH),
             backdrop_opacity: 0.4,
             focus_handle: cx.focus_handle(),
-            drawer_state: Arc::new(Mutex::new(DrawerState::default())),
+            drawer_state: DrawerState::default(),
             snap_from: 0.0,
             snap_target: None,
             snap_started_at: None,
@@ -102,21 +103,27 @@ impl DrawerHost {
     }
 
     /// Animate the drawer open (slide-in).
+    ///
+    /// Emits `DrawerEvent::Opened` immediately (before the animation completes)
+    /// so callers can update state (e.g. load git status) without waiting for
+    /// the visual transition to finish.
     pub fn open(&mut self, cx: &mut Context<Self>) {
         let w = f32::from(self.width);
+        DRAWER_OVERLAY_VISIBLE.store(true, Ordering::Relaxed);
         self.start_snap(w, cx);
         cx.emit(DrawerEvent::Opened);
     }
 
     /// Animate the drawer closed (slide-out).
+    ///
+    /// Emits `DrawerEvent::Closed` immediately (before the animation completes).
     pub fn close(&mut self, cx: &mut Context<Self>) {
         self.start_snap(0.0, cx);
         cx.emit(DrawerEvent::Closed);
     }
 
     pub fn is_open(&self) -> bool {
-        let offset = self.drawer_state.lock().map(|s| s.offset).unwrap_or(0.0);
-        offset > 0.0 || self.snap_target.map_or(false, |t| t > 0.0)
+        self.drawer_state.offset > 0.0 || self.snap_target.map_or(false, |t| t > 0.0)
     }
 
     pub fn set_side(&mut self, side: DrawerSide) {
@@ -133,25 +140,21 @@ impl DrawerHost {
 
     /// Start a snap animation to the given target offset.
     fn start_snap(&mut self, target: f32, cx: &mut Context<Self>) {
-        let current = self.drawer_state.lock().map(|s| s.offset).unwrap_or(0.0);
+        let current = self.drawer_state.offset;
 
         // Skip animation when already at (or very near) target — avoids a ghost
         // overlay window where the backdrop stays alive but invisible.
         if (current - target).abs() < 1.0 {
-            if let Ok(mut state) = self.drawer_state.lock() {
-                state.offset = target;
-                state.is_dragging = false;
-            }
+            self.drawer_state.offset = target;
+            self.drawer_state.is_dragging = false;
             self.snap_target = None;
             self.snap_started_at = None;
             cx.notify();
             return;
         }
 
-        if let Ok(mut state) = self.drawer_state.lock() {
-            state.offset = target;
-            state.is_dragging = false;
-        }
+        self.drawer_state.offset = target;
+        self.drawer_state.is_dragging = false;
         self.snap_from = current;
         self.snap_target = Some(target);
         self.snap_started_at = Some(std::time::Instant::now());
@@ -172,9 +175,13 @@ impl Render for DrawerHost {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Clear completed snap animations (animation duration is 250ms, give 280ms margin)
         if let Some(started) = self.snap_started_at {
-            if started.elapsed() >= Duration::from_millis(280) {
+            if started.elapsed() >= Duration::from_millis(theme::ANIMATION_DURATION_MS + 30) {
                 self.snap_target = None;
                 self.snap_started_at = None;
+                // Drawer is now fully closed — update global overlay flag
+                if self.drawer_state.offset <= 0.0 {
+                    DRAWER_OVERLAY_VISIBLE.store(false, Ordering::Relaxed);
+                }
             }
         }
 
@@ -184,12 +191,8 @@ impl Render for DrawerHost {
         let drawer_width = f32::from(self.width);
         let max_opacity = self.backdrop_opacity;
 
-        // Read drawer state
-        let (drawer_offset, is_dragging) = self
-            .drawer_state
-            .lock()
-            .map(|s| (s.offset, s.is_dragging))
-            .unwrap_or((0.0, false));
+        let drawer_offset = self.drawer_state.offset;
+        let is_dragging = self.drawer_state.is_dragging;
 
         let is_open = drawer_offset > 0.0;
         let snap_target = self.snap_target;
@@ -201,7 +204,6 @@ impl Render for DrawerHost {
         // dragged, or animating. Including is_dragging prevents the occluding
         // overlay from disappearing mid-gesture when the offset hits 0.
         let show_overlay = has_drawer && (is_open || is_dragging || snap_target.is_some());
-        DRAWER_OVERLAY_VISIBLE.store(show_overlay, Ordering::Relaxed);
 
         div()
             .track_focus(&self.focus_handle)
@@ -216,32 +218,25 @@ impl Render for DrawerHost {
                 let delta = event.delta.pixel_delta(window.line_height());
                 let dx = f32::from(delta.x);
                 let dy = f32::from(delta.y);
-                const EDGE_ZONE: f32 = 44.0;
                 let pos_x = f32::from(event.position.x);
-                let drawer_open =
-                    this.drawer_state.lock().map(|s| s.offset > 0.0).unwrap_or(false);
                 if dx.abs() <= dy.abs() {
                     return;
                 }
-                if !drawer_open && pos_x >= EDGE_ZONE {
+                if this.drawer_state.offset <= 0.0 && pos_x >= theme::DRAWER_EDGE_ZONE {
                     return;
                 }
                 // Horizontal swipe is driving the drawer — dismiss keyboard.
-                crate::platform_bridge::bridge().hide_keyboard();
+                platform_bridge::bridge().hide_keyboard();
                 let width = f32::from(this.width);
-                let current = this.drawer_state.lock().map(|s| s.offset).unwrap_or(0.0);
+                let current = this.drawer_state.offset;
                 if current <= 0.0 && dx <= 0.0 {
                     return;
                 }
                 this.last_drag_dx = dx;
-                let new_offset = if let Ok(mut state) = this.drawer_state.lock() {
-                    state.is_dragging = true;
-                    state.offset = (state.offset + dx).clamp(0.0, width);
-                    state.offset
-                } else {
-                    (current + dx).clamp(0.0, width)
-                };
-                const VELOCITY_THRESHOLD: f32 = 6.0;
+                this.drawer_state.is_dragging = true;
+                this.drawer_state.offset = (this.drawer_state.offset + dx).clamp(0.0, width);
+                let new_offset = this.drawer_state.offset;
+                const VELOCITY_THRESHOLD: f32 = theme::DRAWER_VELOCITY_THRESHOLD;
                 let position_threshold = width * 0.3;
                 if dx > 0.0 && (new_offset > position_threshold || dx > VELOCITY_THRESHOLD) {
                     this.start_snap(width, cx);
@@ -260,14 +255,8 @@ impl Render for DrawerHost {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                    let was_dragging = this
-                        .drawer_state
-                        .lock()
-                        .map(|s| s.is_dragging)
-                        .unwrap_or(false);
-
-                    if was_dragging {
-                        let current = this.drawer_state.lock().map(|s| s.offset).unwrap_or(0.0);
+                    if this.drawer_state.is_dragging {
+                        let current = this.drawer_state.offset;
                         let width = f32::from(this.width);
                         let last_dx = this.last_drag_dx;
 
@@ -307,7 +296,7 @@ impl Render for DrawerHost {
                 let backdrop = div().absolute().inset_0().on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, event: &MouseDownEvent, _window, cx| {
-                        let offset = this.drawer_state.lock().map(|s| s.offset).unwrap_or(0.0);
+                        let offset = this.drawer_state.offset;
                         // Drawer closed or closing — let events through to content
                         if offset <= 0.0 {
                             return;
@@ -318,7 +307,7 @@ impl Render for DrawerHost {
                         }
                         // Backdrop tap: block content behind from firing, close drawer
                         cx.stop_propagation();
-                        crate::platform_bridge::bridge().hide_keyboard();
+                        platform_bridge::bridge().hide_keyboard();
                         cx.emit(DrawerEvent::BackdropTapped);
                         this.close(cx);
                     }),
@@ -330,7 +319,7 @@ impl Render for DrawerHost {
                     backdrop
                         .with_animation(
                             ElementId::NamedInteger("drawer-backdrop-snap".into(), animation_id),
-                            Animation::new(Duration::from_millis(250))
+                            Animation::new(Duration::from_millis(theme::ANIMATION_DURATION_MS))
                                 .with_easing(ease_out_quint()),
                             move |elem, delta| {
                                 let o = from + (target - from) * delta;
@@ -366,7 +355,7 @@ impl Render for DrawerHost {
                     panel
                         .with_animation(
                             ElementId::NamedInteger("drawer-panel-snap".into(), animation_id),
-                            Animation::new(Duration::from_millis(250))
+                            Animation::new(Duration::from_millis(theme::ANIMATION_DURATION_MS))
                                 .with_easing(ease_out_quint()),
                             move |elem, delta| {
                                 let o = from + (target - from) * delta;

@@ -192,22 +192,7 @@ impl EditorView {
             }
         }
 
-        // Sort by start position, then by shorter range (more specific captures win)
-        result.sort_by(|a, b| a.0.start.cmp(&b.0.start).then(a.0.len().cmp(&b.0.len())));
-
-        // Remove overlaps: keep only the first (most specific) highlight at each position
-        let mut merged: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
-        let mut cursor = 0usize;
-        for (range, style) in result {
-            if range.start >= cursor {
-                merged.push((range.clone(), style));
-                cursor = range.end;
-            } else if range.start < cursor && range.end > cursor {
-                merged.push((cursor..range.end, style));
-                cursor = range.end;
-            }
-        }
-        merged
+        super::merge_highlights(result)
     }
 }
 
@@ -225,7 +210,7 @@ impl Render for EditorView {
             self.rebuild_line_cache();
             let line_count = self.cached_lines.len();
             let char_count: usize = self.cached_lines.iter().map(|l| l.text.len()).sum();
-            log::info!(
+            log::debug!(
                 "[PERF] editor: rebuilt cache, {} lines, {} chars",
                 line_count,
                 char_count

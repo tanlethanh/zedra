@@ -76,7 +76,7 @@ impl Render for HomeView {
             );
 
         if !self.items.is_empty() {
-            let mut cards = div().mt_4().w(px(280.0)).flex().flex_col().gap(px(8.0));
+            let mut cards = div().mt_4().w(px(theme::HOME_CARD_WIDTH)).flex().flex_col().gap(px(8.0));
 
             for (item_idx, item) in self.items.iter().enumerate() {
                 let card = match (&item.active, &item.saved) {
@@ -140,7 +140,7 @@ impl Render for HomeView {
         if self.items.is_empty() {
             content = content.child(
                 div()
-                    .w(px(280.0))
+                    .w(px(theme::HOME_CARD_WIDTH))
                     .rounded(px(8.0))
                     .bg(rgb(theme::BG_CARD))
                     .border_1()
@@ -181,7 +181,7 @@ impl Render for HomeView {
         content = content.child(
             div()
                 .mt_4()
-                .w(px(280.0))
+                .w(px(theme::HOME_CARD_WIDTH))
                 .py(px(12.0))
                 .rounded(px(8.0))
                 .border_1()
@@ -207,7 +207,7 @@ impl Render for HomeView {
                 .mt_8()
                 .text_color(rgb(theme::TEXT_MUTED))
                 .text_size(px(theme::FONT_DETAIL))
-                .child("zedra v0.1.0"),
+                .child(concat!("zedra v", env!("CARGO_PKG_VERSION"))),
         );
 
         div()

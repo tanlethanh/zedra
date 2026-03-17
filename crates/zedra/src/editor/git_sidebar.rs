@@ -143,7 +143,13 @@ pub struct GitSidebar {
 impl GitSidebar {
     pub fn new(cx: &mut App) -> Self {
         Self {
-            repo_state: GitRepoState::sample(),
+            repo_state: GitRepoState {
+                branch: String::new(),
+                staged_files: Vec::new(),
+                unstaged_files: Vec::new(),
+                untracked_files: Vec::new(),
+                commit_message: String::new(),
+            },
             section_expanded: [true, true, true],
             focus_handle: cx.focus_handle(),
         }
@@ -170,7 +176,6 @@ impl GitSidebar {
         title: &str,
         count: usize,
         section_idx: usize,
-        _action_label: Option<&str>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let is_expanded = self.section_expanded[section_idx];
@@ -324,31 +329,13 @@ impl Render for GitSidebar {
             .collect();
 
         let staged_header = self
-            .render_section_header(
-                "Staged changes",
-                self.repo_state.total_staged(),
-                0,
-                Some("-"),
-                cx,
-            )
+            .render_section_header("Staged changes", self.repo_state.total_staged(), 0, cx)
             .into_any_element();
         let unstaged_header = self
-            .render_section_header(
-                "Changes",
-                self.repo_state.total_unstaged(),
-                1,
-                Some("+"),
-                cx,
-            )
+            .render_section_header("Changes", self.repo_state.total_unstaged(), 1, cx)
             .into_any_element();
         let untracked_header = self
-            .render_section_header(
-                "Untracked",
-                self.repo_state.total_untracked(),
-                2,
-                Some("+"),
-                cx,
-            )
+            .render_section_header("Untracked", self.repo_state.total_untracked(), 2, cx)
             .into_any_element();
 
         let show_staged = self.section_expanded[0];

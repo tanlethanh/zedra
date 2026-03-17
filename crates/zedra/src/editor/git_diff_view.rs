@@ -180,7 +180,6 @@ struct CachedDiffLine {
 
 pub struct GitDiffView {
     diff: FileDiff,
-    _file_path: String,
     highlighter: Highlighter,
     theme: SyntaxTheme,
     scroll_handle: UniformListScrollHandle,
@@ -191,10 +190,10 @@ pub struct GitDiffView {
 
 impl GitDiffView {
     pub fn new(diff: FileDiff, file_path: String, cx: &mut App) -> Self {
+        let highlighter = Highlighter::from_filename(&file_path);
         Self {
             diff,
-            _file_path: file_path,
-            highlighter: Highlighter::rust(),
+            highlighter,
             theme: SyntaxTheme::default_dark(),
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
@@ -286,20 +285,7 @@ impl GitDiffView {
             }
         }
 
-        result.sort_by(|a, b| a.0.start.cmp(&b.0.start).then(a.0.len().cmp(&b.0.len())));
-
-        let mut merged: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
-        let mut cursor = 0usize;
-        for (range, style) in result {
-            if range.start >= cursor {
-                merged.push((range.clone(), style));
-                cursor = range.end;
-            } else if range.start < cursor && range.end > cursor {
-                merged.push((cursor..range.end, style));
-                cursor = range.end;
-            }
-        }
-        merged
+        super::merge_highlights(result)
     }
 }
 

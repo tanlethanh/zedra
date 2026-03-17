@@ -62,20 +62,23 @@ pub struct FileExplorer {
     pending_entries: SharedPendingSlot<Vec<FileEntry>>,
     /// Pending children from async fs/list (per-instance, not global)
     pending_children: SharedPendingSlot<(Vec<usize>, Vec<FileEntry>)>,
-    /// Last flattened entry count, for change-only logging
-    last_flat_count: usize,
+    /// Cached flattened entry list; rebuilt only when entries change.
+    flat_entries: Vec<FlatEntry>,
+    /// Whether `flat_entries` needs to be rebuilt.
+    flat_dirty: bool,
     session_handle: Option<zedra_session::SessionHandle>,
 }
 
 impl FileExplorer {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let mut explorer = Self {
-            entries: demo_entries(),
+            entries: Vec::new(),
             focus_handle: cx.focus_handle(),
             remote_loaded: false,
             pending_entries: shared_pending_slot(),
             pending_children: shared_pending_slot(),
-            last_flat_count: 0,
+            flat_entries: Vec::new(),
+            flat_dirty: false,
             session_handle: None,
         };
 
@@ -95,10 +98,11 @@ impl FileExplorer {
         self.try_load_remote_root(cx);
     }
 
-    /// Reset to demo data (e.g. after disconnect)
+    /// Reset to empty state (e.g. after disconnect)
     pub fn reset_to_demo(&mut self, cx: &mut Context<Self>) {
-        self.entries = demo_entries();
+        self.entries = Vec::new();
         self.remote_loaded = false;
+        self.flat_dirty = true;
         cx.notify();
     }
 
@@ -168,6 +172,7 @@ impl FileExplorer {
     fn apply_pending_entries(&mut self) {
         if let Some(entries) = self.pending_entries.take() {
             self.entries = entries;
+            self.flat_dirty = true;
         }
     }
 
@@ -224,6 +229,7 @@ impl FileExplorer {
             if let Some(entry) = self.entry_at_path_mut(&path) {
                 entry.children = children;
                 entry.loading = false;
+                self.flat_dirty = true;
             }
         }
     }
@@ -251,6 +257,7 @@ impl FileExplorer {
         if let Some(entry) = self.entry_at_path_mut(index_path) {
             if entry.is_dir {
                 entry.expanded = !entry.expanded;
+                self.flat_dirty = true;
                 cx.notify();
             }
         }
@@ -325,20 +332,23 @@ impl Render for FileExplorer {
         self.apply_pending_entries();
         self.apply_pending_children();
 
-        let flat = self.flatten();
-
-        if flat.len() != self.last_flat_count {
-            log::info!(
+        if self.flat_dirty {
+            self.flat_entries = self.flatten();
+            log::debug!(
                 "[PERF] file_explorer: {} entries, remote={}",
-                flat.len(),
+                self.flat_entries.len(),
                 self.remote_loaded
             );
-            self.last_flat_count = flat.len();
+            self.flat_dirty = false;
         }
 
         let mut list = div().id("file-list").flex().flex_col();
 
-        for (flat_idx, entry) in flat.into_iter().enumerate() {
+        // We need to iterate by index to avoid borrow issues with cx.listener closures.
+        // Clone the flat entries that the listener closures will capture.
+        let flat_len = self.flat_entries.len();
+        for flat_idx in 0..flat_len {
+            let entry = &self.flat_entries[flat_idx];
             let indent = entry.depth as f32 * 16.0;
             let text_color = if entry.is_dir {
                 rgb(0xffffff) // white for dirs
@@ -454,44 +464,3 @@ fn flatten_entry(entry: &FileEntry, depth: usize, path: &mut Vec<usize>, out: &m
     }
 }
 
-/// Demo file tree data (used when no remote session is active).
-fn demo_entries() -> Vec<FileEntry> {
-    vec![
-        FileEntry::dir(
-            "src",
-            "src",
-            vec![
-                FileEntry::dir(
-                    "components",
-                    "src/components",
-                    vec![
-                        FileEntry::file("App.tsx", "src/components/App.tsx"),
-                        FileEntry::file("Header.tsx", "src/components/Header.tsx"),
-                        FileEntry::file("Sidebar.tsx", "src/components/Sidebar.tsx"),
-                    ],
-                ),
-                FileEntry::dir(
-                    "utils",
-                    "src/utils",
-                    vec![
-                        FileEntry::file("helpers.ts", "src/utils/helpers.ts"),
-                        FileEntry::file("api.ts", "src/utils/api.ts"),
-                    ],
-                ),
-                FileEntry::file("main.ts", "src/main.ts"),
-                FileEntry::file("index.html", "src/index.html"),
-            ],
-        ),
-        FileEntry::dir(
-            "tests",
-            "tests",
-            vec![
-                FileEntry::file("app.test.ts", "tests/app.test.ts"),
-                FileEntry::file("helpers.test.ts", "tests/helpers.test.ts"),
-            ],
-        ),
-        FileEntry::file("Cargo.toml", "Cargo.toml"),
-        FileEntry::file("README.md", "README.md"),
-        FileEntry::file(".gitignore", ".gitignore"),
-    ]
-}
