@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use crate::theme;
+use crate::{platform_bridge, theme};
 
 /// Event emitted when the input value changes
 #[derive(Clone, Debug)]
@@ -27,6 +27,8 @@ pub struct InputSubmit {
 pub struct Input {
     /// Current text value
     value: String,
+    /// Cached display value — bullet-masked for secure inputs; updated on every `value` change.
+    display_value: String,
     /// Placeholder text shown when empty
     placeholder: String,
     /// Whether to obscure text (for passwords)
@@ -41,11 +43,21 @@ impl Input {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             value: String::new(),
+            display_value: String::new(),
             placeholder: String::new(),
             secure: false,
             focus_handle: cx.focus_handle(),
             last_keystroke: None,
         }
+    }
+
+    /// Recompute `display_value` from the current `value` and `secure` flag.
+    fn refresh_display_value(&mut self) {
+        self.display_value = if self.secure && !self.value.is_empty() {
+            "\u{2022}".repeat(self.value.len())
+        } else {
+            self.value.clone()
+        };
     }
 
     /// Set the placeholder text
@@ -63,6 +75,7 @@ impl Input {
     /// Set the initial value
     pub fn value(mut self, value: impl Into<String>) -> Self {
         self.value = value.into();
+        self.refresh_display_value();
         self
     }
 
@@ -74,6 +87,7 @@ impl Input {
     /// Set current value
     pub fn set_value(&mut self, value: impl Into<String>) {
         self.value = value.into();
+        self.refresh_display_value();
     }
 
     fn handle_click(&mut self, _event: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -81,7 +95,7 @@ impl Input {
         // Focus this element
         self.focus_handle.focus(window, cx);
         // Request keyboard
-        crate::platform_bridge::bridge().show_keyboard();
+        platform_bridge::bridge().show_keyboard();
         cx.notify();
     }
 
@@ -101,6 +115,7 @@ impl Input {
             "backspace" => {
                 if !self.value.is_empty() {
                     self.value.pop();
+                    self.refresh_display_value();
                     cx.emit(InputChanged {
                         value: self.value.clone(),
                     });
@@ -116,6 +131,7 @@ impl Input {
                 // Handle character input
                 if let Some(ch) = &event.keystroke.key_char {
                     self.value.push_str(ch);
+                    self.refresh_display_value();
                     cx.emit(InputChanged {
                         value: self.value.clone(),
                     });
@@ -171,12 +187,7 @@ impl Render for Input {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let is_focused = self.focus_handle.is_focused(window);
 
-        // Determine what text to display
-        let display_value = if self.secure && !self.value.is_empty() {
-            "\u{2022}".repeat(self.value.len()) // Bullet points for password
-        } else {
-            self.value.clone()
-        };
+        let display_value = self.display_value.clone();
 
         // Show placeholder only when unfocused and empty
         let show_placeholder = self.value.is_empty() && !is_focused;
