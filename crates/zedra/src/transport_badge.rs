@@ -11,7 +11,7 @@ use crate::theme;
 /// `SessionState::Reconnecting` is not written by the reconnect loop.
 ///
 /// Returns `(label, dot_color)` for rendering in the workspace header.
-pub(crate) fn transport_badge_info(
+pub(crate) fn _transport_badge_info(
     state: &SessionState,
     reconnect_attempt: u32,
     reconnect_reason: &zedra_session::ReconnectReason,
@@ -86,7 +86,7 @@ pub(crate) fn transport_badge_info(
 }
 
 /// Render an inline transport badge element (dot + label).
-pub(crate) fn render_transport_badge(label: String, dot_color: u32) -> Div {
+pub(crate) fn _render_transport_badge(label: String, dot_color: u32) -> Div {
     div()
         .flex()
         .flex_row()
