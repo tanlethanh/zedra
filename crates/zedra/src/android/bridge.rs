@@ -44,4 +44,8 @@ impl PlatformBridge for AndroidBridge {
     fn data_directory(&self) -> Option<String> {
         jni::get_files_dir()
     }
+
+    fn open_url(&self, url: &str) {
+        jni::open_url(url);
+    }
 }

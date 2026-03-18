@@ -118,6 +118,8 @@ pub trait PlatformBridge: Send + Sync + 'static {
     /// The platform implementation should present the dialog and call
     /// `platform_bridge::dispatch_alert_result(id, button_index)` when the user responds.
     fn present_alert(&self, _id: u32, _title: &str, _message: &str, _buttons: &[AlertButton]) {}
+    /// Open a URL in the system browser.
+    fn open_url(&self, _url: &str) {}
 }
 
 static BRIDGE: OnceLock<Box<dyn PlatformBridge>> = OnceLock::new();

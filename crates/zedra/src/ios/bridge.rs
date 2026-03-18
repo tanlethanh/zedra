@@ -85,6 +85,8 @@ unsafe extern "C" {
         labels: *const *const std::ffi::c_char,
         styles: *const i32,
     );
+    /// Open a URL in the system browser via UIApplication.
+    fn ios_open_url(url: *const std::ffi::c_char);
 }
 
 impl PlatformBridge for IosBridge {
@@ -145,6 +147,13 @@ impl PlatformBridge for IosBridge {
             let cstr = std::ffi::CStr::from_ptr(ptr);
             let s = cstr.to_str().ok()?.to_string();
             Some(s)
+        }
+    }
+
+    fn open_url(&self, url: &str) {
+        use std::ffi::CString;
+        if let Ok(c_url) = CString::new(url) {
+            unsafe { ios_open_url(c_url.as_ptr()) };
         }
     }
 

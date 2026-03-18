@@ -58,6 +58,19 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
+     * Open a URL in the system browser (called from Rust via JNI)
+     */
+    public static void openUrl(String url) {
+        Log.d(TAG, "openUrl called from native: " + url);
+        if (sActivity != null) {
+            sActivity.runOnUiThread(() -> {
+                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                sActivity.startActivity(intent);
+            });
+        }
+    }
+
+    /**
      * Hide the soft keyboard (called from Rust via JNI)
      */
     public static void hideKeyboard() {

@@ -207,3 +207,13 @@ void ios_present_qr_scanner(void) {
         [presenter presentViewController:vc animated:YES completion:nil];
     });
 }
+
+void ios_open_url(const char *url) {
+    if (!url) return;
+    NSString *urlStr = [NSString stringWithUTF8String:url];
+    NSURL *nsUrl = [NSURL URLWithString:urlStr];
+    if (!nsUrl) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[UIApplication sharedApplication] openURL:nsUrl options:@{} completionHandler:nil];
+    });
+}

@@ -40,11 +40,15 @@
 
 #define SPACING_LG 16.0
 
-#define DRAWER_WIDTH 293.0
+#define DRAWER_WIDTH 295.0
+
+#define QA_DRAWER_WIDTH 295.0
 
 #define HEADER_HEIGHT 48.0
 
 #define HOME_CARD_WIDTH 280.0
+
+#define CONNECT_DETAIL_WIDTH 300.0
 
 #define HEADER_BUTTON_SIZE 42.0
 
@@ -139,6 +143,11 @@ extern void ios_present_alert(uint32_t callback_id,
                               int32_t button_count,
                               const char *const *labels,
                               const int32_t *styles);
+
+/**
+ * Open a URL in the system browser via UIApplication.
+ */
+extern void ios_open_url(const char *url);
 
 /**
  * Called from the UIAlertController handler in main.m after the user taps a button.

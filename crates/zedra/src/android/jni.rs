@@ -852,6 +852,73 @@ fn launch_qr_scanner_inner() {
     }
 }
 
+/// Open a URL in the system browser
+pub fn open_url(url: &str) {
+    log::info!("open_url() called");
+    let url_owned = url.to_string();
+    jni_call("open_url", move || open_url_inner(url_owned));
+}
+
+fn open_url_inner(url: String) {
+    let jvm = match JVM.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(jvm) => jvm.clone(),
+            None => {
+                log::error!("JVM not available for open_url");
+                return;
+            }
+        },
+        Err(e) => {
+            log::error!("Failed to lock JVM mutex: {:?}", e);
+            return;
+        }
+    };
+
+    let mut env = match jvm.get_env() {
+        Ok(env) => env,
+        Err(_) => match jvm.attach_current_thread_as_daemon() {
+            Ok(env) => env,
+            Err(e) => {
+                log::error!("Failed to attach thread for open_url: {:?}", e);
+                return;
+            }
+        },
+    };
+
+    let class = match env.find_class("dev/zedra/app/MainActivity") {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Failed to find MainActivity class: {:?}", e);
+            if env.exception_check().unwrap_or(false) {
+                env.exception_describe().ok();
+                env.exception_clear().ok();
+            }
+            return;
+        }
+    };
+
+    let j_url = match env.new_string(&url) {
+        Ok(s) => s,
+        Err(e) => {
+            log::error!("Failed to create JString for URL: {:?}", e);
+            return;
+        }
+    };
+
+    if let Err(e) = env.call_static_method(
+        &class,
+        "openUrl",
+        "(Ljava/lang/String;)V",
+        &[(&j_url).into()],
+    ) {
+        log::error!("Failed to call openUrl: {:?}", e);
+        if env.exception_check().unwrap_or(false) {
+            env.exception_describe().ok();
+            env.exception_clear().ok();
+        }
+    }
+}
+
 /// Hide the Android soft keyboard
 ///
 /// Call this when a text input loses focus
