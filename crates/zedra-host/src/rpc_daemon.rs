@@ -5,11 +5,14 @@
 //   Reconnect:      Authenticate → AuthProve → (RPC calls)
 //   Health:         Ping (every 2s, foreground only, 5 misses = client reconnects)
 
+use crate::analytics::Analytics;
 use crate::fs::{Filesystem, LocalFs};
 use crate::git::GitRepo;
 use crate::identity::SharedIdentity;
 use crate::pty::{ShellSession, SpawnOptions};
-use crate::session_registry::{AttachResult, ConsumeSlotResult, OutputSenderSlot, ServerSession, SessionRegistry, TermSession};
+use crate::session_registry::{
+    AttachResult, ConsumeSlotResult, OutputSenderSlot, ServerSession, SessionRegistry, TermSession,
+};
 use anyhow::Result;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -18,12 +21,35 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use zedra_rpc::proto::*;
 
 fn ts() -> String {
-    let s = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    format!("{:02}:{:02}:{:02}", (s % 86400) / 3600, (s % 3600) / 60, s % 60)
+    let s = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!(
+        "{:02}:{:02}:{:02}",
+        (s % 86400) / 3600,
+        (s % 3600) / 60,
+        s % 60
+    )
 }
 
 fn short_key(key: &[u8; 32]) -> String {
     key[..4].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Snapshot the iroh connection path type at the current moment.
+/// Returns "direct" for P2P, "relay" for relay-only, "unknown" if undetermined.
+fn initial_path_type(conn: &iroh::endpoint::Connection) -> &'static str {
+    use iroh::Watcher;
+    let mut paths = conn.paths();
+    let path_list = paths.get();
+    let result = path_list
+        .iter()
+        .find(|p| p.is_selected())
+        .map(|p| if p.is_ip() { "direct" } else { "relay" })
+        .unwrap_or("unknown");
+    drop(path_list);
+    result
 }
 
 /// Resolve `user_path` relative to `workdir`, then verify the canonical path
@@ -33,23 +59,21 @@ fn resolve_path(workdir: &Path, user_path: &str) -> Result<PathBuf> {
     // Reject empty paths
     anyhow::ensure!(!user_path.is_empty(), "empty path");
     let joined = workdir.join(user_path);
-    let resolved = joined
-        .canonicalize()
-        .or_else(|_| {
-            // File may not exist yet (e.g. FsWrite to a new path).
-            // Walk up to the first existing ancestor and canonicalize that.
-            let mut base = joined.as_path();
-            while let Some(parent) = base.parent() {
-                if parent.exists() {
-                    let canon = parent.canonicalize()?;
-                    // Reconstruct: canon + the non-existing tail
-                    let tail = joined.strip_prefix(parent).unwrap_or(base);
-                    return Ok(canon.join(tail));
-                }
-                base = parent;
+    let resolved = joined.canonicalize().or_else(|_| {
+        // File may not exist yet (e.g. FsWrite to a new path).
+        // Walk up to the first existing ancestor and canonicalize that.
+        let mut base = joined.as_path();
+        while let Some(parent) = base.parent() {
+            if parent.exists() {
+                let canon = parent.canonicalize()?;
+                // Reconstruct: canon + the non-existing tail
+                let tail = joined.strip_prefix(parent).unwrap_or(base);
+                return Ok(canon.join(tail));
             }
-            anyhow::bail!("could not resolve path");
-        })?;
+            base = parent;
+        }
+        anyhow::bail!("could not resolve path");
+    })?;
     let jail = workdir.canonicalize()?;
     anyhow::ensure!(
         resolved.starts_with(&jail),
@@ -66,6 +90,8 @@ pub struct DaemonState {
     pub workdir: std::path::PathBuf,
     /// Host identity for signing challenges in the Authenticate step.
     pub identity: SharedIdentity,
+    /// Product analytics (no-op when credentials are not compiled in).
+    pub analytics: Arc<Analytics>,
     /// Default command injected into every new terminal on startup (e.g. "claude --resume").
     /// Can be overridden per-terminal via `TermCreateReq::launch_cmd`.
     pub default_launch_cmd: Option<String>,
@@ -87,6 +113,7 @@ impl DaemonState {
             fs: Arc::new(LocalFs),
             workdir,
             identity,
+            analytics: Arc::new(Analytics::disabled()),
             default_launch_cmd: None,
             started_at: std::time::Instant::now(),
         }
@@ -109,29 +136,76 @@ pub async fn handle_connection(
     let remote = conn.remote_id();
     tracing::info!("connection from {}", remote.fmt_short());
 
-    // Auth phase: returns (session, client_pubkey) or closes connection
-    let (session, client_pubkey) =
-        match auth_phase(&conn, &registry, &state.identity, &state.workdir).await {
-            Ok(pair) => pair,
+    // Auth phase: returns (session, client_pubkey, is_new_client) or closes connection
+    let auth_start = std::time::Instant::now();
+    let (session, client_pubkey, is_new_client) =
+        match auth_phase(&conn, &registry, &state.identity, &state.workdir, &state.analytics).await {
+            Ok(triple) => triple,
             Err(e) => {
+                state.analytics.auth_failed("auth_error");
                 tracing::warn!("auth failed from {}: {}", remote.fmt_short(), e);
                 // Wait for the client to close the connection (up to 500ms) so any
                 // error response we sent has time to be delivered before CONNECTION_CLOSE.
-                let _ = tokio::time::timeout(
-                    std::time::Duration::from_millis(500),
-                    conn.closed(),
-                )
-                .await;
+                let _ = tokio::time::timeout(std::time::Duration::from_millis(500), conn.closed())
+                    .await;
                 return Ok(());
             }
         };
+
+    let auth_duration_ms = auth_start.elapsed().as_millis() as u64;
+    let path_type = initial_path_type(&conn);
+    state.analytics.auth_success(is_new_client, auth_duration_ms, path_type);
 
     tracing::info!(
         "Authenticated client {:?}... → session={}",
         &client_pubkey[..4],
         session.id,
     );
-    eprintln!("[{}] connected: {} → session {}", ts(), short_key(&client_pubkey), &session.id[..8.min(session.id.len())]);
+    eprintln!(
+        "[{}] connected: {} → session {}",
+        ts(),
+        short_key(&client_pubkey),
+        &session.id[..8.min(session.id.len())]
+    );
+
+    let session_start = std::time::Instant::now();
+
+    // Spawn bandwidth sampler: reads iroh path stats every 60s while connected.
+    {
+        use iroh::Watcher;
+        let conn_for_bw = conn.clone();
+        let analytics_for_bw = state.analytics.clone();
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(60));
+            interval.tick().await; // skip immediate first tick
+            let mut paths = conn_for_bw.paths(); // hold watcher for the lifetime of the task
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let path_list = paths.get();
+                        let mut bw_tx = 0u64;
+                        let mut bw_rx = 0u64;
+                        let mut bw_found = false;
+                        for p in path_list.iter() {
+                            if p.is_selected() {
+                                let s = p.stats();
+                                bw_tx = s.udp_tx.bytes;
+                                bw_rx = s.udp_rx.bytes;
+                                bw_found = true;
+                                break;
+                            }
+                        }
+                        drop(path_list);
+                        if bw_found {
+                            analytics_for_bw.bandwidth_sample(bw_tx, bw_rx, 60);
+                        }
+                    }
+                    _ = conn_for_bw.closed() => break,
+                }
+            }
+        });
+    }
 
     // RPC dispatch loop
     loop {
@@ -161,13 +235,22 @@ pub async fn handle_connection(
     // reader task self-heals by clearing a dead sender on the next write attempt.
     // Calling it here would race with a concurrent new TermAttach and silence
     // the new client's output.
+    let session_duration_ms = session_start.elapsed().as_millis() as u64;
+    let terminal_count = session.terminals.lock().await.len() as u64;
+    state.analytics.session_end(session_duration_ms, terminal_count, path_type);
+
     registry.detach_client(&session.id, client_pubkey).await;
 
     tracing::info!(
         "Connection closed: session={} (session stays alive in registry)",
         session.id,
     );
-    eprintln!("[{}] disconn:   {} (session {})", ts(), short_key(&client_pubkey), &session.id[..8.min(session.id.len())]);
+    eprintln!(
+        "[{}] disconn:   {} (session {})",
+        ts(),
+        short_key(&client_pubkey),
+        &session.id[..8.min(session.id.len())]
+    );
     Ok(())
 }
 
@@ -186,14 +269,15 @@ async fn auth_phase(
     registry: &Arc<SessionRegistry>,
     identity: &SharedIdentity,
     workdir: &std::path::Path,
-) -> Result<(Arc<ServerSession>, [u8; 32])> {
+    analytics: &Arc<Analytics>,
+) -> Result<(Arc<ServerSession>, [u8; 32], bool)> {
     // Step 1: Optional Register
     let first = irpc_iroh::read_request::<ZedraProto>(conn).await?;
 
     let client_pubkey: [u8; 32] = match first {
         Some(ZedraMessage::Register(msg)) => {
             let pubkey = msg.client_pubkey;
-            let result = handle_register(&msg, registry).await;
+            let result = handle_register(&msg, registry, analytics).await;
             let ok = matches!(result, RegisterResult::Ok);
             let _ = msg.tx.send(result).await;
             if !ok {
@@ -211,7 +295,8 @@ async fn auth_phase(
                 anyhow::bail!("client not authorized");
             }
             let nonce = issue_challenge(msg.tx, identity).await?;
-            return finish_auth(conn, registry, pubkey, nonce, workdir).await;
+            // is_new_client = false: this is a reconnect
+            return finish_auth(conn, registry, pubkey, nonce, workdir, false).await;
         }
         _ => anyhow::bail!("expected Register or Authenticate as first message"),
     };
@@ -222,7 +307,8 @@ async fn auth_phase(
         Some(ZedraMessage::Authenticate(msg)) => {
             // After fresh registration, client is authorized
             let nonce = issue_challenge(msg.tx, identity).await?;
-            finish_auth(conn, registry, client_pubkey, nonce, workdir).await
+            // is_new_client = true: came through the Register path
+            finish_auth(conn, registry, client_pubkey, nonce, workdir, true).await
         }
         _ => anyhow::bail!("expected Authenticate after Register"),
     }
@@ -232,6 +318,7 @@ async fn auth_phase(
 async fn handle_register(
     msg: &irpc::WithChannels<RegisterReq, ZedraProto>,
     registry: &Arc<SessionRegistry>,
+    analytics: &Arc<Analytics>,
 ) -> RegisterResult {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -240,7 +327,11 @@ async fn handle_register(
 
     // Check timestamp (±60s window)
     if now.abs_diff(msg.timestamp) > 60 {
-        tracing::warn!("Register: stale timestamp (now={}, ts={})", now, msg.timestamp);
+        tracing::warn!(
+            "Register: stale timestamp (now={}, ts={})",
+            now,
+            msg.timestamp
+        );
         return RegisterResult::StaleTimestamp;
     }
 
@@ -254,7 +345,10 @@ async fn handle_register(
                 msg.timestamp,
                 &msg.hmac,
             ) {
-                tracing::warn!("Register: invalid HMAC from {:?}...", &msg.client_pubkey[..4]);
+                tracing::warn!(
+                    "Register: invalid HMAC from {:?}...",
+                    &msg.client_pubkey[..4]
+                );
                 return RegisterResult::InvalidHandshake;
             }
 
@@ -268,15 +362,27 @@ async fn handle_register(
                 &msg.client_pubkey[..4],
                 slot.session_id,
             );
-            eprintln!("[{}] paired:    {} → session {}", ts(), short_key(&msg.client_pubkey), &slot.session_id[..8.min(slot.session_id.len())]);
+            eprintln!(
+                "[{}] paired:    {} → session {}",
+                ts(),
+                short_key(&msg.client_pubkey),
+                &slot.session_id[..8.min(slot.session_id.len())]
+            );
+            analytics.client_paired();
             RegisterResult::Ok
         }
         ConsumeSlotResult::Consumed => {
-            tracing::warn!("Register: slot for {} already consumed", msg.slot_session_id);
+            tracing::warn!(
+                "Register: slot for {} already consumed",
+                msg.slot_session_id
+            );
             RegisterResult::HandshakeConsumed
         }
         ConsumeSlotResult::NotFound => {
-            tracing::warn!("Register: no slot found for session {}", msg.slot_session_id);
+            tracing::warn!(
+                "Register: no slot found for session {}",
+                msg.slot_session_id
+            );
             RegisterResult::SlotNotFound
         }
     }
@@ -291,7 +397,12 @@ async fn issue_challenge(
     let mut nonce = [0u8; 32];
     rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
     let host_signature = identity.sign_challenge(&nonce);
-    let _ = tx.send(AuthChallengeResult { nonce, host_signature }).await;
+    let _ = tx
+        .send(AuthChallengeResult {
+            nonce,
+            host_signature,
+        })
+        .await;
     Ok(nonce)
 }
 
@@ -302,7 +413,8 @@ async fn finish_auth(
     client_pubkey: [u8; 32],
     nonce: [u8; 32],
     workdir: &std::path::Path,
-) -> Result<(Arc<ServerSession>, [u8; 32])> {
+    is_new_client: bool,
+) -> Result<(Arc<ServerSession>, [u8; 32], bool)> {
     let prove_msg = irpc_iroh::read_request::<ZedraProto>(conn).await?;
 
     let msg = match prove_msg {
@@ -341,38 +453,32 @@ async fn finish_auth(
             AttachResult::SessionNotFound => {
                 // Client is globally authorized but their session was lost.
                 // Try to find another session they have ACL for, or create one.
-                let fallback = if let Some(s) =
-                    registry.find_session_for_client(&client_pubkey).await
-                {
-                    tracing::info!(
-                        "finish_auth: session {} gone, falling back to session {}",
-                        session_id,
-                        s.id,
-                    );
-                    s
-                } else {
-                    // No existing session — create a fresh default one.
-                    let name = workdir
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("default");
-                    let s = registry.create_named(name, workdir.to_path_buf()).await;
-                    registry
-                        .add_client_to_session(&s.id, client_pubkey)
-                        .await;
-                    tracing::info!(
-                        "finish_auth: session {} gone, created new session {} ({})",
-                        session_id,
-                        s.id,
-                        name,
-                    );
-                    s
-                };
+                let fallback =
+                    if let Some(s) = registry.find_session_for_client(&client_pubkey).await {
+                        tracing::info!(
+                            "finish_auth: session {} gone, falling back to session {}",
+                            session_id,
+                            s.id,
+                        );
+                        s
+                    } else {
+                        // No existing session — create a fresh default one.
+                        let name = workdir
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("default");
+                        let s = registry.create_named(name, workdir.to_path_buf()).await;
+                        registry.add_client_to_session(&s.id, client_pubkey).await;
+                        tracing::info!(
+                            "finish_auth: session {} gone, created new session {} ({})",
+                            session_id,
+                            s.id,
+                            name,
+                        );
+                        s
+                    };
                 let new_id = fallback.id.clone();
-                (
-                    registry.attach_client(&new_id, client_pubkey).await,
-                    new_id,
-                )
+                (registry.attach_client(&new_id, client_pubkey).await, new_id)
             }
             other => (other, session_id.clone()),
         };
@@ -384,7 +490,7 @@ async fn finish_auth(
                 anyhow::bail!("session {} vanished after attach", resolved_session_id);
             };
             let _ = tx.send(AuthProveResult::Ok).await;
-            Ok((session, client_pubkey))
+            Ok((session, client_pubkey, is_new_client))
         }
         AttachResult::SessionNotFound => {
             let _ = tx.send(AuthProveResult::SessionNotFound).await;
@@ -420,7 +526,9 @@ pub async fn create_terminal(
     if session.terminals.lock().await.len() >= MAX_TERMINALS_PER_SESSION {
         anyhow::bail!(
             "session {} already has {} terminals (limit {})",
-            session.id, MAX_TERMINALS_PER_SESSION, MAX_TERMINALS_PER_SESSION,
+            session.id,
+            MAX_TERMINALS_PER_SESSION,
+            MAX_TERMINALS_PER_SESSION,
         );
     }
 
@@ -430,12 +538,16 @@ pub async fn create_terminal(
 
     tracing::info!(
         "create_terminal: id={} cols={} rows={} session={}",
-        id, cols, rows, session.id,
+        id,
+        cols,
+        rows,
+        session.id,
     );
 
-    let output_sender = Arc::new(std::sync::Mutex::new(
-        OutputSenderSlot { gen: 0, sender: None },
-    ));
+    let output_sender = Arc::new(std::sync::Mutex::new(OutputSenderSlot {
+        gen: 0,
+        sender: None,
+    }));
 
     session.terminals.lock().await.insert(
         id.clone(),
@@ -459,11 +571,13 @@ pub async fn create_terminal(
                     let data = buf[..n].to_vec();
                     let seq = rt.block_on(async {
                         let s = sess_for_reader.next_backlog_seq().await;
-                        sess_for_reader.push_backlog_entry(BacklogEntry {
-                            seq: s,
-                            terminal_id: term_id.clone(),
-                            data: data.clone(),
-                        }).await;
+                        sess_for_reader
+                            .push_backlog_entry(BacklogEntry {
+                                seq: s,
+                                terminal_id: term_id.clone(),
+                                data: data.clone(),
+                            })
+                            .await;
                         s
                     });
 
@@ -516,17 +630,20 @@ async fn dispatch(
             let username = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
             let workdir = state.workdir.to_string_lossy().into_owned();
             let home_dir = std::env::var("HOME").ok();
-            let _ = msg.tx.send(SessionInfoResult {
-                hostname,
-                workdir,
-                username,
-                home_dir,
-                session_id: Some(session.id.clone()),
-                os: Some(std::env::consts::OS.to_string()),
-                arch: Some(std::env::consts::ARCH.to_string()),
-                os_version: os_version_string(),
-                host_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            }).await;
+            let _ = msg
+                .tx
+                .send(SessionInfoResult {
+                    hostname,
+                    workdir,
+                    username,
+                    home_dir,
+                    session_id: Some(session.id.clone()),
+                    os: Some(std::env::consts::OS.to_string()),
+                    arch: Some(std::env::consts::ARCH.to_string()),
+                    os_version: os_version_string(),
+                    host_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                })
+                .await;
         }
 
         ZedraMessage::ListSessions(msg) => {
@@ -551,18 +668,19 @@ async fn dispatch(
             // not just globally. This prevents a client from switching to a
             // session it was never paired with.
             match registry.get_by_name(&msg.session_name).await {
-                Some(target)
-                    if target.acl.lock().await.contains(&client_pubkey) =>
-                {
+                Some(target) if target.acl.lock().await.contains(&client_pubkey) => {
                     target.touch().await;
                     let workdir = target
                         .workdir
                         .as_ref()
                         .map(|p| p.to_string_lossy().into_owned());
-                    let _ = msg.tx.send(SessionSwitchResult {
-                        session_id: target.id.clone(),
-                        workdir,
-                    }).await;
+                    let _ = msg
+                        .tx
+                        .send(SessionSwitchResult {
+                            session_id: target.id.clone(),
+                            workdir,
+                        })
+                        .await;
                 }
                 _ => {
                     drop(msg.tx);
@@ -582,8 +700,17 @@ async fn dispatch(
             };
             match state.fs.list(&path) {
                 Ok(entries) => {
-                    let entries = entries
+                    let total = entries.len() as u32;
+                    let limit = if msg.limit == 0 {
+                        FS_LIST_DEFAULT_LIMIT
+                    } else {
+                        msg.limit.min(FS_LIST_DEFAULT_LIMIT)
+                    } as usize;
+                    let offset = msg.offset as usize;
+                    let page: Vec<FsEntry> = entries
                         .into_iter()
+                        .skip(offset)
+                        .take(limit)
                         .map(|e| FsEntry {
                             name: e.name,
                             path: e.path.to_string_lossy().into_owned(),
@@ -591,7 +718,15 @@ async fn dispatch(
                             size: e.size,
                         })
                         .collect();
-                    let _ = msg.tx.send(FsListResult { entries }).await;
+                    let has_more = (offset + page.len()) < total as usize;
+                    let _ = msg
+                        .tx
+                        .send(FsListResult {
+                            entries: page,
+                            total,
+                            has_more,
+                        })
+                        .await;
                 }
                 Err(_) => drop(msg.tx),
             }
@@ -606,9 +741,26 @@ async fn dispatch(
                     return Ok(());
                 }
             };
+            const MAX_FILE_SIZE: u64 = 500 * 1024;
+            if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > MAX_FILE_SIZE {
+                let _ = msg
+                    .tx
+                    .send(FsReadResult {
+                        content: String::new(),
+                        too_large: true,
+                    })
+                    .await;
+                return Ok(());
+            }
             match state.fs.read(&path) {
                 Ok(content) => {
-                    let _ = msg.tx.send(FsReadResult { content }).await;
+                    let _ = msg
+                        .tx
+                        .send(FsReadResult {
+                            content,
+                            too_large: false,
+                        })
+                        .await;
                 }
                 Err(_) => drop(msg.tx),
             }
@@ -638,12 +790,15 @@ async fn dispatch(
             };
             match state.fs.stat(&path) {
                 Ok(stat) => {
-                    let _ = msg.tx.send(FsStatResult {
-                        path: stat.path.to_string_lossy().into_owned(),
-                        is_dir: stat.is_dir,
-                        size: stat.size,
-                        modified: stat.modified,
-                    }).await;
+                    let _ = msg
+                        .tx
+                        .send(FsStatResult {
+                            path: stat.path.to_string_lossy().into_owned(),
+                            is_dir: stat.is_dir,
+                            size: stat.size,
+                            modified: stat.modified,
+                        })
+                        .await;
                 }
                 Err(_) => drop(msg.tx),
             }
@@ -652,10 +807,31 @@ async fn dispatch(
         // -- Terminal --
         ZedraMessage::TermCreate(msg) => {
             session.touch().await;
-            let workdir = session.workdir.clone().or_else(|| Some(state.workdir.clone()));
-            let launch_cmd = msg.launch_cmd.clone().or_else(|| state.default_launch_cmd.clone());
-            match create_terminal(&session, msg.cols, msg.rows, SpawnOptions { workdir, launch_cmd }).await {
-                Ok(id) => { let _ = msg.tx.send(TermCreateResult { id }).await; }
+            let workdir = session
+                .workdir
+                .clone()
+                .or_else(|| Some(state.workdir.clone()));
+            let has_launch_cmd =
+                msg.launch_cmd.is_some() || state.default_launch_cmd.is_some();
+            let launch_cmd = msg
+                .launch_cmd
+                .clone()
+                .or_else(|| state.default_launch_cmd.clone());
+            match create_terminal(
+                &session,
+                msg.cols,
+                msg.rows,
+                SpawnOptions {
+                    workdir,
+                    launch_cmd,
+                },
+            )
+            .await
+            {
+                Ok(id) => {
+                    state.analytics.terminal_open(has_launch_cmd);
+                    let _ = msg.tx.send(TermCreateResult { id }).await;
+                }
                 Err(e) => {
                     tracing::warn!("TermCreate failed: {}", e);
                     drop(msg.tx);
@@ -699,11 +875,17 @@ async fn dispatch(
             let backlog = session.backlog_after(&term_id, last_seq).await;
             tracing::info!(
                 "TermAttach: id={} last_seq={} backlog_entries={} session={}",
-                term_id, last_seq, backlog.len(), session.id,
+                term_id,
+                last_seq,
+                backlog.len(),
+                session.id,
             );
             for entry in backlog {
                 if irpc_tx
-                    .send(TermOutput { data: entry.data, seq: entry.seq })
+                    .send(TermOutput {
+                        data: entry.data,
+                        seq: entry.seq,
+                    })
                     .await
                     .is_err()
                 {
@@ -814,86 +996,76 @@ async fn dispatch(
         }
 
         // -- Git --
-        ZedraMessage::GitStatus(msg) => {
-            match GitRepo::open(&state.workdir) {
-                Ok(repo) => {
-                    let branch = repo.branch().unwrap_or_default();
-                    let entries = repo
-                        .status()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|e| GitStatusEntry {
-                            path: e.path,
-                            status: format!("{:?}", e.status).to_lowercase(),
-                        })
-                        .collect();
-                    let _ = msg.tx.send(GitStatusResult { branch, entries }).await;
+        ZedraMessage::GitStatus(msg) => match GitRepo::open(&state.workdir) {
+            Ok(repo) => {
+                let branch = repo.branch().unwrap_or_default();
+                let entries = repo
+                    .status()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|e| GitStatusEntry {
+                        path: e.path,
+                        status: format!("{:?}", e.status).to_lowercase(),
+                    })
+                    .collect();
+                let _ = msg.tx.send(GitStatusResult { branch, entries }).await;
+            }
+            Err(_) => drop(msg.tx),
+        },
+
+        ZedraMessage::GitDiff(msg) => match GitRepo::open(&state.workdir) {
+            Ok(repo) => {
+                let diff = repo
+                    .diff(msg.path.as_deref(), msg.staged)
+                    .unwrap_or_default();
+                let _ = msg.tx.send(GitDiffResult { diff }).await;
+            }
+            Err(_) => drop(msg.tx),
+        },
+
+        ZedraMessage::GitLog(msg) => match GitRepo::open(&state.workdir) {
+            Ok(repo) => {
+                let entries = repo
+                    .log(msg.limit.unwrap_or(20).min(500))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|e| GitLogEntry {
+                        id: e.id,
+                        message: e.message,
+                        author: e.author,
+                        timestamp: e.timestamp,
+                    })
+                    .collect();
+                let _ = msg.tx.send(GitLogResult { entries }).await;
+            }
+            Err(_) => drop(msg.tx),
+        },
+
+        ZedraMessage::GitCommit(msg) => match GitRepo::open(&state.workdir) {
+            Ok(repo) => match repo.commit(&msg.message, &msg.paths) {
+                Ok(hash) => {
+                    let _ = msg.tx.send(GitCommitResult { hash }).await;
                 }
                 Err(_) => drop(msg.tx),
-            }
-        }
+            },
+            Err(_) => drop(msg.tx),
+        },
 
-        ZedraMessage::GitDiff(msg) => {
-            match GitRepo::open(&state.workdir) {
-                Ok(repo) => {
-                    let diff = repo
-                        .diff(msg.path.as_deref(), msg.staged)
-                        .unwrap_or_default();
-                    let _ = msg.tx.send(GitDiffResult { diff }).await;
-                }
-                Err(_) => drop(msg.tx),
+        ZedraMessage::GitBranches(msg) => match GitRepo::open(&state.workdir) {
+            Ok(repo) => {
+                let branches = repo
+                    .branches()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|b| GitBranchEntry {
+                        name: b.name,
+                        is_head: b.is_head,
+                    })
+                    .collect();
+                let _ = msg.tx.send(GitBranchesResult { branches }).await;
             }
-        }
-
-        ZedraMessage::GitLog(msg) => {
-            match GitRepo::open(&state.workdir) {
-                Ok(repo) => {
-                    let entries = repo
-                        .log(msg.limit.unwrap_or(20).min(500))
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|e| GitLogEntry {
-                            id: e.id,
-                            message: e.message,
-                            author: e.author,
-                            timestamp: e.timestamp,
-                        })
-                        .collect();
-                    let _ = msg.tx.send(GitLogResult { entries }).await;
-                }
-                Err(_) => drop(msg.tx),
-            }
-        }
-
-        ZedraMessage::GitCommit(msg) => {
-            match GitRepo::open(&state.workdir) {
-                Ok(repo) => match repo.commit(&msg.message, &msg.paths) {
-                    Ok(hash) => {
-                        let _ = msg.tx.send(GitCommitResult { hash }).await;
-                    }
-                    Err(_) => drop(msg.tx),
-                },
-                Err(_) => drop(msg.tx),
-            }
-        }
-
-        ZedraMessage::GitBranches(msg) => {
-            match GitRepo::open(&state.workdir) {
-                Ok(repo) => {
-                    let branches = repo
-                        .branches()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|b| GitBranchEntry {
-                            name: b.name,
-                            is_head: b.is_head,
-                        })
-                        .collect();
-                    let _ = msg.tx.send(GitBranchesResult { branches }).await;
-                }
-                Err(_) => drop(msg.tx),
-            }
-        }
+            Err(_) => drop(msg.tx),
+        },
 
         ZedraMessage::GitCheckout(msg) => {
             let ok = GitRepo::open(&state.workdir)
@@ -907,8 +1079,8 @@ async fn dispatch(
             // Resolve the Claude binary path. Prefer an explicit absolute path
             // from the environment to avoid executing a malicious `claude` binary
             // that might appear earlier in $PATH.
-            let claude_bin = std::env::var("ZEDRA_CLAUDE_BIN")
-                .unwrap_or_else(|_| "claude".to_string());
+            let claude_bin =
+                std::env::var("ZEDRA_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string());
             let output = std::process::Command::new(&claude_bin)
                 .args(["--print", &msg.prompt])
                 .current_dir(&state.workdir)
@@ -954,9 +1126,12 @@ async fn dispatch(
         }
 
         ZedraMessage::LspHover(msg) => {
-            let _ = msg.tx.send(LspHoverResult {
-                contents: "LSP hover not yet connected to a language server.".to_string(),
-            }).await;
+            let _ = msg
+                .tx
+                .send(LspHoverResult {
+                    contents: "LSP hover not yet connected to a language server.".to_string(),
+                })
+                .await;
         }
     }
 

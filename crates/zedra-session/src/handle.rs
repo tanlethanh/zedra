@@ -1126,20 +1126,33 @@ impl SessionHandle {
     // RPC: filesystem
     // -----------------------------------------------------------------------
 
-    pub async fn fs_list(&self, path: &str) -> Result<Vec<FsEntry>> {
-        let result: FsListResult = self
-            .client()?
-            .rpc(FsListReq { path: path.to_string() })
-            .await?;
-        Ok(result.entries)
+    /// Fetch the first page of a directory listing.
+    /// Returns `(entries, total, has_more)`.
+    pub async fn fs_list(&self, path: &str) -> Result<(Vec<FsEntry>, u32, bool)> {
+        self.fs_list_page(path, 0, FS_LIST_DEFAULT_LIMIT).await
     }
 
-    pub async fn fs_read(&self, path: &str) -> Result<String> {
+    /// Fetch a specific page of a directory listing.
+    /// Returns `(entries, total, has_more)`.
+    pub async fn fs_list_page(
+        &self,
+        path: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<(Vec<FsEntry>, u32, bool)> {
+        let result: FsListResult = self
+            .client()?
+            .rpc(FsListReq { path: path.to_string(), offset, limit })
+            .await?;
+        Ok((result.entries, result.total, result.has_more))
+    }
+
+    pub async fn fs_read(&self, path: &str) -> Result<FsReadResult> {
         let result: FsReadResult = self
             .client()?
             .rpc(FsReadReq { path: path.to_string() })
             .await?;
-        Ok(result.content)
+        Ok(result)
     }
 
     pub async fn fs_write(&self, path: &str, content: &str) -> Result<()> {

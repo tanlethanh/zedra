@@ -19,6 +19,31 @@ use zedra_terminal::view::{DisconnectRequested, TerminalView};
 /// Sentinel terminal ID used before the server assigns a real ID.
 const PENDING_TERMINAL_ID: &str = "__pending__";
 
+/// Full-screen centered placeholder shown when a file is too large to preview.
+struct FileTooLargeView {
+    message: String,
+}
+
+impl Render for FileTooLargeView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    // Magic! It's more balance with this
+                    .top(px(-32.0))
+                    .text_color(rgb(theme::TEXT_SECONDARY))
+                    .text_size(px(theme::FONT_BODY))
+                    .text_align(TextAlign::Center)
+                    .child(self.message.clone()),
+            )
+    }
+}
+
 /// Published to HomeView and QuickActionPanel.
 #[derive(Clone, Debug)]
 pub struct WorkspaceSummary {
@@ -267,7 +292,7 @@ pub struct WorkspaceView {
     pub pending_terminal_id: SharedPendingSlot<String>,
     /// Filled by ZedraApp on session resume with existing server-side terminal IDs.
     pub pending_existing_terminals: SharedPendingSlot<Vec<String>>,
-    pending_file: SharedPendingSlot<(String, String)>,
+    pending_file: SharedPendingSlot<(String, String, bool)>,
     pending_git_diff: SharedPendingSlot<(String, FileDiff)>,
     /// Set by the native alert callback when user confirms terminal deletion.
     pending_terminal_delete: SharedPendingSlot<String>,
@@ -282,7 +307,7 @@ impl WorkspaceView {
     pub fn new(session_handle: SessionHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
 
-        let pending_file: SharedPendingSlot<(String, String)> = shared_pending_slot();
+        let pending_file: SharedPendingSlot<(String, String, bool)> = shared_pending_slot();
         let pending_git_diff: SharedPendingSlot<(String, FileDiff)> = shared_pending_slot();
         let pending_terminal_id: SharedPendingSlot<String> = shared_pending_slot();
         let pending_existing_terminals: SharedPendingSlot<Vec<String>> = shared_pending_slot();
@@ -435,8 +460,12 @@ impl WorkspaceView {
                                 let pfile = pending_file_clone.clone();
                                 zedra_session::session_runtime().spawn(async move {
                                     match handle.fs_read(&path).await {
-                                        Ok(content) => {
-                                            pfile.set((filename_clone, content));
+                                        Ok(result) => {
+                                            pfile.set((
+                                                filename_clone,
+                                                result.content,
+                                                result.too_large,
+                                            ));
                                             zedra_session::push_callback(Box::new(|| {}));
                                         }
                                         Err(e) => {
@@ -689,12 +718,20 @@ impl Render for WorkspaceView {
             }
         }
 
-        if let Some((filename, content)) = self.pending_file.take() {
-            let editor_view = cx.new(|cx| EditorView::new(content, cx));
+        if let Some((filename, content, too_large)) = self.pending_file.take() {
             let fname = filename.clone();
-            self.workspace_content.update(cx, |c, cx| {
-                c.set_main_view(editor_view.into(), fname, cx);
-            });
+            if too_large {
+                let msg = format!("File too large to preview\n(>500 KB)");
+                let placeholder = cx.new(move |_cx| FileTooLargeView { message: msg });
+                self.workspace_content.update(cx, |c, cx| {
+                    c.set_main_view(placeholder.into(), fname, cx);
+                });
+            } else {
+                let editor_view = cx.new(|cx| EditorView::new(content, cx));
+                self.workspace_content.update(cx, |c, cx| {
+                    c.set_main_view(editor_view.into(), fname, cx);
+                });
+            }
         }
 
         if let Some((filename, diff)) = self.pending_git_diff.take() {

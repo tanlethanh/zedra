@@ -16,6 +16,8 @@ pub struct FileEntry {
     children: Vec<FileEntry>,
     /// Whether children are currently being loaded from remote
     loading: bool,
+    /// Total children on the server (may exceed `children.len()` when paginated)
+    children_total: u32,
 }
 
 impl FileEntry {
@@ -27,6 +29,7 @@ impl FileEntry {
             expanded: false,
             children,
             loading: false,
+            children_total: 0,
         }
     }
 
@@ -38,6 +41,7 @@ impl FileEntry {
             expanded: false,
             children: Vec::new(),
             loading: false,
+            children_total: 0,
         }
     }
 }
@@ -51,6 +55,10 @@ struct FlatEntry {
     loading: bool,
     /// Index path into the tree for toggling (e.g. [0, 2] = root.children[0].children[2])
     index_path: Vec<usize>,
+    /// If true, this row is a "Load N more…" action rather than a real entry.
+    is_load_more: bool,
+    /// For load-more rows: index path of the parent dir (`[]` = root level).
+    load_more_for: Vec<usize>,
 }
 
 pub struct FileExplorer {
@@ -58,10 +66,14 @@ pub struct FileExplorer {
     focus_handle: FocusHandle,
     /// Whether entries were loaded from the remote host
     remote_loaded: bool,
-    /// Pending root entries from async fs/list (per-instance, not global)
-    pending_entries: SharedPendingSlot<Vec<FileEntry>>,
-    /// Pending children from async fs/list (per-instance, not global)
-    pending_children: SharedPendingSlot<(Vec<usize>, Vec<FileEntry>)>,
+    /// Total root entries on the server (may exceed `entries.len()` when paginated)
+    root_total: u32,
+    /// Pending root entries from async fs/list (carries entries + total)
+    pending_entries: SharedPendingSlot<(Vec<FileEntry>, u32)>,
+    /// Pending children from async fs/list (index_path + entries + total)
+    pending_children: SharedPendingSlot<(Vec<usize>, Vec<FileEntry>, u32)>,
+    /// Pending appended entries from "load more" (index_path + entries; [] = root)
+    pending_more: SharedPendingSlot<(Vec<usize>, Vec<FileEntry>)>,
     /// Cached flattened entry list; rebuilt only when entries change.
     flat_entries: Vec<FlatEntry>,
     /// Whether `flat_entries` needs to be rebuilt.
@@ -75,8 +87,10 @@ impl FileExplorer {
             entries: Vec::new(),
             focus_handle: cx.focus_handle(),
             remote_loaded: false,
+            root_total: 0,
             pending_entries: shared_pending_slot(),
             pending_children: shared_pending_slot(),
+            pending_more: shared_pending_slot(),
             flat_entries: Vec::new(),
             flat_dirty: false,
             session_handle: None,
@@ -101,6 +115,7 @@ impl FileExplorer {
     /// Reset to empty state (e.g. after disconnect)
     pub fn reset_to_demo(&mut self, cx: &mut Context<Self>) {
         self.entries = Vec::new();
+        self.root_total = 0;
         self.remote_loaded = false;
         self.flat_dirty = true;
         cx.notify();
@@ -110,9 +125,11 @@ impl FileExplorer {
     /// Used when switching workspaces so the explorer reflects the new session.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.remote_loaded = false;
+        self.root_total = 0;
         // Clear any in-flight pending results from the old session.
         let _ = self.pending_entries.take();
         let _ = self.pending_children.take();
+        let _ = self.pending_more.take();
         self.try_load_remote_root(cx);
         cx.notify();
     }
@@ -131,13 +148,14 @@ impl FileExplorer {
             expanded: false,
             children: Vec::new(),
             loading: true,
+            children_total: 0,
         }];
         self.remote_loaded = true;
 
         let pending = self.pending_entries.clone();
         zedra_session::session_runtime().spawn(async move {
             match handle.fs_list(".").await {
-                Ok(entries) => {
+                Ok((entries, total, _has_more)) => {
                     let file_entries: Vec<FileEntry> = entries
                         .into_iter()
                         .map(|e| {
@@ -149,19 +167,20 @@ impl FileExplorer {
                         })
                         .collect();
 
-                    pending.set(file_entries);
+                    pending.set((file_entries, total));
                     zedra_session::push_callback(Box::new(|| {}));
                 }
                 Err(e) => {
                     log::error!("fs/list failed: {}", e);
-                    pending.set(vec![FileEntry {
+                    pending.set((vec![FileEntry {
                         name: format!("Error: {}", e),
                         path: String::new(),
                         is_dir: false,
                         expanded: false,
                         children: Vec::new(),
                         loading: false,
-                    }]);
+                        children_total: 0,
+                    }], 0));
                     zedra_session::push_callback(Box::new(|| {}));
                 }
             }
@@ -170,8 +189,9 @@ impl FileExplorer {
 
     /// Check for pending entries from async fs/list and apply them
     fn apply_pending_entries(&mut self) {
-        if let Some(entries) = self.pending_entries.take() {
+        if let Some((entries, total)) = self.pending_entries.take() {
             self.entries = entries;
+            self.root_total = total;
             self.flat_dirty = true;
         }
     }
@@ -201,7 +221,7 @@ impl FileExplorer {
 
         zedra_session::session_runtime().spawn(async move {
             match handle.fs_list(&dir_path).await {
-                Ok(entries) => {
+                Ok((entries, total, _has_more)) => {
                     let file_entries: Vec<FileEntry> = entries
                         .into_iter()
                         .map(|e| {
@@ -213,7 +233,7 @@ impl FileExplorer {
                         })
                         .collect();
 
-                    pending.set((path_for_entries, file_entries));
+                    pending.set((path_for_entries, file_entries, total));
                     zedra_session::push_callback(Box::new(|| {}));
                 }
                 Err(e) => {
@@ -225,12 +245,68 @@ impl FileExplorer {
 
     /// Check for pending children from async fs/list and apply them
     fn apply_pending_children(&mut self) {
-        if let Some((path, children)) = self.pending_children.take() {
+        if let Some((path, children, total)) = self.pending_children.take() {
             if let Some(entry) = self.entry_at_path_mut(&path) {
                 entry.children = children;
+                entry.children_total = total;
                 entry.loading = false;
                 self.flat_dirty = true;
             }
+        }
+    }
+
+    /// Load the next page of entries for a directory or the root.
+    /// `load_more_path` is `[]` for root, or the index path of a dir entry.
+    fn load_more_entries(&mut self, load_more_path: Vec<usize>, cx: &mut Context<Self>) {
+        let handle = match self.session_handle.as_ref() {
+            Some(h) if h.is_connected() => h.clone(),
+            _ => return,
+        };
+
+        let (dir_path, offset) = if load_more_path.is_empty() {
+            (".".to_string(), self.entries.len() as u32)
+        } else {
+            match self.entry_at_path(&load_more_path) {
+                Some(entry) => (entry.path.clone(), entry.children.len() as u32),
+                None => return,
+            }
+        };
+
+        let pending = self.pending_more.clone();
+        zedra_session::session_runtime().spawn(async move {
+            match handle.fs_list_page(&dir_path, offset, zedra_rpc::proto::FS_LIST_DEFAULT_LIMIT).await {
+                Ok((entries, _total, _has_more)) => {
+                    let file_entries: Vec<FileEntry> = entries
+                        .into_iter()
+                        .map(|e| {
+                            if e.is_dir {
+                                FileEntry::dir(&e.name, &e.path, Vec::new())
+                            } else {
+                                FileEntry::file(&e.name, &e.path)
+                            }
+                        })
+                        .collect();
+                    pending.set((load_more_path, file_entries));
+                    zedra_session::push_callback(Box::new(|| {}));
+                }
+                Err(e) => {
+                    log::error!("fs/list load_more for {:?} failed: {}", dir_path, e);
+                }
+            }
+        });
+        cx.notify();
+    }
+
+    /// Check for pending "load more" entries and append them
+    fn apply_pending_more(&mut self) {
+        if let Some((path, more)) = self.pending_more.take() {
+            if path.is_empty() {
+                self.entries.extend(more);
+            } else if let Some(entry) = self.entry_at_path_mut(&path) {
+                entry.children.extend(more);
+                entry.loading = false;
+            }
+            self.flat_dirty = true;
         }
     }
 
@@ -238,6 +314,20 @@ impl FileExplorer {
         let mut flat = Vec::new();
         for (i, entry) in self.entries.iter().enumerate() {
             flatten_entry(entry, 0, &mut vec![i], &mut flat);
+        }
+        // Root-level load-more row
+        if self.entries.len() < self.root_total as usize {
+            let remaining = self.root_total as usize - self.entries.len();
+            flat.push(FlatEntry {
+                name: format!("Load {} more…", remaining.min(zedra_rpc::proto::FS_LIST_DEFAULT_LIMIT as usize)),
+                is_dir: false,
+                depth: 0,
+                expanded: false,
+                loading: false,
+                index_path: Vec::new(),
+                is_load_more: true,
+                load_more_for: Vec::new(),
+            });
         }
         flat
     }
@@ -331,6 +421,7 @@ impl Render for FileExplorer {
         // Apply any pending async results
         self.apply_pending_entries();
         self.apply_pending_children();
+        self.apply_pending_more();
 
         if self.flat_dirty {
             self.flat_entries = self.flatten();
@@ -360,7 +451,38 @@ impl Render for FileExplorer {
             let name = entry.name.clone();
             let loading = entry.loading;
             let expanded = entry.expanded;
+            let is_load_more = entry.is_load_more;
+            let load_more_for = entry.load_more_for.clone();
             let index_path_for_path = index_path.clone();
+
+            // Load-more sentinel row
+            if is_load_more {
+                list = list.child(
+                    div()
+                        .id(flat_idx)
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .py(px(4.0))
+                        .pl(px(12.0 + indent))
+                        .pr(px(8.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(hsla(0.0, 0.0, 1.0, 0.05)))
+                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                            this.load_more_entries(load_more_for.clone(), cx);
+                        }))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(rgb(theme::TEXT_MUTED))
+                                .text_size(px(theme::FONT_BODY))
+                                .child(name),
+                        ),
+                );
+                continue;
+            }
 
             let icon_element: AnyElement = if loading {
                 div()
@@ -407,9 +529,12 @@ impl Render for FileExplorer {
                             cx.emit(FileSelected { path });
                         }
                     }))
-                    .child(icon_element)
+                    .child(div().flex_shrink_0().child(icon_element))
                     .child(
                         div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
                             .text_color(text_color)
                             .text_size(px(theme::FONT_BODY))
                             .child(name),
@@ -441,6 +566,8 @@ fn flatten_entry(entry: &FileEntry, depth: usize, path: &mut Vec<usize>, out: &m
         expanded: entry.expanded,
         loading: entry.loading,
         index_path: path.clone(),
+        is_load_more: false,
+        load_more_for: Vec::new(),
     });
 
     if entry.is_dir && entry.expanded {
@@ -453,12 +580,28 @@ fn flatten_entry(entry: &FileEntry, depth: usize, path: &mut Vec<usize>, out: &m
                 expanded: false,
                 loading: true,
                 index_path: Vec::new(),
+                is_load_more: false,
+                load_more_for: Vec::new(),
             });
         } else {
             for (i, child) in entry.children.iter().enumerate() {
                 path.push(i);
                 flatten_entry(child, depth + 1, path, out);
                 path.pop();
+            }
+            // Load-more row if more children exist on the server
+            if entry.children.len() < entry.children_total as usize {
+                let remaining = entry.children_total as usize - entry.children.len();
+                out.push(FlatEntry {
+                    name: format!("Load {} more…", remaining.min(zedra_rpc::proto::FS_LIST_DEFAULT_LIMIT as usize)),
+                    is_dir: false,
+                    depth: depth + 1,
+                    expanded: false,
+                    loading: false,
+                    index_path: Vec::new(),
+                    is_load_more: true,
+                    load_more_for: path.clone(),
+                });
             }
         }
     }

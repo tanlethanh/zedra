@@ -125,7 +125,10 @@ pub enum ZedraProto {
 // ALPN protocol identifier
 // ---------------------------------------------------------------------------
 
-pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/3";
+pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/1";
+
+/// Default page size for `FsList` requests (host uses this when `limit == 0`).
+pub const FS_LIST_DEFAULT_LIMIT: u32 = 50;
 
 // ---------------------------------------------------------------------------
 // Serde helper for [u8; 64] (serde supports arrays only up to size 32 by default)
@@ -346,11 +349,15 @@ pub struct SessionSwitchResult {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FsListReq {
     pub path: String,
+    pub offset: u32,
+    pub limit: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FsListResult {
     pub entries: Vec<FsEntry>,
+    pub total: u32,
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -369,6 +376,7 @@ pub struct FsReadReq {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FsReadResult {
     pub content: String,
+    pub too_large: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
