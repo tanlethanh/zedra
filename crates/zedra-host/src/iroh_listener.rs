@@ -12,6 +12,12 @@ use zedra_rpc::proto::ZEDRA_ALPN;
 
 use crate::identity::SharedIdentity;
 
+fn ts() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let s = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    format!("{:02}:{:02}:{:02}", (s % 86400) / 3600, (s % 3600) / 60, s % 60)
+}
+
 /// Build a relay map from the given URL.
 fn relay_map_from_url(url_str: &str) -> Result<iroh::RelayMap> {
     let url: iroh::RelayUrl = url_str.parse()?;
@@ -59,6 +65,20 @@ pub async fn create_endpoint(
                         r.mapping_varies_by_dest(),
                         r.preferred_relay,
                     );
+                    let sym_nat = r.mapping_varies_by_dest().unwrap_or(false);
+                    match (r.global_v4, r.global_v6) {
+                        (None, None) => eprintln!("[{}] network:  no public IP found — relay only", ts()),
+                        (v4, v6) => {
+                            let addr = v4.map(|a| a.to_string())
+                                .or_else(|| v6.map(|a| a.to_string()))
+                                .unwrap_or_default();
+                            if sym_nat {
+                                eprintln!("[{}] network:  {} (symmetric NAT — P2P may fail)", ts(), addr);
+                            } else {
+                                eprintln!("[{}] network:  {} (P2P available)", ts(), addr);
+                            }
+                        }
+                    }
                     break;
                 }
                 if tokio::time::timeout(
@@ -68,7 +88,8 @@ pub async fn create_endpoint(
                 .await
                 .is_err()
                 {
-                    tracing::warn!("net_report: STUN did not complete within 10s (no public IP discovered)");
+                    tracing::warn!("net_report: STUN did not complete within 10s");
+                    eprintln!("[{}] network:  STUN timed out — relay only", ts());
                     break;
                 }
             }
@@ -120,6 +141,7 @@ pub async fn run_accept_loop(
                 conn.remote_id().fmt_short(),
                 String::from_utf8_lossy(conn.alpn()),
             );
+            eprintln!("[{}] inbound:  {}", ts(), conn.remote_id().fmt_short());
 
             if let Err(e) = rpc_daemon::handle_connection(conn, registry, state).await {
                 tracing::warn!("irpc connection error: {}", e);
