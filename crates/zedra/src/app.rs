@@ -467,6 +467,8 @@ impl ZedraApp {
                                 "Session resumed: attaching {} existing terminal(s)",
                                 server_ids.len()
                             );
+                            handle_for_connect.set_resuming_terminals();
+                            let t_resume = std::time::Instant::now();
                             let mut attached = Vec::new();
                             for id in &server_ids {
                                 match handle_for_connect.terminal_attach_existing(id).await {
@@ -476,10 +478,13 @@ impl ZedraApp {
                                     }
                                 }
                             }
+                            let resume_ms = t_resume.elapsed().as_millis() as u64;
                             if !attached.is_empty() {
+                                handle_for_connect.mark_connected_after_resume(resume_ms);
                                 pending_existing_terminals.set(attached);
                             } else {
                                 // All attaches failed — fall back to creating a new terminal
+                                handle_for_connect.mark_connected_after_resume(resume_ms);
                                 match handle_for_connect.terminal_create(cols_u16, rows_u16).await {
                                     Ok(term_id) => pending_term_id.set(term_id),
                                     Err(e) => {

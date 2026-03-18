@@ -1,0 +1,535 @@
+/// Connection loading screen — shown while a workspace is connecting/reconnecting/failed.
+///
+/// Layout:
+///   1. Horizontal 6-step progress stepper
+///   2. Vertical current-phase detail (transport, auth, host, timing, error/reconnect banners)
+use gpui::{prelude::FluentBuilder as _, *};
+use zedra_session::{
+    ConnectPhase, ConnectSnapshot, ConnectState, TransportSnapshot, STEPPER_STEP_NAMES,
+};
+
+use crate::theme;
+use crate::transport_badge::{format_bytes, render_transport_badge, transport_badge_info};
+
+// ─── Public entry points ─────────────────────────────────────────────────────
+
+/// Semi-transparent reconnecting overlay — rendered on top of the workspace
+/// while the session is in the Reconnecting phase so the user can see the
+/// workspace content underneath.
+pub fn render_reconnecting_overlay(handle: &zedra_session::SessionHandle) -> impl IntoElement {
+    let cs = handle.connect_state();
+    let (attempt, next_retry_secs, reason_str) =
+        if let zedra_session::ConnectPhase::Reconnecting {
+            attempt,
+            next_retry_secs,
+            reason,
+        } = &cs.phase
+        {
+            let r = match reason {
+                zedra_session::ReconnectReason::AppForegrounded => "app resumed",
+                zedra_session::ReconnectReason::ConnectionLost => "connection lost",
+            };
+            (*attempt, *next_retry_secs, r)
+        } else {
+            (0, 0, "")
+        };
+
+    let status_msg = if next_retry_secs > 0 {
+        format!("Retry in {next_retry_secs}s \u{00b7} {reason_str}")
+    } else {
+        format!("Retrying\u{2026} \u{00b7} {reason_str}")
+    };
+
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .bottom_0()
+        // 0.6 opacity BG_PRIMARY (0x0e0c0c at alpha 0x99)
+        .bg(rgba(0x0e0c0c99u32))
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_end()
+        .pb(px(48.0))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .w(px(8.0))
+                        .h(px(8.0))
+                        .rounded(px(4.0))
+                        .bg(rgb(theme::ACCENT_YELLOW)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(
+                            div()
+                                .text_color(rgb(theme::TEXT_PRIMARY))
+                                .text_size(px(theme::FONT_BODY))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(format!("Reconnecting ({attempt})")),
+                        )
+                        .child(
+                            div()
+                                .text_color(rgb(theme::TEXT_MUTED))
+                                .text_size(px(theme::FONT_DETAIL))
+                                .child(status_msg),
+                        ),
+                ),
+        )
+}
+
+/// Render the full-screen opaque connecting overlay.
+/// Call this for initial connect, resume, and failed phases.
+pub fn render_connecting(handle: &zedra_session::SessionHandle) -> impl IntoElement {
+    let cs = handle.connect_state();
+    div()
+        .id("connecting-view")
+        .size_full()
+        .bg(rgb(theme::BG_PRIMARY))
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_start()
+        .pt(px(32.0))
+        .child(render_phase_title(&cs))
+        .child(render_stepper(&cs))
+        .child(render_detail(&cs))
+}
+
+// ─── Phase title ─────────────────────────────────────────────────────────────
+
+fn render_phase_title(cs: &ConnectState) -> Div {
+    let (label, dot_color) = transport_badge_info(cs);
+    div()
+        .mb(px(theme::SPACING_LG))
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(8.0))
+        .child(
+            div()
+                .text_color(rgb(theme::TEXT_PRIMARY))
+                .text_size(px(theme::FONT_HEADING))
+                .font_weight(FontWeight::MEDIUM)
+                .child(cs.phase.display_name()),
+        )
+        .child(render_transport_badge(label, dot_color))
+}
+
+// ─── Horizontal stepper ──────────────────────────────────────────────────────
+
+fn render_stepper(cs: &ConnectState) -> Div {
+    let active_step = cs.phase.step_index().unwrap_or_else(|| {
+        if cs.phase.is_idle() {
+            0
+        } else {
+            // Reconnecting / Failed: use snapshot's failed_at_step or last completed step
+            cs.snapshot
+                .failed_at_step
+                .unwrap_or_else(|| completed_step_count(cs).saturating_sub(1).min(5))
+        }
+    });
+
+    let completed = completed_step_count(cs);
+
+    let mut row = div()
+        .w(px(theme::HOME_CARD_WIDTH + 20.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .mb(px(theme::SPACING_LG));
+
+    for (i, name) in STEPPER_STEP_NAMES.iter().enumerate() {
+        let is_done = i < completed && !cs.phase.is_failed();
+        let is_active = i == active_step;
+        let is_failed = cs.phase.is_failed() && i == active_step;
+
+        // Dot
+        let dot_color = if is_failed {
+            rgb(theme::ACCENT_RED)
+        } else if is_done {
+            rgb(theme::ACCENT_GREEN)
+        } else if is_active {
+            rgb(theme::ACCENT_YELLOW)
+        } else {
+            rgb(theme::TEXT_MUTED)
+        };
+
+        let dot_border_color = dot_color;
+        let dot_size = 10.0_f32;
+
+        let dot = div()
+            .w(px(dot_size))
+            .h(px(dot_size))
+            .rounded(px(dot_size / 2.0))
+            .border_1()
+            .border_color(dot_border_color)
+            .when(is_done || is_active || is_failed, |d: Div| d.bg(dot_color));
+
+        let step_col = div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(4.0))
+            .child(dot)
+            .child(
+                div()
+                    .text_size(px(9.0))
+                    .text_color(if is_done {
+                        rgb(theme::ACCENT_GREEN)
+                    } else if is_active && !is_failed {
+                        rgb(theme::ACCENT_YELLOW)
+                    } else if is_failed {
+                        rgb(theme::ACCENT_RED)
+                    } else {
+                        rgb(theme::TEXT_MUTED)
+                    })
+                    .child(*name),
+            );
+
+        row = row.child(step_col);
+
+        // Connector line between steps
+        if i < STEPPER_STEP_NAMES.len() - 1 {
+            let line_color = if i + 1 <= completed && !cs.phase.is_failed() {
+                rgb(theme::ACCENT_GREEN)
+            } else {
+                rgb(theme::BORDER_SUBTLE)
+            };
+            row = row.child(
+                div()
+                    .flex_1()
+                    .h(px(1.0))
+                    .mb(px(14.0)) // align with dots (above label)
+                    .bg(line_color),
+            );
+        }
+    }
+
+    row
+}
+
+/// Number of steps that have been fully completed.
+/// Step mapping: 0=Endpoint, 1=Connect, 2=Auth, 3=Info, 4=Resume, 5=Done
+fn completed_step_count(cs: &ConnectState) -> usize {
+    if cs.phase.is_connected() {
+        return 6;
+    }
+    let snap = &cs.snapshot;
+    let mut n = 0;
+    if snap.binding_ms.is_some() {
+        n = 1; // Endpoint done
+    }
+    if snap.rpc_ms.is_some() {
+        n = 2; // Connect done (P2P + RPC both finished)
+    }
+    if snap.auth_ms.is_some() {
+        n = 3; // Auth done
+    }
+    if snap.fetch_ms.is_some() {
+        n = 4; // Info done
+    }
+    if snap.resume_ms.is_some() {
+        n = 5; // Resume done
+    }
+    n
+}
+
+// ─── Vertical detail panel ───────────────────────────────────────────────────
+
+fn render_detail(cs: &ConnectState) -> Div {
+    let snap = &cs.snapshot;
+    let mut col = div()
+        .w(px(theme::HOME_CARD_WIDTH))
+        .flex()
+        .flex_col()
+        .gap(px(theme::SPACING_SM));
+
+    // Endpoint section
+    if snap.local_node_id.is_some() || snap.remote_node_id.is_some() || snap.relay_url.is_some() {
+        col = col.child(render_section(
+            "Endpoint",
+            render_endpoint_rows(snap),
+        ));
+    }
+
+    // Transport section
+    if let Some(t) = &snap.transport {
+        col = col.child(render_section("Transport", render_transport_rows(t)));
+    }
+
+    // Auth section
+    if snap.session_id.is_some() || snap.auth_outcome.is_some() {
+        col = col.child(render_section("Auth", render_auth_rows(snap)));
+    }
+
+    // Host section
+    if snap.hostname.is_some() {
+        col = col.child(render_section("Host", render_host_rows(snap)));
+    }
+
+    // Timing row
+    let timing = build_timing_string(snap);
+    if !timing.is_empty() {
+        col = col.child(
+            div()
+                .text_color(rgb(theme::TEXT_MUTED))
+                .text_size(px(theme::FONT_DETAIL))
+                .child(timing),
+        );
+    }
+
+    // Error banner
+    if let ConnectPhase::Failed(e) = &cs.phase {
+        col = col.child(
+            div()
+                .mt(px(4.0))
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .text_color(rgb(theme::ACCENT_RED))
+                        .text_size(px(theme::FONT_BODY))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(e.user_message()),
+                )
+                .children(e.action_hint().map(|hint| {
+                    div()
+                        .text_color(rgb(theme::TEXT_MUTED))
+                        .text_size(px(theme::FONT_DETAIL))
+                        .child(hint)
+                })),
+        );
+    }
+
+    // Reconnecting banner
+    if let ConnectPhase::Reconnecting {
+        attempt,
+        next_retry_secs,
+        reason,
+    } = &cs.phase
+    {
+        let reason_str = match reason {
+            zedra_session::ReconnectReason::AppForegrounded => "app resumed",
+            zedra_session::ReconnectReason::ConnectionLost => "connection lost",
+        };
+        let msg = if *next_retry_secs > 0 {
+            format!("Attempt {attempt} \u{00b7} {next_retry_secs}s until retry \u{00b7} {reason_str}")
+        } else {
+            format!("Attempt {attempt} \u{00b7} retrying\u{2026} \u{00b7} {reason_str}")
+        };
+        col = col.child(
+            div()
+                .mt(px(4.0))
+                .text_color(rgb(theme::ACCENT_YELLOW))
+                .text_size(px(theme::FONT_DETAIL))
+                .child(msg),
+        );
+    }
+
+    col
+}
+
+fn render_section(title: &'static str, rows: Div) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .child(
+            div()
+                .text_color(rgb(theme::TEXT_MUTED))
+                .text_size(px(theme::FONT_DETAIL))
+                .mb(px(2.0))
+                .child(title),
+        )
+        .child(rows)
+}
+
+fn render_endpoint_rows(snap: &ConnectSnapshot) -> Div {
+    let mut d = div().flex().flex_col().gap(px(2.0));
+    if let Some(id) = &snap.local_node_id {
+        d = d.child(kv_row("Local", id));
+    }
+    if let Some(id) = &snap.remote_node_id {
+        d = d.child(kv_row("Remote", id));
+    }
+    if let Some(relay) = &snap.relay_url {
+        d = d.child(kv_row("Relay", relay));
+    }
+    if let Some(alpn) = &snap.alpn {
+        d = d.child(kv_row("ALPN", alpn));
+    }
+    d
+}
+
+fn render_transport_rows(t: &TransportSnapshot) -> Div {
+    let conn_type = if t.is_direct { "Direct (P2P)" } else { "Relayed" };
+    let conn_color = if t.is_direct {
+        theme::ACCENT_GREEN
+    } else {
+        theme::ACCENT_YELLOW
+    };
+
+    let mut d = div()
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .w(px(theme::ICON_STATUS))
+                        .h(px(theme::ICON_STATUS))
+                        .rounded(px(3.0))
+                        .bg(rgb(conn_color)),
+                )
+                .child(
+                    div()
+                        .text_color(rgb(conn_color))
+                        .text_size(px(theme::FONT_BODY))
+                        .child(conn_type),
+                ),
+        )
+        .child(kv_row("Address", &t.remote_addr));
+
+    if let Some(relay) = &t.relay_url {
+        d = d.child(kv_row("Relay", relay));
+    }
+    if t.rtt_ms > 0 {
+        d = d.child(kv_row("RTT", &format!("{}ms", t.rtt_ms)));
+    }
+    d = d.child(kv_row("Paths", &format!("{}", t.num_paths)));
+    if t.bytes_sent > 0 || t.bytes_recv > 0 {
+        d = d.child(kv_row(
+            "Data",
+            &format!(
+                "{} \u{2191} / {} \u{2193}",
+                format_bytes(t.bytes_sent),
+                format_bytes(t.bytes_recv)
+            ),
+        ));
+    }
+    if t.path_upgraded {
+        d = d.child(
+            div()
+                .text_color(rgb(theme::ACCENT_GREEN))
+                .text_size(px(theme::FONT_DETAIL))
+                .child("\u{2713} Path upgraded to P2P"),
+        );
+    }
+    d
+}
+
+fn render_auth_rows(snap: &ConnectSnapshot) -> Div {
+    let mut d = div().flex().flex_col().gap(px(2.0));
+    if let Some(sid) = &snap.session_id {
+        d = d.child(kv_row("Session", sid));
+    }
+    if let Some(outcome) = &snap.auth_outcome {
+        let label = match outcome {
+            zedra_session::AuthOutcome::Registered => "Registered (first pairing)",
+            zedra_session::AuthOutcome::Authenticated => "Authenticated",
+        };
+        d = d.child(kv_row("Outcome", label));
+    }
+    if snap.is_first_pairing {
+        d = d.child(
+            div()
+                .text_color(rgb(theme::ACCENT_GREEN))
+                .text_size(px(theme::FONT_DETAIL))
+                .child("\u{2713} First pairing — device registered"),
+        );
+    }
+    d
+}
+
+fn render_host_rows(snap: &ConnectSnapshot) -> Div {
+    let mut d = div().flex().flex_col().gap(px(2.0));
+    if let Some(v) = &snap.hostname {
+        d = d.child(kv_row("Host", v));
+    }
+    if let Some(v) = &snap.username {
+        if !v.is_empty() {
+            d = d.child(kv_row("User", v));
+        }
+    }
+    if let Some(v) = &snap.workdir {
+        d = d.child(kv_row("Dir", v));
+    }
+    if let Some(os) = &snap.os {
+        let label = match &snap.arch {
+            Some(arch) if !arch.is_empty() => format!("{os} / {arch}"),
+            _ => os.clone(),
+        };
+        d = d.child(kv_row("OS", &label));
+    }
+    if let Some(v) = &snap.host_version {
+        if !v.is_empty() {
+            d = d.child(kv_row("zedra-host", v));
+        }
+    }
+    d
+}
+
+fn build_timing_string(snap: &ConnectSnapshot) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(ms) = snap.binding_ms {
+        parts.push(format!("Bind {ms}ms"));
+    }
+    if let Some(ms) = snap.hole_punch_ms {
+        parts.push(format!("P2P {ms}ms"));
+    }
+    if let Some(ms) = snap.rpc_ms {
+        parts.push(format!("RPC {ms}ms"));
+    }
+    if let Some(ms) = snap.register_ms {
+        parts.push(format!("Reg {ms}ms"));
+    }
+    if let Some(ms) = snap.auth_ms {
+        parts.push(format!("Auth {ms}ms"));
+    }
+    if let Some(ms) = snap.fetch_ms {
+        parts.push(format!("Info {ms}ms"));
+    }
+    if let Some(ms) = snap.resume_ms {
+        parts.push(format!("Resume {ms}ms"));
+    }
+    parts.join(" \u{00b7} ")
+}
+
+fn kv_row(key: &'static str, value: &str) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .gap(px(6.0))
+        .child(
+            div()
+                .w(px(60.0))
+                .flex_shrink_0()
+                .text_color(rgb(theme::TEXT_MUTED))
+                .text_size(px(theme::FONT_DETAIL))
+                .child(key),
+        )
+        .child(
+            div()
+                .flex_1()
+                .text_color(rgb(theme::TEXT_SECONDARY))
+                .text_size(px(theme::FONT_DETAIL))
+                .child(value.to_string()),
+        )
+}

@@ -39,6 +39,9 @@ pub mod quick_action_panel;
 // Transport badge (P2P / Relay indicator) + format_bytes utility
 pub mod transport_badge;
 
+// Connection loading screen (shown while connecting / reconnecting / failed)
+pub mod connecting_view;
+
 // Active terminal input routing for platform FFI bridges
 pub mod active_terminal;
 
