@@ -58,7 +58,7 @@
 
 #define ANIMATION_DURATION_MS 250
 
-#define FONT_TITLE 22.0
+#define FONT_TITLE 28.0
 
 #define FONT_HEADING 13.0
 
