@@ -167,7 +167,7 @@ impl Render for WorkspaceContent {
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
-                            .hit_slop(px(6.0))
+                            .hit_slop(px(10.0))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
@@ -212,7 +212,7 @@ impl Render for WorkspaceContent {
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
-                            .hit_slop(px(6.0))
+                            .hit_slop(px(10.0))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
@@ -283,8 +283,7 @@ impl WorkspaceView {
         let mut subscriptions = Vec::new();
 
         let pending_file: SharedPendingSlot<(String, String)> = shared_pending_slot();
-        let pending_git_diff: SharedPendingSlot<(String, FileDiff)> =
-            shared_pending_slot();
+        let pending_git_diff: SharedPendingSlot<(String, FileDiff)> = shared_pending_slot();
         let pending_terminal_id: SharedPendingSlot<String> = shared_pending_slot();
         let pending_existing_terminals: SharedPendingSlot<Vec<String>> = shared_pending_slot();
         let pending_terminal_ready: SharedPendingSlot<String> = shared_pending_slot();
@@ -536,7 +535,11 @@ impl WorkspaceView {
         let cs = self.session_handle.connect_state();
         let is_connected = cs.phase.is_connected();
         let workdir = self.session_handle.workdir();
-        let project_path = if workdir.is_empty() { None } else { Some(workdir) };
+        let project_path = if workdir.is_empty() {
+            None
+        } else {
+            Some(workdir)
+        };
         let terminal_ids: Vec<String> = self
             .terminal_views
             .iter()

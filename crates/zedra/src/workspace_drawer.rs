@@ -371,7 +371,7 @@ impl Render for WorkspaceDrawer {
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
-                            .hit_slop(px(8.0))
+                            .hit_slop(px(10.0))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
