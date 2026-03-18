@@ -5,6 +5,7 @@
 //                    and the live RPC client). Arc-wrapped, cheap to clone, survives
 //                    transport failures.
 
+pub mod connect_state;
 pub mod handle;
 pub mod signer;
 pub mod terminal;
@@ -55,5 +56,9 @@ pub fn drain_callbacks() -> VecDeque<MainCallback> {
 }
 
 // Re-exports for crate consumers.
-pub use handle::{ConnectionInfo, ReconnectReason, SessionHandle, SessionState};
+pub use connect_state::{
+    AuthOutcome, ConnectError, ConnectPhase, ConnectSnapshot, ConnectState, ReconnectReason,
+    TransportSnapshot, STEPPER_STEP_NAMES,
+};
+pub use handle::SessionHandle;
 pub use terminal::RemoteTerminal;

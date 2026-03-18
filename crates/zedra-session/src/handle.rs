@@ -1,71 +1,25 @@
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
+use std::time::Instant;
 
 use anyhow::Result;
 use zedra_rpc::proto::*;
 
 use crate::{session_runtime, signer::ClientSigner, terminal::RemoteTerminal};
+use crate::connect_state::{
+    AuthOutcome, ConnectError, ConnectPhase, ConnectSnapshot, ConnectState, ReconnectReason,
+    TransportSnapshot,
+};
 
-/// Why a reconnect was triggered.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ReconnectReason {
-    /// QUIC connection closed (transport failure, timeout).
-    ConnectionLost,
-    /// App returned to foreground after iOS suspension.
-    AppForegrounded,
-}
-
-/// Per-connection state of the session.
-#[derive(Clone, Debug)]
-pub enum SessionState {
-    Disconnected,
-    Connecting {
-        phase: String,
-    },
-    Connected {
-        hostname: String,
-        username: String,
-        workdir: String,
-        home_dir: String,
-        os: String,
-        arch: String,
-        os_version: String,
-        host_version: String,
-    },
-    Reconnecting {
-        attempt: u32,
-        reason: ReconnectReason,
-        next_retry_secs: u64,
-    },
-    /// All reconnect attempts exhausted; user must retry or re-scan QR.
-    HostUnreachable,
-    Error(String),
-}
-
-/// Active iroh transport path snapshot, refreshed by the path watcher task.
-#[derive(Clone, Debug)]
-pub struct ConnectionInfo {
-    pub is_direct: bool,
-    pub remote_addr: String,
-    pub relay_url: Option<String>,
-    pub endpoint_id: String,
-    pub local_endpoint_id: String,
-    pub num_paths: usize,
-    pub protocol: String,
-    pub path_rtt_ms: u64,
-    pub bytes_sent: u64,
-    pub bytes_recv: u64,
-}
-
-/// Workspace-scoped durable session state; owns credentials, terminals, reconnect
-/// control, and the live RPC client. Arc-wrapped — clone freely to share with async tasks.
+/// Workspace-scoped durable session state. Arc-wrapped — clone freely to share
+/// with async tasks. Survives transport failures and reconnect cycles.
 #[derive(Clone)]
 pub struct SessionHandle(Arc<SessionHandleInner>);
 
 struct SessionHandleInner {
-    // Durable credentials / identity
+    // ── Durable credentials / identity ─────────────────────────────────────
     sid: Arc<Mutex<Option<String>>>,
     endpoint_addr: Mutex<Option<iroh::EndpointAddr>>,
     terminals: Arc<Mutex<Vec<Arc<RemoteTerminal>>>>,
@@ -73,38 +27,35 @@ struct SessionHandleInner {
     endpoint_id: Mutex<Option<iroh::PublicKey>>,
     pending_ticket: Mutex<Option<zedra_rpc::ZedraPairingTicket>>,
 
-    // Connection state (replaced on each new connect)
+    // ── Live connection ──────────────────────────────────────────────────────
     client: Mutex<Option<irpc::Client<ZedraProto>>>,
-    session_state: Mutex<SessionState>,
-    /// Monotonically increasing counter bumped on every call to `connect()`.
-    /// Each connection watcher captures its value at creation time and skips
-    /// `spawn_reconnect()` if the counter has advanced — meaning a newer
-    /// connection already superseded this one.  This prevents the stale watcher
-    /// from a still-alive old connection triggering a spurious second reconnect
-    /// cycle after foreground-resume has already successfully re-established.
+
+    // ── Connection state machine (single source of truth) ───────────────────
+    connect_state: Mutex<ConnectState>,
+
+    /// Monotonically increasing counter bumped on every connect() call.
+    /// Stale watchers (path watcher, connection closed watcher) capture their
+    /// generation and bail out if the counter has advanced past theirs.
     conn_generation: AtomicU64,
-    /// Last hostname/workdir/project-name seen in a successful Connected state.
-    /// Updated on every successful connect; never cleared on disconnect so the
-    /// UI can show the project name even while Reconnecting.
+
+    // ── Cached host identity (survives reconnect — used for UI during Reconnecting) ─
     workdir: Mutex<String>,
     hostname: Mutex<String>,
     home_dir: Mutex<String>,
-    /// Precomputed last path component of `workdir` (e.g. "zedra").
-    /// Stored so callers never have to split a path string to display the name.
+    /// Last path component of `workdir`, pre-computed (e.g. "zedra").
     project_name: Mutex<String>,
-    connection_info: Arc<Mutex<Option<ConnectionInfo>>>,
-    latency_ms: Arc<AtomicU64>,
 
-    // Reconnect control
-    reconnect_attempt: AtomicU32,
-    reconnect_reason: Mutex<ReconnectReason>,
+    // ── Reconnect control signals ───────────────────────────────────────────
+    /// Set to true by user-initiated disconnect; suppresses automatic reconnect.
     user_disconnect: AtomicBool,
+    /// Set to true by foreground resume; causes the next backoff to be skipped.
     skip_next_backoff: AtomicBool,
-    next_retry_secs: AtomicU64,
-    host_unreachable: AtomicBool,
+    /// CAS guard — prevents two concurrent reconnect loops.
+    reconnect_running: AtomicBool,
 
-    // Notifier set by the UI layer; called whenever session state changes.
-    // Must only capture Send types (WeakEntity and AsyncApp are !Send).
+    // ── UI notifier ─────────────────────────────────────────────────────────
+    /// Called (via push_callback) whenever session state changes.
+    /// Must only capture Send types (WeakEntity / AsyncApp are !Send).
     state_notifier: Mutex<Option<Box<dyn Fn() + Send + Sync + 'static>>>,
 }
 
@@ -118,20 +69,15 @@ impl SessionHandle {
             endpoint_id: Mutex::new(None),
             pending_ticket: Mutex::new(None),
             client: Mutex::new(None),
-            session_state: Mutex::new(SessionState::Disconnected),
+            connect_state: Mutex::new(ConnectState::idle()),
             conn_generation: AtomicU64::new(0),
             workdir: Mutex::new(String::new()),
             hostname: Mutex::new(String::new()),
             home_dir: Mutex::new(String::new()),
             project_name: Mutex::new(String::new()),
-            connection_info: Arc::new(Mutex::new(None)),
-            latency_ms: Arc::new(AtomicU64::new(0)),
-            reconnect_attempt: AtomicU32::new(0),
-            reconnect_reason: Mutex::new(ReconnectReason::ConnectionLost),
             user_disconnect: AtomicBool::new(false),
             skip_next_backoff: AtomicBool::new(false),
-            next_retry_secs: AtomicU64::new(0),
-            host_unreachable: AtomicBool::new(false),
+            reconnect_running: AtomicBool::new(false),
             state_notifier: Mutex::new(None),
         }))
     }
@@ -186,126 +132,84 @@ impl SessionHandle {
         }
     }
 
-    pub fn is_host_unreachable(&self) -> bool {
-        self.0.host_unreachable.load(Ordering::Relaxed)
-    }
-
     // -----------------------------------------------------------------------
-    // Session state
+    // Connection state (single source of truth)
     // -----------------------------------------------------------------------
 
-    /// Effective state for the UI. Reconnect atomics take priority.
-    pub fn state(&self) -> SessionState {
-        let attempt = self.reconnect_attempt();
-        if attempt > 0 {
-            return SessionState::Reconnecting {
-                attempt,
-                reason: self.reconnect_reason(),
-                next_retry_secs: self.next_retry_secs(),
-            };
+    pub fn connect_state(&self) -> ConnectState {
+        match self.0.connect_state.lock() {
+            Ok(cs) => cs.clone(),
+            Err(_) => ConnectState::idle(),
         }
-        if self.is_host_unreachable() {
-            return SessionState::HostUnreachable;
-        }
-        self.0
-            .session_state
-            .lock()
-            .map(|s| s.clone())
-            .unwrap_or(SessionState::Disconnected)
     }
 
-    pub fn connection_info(&self) -> Option<ConnectionInfo> {
-        self.0.connection_info.lock().ok().and_then(|g| g.clone())
+    pub fn is_connected(&self) -> bool {
+        self.connect_state().phase.is_connected()
     }
 
-    pub fn latency_ms(&self) -> u64 {
-        self.0.latency_ms.load(Ordering::Relaxed)
+    pub fn is_reconnecting(&self) -> bool {
+        self.connect_state().phase.is_reconnecting()
     }
 
-    /// User-initiated disconnect; suppresses automatic reconnect.
+    /// User-initiated disconnect — clears session and suppresses auto-reconnect.
     pub fn clear_session(&self) {
         self.0.user_disconnect.store(true, Ordering::Release);
         if let Ok(mut slot) = self.0.client.lock() {
             *slot = None;
         }
-        if let Ok(mut s) = self.0.session_state.lock() {
-            *s = SessionState::Disconnected;
+        if let Ok(mut cs) = self.0.connect_state.lock() {
+            *cs = ConnectState::idle();
         }
+        self.0.reconnect_running.store(false, Ordering::Release);
         tracing::info!("SessionHandle: session cleared (user disconnect)");
-    }
-
-    pub fn is_connected(&self) -> bool {
-        matches!(self.state(), SessionState::Connected { .. })
     }
 
     // -----------------------------------------------------------------------
     // Reconnect control
     // -----------------------------------------------------------------------
 
-    pub fn is_reconnecting(&self) -> bool {
-        self.reconnect_attempt() > 0
-    }
-
-    pub fn reconnect_attempt(&self) -> u32 {
-        self.0.reconnect_attempt.load(Ordering::Relaxed)
-    }
-
-    pub fn set_reconnect_attempt(&self, attempt: u32) {
-        self.0.reconnect_attempt.store(attempt, Ordering::Release);
-    }
-
-    pub fn reconnect_reason(&self) -> ReconnectReason {
-        self.0
-            .reconnect_reason
-            .lock()
-            .map(|r| r.clone())
-            .unwrap_or(ReconnectReason::ConnectionLost)
-    }
-
-    pub fn set_reconnect_reason(&self, reason: ReconnectReason) {
-        if let Ok(mut slot) = self.0.reconnect_reason.lock() {
-            *slot = reason;
-        }
-    }
-
-    pub fn next_retry_secs(&self) -> u64 {
-        self.0.next_retry_secs.load(Ordering::Relaxed)
-    }
-
     pub fn skip_next_backoff(&self) -> bool {
         self.0.skip_next_backoff.load(Ordering::Relaxed)
     }
 
-    /// iOS foreground resume: skip the next backoff and trigger an immediate reconnect.
+    /// Foreground resume: skip the next backoff and trigger an immediate reconnect
+    /// only if the session is not already connected or in-progress.
+    ///
+    /// When the phase is `Connected` we leave it alone — the QUIC closed-watcher
+    /// running in the background will detect a real dropout and fire
+    /// `spawn_reconnect_with_reason(ConnectionLost)` on its own.  Calling
+    /// reconnect unconditionally here caused a redundant reconnect cycle every
+    /// time the app foregrounded even when the connection was still alive.
     pub fn notify_foreground_resume(&self) {
         if self.0.user_disconnect.load(Ordering::Acquire) {
             return;
         }
-
         if self.endpoint_addr().is_none() {
             return;
         }
 
-        self.set_reconnect_reason(ReconnectReason::AppForegrounded);
         self.0.skip_next_backoff.store(true, Ordering::Release);
 
-        if self.is_reconnecting() {
-            tracing::info!("foreground_resume: reconnect in progress, flagged to skip backoff");
+        let phase = self.connect_state().phase;
+
+        if phase.is_connected() {
+            tracing::info!("foreground_resume: session Connected, skipping reconnect (closed-watcher handles dropout)");
             return;
         }
 
-        tracing::info!("foreground_resume: triggering immediate reconnect");
-        self.spawn_reconnect();
+        if phase.is_reconnecting() || phase.is_connecting() {
+            tracing::info!("foreground_resume: reconnect already in progress, flagged to skip backoff");
+            return;
+        }
+
+        tracing::info!("foreground_resume: session not connected, triggering immediate reconnect");
+        self.spawn_reconnect_with_reason(ReconnectReason::AppForegrounded);
     }
 
     // -----------------------------------------------------------------------
     // State notifier (set by UI layer)
     // -----------------------------------------------------------------------
 
-    /// Register a callback to be invoked (via push_callback) whenever session
-    /// state changes. The closure must be Send + Sync — it cannot capture GPUI
-    /// handles (WeakEntity / AsyncApp are !Send). Typically it just calls
-    /// `push_callback(Box::new(|| {}))` to force a re-render.
     pub fn set_state_notifier(&self, f: impl Fn() + Send + Sync + 'static) {
         if let Ok(mut slot) = self.0.state_notifier.lock() {
             *slot = Some(Box::new(f));
@@ -341,39 +245,22 @@ impl SessionHandle {
     }
 
     // -----------------------------------------------------------------------
-    // Connect / reconnect
+    // Cached host display fields (survive reconnect cycles)
     // -----------------------------------------------------------------------
 
-    /// Workdir and hostname from the last successful connect, or empty string if
-    /// we have never connected.  Safe to call at any time including during Reconnecting.
     pub fn workdir(&self) -> String {
-        self.0
-            .workdir
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_default()
+        self.0.workdir.lock().map(|g| g.clone()).unwrap_or_default()
     }
 
     pub fn home_dir(&self) -> String {
-        self.0
-            .home_dir
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_default()
+        self.0.home_dir.lock().map(|g| g.clone()).unwrap_or_default()
     }
 
     pub fn hostname(&self) -> String {
-        self.0
-            .hostname
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_default()
+        self.0.hostname.lock().map(|g| g.clone()).unwrap_or_default()
     }
 
     /// Last path component of the remote working directory (e.g. `"zedra"`).
-    /// Precomputed and stored on every successful connect so callers never need
-    /// to split the workdir string themselves.  Returns an empty string before
-    /// the first successful connection.
     pub fn project_name(&self) -> String {
         self.0
             .project_name
@@ -382,25 +269,34 @@ impl SessionHandle {
             .unwrap_or_default()
     }
 
+    // -----------------------------------------------------------------------
+    // Connect
+    // -----------------------------------------------------------------------
+
     /// Establish a QUIC/iroh connection to `addr` and run PKI auth.
-    /// Updates internal state (session_state, client, terminals) in place.
+    /// Advances `connect_state.phase` through the full sequence.
     pub async fn connect(&self, addr: iroh::EndpointAddr) -> Result<()> {
         self.set_endpoint_addr(addr.clone());
         self.set_endpoint_id(addr.id);
         self.0.user_disconnect.store(false, Ordering::Release);
 
-        // Bump the connection generation so any watcher still alive from a
-        // previous connection will recognise it is stale and skip reconnect.
         let my_gen = self.0.conn_generation.fetch_add(1, Ordering::AcqRel) + 1;
 
         tracing::info!(
-            "SessionHandle: connecting via iroh (endpoint: {})",
+            "SessionHandle: connecting (endpoint: {}, gen: {})",
             addr.id.fmt_short(),
+            my_gen,
         );
 
-        if let Ok(mut s) = self.0.session_state.lock() {
-            *s = SessionState::Connecting {
-                phase: "Creating endpoint".into(),
+        // ── Phase: BindingEndpoint ────────────────────────────────────────
+        {
+            let mut cs = self.0.connect_state.lock().unwrap();
+            cs.phase = ConnectPhase::BindingEndpoint;
+            cs.snapshot = ConnectSnapshot {
+                remote_node_id: Some(addr.id.fmt_short().to_string()),
+                relay_url: Some(zedra_rpc::ZEDRA_RELAY_URL.to_string()),
+                alpn: Some(String::from_utf8_lossy(ZEDRA_ALPN).to_string()),
+                ..Default::default()
             };
         }
         self.notify_state_change();
@@ -411,95 +307,138 @@ impl SessionHandle {
             url: relay_url,
             quic: Some(iroh_relay::RelayQuicConfig::default()),
         }]);
+
+        let t0 = Instant::now();
         let endpoint = iroh::Endpoint::builder()
             .relay_mode(iroh::RelayMode::Custom(relay_map))
             .alpns(vec![ZEDRA_ALPN.to_vec()])
             .address_lookup(iroh::address_lookup::PkarrResolver::n0_dns())
             .bind()
-            .await?;
-        tracing::info!("iroh client endpoint bound: {}", endpoint.id().fmt_short());
+            .await
+            .map_err(|e| {
+                self.set_failed(ConnectError::EndpointBindFailed(e.to_string()));
+                anyhow::anyhow!("endpoint bind failed: {e}")
+            })?;
 
-        if let Ok(mut s) = self.0.session_state.lock() {
-            *s = SessionState::Connecting {
-                phase: "QUIC handshake (direct P2P)".into(),
-            };
+        let local_node_id = endpoint.id().fmt_short().to_string();
+        tracing::info!("iroh client endpoint bound: {}", local_node_id);
+
+        // ── Phase: HolePunching ───────────────────────────────────────────
+        {
+            let mut cs = self.0.connect_state.lock().unwrap();
+            cs.snapshot.binding_ms = Some(t0.elapsed().as_millis() as u64);
+            cs.snapshot.local_node_id = Some(local_node_id);
+            cs.phase = ConnectPhase::HolePunching;
         }
         self.notify_state_change();
 
-        let conn = endpoint.connect(addr, ZEDRA_ALPN).await?;
-        tracing::info!("iroh: connected to {}", conn.remote_id().fmt_short());
+        let t1 = Instant::now();
+        let conn = endpoint
+            .connect(addr, ZEDRA_ALPN)
+            .await
+            .map_err(|e| {
+                self.set_failed(ConnectError::QuicConnectFailed(e.to_string()));
+                anyhow::anyhow!("quic connect failed: {e}")
+            })?;
 
-        if let Ok(mut s) = self.0.session_state.lock() {
-            *s = SessionState::Connecting {
-                phase: "Establishing RPC session".into(),
-            };
+        let remote_node_id = conn.remote_id().fmt_short().to_string();
+        let alpn_str = String::from_utf8_lossy(conn.alpn()).to_string();
+        tracing::info!("iroh: connected to {}", remote_node_id);
+
+        // ── Phase: EstablishingRpc ────────────────────────────────────────
+        {
+            let mut cs = self.0.connect_state.lock().unwrap();
+            cs.snapshot.hole_punch_ms = Some(t1.elapsed().as_millis() as u64);
+            cs.snapshot.remote_node_id = Some(remote_node_id);
+            cs.snapshot.alpn = Some(alpn_str);
+            cs.phase = ConnectPhase::EstablishingRpc;
         }
         self.notify_state_change();
 
-        let local_eid = endpoint.id().fmt_short().to_string();
-        let remote_eid = conn.remote_id().fmt_short().to_string();
-        let alpn = String::from_utf8_lossy(conn.alpn()).to_string();
         let conn_for_paths = conn.clone();
         let conn_for_watcher = conn.clone();
-        let remote_eid_for_log = remote_eid.clone();
 
+        let t2 = Instant::now();
         let remote = irpc_iroh::IrohRemoteConnection::new(conn);
         let client = irpc::Client::<ZedraProto>::boxed(remote);
 
-        // Refresh ConnectionInfo on each path change or every 2s.
+        {
+            let mut cs = self.0.connect_state.lock().unwrap();
+            cs.snapshot.rpc_ms = Some(t2.elapsed().as_millis() as u64);
+        }
+
+        if let Ok(mut slot) = self.0.client.lock() {
+            *slot = Some(client.clone());
+        }
+
+        // Spawn path watcher: updates snapshot.transport live.
         {
             use iroh::Watcher;
             let mut paths = conn_for_paths.paths();
-            let info_slot = self.0.connection_info.clone();
-            let latency_ms = self.0.latency_ms.clone();
+            let handle_for_paths = self.clone();
             tokio::spawn(async move {
-                let mut paths_watcher_active = true;
+                let mut watcher_active = true;
                 loop {
+                    // Stop if the connection has been superseded.
+                    let current_gen =
+                        handle_for_paths.0.conn_generation.load(Ordering::Acquire);
+                    if current_gen != my_gen {
+                        break;
+                    }
+
                     let path_list = paths.get();
-                    let selected = path_list.iter().find(|p| p.is_selected());
-                    if let Some(path) = selected {
+                    if let Some(path) = path_list.iter().find(|p| p.is_selected()) {
                         let stats = path.stats();
                         let is_direct = path.is_ip();
                         let (remote_addr, relay_url) = match path.remote_addr() {
                             iroh::TransportAddr::Ip(addr) => (addr.to_string(), None),
                             iroh::TransportAddr::Relay(url) => {
-                                let host = url.host_str().unwrap_or(url.as_str()).to_string();
+                                let host =
+                                    url.host_str().unwrap_or(url.as_str()).to_string();
                                 (host.clone(), Some(host))
                             }
                             _ => (format!("{:?}", path.remote_addr()), None),
                         };
                         let rtt = stats.rtt.as_millis() as u64;
-                        latency_ms.store(rtt, Ordering::Relaxed);
-                        let info = ConnectionInfo {
-                            is_direct,
-                            remote_addr,
-                            relay_url,
-                            endpoint_id: remote_eid.clone(),
-                            local_endpoint_id: local_eid.clone(),
-                            num_paths: path_list.len(),
-                            protocol: alpn.clone(),
-                            path_rtt_ms: rtt,
-                            bytes_sent: stats.udp_tx.bytes,
-                            bytes_recv: stats.udp_rx.bytes,
-                        };
-                        let was_relay = info_slot
-                            .lock()
-                            .ok()
-                            .and_then(|g| g.as_ref().map(|i| !i.is_direct))
-                            .unwrap_or(true);
-                        if was_relay && info.is_direct {
-                            tracing::info!("iroh path upgraded: relay -> direct P2P");
-                        }
-                        if let Ok(mut slot) = info_slot.lock() {
-                            *slot = Some(info);
+
+                        if let Ok(mut cs) = handle_for_paths.0.connect_state.lock() {
+                            let prev_direct = cs
+                                .snapshot
+                                .transport
+                                .as_ref()
+                                .map(|t| t.is_direct)
+                                .unwrap_or(false);
+                            let path_upgraded = (!prev_direct && is_direct)
+                                || cs
+                                    .snapshot
+                                    .transport
+                                    .as_ref()
+                                    .map(|t| t.path_upgraded)
+                                    .unwrap_or(false);
+
+                            if !prev_direct && is_direct {
+                                tracing::info!("iroh path upgraded: relay → direct P2P");
+                            }
+
+                            cs.snapshot.transport = Some(TransportSnapshot {
+                                is_direct,
+                                remote_addr,
+                                relay_url,
+                                num_paths: path_list.len(),
+                                rtt_ms: rtt,
+                                bytes_sent: stats.udp_tx.bytes,
+                                bytes_recv: stats.udp_rx.bytes,
+                                path_upgraded,
+                            });
                         }
                     }
-                    if paths_watcher_active {
+
+                    if watcher_active {
                         tokio::select! {
                             res = paths.updated() => {
                                 if res.is_err() {
-                                    tracing::debug!("iroh path watcher closed — switching to polling");
-                                    paths_watcher_active = false;
+                                    tracing::debug!("path watcher closed — polling");
+                                    watcher_active = false;
                                 }
                             }
                             _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
@@ -511,19 +450,16 @@ impl SessionHandle {
             });
         }
 
-        // Store the new client.
-        if let Ok(mut slot) = self.0.client.lock() {
-            *slot = Some(client.clone());
-        }
+        // ── PKI auth phases (Registering → Authenticating → Proving) ─────
+        let ticket = self.0.pending_ticket.lock().ok().and_then(|mut g| g.take());
+        let session_id = self.session_id();
+        let endpoint_id = self.endpoint_id().expect("endpoint_id stored above");
 
-        // PKI auth.
-        {
-            let ticket = self.0.pending_ticket.lock().ok().and_then(|mut g| g.take());
-            let session_id = self.session_id();
-            let endpoint_id = self.endpoint_id().expect("endpoint_id stored above");
-            match self.signer() {
-                Some(signer) => {
-                    match Self::authenticate(
+        match self.signer() {
+            Some(signer) => {
+                let t_auth = Instant::now();
+                match self
+                    .authenticate(
                         &client,
                         ticket.as_ref(),
                         signer.as_ref(),
@@ -531,30 +467,49 @@ impl SessionHandle {
                         session_id.as_deref(),
                     )
                     .await
-                    {
-                        Ok(sid) => {
-                            if let Ok(mut slot) = self.0.sid.lock() {
-                                *slot = Some(sid);
-                            }
+                {
+                    Ok((sid, outcome)) => {
+                        if let Ok(mut slot) = self.0.sid.lock() {
+                            *slot = Some(sid.clone());
                         }
-                        Err(e) => {
-                            tracing::warn!("PKI auth failed: {}", e);
+                        if let Ok(mut cs) = self.0.connect_state.lock() {
+                            cs.snapshot.session_id = Some(sid);
+                            cs.snapshot.auth_outcome = Some(outcome);
+                            cs.snapshot.auth_ms = Some(t_auth.elapsed().as_millis() as u64);
                         }
                     }
+                    Err(e) => {
+                        tracing::warn!("PKI auth failed: {e}");
+                        return Err(e);
+                    }
                 }
-                None => {
-                    tracing::warn!("No signer — skipping PKI auth (RPC calls will fail)");
-                }
+            }
+            None => {
+                tracing::warn!("No signer — skipping PKI auth (RPC calls will fail)");
             }
         }
 
-        self.fetch_session_info(&client, "unknown").await;
+        // ── Phase: FetchingInfo ────────────────────────────────────────────
+        {
+            let mut cs = self.0.connect_state.lock().unwrap();
+            cs.phase = ConnectPhase::FetchingInfo;
+        }
+        self.notify_state_change();
+
+        let t_fetch = Instant::now();
+        self.fetch_session_info(&client).await;
+
+        {
+            let mut cs = self.0.connect_state.lock().unwrap();
+            cs.snapshot.fetch_ms = Some(t_fetch.elapsed().as_millis() as u64);
+            cs.phase = ConnectPhase::Connected;
+        }
+        self.notify_state_change();
+
         self.reattach_terminals(&client).await;
 
-        // Subscribe to host-initiated events in the background. This must NOT
-        // be awaited inline: open_bi() inside server_streaming can stall under
-        // QUIC stream pressure, which would block the Connected state transition
-        // and leave the UI unable to load any data.
+        // Subscribe to host-initiated events (spawned separately — must NOT be awaited
+        // inline: open_bi() can stall under QUIC stream pressure).
         {
             let handle_for_sub = self.clone();
             let client_for_sub = client.clone();
@@ -563,52 +518,55 @@ impl SessionHandle {
             });
         }
 
+        // Watch for connection close and trigger reconnect.
         let handle_for_watcher = self.clone();
         tokio::spawn(async move {
             conn_for_watcher.closed().await;
-            // Only trigger a reconnect if this is still the active connection.
-            // If conn_generation has advanced, a newer connect() call already
-            // superseded this one — firing spawn_reconnect() here would cause a
-            // spurious second reconnect cycle that interrupts input and briefly
-            // clears the project name from the header.
-            let current_gen = handle_for_watcher.0.conn_generation.load(Ordering::Acquire);
+            let current_gen =
+                handle_for_watcher.0.conn_generation.load(Ordering::Acquire);
             if current_gen != my_gen {
                 tracing::debug!(
-                    "stale connection closed (gen={} current={}), skipping reconnect",
-                    my_gen, current_gen,
+                    "stale connection closed (gen={my_gen} current={current_gen}), skipping"
                 );
                 return;
             }
             tracing::info!("iroh connection closed, triggering reconnect");
-            if let Ok(mut reason) = handle_for_watcher.0.reconnect_reason.lock() {
-                *reason = ReconnectReason::ConnectionLost;
-            }
-            handle_for_watcher.spawn_reconnect();
+            handle_for_watcher.spawn_reconnect_with_reason(ReconnectReason::ConnectionLost);
         });
 
-        tracing::info!(
-            "SessionHandle: connected via iroh to {}",
-            remote_eid_for_log
-        );
+        tracing::info!("SessionHandle: connected (gen={my_gen})");
         Ok(())
     }
 
-    /// PKI auth. First connect: Register → Auth → AuthProve.
-    /// Reconnect (no ticket): Auth → AuthProve.
+    // -----------------------------------------------------------------------
+    // PKI auth (Registering → Authenticating → Proving)
+    // -----------------------------------------------------------------------
+
     async fn authenticate(
+        &self,
         client: &irpc::Client<ZedraProto>,
         ticket: Option<&zedra_rpc::ZedraPairingTicket>,
         signer: &dyn ClientSigner,
         endpoint_id: &iroh::PublicKey,
         session_id: Option<&str>,
-    ) -> Result<String> {
+    ) -> Result<(String, AuthOutcome)> {
         use ed25519_dalek::{Verifier, VerifyingKey};
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let client_pubkey = signer.pubkey();
+        let mut outcome = AuthOutcome::Authenticated;
 
-        // Step 1: Register (first connection only).
+        // Step 1: Register (first pairing only).
         if let Some(t) = ticket {
+            outcome = AuthOutcome::Registered;
+            {
+                let mut cs = self.0.connect_state.lock().unwrap();
+                cs.phase = ConnectPhase::Registering;
+                cs.snapshot.is_first_pairing = true;
+            }
+            self.notify_state_change();
+
+            let t_register = Instant::now();
             let timestamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -618,6 +576,7 @@ impl SessionHandle {
                 &client_pubkey,
                 timestamp,
             );
+
             match client
                 .rpc(RegisterReq {
                     client_pubkey,
@@ -629,25 +588,56 @@ impl SessionHandle {
             {
                 RegisterResult::Ok => {
                     tracing::info!("PKI: registered, session={}", t.session_id);
+                    if let Ok(mut cs) = self.0.connect_state.lock() {
+                        cs.snapshot.register_ms =
+                            Some(t_register.elapsed().as_millis() as u64);
+                    }
                 }
-                other => {
-                    return Err(anyhow::anyhow!("register failed: {:?}", other));
+                RegisterResult::HandshakeConsumed => {
+                    self.set_failed(ConnectError::HandshakeConsumed);
+                    return Err(anyhow::anyhow!("register: HandshakeConsumed"));
+                }
+                RegisterResult::InvalidHandshake => {
+                    self.set_failed(ConnectError::InvalidHandshake);
+                    return Err(anyhow::anyhow!("register: InvalidHandshake"));
+                }
+                RegisterResult::StaleTimestamp => {
+                    self.set_failed(ConnectError::StaleTimestamp);
+                    return Err(anyhow::anyhow!("register: StaleTimestamp"));
+                }
+                RegisterResult::SlotNotFound => {
+                    self.set_failed(ConnectError::SlotNotFound);
+                    return Err(anyhow::anyhow!("register: SlotNotFound"));
                 }
             }
         }
 
-        // Authenticate — get nonce + verify host signature.
+        // Step 2: Authenticate — request nonce + verify host signature.
+        {
+            let mut cs = self.0.connect_state.lock().unwrap();
+            cs.phase = ConnectPhase::Authenticating;
+        }
+        self.notify_state_change();
+
         let challenge: AuthChallengeResult = client.rpc(AuthReq { client_pubkey }).await?;
         {
             let vk_bytes = endpoint_id.as_bytes();
             let vk = VerifyingKey::from_bytes(vk_bytes)
                 .map_err(|e| anyhow::anyhow!("invalid host pubkey: {e}"))?;
             let sig = ed25519_dalek::Signature::from_bytes(&challenge.host_signature);
-            vk.verify(&challenge.nonce, &sig)
-                .map_err(|_| anyhow::anyhow!("host challenge signature invalid"))?;
+            vk.verify(&challenge.nonce, &sig).map_err(|_| {
+                self.set_failed(ConnectError::HostSignatureInvalid);
+                anyhow::anyhow!("host challenge signature invalid")
+            })?;
         }
 
-        // AuthProve — sign nonce, attach to target session.
+        // Step 3: Prove identity.
+        {
+            let mut cs = self.0.connect_state.lock().unwrap();
+            cs.phase = ConnectPhase::Proving;
+        }
+        self.notify_state_change();
+
         let client_signature = signer.sign(&challenge.nonce);
         let attach_session_id = ticket
             .map(|t| t.session_id.clone())
@@ -663,14 +653,33 @@ impl SessionHandle {
             .await?
         {
             AuthProveResult::Ok => {
-                tracing::info!("PKI: authenticated, session {}", attach_session_id);
-                Ok(attach_session_id)
+                tracing::info!("PKI: authenticated, session={}", attach_session_id);
+                Ok((attach_session_id, outcome))
             }
-            other => Err(anyhow::anyhow!("auth prove failed: {:?}", other)),
+            AuthProveResult::Unauthorized => {
+                self.set_failed(ConnectError::Unauthorized);
+                Err(anyhow::anyhow!("auth prove: Unauthorized"))
+            }
+            AuthProveResult::NotInSessionAcl => {
+                self.set_failed(ConnectError::NotInSessionAcl);
+                Err(anyhow::anyhow!("auth prove: NotInSessionAcl"))
+            }
+            AuthProveResult::SessionOccupied => {
+                self.set_failed(ConnectError::SessionOccupied);
+                Err(anyhow::anyhow!("auth prove: SessionOccupied"))
+            }
+            AuthProveResult::SessionNotFound => {
+                self.set_failed(ConnectError::SessionNotFound);
+                Err(anyhow::anyhow!("auth prove: SessionNotFound"))
+            }
+            AuthProveResult::InvalidSignature => {
+                self.set_failed(ConnectError::InvalidSignature);
+                Err(anyhow::anyhow!("auth prove: InvalidSignature"))
+            }
         }
     }
 
-    async fn fetch_session_info(&self, client: &irpc::Client<ZedraProto>, fallback_hostname: &str) {
+    async fn fetch_session_info(&self, client: &irpc::Client<ZedraProto>) {
         match client.rpc(SessionInfoReq {}).await {
             Ok(info) => {
                 tracing::info!(
@@ -679,21 +688,31 @@ impl SessionHandle {
                     info.username,
                     info.workdir,
                 );
-                if let Some(sid) = info.session_id {
-                    if let Ok(mut slot) = self.0.sid.lock() {
-                        if slot.is_none() {
-                            *slot = Some(sid);
-                        }
-                    }
+
+                // Update snapshot.
+                if let Ok(mut cs) = self.0.connect_state.lock() {
+                    cs.snapshot.hostname = Some(info.hostname.clone());
+                    cs.snapshot.username = Some(info.username.clone());
+                    cs.snapshot.workdir = Some(info.workdir.clone());
+                    cs.snapshot.os = info.os.clone();
+                    cs.snapshot.arch = info.arch.clone();
+                    cs.snapshot.os_version = info.os_version.clone();
+                    cs.snapshot.host_version = info.host_version.clone();
                 }
-                // Cache for UI display during future Reconnecting states.
+
+                // Update cached fields (survive reconnect cycles for header display).
                 if !info.hostname.is_empty() {
                     if let Ok(mut h) = self.0.hostname.lock() {
                         *h = info.hostname.clone();
                     }
                 }
                 if !info.workdir.is_empty() {
-                    let project = info.workdir.rsplit('/').next().unwrap_or(&info.workdir).to_string();
+                    let project = info
+                        .workdir
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&info.workdir)
+                        .to_string();
                     if let Ok(mut w) = self.0.workdir.lock() {
                         *w = info.workdir.clone();
                     }
@@ -704,42 +723,34 @@ impl SessionHandle {
                 let home_dir = info.home_dir.unwrap_or_default();
                 if !home_dir.is_empty() {
                     if let Ok(mut h) = self.0.home_dir.lock() {
-                        *h = home_dir.clone();
+                        *h = home_dir;
                     }
                 }
-                if let Ok(mut s) = self.0.session_state.lock() {
-                    *s = SessionState::Connected {
-                        hostname: info.hostname,
-                        username: info.username,
-                        workdir: info.workdir,
-                        home_dir,
-                        os: info.os.unwrap_or_default(),
-                        arch: info.arch.unwrap_or_default(),
-                        os_version: info.os_version.unwrap_or_default(),
-                        host_version: info.host_version.unwrap_or_default(),
-                    };
+
+                // Store session ID if the server provided one and we don't have one yet.
+                if let Some(sid) = info.session_id {
+                    if let Ok(mut slot) = self.0.sid.lock() {
+                        if slot.is_none() {
+                            *slot = Some(sid.clone());
+                        }
+                    }
+                    if let Ok(mut cs) = self.0.connect_state.lock() {
+                        if cs.snapshot.session_id.is_none() {
+                            cs.snapshot.session_id = Some(sid);
+                        }
+                    }
                 }
             }
             Err(e) => {
                 tracing::warn!("session/info failed: {e}");
-                if let Ok(mut s) = self.0.session_state.lock() {
-                    *s = SessionState::Connected {
-                        hostname: fallback_hostname.to_string(),
-                        username: String::new(),
-                        workdir: String::new(),
-                        home_dir: String::new(),
-                        os: String::new(),
-                        arch: String::new(),
-                        os_version: String::new(),
-                        host_version: String::new(),
-                    };
-                }
             }
         }
-        self.notify_state_change();
     }
 
-    /// Open a TermAttach bidi stream and spawn input/output bridge tasks.
+    // -----------------------------------------------------------------------
+    // Terminal attachment
+    // -----------------------------------------------------------------------
+
     async fn attach_terminal(
         &self,
         client: &irpc::Client<ZedraProto>,
@@ -776,22 +787,14 @@ impl SessionHandle {
             loop {
                 match irpc_output_rx.recv().await {
                     Ok(Some(output)) => {
-                        // On the first message, detect a backlog gap: if the oldest
-                        // available seq is ahead of what we last processed, entries
-                        // were evicted from the 1000-entry cap and the VTE processor
-                        // state is inconsistent with the incoming bytes.  Inject a
-                        // terminal reset so the emulator starts clean rather than
-                        // misinterpreting a stream that begins mid-escape-sequence.
                         if first_msg {
                             first_msg = false;
                             if last_seq > 0 && output.seq > last_seq + 1 {
                                 tracing::warn!(
-                                    "terminal {}: backlog gap detected (last_seq={} first_recv_seq={}), injecting reset",
+                                    "terminal {}: backlog gap (last_seq={} first_recv_seq={}), injecting reset",
                                     terminal_pump.id, last_seq, output.seq,
                                 );
                                 if let Ok(mut buf) = terminal_pump.output.lock() {
-                                    // RIS (Reset to Initial State) — clears screen and
-                                    // all modes so the subsequent backlog renders cleanly.
                                     buf.push_back(b"\x1bc".to_vec());
                                 }
                             }
@@ -818,14 +821,56 @@ impl SessionHandle {
         Ok(())
     }
 
-    /// Open a Subscribe server-streaming channel and spawn a task that handles
-    /// host-initiated events (e.g. a terminal created via the local REST API).
-    ///
-    /// Must be called from a background task — never awaited inline in connect()
-    /// because open_bi() can stall under QUIC stream pressure.
+    async fn reattach_terminals(&self, client: &irpc::Client<ZedraProto>) {
+        let terminals = self
+            .0
+            .terminals
+            .lock()
+            .map(|v| v.clone())
+            .unwrap_or_default();
+        if terminals.is_empty() {
+            return;
+        }
+        tracing::info!("reattaching {} terminals", terminals.len());
+        if let Ok(mut cs) = self.0.connect_state.lock() {
+            cs.phase = ConnectPhase::ResumingTerminals;
+        }
+        self.notify_state_change();
+        let t = Instant::now();
+        for terminal in &terminals {
+            if let Err(e) = self.attach_terminal(client, terminal).await {
+                tracing::warn!("failed to reattach terminal {}: {e}", terminal.id);
+            }
+        }
+        if let Ok(mut cs) = self.0.connect_state.lock() {
+            cs.phase = ConnectPhase::Connected;
+            cs.snapshot.resume_ms = Some(t.elapsed().as_millis() as u64);
+        }
+        self.notify_state_change();
+    }
+
+    /// Set phase to ResumingTerminals — call from app before manually attaching
+    /// existing server-side terminals on initial session resume.
+    pub fn set_resuming_terminals(&self) {
+        if let Ok(mut cs) = self.0.connect_state.lock() {
+            cs.phase = ConnectPhase::ResumingTerminals;
+        }
+        self.notify_state_change();
+    }
+
+    /// Set phase back to Connected with resume timing — call from app after
+    /// all terminal attach_existing calls complete.
+    pub fn mark_connected_after_resume(&self, elapsed_ms: u64) {
+        if let Ok(mut cs) = self.0.connect_state.lock() {
+            cs.phase = ConnectPhase::Connected;
+            cs.snapshot.resume_ms = Some(elapsed_ms);
+        }
+        self.notify_state_change();
+    }
+
     async fn subscribe_to_events(&self, client: &irpc::Client<ZedraProto>) {
-        let stream_fut = client
-            .server_streaming::<SubscribeReq, HostEvent>(SubscribeReq {}, 32);
+        let stream_fut =
+            client.server_streaming::<SubscribeReq, HostEvent>(SubscribeReq {}, 32);
 
         let mut rx = match tokio::time::timeout(
             std::time::Duration::from_secs(10),
@@ -839,7 +884,7 @@ impl SessionHandle {
                 return;
             }
             Err(_) => {
-                tracing::warn!("Subscribe timed out (host may not support events)");
+                tracing::warn!("Subscribe timed out");
                 return;
             }
         };
@@ -865,7 +910,6 @@ impl SessionHandle {
         tracing::info!("Subscribed to host events");
     }
 
-    /// Dispatch a single `HostEvent` received from the host.
     async fn handle_host_event(
         &self,
         event: HostEvent,
@@ -875,33 +919,18 @@ impl SessionHandle {
             HostEvent::TerminalCreated { id, launch_cmd } => {
                 tracing::info!(
                     "HostEvent: terminal created id={} launch_cmd={:?}",
-                    id, launch_cmd,
+                    id,
+                    launch_cmd,
                 );
                 let terminal = RemoteTerminal::new(id);
                 self.0.terminals.lock().unwrap().push(terminal.clone());
                 if let Err(e) = self.attach_terminal(client, &terminal).await {
-                    tracing::warn!("Failed to attach host-created terminal {}: {e}", terminal.id);
+                    tracing::warn!(
+                        "Failed to attach host-created terminal {}: {e}",
+                        terminal.id
+                    );
                 }
-                // Signal the UI to refresh the terminal list.
                 self.notify_state_change();
-            }
-        }
-    }
-
-    async fn reattach_terminals(&self, client: &irpc::Client<ZedraProto>) {
-        let terminals = self
-            .0
-            .terminals
-            .lock()
-            .map(|v| v.clone())
-            .unwrap_or_default();
-        if terminals.is_empty() {
-            return;
-        }
-        tracing::info!("reattaching {} terminals", terminals.len());
-        for terminal in &terminals {
-            if let Err(e) = self.attach_terminal(client, terminal).await {
-                tracing::warn!("failed to reattach terminal {}: {e}", terminal.id);
             }
         }
     }
@@ -910,21 +939,23 @@ impl SessionHandle {
     // Reconnect loop
     // -----------------------------------------------------------------------
 
-    /// Spawn a reconnect loop with exponential backoff (1–30s, max 10 attempts).
-    /// No-op if `user_disconnect` is set or a loop is already running.
+    /// Spawn a reconnect loop assuming `ConnectionLost`.
     pub fn spawn_reconnect(&self) {
+        self.spawn_reconnect_with_reason(ReconnectReason::ConnectionLost);
+    }
+
+    fn spawn_reconnect_with_reason(&self, initial_reason: ReconnectReason) {
         if self.0.user_disconnect.load(Ordering::Acquire) {
-            tracing::info!("spawn_reconnect: skipping, user disconnect in progress");
+            tracing::info!("spawn_reconnect: skipping, user disconnect");
             return;
         }
-
         if self
             .0
-            .reconnect_attempt
-            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)
+            .reconnect_running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
             .is_err()
         {
-            tracing::info!("spawn_reconnect: already reconnecting");
+            tracing::info!("spawn_reconnect: already running");
             return;
         }
 
@@ -932,51 +963,60 @@ impl SessionHandle {
         session_runtime().spawn(async move {
             let max_attempts = 10u32;
             let mut attempt = 1u32;
+            let mut reason = initial_reason;
 
-            loop {
+            'reconnect: loop {
                 if handle.0.user_disconnect.load(Ordering::Acquire) {
-                    tracing::info!("reconnect: user disconnect during reconnect, aborting");
                     break;
                 }
-
                 if attempt > max_attempts {
-                    tracing::warn!("reconnect: max attempts ({}) reached", max_attempts);
                     break;
                 }
-
-                handle.set_reconnect_attempt(attempt);
-                handle.notify_state_change();
 
                 let delay_secs = std::cmp::min(1u64 << (attempt - 1), 30);
-                let skip_backoff = handle.0.skip_next_backoff.swap(false, Ordering::AcqRel);
+                let skip_backoff =
+                    handle.0.skip_next_backoff.swap(false, Ordering::AcqRel);
                 let next_retry_secs = if skip_backoff { 0 } else { delay_secs };
-                handle
-                    .0
-                    .next_retry_secs
-                    .store(next_retry_secs, Ordering::Release);
 
-                if skip_backoff {
-                    tracing::info!(
-                        "reconnect: attempt {} of {} (skipping backoff — foreground resume)",
+                // Set Reconnecting phase.
+                {
+                    let mut cs = handle.0.connect_state.lock().unwrap();
+                    cs.phase = ConnectPhase::Reconnecting {
                         attempt,
-                        max_attempts,
-                    );
-                } else {
+                        reason: reason.clone(),
+                        next_retry_secs,
+                    };
+                }
+                handle.notify_state_change();
+
+                // Countdown.
+                if !skip_backoff && delay_secs > 0 {
                     tracing::info!(
-                        "reconnect: attempt {} of {} (backoff {}s)",
+                        "reconnect: attempt {}/{} backoff {}s",
                         attempt,
                         max_attempts,
                         delay_secs,
                     );
                     for remaining in (1..=delay_secs).rev() {
-                        handle.0.next_retry_secs.store(remaining, Ordering::Release);
+                        if let Ok(mut cs) = handle.0.connect_state.lock() {
+                            cs.phase = ConnectPhase::Reconnecting {
+                                attempt,
+                                reason: reason.clone(),
+                                next_retry_secs: remaining,
+                            };
+                        }
                         handle.notify_state_change();
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                         if handle.0.user_disconnect.load(Ordering::Acquire) {
-                            break;
+                            break 'reconnect;
                         }
                     }
-                    handle.0.next_retry_secs.store(0, Ordering::Release);
+                } else {
+                    tracing::info!(
+                        "reconnect: attempt {}/{} (immediate)",
+                        attempt,
+                        max_attempts,
+                    );
                 }
 
                 if handle.0.user_disconnect.load(Ordering::Acquire) {
@@ -1000,34 +1040,53 @@ impl SessionHandle {
                                 ids.len(),
                                 ids,
                             ),
-                            Err(e) => tracing::warn!("reconnect: terminal_list failed: {}", e),
+                            Err(e) => tracing::warn!("reconnect: terminal_list failed: {e}"),
                         }
-                        handle.set_reconnect_attempt(0);
-                        handle.notify_state_change();
-                        return;
+                        // Phase is now Connected (set inside connect()).
+                        break;
                     }
                     Err(e) => {
-                        tracing::warn!("reconnect: attempt {} failed: {}", attempt, e);
+                        tracing::warn!("reconnect: attempt {} failed: {e}", attempt);
+                        // Fatal auth errors — stop retrying.
+                        if let ConnectPhase::Failed(ref err) = handle.connect_state().phase {
+                            if err.is_fatal() {
+                                break;
+                            }
+                        }
                         attempt += 1;
+                        reason = ReconnectReason::ConnectionLost;
                     }
                 }
             }
 
-            handle.set_reconnect_attempt(0);
-            if !handle.0.user_disconnect.load(Ordering::Acquire) && attempt > max_attempts {
-                tracing::warn!(
-                    "reconnect: {} attempts exhausted, marking host unreachable",
-                    max_attempts
-                );
-                handle.0.host_unreachable.store(true, Ordering::Release);
+            // Post-loop: if we exhausted attempts without connecting or hitting a
+            // fatal error, mark host as unreachable.
+            if !handle.0.user_disconnect.load(Ordering::Acquire) {
+                let phase = handle.connect_state().phase;
+                let is_fatal = matches!(&phase, ConnectPhase::Failed(err) if err.is_fatal());
+                if !phase.is_connected() && !is_fatal {
+                    if let Ok(mut cs) = handle.0.connect_state.lock() {
+                        cs.phase = ConnectPhase::Failed(ConnectError::HostUnreachable);
+                    }
+                    handle.notify_state_change();
+                }
             }
-            handle.notify_state_change();
+
+            handle.0.reconnect_running.store(false, Ordering::Release);
         });
     }
 
     // -----------------------------------------------------------------------
-    // RPC helpers
+    // Internal helpers
     // -----------------------------------------------------------------------
+
+    fn set_failed(&self, error: ConnectError) {
+        if let Ok(mut cs) = self.0.connect_state.lock() {
+            cs.snapshot.failed_at_step = cs.phase.step_index();
+            cs.phase = ConnectPhase::Failed(error);
+        }
+        self.notify_state_change();
+    }
 
     fn client(&self) -> Result<irpc::Client<ZedraProto>> {
         self.0
@@ -1049,17 +1108,17 @@ impl SessionHandle {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let result: PongResult = client
-            .rpc(PingReq {
-                timestamp_ms: now_ms,
-            })
-            .await?;
+        let result: PongResult = client.rpc(PingReq { timestamp_ms: now_ms }).await?;
         let after_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
         let rtt_ms = after_ms.saturating_sub(result.timestamp_ms);
-        self.0.latency_ms.store(rtt_ms, Ordering::Relaxed);
+        if let Ok(mut cs) = self.0.connect_state.lock() {
+            if let Some(ref mut t) = cs.snapshot.transport {
+                t.rtt_ms = rtt_ms;
+            }
+        }
         Ok(rtt_ms)
     }
 
@@ -1068,28 +1127,24 @@ impl SessionHandle {
     // -----------------------------------------------------------------------
 
     pub async fn fs_list(&self, path: &str) -> Result<Vec<FsEntry>> {
-        let client = self.client()?;
-        let result: FsListResult = client
-            .rpc(FsListReq {
-                path: path.to_string(),
-            })
+        let result: FsListResult = self
+            .client()?
+            .rpc(FsListReq { path: path.to_string() })
             .await?;
         Ok(result.entries)
     }
 
     pub async fn fs_read(&self, path: &str) -> Result<String> {
-        let client = self.client()?;
-        let result: FsReadResult = client
-            .rpc(FsReadReq {
-                path: path.to_string(),
-            })
+        let result: FsReadResult = self
+            .client()?
+            .rpc(FsReadReq { path: path.to_string() })
             .await?;
         Ok(result.content)
     }
 
     pub async fn fs_write(&self, path: &str, content: &str) -> Result<()> {
-        let client = self.client()?;
-        let _: FsWriteResult = client
+        let _: FsWriteResult = self
+            .client()?
             .rpc(FsWriteReq {
                 path: path.to_string(),
                 content: content.to_string(),
@@ -1099,12 +1154,7 @@ impl SessionHandle {
     }
 
     pub async fn fs_stat(&self, path: &str) -> Result<FsStatResult> {
-        let client = self.client()?;
-        Ok(client
-            .rpc(FsStatReq {
-                path: path.to_string(),
-            })
-            .await?)
+        Ok(self.client()?.rpc(FsStatReq { path: path.to_string() }).await?)
     }
 
     // -----------------------------------------------------------------------
@@ -1116,8 +1166,8 @@ impl SessionHandle {
     }
 
     pub async fn git_diff(&self, path: Option<&str>, staged: bool) -> Result<String> {
-        let client = self.client()?;
-        let result: GitDiffResult = client
+        let result: GitDiffResult = self
+            .client()?
             .rpc(GitDiffReq {
                 path: path.map(|s| s.to_string()),
                 staged,
@@ -1132,16 +1182,15 @@ impl SessionHandle {
     }
 
     pub async fn git_branches(&self) -> Result<Vec<GitBranchEntry>> {
-        let result: GitBranchesResult = self.client()?.rpc(GitBranchesReq {}).await?;
+        let result: GitBranchesResult =
+            self.client()?.rpc(GitBranchesReq {}).await?;
         Ok(result.branches)
     }
 
     pub async fn git_checkout(&self, branch: &str) -> Result<()> {
         let _: GitCheckoutResult = self
             .client()?
-            .rpc(GitCheckoutReq {
-                branch: branch.to_string(),
-            })
+            .rpc(GitCheckoutReq { branch: branch.to_string() })
             .await?;
         Ok(())
     }
@@ -1172,9 +1221,8 @@ impl SessionHandle {
         launch_cmd: Option<String>,
     ) -> Result<String> {
         let client = self.client()?;
-        let result: TermCreateResult = client
-            .rpc(TermCreateReq { cols, rows, launch_cmd })
-            .await?;
+        let result: TermCreateResult =
+            client.rpc(TermCreateReq { cols, rows, launch_cmd }).await?;
 
         let terminal = RemoteTerminal::new(result.id.clone());
         self.0.terminals.lock().unwrap().push(terminal.clone());
@@ -1196,45 +1244,32 @@ impl SessionHandle {
         Ok(())
     }
 
-    pub async fn terminal_list(&self) -> Result<Vec<String>> {
-        let result: TermListResult = self.client()?.rpc(TermListReq {}).await?;
-        Ok(result.terminals.into_iter().map(|e| e.id).collect())
-    }
-
-    /// Close a terminal on the server and remove it from the local list.
     pub async fn terminal_close(&self, id: &str) -> Result<()> {
         let _: TermCloseResult = self
             .client()?
             .rpc(TermCloseReq { id: id.to_string() })
             .await?;
-        if let Ok(mut terms) = self.0.terminals.lock() {
-            terms.retain(|t| t.id != id);
-        }
-        tracing::info!("Terminal closed: {}", id);
+        self.0
+            .terminals
+            .lock()
+            .unwrap()
+            .retain(|t| t.id != id);
         Ok(())
     }
 
-    /// Attach to a pre-existing server terminal (cold-start session resume).
+    /// Attach to an existing server-side terminal (session resume). Creates a
+    /// `RemoteTerminal` with the given ID and starts the output pump.
     pub async fn terminal_attach_existing(&self, id: &str) -> Result<()> {
         let client = self.client()?;
-        let terminal = {
-            let mut terms = self.0.terminals.lock().unwrap();
-            if let Some(t) = terms.iter().find(|t| t.id == id) {
-                t.clone()
-            } else {
-                let t = RemoteTerminal::new(id.to_string());
-                terms.push(t.clone());
-                t
-            }
-        };
+        let terminal = RemoteTerminal::new(id.to_string());
+        self.0.terminals.lock().unwrap().push(terminal.clone());
         self.attach_terminal(&client, &terminal).await?;
-        tracing::info!("Terminal attached (existing): {}", id);
+        tracing::info!("Terminal attached (resume): {}", id);
         Ok(())
     }
-}
 
-impl Default for SessionHandle {
-    fn default() -> Self {
-        Self::new()
+    pub async fn terminal_list(&self) -> Result<Vec<String>> {
+        let result: TermListResult = self.client()?.rpc(TermListReq {}).await?;
+        Ok(result.terminals.into_iter().map(|e| e.id).collect())
     }
 }
