@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::sync::Once;
 
 static FONTS: &[&[u8]] = &[
+    include_bytes!("../assets/fonts/Lora-VariableFont_wght.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMono/JetBrainsMonoNLNerdFontMono-Regular.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMono/JetBrainsMonoNLNerdFontMono-Bold.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMono/JetBrainsMonoNLNerdFontMono-Italic.ttf"),
@@ -23,6 +24,9 @@ static FONTS: &[&[u8]] = &[
     // Monochrome symbol fallback for ⏺ ⏹ ⏸ ✔ ✘ ★ ⚠ etc.
     include_bytes!("../assets/fonts/NotoSansSymbols2-Regular.ttf"),
 ];
+
+/// The font family name for app headings (Lora variable serif)
+pub const HEADING_FONT_FAMILY: &str = "Lora";
 
 /// The font family name for the embedded monospace font
 pub const MONO_FONT_FAMILY: &str = "JetBrainsMonoNL Nerd Font Mono";

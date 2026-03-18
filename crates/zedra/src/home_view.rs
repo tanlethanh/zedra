@@ -1,5 +1,6 @@
 use gpui::*;
 
+use crate::fonts;
 use crate::theme;
 use crate::workspace_store::PersistedWorkspace;
 use crate::workspace_view::WorkspaceSummary;
@@ -58,25 +59,47 @@ impl Render for HomeView {
             .flex()
             .flex_col()
             .items_center()
-            .gap(px(16.0))
-            // Logo
-            .child(
-                svg()
-                    .path("icons/logo.svg")
-                    .size(px(48.0))
-                    .text_color(rgb(theme::TEXT_PRIMARY)),
-            )
-            // "Zedra" title
+            .gap(px(theme::SPACING_LG))
             .child(
                 div()
-                    .text_color(rgb(theme::TEXT_PRIMARY))
-                    .text_size(px(theme::FONT_TITLE))
-                    .font_weight(FontWeight::BOLD)
-                    .child("Zedra"),
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    // Logo
+                    .child(
+                        svg()
+                            .path("icons/logo.svg")
+                            .size(px(60.0))
+                            .text_color(rgb(theme::TEXT_PRIMARY))
+                            .mb(px(theme::SPACING_LG)),
+                    )
+                    // "Zedra" title
+                    .child(
+                        div()
+                            .text_color(rgb(theme::TEXT_PRIMARY))
+                            .text_size(px(theme::FONT_TITLE))
+                            .font_family(fonts::HEADING_FONT_FAMILY)
+                            .font_weight(FontWeight::BOLD)
+                            .child("Zedra"),
+                    )
+                    // Subtitle
+                    .child(
+                        div()
+                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_size(px(theme::FONT_BODY))
+                            .font_family(fonts::HEADING_FONT_FAMILY)
+                            .font_weight(FontWeight::BOLD)
+                            .child("Mobile IDE, desktop-powered"),
+                    ),
             );
 
         if !self.items.is_empty() {
-            let mut cards = div().mt_4().w(px(theme::HOME_CARD_WIDTH)).flex().flex_col().gap(px(8.0));
+            let mut cards = div()
+                .mt_4()
+                .w(px(theme::HOME_CARD_WIDTH))
+                .flex()
+                .flex_col()
+                .gap(px(8.0));
 
             for (item_idx, item) in self.items.iter().enumerate() {
                 let card = match (&item.active, &item.saved) {
@@ -115,7 +138,13 @@ impl Render for HomeView {
                             format!("{} terminals", summary.terminal_count)
                         };
                         active_workspace_card(
-                            item_idx, index, path_label, status_label, status_color, term_label, cx,
+                            item_idx,
+                            index,
+                            path_label,
+                            status_label,
+                            status_color,
+                            term_label,
+                            cx,
                         )
                         .into_any_element()
                     }
@@ -250,40 +279,40 @@ fn active_workspace_card(
             cx.emit(HomeEvent::WorkspaceRemoved(item_idx));
         }))
         .child(
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(6.0))
-            .child(
-                div()
-                    .w(px(theme::ICON_STATUS))
-                    .h(px(theme::ICON_STATUS))
-                    .rounded(px(3.0))
-                    .bg(rgb(status_color)),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .text_color(rgb(theme::TEXT_PRIMARY))
-                    .text_size(px(theme::FONT_BODY))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(path_label),
-            )
-            .child(
-                div()
-                    .text_color(rgb(status_color))
-                    .text_size(px(theme::FONT_DETAIL))
-                    .child(status_label),
-            ),
-    )
-    .child(
-        div()
-            .mt(px(4.0))
-            .text_color(rgb(theme::TEXT_MUTED))
-            .text_size(px(theme::FONT_DETAIL))
-            .child(term_label),
-    )
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    div()
+                        .w(px(theme::ICON_STATUS))
+                        .h(px(theme::ICON_STATUS))
+                        .rounded(px(3.0))
+                        .bg(rgb(status_color)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .text_color(rgb(theme::TEXT_PRIMARY))
+                        .text_size(px(theme::FONT_BODY))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(path_label),
+                )
+                .child(
+                    div()
+                        .text_color(rgb(status_color))
+                        .text_size(px(theme::FONT_DETAIL))
+                        .child(status_label),
+                ),
+        )
+        .child(
+            div()
+                .mt(px(4.0))
+                .text_color(rgb(theme::TEXT_MUTED))
+                .text_size(px(theme::FONT_DETAIL))
+                .child(term_label),
+        )
 }
 
 fn saved_workspace_card(

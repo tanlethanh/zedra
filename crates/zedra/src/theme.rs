@@ -43,7 +43,7 @@ pub const DRAWER_VELOCITY_THRESHOLD: f32 = 6.0;
 pub const ANIMATION_DURATION_MS: u64 = 250;
 
 // Font sizes (pixels) — change these to scale all UI text
-pub const FONT_TITLE: f32 = 22.0; // App main title ("Zedra")
+pub const FONT_TITLE: f32 = 28.0; // App main title ("Zedra")
 pub const FONT_HEADING: f32 = 13.0; // Section headings, dialog titles
 pub const FONT_BODY: f32 = 12.0; // Standard UI text: labels, buttons, file names, values
 pub const FONT_DETAIL: f32 = 12.0; // Small metadata, code previews, badges
