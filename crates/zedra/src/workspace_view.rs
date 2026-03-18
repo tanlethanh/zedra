@@ -293,9 +293,10 @@ impl Render for WorkspaceContent {
                                 .right_0()
                                 .bottom_0()
                                 .bg(rgb(theme::BG_PRIMARY))
-                                // Consume pointer events so they don't reach the terminal
-                                // view underneath (which would trigger the keyboard).
-                                .on_mouse_down(MouseButton::Left, |_, _, _| {})
+                                // Block pointer events from reaching the terminal underneath.
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation();
+                                })
                                 .child(connecting_view::render_connecting(&handle)),
                         )
                     })
