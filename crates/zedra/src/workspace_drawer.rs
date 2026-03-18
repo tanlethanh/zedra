@@ -7,7 +7,7 @@ use crate::pending::{SharedPendingSlot, shared_pending_slot};
 use crate::platform_bridge;
 use crate::theme;
 use crate::{session_panel, terminal_panel};
-use zedra_session::SessionState;
+use zedra_session::ConnectPhase;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DrawerSection {
@@ -117,6 +117,14 @@ impl WorkspaceDrawer {
         self.file_explorer.update(cx, |fe, cx| fe.reset_to_demo(cx));
     }
 
+    /// Prefetch file explorer and git content in parallel during session resume.
+    /// Both fetches are independent tokio tasks so they run concurrently.
+    pub fn prefetch_for_resume(&mut self, cx: &mut Context<Self>) {
+        self.git_loaded = false;
+        self.file_explorer.update(cx, |fe, cx| fe.reload(cx));
+        self.load_git_status();
+    }
+
     /// Update the active terminal indicator in the Terminal tab.
     pub fn set_active_terminal(&mut self, id: Option<String>, cx: &mut Context<Self>) {
         self.active_terminal_id = id;
@@ -213,24 +221,20 @@ impl WorkspaceDrawer {
             }
             DrawerSection::Terminal => "terminals".into(),
             DrawerSection::Session => {
-                let state = self.session_handle.as_ref().map(|h| h.state());
-                let status = match &state {
-                    Some(SessionState::Connected { .. }) => "Connected",
-                    Some(SessionState::Connecting { .. }) => "Connecting",
-                    Some(SessionState::Reconnecting { .. }) => "Reconnecting",
-                    Some(SessionState::HostUnreachable) => "Unreachable",
-                    Some(SessionState::Error(_)) => "Error",
-                    Some(SessionState::Disconnected) | None => "Disconnected",
+                let cs = self.session_handle.as_ref().map(|h| h.connect_state());
+                let phase = cs.as_ref().map(|s| &s.phase);
+                let status = match phase {
+                    Some(ConnectPhase::Connected) => "Connected",
+                    Some(p) if p.is_connecting() => "Connecting",
+                    Some(ConnectPhase::Reconnecting { .. }) => "Reconnecting",
+                    Some(ConnectPhase::Failed(_)) => "Error",
+                    _ => "Disconnected",
                 };
-                let ci = self
-                    .session_handle
+                let mode = cs
                     .as_ref()
-                    .and_then(|h| h.connection_info());
-                let mode = match &ci {
-                    Some(ci) if ci.is_direct => "P2P",
-                    Some(_) => "Relay",
-                    None => "...",
-                };
+                    .and_then(|s| s.snapshot.transport.as_ref())
+                    .map(|t| if t.is_direct { "P2P" } else { "Relay" })
+                    .unwrap_or("...");
                 format!("{status} - {mode}")
             }
         }
@@ -257,6 +261,7 @@ impl WorkspaceDrawer {
             .justify_center()
             .rounded(px(6.0))
             .cursor_pointer()
+            .hit_slop(px(10.0))
             .hover(|s| s.bg(theme::hover_bg()))
             .on_mouse_down(
                 MouseButton::Left,
@@ -305,11 +310,13 @@ impl Render for WorkspaceDrawer {
 
         let project_name = self.project_name();
         let tab_subtitle = self.tab_subtitle(cx);
-        let status_color = match self.session_handle.as_ref().map(|h| h.state()) {
-            Some(SessionState::Connected { .. }) => theme::ACCENT_GREEN,
-            Some(SessionState::Connecting { .. } | SessionState::Reconnecting { .. }) => {
-                theme::ACCENT_YELLOW
-            }
+        let status_color = match self
+            .session_handle
+            .as_ref()
+            .map(|h| h.connect_state().phase)
+        {
+            Some(ConnectPhase::Connected) => theme::ACCENT_GREEN,
+            Some(ref p) if p.is_connecting() || p.is_reconnecting() => theme::ACCENT_YELLOW,
             _ => theme::ACCENT_RED,
         };
         let viewport_h = window.viewport_size().height;
@@ -364,6 +371,7 @@ impl Render for WorkspaceDrawer {
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
+                            .hit_slop(px(8.0))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {

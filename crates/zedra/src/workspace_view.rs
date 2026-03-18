@@ -1,8 +1,9 @@
 // Per-session workspace: DrawerHost + header/main-view stack, wired to a SessionHandle.
 
-use gpui::*;
+use gpui::{prelude::FluentBuilder as _, *};
 
 use crate::active_terminal;
+use crate::connecting_view;
 use crate::editor::code_editor::EditorView;
 use crate::editor::git_diff_view::{FileDiff, GitDiffView, parse_unified_diff};
 use crate::fonts;
@@ -24,7 +25,7 @@ pub struct WorkspaceSummary {
     pub index: usize,
     pub project_path: Option<String>,
     pub is_connected: bool,
-    pub session_state: zedra_session::SessionState,
+    pub connect_phase: zedra_session::ConnectPhase,
     pub terminal_count: usize,
     /// Excludes `__pending__` slots; used for direct terminal navigation.
     pub terminal_ids: Vec<String>,
@@ -48,11 +49,20 @@ pub enum WorkspaceContentEvent {
 }
 
 /// Header bar `[≡ | title | ⚡]` with a swappable main view below.
+/// The connecting overlay is rendered on top of the main view and lingers for
+/// ~1s after the session becomes Connected so the workspace can fully repaint
+/// before the overlay disappears (avoids a terminal-resume glitch).
 pub struct WorkspaceContent {
     pub main_view: AnyView,
     pub header_title: SharedString,
     focus_handle: FocusHandle,
     session_handle: SessionHandle,
+    /// Whether the connecting overlay is currently shown.
+    overlay_visible: bool,
+    /// True once Connected is detected; waiting for the 1s dismiss timer.
+    overlay_pending_hide: bool,
+    /// Kept alive so the dismiss timer is not cancelled.
+    _overlay_task: Option<Task<()>>,
 }
 
 impl WorkspaceContent {
@@ -67,6 +77,9 @@ impl WorkspaceContent {
             header_title: title.into(),
             focus_handle: cx.focus_handle(),
             session_handle,
+            overlay_visible: true,
+            overlay_pending_hide: false,
+            _overlay_task: None,
         }
     }
 
@@ -92,6 +105,33 @@ impl Focusable for WorkspaceContent {
 
 impl Render for WorkspaceContent {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Manage the full opaque overlay (initial connect, resume, failed).
+        // Reconnecting gets its own semi-transparent overlay rendered separately.
+        let phase = self.session_handle.connect_state().phase;
+        let needs_full_overlay =
+            !phase.is_connected() && !phase.is_idle() && !phase.is_reconnecting();
+
+        if needs_full_overlay {
+            // Active connect/failed phase — ensure full overlay is showing.
+            self.overlay_visible = true;
+            self.overlay_pending_hide = false;
+            self._overlay_task = None;
+        } else if self.overlay_visible && !self.overlay_pending_hide {
+            // Just became Connected — start 1s linger before hiding.
+            self.overlay_pending_hide = true;
+            self._overlay_task = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(1000))
+                    .await;
+                let _ = this.update(cx, |this: &mut WorkspaceContent, cx| {
+                    this.overlay_visible = false;
+                    this.overlay_pending_hide = false;
+                    this._overlay_task = None;
+                    cx.notify();
+                });
+            }));
+        }
+
         let top_inset = status_bar_inset();
         let title = self.header_title.clone();
 
@@ -127,6 +167,7 @@ impl Render for WorkspaceContent {
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
+                            .hit_slop(px(6.0))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
@@ -171,6 +212,7 @@ impl Render for WorkspaceContent {
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
+                            .hit_slop(px(6.0))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
@@ -186,7 +228,30 @@ impl Render for WorkspaceContent {
                             ),
                     ),
             )
-            .child(div().flex_1().child(self.main_view.clone()))
+            .child({
+                let is_reconnecting = phase.is_reconnecting();
+                let overlay_visible = self.overlay_visible;
+                let handle = self.session_handle.clone();
+                div()
+                    .flex_1()
+                    .relative()
+                    .child(self.main_view.clone())
+                    .when(overlay_visible, |d: Div| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .right_0()
+                                .bottom_0()
+                                .bg(rgb(theme::BG_PRIMARY))
+                                .child(connecting_view::render_connecting(&handle)),
+                        )
+                    })
+                    .when(is_reconnecting, |d: Div| {
+                        d.child(connecting_view::render_reconnecting_overlay(&handle))
+                    })
+            })
     }
 }
 
@@ -468,8 +533,8 @@ impl WorkspaceView {
 
     /// Returns a summary of this workspace for HomeView / QuickActionPanel.
     pub fn summary(&self, index: usize) -> WorkspaceSummary {
-        let state = self.session_handle.state();
-        let is_connected = matches!(state, zedra_session::SessionState::Connected { .. });
+        let cs = self.session_handle.connect_state();
+        let is_connected = cs.phase.is_connected();
         let workdir = self.session_handle.workdir();
         let project_path = if workdir.is_empty() { None } else { Some(workdir) };
         let terminal_ids: Vec<String> = self
@@ -487,7 +552,7 @@ impl WorkspaceView {
             index,
             project_path,
             is_connected,
-            session_state: state,
+            connect_phase: cs.phase,
             terminal_count,
             terminal_ids,
             active_terminal_id: self.active_terminal_id.clone(),
@@ -578,6 +643,9 @@ impl Render for WorkspaceView {
         if let Some(existing_ids) = self.pending_existing_terminals.take() {
             if !existing_ids.is_empty() {
                 self.terminal_views.clear();
+                // Prefetch file explorer + git content in parallel during resume.
+                self.workspace_drawer
+                    .update(cx, |d, cx| d.prefetch_for_resume(cx));
 
                 let (columns, rows, cell_width, line_height) = compute_terminal_dimensions(window);
                 let cols_u16 = columns as u16;
