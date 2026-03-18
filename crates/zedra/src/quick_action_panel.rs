@@ -45,29 +45,21 @@ impl Focusable for QuickActionPanel {
 
 impl Render for QuickActionPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let viewport = window.viewport_size();
         let top_inset = platform_bridge::status_bar_inset();
         let bottom_inset = platform_bridge::home_indicator_inset().max(10.0);
-
-        // Panel width: ~75% of viewport
-        let panel_width = viewport.width * 0.75;
+        let viewport_h = window.viewport_size().height;
 
         let workspaces = self.workspaces.clone();
 
         // Right panel
         let mut panel = div()
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .right_0()
-            .w(panel_width)
-            .max_w(px(400.0))
+            .w_full()
+            .h(viewport_h)
             .bg(rgb(theme::BG_PRIMARY))
             .border_l_1()
             .border_color(rgb(theme::BORDER_SUBTLE))
             .flex()
             .flex_col()
-            .occlude()
             // Status bar spacer
             .child(div().h(px(top_inset)))
             // Panel header

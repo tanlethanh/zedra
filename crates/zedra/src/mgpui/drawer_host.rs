@@ -18,6 +18,7 @@ pub fn is_drawer_overlay_visible() -> bool {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DrawerSide {
     Left,
+    Right,
 }
 
 impl Default for DrawerSide {
@@ -95,6 +96,10 @@ impl DrawerHost {
             animation_id: 0,
             last_drag_dx: 0.0,
         }
+    }
+
+    pub fn set_content(&mut self, content: AnyView) {
+        self.content = content;
     }
 
     /// Pre-register the drawer view. It persists across open/close cycles.
@@ -222,28 +227,39 @@ impl Render for DrawerHost {
                 if dx.abs() <= dy.abs() {
                     return;
                 }
-                if this.drawer_state.offset <= 0.0 && pos_x >= theme::DRAWER_EDGE_ZONE {
+                let vw = f32::from(window.viewport_size().width);
+                let (eff_dx, edge_ok) = match this.side {
+                    DrawerSide::Left => (
+                        dx,
+                        pos_x < theme::DRAWER_EDGE_ZONE || this.drawer_state.offset > 0.0,
+                    ),
+                    DrawerSide::Right => (
+                        -dx,
+                        pos_x > vw - theme::DRAWER_EDGE_ZONE || this.drawer_state.offset > 0.0,
+                    ),
+                };
+                if !edge_ok {
                     return;
                 }
                 // Horizontal swipe is driving the drawer — dismiss keyboard.
                 platform_bridge::bridge().hide_keyboard();
                 let width = f32::from(this.width);
                 let current = this.drawer_state.offset;
-                if current <= 0.0 && dx <= 0.0 {
+                if current <= 0.0 && eff_dx <= 0.0 {
                     return;
                 }
-                this.last_drag_dx = dx;
+                this.last_drag_dx = eff_dx;
                 this.drawer_state.is_dragging = true;
-                this.drawer_state.offset = (this.drawer_state.offset + dx).clamp(0.0, width);
+                this.drawer_state.offset = (this.drawer_state.offset + eff_dx).clamp(0.0, width);
                 let new_offset = this.drawer_state.offset;
                 const VELOCITY_THRESHOLD: f32 = theme::DRAWER_VELOCITY_THRESHOLD;
                 let position_threshold = width * 0.3;
-                if dx > 0.0 && (new_offset > position_threshold || dx > VELOCITY_THRESHOLD) {
+                if eff_dx > 0.0 && (new_offset > position_threshold || eff_dx > VELOCITY_THRESHOLD) {
                     this.start_snap(width, cx);
                     cx.emit(DrawerEvent::Opened);
-                } else if dx < 0.0
+                } else if eff_dx < 0.0
                     && (new_offset < width - position_threshold
-                        || dx.abs() > VELOCITY_THRESHOLD)
+                        || eff_dx.abs() > VELOCITY_THRESHOLD)
                 {
                     this.start_snap(0.0, cx);
                     cx.emit(DrawerEvent::Closed);
@@ -295,14 +311,21 @@ impl Render for DrawerHost {
                 // When the drawer is open, stop_propagation() blocks content buttons.
                 let backdrop = div().absolute().inset_0().on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                    cx.listener(|this, event: &MouseDownEvent, window, cx| {
                         let offset = this.drawer_state.offset;
                         // Drawer closed or closing — let events through to content
                         if offset <= 0.0 {
                             return;
                         }
                         // Tap inside the panel area — panel's own .occlude() handles it
-                        if f32::from(event.position.x) < offset {
+                        let inside_panel = match this.side {
+                            DrawerSide::Left => f32::from(event.position.x) < offset,
+                            DrawerSide::Right => {
+                                let vw = f32::from(window.viewport_size().width);
+                                f32::from(event.position.x) > vw - offset
+                            }
+                        };
+                        if inside_panel {
                             return;
                         }
                         // Backdrop tap: block content behind from firing, close drawer
@@ -349,6 +372,7 @@ impl Render for DrawerHost {
                     .occlude()
                     .child(drawer_view);
 
+                let side = self.side;
                 let panel: AnyElement = if animating {
                     let from = snap_from;
                     let target = snap_target.unwrap();
@@ -359,14 +383,22 @@ impl Render for DrawerHost {
                                 .with_easing(ease_out_quint()),
                             move |elem, delta| {
                                 let o = from + (target - from) * delta;
-                                elem.left(px(o - drawer_width))
+                                match side {
+                                    DrawerSide::Left => elem.left(px(o - drawer_width)),
+                                    DrawerSide::Right => elem.right(px(o - drawer_width)),
+                                }
                             },
                         )
                         .into_any_element()
                 } else {
-                    panel
-                        .left(px(drawer_offset - drawer_width))
-                        .into_any_element()
+                    match side {
+                        DrawerSide::Left => panel
+                            .left(px(drawer_offset - drawer_width))
+                            .into_any_element(),
+                        DrawerSide::Right => panel
+                            .right(px(drawer_offset - drawer_width))
+                            .into_any_element(),
+                    }
                 };
 
                 el.child(

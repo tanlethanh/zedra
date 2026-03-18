@@ -6,6 +6,7 @@ use gpui::*;
 use crate::deeplink::{self, DeeplinkAction};
 use crate::fonts;
 use crate::home_view::{HomeEvent, HomeView, HomeWorkspaceItem};
+use crate::mgpui::{DrawerHost, DrawerSide};
 use crate::platform_bridge::{self, AlertButton};
 use crate::quick_action_panel::{QuickActionEvent, QuickActionPanel};
 use crate::theme;
@@ -50,13 +51,7 @@ pub struct ZedraApp {
     saved_workspaces: Vec<PersistedWorkspace>,
     active_workspace: Option<usize>,
     quick_action: Entity<QuickActionPanel>,
-    quick_action_open: bool,
-    /// Animating open or close; cleared after animation completes.
-    qa_animating: bool,
-    /// true = opening, false = closing
-    qa_opening: bool,
-    qa_animation_id: u64,
-    qa_anim_started: Option<std::time::Instant>,
+    qa_drawer: Entity<DrawerHost>,
     render_count: u64,
     _subscriptions: Vec<Subscription>,
 }
@@ -79,26 +74,7 @@ fn load_client_signer() -> Option<std::sync::Arc<dyn zedra_session::signer::Clie
     }
 }
 
-const QA_ANIM_DURATION_MS: u64 = 250;
-
 impl ZedraApp {
-    fn open_quick_action(&mut self, cx: &mut Context<Self>) {
-        self.quick_action_open = true;
-        self.qa_animating = true;
-        self.qa_opening = true;
-        self.qa_animation_id += 1;
-        self.qa_anim_started = Some(std::time::Instant::now());
-        cx.notify();
-    }
-
-    fn close_quick_action(&mut self, cx: &mut Context<Self>) {
-        self.qa_animating = true;
-        self.qa_opening = false;
-        self.qa_animation_id += 1;
-        self.qa_anim_started = Some(std::time::Instant::now());
-        cx.notify();
-    }
-
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Load JetBrains Mono font for all UI text
         fonts::load_fonts(window);
@@ -161,18 +137,18 @@ impl ZedraApp {
             window,
             |this: &mut Self, _emitter, event: &QuickActionEvent, window, cx| match event {
                 QuickActionEvent::Close => {
-                    this.close_quick_action(cx);
+                    this.qa_drawer.update(cx, |h, cx| h.close(cx));
                 }
                 QuickActionEvent::GoHome => {
-                    this.close_quick_action(cx);
+                    this.qa_drawer.update(cx, |h, cx| h.close(cx));
                     this.screen = AppScreen::Home;
                 }
                 QuickActionEvent::SwitchToWorkspace(index) => {
-                    this.close_quick_action(cx);
+                    this.qa_drawer.update(cx, |h, cx| h.close(cx));
                     this.switch_to_workspace(*index, window, cx);
                 }
                 QuickActionEvent::SwitchToTerminal(ws_index, tid) => {
-                    this.close_quick_action(cx);
+                    this.qa_drawer.update(cx, |h, cx| h.close(cx));
                     let ws_index = *ws_index;
                     let tid = tid.clone();
                     this.switch_to_workspace(ws_index, window, cx);
@@ -200,6 +176,13 @@ impl ZedraApp {
         });
         subscriptions.push(sub);
 
+        let qa_drawer = cx.new(|cx| DrawerHost::new(home_view.clone().into(), cx));
+        qa_drawer.update(cx, |h, _| {
+            h.set_side(DrawerSide::Right);
+            h.set_width(px(theme::QA_DRAWER_WIDTH));
+            h.set_drawer(quick_action.clone().into());
+        });
+
         let mut app = Self {
             screen: AppScreen::Home,
             home_view,
@@ -207,11 +190,7 @@ impl ZedraApp {
             saved_workspaces: Vec::new(),
             active_workspace: None,
             quick_action,
-            quick_action_open: false,
-            qa_animating: false,
-            qa_opening: false,
-            qa_animation_id: 0,
-            qa_anim_started: None,
+            qa_drawer,
             render_count: 0,
             _subscriptions: subscriptions,
         };
@@ -409,7 +388,7 @@ impl ZedraApp {
                         cx.notify();
                     }
                     WorkspaceEvent::OpenQuickAction => {
-                        this.open_quick_action(cx);
+                        this.qa_drawer.update(cx, |h, cx| h.open(cx));
                     }
                     WorkspaceEvent::Disconnected => {
                         this.workspaces.retain(|e| e.view != view_entity);
@@ -589,131 +568,21 @@ impl Render for ZedraApp {
             qa.update_workspaces(summaries, cx);
         });
 
-        let screen_content: AnyElement = match self.screen {
-            AppScreen::Home => div()
-                .size_full()
-                .child(self.home_view.clone())
-                .into_any_element(),
-            AppScreen::Workspace => {
-                if let Some(idx) = self.active_workspace {
-                    if let Some(entry) = self.workspaces.get(idx) {
-                        div()
-                            .size_full()
-                            .bg(rgb(theme::BG_PRIMARY))
-                            .flex()
-                            .flex_col()
-                            .child(div().flex_1().child(entry.view.clone()))
-                            .into_any_element()
-                    } else {
-                        div()
-                            .size_full()
-                            .child(self.home_view.clone())
-                            .into_any_element()
-                    }
-                } else {
-                    div()
-                        .size_full()
-                        .child(self.home_view.clone())
-                        .into_any_element()
-                }
-            }
+        // Sync qa_drawer content to the current active screen view
+        let screen_view: AnyView = match self.screen {
+            AppScreen::Home => self.home_view.clone().into(),
+            AppScreen::Workspace => self
+                .active_workspace
+                .and_then(|i| self.workspaces.get(i))
+                .map(|e| e.view.clone().into())
+                .unwrap_or_else(|| self.home_view.clone().into()),
         };
+        self.qa_drawer.update(cx, |h, _| h.set_content(screen_view));
 
-        let mut root = div()
+        div()
             .size_full()
             .font_family(fonts::MONO_FONT_FAMILY)
-            .child(screen_content);
-
-        // Clear completed close animations
-        if let Some(started) = self.qa_anim_started {
-            if started.elapsed() >= std::time::Duration::from_millis(QA_ANIM_DURATION_MS + 30) {
-                self.qa_animating = false;
-                self.qa_anim_started = None;
-                if !self.qa_opening {
-                    self.quick_action_open = false;
-                }
-            }
-        }
-
-        // Quick action overlay (rendered on top with high priority)
-        if self.quick_action_open {
-            let animating = self.qa_animating;
-            let opening = self.qa_opening;
-            let anim_id = self.qa_animation_id;
-            let viewport_w = f32::from(window.viewport_size().width);
-
-            // Backdrop
-            let backdrop = div()
-                .absolute()
-                .inset_0()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _event: &MouseDownEvent, _window, cx| {
-                        this.close_quick_action(cx);
-                    }),
-                );
-
-            let backdrop: AnyElement = if animating {
-                let (from, to) = if opening { (0.0, 0.4) } else { (0.4, 0.0) };
-                backdrop
-                    .with_animation(
-                        ElementId::NamedInteger("qa-backdrop".into(), anim_id),
-                        Animation::new(std::time::Duration::from_millis(QA_ANIM_DURATION_MS))
-                            .with_easing(ease_out_quint()),
-                        move |elem, delta| {
-                            let opacity = from + (to - from) * delta;
-                            elem.bg(hsla(0.0, 0.0, 0.0, opacity))
-                        },
-                    )
-                    .into_any_element()
-            } else {
-                backdrop.bg(hsla(0.0, 0.0, 0.0, 0.4)).into_any_element()
-            };
-
-            // Panel wrapper (slides from right).
-            // Uses w/h matching viewport so the panel's `right(0)` stays correct.
-            let viewport_h = f32::from(window.viewport_size().height);
-            let panel_wrapper = div()
-                .absolute()
-                .top_0()
-                .w(px(viewport_w))
-                .h(px(viewport_h))
-                .child(self.quick_action.clone());
-
-            let panel: AnyElement = if animating {
-                let (from, to) = if opening {
-                    (viewport_w, 0.0)
-                } else {
-                    (0.0, viewport_w)
-                };
-                panel_wrapper
-                    .with_animation(
-                        ElementId::NamedInteger("qa-panel".into(), anim_id),
-                        Animation::new(std::time::Duration::from_millis(QA_ANIM_DURATION_MS))
-                            .with_easing(ease_out_quint()),
-                        move |elem, delta| {
-                            let offset = from + (to - from) * delta;
-                            elem.left(px(offset))
-                        },
-                    )
-                    .into_any_element()
-            } else {
-                panel_wrapper.into_any_element()
-            };
-
-            root = root.child(
-                deferred(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .child(backdrop)
-                        .child(panel),
-                )
-                .with_priority(200),
-            );
-        }
-
-        root
+            .child(self.qa_drawer.clone())
     }
 }
 
