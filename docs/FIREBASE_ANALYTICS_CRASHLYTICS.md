@@ -674,6 +674,53 @@ Debug builds already use unstripped libs so no staging step is needed.
 
 ---
 
+---
+
+## Host Daemon Analytics (`zedra-host`)
+
+The desktop daemon uses the **GA4 Measurement Protocol** directly over HTTPS — no Firebase SDK required. All events go to the same GA4 property as the mobile app.
+
+### Enabling
+
+Set two environment variables at **build time**:
+
+```bash
+ZEDRA_GA_MEASUREMENT_ID=G-XXXXXXXXXX \
+ZEDRA_GA_API_SECRET=your_secret \
+cargo build -p zedra-host --release
+```
+
+Get the API secret from Firebase console → your GA4 property → Data Streams → Web stream → **Measurement Protocol API secrets**.
+
+If either variable is absent or empty the analytics module is silently disabled — no HTTP calls, no overhead.
+
+### Analytics ID
+
+A random UUID is generated on first run and stored at `~/.config/zedra/analytics_id`. It is machine-level (shared across workspaces), never tied to cryptographic identity, and never transmitted alongside it.
+
+### Events
+
+Every event automatically includes `host_version`, `os`, and `arch` fields.
+
+| Event | Params | Fired when |
+|-------|--------|-----------|
+| `daemon_start` | `relay_type` (cf_worker/custom/default) | `zedra start` |
+| `net_report` | `has_ipv4`, `has_ipv6`, `symmetric_nat` | STUN completes (~1s after bind) |
+| `client_paired` | — | New device paired via QR (Register flow) |
+| `auth_success` | `is_new_client`, `duration_ms`, `path_type` | Auth phase completes |
+| `auth_failed` | `reason` | Auth rejected for any reason |
+| `session_end` | `duration_ms`, `terminal_count`, `path_type` | Client disconnects |
+| `terminal_open` | `has_launch_cmd` | `TermCreate` RPC succeeds |
+| `bandwidth_sample` | `bytes_sent`, `bytes_recv`, `interval_secs=60` | Every 60s while connected |
+
+`path_type` is `"direct"` (P2P), `"relay"`, or `"unknown"` (path not yet determined at auth time).
+
+### Privacy
+
+No personal data is collected: no paths, hostnames, usernames, IP addresses, or file content. The host's Ed25519 cryptographic identity is never sent. Only behavioral counters and timing are tracked.
+
+---
+
 ## Summary of Files Changed/Created
 
 | File | Action | Notes |

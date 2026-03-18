@@ -10,6 +10,7 @@ use crate::rpc_daemon::{self, DaemonState};
 use crate::session_registry::SessionRegistry;
 use zedra_rpc::proto::ZEDRA_ALPN;
 
+use crate::analytics::Analytics;
 use crate::identity::SharedIdentity;
 
 fn ts() -> String {
@@ -34,6 +35,7 @@ fn relay_map_from_url(url_str: &str) -> Result<iroh::RelayMap> {
 pub async fn create_endpoint(
     identity: &SharedIdentity,
     relay_url: Option<&str>,
+    analytics: std::sync::Arc<Analytics>,
 ) -> Result<iroh::Endpoint> {
     let relay_mode = iroh::RelayMode::Custom(
         relay_map_from_url(relay_url.unwrap_or(zedra_rpc::ZEDRA_RELAY_URL))?
@@ -66,6 +68,9 @@ pub async fn create_endpoint(
                         r.preferred_relay,
                     );
                     let sym_nat = r.mapping_varies_by_dest().unwrap_or(false);
+                    let has_ipv4 = r.global_v4.is_some();
+                    let has_ipv6 = r.global_v6.is_some();
+                    analytics.net_report(has_ipv4, has_ipv6, sym_nat);
                     match (r.global_v4, r.global_v6) {
                         (None, None) => eprintln!("[{}] network:  no public IP found — relay only", ts()),
                         (v4, v6) => {

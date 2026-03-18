@@ -11,6 +11,8 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use std::sync::Arc;
+use zedra_host::analytics::Analytics;
 use zedra_host::client as zedra_client;
 use zedra_host::{api, identity, iroh_listener, qr, rpc_daemon, session_registry, workspace_lock};
 use zedra_rpc::ZedraPairingTicket;
@@ -174,9 +176,19 @@ async fn main() -> Result<()> {
                 session_id: session.id.clone(),
             };
 
+            // Initialize analytics. The analytics_id is machine-level (not per-workspace)
+            // so connection counts roll up to a single host in the dashboard.
+            let analytics = Arc::new(Analytics::new(
+                &identity::analytics_id_path().unwrap_or_else(|_| workdir.join(".zedra-analytics-id")),
+            ));
+            if analytics.is_enabled() {
+                eprintln!("[init]     analytics enabled");
+            }
+
             let mut state = rpc_daemon::DaemonState::new(workdir.clone(), host_identity.clone());
             state.default_launch_cmd = launch_cmd;
-            let state = std::sync::Arc::new(state);
+            state.analytics = analytics.clone();
+            let state = Arc::new(state);
 
             // 1. Bind iroh endpoint.
             //    For relay.zedra.dev (CF Worker) append ?host=<base64url(pubkey)> so the
@@ -191,8 +203,23 @@ async fn main() -> Result<()> {
             } else {
                 base_relay_url.to_string()
             };
-            let endpoint =
-                iroh_listener::create_endpoint(&host_identity, Some(&endpoint_relay_url)).await?;
+
+            // Determine relay_type label for analytics before the endpoint is created.
+            let relay_type = if is_cf_worker_relay(base_relay_url) {
+                "cf_worker"
+            } else if relay_url.is_some() {
+                "custom"
+            } else {
+                "default"
+            };
+            analytics.daemon_start(relay_type);
+
+            let endpoint = iroh_listener::create_endpoint(
+                &host_identity,
+                Some(&endpoint_relay_url),
+                analytics.clone(),
+            )
+            .await?;
 
             // Pre-authorize the persistent CLI client key so `zedra client` can
             // connect without QR pairing. The key is generated once per workspace.

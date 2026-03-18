@@ -1,5 +1,6 @@
 // zedra-host library — re-exports for integration tests
 
+pub mod analytics;
 pub mod api;
 pub mod client;
 pub mod fs;
