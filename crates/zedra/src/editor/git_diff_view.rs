@@ -271,7 +271,7 @@ impl GitDiffView {
         }
 
         let content_len = content.len();
-        self.highlighter.parse(content);
+        self.highlighter.parse_fresh(content);
         let raw_highlights = self.highlighter.highlights(content, 0..content_len);
         let mut result: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
 

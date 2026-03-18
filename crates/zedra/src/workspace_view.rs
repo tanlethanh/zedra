@@ -146,7 +146,7 @@ impl Render for WorkspaceContent {
             self.overlay_pending_hide = true;
             self._overlay_task = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor()
-                    .timer(std::time::Duration::from_millis(1000))
+                    .timer(std::time::Duration::from_millis(3000))
                     .await;
                 let _ = this.update(cx, |this: &mut WorkspaceContent, cx| {
                     this.overlay_visible = false;
@@ -509,28 +509,53 @@ impl WorkspaceView {
                                 let filename_clone = filename.clone();
                                 let pgit = pending_git_diff_clone.clone();
                                 zedra_session::session_runtime().spawn(async move {
-                                    match handle.git_diff(Some(&path_clone), false).await {
-                                        Ok(diff_text) => {
-                                            let diffs = parse_unified_diff(&diff_text);
-                                            let diff = diffs
-                                                .into_iter()
-                                                .find(|d| d.new_path == path_clone)
-                                                .unwrap_or(FileDiff {
-                                                    old_path: path_clone.clone(),
-                                                    new_path: path_clone.clone(),
-                                                    hunks: Vec::new(),
-                                                });
-                                            pgit.set((filename_clone, diff));
-                                            zedra_session::push_callback(Box::new(|| {}));
+                                    log::debug!("[git_diff] requesting diff for: {}", path_clone);
+                                    let diff_text = match handle.git_diff(Some(&path_clone), false).await {
+                                        Ok(text) if !text.is_empty() => {
+                                            log::debug!("[git_diff] unstaged diff: {} bytes", text.len());
+                                            text
+                                        }
+                                        Ok(_) => {
+                                            log::debug!("[git_diff] unstaged empty, trying --cached");
+                                            match handle.git_diff(Some(&path_clone), true).await {
+                                                Ok(text) => {
+                                                    log::debug!("[git_diff] staged diff: {} bytes", text.len());
+                                                    text
+                                                }
+                                                Err(e) => {
+                                                    log::error!("[git_diff] staged RPC failed for {}: {}", path_clone, e);
+                                                    String::new()
+                                                }
+                                            }
                                         }
                                         Err(e) => {
                                             log::error!(
-                                                "git_diff RPC failed for {}: {}",
+                                                "[git_diff] RPC failed for {}: {}",
                                                 path_clone,
                                                 e
                                             );
+                                            return;
                                         }
+                                    };
+                                    let diffs = parse_unified_diff(&diff_text);
+                                    log::debug!("[git_diff] parsed {} file diffs from {} bytes", diffs.len(), diff_text.len());
+                                    for d in &diffs {
+                                        log::debug!("[git_diff]   '{}' -> '{}', {} hunks", d.old_path, d.new_path, d.hunks.len());
                                     }
+                                    let diff = diffs
+                                        .into_iter()
+                                        .find(|d| d.new_path == path_clone)
+                                        .unwrap_or_else(|| {
+                                            log::warn!("[git_diff] no match for '{}', showing empty diff", path_clone);
+                                            FileDiff {
+                                                old_path: path_clone.clone(),
+                                                new_path: path_clone.clone(),
+                                                hunks: Vec::new(),
+                                            }
+                                        });
+                                    log::debug!("[git_diff] rendering diff with {} hunks", diff.hunks.len());
+                                    pgit.set((filename_clone, diff));
+                                    zedra_session::push_callback(Box::new(|| {}));
                                 });
                             } else {
                                 log::warn!("git diff requested while disconnected, ignoring");
@@ -727,7 +752,7 @@ impl Render for WorkspaceView {
                     c.set_main_view(placeholder.into(), fname, cx);
                 });
             } else {
-                let editor_view = cx.new(|cx| EditorView::new(content, cx));
+                let editor_view = cx.new(|cx| EditorView::with_filename(content, &filename, cx));
                 self.workspace_content.update(cx, |c, cx| {
                     c.set_main_view(editor_view.into(), fname, cx);
                 });

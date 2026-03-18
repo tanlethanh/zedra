@@ -8,16 +8,14 @@ const PYTHON_HIGHLIGHTS: &str =
     include_str!("../../../../vendor/zed/crates/languages/src/python/highlights.scm");
 const GO_HIGHLIGHTS: &str =
     include_str!("../../../../vendor/zed/crates/languages/src/go/highlights.scm");
-const JAVASCRIPT_HIGHLIGHTS: &str =
-    include_str!("../../../../vendor/zed/crates/languages/src/javascript/highlights.scm");
+const JAVASCRIPT_HIGHLIGHTS: &str = include_str!("queries/javascript/highlights.scm");
 const TYPESCRIPT_HIGHLIGHTS: &str =
     include_str!("../../../../vendor/zed/crates/languages/src/typescript/highlights.scm");
 const TSX_HIGHLIGHTS: &str =
     include_str!("../../../../vendor/zed/crates/languages/src/tsx/highlights.scm");
 const C_HIGHLIGHTS: &str =
     include_str!("../../../../vendor/zed/crates/languages/src/c/highlights.scm");
-const CPP_HIGHLIGHTS: &str =
-    include_str!("../../../../vendor/zed/crates/languages/src/cpp/highlights.scm");
+const CPP_HIGHLIGHTS: &str = include_str!("queries/cpp/highlights.scm");
 const CSS_HIGHLIGHTS: &str =
     include_str!("../../../../vendor/zed/crates/languages/src/css/highlights.scm");
 const JSON_HIGHLIGHTS: &str =
@@ -28,6 +26,7 @@ const BASH_HIGHLIGHTS: &str =
     include_str!("../../../../vendor/zed/crates/languages/src/bash/highlights.scm");
 const MARKDOWN_HIGHLIGHTS: &str =
     include_str!("../../../../vendor/zed/crates/languages/src/markdown/highlights.scm");
+const CSHARP_HIGHLIGHTS: &str = include_str!("queries/csharp/highlights.scm");
 
 /// Supported programming languages for syntax highlighting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -45,6 +44,11 @@ pub enum Language {
     Yaml,
     Bash,
     Markdown,
+    Html,
+    Ruby,
+    Java,
+    CSharp,
+    Php,
     PlainText,
 }
 
@@ -67,6 +71,11 @@ impl Language {
             "yaml" | "yml" => Language::Yaml,
             "sh" | "bash" | "zsh" => Language::Bash,
             "md" | "markdown" => Language::Markdown,
+            "html" | "htm" => Language::Html,
+            "rb" | "rake" | "gemspec" => Language::Ruby,
+            "java" => Language::Java,
+            "cs" => Language::CSharp,
+            "php" | "phtml" | "php3" | "php4" | "php5" => Language::Php,
             _ => Language::PlainText,
         }
     }
@@ -86,6 +95,11 @@ impl Language {
             Language::Yaml => "YAML",
             Language::Bash => "Bash",
             Language::Markdown => "Markdown",
+            Language::Html => "HTML",
+            Language::Ruby => "Ruby",
+            Language::Java => "Java",
+            Language::CSharp => "C#",
+            Language::Php => "PHP",
             Language::PlainText => "Plain Text",
         }
     }
@@ -115,6 +129,26 @@ impl Language {
             Language::Markdown => {
                 Some((tree_sitter_md::LANGUAGE.into(), MARKDOWN_HIGHLIGHTS))
             }
+            Language::Html => Some((
+                tree_sitter_html::LANGUAGE.into(),
+                tree_sitter_html::HIGHLIGHTS_QUERY,
+            )),
+            Language::Ruby => Some((
+                tree_sitter_ruby::LANGUAGE.into(),
+                tree_sitter_ruby::HIGHLIGHTS_QUERY,
+            )),
+            Language::Java => Some((
+                tree_sitter_java::LANGUAGE.into(),
+                tree_sitter_java::HIGHLIGHTS_QUERY,
+            )),
+            Language::CSharp => Some((
+                tree_sitter_c_sharp::LANGUAGE.into(),
+                CSHARP_HIGHLIGHTS,
+            )),
+            Language::Php => Some((
+                tree_sitter_php::LANGUAGE_PHP.into(),
+                tree_sitter_php::HIGHLIGHTS_QUERY,
+            )),
             Language::PlainText => None,
         }
     }
@@ -186,6 +220,15 @@ impl Highlighter {
         }
     }
 
+    /// Parse without reusing the previous tree. Use when the new source is
+    /// unrelated to the previous parse (e.g. a different file or diff line),
+    /// to avoid stale byte offsets from the old tree causing out-of-bounds panics.
+    pub fn parse_fresh(&mut self, source: &str) {
+        if let Some(ref mut parser) = self.parser {
+            self.tree = parser.parse(source, None);
+        }
+    }
+
     /// Return highlight spans for the given byte range of the source.
     ///
     /// Each span is `(byte_range, capture_name)`.
@@ -227,5 +270,41 @@ impl Highlighter {
 
         result.sort_by(|a, b| a.0.start.cmp(&b.0.start).then(b.0.end.cmp(&a.0.end)));
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check_query(name: &str, lang: TSLanguage, query_src: &'static str) -> bool {
+        match Query::new(&lang, query_src) {
+            Ok(_)  => { println!("{name}: OK"); true }
+            Err(e) => { println!("{name}: ERROR - {e}"); false }
+        }
+    }
+
+    #[test]
+    fn all_queries_parse() {
+        let mut ok = true;
+        ok &= check_query("rust",       tree_sitter_rust::LANGUAGE.into(),       RUST_HIGHLIGHTS);
+        ok &= check_query("python",     tree_sitter_python::LANGUAGE.into(),     PYTHON_HIGHLIGHTS);
+        ok &= check_query("go",         tree_sitter_go::LANGUAGE.into(),         GO_HIGHLIGHTS);
+        ok &= check_query("javascript", tree_sitter_javascript::LANGUAGE.into(), JAVASCRIPT_HIGHLIGHTS);
+        ok &= check_query("typescript", tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(), TYPESCRIPT_HIGHLIGHTS);
+        ok &= check_query("tsx",        tree_sitter_typescript::LANGUAGE_TSX.into(), TSX_HIGHLIGHTS);
+        ok &= check_query("c",          tree_sitter_c::LANGUAGE.into(),          C_HIGHLIGHTS);
+        ok &= check_query("cpp",        tree_sitter_cpp::LANGUAGE.into(),        CPP_HIGHLIGHTS);
+        ok &= check_query("css",        tree_sitter_css::LANGUAGE.into(),        CSS_HIGHLIGHTS);
+        ok &= check_query("json",       tree_sitter_json::LANGUAGE.into(),       JSON_HIGHLIGHTS);
+        ok &= check_query("yaml",       tree_sitter_yaml::LANGUAGE.into(),       YAML_HIGHLIGHTS);
+        ok &= check_query("bash",       tree_sitter_bash::LANGUAGE.into(),       BASH_HIGHLIGHTS);
+        ok &= check_query("markdown",   tree_sitter_md::LANGUAGE.into(),         MARKDOWN_HIGHLIGHTS);
+        ok &= check_query("html",       tree_sitter_html::LANGUAGE.into(),       tree_sitter_html::HIGHLIGHTS_QUERY);
+        ok &= check_query("ruby",       tree_sitter_ruby::LANGUAGE.into(),       tree_sitter_ruby::HIGHLIGHTS_QUERY);
+        ok &= check_query("java",       tree_sitter_java::LANGUAGE.into(),       tree_sitter_java::HIGHLIGHTS_QUERY);
+        ok &= check_query("csharp",     tree_sitter_c_sharp::LANGUAGE.into(),    CSHARP_HIGHLIGHTS);
+        ok &= check_query("php",        tree_sitter_php::LANGUAGE_PHP.into(),    tree_sitter_php::HIGHLIGHTS_QUERY);
+        assert!(ok, "one or more highlight queries failed to parse");
     }
 }
