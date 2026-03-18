@@ -310,7 +310,7 @@ async fn test_rpc_terminal_over_relay() {
             .unwrap();
 
     // Create terminal
-    let result: TermCreateResult = client.rpc(TermCreateReq { cols: 80, rows: 24 }).await.unwrap();
+    let result: TermCreateResult = client.rpc(TermCreateReq { cols: 80, rows: 24, launch_cmd: None }).await.unwrap();
     assert!(result.id.starts_with("term-"));
 
     // Attach to terminal via bidi streaming

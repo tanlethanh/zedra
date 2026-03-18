@@ -12,9 +12,20 @@ pub struct ShellSession {
     writer: Box<dyn Write + Send>,
 }
 
+/// Options for spawning a new shell session.
+#[derive(Default)]
+pub struct SpawnOptions {
+    /// Working directory for the shell. Defaults to the process cwd if `None`.
+    pub workdir: Option<std::path::PathBuf>,
+    /// Shell command to inject into the PTY immediately after the shell starts.
+    /// The command is written as `<cmd>\n` so the shell executes it on startup.
+    /// Example: `"claude --resume"` to drop straight into a Claude session.
+    pub launch_cmd: Option<String>,
+}
+
 impl ShellSession {
-    /// Spawn a new shell with the given PTY size
-    pub fn spawn(columns: u16, rows: u16) -> Result<Self> {
+    /// Spawn a new shell with the given PTY size and options.
+    pub fn spawn(columns: u16, rows: u16, opts: SpawnOptions) -> Result<Self> {
         let pty_system = native_pty_system();
 
         let pty_size = PtySize {
@@ -33,6 +44,11 @@ impl ShellSession {
 
         let mut cmd = CommandBuilder::new(&shell);
         cmd.arg("-l"); // Login shell
+
+        // Start in the session working directory if provided.
+        if let Some(dir) = &opts.workdir {
+            cmd.cwd(dir);
+        }
 
         // Build a sanitized environment: start clean, allow only safe variables.
         // This prevents daemon secrets (AWS keys, tokens, etc.) from leaking into shells.
@@ -61,10 +77,20 @@ impl ShellSession {
             .master
             .try_clone_reader()
             .map_err(|e| anyhow::anyhow!("Failed to clone PTY reader: {}", e))?;
-        let writer = pair
+        let mut writer = pair
             .master
             .take_writer()
             .map_err(|e| anyhow::anyhow!("Failed to take PTY writer: {}", e))?;
+
+        // Inject the launch command. The bytes sit in the kernel PTY buffer and
+        // are processed once the shell finishes sourcing its init files.
+        if let Some(cmd) = &opts.launch_cmd {
+            let mut line = cmd.as_bytes().to_vec();
+            line.push(b'\n');
+            writer
+                .write_all(&line)
+                .map_err(|e| anyhow::anyhow!("Failed to inject launch command: {}", e))?;
+        }
 
         Ok(Self {
             master: pair.master,
@@ -91,7 +117,7 @@ mod tests {
 
     #[test]
     fn test_spawn_shell() {
-        let session = ShellSession::spawn(80, 24);
+        let session = ShellSession::spawn(80, 24, SpawnOptions::default());
         assert!(
             session.is_ok(),
             "Failed to spawn shell: {:?}",
@@ -101,7 +127,7 @@ mod tests {
 
     #[test]
     fn test_shell_write_read() {
-        let session = ShellSession::spawn(80, 24).unwrap();
+        let session = ShellSession::spawn(80, 24, SpawnOptions::default()).unwrap();
         let (mut reader, mut writer, _master) = session.take_reader();
 
         // Writer should accept data
@@ -118,7 +144,7 @@ mod tests {
 
     #[test]
     fn test_shell_resize() {
-        let session = ShellSession::spawn(80, 24).unwrap();
+        let session = ShellSession::spawn(80, 24, SpawnOptions::default()).unwrap();
         let (_reader, _writer, master) = session.take_reader();
 
         let result = master.resize(PtySize {
