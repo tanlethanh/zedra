@@ -1,9 +1,15 @@
 use gpui::*;
 
 use crate::fonts;
+use crate::platform_bridge;
 use crate::theme;
 use crate::workspace_store::PersistedWorkspace;
 use crate::workspace_view::WorkspaceSummary;
+
+const WEBSITE_URL: &str = "https://www.zedra.dev";
+const GITHUB_URL: &str = "https://github.com/tanlethanh/zedra";
+const DISCORD_URL: &str = "https://discord.gg/39MmkSS8sc";
+const XCOM_URL: &str = "https://x.com/zedradev";
 
 /// A single entry in the home workspace list. Carries whichever combination of
 /// active (in-memory) and saved (persisted) data applies to this workspace.
@@ -79,7 +85,7 @@ impl Render for HomeView {
                             .text_color(rgb(theme::TEXT_PRIMARY))
                             .text_size(px(theme::FONT_TITLE))
                             .font_family(fonts::HEADING_FONT_FAMILY)
-                            .font_weight(FontWeight::BOLD)
+                            .font_weight(FontWeight::EXTRA_BOLD)
                             .child("Zedra"),
                     )
                     // Subtitle
@@ -87,8 +93,6 @@ impl Render for HomeView {
                         div()
                             .text_color(rgb(theme::TEXT_MUTED))
                             .text_size(px(theme::FONT_BODY))
-                            .font_family(fonts::HEADING_FONT_FAMILY)
-                            .font_weight(FontWeight::BOLD)
                             .child("Mobile IDE, desktop-powered"),
                     ),
             );
@@ -97,6 +101,7 @@ impl Render for HomeView {
             let mut cards = div()
                 .mt_4()
                 .w(px(theme::HOME_CARD_WIDTH))
+                .min_h(px(100.0))
                 .flex()
                 .flex_col()
                 .gap(px(8.0));
@@ -105,22 +110,18 @@ impl Render for HomeView {
                 let card = match (&item.active, &item.saved) {
                     (Some((ws_idx, summary)), _) => {
                         let index = *ws_idx;
-                        let (status_label, status_color): (&str, u32) =
-                            match &summary.connect_phase {
-                                zedra_session::ConnectPhase::Connected => {
-                                    ("Connected", theme::ACCENT_GREEN)
-                                }
-                                p if p.is_connecting() => {
-                                    ("Connecting\u{2026}", theme::ACCENT_YELLOW)
-                                }
-                                zedra_session::ConnectPhase::Reconnecting { .. } => {
-                                    ("Reconnecting\u{2026}", theme::ACCENT_YELLOW)
-                                }
-                                zedra_session::ConnectPhase::Failed(_) => {
-                                    ("Error", theme::ACCENT_RED)
-                                }
-                                _ => ("Disconnected", theme::ACCENT_RED),
-                            };
+                        let (status_label, status_color): (&str, u32) = match &summary.connect_phase
+                        {
+                            zedra_session::ConnectPhase::Connected => {
+                                ("Connected", theme::ACCENT_GREEN)
+                            }
+                            p if p.is_connecting() => ("Connecting\u{2026}", theme::ACCENT_YELLOW),
+                            zedra_session::ConnectPhase::Reconnecting { .. } => {
+                                ("Reconnecting\u{2026}", theme::ACCENT_YELLOW)
+                            }
+                            zedra_session::ConnectPhase::Failed(_) => ("Error", theme::ACCENT_RED),
+                            _ => ("Disconnected", theme::ACCENT_RED),
+                        };
                         let path_label = summary
                             .project_path
                             .as_deref()
@@ -166,7 +167,8 @@ impl Render for HomeView {
         if self.items.is_empty() {
             content = content.child(
                 div()
-                    .w(px(theme::HOME_CARD_WIDTH))
+                    .w(px(theme::HOME_GUIDE_WIDTH))
+                    .min_h(px(100.0))
                     .rounded(px(8.0))
                     .bg(rgb(theme::BG_CARD))
                     .border_1()
@@ -179,13 +181,13 @@ impl Render for HomeView {
                         div()
                             .text_color(rgb(theme::TEXT_MUTED))
                             .text_size(px(theme::FONT_DETAIL))
-                            .child("# Install zedra-host on your machine"),
+                            .child("# Install zedra on your desktop"),
                     )
                     .child(
                         div()
                             .text_color(rgb(theme::TEXT_SECONDARY))
                             .text_size(px(theme::FONT_DETAIL))
-                            .child("cargo install zedra-host"),
+                            .child("curl -fsSL zedra.dev/install | bash"),
                     )
                     .child(
                         div()
@@ -198,7 +200,7 @@ impl Render for HomeView {
                         div()
                             .text_color(rgb(theme::TEXT_SECONDARY))
                             .text_size(px(theme::FONT_DETAIL))
-                            .child("zedra-host listen"),
+                            .child("zedra start"),
                     ),
             );
         }
@@ -207,6 +209,7 @@ impl Render for HomeView {
         content = content.child(
             div()
                 .mt_4()
+                .mb_8()
                 .w(px(theme::HOME_CARD_WIDTH))
                 .py(px(12.0))
                 .rounded(px(8.0))
@@ -227,14 +230,7 @@ impl Render for HomeView {
                 .child("Scan QR Code"),
         );
 
-        // Footer
-        content = content.child(
-            div()
-                .mt_8()
-                .text_color(rgb(theme::TEXT_MUTED))
-                .text_size(px(theme::FONT_DETAIL))
-                .child(concat!("zedra v", env!("CARGO_PKG_VERSION"))),
-        );
+        let bottom_inset = platform_bridge::home_indicator_inset();
 
         div()
             .id("home-starting")
@@ -246,6 +242,41 @@ impl Render for HomeView {
             .items_center()
             .justify_center()
             .child(content)
+            .child(
+                div()
+                    .absolute()
+                    .bottom(px(bottom_inset + 20.0))
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(theme::SPACING_MD))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(theme::SPACING_LG))
+                            .child(social_button("btn-xcom", "icons/xcom.svg", XCOM_URL, cx))
+                            .child(social_button(
+                                "btn-github",
+                                "icons/github.svg",
+                                GITHUB_URL,
+                                cx,
+                            ))
+                            .child(social_button(
+                                "btn-discord",
+                                "icons/discord.svg",
+                                DISCORD_URL,
+                                cx,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_size(px(theme::FONT_DETAIL))
+                            .child(concat!("zedra v", env!("CARGO_PKG_VERSION"))),
+                    ),
+            )
     }
 }
 
@@ -378,4 +409,31 @@ fn saved_workspace_card(
                     .child(path_label),
             )
         })
+}
+
+fn social_button(
+    id: &'static str,
+    icon: &'static str,
+    url: &'static str,
+    cx: &mut Context<HomeView>,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .flex()
+        .hit_slop(px(10.0))
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |_this, _event, _window, _cx| {
+                platform_bridge::bridge().open_url(url);
+            }),
+        )
+        .child(
+            svg()
+                .path(icon)
+                .size(px(36.0))
+                .text_color(rgb(theme::TEXT_MUTED)),
+        )
 }
