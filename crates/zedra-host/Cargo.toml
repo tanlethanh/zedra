@@ -16,6 +16,10 @@ path = "src/main.rs"
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
+# Local REST API
+axum = "0.7"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+
 # PTY spawning
 portable-pty = "0.8"
 

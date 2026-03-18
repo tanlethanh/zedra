@@ -11,13 +11,17 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use zedra_host::{identity, iroh_listener, qr, rpc_daemon, session_registry, workspace_lock};
 use zedra_host::client as zedra_client;
+use zedra_host::{api, identity, iroh_listener, qr, rpc_daemon, session_registry, workspace_lock};
 use zedra_rpc::ZedraPairingTicket;
 
 #[derive(Parser)]
 #[command(name = "zedra", about = "Desktop companion daemon for Zedra")]
 struct Cli {
+    /// Show tracing logs (default: only user-facing output)
+    #[arg(long, global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -37,6 +41,12 @@ enum Commands {
         /// Override relay URL (e.g. https://sg1.relay.zedra.dev)
         #[arg(long)]
         relay_url: Option<String>,
+
+        /// Command to inject into every new terminal on startup.
+        /// Example: --launch-cmd "claude --resume" drops the user straight
+        /// into a resumed Claude Code session each time a terminal is opened.
+        #[arg(long)]
+        launch_cmd: Option<String>,
     },
     /// Connect to a running daemon and measure end-to-end RTT
     Client {
@@ -62,28 +72,59 @@ enum Commands {
         #[arg(long, default_value = "5")]
         grace: u64,
     },
+
+    /// Show status of the running daemon (reads api-addr/api-token automatically)
+    Status {
+        /// Working directory of the running daemon
+        #[arg(short, long, default_value = ".")]
+        workdir: String,
+    },
+
+    /// List all active zedra instances across all workdirs
+    List,
+
+    /// Open a new terminal on the connected phone (reads api-addr/api-token automatically)
+    Terminal {
+        /// Working directory of the running daemon
+        #[arg(short, long, default_value = ".")]
+        workdir: String,
+
+        /// Command to inject into the terminal on startup (e.g. "claude --resume <id>")
+        #[arg(long)]
+        launch_cmd: Option<String>,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-
     let cli = Cli::parse();
 
+    let log_filter = if cli.verbose {
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+    } else {
+        tracing_subscriber::EnvFilter::new("error")
+    };
+    tracing_subscriber::fmt().with_env_filter(log_filter).init();
+
     match cli.command {
-        Commands::Client { workdir, count, relay_only } => {
+        Commands::Client {
+            workdir,
+            count,
+            relay_only,
+        } => {
             let workdir = std::path::PathBuf::from(workdir)
                 .canonicalize()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
             zedra_client::run(&workdir, count, relay_only).await?;
         }
 
-        Commands::Start { workdir, json, relay_url } => {
+        Commands::Start {
+            workdir,
+            json,
+            relay_url,
+            launch_cmd,
+        } => {
             let workdir = std::path::PathBuf::from(workdir)
                 .canonicalize()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -94,7 +135,8 @@ async fn main() -> Result<()> {
             let _lock = workspace_lock::acquire(&workdir)?;
             tracing::info!("Acquired workspace lock for {}", workdir.display());
 
-            let host_identity = match identity::HostIdentity::load_or_generate_for_workdir(&workdir) {
+            let host_identity = match identity::HostIdentity::load_or_generate_for_workdir(&workdir)
+            {
                 Ok(id) => std::sync::Arc::new(id),
                 Err(e) => anyhow::bail!("Failed to load host identity: {}", e),
             };
@@ -112,9 +154,7 @@ async fn main() -> Result<()> {
                 .and_then(|n| n.to_str())
                 .unwrap_or("default")
                 .to_string();
-            let session = registry
-                .create_named(&session_name, workdir.clone())
-                .await;
+            let session = registry.create_named(&session_name, workdir.clone()).await;
             tracing::info!(
                 "Created session '{}' (id={}) for {}",
                 session_name,
@@ -124,7 +164,9 @@ async fn main() -> Result<()> {
 
             // Create a one-use pairing slot and encode as QR ticket
             let handshake_secret: [u8; 16] = rand::random();
-            registry.add_pairing_slot(&session.id, handshake_secret).await;
+            registry
+                .add_pairing_slot(&session.id, handshake_secret)
+                .await;
 
             let ticket = ZedraPairingTicket {
                 endpoint_id: host_identity.endpoint_id(),
@@ -132,10 +174,9 @@ async fn main() -> Result<()> {
                 session_id: session.id.clone(),
             };
 
-            let state = std::sync::Arc::new(rpc_daemon::DaemonState::new(
-                workdir.clone(),
-                host_identity.clone(),
-            ));
+            let mut state = rpc_daemon::DaemonState::new(workdir.clone(), host_identity.clone());
+            state.default_launch_cmd = launch_cmd;
+            let state = std::sync::Arc::new(state);
 
             // 1. Bind iroh endpoint.
             //    For relay.zedra.dev (CF Worker) append ?host=<base64url(pubkey)> so the
@@ -150,7 +191,8 @@ async fn main() -> Result<()> {
             } else {
                 base_relay_url.to_string()
             };
-            let endpoint = iroh_listener::create_endpoint(&host_identity, Some(&endpoint_relay_url)).await?;
+            let endpoint =
+                iroh_listener::create_endpoint(&host_identity, Some(&endpoint_relay_url)).await?;
 
             // Pre-authorize the persistent CLI client key so `zedra client` can
             // connect without QR pairing. The key is generated once per workspace.
@@ -158,7 +200,9 @@ async fn main() -> Result<()> {
                 match zedra_client::load_or_generate_cli_key(&config_dir) {
                     Ok(cli_key) => {
                         let cli_pubkey: [u8; 32] = cli_key.verifying_key().to_bytes();
-                        registry.add_client_to_session(&session.id, cli_pubkey).await;
+                        registry
+                            .add_client_to_session(&session.id, cli_pubkey)
+                            .await;
                         tracing::info!("Pre-authorized CLI client key for session {}", session.id);
                     }
                     Err(e) => tracing::warn!("Failed to load/generate CLI client key: {}", e),
@@ -198,8 +242,182 @@ async fn main() -> Result<()> {
                 }
             }
 
-            // 3. Run iroh accept loop (blocks main)
+            // 3. Start local REST API server (127.0.0.1, OS-assigned port).
+            //    Write the bound address and bearer token to the config dir so
+            //    tools like `/zedra-start` can discover and authenticate.
+            if let Ok(config_dir) = identity::workspace_config_dir(&workdir) {
+                let token: String = {
+                    let bytes: [u8; 32] = rand::random();
+                    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+                };
+                match api::start(api::ApiState {
+                    registry: registry.clone(),
+                    daemon_state: state.clone(),
+                    token: token.clone(),
+                })
+                .await
+                {
+                    Ok(addr) => {
+                        let _ = std::fs::write(config_dir.join("api-addr"), addr.to_string());
+                        let _ = std::fs::write(config_dir.join("api-token"), &token);
+                        tracing::info!("REST API listening on http://{}", addr);
+                    }
+                    Err(e) => tracing::warn!("Failed to start REST API: {}", e),
+                }
+            }
+
+            // 4. Run iroh accept loop (blocks main)
             iroh_listener::run_accept_loop(&endpoint, registry, state).await?;
+        }
+
+        Commands::Status { workdir } => {
+            let workdir = std::path::PathBuf::from(workdir)
+                .canonicalize()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let config_dir = identity::workspace_config_dir(&workdir)?;
+            let addr = std::fs::read_to_string(config_dir.join("api-addr")).unwrap_or_default();
+            let token = std::fs::read_to_string(config_dir.join("api-token")).unwrap_or_default();
+            if addr.trim().is_empty() {
+                eprintln!("No running daemon found for: {}", workdir.display());
+                std::process::exit(1);
+            }
+            let url = format!("http://{}/api/status", addr.trim());
+            let client = reqwest::blocking::Client::new();
+            match client.get(&url).bearer_auth(token.trim()).send() {
+                Ok(resp) => {
+                    let body = resp.text().unwrap_or_default();
+                    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                    let version = v["version"].as_str().unwrap_or("?");
+                    let workdir = v["workdir"].as_str().unwrap_or("?");
+                    let endpoint_id = v["endpoint_id"].as_str().unwrap_or("?");
+                    let uptime = v["uptime_secs"]
+                        .as_u64()
+                        .map(format_duration)
+                        .unwrap_or_default();
+                    println!("zedra host v{}", version);
+                    println!("  uptime:      {}", uptime);
+                    println!("  workdir:     {}", workdir);
+                    println!("  endpoint_id: {}", &endpoint_id[..endpoint_id.len().min(8)]);
+                }
+                Err(e) => {
+                    eprintln!("Failed to reach daemon: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::Terminal {
+            workdir,
+            launch_cmd,
+        } => {
+            let workdir = std::path::PathBuf::from(workdir)
+                .canonicalize()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let config_dir = identity::workspace_config_dir(&workdir)?;
+            let addr = std::fs::read_to_string(config_dir.join("api-addr")).unwrap_or_default();
+            let token = std::fs::read_to_string(config_dir.join("api-token")).unwrap_or_default();
+            if addr.trim().is_empty() {
+                eprintln!("No running daemon found for: {}", workdir.display());
+                std::process::exit(1);
+            }
+            let url = format!("http://{}/api/terminal", addr.trim());
+            let body = serde_json::json!({ "launch_cmd": launch_cmd });
+            let client = reqwest::blocking::Client::new();
+            match client
+                .post(&url)
+                .bearer_auth(token.trim())
+                .json(&body)
+                .send()
+            {
+                Ok(resp) => {
+                    let text = resp.text().unwrap_or_default();
+                    println!("{}", text);
+                }
+                Err(e) => {
+                    eprintln!("Failed to reach daemon: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::List => {
+            let instances = workspace_lock::scan_all_instances();
+            if instances.is_empty() {
+                println!("No zedra instances found.");
+            } else {
+                let http = reqwest::blocking::Client::builder()
+                    .timeout(std::time::Duration::from_secs(2))
+                    .build()
+                    .unwrap_or_default();
+                for (config_dir, lock, alive) in &instances {
+                    if !alive {
+                        println!("  [stale]  {}  (pid {} gone)", lock.workdir, lock.pid);
+                        continue;
+                    }
+                    let addr =
+                        std::fs::read_to_string(config_dir.join("api-addr")).unwrap_or_default();
+                    let token =
+                        std::fs::read_to_string(config_dir.join("api-token")).unwrap_or_default();
+                    let status = if !addr.trim().is_empty() {
+                        let url = format!("http://{}/api/status", addr.trim());
+                        http.get(&url)
+                            .bearer_auth(token.trim())
+                            .send()
+                            .ok()
+                            .and_then(|r| r.text().ok())
+                            .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
+                    } else {
+                        None
+                    };
+
+                    let workdir = status
+                        .as_ref()
+                        .and_then(|v| v["workdir"].as_str().map(|s| s.to_string()))
+                        .unwrap_or_else(|| lock.workdir.clone());
+                    let version = status
+                        .as_ref()
+                        .and_then(|v| v["version"].as_str().map(|s| s.to_string()))
+                        .unwrap_or_else(|| "?".to_string());
+                    let endpoint_id = status
+                        .as_ref()
+                        .and_then(|v| v["endpoint_id"].as_str().map(|s| s.to_string()))
+                        .unwrap_or_else(|| "?".to_string());
+
+                    println!("  v{version}  {workdir}");
+                    println!("    endpoint:  {}", &endpoint_id[..endpoint_id.len().min(8)]);
+                    println!(
+                        "    pid:       {}  started {}",
+                        lock.pid,
+                        lock.running_for()
+                    );
+
+                    if let Some(sessions) = status.as_ref().and_then(|v| v["sessions"].as_array()) {
+                        for s in sessions {
+                            let id = s["id"].as_str().unwrap_or("?");
+                            let name = s["name"]
+                                .as_str()
+                                .map(|n| format!(" ({n})"))
+                                .unwrap_or_default();
+                            let terms = s["terminal_count"].as_u64().unwrap_or(0);
+                            let occupied = if s["is_occupied"].as_bool().unwrap_or(false) {
+                                " [connected]"
+                            } else {
+                                ""
+                            };
+                            let uptime = s["uptime_secs"].as_u64().unwrap_or(0);
+                            print!(
+                                "    session:   {id}{name}{occupied}  {}",
+                                format_duration(uptime)
+                            );
+                            if terms > 0 {
+                                print!("  ({terms} terminal{})", if terms == 1 { "" } else { "s" });
+                            }
+                            println!();
+                        }
+                    }
+                    println!();
+                }
+            }
         }
 
         Commands::Stop { workdir, grace } => {
@@ -238,10 +456,19 @@ async fn main() -> Result<()> {
             workspace_lock::kill_and_unlock(&workdir, grace)?;
             eprintln!("Done.");
         }
-
     }
 
     Ok(())
+}
+
+fn format_duration(secs: u64) -> String {
+    if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        format!("{}m{}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
+    }
 }
 
 /// Returns true if the relay URL points to the Cloudflare Worker relay (relay.zedra.dev).

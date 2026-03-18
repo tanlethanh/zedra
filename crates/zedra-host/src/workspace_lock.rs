@@ -140,6 +140,40 @@ pub fn acquire(workdir: &Path) -> Result<WorkspaceLock> {
     Ok(WorkspaceLock { path: lock_path })
 }
 
+/// Scan all workspace config directories under `~/.config/zedra/workspaces/`
+/// and return every instance that has a lock file, along with whether its
+/// process is still alive and the path to its config directory.
+pub fn scan_all_instances() -> Vec<(PathBuf, LockInfo, bool)> {
+    let workspaces_dir = match (|| -> Option<PathBuf> {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .or_else(|| directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf()))?;
+        Some(home.join(".config").join("zedra").join("workspaces"))
+    })() {
+        Some(d) => d,
+        None => return Vec::new(),
+    };
+
+    let entries = match std::fs::read_dir(&workspaces_dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut result = Vec::new();
+    for entry in entries.flatten() {
+        let config_dir = entry.path();
+        let lock_path = config_dir.join("daemon.lock");
+        if let Some(info) = read_lock_file(&lock_path) {
+            let alive = is_process_alive(info.pid);
+            result.push((config_dir, info, alive));
+        }
+    }
+
+    // Sort by workdir for stable output
+    result.sort_by(|a, b| a.1.workdir.cmp(&b.1.workdir));
+    result
+}
+
 /// Read the lock file metadata for a workspace without acquiring the lock.
 /// Returns `None` if no lock file exists or it cannot be parsed.
 pub fn read_lock_info(workdir: &Path) -> Result<Option<LockInfo>> {

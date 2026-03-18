@@ -8,14 +8,23 @@
 use crate::fs::{Filesystem, LocalFs};
 use crate::git::GitRepo;
 use crate::identity::SharedIdentity;
-use crate::pty::ShellSession;
-use crate::session_registry::{AttachResult, ConsumeSlotResult, ServerSession, SessionRegistry, TermSession};
+use crate::pty::{ShellSession, SpawnOptions};
+use crate::session_registry::{AttachResult, ConsumeSlotResult, OutputSenderSlot, ServerSession, SessionRegistry, TermSession};
 use anyhow::Result;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zedra_rpc::proto::*;
+
+fn ts() -> String {
+    let s = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    format!("{:02}:{:02}:{:02}", (s % 86400) / 3600, (s % 3600) / 60, s % 60)
+}
+
+fn short_key(key: &[u8; 32]) -> String {
+    key[..4].iter().map(|b| format!("{b:02x}")).collect()
+}
 
 /// Resolve `user_path` relative to `workdir`, then verify the canonical path
 /// stays inside `workdir`. Rejects absolute paths, `..` escapes, and symlinks
@@ -57,6 +66,11 @@ pub struct DaemonState {
     pub workdir: std::path::PathBuf,
     /// Host identity for signing challenges in the Authenticate step.
     pub identity: SharedIdentity,
+    /// Default command injected into every new terminal on startup (e.g. "claude --resume").
+    /// Can be overridden per-terminal via `TermCreateReq::launch_cmd`.
+    pub default_launch_cmd: Option<String>,
+    /// When the daemon started; used to compute uptime.
+    pub started_at: std::time::Instant,
 }
 
 impl std::fmt::Debug for DaemonState {
@@ -73,6 +87,8 @@ impl DaemonState {
             fs: Arc::new(LocalFs),
             workdir,
             identity,
+            default_launch_cmd: None,
+            started_at: std::time::Instant::now(),
         }
     }
 }
@@ -115,6 +131,7 @@ pub async fn handle_connection(
         &client_pubkey[..4],
         session.id,
     );
+    eprintln!("[{}] connected: {} → session {}", ts(), short_key(&client_pubkey), &session.id[..8.min(session.id.len())]);
 
     // RPC dispatch loop
     loop {
@@ -150,6 +167,7 @@ pub async fn handle_connection(
         "Connection closed: session={} (session stays alive in registry)",
         session.id,
     );
+    eprintln!("[{}] disconn:   {} (session {})", ts(), short_key(&client_pubkey), &session.id[..8.min(session.id.len())]);
     Ok(())
 }
 
@@ -250,6 +268,7 @@ async fn handle_register(
                 &msg.client_pubkey[..4],
                 slot.session_id,
             );
+            eprintln!("[{}] paired:    {} → session {}", ts(), short_key(&msg.client_pubkey), &slot.session_id[..8.min(slot.session_id.len())]);
             RegisterResult::Ok
         }
         ConsumeSlotResult::Consumed => {
@@ -380,6 +399,88 @@ async fn finish_auth(
             anyhow::bail!("session {} is occupied", resolved_session_id)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Terminal creation (shared by RPC dispatch and REST API)
+// ---------------------------------------------------------------------------
+
+pub const MAX_TERMINALS_PER_SESSION: usize = 16;
+
+/// Spawn a new PTY shell and register it in `session`.
+///
+/// Returns the new terminal ID on success. Used by both the `TermCreate` RPC
+/// handler and the local REST API so both paths share identical behaviour.
+pub async fn create_terminal(
+    session: &Arc<ServerSession>,
+    cols: u16,
+    rows: u16,
+    opts: SpawnOptions,
+) -> Result<String> {
+    if session.terminals.lock().await.len() >= MAX_TERMINALS_PER_SESSION {
+        anyhow::bail!(
+            "session {} already has {} terminals (limit {})",
+            session.id, MAX_TERMINALS_PER_SESSION, MAX_TERMINALS_PER_SESSION,
+        );
+    }
+
+    let shell = ShellSession::spawn(cols, rows, opts)?;
+    let (pty_reader, pty_writer, master) = shell.take_reader();
+    let id = session.next_terminal_id().await;
+
+    tracing::info!(
+        "create_terminal: id={} cols={} rows={} session={}",
+        id, cols, rows, session.id,
+    );
+
+    let output_sender = Arc::new(std::sync::Mutex::new(
+        OutputSenderSlot { gen: 0, sender: None },
+    ));
+
+    session.terminals.lock().await.insert(
+        id.clone(),
+        TermSession {
+            writer: pty_writer,
+            master,
+            output_sender: output_sender.clone(),
+        },
+    );
+
+    let term_id = id.clone();
+    let sess_for_reader = session.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut reader = pty_reader;
+        let mut buf = [0u8; 8192];
+        let rt = tokio::runtime::Handle::current();
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let data = buf[..n].to_vec();
+                    let seq = rt.block_on(async {
+                        let s = sess_for_reader.next_backlog_seq().await;
+                        sess_for_reader.push_backlog_entry(BacklogEntry {
+                            seq: s,
+                            terminal_id: term_id.clone(),
+                            data: data.clone(),
+                        }).await;
+                        s
+                    });
+
+                    let sender: Option<tokio::sync::mpsc::Sender<TermOutput>> =
+                        output_sender.lock().unwrap().sender.clone();
+                    if let Some(tx) = sender {
+                        if rt.block_on(tx.send(TermOutput { data, seq })).is_err() {
+                            output_sender.lock().unwrap().sender = None;
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    Ok(id)
 }
 
 // ---------------------------------------------------------------------------
@@ -551,80 +652,31 @@ async fn dispatch(
         // -- Terminal --
         ZedraMessage::TermCreate(msg) => {
             session.touch().await;
-
-            const MAX_TERMINALS_PER_SESSION: usize = 16;
-            if session.terminals.lock().await.len() >= MAX_TERMINALS_PER_SESSION {
-                tracing::warn!(
-                    "TermCreate: session {} has {} terminals, limit {}",
-                    session.id, MAX_TERMINALS_PER_SESSION, MAX_TERMINALS_PER_SESSION
-                );
-                drop(msg.tx);
-                return Ok(());
+            let workdir = session.workdir.clone().or_else(|| Some(state.workdir.clone()));
+            let launch_cmd = msg.launch_cmd.clone().or_else(|| state.default_launch_cmd.clone());
+            match create_terminal(&session, msg.cols, msg.rows, SpawnOptions { workdir, launch_cmd }).await {
+                Ok(id) => { let _ = msg.tx.send(TermCreateResult { id }).await; }
+                Err(e) => {
+                    tracing::warn!("TermCreate failed: {}", e);
+                    drop(msg.tx);
+                }
             }
+        }
 
-            let shell = ShellSession::spawn(msg.cols, msg.rows)?;
-            let (pty_reader, pty_writer, master) = shell.take_reader();
-            let id = session.next_terminal_id().await;
-
-            tracing::info!(
-                "TermCreate: id={} cols={} rows={} session={}",
-                id, msg.cols, msg.rows, session.id,
-            );
-
-            let output_sender = Arc::new(std::sync::Mutex::new(
-                crate::session_registry::OutputSenderSlot { gen: 0, sender: None },
-            ));
-
-            session.terminals.lock().await.insert(
-                id.clone(),
-                TermSession {
-                    writer: pty_writer,
-                    master,
-                    output_sender: output_sender.clone(),
-                },
-            );
-
-            let term_id = id.clone();
-            let sess_for_reader = session.clone();
-            tokio::task::spawn_blocking(move || {
-                let mut reader = pty_reader;
-                let mut buf = [0u8; 8192];
-                let rt = tokio::runtime::Handle::current();
-                loop {
-                    match reader.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let data = buf[..n].to_vec();
-                            // Combine both backlog ops into a single block_on to
-                            // halve the number of tokio runtime context switches.
-                            let seq = rt.block_on(async {
-                                let s = sess_for_reader.next_backlog_seq().await;
-                                sess_for_reader.push_backlog_entry(BacklogEntry {
-                                    seq: s,
-                                    terminal_id: term_id.clone(),
-                                    data: data.clone(),
-                                }).await;
-                                s
-                            });
-
-                            let sender: Option<tokio::sync::mpsc::Sender<TermOutput>> =
-                                output_sender.lock().unwrap().sender.clone();
-                            if let Some(tx) = sender {
-                                // Block when the channel is full rather than
-                                // dropping data. This propagates backpressure to
-                                // the shell via kernel TTY flow control, matching
-                                // SSH semantics — no output is ever silently lost.
-                                if rt.block_on(tx.send(TermOutput { data, seq })).is_err() {
-                                    output_sender.lock().unwrap().sender = None;
-                                }
-                            }
-                        }
-                        Err(_) => break,
+        ZedraMessage::Subscribe(msg) => {
+            session.touch().await;
+            // Bridge: store a regular tokio sender in the session; spawn a task
+            // that forwards events from it to the irpc channel toward the client.
+            let (bridge_tx, mut bridge_rx) = tokio::sync::mpsc::channel::<HostEvent>(32);
+            *session.event_tx.lock().await = Some(bridge_tx);
+            let irpc_tx = msg.tx;
+            tokio::spawn(async move {
+                while let Some(event) = bridge_rx.recv().await {
+                    if irpc_tx.send(event).await.is_err() {
+                        break;
                     }
                 }
             });
-
-            let _ = msg.tx.send(TermCreateResult { id }).await;
         }
 
         ZedraMessage::TermAttach(msg) => {
