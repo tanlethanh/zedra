@@ -121,7 +121,7 @@ pub fn render_connecting(handle: &zedra_session::SessionHandle) -> impl IntoElem
 /// The icon is dimmed normally; brightens to `TEXT_SECONDARY` after 30 s stuck.
 pub fn render_retry_button(handle: &zedra_session::SessionHandle) -> Option<Div> {
     let cs = handle.connect_state();
-    if !cs.phase.is_connecting() && !cs.phase.is_reconnecting() {
+    if !cs.phase.is_connecting() && !cs.phase.is_reconnecting() && !cs.phase.is_failed() {
         return None;
     }
     let stuck = cs.elapsed_secs() >= 30;
