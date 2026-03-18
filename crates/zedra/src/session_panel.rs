@@ -3,6 +3,7 @@
 /// Displays host info, connection details, endpoints, and disconnect button.
 use gpui::*;
 
+use crate::connecting_view;
 use crate::theme;
 use crate::transport_badge::format_bytes;
 use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
@@ -200,6 +201,27 @@ pub fn render_session_tab(
                 .text_size(px(theme::FONT_DETAIL))
                 .child(msg),
         );
+    }
+
+    // --- Retry button (connecting / reconnecting phases) ---
+    if let Some(handle) = handle {
+        if let Some(btn) = connecting_view::render_retry_button(handle) {
+            content = content.child(
+                div()
+                    .mt(px(12.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(btn)
+                    .child(
+                        div()
+                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_size(px(theme::FONT_DETAIL))
+                            .child("Retry connection"),
+                    ),
+            );
+        }
     }
 
     // --- Disconnect button ---

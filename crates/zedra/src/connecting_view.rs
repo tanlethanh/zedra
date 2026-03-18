@@ -3,7 +3,15 @@
 /// Layout:
 ///   1. Horizontal 6-step progress stepper
 ///   2. Vertical current-phase detail (transport, auth, host, timing, error/reconnect banners)
-use gpui::{prelude::FluentBuilder as _, *};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
+use gpui::{Animation, AnimationExt as _, Transformation, prelude::FluentBuilder as _, *};
+
+// Incremented each time the retry button is pressed.
+// Each new value produces a unique animation element ID, causing GPUI to start
+// a fresh oneshot rotation for exactly that press.
+static RETRY_GENERATION: AtomicU64 = AtomicU64::new(0);
 use zedra_session::{
     ConnectPhase, ConnectSnapshot, ConnectState, TransportSnapshot, STEPPER_STEP_NAMES,
 };
@@ -106,12 +114,16 @@ pub fn render_connecting(handle: &zedra_session::SessionHandle) -> impl IntoElem
         .child(render_detail(&cs))
 }
 
-// ─── Phase title ─────────────────────────────────────────────────────────────
+// ─── Retry button (reusable) ─────────────────────────────────────────────────
 
-fn render_phase_title(cs: &ConnectState, handle: &zedra_session::SessionHandle) -> Div {
-    let (label, dot_color) = transport_badge_info(cs);
-    // Show retry button when connecting; highlight after 30 s stuck.
-    let is_retryable = cs.phase.is_connecting() || cs.phase.is_reconnecting();
+/// A 18×18 refresh icon button that spins once for 1 s when pressed.
+/// Returns `None` when the current phase is not retryable.
+/// The icon is dimmed normally; brightens to `TEXT_SECONDARY` after 30 s stuck.
+pub fn render_retry_button(handle: &zedra_session::SessionHandle) -> Option<Div> {
+    let cs = handle.connect_state();
+    if !cs.phase.is_connecting() && !cs.phase.is_reconnecting() {
+        return None;
+    }
     let stuck = cs.elapsed_secs() >= 30;
     let retry_color = if stuck {
         rgb(theme::TEXT_SECONDARY)
@@ -119,6 +131,47 @@ fn render_phase_title(cs: &ConnectState, handle: &zedra_session::SessionHandle) 
         rgb(theme::TEXT_MUTED)
     };
     let handle_retry = handle.clone();
+    let generation = RETRY_GENERATION.load(Ordering::Acquire);
+
+    // A new generation ID causes GPUI to start a fresh oneshot animation.
+    let retry_icon: AnyElement = if generation > 0 {
+        svg()
+            .path("icons/refresh-ccw.svg")
+            .size_full()
+            .text_color(retry_color)
+            .with_animation(
+                SharedString::from(format!("retry-spin-{generation}")),
+                Animation::new(Duration::from_secs(1)),
+                |svg, delta| {
+                    svg.with_transformation(Transformation::rotate(percentage(delta)))
+                },
+            )
+            .into_any_element()
+    } else {
+        svg()
+            .path("icons/refresh-ccw.svg")
+            .size_full()
+            .text_color(retry_color)
+            .into_any_element()
+    };
+
+    Some(
+        div()
+            .cursor_pointer()
+            .w(px(14.0))
+            .h(px(14.0))
+            .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                RETRY_GENERATION.fetch_add(1, Ordering::Release);
+                handle_retry.retry_connect();
+            })
+            .child(retry_icon),
+    )
+}
+
+// ─── Phase title ─────────────────────────────────────────────────────────────
+
+fn render_phase_title(cs: &ConnectState, handle: &zedra_session::SessionHandle) -> Div {
+    let (label, dot_color) = transport_badge_info(cs);
 
     div()
         .mb(px(theme::SPACING_LG))
@@ -133,25 +186,17 @@ fn render_phase_title(cs: &ConnectState, handle: &zedra_session::SessionHandle) 
                 .items_center()
                 .gap(px(8.0))
                 .child(
+                    // Fixed width so the retry icon always appears at the same position
+                    // regardless of phase name length (longest: "Resuming terminals").
                     div()
+                        .w(px(160.0))
+                        .text_align(TextAlign::Center)
                         .text_color(rgb(theme::TEXT_PRIMARY))
                         .text_size(px(theme::FONT_HEADING))
                         .font_weight(FontWeight::MEDIUM)
                         .child(cs.phase.display_name()),
                 )
-                .when(is_retryable, |d: Div| {
-                    d.child(
-                        div()
-                            .id("retry-btn")
-                            .cursor_pointer()
-                            .text_color(retry_color)
-                            .text_size(px(theme::FONT_BODY))
-                            .on_mouse_down(MouseButton::Left, move |_, _, _| {
-                                handle_retry.retry_connect();
-                            })
-                            .child("\u{21bb}"), // ↻
-                    )
-                }),
+                .children(render_retry_button(handle)),
         )
         .child(render_transport_badge(label, dot_color))
 }
