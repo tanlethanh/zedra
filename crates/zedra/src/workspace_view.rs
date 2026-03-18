@@ -142,11 +142,12 @@ impl Render for WorkspaceContent {
             self.overlay_pending_hide = false;
             self._overlay_task = None;
         } else if self.overlay_visible && !self.overlay_pending_hide {
-            // Just became Connected — start 1s linger before hiding.
+            // Just became Connected — start 2s linger before hiding.
             self.overlay_pending_hide = true;
             self._overlay_task = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor()
-                    .timer(std::time::Duration::from_millis(3000))
+                    // Better UX, make sure the terminal resuming is fully completed
+                    .timer(std::time::Duration::from_millis(2000))
                     .await;
                 let _ = this.update(cx, |this: &mut WorkspaceContent, cx| {
                     this.overlay_visible = false;
@@ -511,15 +512,16 @@ impl WorkspaceView {
                                 zedra_session::session_runtime().spawn(async move {
                                     let diff_text = match handle.git_diff(Some(&path_clone), false).await {
                                         Ok(text) if !text.is_empty() => text,
-                                        Ok(_) => match handle.git_diff(Some(&path_clone), true).await {
-                                            Ok(text) => text,
-                                            Err(e) => {
-                                                log::error!("git_diff staged RPC failed for {}: {}", path_clone, e);
-                                                String::new()
-                                            }
-                                        },
+                                        Ok(_) => handle
+                                            .git_diff(Some(&path_clone), true)
+                                            .await
+                                            .unwrap_or_default(),
                                         Err(e) => {
-                                            log::error!("git_diff RPC failed for {}: {}", path_clone, e);
+                                            log::error!(
+                                                "git_diff RPC failed for {}: {}",
+                                                path_clone,
+                                                e
+                                            );
                                             return;
                                         }
                                     };
@@ -730,7 +732,7 @@ impl Render for WorkspaceView {
                     c.set_main_view(placeholder.into(), fname, cx);
                 });
             } else {
-                let editor_view = cx.new(|cx| EditorView::with_filename(content, &filename, cx));
+                let editor_view = cx.new(|cx| EditorView::new(content, cx));
                 self.workspace_content.update(cx, |c, cx| {
                     c.set_main_view(editor_view.into(), fname, cx);
                 });

@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zedra — Remote Code Editor</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="site-header">
+    <nav aria-label="Main navigation">
+      <a href="/" class="logo">Zedra</a>
+      <ul class="nav-links">
+        <li><a href="/docs">Docs</a></li>
+        <li><a href="/download">Download</a></li>
+        <li>
+          <a href="https://github.com/zedra-dev/zedra" target="_blank" rel="noopener">
+            GitHub
+          </a>
+        </li>
+      </ul>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <h1>Edit code on any device.</h1>
+      <p class="tagline">
+        Zedra brings the full Zed editor experience to Android and iOS
+        over a secure peer-to-peer connection.
+      </p>
+      <div class="cta-group">
+        <a href="/download" class="btn btn-primary">Download for Android</a>
+        <a href="/docs/quickstart" class="btn btn-secondary">Quickstart</a>
+      </div>
+    </section>
+
+    <section class="features" aria-labelledby="features-heading">
+      <h2 id="features-heading">Features</h2>
+      <ul class="feature-grid">
+        <li>
+          <h3>Syntax Highlighting</h3>
+          <p>Tree-sitter powered highlighting for 18+ languages.</p>
+        </li>
+        <li>
+          <h3>60 FPS Rendering</h3>
+          <p>GPU-accelerated UI via wgpu and Vulkan.</p>
+        </li>
+        <li>
+          <h3>P2P Transport</h3>
+          <p>iroh QUIC/TLS 1.3 — no cloud relay required.</p>
+        </li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>
+    <p>&copy; 2026 Zedra Contributors. MIT License.</p>
+  </footer>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+{
+  "name": "zedra-examples",
+  "version": "1.0.0",
+  "description": "Syntax highlighting test fixtures",
+  "config": {
+    "server": {
+      "host": "0.0.0.0",
+      "port": 8080,
+      "tls": true,
+      "timeout_ms": 5000
+    },
+    "database": {
+      "url": "postgres://user:pass@localhost:5432/mydb",
+      "pool_size": 10,
+      "max_idle": 5,
+      "ssl_mode": "require"
+    },
+    "cache": {
+      "backend": "redis",
+      "ttl_seconds": 300,
+      "max_entries": 10000
+    }
+  },
+  "features": {
+    "dark_mode": true,
+    "analytics": false,
+    "beta": null,
+    "rate_limit": 100
+  },
+  "tags": ["mobile", "editor", "gpui", "android", "ios"],
+  "dependencies": {
+    "tree-sitter": "0.26.0",
+    "wgpu": "0.20.0",
+    "tokio": "1.38.0"
+  },
+  "scripts": {
+    "build": "./scripts/build-android.sh",
+    "test": "cargo test --workspace",
+    "lint": "cargo clippy --workspace -- -D warnings"
+  }
+}

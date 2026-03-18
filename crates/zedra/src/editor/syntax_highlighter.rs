@@ -8,14 +8,16 @@ const PYTHON_HIGHLIGHTS: &str =
     include_str!("../../../../vendor/zed/crates/languages/src/python/highlights.scm");
 const GO_HIGHLIGHTS: &str =
     include_str!("../../../../vendor/zed/crates/languages/src/go/highlights.scm");
-const JAVASCRIPT_HIGHLIGHTS: &str = include_str!("queries/javascript/highlights.scm");
+const JAVASCRIPT_HIGHLIGHTS: &str =
+    include_str!("../../../../vendor/zed/crates/languages/src/javascript/highlights.scm");
 const TYPESCRIPT_HIGHLIGHTS: &str =
     include_str!("../../../../vendor/zed/crates/languages/src/typescript/highlights.scm");
 const TSX_HIGHLIGHTS: &str =
     include_str!("../../../../vendor/zed/crates/languages/src/tsx/highlights.scm");
 const C_HIGHLIGHTS: &str =
     include_str!("../../../../vendor/zed/crates/languages/src/c/highlights.scm");
-const CPP_HIGHLIGHTS: &str = include_str!("queries/cpp/highlights.scm");
+const CPP_HIGHLIGHTS: &str =
+    include_str!("../../../../vendor/zed/crates/languages/src/cpp/highlights.scm");
 const CSS_HIGHLIGHTS: &str =
     include_str!("../../../../vendor/zed/crates/languages/src/css/highlights.scm");
 const JSON_HIGHLIGHTS: &str =
@@ -110,7 +112,7 @@ impl Language {
             Language::Python => Some((tree_sitter_python::LANGUAGE.into(), PYTHON_HIGHLIGHTS)),
             Language::Go => Some((tree_sitter_go::LANGUAGE.into(), GO_HIGHLIGHTS)),
             Language::JavaScript => Some((
-                tree_sitter_javascript::LANGUAGE.into(),
+                tree_sitter_typescript::LANGUAGE_TSX.into(),
                 JAVASCRIPT_HIGHLIGHTS,
             )),
             Language::TypeScript => Some((
@@ -290,7 +292,7 @@ mod tests {
         ok &= check_query("rust",       tree_sitter_rust::LANGUAGE.into(),       RUST_HIGHLIGHTS);
         ok &= check_query("python",     tree_sitter_python::LANGUAGE.into(),     PYTHON_HIGHLIGHTS);
         ok &= check_query("go",         tree_sitter_go::LANGUAGE.into(),         GO_HIGHLIGHTS);
-        ok &= check_query("javascript", tree_sitter_javascript::LANGUAGE.into(), JAVASCRIPT_HIGHLIGHTS);
+        ok &= check_query("javascript", tree_sitter_typescript::LANGUAGE_TSX.into(), JAVASCRIPT_HIGHLIGHTS);
         ok &= check_query("typescript", tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(), TYPESCRIPT_HIGHLIGHTS);
         ok &= check_query("tsx",        tree_sitter_typescript::LANGUAGE_TSX.into(), TSX_HIGHLIGHTS);
         ok &= check_query("c",          tree_sitter_c::LANGUAGE.into(),          C_HIGHLIGHTS);
