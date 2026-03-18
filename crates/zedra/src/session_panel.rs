@@ -6,17 +6,19 @@ use gpui::*;
 use crate::theme;
 use crate::transport_badge::format_bytes;
 use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
-use zedra_session::SessionState;
+use zedra_session::{ConnectPhase, ConnectState};
 
 /// Render the session tab content for the workspace drawer.
 pub fn render_session_tab(
     handle: Option<&zedra_session::SessionHandle>,
     cx: &mut Context<WorkspaceDrawer>,
 ) -> Div {
-    let is_empty = handle.is_none()
-        || handle
-            .as_ref()
-            .map_or(false, |h| matches!(h.state(), SessionState::Disconnected));
+    let cs: Option<ConnectState> = handle.map(|h| h.connect_state());
+
+    let is_empty = cs
+        .as_ref()
+        .map(|s| s.phase.is_idle())
+        .unwrap_or(true);
     if is_empty {
         return div()
             .size_full()
@@ -27,71 +29,51 @@ pub fn render_session_tab(
             .text_size(px(theme::FONT_BODY))
             .child("No active session");
     }
-    let handle = handle.unwrap();
-    let state = handle.state();
 
-    let session_id = handle
-        .session_id()
-        .unwrap_or_else(|| "\u{2014}".to_string());
-    let conn_info = handle.connection_info();
-
-    let (hostname, username, workdir, os, arch, os_version, host_version) = match &state {
-        SessionState::Connected {
-            hostname,
-            username,
-            workdir,
-            os,
-            arch,
-            os_version,
-            host_version,
-            ..
-        } => (
-            hostname.clone(),
-            username.clone(),
-            workdir.clone(),
-            os.clone(),
-            arch.clone(),
-            os_version.clone(),
-            host_version.clone(),
-        ),
-        _ => Default::default(),
-    };
-
-    // --- Host section ---
+    let cs = cs.unwrap();
+    let snap = &cs.snapshot;
 
     let mut content = div()
         .px(px(theme::DRAWER_PADDING))
         .flex()
-        .flex_col()
-        .child(info_row("Hostname", hostname));
-    if !username.is_empty() {
-        content = content.child(info_row("User", username));
+        .flex_col();
+
+    // --- Host section ---
+    if let Some(hostname) = &snap.hostname {
+        content = content.child(info_row("Hostname", hostname.clone()));
     }
-    if !os.is_empty() {
-        let os_label = if !arch.is_empty() {
-            format!("{} / {}", os, arch)
-        } else {
-            os
-        };
-        content = content.child(info_row("Platform", os_label));
+    if let Some(username) = &snap.username {
+        if !username.is_empty() {
+            content = content.child(info_row("User", username.clone()));
+        }
     }
-    if !os_version.is_empty() {
-        content = content.child(info_row("OS Version", os_version));
+    if let Some(os) = &snap.os {
+        if !os.is_empty() {
+            let os_label = match &snap.arch {
+                Some(arch) if !arch.is_empty() => format!("{os} / {arch}"),
+                _ => os.clone(),
+            };
+            content = content.child(info_row("Platform", os_label));
+        }
     }
-    if !host_version.is_empty() {
-        content = content.child(info_row("Host Version", host_version));
+    if let Some(v) = &snap.os_version {
+        if !v.is_empty() {
+            content = content.child(info_row("OS Version", v.clone()));
+        }
     }
-    content = content.child(info_row("Directory", workdir));
+    if let Some(v) = &snap.host_version {
+        if !v.is_empty() {
+            content = content.child(info_row("Host Version", v.clone()));
+        }
+    }
+    if let Some(wd) = &snap.workdir {
+        content = content.child(info_row("Directory", wd.clone()));
+    }
 
     // --- Connection section ---
-
-    if let Some(ci) = &conn_info {
-        let conn_type_label = if ci.is_direct {
-            "Direct (P2P)"
-        } else {
-            "Relayed"
-        };
-        let conn_type_color = if ci.is_direct {
+    if let Some(t) = &snap.transport {
+        let conn_type_label = if t.is_direct { "Direct (P2P)" } else { "Relayed" };
+        let conn_type_color = if t.is_direct {
             theme::ACCENT_GREEN
         } else {
             theme::ACCENT_YELLOW
@@ -129,50 +111,98 @@ pub fn render_session_tab(
                 ),
         );
 
-        content = content
-            .child(info_row("Protocol", ci.protocol.clone()))
-            .child(info_row("Remote Address", ci.remote_addr.clone()));
+        content = content.child(info_row("Remote Address", t.remote_addr.clone()));
 
-        if ci.path_rtt_ms > 0 {
-            content = content.child(info_row("RTT", format!("{}ms", ci.path_rtt_ms)));
+        if let Some(relay) = &t.relay_url {
+            content = content.child(info_row("Relay", relay.clone()));
         }
 
-        content = content.child(info_row("Paths", format!("{}", ci.num_paths)));
+        if t.rtt_ms > 0 {
+            content = content.child(info_row("RTT", format!("{}ms", t.rtt_ms)));
+        }
 
-        if ci.bytes_sent > 0 || ci.bytes_recv > 0 {
+        content = content.child(info_row("Paths", format!("{}", t.num_paths)));
+
+        if t.bytes_sent > 0 || t.bytes_recv > 0 {
             content = content.child(info_row(
                 "Data",
                 format!(
                     "{} sent / {} recv",
-                    format_bytes(ci.bytes_sent),
-                    format_bytes(ci.bytes_recv),
+                    format_bytes(t.bytes_sent),
+                    format_bytes(t.bytes_recv),
                 ),
             ));
         }
     }
 
     // --- Endpoints section ---
-
-    if let Some(ci) = &conn_info {
-        content = content
-            .child(info_row("Local", ci.local_endpoint_id.clone()))
-            .child(info_row("Remote", ci.endpoint_id.clone()));
+    if let Some(id) = &snap.local_node_id {
+        content = content.child(info_row("Local Node", id.clone()));
+    }
+    if let Some(id) = &snap.remote_node_id {
+        content = content.child(info_row("Remote Node", id.clone()));
+    }
+    if let Some(alpn) = &snap.alpn {
+        content = content.child(info_row("Protocol", alpn.clone()));
     }
 
     // --- Session section ---
+    if let Some(sid) = &snap.session_id {
+        content = content.child(info_row("Session ID", sid.clone()));
+    }
 
-    content = content.child(info_row("Session ID", session_id));
+    // --- Phase timing section ---
+    content = content.child(render_timing(snap));
 
-    if let SessionState::Error(msg) = &state {
+    // --- Error banner ---
+    if let ConnectPhase::Failed(e) = &cs.phase {
         content = content.child(
             div()
-                .pt(px(6.0))
-                .text_color(rgb(theme::ACCENT_RED))
-                .text_size(px(theme::FONT_BODY))
-                .child(msg.clone()),
+                .mt(px(8.0))
+                .p(px(8.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(rgb(theme::ACCENT_RED))
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .text_color(rgb(theme::ACCENT_RED))
+                        .text_size(px(theme::FONT_BODY))
+                        .child(e.user_message()),
+                )
+                .children(e.action_hint().map(|hint| {
+                    div()
+                        .text_color(rgb(theme::TEXT_MUTED))
+                        .text_size(px(theme::FONT_DETAIL))
+                        .child(hint)
+                })),
         );
     }
 
+    // --- Reconnecting banner ---
+    if let ConnectPhase::Reconnecting {
+        attempt,
+        next_retry_secs,
+        ..
+    } = &cs.phase
+    {
+        let msg = if *next_retry_secs > 0 {
+            format!("Reconnecting (attempt {attempt}) — {next_retry_secs}s until next retry")
+        } else {
+            format!("Reconnecting (attempt {attempt})\u{2026}")
+        };
+        content = content.child(
+            div()
+                .mt(px(8.0))
+                .text_color(rgb(theme::ACCENT_YELLOW))
+                .text_size(px(theme::FONT_DETAIL))
+                .child(msg),
+        );
+    }
+
+    // --- Disconnect button ---
     let disconnect_button = div()
         .id("session-disconnect-btn")
         .mt(px(16.0))
@@ -190,9 +220,51 @@ pub fn render_session_tab(
         }))
         .child(div().flex().justify_center().child("Disconnect"));
 
-    content = content.child(disconnect_button).child(div().h(px(16.0)));
+    content.child(disconnect_button).child(div().h(px(16.0)))
+}
 
-    content
+/// Render phase timing summary row.
+fn render_timing(snap: &zedra_session::ConnectSnapshot) -> Div {
+    let mut timing_parts: Vec<String> = Vec::new();
+    if let Some(ms) = snap.binding_ms {
+        timing_parts.push(format!("Bind {ms}ms"));
+    }
+    if let Some(ms) = snap.hole_punch_ms {
+        timing_parts.push(format!("P2P {ms}ms"));
+    }
+    if let Some(ms) = snap.rpc_ms {
+        timing_parts.push(format!("RPC {ms}ms"));
+    }
+    if let Some(ms) = snap.register_ms {
+        timing_parts.push(format!("Reg {ms}ms"));
+    }
+    if let Some(ms) = snap.auth_ms {
+        timing_parts.push(format!("Auth {ms}ms"));
+    }
+    if let Some(ms) = snap.fetch_ms {
+        timing_parts.push(format!("Info {ms}ms"));
+    }
+    if let Some(ms) = snap.resume_ms {
+        timing_parts.push(format!("Resume {ms}ms"));
+    }
+    if timing_parts.is_empty() {
+        return div();
+    }
+    div()
+        .py(px(4.0))
+        .child(
+            div()
+                .text_color(rgb(theme::TEXT_MUTED))
+                .text_size(px(theme::FONT_DETAIL))
+                .child("Timing"),
+        )
+        .child(
+            div()
+                .mt(px(1.0))
+                .text_color(rgb(theme::TEXT_SECONDARY))
+                .text_size(px(theme::FONT_DETAIL))
+                .child(timing_parts.join(" \u{00b7} ")),
+        )
 }
 
 fn info_row(label: &'static str, value: String) -> Div {

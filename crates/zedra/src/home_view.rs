@@ -105,25 +105,22 @@ impl Render for HomeView {
                 let card = match (&item.active, &item.saved) {
                     (Some((ws_idx, summary)), _) => {
                         let index = *ws_idx;
-                        let (status_label, status_color): (&str, u32) = match &summary.session_state
-                        {
-                            zedra_session::SessionState::Connected { .. } => {
-                                ("Connected", theme::ACCENT_GREEN)
-                            }
-                            zedra_session::SessionState::Connecting { .. } => {
-                                ("Connecting\u{2026}", theme::ACCENT_YELLOW)
-                            }
-                            zedra_session::SessionState::Reconnecting { .. } => {
-                                ("Reconnecting\u{2026}", theme::ACCENT_YELLOW)
-                            }
-                            zedra_session::SessionState::Disconnected => {
-                                ("Disconnected", theme::ACCENT_RED)
-                            }
-                            zedra_session::SessionState::HostUnreachable => {
-                                ("Unreachable", theme::ACCENT_RED)
-                            }
-                            zedra_session::SessionState::Error(_) => ("Error", theme::ACCENT_RED),
-                        };
+                        let (status_label, status_color): (&str, u32) =
+                            match &summary.connect_phase {
+                                zedra_session::ConnectPhase::Connected => {
+                                    ("Connected", theme::ACCENT_GREEN)
+                                }
+                                p if p.is_connecting() => {
+                                    ("Connecting\u{2026}", theme::ACCENT_YELLOW)
+                                }
+                                zedra_session::ConnectPhase::Reconnecting { .. } => {
+                                    ("Reconnecting\u{2026}", theme::ACCENT_YELLOW)
+                                }
+                                zedra_session::ConnectPhase::Failed(_) => {
+                                    ("Error", theme::ACCENT_RED)
+                                }
+                                _ => ("Disconnected", theme::ACCENT_RED),
+                            };
                         let path_label = summary
                             .project_path
                             .as_deref()
