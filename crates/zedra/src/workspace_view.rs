@@ -19,6 +19,28 @@ use zedra_terminal::view::{DisconnectRequested, TerminalView};
 /// Sentinel terminal ID used before the server assigns a real ID.
 const PENDING_TERMINAL_ID: &str = "__pending__";
 
+/// Full-screen centered placeholder shown when a file is loading.
+struct FileLoadingView;
+
+impl Render for FileLoadingView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .top(px(-32.0))
+                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_size(px(theme::FONT_BODY))
+                    .text_align(TextAlign::Center)
+                    .child("Loading..."),
+            )
+    }
+}
+
 /// Full-screen centered placeholder shown when a file is too large to preview.
 struct FileTooLargeView {
     message: String,
@@ -271,6 +293,9 @@ impl Render for WorkspaceContent {
                                 .right_0()
                                 .bottom_0()
                                 .bg(rgb(theme::BG_PRIMARY))
+                                // Consume pointer events so they don't reach the terminal
+                                // view underneath (which would trigger the keyboard).
+                                .on_mouse_down(MouseButton::Left, |_, _, _| {})
                                 .child(connecting_view::render_connecting(&handle)),
                         )
                     })
@@ -456,6 +481,10 @@ impl WorkspaceView {
                             if !path.is_empty() {
                                 let path = path.clone();
                                 let filename = path.rsplit('/').next().unwrap_or(&path).to_string();
+                                let loading = cx.new(|_cx| FileLoadingView);
+                                workspace_content_clone.update(cx, |c, cx| {
+                                    c.set_main_view(loading.into(), filename.clone(), cx);
+                                });
                                 let handle = this.session_handle.clone();
                                 let filename_clone = filename.clone();
                                 let pfile = pending_file_clone.clone();
@@ -504,6 +533,10 @@ impl WorkspaceView {
                             drawer_host_clone.update(cx, |host, cx| host.close(cx));
                             let path = path.clone();
                             let filename = path.rsplit('/').next().unwrap_or(&path).to_string();
+                            let loading = cx.new(|_cx| FileLoadingView);
+                            workspace_content_clone.update(cx, |c, cx| {
+                                c.set_main_view(loading.into(), filename.clone(), cx);
+                            });
                             if this.session_handle.is_connected() {
                                 let handle = this.session_handle.clone();
                                 let path_clone = path.clone();
