@@ -773,7 +773,7 @@ impl Render for WorkspaceView {
                     c.set_main_view(placeholder.into(), fname, cx);
                 });
             } else {
-                let editor_view = cx.new(|cx| EditorView::new(content, cx));
+                let editor_view = cx.new(|cx| EditorView::with_filename(content, &filename, cx));
                 self.workspace_content.update(cx, |c, cx| {
                     c.set_main_view(editor_view.into(), fname, cx);
                 });

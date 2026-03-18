@@ -309,4 +309,45 @@ mod tests {
         ok &= check_query("php",        tree_sitter_php::LANGUAGE_PHP.into(),    tree_sitter_php::HIGHLIGHTS_QUERY);
         assert!(ok, "one or more highlight queries failed to parse");
     }
+
+    #[test]
+    fn highlight_js_and_cpp_produce_captures() {
+        let js_src = "function greet(name) { return 'Hello ' + name; }";
+        let mut js_hl = Highlighter::new(Language::JavaScript);
+        js_hl.parse(js_src);
+        let js_caps: Vec<_> = js_hl.highlights(js_src, 0..js_src.len());
+        println!("JS captures ({}):", js_caps.len());
+        for (range, name) in &js_caps {
+            println!("  {:?} -> {name}", &js_src[range.clone()]);
+        }
+        assert!(!js_caps.is_empty(), "JS produced no highlights");
+
+        let cpp_src = "#include <vector>\nint main() { return 0; }";
+        let mut cpp_hl = Highlighter::new(Language::Cpp);
+        cpp_hl.parse(cpp_src);
+        let cpp_caps: Vec<_> = cpp_hl.highlights(cpp_src, 0..cpp_src.len());
+        println!("C++ captures ({}):", cpp_caps.len());
+        for (range, name) in &cpp_caps {
+            println!("  {:?} -> {name}", &cpp_src[range.clone()]);
+        }
+        assert!(!cpp_caps.is_empty(), "C++ produced no highlights");
+
+        // Test with more complex JS to exercise class/arrow/template patterns
+        let complex_js = r#"class Foo extends Bar {
+  constructor(x) { this.x = x; }
+  greet = (name) => `Hello ${name}`;
+  static create() { return new Foo(0); }
+}
+const MAX = 100;
+import { foo } from './bar';
+"#;
+        let mut js2 = Highlighter::new(Language::JavaScript);
+        js2.parse(complex_js);
+        let caps2: Vec<_> = js2.highlights(complex_js, 0..complex_js.len());
+        println!("Complex JS captures ({}):", caps2.len());
+        for (range, name) in &caps2 {
+            println!("  {:?} -> {name}", &complex_js[range.clone()]);
+        }
+        assert!(caps2.len() > 14, "Complex JS should produce more than 14 captures, got {}", caps2.len());
+    }
 }
