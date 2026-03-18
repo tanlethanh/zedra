@@ -80,20 +80,19 @@ pub enum ConnectPhase {
     Failed(ConnectError),
 }
 
-/// Step index labels for the horizontal progress stepper (6 visual steps).
-pub const STEPPER_STEP_NAMES: [&str; 6] = ["Init", "Connect", "Auth", "Info", "Resume", "Done"];
+/// Step index labels for the horizontal progress stepper (5 visual steps).
+pub const STEPPER_STEP_NAMES: [&str; 5] = ["Init", "Connect", "Auth", "Sync", "Done"];
 
 impl ConnectPhase {
-    /// Maps to a stepper step index (0–5) for the horizontal progress bar.
+    /// Maps to a stepper step index (0–4) for the horizontal progress bar.
     /// Returns `None` for Idle / Reconnecting / Failed (they don't map linearly).
     pub fn step_index(&self) -> Option<usize> {
         match self {
             Self::BindingEndpoint => Some(0),
             Self::HolePunching | Self::EstablishingRpc => Some(1),
             Self::Registering | Self::Authenticating | Self::Proving => Some(2),
-            Self::FetchingInfo => Some(3),
-            Self::ResumingTerminals => Some(4),
-            Self::Connected => Some(5),
+            Self::FetchingInfo | Self::ResumingTerminals => Some(3),
+            Self::Connected => Some(4),
             _ => None,
         }
     }

@@ -1,7 +1,7 @@
 /// Connection loading screen — shown while a workspace is connecting/reconnecting/failed.
 ///
 /// Layout:
-///   1. Horizontal 6-step progress stepper
+///   1. Horizontal 5-step progress stepper
 ///   2. Vertical current-phase detail (transport, auth, host, timing, error/reconnect banners)
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -13,7 +13,7 @@ use gpui::{Animation, AnimationExt as _, Transformation, prelude::FluentBuilder 
 // a fresh oneshot rotation for exactly that press.
 static RETRY_GENERATION: AtomicU64 = AtomicU64::new(0);
 use zedra_session::{
-    ConnectPhase, ConnectSnapshot, ConnectState, TransportSnapshot, STEPPER_STEP_NAMES,
+    ConnectPhase, ConnectSnapshot, ConnectState, STEPPER_STEP_NAMES, TransportSnapshot,
 };
 
 use crate::theme;
@@ -142,9 +142,7 @@ pub fn render_retry_button(handle: &zedra_session::SessionHandle) -> Option<Div>
             .with_animation(
                 SharedString::from(format!("retry-spin-{generation}")),
                 Animation::new(Duration::from_secs(1)),
-                |svg, delta| {
-                    svg.with_transformation(Transformation::rotate(percentage(delta)))
-                },
+                |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
             )
             .into_any_element()
     } else {
@@ -160,6 +158,7 @@ pub fn render_retry_button(handle: &zedra_session::SessionHandle) -> Option<Div>
             .cursor_pointer()
             .w(px(14.0))
             .h(px(14.0))
+            .hit_slop(px(10.0))
             .on_mouse_down(MouseButton::Left, move |_, _, _| {
                 RETRY_GENERATION.fetch_add(1, Ordering::Release);
                 handle_retry.retry_connect();
@@ -211,14 +210,14 @@ fn render_stepper(cs: &ConnectState) -> Div {
             // Reconnecting / Failed: use snapshot's failed_at_step or last completed step
             cs.snapshot
                 .failed_at_step
-                .unwrap_or_else(|| completed_step_count(cs).saturating_sub(1).min(5))
+                .unwrap_or_else(|| completed_step_count(cs).saturating_sub(1).min(4))
         }
     });
 
     let completed = completed_step_count(cs);
 
     let mut row = div()
-        .w(px(theme::HOME_CARD_WIDTH + 20.0))
+        .w(px(260.0))
         .flex()
         .flex_row()
         .items_center()
@@ -251,12 +250,33 @@ fn render_stepper(cs: &ConnectState) -> Div {
             .border_color(dot_border_color)
             .when(is_done || is_active || is_failed, |d: Div| d.bg(dot_color));
 
+        // Soft scale pulse on the active (in-progress) dot.
+        // Uses an SVG circle so Transformation::scale() applies visually without affecting layout.
+        let dot_element: AnyElement = if is_active && !is_failed {
+            svg()
+                .path("icons/dot.svg")
+                .size(px(dot_size))
+                .text_color(dot_color)
+                .with_animation(
+                    SharedString::from(format!("stepper-pulse-{i}")),
+                    Animation::new(Duration::from_millis(1200)).repeat(),
+                    move |s, delta| {
+                        let t = (delta * std::f32::consts::PI).sin();
+                        let scale = 1.0 + 0.35 * t;
+                        s.with_transformation(Transformation::scale(size(scale, scale)))
+                    },
+                )
+                .into_any_element()
+        } else {
+            dot.into_any_element()
+        };
+
         let step_col = div()
             .flex()
             .flex_col()
             .items_center()
             .gap(px(4.0))
-            .child(dot)
+            .child(dot_element)
             .child(
                 div()
                     .text_size(px(9.0))
@@ -295,15 +315,15 @@ fn render_stepper(cs: &ConnectState) -> Div {
 }
 
 /// Number of steps that have been fully completed.
-/// Step mapping: 0=Endpoint, 1=Connect, 2=Auth, 3=Info, 4=Resume, 5=Done
+/// Step mapping: 0=Init, 1=Connect, 2=Auth, 3=Sync, 4=Done
 fn completed_step_count(cs: &ConnectState) -> usize {
     if cs.phase.is_connected() {
-        return 6;
+        return 5;
     }
     let snap = &cs.snapshot;
     let mut n = 0;
     if snap.binding_ms.is_some() {
-        n = 1; // Endpoint done
+        n = 1; // Init done
     }
     if snap.rpc_ms.is_some() {
         n = 2; // Connect done (P2P + RPC both finished)
@@ -311,11 +331,11 @@ fn completed_step_count(cs: &ConnectState) -> usize {
     if snap.auth_ms.is_some() {
         n = 3; // Auth done
     }
-    if snap.fetch_ms.is_some() {
-        n = 4; // Info done
-    }
+    // Sync (FetchingInfo + ResumingTerminals) is done once resume completes.
+    // For new sessions (no resume), Connected is reached immediately after fetch
+    // and the early return above handles full completion.
     if snap.resume_ms.is_some() {
-        n = 5; // Resume done
+        n = 4; // Sync done
     }
     n
 }
@@ -325,17 +345,14 @@ fn completed_step_count(cs: &ConnectState) -> usize {
 fn render_detail(cs: &ConnectState) -> Div {
     let snap = &cs.snapshot;
     let mut col = div()
-        .w(px(theme::HOME_CARD_WIDTH))
+        .w(px(theme::CONNECT_DETAIL_WIDTH))
         .flex()
         .flex_col()
         .gap(px(theme::SPACING_SM));
 
     // Endpoint section
     if snap.local_node_id.is_some() || snap.remote_node_id.is_some() || snap.relay_url.is_some() {
-        col = col.child(render_section(
-            "Endpoint",
-            render_endpoint_rows(snap),
-        ));
+        col = col.child(render_section("Endpoint", render_endpoint_rows(snap)));
     }
 
     // Transport section
@@ -400,7 +417,9 @@ fn render_detail(cs: &ConnectState) -> Div {
             zedra_session::ReconnectReason::ConnectionLost => "connection lost",
         };
         let msg = if *next_retry_secs > 0 {
-            format!("Attempt {attempt} \u{00b7} {next_retry_secs}s until retry \u{00b7} {reason_str}")
+            format!(
+                "Attempt {attempt} \u{00b7} {next_retry_secs}s until retry \u{00b7} {reason_str}"
+            )
         } else {
             format!("Attempt {attempt} \u{00b7} retrying\u{2026} \u{00b7} {reason_str}")
         };
@@ -449,64 +468,32 @@ fn render_endpoint_rows(snap: &ConnectSnapshot) -> Div {
 }
 
 fn render_transport_rows(t: &TransportSnapshot) -> Div {
-    let conn_type = if t.is_direct { "Direct (P2P)" } else { "Relayed" };
-    let conn_color = if t.is_direct {
-        theme::ACCENT_GREEN
+    let conn_type = if t.is_direct {
+        "Direct (P2P)"
     } else {
-        theme::ACCENT_YELLOW
+        "Relayed"
     };
 
     let mut d = div()
         .flex()
         .flex_col()
         .gap(px(2.0))
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(4.0))
-                .child(
-                    div()
-                        .w(px(theme::ICON_STATUS))
-                        .h(px(theme::ICON_STATUS))
-                        .rounded(px(3.0))
-                        .bg(rgb(conn_color)),
-                )
-                .child(
-                    div()
-                        .text_color(rgb(conn_color))
-                        .text_size(px(theme::FONT_BODY))
-                        .child(conn_type),
-                ),
-        )
-        .child(kv_row("Address", &t.remote_addr));
+        .child(kv_row("Type", conn_type))
+        .child(kv_row(
+            "Address",
+            &format!("{} ({})", t.remote_addr, t.num_paths),
+        ));
 
     if let Some(relay) = &t.relay_url {
         d = d.child(kv_row("Relay", relay));
     }
-    if t.rtt_ms > 0 {
-        d = d.child(kv_row("RTT", &format!("{}ms", t.rtt_ms)));
-    }
-    d = d.child(kv_row("Paths", &format!("{}", t.num_paths)));
-    if t.bytes_sent > 0 || t.bytes_recv > 0 {
-        d = d.child(kv_row(
-            "Data",
-            &format!(
-                "{} \u{2191} / {} \u{2193}",
-                format_bytes(t.bytes_sent),
-                format_bytes(t.bytes_recv)
-            ),
-        ));
-    }
-    if t.path_upgraded {
-        d = d.child(
-            div()
-                .text_color(rgb(theme::ACCENT_GREEN))
-                .text_size(px(theme::FONT_DETAIL))
-                .child("\u{2713} Path upgraded to P2P"),
-        );
-    }
+    let net = format!(
+        "{} - {} \u{2191} / {} \u{2193}",
+        t.rtt_ms,
+        format_bytes(t.bytes_sent),
+        format_bytes(t.bytes_recv)
+    );
+    d = d.child(kv_row("Net", &net));
     d
 }
 
@@ -518,17 +505,9 @@ fn render_auth_rows(snap: &ConnectSnapshot) -> Div {
     if let Some(outcome) = &snap.auth_outcome {
         let label = match outcome {
             zedra_session::AuthOutcome::Registered => "Registered (first pairing)",
-            zedra_session::AuthOutcome::Authenticated => "Authenticated",
+            zedra_session::AuthOutcome::Authenticated => "Authorized",
         };
-        d = d.child(kv_row("Outcome", label));
-    }
-    if snap.is_first_pairing {
-        d = d.child(
-            div()
-                .text_color(rgb(theme::ACCENT_GREEN))
-                .text_size(px(theme::FONT_DETAIL))
-                .child("\u{2713} First pairing — device registered"),
-        );
+        d = d.child(kv_row("Status", label));
     }
     d
 }
@@ -544,7 +523,7 @@ fn render_host_rows(snap: &ConnectSnapshot) -> Div {
         }
     }
     if let Some(v) = &snap.workdir {
-        d = d.child(kv_row("Dir", v));
+        d = d.child(kv_row("Workdir", v));
     }
     if let Some(os) = &snap.os {
         let label = match &snap.arch {
@@ -555,7 +534,7 @@ fn render_host_rows(snap: &ConnectSnapshot) -> Div {
     }
     if let Some(v) = &snap.host_version {
         if !v.is_empty() {
-            d = d.child(kv_row("zedra-host", v));
+            d = d.child(kv_row("Version", v));
         }
     }
     d
@@ -578,11 +557,10 @@ fn build_timing_string(snap: &ConnectSnapshot) -> String {
     if let Some(ms) = snap.auth_ms {
         parts.push(format!("Auth {ms}ms"));
     }
-    if let Some(ms) = snap.fetch_ms {
-        parts.push(format!("Info {ms}ms"));
-    }
-    if let Some(ms) = snap.resume_ms {
-        parts.push(format!("Resume {ms}ms"));
+    match (snap.fetch_ms, snap.resume_ms) {
+        (Some(fetch), Some(resume)) => parts.push(format!("Sync {}ms", fetch + resume)),
+        (Some(ms), None) => parts.push(format!("Sync {ms}ms")),
+        _ => {}
     }
     parts.join(" \u{00b7} ")
 }
