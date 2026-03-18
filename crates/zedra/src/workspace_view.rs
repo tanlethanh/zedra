@@ -509,51 +509,29 @@ impl WorkspaceView {
                                 let filename_clone = filename.clone();
                                 let pgit = pending_git_diff_clone.clone();
                                 zedra_session::session_runtime().spawn(async move {
-                                    log::debug!("[git_diff] requesting diff for: {}", path_clone);
                                     let diff_text = match handle.git_diff(Some(&path_clone), false).await {
-                                        Ok(text) if !text.is_empty() => {
-                                            log::debug!("[git_diff] unstaged diff: {} bytes", text.len());
-                                            text
-                                        }
-                                        Ok(_) => {
-                                            log::debug!("[git_diff] unstaged empty, trying --cached");
-                                            match handle.git_diff(Some(&path_clone), true).await {
-                                                Ok(text) => {
-                                                    log::debug!("[git_diff] staged diff: {} bytes", text.len());
-                                                    text
-                                                }
-                                                Err(e) => {
-                                                    log::error!("[git_diff] staged RPC failed for {}: {}", path_clone, e);
-                                                    String::new()
-                                                }
+                                        Ok(text) if !text.is_empty() => text,
+                                        Ok(_) => match handle.git_diff(Some(&path_clone), true).await {
+                                            Ok(text) => text,
+                                            Err(e) => {
+                                                log::error!("git_diff staged RPC failed for {}: {}", path_clone, e);
+                                                String::new()
                                             }
-                                        }
+                                        },
                                         Err(e) => {
-                                            log::error!(
-                                                "[git_diff] RPC failed for {}: {}",
-                                                path_clone,
-                                                e
-                                            );
+                                            log::error!("git_diff RPC failed for {}: {}", path_clone, e);
                                             return;
                                         }
                                     };
                                     let diffs = parse_unified_diff(&diff_text);
-                                    log::debug!("[git_diff] parsed {} file diffs from {} bytes", diffs.len(), diff_text.len());
-                                    for d in &diffs {
-                                        log::debug!("[git_diff]   '{}' -> '{}', {} hunks", d.old_path, d.new_path, d.hunks.len());
-                                    }
                                     let diff = diffs
                                         .into_iter()
                                         .find(|d| d.new_path == path_clone)
-                                        .unwrap_or_else(|| {
-                                            log::warn!("[git_diff] no match for '{}', showing empty diff", path_clone);
-                                            FileDiff {
-                                                old_path: path_clone.clone(),
-                                                new_path: path_clone.clone(),
-                                                hunks: Vec::new(),
-                                            }
+                                        .unwrap_or(FileDiff {
+                                            old_path: path_clone.clone(),
+                                            new_path: path_clone.clone(),
+                                            hunks: Vec::new(),
                                         });
-                                    log::debug!("[git_diff] rendering diff with {} hunks", diff.hunks.len());
                                     pgit.set((filename_clone, diff));
                                     zedra_session::push_callback(Box::new(|| {}));
                                 });
