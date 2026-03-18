@@ -10,6 +10,7 @@ use gpui::*;
 
 use super::syntax_highlighter::Highlighter;
 use super::syntax_theme::SyntaxTheme;
+use crate::platform_bridge;
 use crate::theme;
 
 // ── Diff data types ─────────────────────────────────────────────────────────
@@ -172,10 +173,13 @@ const LINE_HEIGHT: f32 = theme::EDITOR_LINE_HEIGHT;
 const GUTTER_WIDTH: f32 = theme::EDITOR_GUTTER_WIDTH;
 const FONT_SIZE: f32 = theme::EDITOR_FONT_SIZE;
 const GUTTER_FONT_SIZE: f32 = theme::EDITOR_GUTTER_FONT_SIZE;
+const BOTTOM_INSET_MIN: f32 = 100.0;
 
 struct CachedDiffLine {
     line: Option<DiffLine>,
     highlights: Vec<(Range<usize>, HighlightStyle)>,
+    /// Length in chars (used to cap horizontal scroll).
+    char_len: usize,
 }
 
 pub struct GitDiffView {
@@ -186,6 +190,9 @@ pub struct GitDiffView {
     focus_handle: FocusHandle,
     cached_lines: Rc<Vec<CachedDiffLine>>,
     lines_dirty: bool,
+    h_scroll_offset: f32,
+    max_line_chars: usize,
+    h_scroll_active: bool,
 }
 
 impl GitDiffView {
@@ -199,6 +206,9 @@ impl GitDiffView {
             focus_handle: cx.focus_handle(),
             cached_lines: Rc::new(Vec::new()),
             lines_dirty: true,
+            h_scroll_offset: 0.0,
+            max_line_chars: 0,
+            h_scroll_active: false,
         }
     }
 
@@ -207,14 +217,20 @@ impl GitDiffView {
         let lines: Vec<CachedDiffLine> = (0..line_count)
             .map(|i| {
                 let line = self.get_line(i);
-                let highlights = line
-                    .as_ref()
-                    .filter(|l| l.kind != DiffLineKind::Header)
-                    .map(|l| self.line_highlights(&l.content))
-                    .unwrap_or_default();
-                CachedDiffLine { line, highlights }
+                let (highlights, char_len) = match &line {
+                    Some(l) if l.kind != DiffLineKind::Header => {
+                        let h = self.line_highlights(&l.content);
+                        // prefix ("+ ", "- ", "  ") adds 2 chars
+                        let len = l.content.chars().count() + 2;
+                        (h, len)
+                    }
+                    Some(l) => (Vec::new(), l.content.chars().count()),
+                    None => (Vec::new(), 0),
+                };
+                CachedDiffLine { line, highlights, char_len }
             })
             .collect();
+        self.max_line_chars = lines.iter().map(|l| l.char_len).max().unwrap_or(0);
         self.cached_lines = Rc::new(lines);
         self.lines_dirty = false;
     }
@@ -298,13 +314,17 @@ impl Focusable for GitDiffView {
 }
 
 impl Render for GitDiffView {
-    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.lines_dirty {
             self.rebuild_line_cache();
         }
 
         let line_count = self.cached_lines.len();
         let cached_lines = self.cached_lines.clone();
+        let bottom_inset = f32::max(platform_bridge::home_indicator_inset(), BOTTOM_INSET_MIN);
+        let extra_items = (bottom_inset / LINE_HEIGHT).ceil() as usize;
+        let h_scroll_offset = self.h_scroll_offset;
+        let scroll_y_lock = self.scroll_handle.0.borrow().base_handle.offset().y;
 
         let text_style = {
             let mut style = window.text_style();
@@ -319,12 +339,38 @@ impl Render for GitDiffView {
             .size_full()
             .bg(rgb(0x0e0c0c))
             .track_focus(&self.focus_handle)
+            .on_scroll_wheel(cx.listener(move |this, event: &ScrollWheelEvent, _window, cx| {
+                let (delta_x, delta_y) = match event.delta {
+                    ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y)),
+                    ScrollDelta::Lines(l) => (l.x * 20.0, l.y * 20.0),
+                };
+                if delta_y.abs() > delta_x.abs() * 3.0 {
+                    this.h_scroll_active = false;
+                } else if delta_x.abs() > delta_y.abs() * 2.5 && delta_x.abs() > 5.0 {
+                    this.h_scroll_active = true;
+                }
+                if this.h_scroll_active && delta_x.abs() > 0.1 {
+                    let char_width = FONT_SIZE * 0.6;
+                    let max_offset = (this.max_line_chars as f32 * char_width).max(0.0);
+                    this.h_scroll_offset = (this.h_scroll_offset - delta_x).clamp(0.0, max_offset);
+                    this.scroll_handle
+                        .0
+                        .borrow()
+                        .base_handle
+                        .set_offset(point(px(0.0), scroll_y_lock));
+                    cx.notify();
+                }
+            }))
             .child(
-                uniform_list("git-diff-view-lines", line_count, {
+                uniform_list("git-diff-view-lines", line_count + extra_items, {
                     let text_style = text_style.clone();
                     move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
                         range
                             .map(|i| {
+                                if i >= line_count {
+                                    return div().h(px(LINE_HEIGHT)).into_any_element();
+                                }
+
                                 let cached = &cached_lines[i];
                                 let Some(line) = &cached.line else {
                                     return div().h(px(LINE_HEIGHT)).into_any_element();
@@ -414,10 +460,19 @@ impl Render for GitDiffView {
                                         div()
                                             .flex_1()
                                             .h(px(LINE_HEIGHT))
-                                            .flex()
-                                            .items_center()
-                                            .text_size(px(FONT_SIZE))
-                                            .child(styled_text),
+                                            .overflow_hidden()
+                                            .relative()
+                                            .child(
+                                                div()
+                                                    .absolute()
+                                                    .top(px(0.0))
+                                                    .left(px(-h_scroll_offset))
+                                                    .h(px(LINE_HEIGHT))
+                                                    .flex()
+                                                    .items_center()
+                                                    .text_size(px(FONT_SIZE))
+                                                    .child(styled_text),
+                                            ),
                                     )
                                     .into_any_element()
                             })
