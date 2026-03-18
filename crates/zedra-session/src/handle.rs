@@ -452,6 +452,8 @@ impl SessionHandle {
                                 path_upgraded,
                             });
                         }
+                        // Notify outside the lock to avoid holding it during the callback.
+                        handle_for_paths.notify_state_change();
                     }
 
                     if watcher_active {

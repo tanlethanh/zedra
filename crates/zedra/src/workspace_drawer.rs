@@ -40,6 +40,9 @@ pub struct WorkspaceDrawer {
     git_loaded: bool,
     active_terminal_id: Option<String>,
     session_handle: Option<zedra_session::SessionHandle>,
+    /// Kept alive to poll session state every 2 s and re-render the session tab.
+    /// Dropped (and cancelled) when replaced by a new session.
+    _session_refresh_task: Option<Task<()>>,
     /// Held to keep GPUI event subscriptions alive; dropped when the view is dropped.
     _subscriptions: Vec<Subscription>,
 }
@@ -76,6 +79,7 @@ impl WorkspaceDrawer {
             git_loaded: false,
             active_terminal_id: None,
             session_handle: None,
+            _session_refresh_task: None,
             _subscriptions: subscriptions,
         }
     }
@@ -108,6 +112,17 @@ impl WorkspaceDrawer {
         self.session_handle = Some(handle.clone());
         self.file_explorer
             .update(cx, |fe, cx| fe.set_session_handle(handle, cx));
+        // Spawn a polling task that triggers a re-render every 2 s so that
+        // live transport stats (RTT, bytes, etc.) stay up to date in the session tab.
+        // Dropping the old task cancels it before the new one starts.
+        self._session_refresh_task = Some(cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(2))
+                .await;
+            if this.update(cx, |_, cx| cx.notify()).is_err() {
+                break;
+            }
+        }));
     }
 
     /// Reset state after disconnect so next session triggers fresh loads.
