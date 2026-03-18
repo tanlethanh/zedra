@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use serde::{Deserialize, Serialize};
-use zedra_rpc::proto::{BacklogEntry, TermOutput};
+use zedra_rpc::proto::{BacklogEntry, HostEvent, TermOutput};
 
 // ---------------------------------------------------------------------------
 // Pairing slot
@@ -67,6 +67,9 @@ pub struct ServerSession {
     pub acl: Mutex<HashSet<[u8; 32]>>,
     /// Currently attached client pubkey. None = session is free.
     pub active_client: Mutex<Option<[u8; 32]>>,
+    /// Channel for pushing host-initiated events to the connected client.
+    /// Installed by the Subscribe RPC handler; replaced on each new subscription.
+    pub event_tx: Mutex<Option<tokio::sync::mpsc::Sender<HostEvent>>>,
 }
 
 /// Guards the swappable PTY output sender against stale cleanup.
@@ -361,6 +364,17 @@ impl SessionRegistry {
         self.sessions.lock().await.get(session_id).cloned()
     }
 
+    /// Return the number of active sessions.
+    pub async fn session_count(&self) -> usize {
+        self.sessions.lock().await.len()
+    }
+
+    /// Return the first session (arbitrary order), if any.
+    /// Used by the REST API when no session_id is specified.
+    pub async fn first_session(&self) -> Option<Arc<ServerSession>> {
+        self.sessions.lock().await.values().next().cloned()
+    }
+
     /// List all active sessions with summary info.
     pub async fn list_sessions(&self) -> Vec<SessionInfo> {
         let sessions = self.sessions.lock().await;
@@ -643,6 +657,16 @@ impl ServerSession {
             next_output_seq: Mutex::new(1),
             acl: Mutex::new(HashSet::new()),
             active_client: Mutex::new(None),
+            event_tx: Mutex::new(None),
+        }
+    }
+
+    /// Push a host-initiated event to the subscribed client, if any.
+    /// Silently drops the event if no client is subscribed or the channel is full.
+    pub async fn push_event(&self, event: HostEvent) {
+        let tx = self.event_tx.lock().await.clone();
+        if let Some(tx) = tx {
+            let _ = tx.send(event).await;
         }
     }
 

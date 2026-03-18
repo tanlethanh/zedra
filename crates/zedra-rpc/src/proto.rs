@@ -71,6 +71,13 @@ pub enum ZedraProto {
     #[rpc(tx = oneshot::Sender<TermCreateResult>)]
     TermCreate(TermCreateReq),
 
+    /// Subscribe to host-initiated events (terminal created, etc.).
+    /// The host pushes `HostEvent` values through the returned channel.
+    /// Only one subscription is active per session; a new Subscribe replaces
+    /// the old one. The channel stays open until the client disconnects.
+    #[rpc(tx = mpsc::Sender<HostEvent>)]
+    Subscribe(SubscribeReq),
+
     #[rpc(rx = mpsc::Receiver<TermInput>, tx = mpsc::Sender<TermOutput>)]
     TermAttach(TermAttachReq),
 
@@ -389,6 +396,26 @@ pub struct FsStatResult {
 }
 
 // ---------------------------------------------------------------------------
+// Subscribe / HostEvent types
+// ---------------------------------------------------------------------------
+
+/// Subscribe request — no fields needed; the response channel carries events.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SubscribeReq {}
+
+/// Events pushed from the host to the connected client.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum HostEvent {
+    /// A new terminal was created externally (e.g. via the local REST API).
+    /// The client should open and display this terminal.
+    TerminalCreated {
+        id: String,
+        /// The launch command injected into the terminal, if any.
+        launch_cmd: Option<String>,
+    },
+}
+
+// ---------------------------------------------------------------------------
 // Terminal types
 // ---------------------------------------------------------------------------
 
@@ -396,6 +423,10 @@ pub struct FsStatResult {
 pub struct TermCreateReq {
     pub cols: u16,
     pub rows: u16,
+    /// Optional shell command to run immediately after the shell starts.
+    /// If `None`, the host's default launch command (if any) is used.
+    /// Example: `"claude --resume"` to drop straight into a Claude session.
+    pub launch_cmd: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

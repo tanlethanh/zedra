@@ -551,6 +551,18 @@ impl SessionHandle {
         self.fetch_session_info(&client, "unknown").await;
         self.reattach_terminals(&client).await;
 
+        // Subscribe to host-initiated events in the background. This must NOT
+        // be awaited inline: open_bi() inside server_streaming can stall under
+        // QUIC stream pressure, which would block the Connected state transition
+        // and leave the UI unable to load any data.
+        {
+            let handle_for_sub = self.clone();
+            let client_for_sub = client.clone();
+            tokio::spawn(async move {
+                handle_for_sub.subscribe_to_events(&client_for_sub).await;
+            });
+        }
+
         let handle_for_watcher = self.clone();
         tokio::spawn(async move {
             conn_for_watcher.closed().await;
@@ -804,6 +816,76 @@ impl SessionHandle {
 
         tracing::info!("Terminal {} attached (last_seq={})", terminal_id, last_seq);
         Ok(())
+    }
+
+    /// Open a Subscribe server-streaming channel and spawn a task that handles
+    /// host-initiated events (e.g. a terminal created via the local REST API).
+    ///
+    /// Must be called from a background task — never awaited inline in connect()
+    /// because open_bi() can stall under QUIC stream pressure.
+    async fn subscribe_to_events(&self, client: &irpc::Client<ZedraProto>) {
+        let stream_fut = client
+            .server_streaming::<SubscribeReq, HostEvent>(SubscribeReq {}, 32);
+
+        let mut rx = match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            stream_fut,
+        )
+        .await
+        {
+            Ok(Ok(rx)) => rx,
+            Ok(Err(e)) => {
+                tracing::warn!("Subscribe failed: {e}");
+                return;
+            }
+            Err(_) => {
+                tracing::warn!("Subscribe timed out (host may not support events)");
+                return;
+            }
+        };
+
+        let handle = self.clone();
+        let client = client.clone();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(Some(event)) => handle.handle_host_event(event, &client).await,
+                    Ok(None) => {
+                        tracing::debug!("Subscribe stream ended");
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::debug!("Subscribe recv error: {e}");
+                        break;
+                    }
+                }
+            }
+        });
+
+        tracing::info!("Subscribed to host events");
+    }
+
+    /// Dispatch a single `HostEvent` received from the host.
+    async fn handle_host_event(
+        &self,
+        event: HostEvent,
+        client: &irpc::Client<ZedraProto>,
+    ) {
+        match event {
+            HostEvent::TerminalCreated { id, launch_cmd } => {
+                tracing::info!(
+                    "HostEvent: terminal created id={} launch_cmd={:?}",
+                    id, launch_cmd,
+                );
+                let terminal = RemoteTerminal::new(id);
+                self.0.terminals.lock().unwrap().push(terminal.clone());
+                if let Err(e) = self.attach_terminal(client, &terminal).await {
+                    tracing::warn!("Failed to attach host-created terminal {}: {e}", terminal.id);
+                }
+                // Signal the UI to refresh the terminal list.
+                self.notify_state_change();
+            }
+        }
     }
 
     async fn reattach_terminals(&self, client: &irpc::Client<ZedraProto>) {
@@ -1080,8 +1162,19 @@ impl SessionHandle {
     // -----------------------------------------------------------------------
 
     pub async fn terminal_create(&self, cols: u16, rows: u16) -> Result<String> {
+        self.terminal_create_with_cmd(cols, rows, None).await
+    }
+
+    pub async fn terminal_create_with_cmd(
+        &self,
+        cols: u16,
+        rows: u16,
+        launch_cmd: Option<String>,
+    ) -> Result<String> {
         let client = self.client()?;
-        let result: TermCreateResult = client.rpc(TermCreateReq { cols, rows }).await?;
+        let result: TermCreateResult = client
+            .rpc(TermCreateReq { cols, rows, launch_cmd })
+            .await?;
 
         let terminal = RemoteTerminal::new(result.id.clone());
         self.0.terminals.lock().unwrap().push(terminal.clone());
