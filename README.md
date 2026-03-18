@@ -53,7 +53,7 @@ Phone ←──── encrypted QUIC tunnel ────→ Desktop
 
 ## Status
 
-Zedra is in active development. Terminal, file explorer, git, and AI agent integration are working.
+Zedra is in active development. I need your feedbacks.
 
 ## License
 
