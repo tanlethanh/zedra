@@ -294,7 +294,7 @@ pub struct WorkspaceView {
     /// Filled by ZedraApp on session resume with existing server-side terminal IDs.
     pub pending_existing_terminals: SharedPendingSlot<Vec<String>>,
     pending_file: SharedPendingSlot<(String, String, bool)>,
-    pending_git_diff: SharedPendingSlot<(String, FileDiff)>,
+    pending_git_diff: SharedPendingSlot<(String, Option<FileDiff>)>,
     /// Set by the native alert callback when user confirms terminal deletion.
     pending_terminal_delete: SharedPendingSlot<String>,
     /// Terminal IDs whose initial resize RPC has completed; used to set connected=true.
@@ -309,7 +309,7 @@ impl WorkspaceView {
         let mut subscriptions = Vec::new();
 
         let pending_file: SharedPendingSlot<(String, String, bool)> = shared_pending_slot();
-        let pending_git_diff: SharedPendingSlot<(String, FileDiff)> = shared_pending_slot();
+        let pending_git_diff: SharedPendingSlot<(String, Option<FileDiff>)> = shared_pending_slot();
         let pending_terminal_id: SharedPendingSlot<String> = shared_pending_slot();
         let pending_existing_terminals: SharedPendingSlot<Vec<String>> = shared_pending_slot();
         let pending_terminal_ready: SharedPendingSlot<String> = shared_pending_slot();
@@ -500,7 +500,7 @@ impl WorkspaceView {
                                 },
                             );
                         }
-                        WorkspaceDrawerEvent::GitFileSelected(path) => {
+                        WorkspaceDrawerEvent::GitFileSelected(path, untracked) => {
                             drawer_host_clone.update(cx, |host, cx| host.close(cx));
                             let path = path.clone();
                             let filename = path.rsplit('/').next().unwrap_or(&path).to_string();
@@ -509,32 +509,73 @@ impl WorkspaceView {
                                 let path_clone = path.clone();
                                 let filename_clone = filename.clone();
                                 let pgit = pending_git_diff_clone.clone();
+                                let is_untracked = *untracked;
                                 zedra_session::session_runtime().spawn(async move {
-                                    let diff_text = match handle.git_diff(Some(&path_clone), false).await {
-                                        Ok(text) if !text.is_empty() => text,
-                                        Ok(_) => handle
-                                            .git_diff(Some(&path_clone), true)
-                                            .await
-                                            .unwrap_or_default(),
-                                        Err(e) => {
-                                            log::error!(
-                                                "git_diff RPC failed for {}: {}",
-                                                path_clone,
-                                                e
-                                            );
-                                            return;
+                                    const MAX_DIFF_BYTES: usize = 200 * 1024;
+                                    let maybe_diff: Option<FileDiff> = if is_untracked {
+                                        // Untracked files have no git diff; read content and
+                                        // synthesize an all-added hunk.
+                                        match handle.fs_read(&path_clone).await {
+                                            Ok(result) if result.too_large => None,
+                                            Ok(result) => {
+                                                let content = result.content;
+                                                if content.len() > MAX_DIFF_BYTES {
+                                                    None
+                                                } else {
+                                                    let lines: Vec<_> = content.lines().map(|l| format!("+{}", l)).collect();
+                                                    let hunk_body = lines.join("\n");
+                                                    let fake_diff = format!(
+                                                        "--- /dev/null\n+++ b/{}\n@@ -0,0 +1,{} @@\n{}\n",
+                                                        path_clone,
+                                                        lines.len(),
+                                                        hunk_body
+                                                    );
+                                                    Some(parse_unified_diff(&fake_diff)
+                                                        .into_iter()
+                                                        .next()
+                                                        .unwrap_or(FileDiff {
+                                                            old_path: path_clone.clone(),
+                                                            new_path: path_clone.clone(),
+                                                            hunks: Vec::new(),
+                                                        }))
+                                                }
+                                            }
+                                            Err(e) => {
+                                                log::error!("fs_read failed for {}: {}", path_clone, e);
+                                                return;
+                                            }
+                                        }
+                                    } else {
+                                        let diff_text = match handle.git_diff(Some(&path_clone), false).await {
+                                            Ok(text) if !text.is_empty() => text,
+                                            Ok(_) => handle
+                                                .git_diff(Some(&path_clone), true)
+                                                .await
+                                                .unwrap_or_default(),
+                                            Err(e) => {
+                                                log::error!(
+                                                    "git_diff RPC failed for {}: {}",
+                                                    path_clone,
+                                                    e
+                                                );
+                                                return;
+                                            }
+                                        };
+                                        if diff_text.len() > MAX_DIFF_BYTES {
+                                            None
+                                        } else {
+                                            let diffs = parse_unified_diff(&diff_text);
+                                            Some(diffs
+                                                .into_iter()
+                                                .find(|d| d.new_path == path_clone)
+                                                .unwrap_or(FileDiff {
+                                                    old_path: path_clone.clone(),
+                                                    new_path: path_clone.clone(),
+                                                    hunks: Vec::new(),
+                                                }))
                                         }
                                     };
-                                    let diffs = parse_unified_diff(&diff_text);
-                                    let diff = diffs
-                                        .into_iter()
-                                        .find(|d| d.new_path == path_clone)
-                                        .unwrap_or(FileDiff {
-                                            old_path: path_clone.clone(),
-                                            new_path: path_clone.clone(),
-                                            hunks: Vec::new(),
-                                        });
-                                    pgit.set((filename_clone, diff));
+                                    pgit.set((filename_clone, maybe_diff));
                                     zedra_session::push_callback(Box::new(|| {}));
                                 });
                             } else {
@@ -739,13 +780,21 @@ impl Render for WorkspaceView {
             }
         }
 
-        if let Some((filename, diff)) = self.pending_git_diff.take() {
-            let path = diff.new_path.clone();
-            let diff_view = cx.new(|cx| GitDiffView::new(diff, path, cx));
+        if let Some((filename, maybe_diff)) = self.pending_git_diff.take() {
             let title = format!("Diff: {}", filename);
-            self.workspace_content.update(cx, |c, cx| {
-                c.set_main_view(diff_view.into(), title, cx);
-            });
+            if let Some(diff) = maybe_diff {
+                let path = diff.new_path.clone();
+                let diff_view = cx.new(|cx| GitDiffView::new(diff, path, cx));
+                self.workspace_content.update(cx, |c, cx| {
+                    c.set_main_view(diff_view.into(), title, cx);
+                });
+            } else {
+                let msg = "File too large to diff\n(>200 KB)".to_string();
+                let placeholder = cx.new(move |_cx| FileTooLargeView { message: msg });
+                self.workspace_content.update(cx, |c, cx| {
+                    c.set_main_view(placeholder.into(), title, cx);
+                });
+            }
         }
 
         if let Some(term_id) = self.pending_terminal_id.take() {

@@ -21,7 +21,7 @@ pub enum DrawerSection {
 pub enum WorkspaceDrawerEvent {
     GoHome,
     FileSelected(String),
-    GitFileSelected(String),
+    GitFileSelected(String, bool),
     CloseRequested,
     DisconnectRequested,
     NewTerminalRequested,
@@ -65,7 +65,7 @@ impl WorkspaceDrawer {
         let sub = cx.subscribe(
             &git_sidebar,
             |_this: &mut Self, _emitter, event: &GitFileSelected, cx| {
-                cx.emit(WorkspaceDrawerEvent::GitFileSelected(event.path.clone()));
+                cx.emit(WorkspaceDrawerEvent::GitFileSelected(event.path.clone(), event.untracked));
             },
         );
         subscriptions.push(sub);

@@ -113,7 +113,7 @@ impl PreviewApp {
                             wc.set_main_view(editor.into(), filename, cx);
                         });
                     }
-                    WorkspaceDrawerEvent::GitFileSelected(_) => {
+                    WorkspaceDrawerEvent::GitFileSelected(_, _) => {
                         drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
                     }
                     WorkspaceDrawerEvent::TerminalSelected(_) => {

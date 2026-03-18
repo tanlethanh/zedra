@@ -130,6 +130,7 @@ const ICON_SIZE: f32 = 14.0;
 #[derive(Clone, Debug)]
 pub struct GitFileSelected {
     pub path: String,
+    pub untracked: bool,
 }
 
 impl EventEmitter<GitFileSelected> for GitSidebar {}
@@ -248,7 +249,10 @@ impl GitSidebar {
             .on_click({
                 let path = path.clone();
                 cx.listener(move |_this, _, _, cx| {
-                    cx.emit(GitFileSelected { path: path.clone() });
+                    cx.emit(GitFileSelected {
+                        path: path.clone(),
+                        untracked: status == GitFileStatus::Untracked,
+                    });
                 })
             })
             .child(

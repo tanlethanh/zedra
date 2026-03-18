@@ -471,6 +471,7 @@ impl Render for GitDiffView {
                                                     .flex()
                                                     .items_center()
                                                     .text_size(px(FONT_SIZE))
+                                                    .relative()
                                                     .child(styled_text),
                                             ),
                                     )
