@@ -8,12 +8,14 @@ use super::syntax_highlighter::{Highlighter, Language};
 use super::syntax_theme::SyntaxTheme;
 use super::text_buffer::Buffer;
 
+use crate::platform_bridge;
 use crate::theme;
 
 const LINE_HEIGHT: f32 = theme::EDITOR_LINE_HEIGHT;
 const GUTTER_WIDTH: f32 = theme::EDITOR_GUTTER_WIDTH;
 const FONT_SIZE: f32 = theme::EDITOR_FONT_SIZE;
 const GUTTER_FONT_SIZE: f32 = theme::EDITOR_GUTTER_FONT_SIZE;
+const BOTTOM_INSET_MIN: f32 = 100.0;
 
 /// Cached per-line data (text, line number, syntax highlights).
 /// Recomputed only when the buffer content changes, NOT on every scroll frame.
@@ -36,6 +38,13 @@ pub struct EditorView {
     cached_lines: Rc<Vec<CachedLine>>,
     /// Whether cached_lines needs rebuilding.
     lines_dirty: bool,
+    /// Horizontal scroll offset in logical pixels.
+    h_scroll_offset: f32,
+    /// Length (in chars) of the longest line — used to cap horizontal scroll.
+    max_line_chars: usize,
+    /// True once a gesture has been committed to horizontal scroll.
+    /// Stays true until a clearly vertical event overrides it.
+    h_scroll_active: bool,
 }
 
 impl EditorView {
@@ -62,6 +71,9 @@ impl EditorView {
             focus_handle: cx.focus_handle(),
             cached_lines: Rc::new(Vec::new()),
             lines_dirty: true,
+            h_scroll_offset: 0.0,
+            max_line_chars: 0,
+            h_scroll_active: false,
         }
     }
 
@@ -71,6 +83,8 @@ impl EditorView {
         self.highlighter.parse(self.buffer.text());
         self.cursor_offset = 0;
         self.lines_dirty = true;
+        self.h_scroll_offset = 0.0;
+        self.h_scroll_active = false;
     }
 
     pub fn language(&self) -> Language {
@@ -87,6 +101,7 @@ impl EditorView {
                 highlights: self.line_highlights(line),
             })
             .collect();
+        self.max_line_chars = lines.iter().map(|l| l.text.len()).max().unwrap_or(0);
         self.cached_lines = Rc::new(lines);
         self.lines_dirty = false;
     }
@@ -220,6 +235,14 @@ impl Render for EditorView {
         let line_count = self.cached_lines.len();
         let (cursor_row, cursor_col) = self.buffer.offset_to_point(self.cursor_offset);
         let cached_lines = self.cached_lines.clone();
+        let bottom_inset = f32::max(platform_bridge::home_indicator_inset(), BOTTOM_INSET_MIN);
+        // uniform_list forces all items to the same height (item 0's measured height = LINE_HEIGHT).
+        // To get `bottom_inset` worth of scroll space we need enough extra items to cover it.
+        let extra_items = (bottom_inset / LINE_HEIGHT).ceil() as usize;
+        let h_scroll_offset = self.h_scroll_offset;
+        // Captured before the scroll event fires; restored while h_scroll_active so
+        // the vertical position doesn't drift during a horizontal swipe.
+        let scroll_y_lock = self.scroll_handle.0.borrow().base_handle.offset().y;
 
         let text_style = {
             let mut style = window.text_style();
@@ -237,13 +260,34 @@ impl Render for EditorView {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 let keystroke = &event.keystroke;
                 let handled = match keystroke.key.as_str() {
-                    "backspace" => { this.backspace(); true }
-                    "delete"    => { this.delete_forward(); true }
-                    "enter"     => { this.insert_newline(); true }
-                    "left"      => { this.move_cursor_left(); true }
-                    "right"     => { this.move_cursor_right(); true }
-                    "up"        => { this.move_cursor_up(); true }
-                    "down"      => { this.move_cursor_down(); true }
+                    "backspace" => {
+                        this.backspace();
+                        true
+                    }
+                    "delete" => {
+                        this.delete_forward();
+                        true
+                    }
+                    "enter" => {
+                        this.insert_newline();
+                        true
+                    }
+                    "left" => {
+                        this.move_cursor_left();
+                        true
+                    }
+                    "right" => {
+                        this.move_cursor_right();
+                        true
+                    }
+                    "up" => {
+                        this.move_cursor_up();
+                        true
+                    }
+                    "down" => {
+                        this.move_cursor_down();
+                        true
+                    }
                     _ => false,
                 };
                 if !handled {
@@ -258,12 +302,49 @@ impl Render for EditorView {
                 }
                 cx.notify();
             }))
+            .on_scroll_wheel(cx.listener(move |this, event: &ScrollWheelEvent, _window, cx| {
+                let (delta_x, delta_y) = match event.delta {
+                    ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y)),
+                    ScrollDelta::Lines(l) => (l.x * 20.0, l.y * 20.0),
+                };
+                // Enter H-scroll mode: strict threshold (2.5×, 5 px min) to commit.
+                // Exit H-scroll mode: a strongly vertical event (3× vertical) overrides.
+                // While locked, accept any event with non-zero horizontal delta so a
+                // drifting finger doesn't break the scroll mid-gesture.
+                if delta_y.abs() > delta_x.abs() * 3.0 {
+                    this.h_scroll_active = false;
+                } else if delta_x.abs() > delta_y.abs() * 2.5 && delta_x.abs() > 5.0 {
+                    this.h_scroll_active = true;
+                }
+                if this.h_scroll_active && delta_x.abs() > 0.1 {
+                    let char_width = FONT_SIZE * 0.6;
+                    let max_offset = (this.max_line_chars as f32 * char_width).max(0.0);
+                    this.h_scroll_offset = (this.h_scroll_offset - delta_x).clamp(0.0, max_offset);
+                    // Undo any vertical drift: the uniform_list overflow scroll already fired
+                    // (bubble phase, inner first) and may have nudged y. Restore it to the
+                    // value captured at the start of this render so vertical position is locked
+                    // for the duration of the horizontal gesture.
+                    this.scroll_handle
+                        .0
+                        .borrow()
+                        .base_handle
+                        .set_offset(point(px(0.0), scroll_y_lock));
+                    cx.notify();
+                }
+            }))
             .child(
-                uniform_list("editor-lines", line_count, {
+                uniform_list("editor-lines", line_count + extra_items, {
                     let text_style = text_style.clone();
                     move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
                         range
-                            .map(|line| {
+                            .map(|line| -> AnyElement {
+                                // Trailing spacer items for bottom safe-area clearance.
+                                // Each renders at LINE_HEIGHT (uniform_list enforces uniform height),
+                                // so extra_items * LINE_HEIGHT >= bottom_inset.
+                                if line >= line_count {
+                                    return div().h(px(LINE_HEIGHT)).into_any_element();
+                                }
+
                                 let cached = &cached_lines[line];
                                 let show_cursor = cursor_row == line;
 
@@ -271,11 +352,10 @@ impl Render for EditorView {
                                     StyledText::new(" ")
                                         .with_default_highlights(&text_style, Vec::new())
                                 } else {
-                                    StyledText::new(cached.text.clone())
-                                        .with_default_highlights(
-                                            &text_style,
-                                            cached.highlights.clone(),
-                                        )
+                                    StyledText::new(cached.text.clone()).with_default_highlights(
+                                        &text_style,
+                                        cached.highlights.clone(),
+                                    )
                                 };
 
                                 div()
@@ -295,28 +375,41 @@ impl Render for EditorView {
                                             .child(cached.number.clone()),
                                     )
                                     .child(
+                                        // Clip container — stays within the row's flex width.
                                         div()
                                             .flex_1()
                                             .h(px(LINE_HEIGHT))
-                                            .flex()
-                                            .items_center()
-                                            .text_size(px(FONT_SIZE))
+                                            .overflow_hidden()
                                             .relative()
-                                            .when(show_cursor, |this| {
-                                                let char_width = FONT_SIZE * 0.6;
-                                                let cursor_x = cursor_col as f32 * char_width;
-                                                this.child(
-                                                    div()
-                                                        .absolute()
-                                                        .left(px(cursor_x))
-                                                        .top(px(0.0))
-                                                        .w(px(2.0))
-                                                        .h(px(LINE_HEIGHT))
-                                                        .bg(rgb(0x528bff)),
-                                                )
-                                            })
-                                            .child(styled_text),
+                                            .child(
+                                                // Scrollable content — shifted left by h_scroll_offset.
+                                                div()
+                                                    .absolute()
+                                                    .top(px(0.0))
+                                                    .left(px(-h_scroll_offset))
+                                                    .h(px(LINE_HEIGHT))
+                                                    .flex()
+                                                    .items_center()
+                                                    .text_size(px(FONT_SIZE))
+                                                    .relative()
+                                                    .when(show_cursor, |this| {
+                                                        let char_width = FONT_SIZE * 0.6;
+                                                        let cursor_x =
+                                                            cursor_col as f32 * char_width;
+                                                        this.child(
+                                                            div()
+                                                                .absolute()
+                                                                .left(px(cursor_x))
+                                                                .top(px(0.0))
+                                                                .w(px(2.0))
+                                                                .h(px(LINE_HEIGHT))
+                                                                .bg(rgb(0x528bff)),
+                                                        )
+                                                    })
+                                                    .child(styled_text),
+                                            ),
                                     )
+                                    .into_any_element()
                             })
                             .collect()
                     }

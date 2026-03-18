@@ -172,6 +172,26 @@ impl SessionHandle {
         self.0.skip_next_backoff.load(Ordering::Relaxed)
     }
 
+    /// Manual retry from the UI: skip any pending backoff and re-connect immediately.
+    /// Safe to call at any time; no-ops when already connected or user-disconnected.
+    pub fn retry_connect(&self) {
+        if self.0.user_disconnect.load(Ordering::Acquire) {
+            return;
+        }
+        if self.endpoint_addr().is_none() {
+            return;
+        }
+        let phase = self.connect_state().phase;
+        if phase.is_connected() {
+            return;
+        }
+        self.0.skip_next_backoff.store(true, Ordering::Release);
+        if !phase.is_reconnecting() && !phase.is_connecting() {
+            self.spawn_reconnect_with_reason(ReconnectReason::ConnectionLost);
+        }
+        // If already reconnecting, skip_next_backoff causes the loop to retry immediately.
+    }
+
     /// Foreground resume: skip the next backoff and trigger an immediate reconnect
     /// only if the session is not already connected or in-progress.
     ///
@@ -292,6 +312,7 @@ impl SessionHandle {
         {
             let mut cs = self.0.connect_state.lock().unwrap();
             cs.phase = ConnectPhase::BindingEndpoint;
+            cs.started_at = Some(Instant::now());
             cs.snapshot = ConnectSnapshot {
                 remote_node_id: Some(addr.id.fmt_short().to_string()),
                 relay_url: Some(zedra_rpc::ZEDRA_RELAY_URL.to_string()),

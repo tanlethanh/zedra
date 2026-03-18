@@ -214,6 +214,10 @@ pub struct ConnectSnapshot {
 pub struct ConnectState {
     pub phase: ConnectPhase,
     pub snapshot: ConnectSnapshot,
+    /// Wall-clock instant when the current connect attempt began. Set at the
+    /// start of `connect()` and reset on each new attempt.  Used by the UI to
+    /// detect a stuck connection (elapsed > 30 s → show prominent retry button).
+    pub started_at: Option<std::time::Instant>,
 }
 
 impl ConnectState {
@@ -221,7 +225,15 @@ impl ConnectState {
         Self {
             phase: ConnectPhase::Idle,
             snapshot: ConnectSnapshot::default(),
+            started_at: None,
         }
+    }
+
+    /// Seconds elapsed since the current connect attempt started, or 0.
+    pub fn elapsed_secs(&self) -> u64 {
+        self.started_at
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0)
     }
 }
 

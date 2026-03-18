@@ -101,15 +101,25 @@ pub fn render_connecting(handle: &zedra_session::SessionHandle) -> impl IntoElem
         .items_center()
         .justify_start()
         .pt(px(32.0))
-        .child(render_phase_title(&cs))
+        .child(render_phase_title(&cs, handle))
         .child(render_stepper(&cs))
         .child(render_detail(&cs))
 }
 
 // ─── Phase title ─────────────────────────────────────────────────────────────
 
-fn render_phase_title(cs: &ConnectState) -> Div {
+fn render_phase_title(cs: &ConnectState, handle: &zedra_session::SessionHandle) -> Div {
     let (label, dot_color) = transport_badge_info(cs);
+    // Show retry button when connecting; highlight after 30 s stuck.
+    let is_retryable = cs.phase.is_connecting() || cs.phase.is_reconnecting();
+    let stuck = cs.elapsed_secs() >= 30;
+    let retry_color = if stuck {
+        rgb(theme::TEXT_SECONDARY)
+    } else {
+        rgb(theme::TEXT_MUTED)
+    };
+    let handle_retry = handle.clone();
+
     div()
         .mb(px(theme::SPACING_LG))
         .flex()
@@ -118,10 +128,30 @@ fn render_phase_title(cs: &ConnectState) -> Div {
         .gap(px(8.0))
         .child(
             div()
-                .text_color(rgb(theme::TEXT_PRIMARY))
-                .text_size(px(theme::FONT_HEADING))
-                .font_weight(FontWeight::MEDIUM)
-                .child(cs.phase.display_name()),
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .text_color(rgb(theme::TEXT_PRIMARY))
+                        .text_size(px(theme::FONT_HEADING))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(cs.phase.display_name()),
+                )
+                .when(is_retryable, |d: Div| {
+                    d.child(
+                        div()
+                            .id("retry-btn")
+                            .cursor_pointer()
+                            .text_color(retry_color)
+                            .text_size(px(theme::FONT_BODY))
+                            .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                                handle_retry.retry_connect();
+                            })
+                            .child("\u{21bb}"), // ↻
+                    )
+                }),
         )
         .child(render_transport_badge(label, dot_color))
 }
