@@ -61,4 +61,4 @@ pub use connect_state::{
     TransportSnapshot, STEPPER_STEP_NAMES,
 };
 pub use handle::SessionHandle;
-pub use terminal::RemoteTerminal;
+pub use terminal::{OscEvent, RemoteTerminal, ShellState, TerminalMeta};
