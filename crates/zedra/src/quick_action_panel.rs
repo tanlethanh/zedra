@@ -20,6 +20,9 @@ impl EventEmitter<QuickActionEvent> for QuickActionPanel {}
 
 pub struct QuickActionPanel {
     states: SharedWorkspaceStates,
+    /// Session handles indexed by workspace_index, so terminal metadata can be
+    /// read from live `RemoteTerminal`s rather than the static state snapshot.
+    handles: Vec<zedra_session::SessionHandle>,
     focus_handle: FocusHandle,
 }
 
@@ -27,12 +30,17 @@ impl QuickActionPanel {
     pub fn new(cx: &mut Context<Self>, states: SharedWorkspaceStates) -> Self {
         Self {
             states,
+            handles: Vec::new(),
             focus_handle: cx.focus_handle(),
         }
     }
 
     pub fn set_states(&mut self, states: SharedWorkspaceStates) {
         self.states = states;
+    }
+
+    pub fn set_handles(&mut self, handles: Vec<zedra_session::SessionHandle>) {
+        self.handles = handles;
     }
 }
 
@@ -226,11 +234,21 @@ impl Render for QuickActionPanel {
                 for (i, tid) in ws.terminal_ids().iter().enumerate() {
                     let tid_click = tid.clone();
                     let is_active = ws.active_terminal_id().is_some_and(|id| id == tid);
+                    let meta = self
+                        .handles
+                        .get(index)
+                        .and_then(|h| h.terminal(tid))
+                        .map(|t| t.meta())
+                        .unwrap_or_default();
 
                     let card = render_terminal_card(TerminalCardProps {
                         id: format!("{}-{}", index, tid),
                         index: i + 1,
                         is_active,
+                        title: meta.title,
+                        cwd: meta.cwd,
+                        shell_state: meta.shell_state,
+                        last_exit_code: meta.last_exit_code,
                     })
                     .on_click(cx.listener(
                         move |_this, _event, _window, cx| {

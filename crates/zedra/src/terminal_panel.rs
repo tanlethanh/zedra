@@ -49,10 +49,18 @@ pub fn render_terminal_tab(
             let tid_tap = tid.clone();
             let tid_del = tid.clone();
 
+            let meta = handle
+                .terminal(tid)
+                .map(|t| t.meta())
+                .unwrap_or_default();
             let card = render_terminal_card(TerminalCardProps {
                 id: tid.clone(),
                 index: index + 1,
                 is_active,
+                title: meta.title,
+                cwd: meta.cwd,
+                shell_state: meta.shell_state,
+                last_exit_code: meta.last_exit_code,
             })
             .on_click(cx.listener(move |_this, _event, _window, cx| {
                 cx.emit(WorkspaceDrawerEvent::TerminalSelected(tid_tap.clone()));

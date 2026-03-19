@@ -278,8 +278,10 @@ impl ZedraApp {
             hv.set_states(Arc::clone(&shared));
             cx.notify();
         });
+        let handles: Vec<_> = self.workspaces.iter().map(|e| e.handle.clone()).collect();
         self.quick_action.update(cx, |qa, cx| {
             qa.set_states(Arc::clone(&shared));
+            qa.set_handles(handles);
             cx.notify();
         });
     }
