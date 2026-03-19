@@ -88,6 +88,8 @@ pub enum WorkspaceContentEvent {
 pub struct WorkspaceContent {
     pub main_view: AnyView,
     pub header_title: SharedString,
+    /// ID of the terminal currently shown as main view; `None` for file/editor views.
+    active_terminal_id: Option<String>,
     focus_handle: FocusHandle,
     session_handle: SessionHandle,
     /// Whether the connecting overlay is currently shown.
@@ -108,6 +110,7 @@ impl WorkspaceContent {
         Self {
             main_view,
             header_title: title.into(),
+            active_terminal_id: None,
             focus_handle: cx.focus_handle(),
             session_handle,
             overlay_visible: true,
@@ -124,6 +127,18 @@ impl WorkspaceContent {
     ) {
         self.main_view = view;
         self.header_title = title.into();
+        self.active_terminal_id = None;
+        cx.notify();
+    }
+
+    pub fn set_main_terminal(
+        &mut self,
+        view: AnyView,
+        terminal_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.main_view = view;
+        self.active_terminal_id = Some(terminal_id);
         cx.notify();
     }
 }
@@ -167,7 +182,30 @@ impl Render for WorkspaceContent {
         }
 
         let top_inset = status_bar_inset();
-        let title = self.header_title.clone();
+        // For terminal views, derive the title live from OSC 2 metadata so it
+        // updates automatically as the shell / running process changes the title.
+        let title: SharedString = if let Some(ref tid) = self.active_terminal_id {
+            self.session_handle
+                .terminal(tid)
+                .and_then(|t| {
+                    let raw = t.meta().title?;
+                    // Strip the default PS1 "user@host:path" prefix — show just the path.
+                    let s = if let Some(at) = raw.find('@') {
+                        if let Some(colon_off) = raw[at..].find(':') {
+                            let path = &raw[at + colon_off + 1..];
+                            if !path.is_empty() { path } else { raw.as_str() }
+                        } else {
+                            raw.as_str()
+                        }
+                    } else {
+                        raw.as_str()
+                    };
+                    if s.is_empty() { None } else { Some(SharedString::from(s.to_owned())) }
+                })
+                .unwrap_or_else(|| SharedString::from("Terminal"))
+        } else {
+            self.header_title.clone()
+        };
 
         let project_name: Option<SharedString> = {
             let name = self.session_handle.project_name();
@@ -447,6 +485,8 @@ impl WorkspaceView {
                                 view.set_status("Creating terminal...".to_string());
                             });
                             workspace_content_clone.update(cx, |content, cx| {
+                                // Active terminal ID not yet known (pending RPC); set to None so
+                                // the header shows "Terminal" until switch_to_terminal is called.
                                 content.set_main_view(terminal_view.clone().into(), "Terminal", cx);
                             });
                             this.terminal_views
@@ -727,7 +767,7 @@ impl WorkspaceView {
             let view = view.clone();
             let tid = terminal_id.to_string();
             self.workspace_content.update(cx, |content, cx| {
-                content.set_main_view(view.into(), "Terminal", cx);
+                content.set_main_terminal(view.into(), tid.clone(), cx);
             });
             self.active_terminal_id = Some(tid.clone());
             if let Some(t) = self.session_handle.terminal(&tid) {
