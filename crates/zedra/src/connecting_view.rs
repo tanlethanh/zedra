@@ -189,6 +189,8 @@ fn render_phase_title(cs: &ConnectState, handle: &zedra_session::SessionHandle) 
                     // regardless of phase name length (longest: "Resuming terminals").
                     div()
                         .w(px(160.0))
+                        .min_w_0()
+                        .truncate()
                         .text_align(TextAlign::Center)
                         .text_color(rgb(theme::TEXT_PRIMARY))
                         .text_size(px(theme::FONT_HEADING))
@@ -581,6 +583,8 @@ fn kv_row(key: &'static str, value: &str) -> Div {
         .child(
             div()
                 .flex_1()
+                .min_w_0()
+                .truncate()
                 .text_color(rgb(theme::TEXT_SECONDARY))
                 .text_size(px(theme::FONT_DETAIL))
                 .child(value.to_string()),

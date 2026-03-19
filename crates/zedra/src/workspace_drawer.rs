@@ -65,7 +65,10 @@ impl WorkspaceDrawer {
         let sub = cx.subscribe(
             &git_sidebar,
             |_this: &mut Self, _emitter, event: &GitFileSelected, cx| {
-                cx.emit(WorkspaceDrawerEvent::GitFileSelected(event.path.clone(), event.untracked));
+                cx.emit(WorkspaceDrawerEvent::GitFileSelected(
+                    event.path.clone(),
+                    event.untracked,
+                ));
             },
         );
         subscriptions.push(sub);
@@ -115,12 +118,14 @@ impl WorkspaceDrawer {
         // Spawn a polling task that triggers a re-render every 2 s so that
         // live transport stats (RTT, bytes, etc.) stay up to date in the session tab.
         // Dropping the old task cancels it before the new one starts.
-        self._session_refresh_task = Some(cx.spawn(async move |this, cx| loop {
-            cx.background_executor()
-                .timer(std::time::Duration::from_secs(2))
-                .await;
-            if this.update(cx, |_, cx| cx.notify()).is_err() {
-                break;
+        self._session_refresh_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(2))
+                    .await;
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
             }
         }));
     }
@@ -217,7 +222,7 @@ impl WorkspaceDrawer {
                 let home = self
                     .session_handle
                     .as_ref()
-                    .map(|h| h.home_dir())
+                    .map(|h| h.homedir())
                     .unwrap_or_default();
                 if !home.is_empty() {
                     if let Some(rest) = wd.strip_prefix(&home) {
@@ -403,12 +408,17 @@ impl Render for WorkspaceDrawer {
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
                             .flex()
                             .flex_col()
                             .items_center()
                             .child(
                                 div()
                                     .id("project_name")
+                                    .w_full()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_center()
                                     .text_color(rgb(theme::TEXT_SECONDARY))
                                     .text_size(px(theme::FONT_BODY))
                                     .font_weight(FontWeight::MEDIUM)
@@ -417,6 +427,10 @@ impl Render for WorkspaceDrawer {
                             .child(
                                 div()
                                     .id("tab_title")
+                                    .w_full()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_center()
                                     .text_color(rgb(theme::TEXT_MUTED))
                                     .text_size(px(theme::FONT_BODY))
                                     .font_weight(FontWeight::MEDIUM)
