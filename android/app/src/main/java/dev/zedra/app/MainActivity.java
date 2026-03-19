@@ -1,5 +1,6 @@
 package dev.zedra.app;
 
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.splashscreen.SplashScreen;
 
@@ -71,6 +72,97 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
+     * Show a native alert dialog (called from Rust via JNI)
+     */
+    public static void showAlert(
+        int callbackId,
+        String title,
+        String message,
+        String[] labels,
+        int[] styles
+    ) {
+        Log.d(TAG, "showAlert called from native");
+        if (sActivity == null) {
+            return;
+        }
+        sActivity.runOnUiThread(() -> {
+            String[] safeLabels = (labels != null && labels.length > 0)
+                ? labels
+                : new String[] {"OK"};
+            int[] safeStyles = (styles != null && styles.length == safeLabels.length)
+                ? styles
+                : new int[safeLabels.length];
+
+            if (safeLabels.length > 3) {
+                Log.w(TAG, "showAlert supports up to 3 buttons on Android; truncating");
+            }
+
+            AlertDialog.Builder builder = new AlertDialog.Builder(sActivity);
+            if (title != null && !title.isEmpty()) {
+                builder.setTitle(title);
+            }
+            if (message != null && !message.isEmpty()) {
+                builder.setMessage(message);
+            }
+
+            int cancelIndex = -1;
+            for (int i = 0; i < safeStyles.length; i++) {
+                if (safeStyles[i] == 1) {
+                    cancelIndex = i;
+                    break;
+                }
+            }
+            final int fallbackIndex = cancelIndex >= 0 ? cancelIndex : Math.max(0, safeLabels.length - 1);
+            builder.setOnCancelListener(dialog -> nativeAlertResult(callbackId, fallbackIndex));
+
+            builder.setPositiveButton(safeLabels[0], (dialog, which) -> nativeAlertResult(callbackId, 0));
+            if (safeLabels.length > 1) {
+                builder.setNegativeButton(safeLabels[1], (dialog, which) -> nativeAlertResult(callbackId, 1));
+            }
+            if (safeLabels.length > 2) {
+                builder.setNeutralButton(safeLabels[2], (dialog, which) -> nativeAlertResult(callbackId, 2));
+            }
+
+            builder.show();
+        });
+    }
+
+    /**
+     * Show a native dismissible selection sheet (called from Rust via JNI)
+     */
+    public static void showSelection(
+        int callbackId,
+        String title,
+        String message,
+        String[] labels,
+        int[] styles
+    ) {
+        Log.d(TAG, "showSelection called from native");
+        if (sActivity == null) {
+            return;
+        }
+        sActivity.runOnUiThread(() -> {
+            String[] safeLabels = (labels != null && labels.length > 0)
+                ? labels
+                : new String[] {"OK"};
+
+            AlertDialog.Builder builder = new AlertDialog.Builder(sActivity);
+            if (title != null && !title.isEmpty()) {
+                builder.setTitle(title);
+            }
+            if (message != null && !message.isEmpty()) {
+                builder.setMessage(message);
+            }
+            builder.setItems(safeLabels, (dialog, which) -> nativeSelectionResult(callbackId, which));
+            builder.setOnCancelListener(dialog -> nativeSelectionDismiss(callbackId));
+
+            AlertDialog dialog = builder.create();
+            dialog.setCanceledOnTouchOutside(true);
+            dialog.show();
+        });
+    }
+
+    /**
      * Hide the soft keyboard (called from Rust via JNI)
      */
     public static void hideKeyboard() {
@@ -110,6 +202,9 @@ public class MainActivity extends AppCompatActivity {
     private static native void gpuiPause(long handle);
     private static native float getDisplayDensity(Object activity);
     private static native void nativeDeeplinkReceived(String url);
+    private static native void nativeAlertResult(int callbackId, int buttonIndex);
+    private static native void nativeSelectionResult(int callbackId, int buttonIndex);
+    private static native void nativeSelectionDismiss(int callbackId);
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {

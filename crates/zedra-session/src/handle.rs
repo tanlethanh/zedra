@@ -1407,6 +1407,26 @@ impl SessionHandle {
         Ok(result.hash)
     }
 
+    pub async fn git_stage(&self, paths: &[String]) -> Result<()> {
+        let _: GitStageResult = self
+            .client()?
+            .rpc(GitStageReq {
+                paths: paths.to_vec(),
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn git_unstage(&self, paths: &[String]) -> Result<()> {
+        let _: GitUnstageResult = self
+            .client()?
+            .rpc(GitUnstageReq {
+                paths: paths.to_vec(),
+            })
+            .await?;
+        Ok(())
+    }
+
     // -----------------------------------------------------------------------
     // RPC: terminals
     // -----------------------------------------------------------------------

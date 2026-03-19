@@ -47,11 +47,18 @@ impl AlertButton {
 }
 
 static NEXT_ALERT_ID: AtomicU32 = AtomicU32::new(1);
-static ALERT_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(usize) + Send>>>> =
+static ALERT_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>) + Send>>>> =
+    OnceLock::new();
+static NEXT_SELECTION_ID: AtomicU32 = AtomicU32::new(1);
+static SELECTION_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>) + Send>>>> =
     OnceLock::new();
 
-fn alert_callbacks() -> &'static Mutex<HashMap<u32, Box<dyn FnOnce(usize) + Send>>> {
+fn alert_callbacks() -> &'static Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>) + Send>>> {
     ALERT_CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn selection_callbacks() -> &'static Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>) + Send>>> {
+    SELECTION_CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Present a native alert dialog with the given title, message, and buttons.
@@ -65,11 +72,33 @@ pub fn show_alert(
     on_result: impl FnOnce(usize) + Send + 'static,
 ) {
     let id = NEXT_ALERT_ID.fetch_add(1, Ordering::Relaxed);
-    alert_callbacks()
+    alert_callbacks().lock().unwrap().insert(
+        id,
+        Box::new(move |result| {
+            if let Some(index) = result {
+                on_result(index);
+            }
+        }),
+    );
+    bridge().present_alert(id, title, message, &buttons);
+}
+
+/// Present a native dismissible selection sheet.
+///
+/// `on_result` receives `Some(index)` when the user picks an item, or `None`
+/// when the sheet is dismissed without a selection.
+pub fn show_selection(
+    title: &str,
+    message: &str,
+    buttons: Vec<AlertButton>,
+    on_result: impl FnOnce(Option<usize>) + Send + 'static,
+) {
+    let id = NEXT_SELECTION_ID.fetch_add(1, Ordering::Relaxed);
+    selection_callbacks()
         .lock()
         .unwrap()
         .insert(id, Box::new(on_result));
-    bridge().present_alert(id, title, message, &buttons);
+    bridge().present_selection(id, title, message, &buttons);
 }
 
 /// Called from platform code after the user taps a button.
@@ -77,7 +106,31 @@ pub fn show_alert(
 pub fn dispatch_alert_result(callback_id: u32, button_index: usize) {
     let cb = alert_callbacks().lock().unwrap().remove(&callback_id);
     if let Some(cb) = cb {
-        cb(button_index);
+        cb(Some(button_index));
+    }
+}
+
+/// Called from platform code after an alert is dismissed without a button tap.
+pub fn dispatch_alert_dismiss(callback_id: u32) {
+    let cb = alert_callbacks().lock().unwrap().remove(&callback_id);
+    if let Some(cb) = cb {
+        cb(None);
+    }
+}
+
+/// Called from platform code after the user picks an item from a selection sheet.
+pub fn dispatch_selection_result(callback_id: u32, button_index: usize) {
+    let cb = selection_callbacks().lock().unwrap().remove(&callback_id);
+    if let Some(cb) = cb {
+        cb(Some(button_index));
+    }
+}
+
+/// Called from platform code after a selection sheet is dismissed without a choice.
+pub fn dispatch_selection_dismiss(callback_id: u32) {
+    let cb = selection_callbacks().lock().unwrap().remove(&callback_id);
+    if let Some(cb) = cb {
+        cb(None);
     }
 }
 
@@ -91,7 +144,20 @@ pub fn clear_pending_alerts() {
         let count = map.len();
         map.clear();
         if count > 0 {
-            log::debug!("clear_pending_alerts: dropped {} unacknowledged alert(s)", count);
+            log::debug!(
+                "clear_pending_alerts: dropped {} unacknowledged alert(s)",
+                count
+            );
+        }
+    }
+    if let Ok(mut map) = selection_callbacks().lock() {
+        let count = map.len();
+        map.clear();
+        if count > 0 {
+            log::debug!(
+                "clear_pending_alerts: dropped {} unacknowledged selection sheet(s)",
+                count
+            );
         }
     }
 }
@@ -118,6 +184,11 @@ pub trait PlatformBridge: Send + Sync + 'static {
     /// The platform implementation should present the dialog and call
     /// `platform_bridge::dispatch_alert_result(id, button_index)` when the user responds.
     fn present_alert(&self, _id: u32, _title: &str, _message: &str, _buttons: &[AlertButton]) {}
+    /// Display a native selection sheet.
+    /// The platform implementation should call
+    /// `platform_bridge::dispatch_selection_result(id, button_index)` on selection,
+    /// or `platform_bridge::dispatch_selection_dismiss(id)` if dismissed.
+    fn present_selection(&self, _id: u32, _title: &str, _message: &str, _buttons: &[AlertButton]) {}
     /// Open a URL in the system browser.
     fn open_url(&self, _url: &str) {}
 }

@@ -172,8 +172,18 @@ The protocol layer includes:
 - `GitDiff(GitDiffReq) -> GitDiffResult`
 - `GitLog(GitLogReq) -> GitLogResult`
 - `GitCommit(GitCommitReq) -> GitCommitResult`
+- `GitStage(GitStageReq) -> GitStageResult`
+- `GitUnstage(GitUnstageReq) -> GitUnstageResult`
 - `GitBranches(GitBranchesReq) -> GitBranchesResult`
 - `GitCheckout(GitCheckoutReq) -> GitCheckoutResult`
+
+### Git status conventions
+
+- `GitStatusEntry` reports index and working-tree state independently via `staged_status` and `unstaged_status`.
+- A file may appear in both UI sections when both fields are present (for example, partially staged edits).
+- Status strings use lowercase semantic names such as `modified`, `added`, `deleted`, `renamed`, `untracked`, and `conflicted`.
+- `GitStage` stages the provided paths with `git add -- <paths>`.
+- `GitUnstage` removes the provided paths from the index while preserving working tree contents.
 
 ## 5.7 AI and LSP
 

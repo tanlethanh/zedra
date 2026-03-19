@@ -5,12 +5,13 @@ use gpui::{prelude::FluentBuilder as _, *};
 use crate::active_terminal;
 use crate::connecting_view;
 use crate::editor::code_editor::EditorView;
-use crate::editor::git_diff_view::{FileDiff, GitDiffView, parse_unified_diff};
+use crate::editor::git_diff_view::{parse_unified_diff, FileDiff, GitDiffView};
+use crate::editor::git_sidebar::GitFileSection;
 use crate::fonts;
 use crate::keyboard;
 use crate::mgpui::DrawerHost;
-use crate::pending::{SharedPendingSlot, shared_pending_slot};
-use crate::platform_bridge::{self, AlertButton, status_bar_inset};
+use crate::pending::{shared_pending_slot, SharedPendingSlot};
+use crate::platform_bridge::{self, status_bar_inset, AlertButton};
 use crate::theme;
 use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
 use zedra_session::SessionHandle;
@@ -79,6 +80,22 @@ pub enum WorkspaceEvent {
 pub enum WorkspaceContentEvent {
     ToggleDrawer,
     OpenQuickAction,
+}
+
+#[derive(Clone, Debug)]
+enum GitItemMenuAction {
+    OpenDiff {
+        path: String,
+        section: GitFileSection,
+    },
+    Stage(String),
+    Unstage(String),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum GitIndexOperation {
+    Stage,
+    Unstage,
 }
 
 /// Header bar `[≡ | title | ⚡]` with a swappable main view below.
@@ -193,14 +210,22 @@ impl Render for WorkspaceContent {
                     let s = if let Some(at) = raw.find('@') {
                         if let Some(colon_off) = raw[at..].find(':') {
                             let path = &raw[at + colon_off + 1..];
-                            if !path.is_empty() { path } else { raw.as_str() }
+                            if !path.is_empty() {
+                                path
+                            } else {
+                                raw.as_str()
+                            }
                         } else {
                             raw.as_str()
                         }
                     } else {
                         raw.as_str()
                     };
-                    if s.is_empty() { None } else { Some(SharedString::from(s.to_owned())) }
+                    if s.is_empty() {
+                        None
+                    } else {
+                        Some(SharedString::from(s.to_owned()))
+                    }
                 })
                 .unwrap_or_else(|| SharedString::from("Terminal"))
         } else {
@@ -255,35 +280,41 @@ impl Render for WorkspaceContent {
                             ),
                     )
                     .child(
-                        div().flex_1().min_w_0().flex().items_center().justify_center().child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .items_center()
-                                .w_full()
-                                .min_w_0()
-                                .children(project_name.map(|name| {
-                                    div()
-                                        .w_full()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_center()
-                                        .text_color(rgb(theme::TEXT_MUTED))
-                                        .text_size(px(theme::FONT_DETAIL))
-                                        .child(name)
-                                }))
-                                .child(
-                                    div()
-                                        .w_full()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_center()
-                                        .text_color(rgb(theme::TEXT_SECONDARY))
-                                        .text_size(px(theme::FONT_BODY))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child(title),
-                                ),
-                        ),
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .w_full()
+                                    .min_w_0()
+                                    .children(project_name.map(|name| {
+                                        div()
+                                            .w_full()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_center()
+                                            .text_color(rgb(theme::TEXT_MUTED))
+                                            .text_size(px(theme::FONT_DETAIL))
+                                            .child(name)
+                                    }))
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_center()
+                                            .text_color(rgb(theme::TEXT_SECONDARY))
+                                            .text_size(px(theme::FONT_BODY))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(title),
+                                    ),
+                            ),
                     )
                     .child(
                         div()
@@ -355,6 +386,10 @@ pub struct WorkspaceView {
     pub pending_existing_terminals: SharedPendingSlot<Vec<String>>,
     pending_file: SharedPendingSlot<(String, String, bool)>,
     pending_git_diff: SharedPendingSlot<(String, Option<FileDiff>)>,
+    pending_git_item_action: SharedPendingSlot<GitItemMenuAction>,
+    pending_git_operation_result: SharedPendingSlot<(GitIndexOperation, Result<(), String>)>,
+    pending_git_commit_request: SharedPendingSlot<(String, Vec<String>)>,
+    pending_git_commit_result: SharedPendingSlot<Result<String, String>>,
     /// Set by the native alert callback when user confirms terminal deletion.
     pending_terminal_delete: SharedPendingSlot<String>,
     /// Terminal IDs whose initial resize RPC has completed; used to set connected=true.
@@ -370,6 +405,15 @@ impl WorkspaceView {
 
         let pending_file: SharedPendingSlot<(String, String, bool)> = shared_pending_slot();
         let pending_git_diff: SharedPendingSlot<(String, Option<FileDiff>)> = shared_pending_slot();
+        let pending_git_item_action: SharedPendingSlot<GitItemMenuAction> = shared_pending_slot();
+        let pending_git_operation_result: SharedPendingSlot<(
+            GitIndexOperation,
+            Result<(), String>,
+        )> = shared_pending_slot();
+        let pending_git_commit_request: SharedPendingSlot<(String, Vec<String>)> =
+            shared_pending_slot();
+        let pending_git_commit_result: SharedPendingSlot<Result<String, String>> =
+            shared_pending_slot();
         let pending_terminal_id: SharedPendingSlot<String> = shared_pending_slot();
         let pending_existing_terminals: SharedPendingSlot<Vec<String>> = shared_pending_slot();
         let pending_terminal_ready: SharedPendingSlot<String> = shared_pending_slot();
@@ -441,6 +485,8 @@ impl WorkspaceView {
             let workspace_content_clone = workspace_content.clone();
             let pending_file_clone = pending_file.clone();
             let pending_git_diff_clone = pending_git_diff.clone();
+            let pending_git_item_action_clone = pending_git_item_action.clone();
+            let pending_git_commit_request_clone = pending_git_commit_request.clone();
             let pending_terminal_id_clone = pending_terminal_id.clone();
 
             let sub = cx.subscribe_in(
@@ -566,7 +612,10 @@ impl WorkspaceView {
                                 },
                             );
                         }
-                        WorkspaceDrawerEvent::TerminalReordered { dragged_id, target_id } => {
+                        WorkspaceDrawerEvent::TerminalReordered {
+                            dragged_id,
+                            target_id,
+                        } => {
                             let dragged_id = dragged_id.clone();
                             let target_id = target_id.clone();
                             if let Some(from) = this
@@ -589,91 +638,85 @@ impl WorkspaceView {
                                 this.sync_terminal_order_to_drawer(cx);
                             }
                         }
-                        WorkspaceDrawerEvent::GitFileSelected(path, untracked) => {
+                        WorkspaceDrawerEvent::GitFileSelected(path, section) => {
                             drawer_host_clone.update(cx, |host, cx| host.close(cx));
+                            this.open_git_diff(
+                                path.clone(),
+                                *section,
+                                workspace_content_clone.clone(),
+                                pending_git_diff_clone.clone(),
+                                cx,
+                            );
+                        }
+                        WorkspaceDrawerEvent::GitFileLongPressed(path, section) => {
                             let path = path.clone();
-                            let filename = path.rsplit('/').next().unwrap_or(&path).to_string();
-                            let loading = cx.new(|_cx| FileLoadingView);
-                            workspace_content_clone.update(cx, |c, cx| {
-                                c.set_main_view(loading.into(), filename.clone(), cx);
-                            });
-                            if this.session_handle.is_connected() {
-                                let handle = this.session_handle.clone();
-                                let path_clone = path.clone();
-                                let filename_clone = filename.clone();
-                                let pgit = pending_git_diff_clone.clone();
-                                let is_untracked = *untracked;
-                                zedra_session::session_runtime().spawn(async move {
-                                    const MAX_DIFF_BYTES: usize = 200 * 1024;
-                                    let maybe_diff: Option<FileDiff> = if is_untracked {
-                                        // Untracked files have no git diff; read content and
-                                        // synthesize an all-added hunk.
-                                        match handle.fs_read(&path_clone).await {
-                                            Ok(result) if result.too_large => None,
-                                            Ok(result) => {
-                                                let content = result.content;
-                                                if content.len() > MAX_DIFF_BYTES {
-                                                    None
-                                                } else {
-                                                    let lines: Vec<_> = content.lines().map(|l| format!("+{}", l)).collect();
-                                                    let hunk_body = lines.join("\n");
-                                                    let fake_diff = format!(
-                                                        "--- /dev/null\n+++ b/{}\n@@ -0,0 +1,{} @@\n{}\n",
-                                                        path_clone,
-                                                        lines.len(),
-                                                        hunk_body
-                                                    );
-                                                    Some(parse_unified_diff(&fake_diff)
-                                                        .into_iter()
-                                                        .next()
-                                                        .unwrap_or(FileDiff {
-                                                            old_path: path_clone.clone(),
-                                                            new_path: path_clone.clone(),
-                                                            hunks: Vec::new(),
-                                                        }))
-                                                }
+                            let section = *section;
+                            let pending = pending_git_item_action_clone.clone();
+                            let display_path = path.clone();
+                            let main_action_label = match section {
+                                GitFileSection::Staged => "Unstage",
+                                GitFileSection::Unstaged | GitFileSection::Untracked => "Stage",
+                            };
+                            platform_bridge::show_selection(
+                                "",
+                                &display_path,
+                                vec![
+                                    AlertButton::default(main_action_label),
+                                    AlertButton::default("Open Diff"),
+                                ],
+                                move |selection| {
+                                    let action = match selection {
+                                        Some(0) => Some(match section {
+                                            GitFileSection::Staged => {
+                                                GitItemMenuAction::Unstage(path.clone())
                                             }
-                                            Err(e) => {
-                                                log::error!("fs_read failed for {}: {}", path_clone, e);
-                                                return;
+                                            GitFileSection::Unstaged
+                                            | GitFileSection::Untracked => {
+                                                GitItemMenuAction::Stage(path.clone())
                                             }
-                                        }
-                                    } else {
-                                        let diff_text = match handle.git_diff(Some(&path_clone), false).await {
-                                            Ok(text) if !text.is_empty() => text,
-                                            Ok(_) => handle
-                                                .git_diff(Some(&path_clone), true)
-                                                .await
-                                                .unwrap_or_default(),
-                                            Err(e) => {
-                                                log::error!(
-                                                    "git_diff RPC failed for {}: {}",
-                                                    path_clone,
-                                                    e
-                                                );
-                                                return;
-                                            }
-                                        };
-                                        if diff_text.len() > MAX_DIFF_BYTES {
-                                            None
-                                        } else {
-                                            let diffs = parse_unified_diff(&diff_text);
-                                            Some(diffs
-                                                .into_iter()
-                                                .find(|d| d.new_path == path_clone)
-                                                .unwrap_or(FileDiff {
-                                                    old_path: path_clone.clone(),
-                                                    new_path: path_clone.clone(),
-                                                    hunks: Vec::new(),
-                                                }))
-                                        }
+                                        }),
+                                        Some(1) => Some(GitItemMenuAction::OpenDiff {
+                                            path: path.clone(),
+                                            section,
+                                        }),
+                                        _ => None,
                                     };
-                                    pgit.set((filename_clone, maybe_diff));
-                                    zedra_session::push_callback(Box::new(|| {}));
-                                });
-                            } else {
-                                log::warn!("git diff requested while disconnected, ignoring");
+                                    if let Some(action) = action {
+                                        pending.set(action);
+                                        zedra_session::push_callback(Box::new(|| {}));
+                                    }
+                                },
+                            );
+                        }
+                        WorkspaceDrawerEvent::GitCommitRequested { message, paths } => {
+                            let message = message.trim().to_string();
+                            let paths = paths.clone();
+                            if message.is_empty() || paths.is_empty() {
+                                return;
                             }
+
+                            let file_label = if paths.len() == 1 {
+                                "1 staged file".to_string()
+                            } else {
+                                format!("{} staged files", paths.len())
+                            };
+                            let confirm_message = format!("Commit {file_label}?\n\n{message}");
+                            let pending = pending_git_commit_request_clone.clone();
+                            platform_bridge::bridge().hide_keyboard();
+                            platform_bridge::show_alert(
+                                "",
+                                &confirm_message,
+                                vec![
+                                    AlertButton::default("Commit"),
+                                    AlertButton::cancel("Cancel"),
+                                ],
+                                move |button_index| {
+                                    if button_index == 0 {
+                                        pending.set((message.clone(), paths.clone()));
+                                        zedra_session::push_callback(Box::new(|| {}));
+                                    }
+                                },
+                            );
                         }
                     }
                 },
@@ -692,6 +735,10 @@ impl WorkspaceView {
             pending_existing_terminals,
             pending_file,
             pending_git_diff,
+            pending_git_item_action,
+            pending_git_operation_result,
+            pending_git_commit_request,
+            pending_git_commit_result,
             pending_terminal_delete: shared_pending_slot(),
             pending_terminal_ready,
             _subscriptions: subscriptions,
@@ -781,6 +828,92 @@ impl WorkspaceView {
             }));
             v.set_connected(true);
             v.set_status(status.to_string());
+        });
+    }
+
+    fn open_git_diff(
+        &mut self,
+        path: String,
+        section: GitFileSection,
+        workspace_content: Entity<WorkspaceContent>,
+        pending_git_diff: SharedPendingSlot<(String, Option<FileDiff>)>,
+        cx: &mut Context<Self>,
+    ) {
+        let filename = path.rsplit('/').next().unwrap_or(&path).to_string();
+        let loading = cx.new(|_cx| FileLoadingView);
+        workspace_content.update(cx, |content, cx| {
+            content.set_main_view(loading.into(), filename.clone(), cx);
+        });
+
+        if !self.session_handle.is_connected() {
+            log::warn!("git diff requested while disconnected, ignoring");
+            return;
+        }
+
+        let handle = self.session_handle.clone();
+        zedra_session::session_runtime().spawn(async move {
+            const MAX_DIFF_BYTES: usize = 200 * 1024;
+
+            let maybe_diff: Option<FileDiff> = match section {
+                GitFileSection::Untracked => match handle.fs_read(&path).await {
+                    Ok(result) if result.too_large => None,
+                    Ok(result) => {
+                        let content = result.content;
+                        if content.len() > MAX_DIFF_BYTES {
+                            None
+                        } else {
+                            let lines: Vec<_> =
+                                content.lines().map(|line| format!("+{}", line)).collect();
+                            let hunk_body = lines.join("\n");
+                            let fake_diff = format!(
+                                "--- /dev/null\n+++ b/{}\n@@ -0,0 +1,{} @@\n{}\n",
+                                path,
+                                lines.len(),
+                                hunk_body
+                            );
+                            Some(parse_unified_diff(&fake_diff).into_iter().next().unwrap_or(
+                                FileDiff {
+                                    old_path: path.clone(),
+                                    new_path: path.clone(),
+                                    hunks: Vec::new(),
+                                },
+                            ))
+                        }
+                    }
+                    Err(error) => {
+                        log::error!("fs_read failed for {}: {}", path, error);
+                        return;
+                    }
+                },
+                GitFileSection::Staged | GitFileSection::Unstaged => {
+                    let staged = matches!(section, GitFileSection::Staged);
+                    let diff_text = match handle.git_diff(Some(&path), staged).await {
+                        Ok(text) => text,
+                        Err(error) => {
+                            log::error!("git_diff RPC failed for {}: {}", path, error);
+                            return;
+                        }
+                    };
+                    if diff_text.len() > MAX_DIFF_BYTES {
+                        None
+                    } else {
+                        let diffs = parse_unified_diff(&diff_text);
+                        Some(
+                            diffs
+                                .into_iter()
+                                .find(|diff| diff.new_path == path)
+                                .unwrap_or(FileDiff {
+                                    old_path: path.clone(),
+                                    new_path: path.clone(),
+                                    hunks: Vec::new(),
+                                }),
+                        )
+                    }
+                }
+            };
+
+            pending_git_diff.set((filename, maybe_diff));
+            zedra_session::push_callback(Box::new(|| {}));
         });
     }
 
@@ -921,6 +1054,118 @@ impl Render for WorkspaceView {
             }
         }
 
+        if let Some(action) = self.pending_git_item_action.take() {
+            match action {
+                GitItemMenuAction::OpenDiff { path, section } => {
+                    self.drawer_host.update(cx, |host, cx| host.close(cx));
+                    self.open_git_diff(
+                        path,
+                        section,
+                        self.workspace_content.clone(),
+                        self.pending_git_diff.clone(),
+                        cx,
+                    );
+                }
+                GitItemMenuAction::Stage(path) => {
+                    let handle = self.session_handle.clone();
+                    let pending_result = self.pending_git_operation_result.clone();
+                    zedra_session::session_runtime().spawn(async move {
+                        let result = handle
+                            .git_stage(&[path])
+                            .await
+                            .map_err(|error| error.to_string());
+                        pending_result.set((GitIndexOperation::Stage, result));
+                        zedra_session::push_callback(Box::new(|| {}));
+                    });
+                }
+                GitItemMenuAction::Unstage(path) => {
+                    let handle = self.session_handle.clone();
+                    let pending_result = self.pending_git_operation_result.clone();
+                    zedra_session::session_runtime().spawn(async move {
+                        let result = handle
+                            .git_unstage(&[path])
+                            .await
+                            .map_err(|error| error.to_string());
+                        pending_result.set((GitIndexOperation::Unstage, result));
+                        zedra_session::push_callback(Box::new(|| {}));
+                    });
+                }
+            }
+        }
+
+        if let Some((operation, result)) = self.pending_git_operation_result.take() {
+            match result {
+                Ok(()) => {
+                    self.workspace_drawer.update(cx, |drawer, _cx| {
+                        drawer.refresh_git_status();
+                    });
+                }
+                Err(error) => {
+                    let title = match operation {
+                        GitIndexOperation::Stage => "Stage failed.",
+                        GitIndexOperation::Unstage => "Unstage failed.",
+                    };
+                    let message = if error.trim().is_empty() {
+                        title.to_string()
+                    } else {
+                        format!("{title}\n\n{error}")
+                    };
+                    platform_bridge::show_alert(
+                        "",
+                        &message,
+                        vec![AlertButton::default("OK")],
+                        |_| {},
+                    );
+                }
+            }
+        }
+
+        if let Some((message, paths)) = self.pending_git_commit_request.take() {
+            self.workspace_drawer.update(cx, |drawer, cx| {
+                drawer.set_git_committing(true, cx);
+            });
+
+            let handle = self.session_handle.clone();
+            let pending_result = self.pending_git_commit_result.clone();
+            zedra_session::session_runtime().spawn(async move {
+                let result = handle
+                    .git_commit(&message, &paths)
+                    .await
+                    .map_err(|error| error.to_string());
+                pending_result.set(result);
+                zedra_session::push_callback(Box::new(|| {}));
+            });
+        }
+
+        if let Some(result) = self.pending_git_commit_result.take() {
+            self.workspace_drawer.update(cx, |drawer, cx| {
+                drawer.set_git_committing(false, cx);
+            });
+
+            match result {
+                Ok(_) => {
+                    platform_bridge::bridge().hide_keyboard();
+                    self.workspace_drawer.update(cx, |drawer, cx| {
+                        drawer.clear_git_commit_message(cx);
+                        drawer.refresh_git_status();
+                    });
+                }
+                Err(error) => {
+                    let message = if error.trim().is_empty() {
+                        "Commit failed.".to_string()
+                    } else {
+                        format!("Commit failed.\n\n{error}")
+                    };
+                    platform_bridge::show_alert(
+                        "",
+                        &message,
+                        vec![AlertButton::default("OK")],
+                        |_| {},
+                    );
+                }
+            }
+        }
+
         if let Some(term_id) = self.pending_terminal_id.take() {
             if let Some(entry) = self
                 .terminal_views
@@ -1003,10 +1248,16 @@ pub fn compute_terminal_dimensions(window: &mut Window) -> (usize, usize, Pixels
         .map(|size| size.width)
         .unwrap_or(px(9.0));
 
+    // Subtract chrome (status bar, header, home indicator) so the PTY row count
+    // matches what's actually visible, preventing TUI overflow.
+    let top_reserved = crate::platform_bridge::status_bar_inset() + theme::HEADER_HEIGHT;
+    let bottom_reserved = crate::platform_bridge::home_indicator_inset();
+    let terminal_height = viewport.height - px(top_reserved + bottom_reserved);
+
     let columns = ((viewport.width / cell_width).floor() as usize)
         .saturating_sub(1)
         .clamp(20, 200);
-    let rows = ((viewport.height / line_height).floor() as usize)
+    let rows = ((terminal_height / line_height).floor() as usize)
         .saturating_sub(1)
         .clamp(5, 200);
 

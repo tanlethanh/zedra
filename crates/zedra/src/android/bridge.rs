@@ -1,9 +1,8 @@
 /// Android implementation of `PlatformBridge`.
 ///
 /// Delegates every call to the corresponding function in `super::jni`.
-
 use crate::android::jni;
-use crate::platform_bridge::PlatformBridge;
+use crate::platform_bridge::{AlertButton, PlatformBridge};
 
 pub struct AndroidBridge;
 
@@ -47,5 +46,13 @@ impl PlatformBridge for AndroidBridge {
 
     fn open_url(&self, url: &str) {
         jni::open_url(url);
+    }
+
+    fn present_alert(&self, id: u32, title: &str, message: &str, buttons: &[AlertButton]) {
+        jni::show_alert(id, title, message, buttons);
+    }
+
+    fn present_selection(&self, id: u32, title: &str, message: &str, buttons: &[AlertButton]) {
+        jni::show_selection(id, title, message, buttons);
     }
 }

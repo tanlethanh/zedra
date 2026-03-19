@@ -7,6 +7,8 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
+use crate::mgpui::input::Input;
+use crate::mgpui::{InputChanged, InputSubmit};
 use crate::theme;
 
 // ── Git state types ─────────────────────────────────────────────────────────
@@ -43,18 +45,32 @@ impl GitFileStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GitFileSection {
+    Staged,
+    Unstaged,
+    Untracked,
+}
+
 /// A single file entry in the git sidebar.
 #[derive(Clone, Debug)]
 pub struct GitFileEntry {
     pub path: String,
     pub filename: String,
     pub status: GitFileStatus,
+    pub section: GitFileSection,
     pub insertions: usize,
     pub deletions: usize,
 }
 
 impl GitFileEntry {
-    pub fn new(path: &str, status: GitFileStatus, insertions: usize, deletions: usize) -> Self {
+    pub fn new(
+        path: &str,
+        status: GitFileStatus,
+        section: GitFileSection,
+        insertions: usize,
+        deletions: usize,
+    ) -> Self {
         let is_dir = path.ends_with('/');
         let trimmed = path.trim_end_matches('/');
         let name = trimmed.rsplit('/').next().unwrap_or(trimmed);
@@ -67,6 +83,7 @@ impl GitFileEntry {
             path: path.to_string(),
             filename,
             status,
+            section,
             insertions,
             deletions,
         }
@@ -80,7 +97,6 @@ pub struct GitRepoState {
     pub staged_files: Vec<GitFileEntry>,
     pub unstaged_files: Vec<GitFileEntry>,
     pub untracked_files: Vec<GitFileEntry>,
-    pub commit_message: String,
 }
 
 impl GitRepoState {
@@ -90,22 +106,24 @@ impl GitRepoState {
             staged_files: vec![GitFileEntry::new(
                 "src/lib.rs",
                 GitFileStatus::Modified,
+                GitFileSection::Staged,
                 12,
                 3,
             )],
             unstaged_files: vec![GitFileEntry::new(
                 "src/main.rs",
                 GitFileStatus::Modified,
+                GitFileSection::Unstaged,
                 5,
                 1,
             )],
             untracked_files: vec![GitFileEntry::new(
                 "src/new_file.rs",
                 GitFileStatus::Untracked,
+                GitFileSection::Untracked,
                 0,
                 0,
             )],
-            commit_message: String::new(),
         }
     }
 
@@ -130,29 +148,69 @@ const ICON_SIZE: f32 = 14.0;
 #[derive(Clone, Debug)]
 pub struct GitFileSelected {
     pub path: String,
-    pub untracked: bool,
+    pub section: GitFileSection,
 }
 
 impl EventEmitter<GitFileSelected> for GitSidebar {}
+
+#[derive(Clone, Debug)]
+pub struct GitFileLongPressed {
+    pub path: String,
+    pub section: GitFileSection,
+}
+
+impl EventEmitter<GitFileLongPressed> for GitSidebar {}
+
+#[derive(Clone, Debug)]
+pub struct GitCommitRequested {
+    pub message: String,
+    pub paths: Vec<String>,
+}
+
+impl EventEmitter<GitCommitRequested> for GitSidebar {}
 
 pub struct GitSidebar {
     repo_state: GitRepoState,
     section_expanded: [bool; 3], // [staged, unstaged, untracked]
     focus_handle: FocusHandle,
+    commit_input: Entity<Input>,
+    commit_message: String,
+    committing: bool,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl GitSidebar {
-    pub fn new(cx: &mut App) -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        let commit_input = cx.new(|cx| Input::new(cx).compact(true).placeholder("Commit message"));
+        let mut subscriptions = Vec::new();
+
+        subscriptions.push(cx.subscribe(
+            &commit_input,
+            |this: &mut Self, _input, event: &InputChanged, cx| {
+                this.commit_message = event.value.clone();
+                cx.notify();
+            },
+        ));
+        subscriptions.push(cx.subscribe(
+            &commit_input,
+            |this: &mut Self, _input, _event: &InputSubmit, cx| {
+                this.request_commit(cx);
+            },
+        ));
+
         Self {
             repo_state: GitRepoState {
                 branch: String::new(),
                 staged_files: Vec::new(),
                 unstaged_files: Vec::new(),
                 untracked_files: Vec::new(),
-                commit_message: String::new(),
             },
             section_expanded: [true, true, true],
             focus_handle: cx.focus_handle(),
+            commit_input,
+            commit_message: String::new(),
+            committing: false,
+            _subscriptions: subscriptions,
         }
     }
 
@@ -165,11 +223,47 @@ impl GitSidebar {
         cx.notify();
     }
 
+    pub fn set_committing(&mut self, committing: bool, cx: &mut Context<Self>) {
+        self.committing = committing;
+        cx.notify();
+    }
+
+    pub fn clear_commit_message(&mut self, cx: &mut Context<Self>) {
+        self.commit_message.clear();
+        self.commit_input
+            .update(cx, |input, _cx| input.set_value(String::new()));
+        cx.notify();
+    }
+
     fn toggle_section(&mut self, section: usize, cx: &mut Context<Self>) {
         if section < 3 {
             self.section_expanded[section] = !self.section_expanded[section];
             cx.notify();
         }
+    }
+
+    fn staged_paths(&self) -> Vec<String> {
+        self.repo_state
+            .staged_files
+            .iter()
+            .map(|file| file.path.clone())
+            .collect()
+    }
+
+    fn can_commit(&self) -> bool {
+        !self.committing
+            && !self.commit_message.trim().is_empty()
+            && !self.repo_state.staged_files.is_empty()
+    }
+
+    fn request_commit(&mut self, cx: &mut Context<Self>) {
+        if !self.can_commit() {
+            return;
+        }
+        cx.emit(GitCommitRequested {
+            message: self.commit_message.trim().to_string(),
+            paths: self.staged_paths(),
+        });
     }
 
     fn render_section_header(
@@ -232,6 +326,7 @@ impl GitSidebar {
         let path = file.path.clone();
         let filename = file.filename.clone();
         let status = file.status;
+        let section = file.section;
         let insertions = file.insertions;
         let deletions = file.deletions;
 
@@ -244,13 +339,21 @@ impl GitSidebar {
             .h(px(28.0))
             .px(px(theme::DRAWER_PADDING))
             .cursor_pointer()
-            // .hover(|s| s.bg(hsla(0.0, 0.0, 1.0, 0.05)))
             .on_click({
                 let path = path.clone();
                 cx.listener(move |_this, _, _, cx| {
                     cx.emit(GitFileSelected {
                         path: path.clone(),
-                        untracked: status == GitFileStatus::Untracked,
+                        section,
+                    });
+                })
+            })
+            .on_long_press({
+                let path = path.clone();
+                cx.listener(move |_this, _, _, cx| {
+                    cx.emit(GitFileLongPressed {
+                        path: path.clone(),
+                        section,
                     });
                 })
             })
@@ -297,6 +400,59 @@ impl GitSidebar {
                                 .child(format!("-{}", deletions)),
                         )
                     }),
+            )
+    }
+
+    fn render_commit_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_enabled = self.can_commit();
+        let icon_path = if self.committing {
+            "icons/refresh-ccw.svg"
+        } else {
+            "icons/check.svg"
+        };
+        let icon_color = if is_enabled || self.committing {
+            theme::TEXT_SECONDARY
+        } else {
+            theme::TEXT_MUTED
+        };
+
+        div()
+            .id("git-commit-button")
+            .w(px(32.0))
+            .h(px(32.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .opacity(if is_enabled || self.committing {
+                1.0
+            } else {
+                0.35
+            })
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.request_commit(cx);
+            }))
+            .child(
+                svg()
+                    .path(icon_path)
+                    .size(px(theme::ICON_GIT_COMMIT))
+                    .text_color(rgb(icon_color)),
+            )
+    }
+
+    fn render_commit_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .pl(px(theme::DRAWER_PADDING))
+            .pr(px(theme::DRAWER_PADDING / 2.0))
+            .pt(px(theme::SPACING_SM))
+            .pb(px(theme::SPACING_SM))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(div().flex_1().child(self.commit_input.clone()))
+                    .child(self.render_commit_button(cx)),
             )
     }
 }
@@ -347,10 +503,14 @@ impl Render for GitSidebar {
 
         div()
             .track_focus(&self.focus_handle)
+            .on_mouse_down(MouseButton::Left, |_, _, _cx| {
+                crate::platform_bridge::bridge().hide_keyboard();
+            })
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0x0e0c0c))
+            .bg(rgb(theme::BG_PRIMARY))
+            .child(self.render_commit_composer(cx))
             // File sections (scrollable)
             .child(
                 div()

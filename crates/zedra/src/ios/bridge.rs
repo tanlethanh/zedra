@@ -85,6 +85,15 @@ unsafe extern "C" {
         labels: *const *const std::ffi::c_char,
         styles: *const i32,
     );
+    /// Present a dismissible native action sheet with dynamic items.
+    fn ios_present_selection(
+        callback_id: u32,
+        title: *const std::ffi::c_char,
+        message: *const std::ffi::c_char,
+        button_count: i32,
+        labels: *const *const std::ffi::c_char,
+        styles: *const i32,
+    );
     /// Open a URL in the system browser via UIApplication.
     fn ios_open_url(url: *const std::ffi::c_char);
 }
@@ -157,19 +166,11 @@ impl PlatformBridge for IosBridge {
         }
     }
 
-    fn present_alert(
-        &self,
-        id: u32,
-        title: &str,
-        message: &str,
-        buttons: &[AlertButton],
-    ) {
+    fn present_alert(&self, id: u32, title: &str, message: &str, buttons: &[AlertButton]) {
         use std::ffi::CString;
 
-        let c_title =
-            CString::new(title).unwrap_or_else(|_| CString::new("").unwrap());
-        let c_message =
-            CString::new(message).unwrap_or_else(|_| CString::new("").unwrap());
+        let c_title = CString::new(title).unwrap_or_else(|_| CString::new("").unwrap());
+        let c_message = CString::new(message).unwrap_or_else(|_| CString::new("").unwrap());
         // Build CString labels and collect raw pointers (kept alive by the Vec).
         let c_labels: Vec<CString> = buttons
             .iter()
@@ -196,6 +197,37 @@ impl PlatformBridge for IosBridge {
             );
         }
     }
+
+    fn present_selection(&self, id: u32, title: &str, message: &str, buttons: &[AlertButton]) {
+        use std::ffi::CString;
+
+        let c_title = CString::new(title).unwrap_or_else(|_| CString::new("").unwrap());
+        let c_message = CString::new(message).unwrap_or_else(|_| CString::new("").unwrap());
+        let c_labels: Vec<CString> = buttons
+            .iter()
+            .map(|b| CString::new(b.label.as_str()).unwrap_or_else(|_| CString::new("OK").unwrap()))
+            .collect();
+        let label_ptrs: Vec<*const std::ffi::c_char> =
+            c_labels.iter().map(|s| s.as_ptr()).collect();
+        let styles: Vec<i32> = buttons
+            .iter()
+            .map(|b| match b.style {
+                AlertButtonStyle::Default => 0,
+                AlertButtonStyle::Cancel => 1,
+                AlertButtonStyle::Destructive => 2,
+            })
+            .collect();
+        unsafe {
+            ios_present_selection(
+                id,
+                c_title.as_ptr(),
+                c_message.as_ptr(),
+                buttons.len() as i32,
+                label_ptrs.as_ptr(),
+                styles.as_ptr(),
+            );
+        }
+    }
 }
 
 /// Called from the UIAlertController handler in main.m after the user taps a button.
@@ -209,6 +241,29 @@ pub extern "C" fn zedra_ios_alert_result(callback_id: u32, button_index: i32) {
         platform_bridge::dispatch_alert_result(callback_id, button_index as usize);
         zedra_session::push_callback(Box::new(|| {}));
     }
+}
+
+/// Called when an alert is dismissed without choosing a button.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_alert_dismiss(callback_id: u32) {
+    platform_bridge::dispatch_alert_dismiss(callback_id);
+    zedra_session::push_callback(Box::new(|| {}));
+}
+
+/// Called from the action sheet handler in main.m after the user taps an item.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_selection_result(callback_id: u32, button_index: i32) {
+    if button_index >= 0 {
+        platform_bridge::dispatch_selection_result(callback_id, button_index as usize);
+        zedra_session::push_callback(Box::new(|| {}));
+    }
+}
+
+/// Called when an action sheet is dismissed without selecting an item.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_selection_dismiss(callback_id: u32) {
+    platform_bridge::dispatch_selection_dismiss(callback_id);
+    zedra_session::push_callback(Box::new(|| {}));
 }
 
 /// Called from the native app delegate when the app enters the background.
@@ -244,10 +299,10 @@ pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
 
     let bytes: &[u8] = match key_name {
         "escape" => b"\x1b",
-        "tab"   => b"\x09",
-        "left"  => b"\x1b[D",
-        "down"  => b"\x1b[B",
-        "up"    => b"\x1b[A",
+        "tab" => b"\x09",
+        "left" => b"\x1b[D",
+        "down" => b"\x1b[B",
+        "up" => b"\x1b[A",
         "right" => b"\x1b[C",
         "enter" => b"\r",
         _ => return,

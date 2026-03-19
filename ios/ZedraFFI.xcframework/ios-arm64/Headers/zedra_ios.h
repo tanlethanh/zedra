@@ -20,7 +20,9 @@
 
 #define TEXT_MUTED 5263440
 
-#define BORDER_DEFAULT 5263440
+#define BORDER_DEFAULT 2894892
+
+#define BORDER_ACTIVE 5263440
 
 #define BORDER_SUBTLE 1710618
 
@@ -46,7 +48,9 @@
 
 #define HEADER_HEIGHT 48.0
 
-#define HOME_CARD_WIDTH 280.0
+#define HOME_CARD_WIDTH 300.0
+
+#define HOME_GUIDE_WIDTH 300.0
 
 #define CONNECT_DETAIL_WIDTH 300.0
 
@@ -81,6 +85,10 @@
 #define ICON_FILE_DIR 14.0
 
 #define ICON_STATUS 6.0
+
+#define ICON_TERMINAL 16.0
+
+#define ICON_GIT_COMMIT 24.0
 
 #define EDITOR_FONT_SIZE 12.0
 
@@ -145,6 +153,16 @@ extern void ios_present_alert(uint32_t callback_id,
                               const int32_t *styles);
 
 /**
+ * Present a dismissible native action sheet with dynamic items.
+ */
+extern void ios_present_selection(uint32_t callback_id,
+                                  const char *title,
+                                  const char *message,
+                                  int32_t button_count,
+                                  const char *const *labels,
+                                  const int32_t *styles);
+
+/**
  * Open a URL in the system browser via UIApplication.
  */
 extern void ios_open_url(const char *url);
@@ -157,6 +175,21 @@ extern void ios_open_url(const char *url);
  * passed to `platform_bridge::show_alert`).
  */
 void zedra_ios_alert_result(uint32_t callback_id, int32_t button_index);
+
+/**
+ * Called when an alert is dismissed without choosing a button.
+ */
+void zedra_ios_alert_dismiss(uint32_t callback_id);
+
+/**
+ * Called from the action sheet handler in main.m after the user taps an item.
+ */
+void zedra_ios_selection_result(uint32_t callback_id, int32_t button_index);
+
+/**
+ * Called when an action sheet is dismissed without selecting an item.
+ */
+void zedra_ios_selection_dismiss(uint32_t callback_id);
 
 /**
  * Called from the native app delegate when the app enters the background.

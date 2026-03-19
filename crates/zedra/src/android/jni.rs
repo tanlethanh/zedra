@@ -1,14 +1,18 @@
 use jni::{
-    JNIEnv, JavaVM,
     objects::{GlobalRef, JClass, JObject},
     sys::{jfloat, jint, jlong},
+    JNIEnv, JavaVM,
 };
 use ndk::native_window::NativeWindow;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Once};
 
-use crate::{install_panic_hook};
-use crate::android::{app, command_queue::{AndroidCommand, get_command_sender}};
+use crate::android::{
+    app,
+    command_queue::{get_command_sender, AndroidCommand},
+};
+use crate::install_panic_hook;
+use crate::platform_bridge::{self, AlertButton, AlertButtonStyle};
 
 // Global storage for JavaVM to enable Rust→Java callbacks
 static JVM: Mutex<Option<Arc<JavaVM>>> = Mutex::new(None);
@@ -607,6 +611,64 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeDeeplinkReceived(
     let _ = sender.send(AndroidCommand::Deeplink { url: deeplink_url });
 }
 
+/// Native alert result callback from MainActivity.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeAlertResult(
+    _env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+    button_index: jint,
+) {
+    if callback_id <= 0 || button_index < 0 {
+        return;
+    }
+    platform_bridge::dispatch_alert_result(callback_id as u32, button_index as usize);
+    zedra_session::push_callback(Box::new(|| {}));
+}
+
+/// Native alert dismiss callback from MainActivity.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeAlertDismiss(
+    _env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    platform_bridge::dispatch_alert_dismiss(callback_id as u32);
+    zedra_session::push_callback(Box::new(|| {}));
+}
+
+/// Native selection result callback from MainActivity.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeSelectionResult(
+    _env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+    button_index: jint,
+) {
+    if callback_id <= 0 || button_index < 0 {
+        return;
+    }
+    platform_bridge::dispatch_selection_result(callback_id as u32, button_index as usize);
+    zedra_session::push_callback(Box::new(|| {}));
+}
+
+/// Native selection dismiss callback from MainActivity.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeSelectionDismiss(
+    _env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    platform_bridge::dispatch_selection_dismiss(callback_id as u32);
+    zedra_session::push_callback(Box::new(|| {}));
+}
+
 /// Fling event callback
 ///
 /// Called when a fling gesture is detected (velocity from Android VelocityTracker)
@@ -912,6 +974,280 @@ fn open_url_inner(url: String) {
         &[(&j_url).into()],
     ) {
         log::error!("Failed to call openUrl: {:?}", e);
+        if env.exception_check().unwrap_or(false) {
+            env.exception_describe().ok();
+            env.exception_clear().ok();
+        }
+    }
+}
+
+/// Present a native Android alert dialog.
+pub fn show_alert(id: u32, title: &str, message: &str, buttons: &[AlertButton]) {
+    let title = title.to_string();
+    let message = message.to_string();
+    let button_labels: Vec<String> = buttons.iter().map(|button| button.label.clone()).collect();
+    let button_styles: Vec<jint> = buttons
+        .iter()
+        .map(|button| match button.style {
+            AlertButtonStyle::Default => 0,
+            AlertButtonStyle::Cancel => 1,
+            AlertButtonStyle::Destructive => 2,
+        })
+        .collect();
+    jni_call("show_alert", move || {
+        show_alert_inner(id, title, message, button_labels, button_styles)
+    });
+}
+
+/// Present a native Android selection sheet.
+pub fn show_selection(id: u32, title: &str, message: &str, buttons: &[AlertButton]) {
+    let title = title.to_string();
+    let message = message.to_string();
+    let button_labels: Vec<String> = buttons.iter().map(|button| button.label.clone()).collect();
+    let button_styles: Vec<jint> = buttons
+        .iter()
+        .map(|button| match button.style {
+            AlertButtonStyle::Default => 0,
+            AlertButtonStyle::Cancel => 1,
+            AlertButtonStyle::Destructive => 2,
+        })
+        .collect();
+    jni_call("show_selection", move || {
+        show_selection_inner(id, title, message, button_labels, button_styles)
+    });
+}
+
+fn show_alert_inner(
+    id: u32,
+    title: String,
+    message: String,
+    button_labels: Vec<String>,
+    button_styles: Vec<jint>,
+) {
+    let jvm = match JVM.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(jvm) => jvm.clone(),
+            None => {
+                log::error!("JVM not available for alert call");
+                return;
+            }
+        },
+        Err(error) => {
+            log::error!("Failed to lock JVM mutex: {:?}", error);
+            return;
+        }
+    };
+
+    let mut env = match jvm.get_env() {
+        Ok(env) => env,
+        Err(_) => match jvm.attach_current_thread_as_daemon() {
+            Ok(env) => env,
+            Err(error) => {
+                log::error!("Failed to attach thread for alert: {:?}", error);
+                return;
+            }
+        },
+    };
+
+    let class = match env.find_class("dev/zedra/app/MainActivity") {
+        Ok(class) => class,
+        Err(error) => {
+            log::error!("Failed to find MainActivity class: {:?}", error);
+            if env.exception_check().unwrap_or(false) {
+                env.exception_describe().ok();
+                env.exception_clear().ok();
+            }
+            return;
+        }
+    };
+
+    let title_value = match env.new_string(&title) {
+        Ok(value) => value,
+        Err(error) => {
+            log::error!("Failed to create alert title string: {:?}", error);
+            return;
+        }
+    };
+    let message_value = match env.new_string(&message) {
+        Ok(value) => value,
+        Err(error) => {
+            log::error!("Failed to create alert message string: {:?}", error);
+            return;
+        }
+    };
+    let string_class = match env.find_class("java/lang/String") {
+        Ok(class) => class,
+        Err(error) => {
+            log::error!("Failed to find String class: {:?}", error);
+            return;
+        }
+    };
+    let label_array =
+        match env.new_object_array(button_labels.len() as i32, string_class, JObject::null()) {
+            Ok(array) => array,
+            Err(error) => {
+                log::error!("Failed to create alert label array: {:?}", error);
+                return;
+            }
+        };
+    for (index, label) in button_labels.iter().enumerate() {
+        let label_value = match env.new_string(label) {
+            Ok(value) => value,
+            Err(error) => {
+                log::error!("Failed to create alert label string: {:?}", error);
+                return;
+            }
+        };
+        if let Err(error) = env.set_object_array_element(&label_array, index as i32, &label_value) {
+            log::error!("Failed to populate alert label array: {:?}", error);
+            return;
+        }
+    }
+
+    let style_array = match env.new_int_array(button_styles.len() as i32) {
+        Ok(array) => array,
+        Err(error) => {
+            log::error!("Failed to create alert style array: {:?}", error);
+            return;
+        }
+    };
+    if let Err(error) = env.set_int_array_region(&style_array, 0, &button_styles) {
+        log::error!("Failed to populate alert style array: {:?}", error);
+        return;
+    }
+
+    if let Err(error) = env.call_static_method(
+        &class,
+        "showAlert",
+        "(ILjava/lang/String;Ljava/lang/String;[Ljava/lang/String;[I)V",
+        &[
+            (id as jint).into(),
+            (&title_value).into(),
+            (&message_value).into(),
+            (&label_array).into(),
+            (&style_array).into(),
+        ],
+    ) {
+        log::error!("Failed to call showAlert: {:?}", error);
+        if env.exception_check().unwrap_or(false) {
+            env.exception_describe().ok();
+            env.exception_clear().ok();
+        }
+    }
+}
+
+fn show_selection_inner(
+    id: u32,
+    title: String,
+    message: String,
+    button_labels: Vec<String>,
+    button_styles: Vec<jint>,
+) {
+    let jvm = match JVM.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(jvm) => jvm.clone(),
+            None => {
+                log::error!("JVM not available for selection call");
+                return;
+            }
+        },
+        Err(error) => {
+            log::error!("Failed to lock JVM mutex: {:?}", error);
+            return;
+        }
+    };
+
+    let mut env = match jvm.get_env() {
+        Ok(env) => env,
+        Err(_) => match jvm.attach_current_thread_as_daemon() {
+            Ok(env) => env,
+            Err(error) => {
+                log::error!("Failed to attach thread for selection: {:?}", error);
+                return;
+            }
+        },
+    };
+
+    let class = match env.find_class("dev/zedra/app/MainActivity") {
+        Ok(class) => class,
+        Err(error) => {
+            log::error!("Failed to find MainActivity class: {:?}", error);
+            if env.exception_check().unwrap_or(false) {
+                env.exception_describe().ok();
+                env.exception_clear().ok();
+            }
+            return;
+        }
+    };
+
+    let title_value = match env.new_string(&title) {
+        Ok(value) => value,
+        Err(error) => {
+            log::error!("Failed to create selection title string: {:?}", error);
+            return;
+        }
+    };
+    let message_value = match env.new_string(&message) {
+        Ok(value) => value,
+        Err(error) => {
+            log::error!("Failed to create selection message string: {:?}", error);
+            return;
+        }
+    };
+    let string_class = match env.find_class("java/lang/String") {
+        Ok(class) => class,
+        Err(error) => {
+            log::error!("Failed to find String class: {:?}", error);
+            return;
+        }
+    };
+    let label_array =
+        match env.new_object_array(button_labels.len() as i32, string_class, JObject::null()) {
+            Ok(array) => array,
+            Err(error) => {
+                log::error!("Failed to create selection label array: {:?}", error);
+                return;
+            }
+        };
+    for (index, label) in button_labels.iter().enumerate() {
+        let label_value = match env.new_string(label) {
+            Ok(value) => value,
+            Err(error) => {
+                log::error!("Failed to create selection label string: {:?}", error);
+                return;
+            }
+        };
+        if let Err(error) = env.set_object_array_element(&label_array, index as i32, &label_value) {
+            log::error!("Failed to populate selection label array: {:?}", error);
+            return;
+        }
+    }
+
+    let style_array = match env.new_int_array(button_styles.len() as i32) {
+        Ok(array) => array,
+        Err(error) => {
+            log::error!("Failed to create selection style array: {:?}", error);
+            return;
+        }
+    };
+    if let Err(error) = env.set_int_array_region(&style_array, 0, &button_styles) {
+        log::error!("Failed to populate selection style array: {:?}", error);
+        return;
+    }
+
+    if let Err(error) = env.call_static_method(
+        &class,
+        "showSelection",
+        "(ILjava/lang/String;Ljava/lang/String;[Ljava/lang/String;[I)V",
+        &[
+            (id as jint).into(),
+            (&title_value).into(),
+            (&message_value).into(),
+            (&label_array).into(),
+            (&style_array).into(),
+        ],
+    ) {
+        log::error!("Failed to call showSelection: {:?}", error);
         if env.exception_check().unwrap_or(false) {
             env.exception_describe().ok();
             env.exception_clear().ok();

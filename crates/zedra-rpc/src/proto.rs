@@ -104,6 +104,12 @@ pub enum ZedraProto {
     #[rpc(tx = oneshot::Sender<GitCommitResult>)]
     GitCommit(GitCommitReq),
 
+    #[rpc(tx = oneshot::Sender<GitStageResult>)]
+    GitStage(GitStageReq),
+
+    #[rpc(tx = oneshot::Sender<GitUnstageResult>)]
+    GitUnstage(GitUnstageReq),
+
     #[rpc(tx = oneshot::Sender<GitBranchesResult>)]
     GitBranches(GitBranchesReq),
 
@@ -558,7 +564,11 @@ pub struct GitStatusResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitStatusEntry {
     pub path: String,
-    pub status: String,
+    /// Index status shown in the "staged" section. `None` means no staged change.
+    pub staged_status: Option<String>,
+    /// Working tree status shown in the "changes" / "untracked" sections.
+    /// `None` means no unstaged change.
+    pub unstaged_status: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -600,6 +610,22 @@ pub struct GitCommitReq {
 pub struct GitCommitResult {
     pub hash: String,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GitStageReq {
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GitStageResult {}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GitUnstageReq {
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GitUnstageResult {}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GitBranchesReq {}

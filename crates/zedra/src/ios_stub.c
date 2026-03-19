@@ -13,6 +13,13 @@ __attribute__((weak)) void ios_present_alert(
     int button_count,
     const char **labels,
     const int *styles) {}
+__attribute__((weak)) void ios_present_selection(
+    unsigned int callback_id,
+    const char *title,
+    const char *message,
+    int button_count,
+    const char **labels,
+    const int *styles) {}
 
 // Firebase Analytics + Crashlytics stubs.
 // Real implementations live in ios/Zedra/ZedraFirebase.m and override at Xcode link time.

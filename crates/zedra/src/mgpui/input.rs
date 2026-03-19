@@ -37,6 +37,8 @@ pub struct Input {
     focus_handle: FocusHandle,
     /// Last time a key was pressed (for cursor blink pause)
     last_keystroke: Option<Instant>,
+    /// Compact mode for denser tool-style inputs.
+    compact: bool,
 }
 
 impl Input {
@@ -48,6 +50,7 @@ impl Input {
             secure: false,
             focus_handle: cx.focus_handle(),
             last_keystroke: None,
+            compact: false,
         }
     }
 
@@ -69,6 +72,12 @@ impl Input {
     /// Set as a secure/password input
     pub fn secure(mut self, secure: bool) -> Self {
         self.secure = secure;
+        self
+    }
+
+    /// Use a smaller, denser layout for compact toolbars and sidebars.
+    pub fn compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
         self
     }
 
@@ -153,7 +162,7 @@ impl Input {
 
         div()
             .w(px(2.0))
-            .h(px(18.0))
+            .h(px(if self.compact { 14.0 } else { 18.0 }))
             .bg(rgb(theme::TEXT_SECONDARY))
             .rounded(px(1.0))
             .with_animation(
@@ -199,10 +208,18 @@ impl Render for Input {
         };
 
         let border_color = if is_focused {
-            rgb(theme::ACCENT_BLUE)
+            rgb(theme::BORDER_ACTIVE)
         } else {
             rgb(theme::BORDER_DEFAULT)
         };
+        let text_size = if self.compact {
+            theme::FONT_DETAIL
+        } else {
+            theme::FONT_BODY
+        };
+        let min_height = if self.compact { 36.0 } else { 44.0 };
+        let horizontal_padding = if self.compact { 10.0 } else { 12.0 };
+        let vertical_padding = if self.compact { 8.0 } else { 10.0 };
 
         // Build display text
         let display_text = if show_placeholder {
@@ -214,20 +231,24 @@ impl Render for Input {
         div()
             .id(("input", cx.entity_id()))
             .track_focus(&self.focus_handle)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation();
+            })
             .on_click(cx.listener(Self::handle_click))
             .on_key_down(cx.listener(Self::handle_key_down))
             .flex()
             .flex_row()
             .items_center()
-            .px_3()
-            .py_2()
+            .px(px(horizontal_padding))
+            .py(px(vertical_padding))
             .w_full()
-            .min_h(px(40.0))
+            .min_h(px(min_height))
             .bg(rgb(theme::BG_SURFACE))
             .rounded(px(6.0))
             .border_1()
             .border_color(border_color)
             .text_color(text_color)
+            .text_size(px(text_size))
             .cursor_text()
             .child(display_text)
             .when(is_focused, |this| this.child(self.render_cursor(cx)))

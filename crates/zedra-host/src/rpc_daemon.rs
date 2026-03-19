@@ -1219,7 +1219,12 @@ async fn dispatch(
                     .into_iter()
                     .map(|e| GitStatusEntry {
                         path: e.path,
-                        status: format!("{:?}", e.status).to_lowercase(),
+                        staged_status: e
+                            .staged_status
+                            .map(|status| format!("{:?}", status).to_lowercase()),
+                        unstaged_status: e
+                            .unstaged_status
+                            .map(|status| format!("{:?}", status).to_lowercase()),
                     })
                     .collect();
                 let _ = msg.tx.send(GitStatusResult { branch, entries }).await;
@@ -1259,6 +1264,26 @@ async fn dispatch(
             Ok(repo) => match repo.commit(&msg.message, &msg.paths) {
                 Ok(hash) => {
                     let _ = msg.tx.send(GitCommitResult { hash }).await;
+                }
+                Err(_) => drop(msg.tx),
+            },
+            Err(_) => drop(msg.tx),
+        },
+
+        ZedraMessage::GitStage(msg) => match GitRepo::open(&state.workdir) {
+            Ok(repo) => match repo.stage(&msg.paths) {
+                Ok(()) => {
+                    let _ = msg.tx.send(GitStageResult {}).await;
+                }
+                Err(_) => drop(msg.tx),
+            },
+            Err(_) => drop(msg.tx),
+        },
+
+        ZedraMessage::GitUnstage(msg) => match GitRepo::open(&state.workdir) {
+            Ok(repo) => match repo.unstage(&msg.paths) {
+                Ok(()) => {
+                    let _ = msg.tx.send(GitUnstageResult {}).await;
                 }
                 Err(_) => drop(msg.tx),
             },

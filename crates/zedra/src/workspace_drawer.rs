@@ -1,7 +1,9 @@
 use gpui::*;
 
-use crate::editor::git_sidebar::{GitFileEntry, GitFileStatus, GitRepoState};
-use crate::editor::git_sidebar::{GitFileSelected, GitSidebar};
+use crate::editor::git_sidebar::{
+    GitCommitRequested, GitFileEntry, GitFileLongPressed, GitFileSection, GitFileSelected,
+    GitFileStatus, GitRepoState, GitSidebar,
+};
 use crate::file_explorer::{FileExplorer, FileSelected};
 use crate::pending::{shared_pending_slot, SharedPendingSlot};
 use crate::platform_bridge;
@@ -21,7 +23,12 @@ pub enum DrawerSection {
 pub enum WorkspaceDrawerEvent {
     GoHome,
     FileSelected(String),
-    GitFileSelected(String, bool),
+    GitFileSelected(String, GitFileSection),
+    GitFileLongPressed(String, GitFileSection),
+    GitCommitRequested {
+        message: String,
+        paths: Vec<String>,
+    },
     CloseRequested,
     DisconnectRequested,
     NewTerminalRequested,
@@ -29,7 +36,10 @@ pub enum WorkspaceDrawerEvent {
     TerminalDeleteRequested(String),
     /// User dragged `dragged_id` onto `target_id`; move dragged to just before target.
     /// `target_id` is empty to mean "append at end".
-    TerminalReordered { dragged_id: String, target_id: String },
+    TerminalReordered {
+        dragged_id: String,
+        target_id: String,
+    },
 }
 
 impl EventEmitter<WorkspaceDrawerEvent> for WorkspaceDrawer {}
@@ -72,8 +82,30 @@ impl WorkspaceDrawer {
             |_this: &mut Self, _emitter, event: &GitFileSelected, cx| {
                 cx.emit(WorkspaceDrawerEvent::GitFileSelected(
                     event.path.clone(),
-                    event.untracked,
+                    event.section,
                 ));
+            },
+        );
+        subscriptions.push(sub);
+
+        let sub = cx.subscribe(
+            &git_sidebar,
+            |_this: &mut Self, _emitter, event: &GitFileLongPressed, cx| {
+                cx.emit(WorkspaceDrawerEvent::GitFileLongPressed(
+                    event.path.clone(),
+                    event.section,
+                ));
+            },
+        );
+        subscriptions.push(sub);
+
+        let sub = cx.subscribe(
+            &git_sidebar,
+            |_this: &mut Self, _emitter, event: &GitCommitRequested, cx| {
+                cx.emit(WorkspaceDrawerEvent::GitCommitRequested {
+                    message: event.message.clone(),
+                    paths: event.paths.clone(),
+                });
             },
         );
         subscriptions.push(sub);
@@ -155,6 +187,21 @@ impl WorkspaceDrawer {
         cx.notify();
     }
 
+    pub fn set_git_committing(&mut self, committing: bool, cx: &mut Context<Self>) {
+        self.git_sidebar
+            .update(cx, |sidebar, cx| sidebar.set_committing(committing, cx));
+    }
+
+    pub fn clear_git_commit_message(&mut self, cx: &mut Context<Self>) {
+        self.git_sidebar
+            .update(cx, |sidebar, cx| sidebar.clear_commit_message(cx));
+    }
+
+    pub fn refresh_git_status(&mut self) {
+        self.git_loaded = false;
+        self.load_git_status();
+    }
+
     /// Update the client-side terminal display order.
     /// Called by WorkspaceView after any order change (create, delete, drag-reorder, reconnect).
     pub fn set_terminal_order(&mut self, order: Vec<String>, cx: &mut Context<Self>) {
@@ -180,12 +227,33 @@ impl WorkspaceDrawer {
                     let mut untracked = Vec::new();
 
                     for entry in &result.entries {
-                        let status = GitFileStatus::from_status_str(&entry.status);
-                        let file = GitFileEntry::new(&entry.path, status, 0, 0);
-                        match entry.status.as_str() {
-                            "added" => staged.push(file),
-                            "untracked" => untracked.push(file),
-                            _ => unstaged.push(file),
+                        if let Some(status) = entry.staged_status.as_deref() {
+                            staged.push(GitFileEntry::new(
+                                &entry.path,
+                                GitFileStatus::from_status_str(status),
+                                GitFileSection::Staged,
+                                0,
+                                0,
+                            ));
+                        }
+
+                        if let Some(status) = entry.unstaged_status.as_deref() {
+                            let file = GitFileEntry::new(
+                                &entry.path,
+                                GitFileStatus::from_status_str(status),
+                                if status == "untracked" {
+                                    GitFileSection::Untracked
+                                } else {
+                                    GitFileSection::Unstaged
+                                },
+                                0,
+                                0,
+                            );
+                            if status == "untracked" {
+                                untracked.push(file);
+                            } else {
+                                unstaged.push(file);
+                            }
                         }
                     }
 
@@ -194,7 +262,6 @@ impl WorkspaceDrawer {
                         staged_files: staged,
                         unstaged_files: unstaged,
                         untracked_files: untracked,
-                        commit_message: String::new(),
                     };
 
                     pending.set(repo_state);

@@ -7,6 +7,7 @@
 //   4. CADisplayLink                 — drives gpui_ios_request_frame() at 60 FPS
 
 #import <UIKit/UIKit.h>
+#import <objc/runtime.h>
 #import <unistd.h>
 
 // Synchronous write to stderr — visible in `devicectl device process launch --console`.
@@ -43,7 +44,28 @@ extern bool zedra_ios_check_pending_frame(void);
 extern void zedra_ios_set_keyboard_height(unsigned int height_px);
 extern void gpui_ios_set_software_keyboard_visible(bool visible);
 extern void zedra_ios_alert_result(unsigned int callback_id, int button_index);
+extern void zedra_ios_alert_dismiss(unsigned int callback_id);
+extern void zedra_ios_selection_result(unsigned int callback_id, int button_index);
+extern void zedra_ios_selection_dismiss(unsigned int callback_id);
 extern void zedra_deeplink_received(const char* url);
+
+@interface ZedraPresentationDismissDelegate : NSObject <UIAdaptivePresentationControllerDelegate>
+@property (nonatomic, assign) unsigned int callbackId;
+@property (nonatomic, assign) BOOL handled;
+@property (nonatomic, assign) BOOL isSelection;
+@end
+
+@implementation ZedraPresentationDismissDelegate
+- (void)presentationControllerDidDismiss:(UIPresentationController *)presentationController {
+    if (self.handled) return;
+    self.handled = YES;
+    if (self.isSelection) {
+        zedra_ios_selection_dismiss(self.callbackId);
+    } else {
+        zedra_ios_alert_dismiss(self.callbackId);
+    }
+}
+@end
 
 // Called from Rust to present a native UIAlertController with dynamic buttons.
 // `labels` and `styles` are parallel arrays of length `button_count`.
@@ -91,6 +113,11 @@ void ios_present_alert(
             alertControllerWithTitle:titleStr
             message:messageStr
             preferredStyle:UIAlertControllerStyleAlert];
+        ZedraPresentationDismissDelegate *delegate = [ZedraPresentationDismissDelegate new];
+        delegate.callbackId = callback_id;
+        delegate.isSelection = NO;
+        alert.presentationController.delegate = delegate;
+        objc_setAssociatedObject(alert, "zedra_alert_delegate", delegate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
         for (int i = 0; i < button_count; i++) {
             UIAlertActionStyle actionStyle;
@@ -101,15 +128,92 @@ void ios_present_alert(
             }
             int captured_i = i;
             unsigned int captured_id = callback_id;
+            ZedraPresentationDismissDelegate *captured_delegate = delegate;
             [alert addAction:[UIAlertAction
                 actionWithTitle:labelArr[i]
                 style:actionStyle
                 handler:^(UIAlertAction *action) {
+                    captured_delegate.handled = YES;
                     zedra_ios_alert_result(captured_id, captured_i);
                 }]];
         }
 
         [vc presentViewController:alert animated:YES completion:nil];
+    });
+}
+
+// Called from Rust to present a native action sheet without an explicit cancel row.
+void ios_present_selection(
+    unsigned int callback_id,
+    const char *title,
+    const char *message,
+    int button_count,
+    const char **labels,
+    const int *styles)
+{
+    NSString *titleStr = (title && title[0]) ? [NSString stringWithUTF8String:title] : nil;
+    NSString *messageStr = (message && message[0]) ? [NSString stringWithUTF8String:message] : nil;
+    NSMutableArray<NSString *> *labelArr = [NSMutableArray arrayWithCapacity:button_count];
+    NSMutableArray<NSNumber *> *styleArr = [NSMutableArray arrayWithCapacity:button_count];
+    for (int i = 0; i < button_count; i++) {
+        NSString *lbl = (labels && labels[i]) ? [NSString stringWithUTF8String:labels[i]] : @"OK";
+        [labelArr addObject:lbl];
+        [styleArr addObject:@(styles ? styles[i] : 0)];
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *vc = nil;
+        for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+            for (UIWindow *win in ((UIWindowScene *)scene).windows) {
+                if (win.isKeyWindow) {
+                    vc = win.rootViewController;
+                    break;
+                }
+            }
+            if (vc) break;
+        }
+        while (vc.presentedViewController) {
+            vc = vc.presentedViewController;
+        }
+        if (!vc) return;
+
+        UIAlertController *sheet = [UIAlertController
+            alertControllerWithTitle:titleStr
+            message:messageStr
+            preferredStyle:UIAlertControllerStyleActionSheet];
+        ZedraPresentationDismissDelegate *delegate = [ZedraPresentationDismissDelegate new];
+        delegate.callbackId = callback_id;
+        delegate.isSelection = YES;
+        sheet.presentationController.delegate = delegate;
+        objc_setAssociatedObject(sheet, "zedra_selection_delegate", delegate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+        UIPopoverPresentationController *popover = sheet.popoverPresentationController;
+        if (popover) {
+            popover.sourceView = vc.view;
+            popover.sourceRect = CGRectMake(CGRectGetMidX(vc.view.bounds), CGRectGetMidY(vc.view.bounds), 1, 1);
+            popover.permittedArrowDirections = 0;
+        }
+
+        for (int i = 0; i < button_count; i++) {
+            UIAlertActionStyle actionStyle;
+            switch ([styleArr[i] intValue]) {
+                case 2:  actionStyle = UIAlertActionStyleDestructive; break;
+                default: actionStyle = UIAlertActionStyleDefault;     break;
+            }
+            int captured_i = i;
+            unsigned int captured_id = callback_id;
+            ZedraPresentationDismissDelegate *captured_delegate = delegate;
+            [sheet addAction:[UIAlertAction
+                actionWithTitle:labelArr[i]
+                style:actionStyle
+                handler:^(UIAlertAction *action) {
+                    captured_delegate.handled = YES;
+                    zedra_ios_selection_result(captured_id, captured_i);
+                }]];
+        }
+
+        [vc presentViewController:sheet animated:YES completion:nil];
     });
 }
 

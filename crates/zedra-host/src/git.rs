@@ -15,7 +15,8 @@ use std::process::Command;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StatusEntry {
     pub path: String,
-    pub status: FileStatus,
+    pub staged_status: Option<FileStatus>,
+    pub unstaged_status: Option<FileStatus>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -80,6 +81,11 @@ impl GitRepo {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
+    fn git_ok(&self, args: &[&str]) -> Result<()> {
+        self.git(args)?;
+        Ok(())
+    }
+
     /// Current branch name.
     pub fn branch(&self) -> Result<String> {
         let out = self.git(&["branch", "--show-current"])?;
@@ -91,21 +97,31 @@ impl GitRepo {
         let out = self.git(&["status", "--porcelain=v1"])?;
         let mut entries = Vec::new();
         for line in out.lines() {
+            if line.len() < 3 {
+                continue;
+            }
+            if line.starts_with("?? ") {
+                entries.push(StatusEntry {
+                    path: parse_status_path(&line[3..]),
+                    staged_status: None,
+                    unstaged_status: Some(FileStatus::Untracked),
+                });
+                continue;
+            }
             if line.len() < 4 {
                 continue;
             }
+
             let xy = &line[..2];
-            let path = line[3..].to_string();
-            let status = match xy.trim() {
-                "M" | "MM" | "AM" => FileStatus::Modified,
-                "A" => FileStatus::Added,
-                "D" => FileStatus::Deleted,
-                "R" => FileStatus::Renamed,
-                "??" => FileStatus::Untracked,
-                "UU" | "AA" | "DD" => FileStatus::Conflicted,
-                _ => FileStatus::Modified,
-            };
-            entries.push(StatusEntry { path, status });
+            let mut chars = xy.chars();
+            let staged_code = chars.next().unwrap_or(' ');
+            let unstaged_code = chars.next().unwrap_or(' ');
+
+            entries.push(StatusEntry {
+                path: parse_status_path(&line[3..]),
+                staged_status: parse_status_code(staged_code),
+                unstaged_status: parse_status_code(unstaged_code),
+            });
         }
         Ok(entries)
     }
@@ -162,11 +178,7 @@ impl GitRepo {
     /// Branch names are validated against a safe character set before use,
     /// and `--` is inserted to prevent flag injection.
     pub fn checkout(&self, branch: &str) -> Result<()> {
-        anyhow::ensure!(
-            is_safe_ref(branch),
-            "invalid branch name: {:?}",
-            branch
-        );
+        anyhow::ensure!(is_safe_ref(branch), "invalid branch name: {:?}", branch);
         self.git(&["checkout", "--", branch])?;
         Ok(())
     }
@@ -178,14 +190,70 @@ impl GitRepo {
         if paths.is_empty() {
             anyhow::bail!("no paths to commit");
         }
-        let mut add_args: Vec<&str> = vec!["add", "--"];
-        for p in paths {
-            add_args.push(p.as_str());
-        }
-        self.git(&add_args)?;
+        self.stage(paths)?;
         self.git(&["commit", "-m", message])?;
         let out = self.git(&["rev-parse", "HEAD"])?;
         Ok(out.trim().to_string())
+    }
+
+    /// Stage paths in the index.
+    pub fn stage(&self, paths: &[String]) -> Result<()> {
+        if paths.is_empty() {
+            anyhow::bail!("no paths to stage");
+        }
+        let mut add_args: Vec<&str> = vec!["add", "--"];
+        for path in paths {
+            add_args.push(path.as_str());
+        }
+        self.git_ok(&add_args)
+    }
+
+    /// Remove paths from the index while keeping working tree contents.
+    pub fn unstage(&self, paths: &[String]) -> Result<()> {
+        if paths.is_empty() {
+            anyhow::bail!("no paths to unstage");
+        }
+
+        let mut reset_args: Vec<&str> = vec!["reset", "HEAD", "--"];
+        for path in paths {
+            reset_args.push(path.as_str());
+        }
+
+        match self.git_ok(&reset_args) {
+            Ok(()) => Ok(()),
+            Err(reset_error) => {
+                let head_exists = self.git_ok(&["rev-parse", "--verify", "HEAD"]).is_ok();
+                if head_exists {
+                    Err(reset_error)
+                } else {
+                    let mut rm_args: Vec<&str> = vec!["rm", "--cached", "--"];
+                    for path in paths {
+                        rm_args.push(path.as_str());
+                    }
+                    self.git_ok(&rm_args)
+                }
+            }
+        }
+    }
+}
+
+fn parse_status_path(path: &str) -> String {
+    path.rsplit_once(" -> ")
+        .map(|(_, new_path)| new_path)
+        .unwrap_or(path)
+        .to_string()
+}
+
+fn parse_status_code(code: char) -> Option<FileStatus> {
+    match code {
+        ' ' => None,
+        'M' | 'T' => Some(FileStatus::Modified),
+        'A' | 'C' => Some(FileStatus::Added),
+        'D' => Some(FileStatus::Deleted),
+        'R' => Some(FileStatus::Renamed),
+        '?' => Some(FileStatus::Untracked),
+        'U' => Some(FileStatus::Conflicted),
+        _ => Some(FileStatus::Modified),
     }
 }
 
@@ -246,8 +314,30 @@ mod tests {
         std::fs::write(dir.path().join("new.txt"), "hello").unwrap();
         let status = repo.status().unwrap();
         assert_eq!(status.len(), 1);
-        assert_eq!(status[0].status, FileStatus::Untracked);
+        assert_eq!(status[0].staged_status, None);
+        assert_eq!(status[0].unstaged_status, Some(FileStatus::Untracked));
         assert_eq!(status[0].path, "new.txt");
+    }
+
+    #[test]
+    fn status_tracks_staged_and_unstaged_sides() {
+        let (dir, repo) = init_repo();
+        std::fs::write(dir.path().join("file.txt"), "one\n").unwrap();
+        repo.commit("initial commit", &["file.txt".into()]).unwrap();
+
+        std::fs::write(dir.path().join("file.txt"), "two\n").unwrap();
+        Command::new("git")
+            .args(["add", "file.txt"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(dir.path().join("file.txt"), "three\n").unwrap();
+
+        let status = repo.status().unwrap();
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].path, "file.txt");
+        assert_eq!(status[0].staged_status, Some(FileStatus::Modified));
+        assert_eq!(status[0].unstaged_status, Some(FileStatus::Modified));
     }
 
     #[test]
@@ -306,7 +396,8 @@ mod tests {
     fn status_entry_serde() {
         let entry = StatusEntry {
             path: "src/lib.rs".into(),
-            status: FileStatus::Modified,
+            staged_status: Some(FileStatus::Modified),
+            unstaged_status: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         let parsed: StatusEntry = serde_json::from_str(&json).unwrap();

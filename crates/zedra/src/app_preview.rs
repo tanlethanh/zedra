@@ -116,6 +116,10 @@ impl PreviewApp {
                     WorkspaceDrawerEvent::GitFileSelected(_, _) => {
                         drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
                     }
+                    WorkspaceDrawerEvent::GitFileLongPressed(_, _) => {
+                        drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
+                    }
+                    WorkspaceDrawerEvent::GitCommitRequested { .. } => {}
                     WorkspaceDrawerEvent::TerminalSelected(_) => {
                         drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
                     }
