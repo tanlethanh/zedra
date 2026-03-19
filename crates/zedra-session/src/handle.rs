@@ -7,11 +7,11 @@ use std::time::Instant;
 use anyhow::Result;
 use zedra_rpc::proto::*;
 
-use crate::{session_runtime, signer::ClientSigner, terminal::RemoteTerminal};
 use crate::connect_state::{
     AuthOutcome, ConnectError, ConnectPhase, ConnectSnapshot, ConnectState, ReconnectReason,
     TransportSnapshot,
 };
+use crate::{session_runtime, signer::ClientSigner, terminal::RemoteTerminal};
 
 /// Workspace-scoped durable session state. Arc-wrapped — clone freely to share
 /// with async tasks. Survives transport failures and reconnect cycles.
@@ -41,9 +41,9 @@ struct SessionHandleInner {
     // ── Cached host identity (survives reconnect — used for UI during Reconnecting) ─
     workdir: Mutex<String>,
     hostname: Mutex<String>,
-    home_dir: Mutex<String>,
-    /// Last path component of `workdir`, pre-computed (e.g. "zedra").
+    homedir: Mutex<String>,
     project_name: Mutex<String>,
+    strip_path: Mutex<String>,
 
     // ── Reconnect control signals ───────────────────────────────────────────
     /// Set to true by user-initiated disconnect; suppresses automatic reconnect.
@@ -72,9 +72,10 @@ impl SessionHandle {
             connect_state: Mutex::new(ConnectState::idle()),
             conn_generation: AtomicU64::new(0),
             workdir: Mutex::new(String::new()),
+            homedir: Mutex::new(String::new()),
             hostname: Mutex::new(String::new()),
-            home_dir: Mutex::new(String::new()),
             project_name: Mutex::new(String::new()),
+            strip_path: Mutex::new(String::new()),
             user_disconnect: AtomicBool::new(false),
             skip_next_backoff: AtomicBool::new(false),
             reconnect_running: AtomicBool::new(false),
@@ -213,12 +214,16 @@ impl SessionHandle {
         let phase = self.connect_state().phase;
 
         if phase.is_connected() {
-            tracing::info!("foreground_resume: session Connected, skipping reconnect (closed-watcher handles dropout)");
+            tracing::info!(
+                "foreground_resume: session Connected, skipping reconnect (closed-watcher handles dropout)"
+            );
             return;
         }
 
         if phase.is_reconnecting() || phase.is_connecting() {
-            tracing::info!("foreground_resume: reconnect already in progress, flagged to skip backoff");
+            tracing::info!(
+                "foreground_resume: reconnect already in progress, flagged to skip backoff"
+            );
             return;
         }
 
@@ -272,12 +277,25 @@ impl SessionHandle {
         self.0.workdir.lock().map(|g| g.clone()).unwrap_or_default()
     }
 
-    pub fn home_dir(&self) -> String {
-        self.0.home_dir.lock().map(|g| g.clone()).unwrap_or_default()
+    pub fn homedir(&self) -> String {
+        self.0.homedir.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    /// Working directory with home prefix stripped and replaced by `~` for display.
+    pub fn strip_path(&self) -> String {
+        self.0
+            .strip_path
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 
     pub fn hostname(&self) -> String {
-        self.0.hostname.lock().map(|g| g.clone()).unwrap_or_default()
+        self.0
+            .hostname
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 
     /// Last path component of the remote working directory (e.g. `"zedra"`).
@@ -354,13 +372,10 @@ impl SessionHandle {
         self.notify_state_change();
 
         let t1 = Instant::now();
-        let conn = endpoint
-            .connect(addr, ZEDRA_ALPN)
-            .await
-            .map_err(|e| {
-                self.set_failed(ConnectError::QuicConnectFailed(e.to_string()));
-                anyhow::anyhow!("quic connect failed: {e}")
-            })?;
+        let conn = endpoint.connect(addr, ZEDRA_ALPN).await.map_err(|e| {
+            self.set_failed(ConnectError::QuicConnectFailed(e.to_string()));
+            anyhow::anyhow!("quic connect failed: {e}")
+        })?;
 
         let remote_node_id = conn.remote_id().fmt_short().to_string();
         let alpn_str = String::from_utf8_lossy(conn.alpn()).to_string();
@@ -401,8 +416,7 @@ impl SessionHandle {
                 let mut watcher_active = true;
                 loop {
                     // Stop if the connection has been superseded.
-                    let current_gen =
-                        handle_for_paths.0.conn_generation.load(Ordering::Acquire);
+                    let current_gen = handle_for_paths.0.conn_generation.load(Ordering::Acquire);
                     if current_gen != my_gen {
                         break;
                     }
@@ -414,8 +428,7 @@ impl SessionHandle {
                         let (remote_addr, relay_url) = match path.remote_addr() {
                             iroh::TransportAddr::Ip(addr) => (addr.to_string(), None),
                             iroh::TransportAddr::Relay(url) => {
-                                let host =
-                                    url.host_str().unwrap_or(url.as_str()).to_string();
+                                let host = url.host_str().unwrap_or(url.as_str()).to_string();
                                 (host.clone(), Some(host))
                             }
                             _ => (format!("{:?}", path.remote_addr()), None),
@@ -545,8 +558,7 @@ impl SessionHandle {
         let handle_for_watcher = self.clone();
         tokio::spawn(async move {
             conn_for_watcher.closed().await;
-            let current_gen =
-                handle_for_watcher.0.conn_generation.load(Ordering::Acquire);
+            let current_gen = handle_for_watcher.0.conn_generation.load(Ordering::Acquire);
             if current_gen != my_gen {
                 tracing::debug!(
                     "stale connection closed (gen={my_gen} current={current_gen}), skipping"
@@ -612,8 +624,7 @@ impl SessionHandle {
                 RegisterResult::Ok => {
                     tracing::info!("PKI: registered, session={}", t.session_id);
                     if let Ok(mut cs) = self.0.connect_state.lock() {
-                        cs.snapshot.register_ms =
-                            Some(t_register.elapsed().as_millis() as u64);
+                        cs.snapshot.register_ms = Some(t_register.elapsed().as_millis() as u64);
                     }
                 }
                 RegisterResult::HandshakeConsumed => {
@@ -730,23 +741,35 @@ impl SessionHandle {
                     }
                 }
                 if !info.workdir.is_empty() {
-                    let project = info
-                        .workdir
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or(&info.workdir)
-                        .to_string();
+                    let workdir = info.workdir.clone();
+                    let project = workdir.rsplit('/').next().unwrap_or(&workdir).to_string();
+
+                    // Cache raw workdir and derived project name.
                     if let Ok(mut w) = self.0.workdir.lock() {
-                        *w = info.workdir.clone();
+                        *w = workdir.clone();
                     }
                     if let Ok(mut p) = self.0.project_name.lock() {
                         *p = project;
                     }
-                }
-                let home_dir = info.home_dir.unwrap_or_default();
-                if !home_dir.is_empty() {
-                    if let Ok(mut h) = self.0.home_dir.lock() {
-                        *h = home_dir;
+
+                    // Cache home directory and a `~`-stripped display path.
+                    let home_dir = info.home_dir.clone().unwrap_or_default();
+                    if !home_dir.is_empty() {
+                        if let Ok(mut h) = self.0.homedir.lock() {
+                            *h = home_dir.clone();
+                        }
+                    }
+                    let display_path = if !home_dir.is_empty() {
+                        if let Some(rest) = workdir.strip_prefix(&home_dir) {
+                            format!("~{rest}")
+                        } else {
+                            workdir
+                        }
+                    } else {
+                        workdir
+                    };
+                    if let Ok(mut s) = self.0.strip_path.lock() {
+                        *s = display_path;
                     }
                 }
 
@@ -815,7 +838,9 @@ impl SessionHandle {
                             if last_seq > 0 && output.seq > last_seq + 1 {
                                 tracing::warn!(
                                     "terminal {}: backlog gap (last_seq={} first_recv_seq={}), injecting reset",
-                                    terminal_pump.id, last_seq, output.seq,
+                                    terminal_pump.id,
+                                    last_seq,
+                                    output.seq,
                                 );
                                 if let Ok(mut buf) = terminal_pump.output.lock() {
                                     buf.push_back(b"\x1bc".to_vec());
@@ -892,25 +917,20 @@ impl SessionHandle {
     }
 
     async fn subscribe_to_events(&self, client: &irpc::Client<ZedraProto>) {
-        let stream_fut =
-            client.server_streaming::<SubscribeReq, HostEvent>(SubscribeReq {}, 32);
+        let stream_fut = client.server_streaming::<SubscribeReq, HostEvent>(SubscribeReq {}, 32);
 
-        let mut rx = match tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            stream_fut,
-        )
-        .await
-        {
-            Ok(Ok(rx)) => rx,
-            Ok(Err(e)) => {
-                tracing::warn!("Subscribe failed: {e}");
-                return;
-            }
-            Err(_) => {
-                tracing::warn!("Subscribe timed out");
-                return;
-            }
-        };
+        let mut rx =
+            match tokio::time::timeout(std::time::Duration::from_secs(10), stream_fut).await {
+                Ok(Ok(rx)) => rx,
+                Ok(Err(e)) => {
+                    tracing::warn!("Subscribe failed: {e}");
+                    return;
+                }
+                Err(_) => {
+                    tracing::warn!("Subscribe timed out");
+                    return;
+                }
+            };
 
         let handle = self.clone();
         let client = client.clone();
@@ -933,11 +953,7 @@ impl SessionHandle {
         tracing::info!("Subscribed to host events");
     }
 
-    async fn handle_host_event(
-        &self,
-        event: HostEvent,
-        client: &irpc::Client<ZedraProto>,
-    ) {
+    async fn handle_host_event(&self, event: HostEvent, client: &irpc::Client<ZedraProto>) {
         match event {
             HostEvent::TerminalCreated { id, launch_cmd } => {
                 tracing::info!(
@@ -997,8 +1013,7 @@ impl SessionHandle {
                 }
 
                 let delay_secs = std::cmp::min(1u64 << (attempt - 1), 30);
-                let skip_backoff =
-                    handle.0.skip_next_backoff.swap(false, Ordering::AcqRel);
+                let skip_backoff = handle.0.skip_next_backoff.swap(false, Ordering::AcqRel);
                 let next_retry_secs = if skip_backoff { 0 } else { delay_secs };
 
                 // Set Reconnecting phase.
@@ -1131,7 +1146,11 @@ impl SessionHandle {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let result: PongResult = client.rpc(PingReq { timestamp_ms: now_ms }).await?;
+        let result: PongResult = client
+            .rpc(PingReq {
+                timestamp_ms: now_ms,
+            })
+            .await?;
         let after_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -1165,7 +1184,11 @@ impl SessionHandle {
     ) -> Result<(Vec<FsEntry>, u32, bool)> {
         let result: FsListResult = self
             .client()?
-            .rpc(FsListReq { path: path.to_string(), offset, limit })
+            .rpc(FsListReq {
+                path: path.to_string(),
+                offset,
+                limit,
+            })
             .await?;
         Ok((result.entries, result.total, result.has_more))
     }
@@ -1173,7 +1196,9 @@ impl SessionHandle {
     pub async fn fs_read(&self, path: &str) -> Result<FsReadResult> {
         let result: FsReadResult = self
             .client()?
-            .rpc(FsReadReq { path: path.to_string() })
+            .rpc(FsReadReq {
+                path: path.to_string(),
+            })
             .await?;
         Ok(result)
     }
@@ -1190,7 +1215,12 @@ impl SessionHandle {
     }
 
     pub async fn fs_stat(&self, path: &str) -> Result<FsStatResult> {
-        Ok(self.client()?.rpc(FsStatReq { path: path.to_string() }).await?)
+        Ok(self
+            .client()?
+            .rpc(FsStatReq {
+                path: path.to_string(),
+            })
+            .await?)
     }
 
     // -----------------------------------------------------------------------
@@ -1218,15 +1248,16 @@ impl SessionHandle {
     }
 
     pub async fn git_branches(&self) -> Result<Vec<GitBranchEntry>> {
-        let result: GitBranchesResult =
-            self.client()?.rpc(GitBranchesReq {}).await?;
+        let result: GitBranchesResult = self.client()?.rpc(GitBranchesReq {}).await?;
         Ok(result.branches)
     }
 
     pub async fn git_checkout(&self, branch: &str) -> Result<()> {
         let _: GitCheckoutResult = self
             .client()?
-            .rpc(GitCheckoutReq { branch: branch.to_string() })
+            .rpc(GitCheckoutReq {
+                branch: branch.to_string(),
+            })
             .await?;
         Ok(())
     }
@@ -1257,8 +1288,13 @@ impl SessionHandle {
         launch_cmd: Option<String>,
     ) -> Result<String> {
         let client = self.client()?;
-        let result: TermCreateResult =
-            client.rpc(TermCreateReq { cols, rows, launch_cmd }).await?;
+        let result: TermCreateResult = client
+            .rpc(TermCreateReq {
+                cols,
+                rows,
+                launch_cmd,
+            })
+            .await?;
 
         let terminal = RemoteTerminal::new(result.id.clone());
         self.0.terminals.lock().unwrap().push(terminal.clone());
@@ -1285,11 +1321,7 @@ impl SessionHandle {
             .client()?
             .rpc(TermCloseReq { id: id.to_string() })
             .await?;
-        self.0
-            .terminals
-            .lock()
-            .unwrap()
-            .retain(|t| t.id != id);
+        self.0.terminals.lock().unwrap().retain(|t| t.id != id);
         Ok(())
     }
 
