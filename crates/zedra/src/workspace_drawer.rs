@@ -27,6 +27,9 @@ pub enum WorkspaceDrawerEvent {
     NewTerminalRequested,
     TerminalSelected(String),
     TerminalDeleteRequested(String),
+    /// User dragged `dragged_id` onto `target_id`; move dragged to just before target.
+    /// `target_id` is empty to mean "append at end".
+    TerminalReordered { dragged_id: String, target_id: String },
 }
 
 impl EventEmitter<WorkspaceDrawerEvent> for WorkspaceDrawer {}
@@ -39,6 +42,8 @@ pub struct WorkspaceDrawer {
     pending_git_status: SharedPendingSlot<GitRepoState>,
     git_loaded: bool,
     active_terminal_id: Option<String>,
+    /// Client-side terminal display order (persists across reconnects, updated on drag-reorder).
+    terminal_order: Vec<String>,
     session_handle: Option<zedra_session::SessionHandle>,
     /// Kept alive to poll session state every 2 s and re-render the session tab.
     /// Dropped (and cancelled) when replaced by a new session.
@@ -81,6 +86,7 @@ impl WorkspaceDrawer {
             pending_git_status: shared_pending_slot(),
             git_loaded: false,
             active_terminal_id: None,
+            terminal_order: Vec::new(),
             session_handle: None,
             _session_refresh_task: None,
             _subscriptions: subscriptions,
@@ -146,6 +152,13 @@ impl WorkspaceDrawer {
     /// Update the active terminal indicator in the Terminal tab.
     pub fn set_active_terminal(&mut self, id: Option<String>, cx: &mut Context<Self>) {
         self.active_terminal_id = id;
+        cx.notify();
+    }
+
+    /// Update the client-side terminal display order.
+    /// Called by WorkspaceView after any order change (create, delete, drag-reorder, reconnect).
+    pub fn set_terminal_order(&mut self, order: Vec<String>, cx: &mut Context<Self>) {
+        self.terminal_order = order;
         cx.notify();
     }
 
@@ -309,8 +322,21 @@ impl WorkspaceDrawer {
     }
 
     fn render_terminal_tab(&self, cx: &mut Context<Self>) -> Div {
+        // Use client-side order if set; otherwise fall back to server order.
+        let ids_from_handle;
+        let terminal_ids: &[String] = if !self.terminal_order.is_empty() {
+            &self.terminal_order
+        } else {
+            ids_from_handle = self
+                .session_handle
+                .as_ref()
+                .map(|h| h.terminal_ids())
+                .unwrap_or_default();
+            &ids_from_handle
+        };
         terminal_panel::render_terminal_tab(
             self.session_handle.as_ref(),
+            terminal_ids,
             self.active_terminal_id.as_deref(),
             cx,
         )

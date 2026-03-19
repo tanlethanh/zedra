@@ -566,6 +566,29 @@ impl WorkspaceView {
                                 },
                             );
                         }
+                        WorkspaceDrawerEvent::TerminalReordered { dragged_id, target_id } => {
+                            let dragged_id = dragged_id.clone();
+                            let target_id = target_id.clone();
+                            if let Some(from) = this
+                                .terminal_views
+                                .iter()
+                                .position(|(id, _)| id == &dragged_id)
+                            {
+                                let entry = this.terminal_views.remove(from);
+                                if target_id.is_empty() {
+                                    this.terminal_views.push(entry);
+                                } else if let Some(to) = this
+                                    .terminal_views
+                                    .iter()
+                                    .position(|(id, _)| id == &target_id)
+                                {
+                                    this.terminal_views.insert(to, entry);
+                                } else {
+                                    this.terminal_views.push(entry);
+                                }
+                                this.sync_terminal_order_to_drawer(cx);
+                            }
+                        }
                         WorkspaceDrawerEvent::GitFileSelected(path, untracked) => {
                             drawer_host_clone.update(cx, |host, cx| host.close(cx));
                             let path = path.clone();
@@ -761,6 +784,20 @@ impl WorkspaceView {
         });
     }
 
+    /// Push the current `terminal_views` order to the workspace drawer.
+    /// Call this after any operation that changes the terminal list or order.
+    fn sync_terminal_order_to_drawer(&self, cx: &mut Context<Self>) {
+        let order: Vec<String> = self
+            .terminal_views
+            .iter()
+            .filter(|(id, _)| id != PENDING_TERMINAL_ID)
+            .map(|(id, _)| id.clone())
+            .collect();
+        self.workspace_drawer.update(cx, |drawer, cx| {
+            drawer.set_terminal_order(order, cx);
+        });
+    }
+
     /// Switch the main view to a specific terminal by ID.
     pub fn switch_to_terminal(&mut self, terminal_id: &str, cx: &mut Context<Self>) {
         if let Some((_, view)) = self.terminal_views.iter().find(|(id, _)| id == terminal_id) {
@@ -785,6 +822,25 @@ impl Render for WorkspaceView {
         // Session resume: replace the placeholder with views for each existing terminal.
         if let Some(existing_ids) = self.pending_existing_terminals.take() {
             if !existing_ids.is_empty() {
+                // Preserve the user's terminal order across reconnects.
+                // Sort server-provided IDs to match our previous order, appending new ones.
+                let prev_order: Vec<String> = self
+                    .terminal_views
+                    .iter()
+                    .filter(|(id, _)| id != PENDING_TERMINAL_ID)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                let mut ordered_ids: Vec<String> = prev_order
+                    .iter()
+                    .filter(|id| existing_ids.contains(id))
+                    .cloned()
+                    .collect();
+                for id in &existing_ids {
+                    if !ordered_ids.contains(id) {
+                        ordered_ids.push(id.clone());
+                    }
+                }
+
                 self.terminal_views.clear();
                 // Prefetch file explorer + git content in parallel during resume.
                 self.workspace_drawer
@@ -793,7 +849,7 @@ impl Render for WorkspaceView {
                 let (columns, rows, cell_width, line_height) = compute_terminal_dimensions(window);
                 let cols_u16 = columns as u16;
                 let rows_u16 = rows as u16;
-                for id in &existing_ids {
+                for id in &ordered_ids {
                     let terminal_view =
                         cx.new(|cx| TerminalView::new(columns, rows, cell_width, line_height, cx));
                     // Wire but keep disconnected until resize RPC confirms dimensions.
@@ -821,6 +877,9 @@ impl Render for WorkspaceView {
                     });
                     self.terminal_views.push((id.clone(), terminal_view));
                 }
+
+                // Sync client order to the drawer so it renders in the preserved order.
+                self.sync_terminal_order_to_drawer(cx);
 
                 if let Some((first_id, _)) = self.terminal_views.first() {
                     let first_id = first_id.clone();
@@ -873,6 +932,7 @@ impl Render for WorkspaceView {
                 let view = entry.1.clone();
                 Self::wire_terminal_view(&view, &self.session_handle, &term_id, "Connected", cx);
             }
+            self.sync_terminal_order_to_drawer(cx);
             self.switch_to_terminal(&term_id, cx);
         }
 
@@ -888,6 +948,7 @@ impl Render for WorkspaceView {
                 }
             });
 
+            self.sync_terminal_order_to_drawer(cx);
             if was_active {
                 if let Some((new_id, _)) = self.terminal_views.first() {
                     let new_id = new_id.clone();

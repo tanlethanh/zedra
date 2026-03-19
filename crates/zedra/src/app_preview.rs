@@ -120,6 +120,7 @@ impl PreviewApp {
                         drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
                     }
                     WorkspaceDrawerEvent::TerminalDeleteRequested(_) => {}
+                    WorkspaceDrawerEvent::TerminalReordered { .. } => {}
                 }
             },
         );
