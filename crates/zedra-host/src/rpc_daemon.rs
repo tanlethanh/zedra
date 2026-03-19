@@ -12,10 +12,14 @@ use crate::identity::SharedIdentity;
 use crate::pty::{ShellSession, SpawnOptions};
 use crate::session_registry::{
     AttachResult, ConsumeSlotResult, OutputSenderSlot, ServerSession, SessionRegistry, TermSession,
+    MAX_WATCHED_PATHS_PER_SESSION,
 };
 use anyhow::Result;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zedra_rpc::proto::*;
@@ -84,6 +88,144 @@ fn resolve_path(workdir: &Path, user_path: &str) -> Result<PathBuf> {
     Ok(resolved)
 }
 
+/// Normalize a client-provided observer path into a canonical relative key.
+/// Returns `None` for invalid input (absolute paths or parent traversal).
+fn normalize_observer_path(path: &str) -> Option<String> {
+    let raw = path.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let p = Path::new(raw);
+    if p.is_absolute() {
+        return None;
+    }
+    let mut out = PathBuf::new();
+    for comp in p.components() {
+        match comp {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(seg) => out.push(seg),
+            _ => return None,
+        }
+    }
+    if out.as_os_str().is_empty() {
+        Some(".".to_string())
+    } else {
+        Some(out.to_string_lossy().into_owned())
+    }
+}
+
+fn git_status_fingerprint(workdir: &Path) -> Option<u64> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workdir)
+        .arg("status")
+        .arg("--porcelain=v1")
+        .arg("--branch")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    output.stdout.hash(&mut hasher);
+    Some(hasher.finish())
+}
+
+fn fs_dir_fingerprint(workdir: &Path, rel_path: &str) -> Option<u64> {
+    let target = resolve_path(workdir, rel_path).ok()?;
+    let entries = std::fs::read_dir(target).ok()?;
+    // File explorer invalidation should track tree shape changes only.
+    // Including mtime/size causes noisy false positives (for example `.git`
+    // metadata churn) that collapse expanded directories via root reload.
+    let mut rows: Vec<(String, bool)> = Vec::new();
+    for entry in entries.flatten() {
+        let meta = entry.metadata().ok()?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let is_dir = meta.is_dir();
+        rows.push((name, is_dir));
+    }
+    rows.sort();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    rows.hash(&mut hasher);
+    Some(hasher.finish())
+}
+
+async fn run_observer(session: Arc<ServerSession>, workdir: PathBuf, my_gen: u64) {
+    let mut last_git: Option<u64> = None;
+    let mut fs_snapshots: HashMap<String, u64> = HashMap::new();
+    let mut tick_count: u64 = 0;
+    loop {
+        let current = session.observer_gen.load(Ordering::Acquire);
+        if current != my_gen {
+            break;
+        }
+
+        if let Ok(git_hash) = tokio::task::spawn_blocking({
+            let workdir = workdir.clone();
+            move || git_status_fingerprint(&workdir)
+        })
+        .await
+        {
+            if let Some(git_hash) = git_hash {
+                if last_git.is_some() && last_git != Some(git_hash) {
+                    let _ = session.push_event(HostEvent::GitChanged).await;
+                }
+                last_git = Some(git_hash);
+            }
+        }
+
+        let watched: Vec<String> = {
+            let set = session.fs_watched_paths.lock().await;
+            set.iter().cloned().collect()
+        };
+
+        let mut retained: HashMap<String, u64> = HashMap::new();
+        for path in watched {
+            let fingerprint = match tokio::task::spawn_blocking({
+                let workdir = workdir.clone();
+                let path_clone = path.clone();
+                move || fs_dir_fingerprint(&workdir, &path_clone)
+            })
+            .await
+            {
+                Ok(v) => v,
+                Err(_) => None,
+            };
+            let Some(next_hash) = fingerprint else {
+                continue;
+            };
+            if let Some(prev_hash) = fs_snapshots.get(&path) {
+                if *prev_hash != next_hash {
+                    let _ = session
+                        .push_event(HostEvent::FsChanged { path: path.clone() })
+                        .await;
+                }
+            }
+            retained.insert(path, next_hash);
+        }
+        fs_snapshots = retained;
+
+        tick_count += 1;
+        if tick_count % 30 == 0 {
+            let watched_count = session.fs_watched_paths.lock().await.len();
+            tracing::info!(
+                "observer metrics: session={} watched={} sent={} dropped_full={} dropped_no_subscriber={} rate_limited={} quota_rejected={}",
+                session.id,
+                watched_count,
+                session.observer_events_sent.load(Ordering::Relaxed),
+                session.observer_events_dropped_full.load(Ordering::Relaxed),
+                session
+                    .observer_events_dropped_no_subscriber
+                    .load(Ordering::Relaxed),
+                session.fs_watch_rate_limited.load(Ordering::Relaxed),
+                session.fs_watch_quota_rejected.load(Ordering::Relaxed),
+            );
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+}
+
 /// Shared state for RPC handlers.
 pub struct DaemonState {
     pub fs: Arc<dyn Filesystem>,
@@ -138,23 +280,32 @@ pub async fn handle_connection(
 
     // Auth phase: returns (session, client_pubkey, is_new_client) or closes connection
     let auth_start = std::time::Instant::now();
-    let (session, client_pubkey, is_new_client) =
-        match auth_phase(&conn, &registry, &state.identity, &state.workdir, &state.analytics).await {
-            Ok(triple) => triple,
-            Err(e) => {
-                state.analytics.auth_failed("auth_error");
-                tracing::warn!("auth failed from {}: {}", remote.fmt_short(), e);
-                // Wait for the client to close the connection (up to 500ms) so any
-                // error response we sent has time to be delivered before CONNECTION_CLOSE.
-                let _ = tokio::time::timeout(std::time::Duration::from_millis(500), conn.closed())
-                    .await;
-                return Ok(());
-            }
-        };
+    let (session, client_pubkey, is_new_client) = match auth_phase(
+        &conn,
+        &registry,
+        &state.identity,
+        &state.workdir,
+        &state.analytics,
+    )
+    .await
+    {
+        Ok(triple) => triple,
+        Err(e) => {
+            state.analytics.auth_failed("auth_error");
+            tracing::warn!("auth failed from {}: {}", remote.fmt_short(), e);
+            // Wait for the client to close the connection (up to 500ms) so any
+            // error response we sent has time to be delivered before CONNECTION_CLOSE.
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_millis(500), conn.closed()).await;
+            return Ok(());
+        }
+    };
 
     let auth_duration_ms = auth_start.elapsed().as_millis() as u64;
     let path_type = initial_path_type(&conn);
-    state.analytics.auth_success(is_new_client, auth_duration_ms, path_type);
+    state
+        .analytics
+        .auth_success(is_new_client, auth_duration_ms, path_type);
 
     tracing::info!(
         "Authenticated client {:?}... → session={}",
@@ -176,8 +327,7 @@ pub async fn handle_connection(
         let conn_for_bw = conn.clone();
         let analytics_for_bw = state.analytics.clone();
         tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(60));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
             interval.tick().await; // skip immediate first tick
             let mut paths = conn_for_bw.paths(); // hold watcher for the lifetime of the task
             loop {
@@ -237,7 +387,9 @@ pub async fn handle_connection(
     // the new client's output.
     let session_duration_ms = session_start.elapsed().as_millis() as u64;
     let terminal_count = session.terminals.lock().await.len() as u64;
-    state.analytics.session_end(session_duration_ms, terminal_count, path_type);
+    state
+        .analytics
+        .session_end(session_duration_ms, terminal_count, path_type);
 
     registry.detach_client(&session.id, client_pubkey).await;
 
@@ -804,6 +956,59 @@ async fn dispatch(
             }
         }
 
+        ZedraMessage::FsWatch(msg) => {
+            if !session.allow_fs_watch_rpc().await {
+                session
+                    .fs_watch_rate_limited
+                    .fetch_add(1, Ordering::Relaxed);
+                tracing::warn!("FsWatch rate limited: session={}", session.id);
+                let _ = msg.tx.send(FsWatchResult::RateLimited).await;
+                return Ok(());
+            }
+            let result = match normalize_observer_path(&msg.path) {
+                Some(path) => {
+                    if session.try_add_watched_path(path).await {
+                        FsWatchResult::Ok
+                    } else {
+                        FsWatchResult::QuotaExceeded
+                    }
+                }
+                None => FsWatchResult::InvalidPath,
+            };
+            if !matches!(result, FsWatchResult::Ok) {
+                tracing::warn!(
+                    "FsWatch rejected: session={} path={:?} quota={} max_watched_paths={}",
+                    session.id,
+                    msg.path,
+                    session.fs_watch_quota_rejected.load(Ordering::Relaxed),
+                    MAX_WATCHED_PATHS_PER_SESSION
+                );
+            }
+            let _ = msg.tx.send(result).await;
+        }
+
+        ZedraMessage::FsUnwatch(msg) => {
+            if !session.allow_fs_watch_rpc().await {
+                session
+                    .fs_watch_rate_limited
+                    .fetch_add(1, Ordering::Relaxed);
+                tracing::warn!("FsUnwatch rate limited: session={}", session.id);
+                let _ = msg.tx.send(FsUnwatchResult::RateLimited).await;
+                return Ok(());
+            }
+            let result = match normalize_observer_path(&msg.path) {
+                Some(path) => {
+                    if session.remove_watched_path(&path).await {
+                        FsUnwatchResult::Ok
+                    } else {
+                        FsUnwatchResult::NotWatched
+                    }
+                }
+                None => FsUnwatchResult::InvalidPath,
+            };
+            let _ = msg.tx.send(result).await;
+        }
+
         // -- Terminal --
         ZedraMessage::TermCreate(msg) => {
             session.touch().await;
@@ -811,8 +1016,7 @@ async fn dispatch(
                 .workdir
                 .clone()
                 .or_else(|| Some(state.workdir.clone()));
-            let has_launch_cmd =
-                msg.launch_cmd.is_some() || state.default_launch_cmd.is_some();
+            let has_launch_cmd = msg.launch_cmd.is_some() || state.default_launch_cmd.is_some();
             let launch_cmd = msg
                 .launch_cmd
                 .clone()
@@ -846,6 +1050,16 @@ async fn dispatch(
             let (bridge_tx, mut bridge_rx) = tokio::sync::mpsc::channel::<HostEvent>(32);
             *session.event_tx.lock().await = Some(bridge_tx);
             let irpc_tx = msg.tx;
+            {
+                let mut watched = session.fs_watched_paths.lock().await;
+                watched.insert(".".to_string());
+            }
+            let my_gen = session.observer_gen.fetch_add(1, Ordering::AcqRel) + 1;
+            let observer_session = session.clone();
+            let observer_workdir = state.workdir.clone();
+            tokio::spawn(async move {
+                run_observer(observer_session, observer_workdir, my_gen).await;
+            });
             tokio::spawn(async move {
                 while let Some(event) = bridge_rx.recv().await {
                     if irpc_tx.send(event).await.is_err() {

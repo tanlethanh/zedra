@@ -1,6 +1,7 @@
+use std::collections::HashSet;
 use std::sync::{
-    Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Mutex,
 };
 use std::time::Instant;
 
@@ -41,7 +42,7 @@ fn classify_ip(ip: std::net::IpAddr) -> NetworkHint {
         }
     }
 }
-use crate::{session_runtime, signer::ClientSigner, terminal::RemoteTerminal};
+use crate::{push_callback, session_runtime, signer::ClientSigner, terminal::RemoteTerminal};
 
 /// Workspace-scoped durable session state. Arc-wrapped — clone freely to share
 /// with async tasks. Survives transport failures and reconnect cycles.
@@ -87,6 +88,12 @@ struct SessionHandleInner {
     /// Called (via push_callback) whenever session state changes.
     /// Must only capture Send types (WeakEntity / AsyncApp are !Send).
     state_notifier: Mutex<Option<Box<dyn Fn() + Send + Sync + 'static>>>,
+    /// Set by HostEvent::GitChanged, consumed by UI render loop.
+    git_needs_refresh: AtomicBool,
+    /// Set of changed watched paths from HostEvent::FsChanged.
+    fs_changed_paths: Mutex<HashSet<String>>,
+    /// Optional observer RPC capability gate for cross-version fallback.
+    observer_rpc_supported: AtomicBool,
 }
 
 impl SessionHandle {
@@ -110,6 +117,9 @@ impl SessionHandle {
             skip_next_backoff: AtomicBool::new(false),
             reconnect_running: AtomicBool::new(false),
             state_notifier: Mutex::new(None),
+            git_needs_refresh: AtomicBool::new(false),
+            fs_changed_paths: Mutex::new(HashSet::new()),
+            observer_rpc_supported: AtomicBool::new(true),
         }))
     }
 
@@ -473,9 +483,8 @@ impl SessionHandle {
                         if rtt > 0 {
                             last_rtt_alive = Some(std::time::Instant::now());
                         }
-                        let last_alive_secs_ago = last_rtt_alive
-                            .map(|t| t.elapsed().as_secs())
-                            .unwrap_or(0);
+                        let last_alive_secs_ago =
+                            last_rtt_alive.map(|t| t.elapsed().as_secs()).unwrap_or(0);
 
                         if let Ok(mut cs) = handle_for_paths.0.connect_state.lock() {
                             let prev_direct = cs
@@ -886,15 +895,15 @@ impl SessionHandle {
                                     last_seq,
                                     output.seq,
                                 );
-                                if let Ok(mut buf) = terminal_pump.output.lock() {
-                                    buf.push_back(b"\x1bc".to_vec());
-                                }
+                                // RIS resets the visual state; also reset the OSC scanner
+                                // so a partial sequence from before the gap doesn't corrupt
+                                // the next sequence.
+                                terminal_pump.reset_osc_scanner();
+                                terminal_pump.push_output(b"\x1bc".to_vec());
                             }
                         }
                         terminal_pump.update_seq(output.seq);
-                        if let Ok(mut buf) = terminal_pump.output.lock() {
-                            buf.push_back(output.data);
-                        }
+                        terminal_pump.push_output(output.data);
                         terminal_pump.signal_needs_render();
                     }
                     Ok(None) => {
@@ -1014,6 +1023,16 @@ impl SessionHandle {
                     );
                 }
                 self.notify_state_change();
+            }
+            HostEvent::GitChanged => {
+                self.0.git_needs_refresh.store(true, Ordering::Release);
+                push_callback(Box::new(|| {}));
+            }
+            HostEvent::FsChanged { path } => {
+                if let Ok(mut changed) = self.0.fs_changed_paths.lock() {
+                    changed.insert(path);
+                }
+                push_callback(Box::new(|| {}));
             }
         }
     }
@@ -1265,6 +1284,77 @@ impl SessionHandle {
                 path: path.to_string(),
             })
             .await?)
+    }
+
+    pub async fn fs_watch(&self, path: &str) -> Result<FsWatchResult> {
+        if !self.0.observer_rpc_supported.load(Ordering::Acquire) {
+            return Ok(FsWatchResult::Unsupported);
+        }
+        let result: std::result::Result<FsWatchResult, _> = self
+            .client()?
+            .rpc(FsWatchReq {
+                path: path.to_string(),
+            })
+            .await;
+        match result {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                if self.downgrade_observer_rpc_if_incompatible(&e.to_string()) {
+                    return Ok(FsWatchResult::Unsupported);
+                }
+                Err(anyhow::anyhow!(e.to_string()))
+            }
+        }
+    }
+
+    pub async fn fs_unwatch(&self, path: &str) -> Result<FsUnwatchResult> {
+        if !self.0.observer_rpc_supported.load(Ordering::Acquire) {
+            return Ok(FsUnwatchResult::Unsupported);
+        }
+        let result: std::result::Result<FsUnwatchResult, _> = self
+            .client()?
+            .rpc(FsUnwatchReq {
+                path: path.to_string(),
+            })
+            .await;
+        match result {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                if self.downgrade_observer_rpc_if_incompatible(&e.to_string()) {
+                    return Ok(FsUnwatchResult::Unsupported);
+                }
+                Err(anyhow::anyhow!(e.to_string()))
+            }
+        }
+    }
+
+    fn downgrade_observer_rpc_if_incompatible(&self, err_msg: &str) -> bool {
+        let msg = err_msg.to_lowercase();
+        let incompatible = msg.contains("unknown variant")
+            || msg.contains("deserialize")
+            || msg.contains("decode")
+            || msg.contains("invalid type");
+        if incompatible {
+            self.0
+                .observer_rpc_supported
+                .store(false, Ordering::Release);
+            tracing::warn!(
+                "observer RPC unsupported by host, disabling fs watch/unwatch for this session: {}",
+                err_msg
+            );
+        }
+        incompatible
+    }
+
+    pub fn take_git_refresh(&self) -> bool {
+        self.0.git_needs_refresh.swap(false, Ordering::AcqRel)
+    }
+
+    pub fn take_fs_changed(&self) -> Vec<String> {
+        match self.0.fs_changed_paths.lock() {
+            Ok(mut changed) => changed.drain().collect(),
+            Err(_) => Vec::new(),
+        }
     }
 
     // -----------------------------------------------------------------------

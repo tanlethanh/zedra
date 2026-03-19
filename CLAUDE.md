@@ -8,6 +8,19 @@ Zedra is a port of Zed's GPUI UI framework to Android using wgpu for GPU renderi
 
 **Test Device**: Mali-G68 MC4 (Vulkan 1.1.0, 1080x2400 @ 2.75x DPI)
 
+## Protocol Governance (Required)
+
+`docs/PROTOCOL_SPECS.md` is the canonical protocol and RPC contract document.
+
+Any change that touches protocol-layer behavior MUST:
+
+1. Update `crates/zedra-rpc/src/proto.rs` as needed.
+2. Update host/client protocol handlers (`zedra-host` + `zedra-session`).
+3. Update or explicitly reference `docs/PROTOCOL_SPECS.md` in the same change.
+4. Preserve protocol compatibility unless a breaking change is intentionally documented.
+
+If code and doc ever diverge, align both immediately in the same PR.
+
 ## Quick Start
 
 ### Build and Deploy
@@ -431,6 +444,7 @@ See `docs/DEBUGGING.md` for complete workflow.
 - Known issues with solutions: `docs/TECHNICAL_DEBT.md`
 - Debug workflow and tools: `docs/DEBUGGING.md`
 - Relay wire protocol + DO topology: `docs/RELAY.md`
+- Protocol/RPC conventions + compatibility: `docs/PROTOCOL_SPECS.md`
 - Terminal persistence design: `docs/TERMINAL_PERSISTENCE.md`
 - **iOS development workflow**: `docs/IOS_WORKFLOW.md` — build pipeline, commands, FFI patterns, debugging, pitfalls
 

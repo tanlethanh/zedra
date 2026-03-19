@@ -7,13 +7,14 @@
 // authorized client public keys. One active client per session at a time.
 // Pairing slots (one-use handshake keys) are used for first registration.
 
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
-use serde::{Deserialize, Serialize};
 use zedra_rpc::proto::{BacklogEntry, HostEvent, TermOutput};
 
 // ---------------------------------------------------------------------------
@@ -70,6 +71,57 @@ pub struct ServerSession {
     /// Channel for pushing host-initiated events to the connected client.
     /// Installed by the Subscribe RPC handler; replaced on each new subscription.
     pub event_tx: Mutex<Option<tokio::sync::mpsc::Sender<HostEvent>>>,
+    /// Relative directory paths watched by the observer for this session.
+    pub fs_watched_paths: Mutex<HashSet<String>>,
+    /// Token bucket for FsWatch/FsUnwatch RPC rate limiting.
+    pub fs_watch_rpc_limiter: Mutex<TokenBucket>,
+    /// Observer generation; incremented on each Subscribe to stop stale observers.
+    pub observer_gen: AtomicU64,
+    /// Observer/event metrics for abuse and backpressure visibility.
+    pub observer_events_sent: AtomicU64,
+    pub observer_events_dropped_no_subscriber: AtomicU64,
+    pub observer_events_dropped_full: AtomicU64,
+    pub fs_watch_quota_rejected: AtomicU64,
+    pub fs_watch_rate_limited: AtomicU64,
+}
+
+/// Max number of observed paths stored per session.
+pub const MAX_WATCHED_PATHS_PER_SESSION: usize = 128;
+/// FsWatch/FsUnwatch token bucket refill rate.
+pub const FS_WATCH_RPC_RATE_PER_SEC: f64 = 10.0;
+/// FsWatch/FsUnwatch token bucket burst capacity.
+pub const FS_WATCH_RPC_BURST: f64 = 20.0;
+
+/// Lightweight token bucket limiter used for watch/unwatch control calls.
+pub struct TokenBucket {
+    tokens: f64,
+    last_refill: Instant,
+    rate_per_sec: f64,
+    burst: f64,
+}
+
+impl TokenBucket {
+    fn new(rate_per_sec: f64, burst: f64) -> Self {
+        Self {
+            tokens: burst,
+            last_refill: Instant::now(),
+            rate_per_sec,
+            burst,
+        }
+    }
+
+    fn allow(&mut self) -> bool {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+        self.last_refill = now;
+        self.tokens = (self.tokens + elapsed * self.rate_per_sec).min(self.burst);
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// Guards the swappable PTY output sender against stale cleanup.
@@ -249,7 +301,9 @@ impl SessionRegistry {
     /// No-op if no storage path was configured. Errors are logged, not
     /// propagated — a save failure should never abort an RPC call.
     async fn save(&self) {
-        let Some(ref path) = self.storage_path else { return };
+        let Some(ref path) = self.storage_path else {
+            return;
+        };
 
         // Snapshot under lock, then release before doing I/O.
         let authorized_clients: Vec<[u8; 32]> = self
@@ -264,8 +318,7 @@ impl SessionRegistry {
         {
             let sessions = self.sessions.lock().await;
             for session in sessions.values() {
-                let acl: Vec<[u8; 32]> =
-                    session.acl.lock().await.iter().cloned().collect();
+                let acl: Vec<[u8; 32]> = session.acl.lock().await.iter().cloned().collect();
                 persisted_sessions.push(PersistedSession {
                     id: session.id.clone(),
                     name: session.name.clone(),
@@ -316,7 +369,11 @@ impl SessionRegistry {
             }
         };
         if let Err(e) = write_result {
-            tracing::warn!("Failed to write sessions temp file {}: {}", tmp_path.display(), e);
+            tracing::warn!(
+                "Failed to write sessions temp file {}: {}",
+                tmp_path.display(),
+                e
+            );
             return;
         }
         if let Err(e) = tokio::fs::rename(&tmp_path, path).await {
@@ -344,9 +401,16 @@ impl SessionRegistry {
         drop(name_index);
 
         let id = zedra_rpc::generate_session_id();
-        let session = Arc::new(ServerSession::new(id.clone(), Some(name.to_string()), Some(workdir)));
+        let session = Arc::new(ServerSession::new(
+            id.clone(),
+            Some(name.to_string()),
+            Some(workdir),
+        ));
 
-        self.sessions.lock().await.insert(id.clone(), session.clone());
+        self.sessions
+            .lock()
+            .await
+            .insert(id.clone(), session.clone());
         self.name_index.lock().await.insert(name.to_string(), id);
         session
     }
@@ -454,25 +518,15 @@ impl SessionRegistry {
 
     /// Check if a client pubkey is in the global authorized list.
     pub async fn is_globally_authorized(&self, client_pubkey: &[u8; 32]) -> bool {
-        self.authorized_clients
-            .lock()
-            .await
-            .contains(client_pubkey)
+        self.authorized_clients.lock().await.contains(client_pubkey)
     }
 
     /// Add a client pubkey to the global authorized list and the session ACL.
     ///
     /// Called after successful HMAC verification during registration.
-    pub async fn add_client_to_session(
-        &self,
-        session_id: &str,
-        client_pubkey: [u8; 32],
-    ) -> bool {
+    pub async fn add_client_to_session(&self, session_id: &str, client_pubkey: [u8; 32]) -> bool {
         // Add to global authorized list
-        self.authorized_clients
-            .lock()
-            .await
-            .insert(client_pubkey);
+        self.authorized_clients.lock().await.insert(client_pubkey);
 
         // Add to session ACL
         let added = {
@@ -486,10 +540,7 @@ impl SessionRegistry {
                 );
                 true
             } else {
-                tracing::warn!(
-                    "add_client_to_session: session {} not found",
-                    session_id
-                );
+                tracing::warn!("add_client_to_session: session {} not found", session_id);
                 false
             }
         };
@@ -507,11 +558,7 @@ impl SessionRegistry {
     /// - Session not found
     /// - Client not in session ACL
     /// - Another client is already active
-    pub async fn attach_client(
-        &self,
-        session_id: &str,
-        client_pubkey: [u8; 32],
-    ) -> AttachResult {
+    pub async fn attach_client(&self, session_id: &str, client_pubkey: [u8; 32]) -> AttachResult {
         let sessions = self.sessions.lock().await;
         let session = match sessions.get(session_id) {
             Some(s) => s,
@@ -658,16 +705,69 @@ impl ServerSession {
             acl: Mutex::new(HashSet::new()),
             active_client: Mutex::new(None),
             event_tx: Mutex::new(None),
+            fs_watched_paths: Mutex::new(HashSet::new()),
+            fs_watch_rpc_limiter: Mutex::new(TokenBucket::new(
+                FS_WATCH_RPC_RATE_PER_SEC,
+                FS_WATCH_RPC_BURST,
+            )),
+            observer_gen: AtomicU64::new(0),
+            observer_events_sent: AtomicU64::new(0),
+            observer_events_dropped_no_subscriber: AtomicU64::new(0),
+            observer_events_dropped_full: AtomicU64::new(0),
+            fs_watch_quota_rejected: AtomicU64::new(0),
+            fs_watch_rate_limited: AtomicU64::new(0),
         }
     }
 
     /// Push a host-initiated event to the subscribed client, if any.
-    /// Silently drops the event if no client is subscribed or the channel is full.
-    pub async fn push_event(&self, event: HostEvent) {
+    /// Non-blocking: drops when channel is absent/full and increments counters.
+    pub async fn push_event(&self, event: HostEvent) -> bool {
         let tx = self.event_tx.lock().await.clone();
-        if let Some(tx) = tx {
-            let _ = tx.send(event).await;
+        let Some(tx) = tx else {
+            self.observer_events_dropped_no_subscriber
+                .fetch_add(1, Ordering::Relaxed);
+            return false;
+        };
+        match tx.try_send(event) {
+            Ok(()) => {
+                self.observer_events_sent.fetch_add(1, Ordering::Relaxed);
+                true
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                self.observer_events_dropped_full
+                    .fetch_add(1, Ordering::Relaxed);
+                false
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                self.observer_events_dropped_no_subscriber
+                    .fetch_add(1, Ordering::Relaxed);
+                false
+            }
         }
+    }
+
+    /// Token-bucket guard for FsWatch/FsUnwatch RPC calls.
+    pub async fn allow_fs_watch_rpc(&self) -> bool {
+        self.fs_watch_rpc_limiter.lock().await.allow()
+    }
+
+    /// Insert a watched path if quota allows.
+    pub async fn try_add_watched_path(&self, path: String) -> bool {
+        let mut watched = self.fs_watched_paths.lock().await;
+        if watched.contains(&path) {
+            return true;
+        }
+        if watched.len() >= MAX_WATCHED_PATHS_PER_SESSION {
+            self.fs_watch_quota_rejected.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+        watched.insert(path);
+        true
+    }
+
+    /// Remove a watched path; returns true if it existed.
+    pub async fn remove_watched_path(&self, path: &str) -> bool {
+        self.fs_watched_paths.lock().await.remove(path)
     }
 
     /// Whether a client is currently attached.
@@ -738,9 +838,7 @@ mod tests {
     }
 
     async fn create_session(registry: &SessionRegistry) -> Arc<ServerSession> {
-        registry
-            .create_named("test", PathBuf::from("/tmp"))
-            .await
+        registry.create_named("test", PathBuf::from("/tmp")).await
     }
 
     #[tokio::test]
@@ -756,8 +854,12 @@ mod tests {
     #[tokio::test]
     async fn create_named_idempotent() {
         let registry = SessionRegistry::new();
-        let s1 = registry.create_named("zedra", PathBuf::from("/zedra")).await;
-        let s2 = registry.create_named("zedra", PathBuf::from("/zedra")).await;
+        let s1 = registry
+            .create_named("zedra", PathBuf::from("/zedra"))
+            .await;
+        let s2 = registry
+            .create_named("zedra", PathBuf::from("/zedra"))
+            .await;
         assert_eq!(s1.id, s2.id);
     }
 
@@ -775,7 +877,9 @@ mod tests {
     #[tokio::test]
     async fn list_sessions_sorted() {
         let registry = SessionRegistry::new();
-        registry.create_named("webapp", PathBuf::from("/webapp")).await;
+        registry
+            .create_named("webapp", PathBuf::from("/webapp"))
+            .await;
         registry.create_named("api", PathBuf::from("/api")).await;
 
         let list = registry.list_sessions().await;
@@ -972,7 +1076,9 @@ mod tests {
     #[tokio::test]
     async fn cleanup_keeps_active_sessions() {
         let registry = SessionRegistry::new();
-        let s = registry.create_named("active", PathBuf::from("/active")).await;
+        let s = registry
+            .create_named("active", PathBuf::from("/active"))
+            .await;
         let id = s.id.clone();
 
         let removed = registry.cleanup(Duration::from_secs(300)).await;

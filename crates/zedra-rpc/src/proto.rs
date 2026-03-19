@@ -18,8 +18,11 @@ use serde::{Deserialize, Serialize};
 #[rpc_requests(message = ZedraMessage)]
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ZedraProto {
+    // IMPORTANT: APPEND-ONLY ORDER.
+    // Postcard encodes enum variants by ordinal index, so inserting/reordering
+    // variants can break cross-version RPC compatibility in non-obvious ways.
+    // Always append new variants at the end of this enum.
     // -- Auth (pre-session, must come before any RPC) --
-
     /// First pairing only: register a new client by proving QR possession.
     /// Must be sent before Authenticate on the very first connection.
     #[rpc(tx = oneshot::Sender<RegisterResult>)]
@@ -37,14 +40,12 @@ pub enum ZedraProto {
     AuthProve(AuthProveReq),
 
     // -- Health / RTT --
-
     /// Ping the host. Host echoes timestamp_ms back for RTT measurement.
     /// Sent every 2s (foreground only). 5 consecutive misses = reconnect.
     #[rpc(tx = oneshot::Sender<PongResult>)]
     Ping(PingReq),
 
     // -- Session --
-
     #[rpc(tx = oneshot::Sender<SessionInfoResult>)]
     GetSessionInfo(SessionInfoReq),
 
@@ -119,6 +120,13 @@ pub enum ZedraProto {
 
     #[rpc(tx = oneshot::Sender<LspHoverResult>)]
     LspHover(LspHoverReq),
+
+    // -- Filesystem observers (added later; keep at enum tail) --
+    #[rpc(tx = oneshot::Sender<FsWatchResult>)]
+    FsWatch(FsWatchReq),
+
+    #[rpc(tx = oneshot::Sender<FsUnwatchResult>)]
+    FsUnwatch(FsUnwatchReq),
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +411,38 @@ pub struct FsStatResult {
     pub modified: Option<u64>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FsWatchReq {
+    /// Relative directory path to observe (for example: ".", "src", "src/editor").
+    pub path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum FsWatchResult {
+    Ok,
+    InvalidPath,
+    RateLimited,
+    QuotaExceeded,
+    /// Client-local fallback when connected host does not support this RPC yet.
+    Unsupported,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FsUnwatchReq {
+    /// Relative directory path to stop observing.
+    pub path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum FsUnwatchResult {
+    Ok,
+    InvalidPath,
+    RateLimited,
+    NotWatched,
+    /// Client-local fallback when connected host does not support this RPC yet.
+    Unsupported,
+}
+
 // ---------------------------------------------------------------------------
 // Subscribe / HostEvent types
 // ---------------------------------------------------------------------------
@@ -421,6 +461,10 @@ pub enum HostEvent {
         /// The launch command injected into the terminal, if any.
         launch_cmd: Option<String>,
     },
+    /// Host-side git working tree state changed and the client should refresh.
+    GitChanged,
+    /// A watched directory path changed and the client should invalidate its cached tree.
+    FsChanged { path: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -689,7 +733,9 @@ mod tests {
 
     #[test]
     fn ping_roundtrip() {
-        let req = PingReq { timestamp_ms: 9_999_999 };
+        let req = PingReq {
+            timestamp_ms: 9_999_999,
+        };
         let encoded = postcard::to_allocvec(&req).unwrap();
         let decoded: PingReq = postcard::from_bytes(&encoded).unwrap();
         assert_eq!(decoded.timestamp_ms, 9_999_999);

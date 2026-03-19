@@ -3,7 +3,7 @@ use gpui::*;
 use crate::editor::git_sidebar::{GitFileEntry, GitFileStatus, GitRepoState};
 use crate::editor::git_sidebar::{GitFileSelected, GitSidebar};
 use crate::file_explorer::{FileExplorer, FileSelected};
-use crate::pending::{SharedPendingSlot, shared_pending_slot};
+use crate::pending::{shared_pending_slot, SharedPendingSlot};
 use crate::platform_bridge;
 use crate::theme;
 use crate::{session_panel, terminal_panel};
@@ -118,14 +118,12 @@ impl WorkspaceDrawer {
         // Spawn a polling task that triggers a re-render every 2 s so that
         // live transport stats (RTT, bytes, etc.) stay up to date in the session tab.
         // Dropping the old task cancels it before the new one starts.
-        self._session_refresh_task = Some(cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_secs(2))
-                    .await;
-                if this.update(cx, |_, cx| cx.notify()).is_err() {
-                    break;
-                }
+        self._session_refresh_task = Some(cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(2))
+                .await;
+            if this.update(cx, |_, cx| cx.notify()).is_err() {
+                break;
             }
         }));
     }
@@ -331,6 +329,17 @@ impl Focusable for WorkspaceDrawer {
 
 impl Render for WorkspaceDrawer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self
+            .session_handle
+            .as_ref()
+            .is_some_and(|h| h.take_git_refresh())
+        {
+            self.git_loaded = false;
+            if self.active_section == DrawerSection::Git {
+                self.load_git_status();
+            }
+        }
+
         // Check for pending git status from async RPC
         if let Some(state) = self.pending_git_status.take() {
             self.git_sidebar
