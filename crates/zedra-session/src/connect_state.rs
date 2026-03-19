@@ -145,6 +145,27 @@ impl ConnectPhase {
     }
 }
 
+/// Network classification for a direct P2P connection.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NetworkHint {
+    /// Tailscale CGNAT range: 100.64.0.0/10 (100.64–100.127).
+    Tailscale,
+    /// RFC 1918 private LAN: 10/8, 172.16/12, 192.168/16.
+    Lan,
+    /// Publicly routable address.
+    Internet,
+}
+
+impl NetworkHint {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Tailscale => "Tailscale",
+            Self::Lan => "LAN",
+            Self::Internet => "Internet",
+        }
+    }
+}
+
 /// Live transport path data. Updated by the iroh path watcher task.
 #[derive(Clone, Debug)]
 pub struct TransportSnapshot {
@@ -158,6 +179,11 @@ pub struct TransportSnapshot {
     pub bytes_recv: u64,
     /// True once a relay→P2P path upgrade has been observed on this connection.
     pub path_upgraded: bool,
+    /// Network classification for direct connections (`None` when relayed).
+    pub network_hint: Option<NetworkHint>,
+    /// Seconds since a non-zero RTT was last observed on this path.
+    /// 0 = path is currently alive; >0 = path may be stale.
+    pub last_alive_secs_ago: u64,
 }
 
 /// All data accumulated during the connection process.

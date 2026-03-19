@@ -253,8 +253,17 @@ impl WorkspaceDrawer {
                 let mode = cs
                     .as_ref()
                     .and_then(|s| s.snapshot.transport.as_ref())
-                    .map(|t| if t.is_direct { "P2P" } else { "Relay" })
-                    .unwrap_or("...");
+                    .map(|t| {
+                        if t.is_direct {
+                            match &t.network_hint {
+                                Some(h) => format!("P2P \u{00b7} {}", h.label()),
+                                None => "P2P".into(),
+                            }
+                        } else {
+                            "Relay".into()
+                        }
+                    })
+                    .unwrap_or_else(|| "...".into());
                 format!("{status} - {mode}")
             }
         }

@@ -471,16 +471,25 @@ fn render_endpoint_rows(snap: &ConnectSnapshot) -> Div {
 
 fn render_transport_rows(t: &TransportSnapshot) -> Div {
     let conn_type = if t.is_direct {
-        "Direct (P2P)"
+        match &t.network_hint {
+            Some(h) => format!("P2P \u{00b7} {}", h.label()),
+            None => "P2P".into(),
+        }
     } else {
-        "Relayed"
+        "Relayed".into()
+    };
+
+    let alive = if t.last_alive_secs_ago == 0 {
+        "now".into()
+    } else {
+        format!("{}s ago", t.last_alive_secs_ago)
     };
 
     let mut d = div()
         .flex()
         .flex_col()
         .gap(px(2.0))
-        .child(kv_row("Type", conn_type))
+        .child(kv_row("Type", &conn_type))
         .child(kv_row(
             "Address",
             &format!("{} ({})", t.remote_addr, t.num_paths),
@@ -496,6 +505,7 @@ fn render_transport_rows(t: &TransportSnapshot) -> Div {
         format_bytes(t.bytes_recv)
     );
     d = d.child(kv_row("Net", &net));
+    d = d.child(kv_row("Alive", &alive));
     d
 }
 

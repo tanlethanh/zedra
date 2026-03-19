@@ -10,10 +10,17 @@ pub(crate) fn transport_badge_info(state: &ConnectState) -> (String, u32) {
     match &state.phase {
         ConnectPhase::Connected => {
             let snap = &state.snapshot;
-            let (conn_type, relay): (&str, Option<&str>) = match &snap.transport {
-                Some(t) if t.is_direct => ("P2P", None),
-                Some(t) => ("Relay", Some(t.remote_addr.as_str())),
-                None => ("\u{2026}", None),
+            let (conn_type, relay): (String, Option<&str>) = match &snap.transport {
+                Some(t) if t.is_direct => {
+                    let hint = t
+                        .network_hint
+                        .as_ref()
+                        .map(|h| format!("P2P \u{00b7} {}", h.label()))
+                        .unwrap_or_else(|| "P2P".into());
+                    (hint, None)
+                }
+                Some(t) => ("Relay".into(), Some(t.remote_addr.as_str())),
+                None => ("\u{2026}".into(), None),
             };
             let rtt = snap.transport.as_ref().map(|t| t.rtt_ms).unwrap_or(0);
             let label = match (relay, rtt) {

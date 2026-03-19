@@ -73,7 +73,14 @@ pub fn render_session_tab(
 
     // --- Connection section ---
     if let Some(t) = &snap.transport {
-        let conn_type_label = if t.is_direct { "Direct (P2P)" } else { "Relayed" };
+        let conn_type_label = if t.is_direct {
+            match &t.network_hint {
+                Some(h) => format!("P2P \u{00b7} {}", h.label()),
+                None => "P2P".into(),
+            }
+        } else {
+            "Relayed".into()
+        };
         let conn_type_color = if t.is_direct {
             theme::ACCENT_GREEN
         } else {
@@ -121,6 +128,13 @@ pub fn render_session_tab(
         if t.rtt_ms > 0 {
             content = content.child(info_row("RTT", format!("{}ms", t.rtt_ms)));
         }
+
+        let alive_label = if t.last_alive_secs_ago == 0 {
+            "now".into()
+        } else {
+            format!("{}s ago", t.last_alive_secs_ago)
+        };
+        content = content.child(info_row("Last Alive", alive_label));
 
         content = content.child(info_row("Paths", format!("{}", t.num_paths)));
 

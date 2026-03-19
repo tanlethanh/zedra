@@ -8,9 +8,39 @@ use anyhow::Result;
 use zedra_rpc::proto::*;
 
 use crate::connect_state::{
-    AuthOutcome, ConnectError, ConnectPhase, ConnectSnapshot, ConnectState, ReconnectReason,
-    TransportSnapshot,
+    AuthOutcome, ConnectError, ConnectPhase, ConnectSnapshot, ConnectState, NetworkHint,
+    ReconnectReason, TransportSnapshot,
 };
+
+/// Classify a remote IP address for debugging display.
+fn classify_ip(ip: std::net::IpAddr) -> NetworkHint {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            // Tailscale CGNAT: 100.64.0.0/10 → first octet 100, second 64–127
+            if o[0] == 100 && o[1] >= 64 && o[1] <= 127 {
+                return NetworkHint::Tailscale;
+            }
+            // RFC 1918
+            if o[0] == 10
+                || (o[0] == 172 && o[1] >= 16 && o[1] <= 31)
+                || (o[0] == 192 && o[1] == 168)
+            {
+                return NetworkHint::Lan;
+            }
+            NetworkHint::Internet
+        }
+        // IPv6 link-local / ULA → treat as LAN; everything else Internet
+        std::net::IpAddr::V6(v6) => {
+            let s = v6.segments();
+            if s[0] == 0xfe80 || s[0] & 0xfe00 == 0xfc00 {
+                NetworkHint::Lan
+            } else {
+                NetworkHint::Internet
+            }
+        }
+    }
+}
 use crate::{session_runtime, signer::ClientSigner, terminal::RemoteTerminal};
 
 /// Workspace-scoped durable session state. Arc-wrapped — clone freely to share
@@ -414,6 +444,8 @@ impl SessionHandle {
             let handle_for_paths = self.clone();
             tokio::spawn(async move {
                 let mut watcher_active = true;
+                // Tracks when a non-zero RTT was last observed; used to compute last_alive_secs_ago.
+                let mut last_rtt_alive: Option<std::time::Instant> = None;
                 loop {
                     // Stop if the connection has been superseded.
                     let current_gen = handle_for_paths.0.conn_generation.load(Ordering::Acquire);
@@ -425,15 +457,25 @@ impl SessionHandle {
                     if let Some(path) = path_list.iter().find(|p| p.is_selected()) {
                         let stats = path.stats();
                         let is_direct = path.is_ip();
-                        let (remote_addr, relay_url) = match path.remote_addr() {
-                            iroh::TransportAddr::Ip(addr) => (addr.to_string(), None),
+                        let (remote_addr, relay_url, network_hint) = match path.remote_addr() {
+                            iroh::TransportAddr::Ip(addr) => {
+                                let hint = classify_ip(addr.ip());
+                                (addr.to_string(), None, Some(hint))
+                            }
                             iroh::TransportAddr::Relay(url) => {
                                 let host = url.host_str().unwrap_or(url.as_str()).to_string();
-                                (host.clone(), Some(host))
+                                (host.clone(), Some(host), None)
                             }
-                            _ => (format!("{:?}", path.remote_addr()), None),
+                            _ => (format!("{:?}", path.remote_addr()), None, None),
                         };
                         let rtt = stats.rtt.as_millis() as u64;
+
+                        if rtt > 0 {
+                            last_rtt_alive = Some(std::time::Instant::now());
+                        }
+                        let last_alive_secs_ago = last_rtt_alive
+                            .map(|t| t.elapsed().as_secs())
+                            .unwrap_or(0);
 
                         if let Ok(mut cs) = handle_for_paths.0.connect_state.lock() {
                             let prev_direct = cs
@@ -463,6 +505,8 @@ impl SessionHandle {
                                 bytes_sent: stats.udp_tx.bytes,
                                 bytes_recv: stats.udp_rx.bytes,
                                 path_upgraded,
+                                network_hint,
+                                last_alive_secs_ago,
                             });
                         }
                         // Notify outside the lock to avoid holding it during the callback.
