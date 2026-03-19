@@ -6,7 +6,7 @@ use gpui::*;
 use crate::platform_bridge;
 use crate::terminal_card::{TerminalCardProps, render_terminal_card};
 use crate::theme;
-use crate::workspace_view::WorkspaceSummary;
+use crate::workspace_state::SharedWorkspaceStates;
 
 #[derive(Clone, Debug)]
 pub enum QuickActionEvent {
@@ -19,21 +19,20 @@ pub enum QuickActionEvent {
 impl EventEmitter<QuickActionEvent> for QuickActionPanel {}
 
 pub struct QuickActionPanel {
-    workspaces: Vec<WorkspaceSummary>,
+    states: SharedWorkspaceStates,
     focus_handle: FocusHandle,
 }
 
 impl QuickActionPanel {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(cx: &mut Context<Self>, states: SharedWorkspaceStates) -> Self {
         Self {
-            workspaces: Vec::new(),
+            states,
             focus_handle: cx.focus_handle(),
         }
     }
 
-    pub fn update_workspaces(&mut self, summaries: Vec<WorkspaceSummary>, cx: &mut Context<Self>) {
-        self.workspaces = summaries;
-        cx.notify();
+    pub fn set_states(&mut self, states: SharedWorkspaceStates) {
+        self.states = states;
     }
 }
 
@@ -49,7 +48,12 @@ impl Render for QuickActionPanel {
         let bottom_inset = platform_bridge::home_indicator_inset().max(10.0);
         let viewport_h = window.viewport_size().height;
 
-        let workspaces = self.workspaces.clone();
+        let workspaces: Vec<_> = self
+            .states
+            .iter()
+            .filter(|s| s.workspace_index().is_some())
+            .cloned()
+            .collect();
 
         // Right panel
         let mut panel = div()
@@ -133,29 +137,29 @@ impl Render for QuickActionPanel {
 
         // Workspace sections
         for ws in &workspaces {
-            let index = ws.index;
-            let status_color = if ws.is_connected {
+            let index = ws.workspace_index().unwrap_or(0);
+            let is_connected = ws
+                .connect_phase()
+                .map(|p| p.is_connected())
+                .unwrap_or(false);
+            let status_color = if is_connected {
                 theme::ACCENT_GREEN
             } else {
                 theme::ACCENT_RED
             };
-            let path_label = ws
-                .project_path
-                .as_deref()
-                .unwrap_or("Workspace")
-                .rsplit('/')
-                .next()
-                .unwrap_or("Workspace")
-                .to_string();
+            let subtitle = match (ws.hostname().is_empty(), ws.strip_path().is_empty()) {
+                (false, false) => format!("{}@{}", ws.hostname(), ws.strip_path()),
+                (false, true) => ws.hostname().to_string(),
+                (true, false) => ws.strip_path().to_string(),
+                (true, true) => String::new(),
+            };
 
-            // Section header row: status dot + project path
+            // Section header row
             panel = panel.child(
                 div()
                     .id(SharedString::from(format!("ws-section-{}", index)))
                     .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.0))
+                    .flex_col()
                     .px(px(16.0))
                     .pt(px(12.0))
                     .pb(px(6.0))
@@ -169,28 +173,45 @@ impl Render for QuickActionPanel {
                     )
                     .child(
                         div()
-                            .w(px(theme::ICON_STATUS))
-                            .h(px(theme::ICON_STATUS))
-                            .rounded(px(3.0))
-                            .bg(rgb(status_color)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_color(rgb(theme::TEXT_PRIMARY))
-                            .text_size(px(theme::FONT_BODY))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(path_label),
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .w(px(theme::ICON_STATUS))
+                                    .h(px(theme::ICON_STATUS))
+                                    .rounded(px(3.0))
+                                    .bg(rgb(status_color)),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_color(rgb(theme::TEXT_PRIMARY))
+                                    .text_size(px(theme::FONT_BODY))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(ws.project_name().to_string()),
+                            )
+                            .child(
+                                div()
+                                    .text_color(rgb(theme::TEXT_MUTED))
+                                    .text_size(px(theme::FONT_BODY))
+                                    .child("\u{2192}"),
+                            ),
                     )
                     .child(
                         div()
                             .text_color(rgb(theme::TEXT_MUTED))
                             .text_size(px(theme::FONT_BODY))
-                            .child("\u{2192}"),
+                            .min_w_0()
+                            .truncate()
+                            .child(subtitle),
                     ),
             );
 
-            if ws.terminal_ids.is_empty() {
+            if ws.terminal_ids().is_empty() {
                 // No terminals placeholder
                 panel = panel.child(
                     div()
@@ -202,9 +223,9 @@ impl Render for QuickActionPanel {
                 );
             } else {
                 panel = panel.gap_1();
-                for (i, tid) in ws.terminal_ids.iter().enumerate() {
+                for (i, tid) in ws.terminal_ids().iter().enumerate() {
                     let tid_click = tid.clone();
-                    let is_active = ws.active_terminal_id.as_deref() == Some(tid.as_str());
+                    let is_active = ws.active_terminal_id().is_some_and(|id| id == tid);
 
                     let card = render_terminal_card(TerminalCardProps {
                         id: format!("{}-{}", index, tid),

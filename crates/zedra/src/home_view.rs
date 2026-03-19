@@ -3,23 +3,12 @@ use gpui::*;
 use crate::fonts;
 use crate::platform_bridge;
 use crate::theme;
-use crate::workspace_store::PersistedWorkspace;
-use crate::workspace_view::WorkspaceSummary;
+use crate::workspace_state::SharedWorkspaceStates;
 
-const WEBSITE_URL: &str = "https://www.zedra.dev";
+const _WEBSITE_URL: &str = "https://www.zedra.dev";
 const GITHUB_URL: &str = "https://github.com/tanlethanh/zedra";
 const DISCORD_URL: &str = "https://discord.gg/39MmkSS8sc";
 const XCOM_URL: &str = "https://x.com/zedradev";
-
-/// A single entry in the home workspace list. Carries whichever combination of
-/// active (in-memory) and saved (persisted) data applies to this workspace.
-#[derive(Clone)]
-pub struct HomeWorkspaceItem {
-    /// Active workspace index into `ZedraApp.workspaces` and its summary, if connected.
-    pub active: Option<(usize, WorkspaceSummary)>,
-    /// Saved workspace index into the persisted list and its data, if persisted.
-    pub saved: Option<(usize, PersistedWorkspace)>,
-}
 
 #[derive(Clone, Debug)]
 pub enum HomeEvent {
@@ -28,28 +17,28 @@ pub enum HomeEvent {
     WorkspaceTapped(usize),
     /// Tap on a saved-only workspace card to reconnect. Carries saved_index.
     SavedWorkspaceTapped(usize),
-    /// Long-press / delete. Carries the item index into HomeView::items.
+    /// Long-press / delete. Carries the item index into HomeView::states.
     WorkspaceRemoved(usize),
 }
 
 impl EventEmitter<HomeEvent> for HomeView {}
 
 pub struct HomeView {
-    pub items: Vec<HomeWorkspaceItem>,
+    /// Shared list; read in render (no lock).
+    pub states: SharedWorkspaceStates,
     focus_handle: FocusHandle,
 }
 
 impl HomeView {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(cx: &mut Context<Self>, states: SharedWorkspaceStates) -> Self {
         Self {
-            items: Vec::new(),
+            states,
             focus_handle: cx.focus_handle(),
         }
     }
 
-    pub fn update_items(&mut self, items: Vec<HomeWorkspaceItem>, cx: &mut Context<Self>) {
-        self.items = items;
-        cx.notify();
+    pub fn set_states(&mut self, states: SharedWorkspaceStates) {
+        self.states = states;
     }
 }
 
@@ -97,66 +86,60 @@ impl Render for HomeView {
                     ),
             );
 
-        if !self.items.is_empty() {
+        if !self.states.is_empty() {
             let mut cards = div()
+                .id("home-cards")
                 .mt_4()
                 .w(px(theme::HOME_CARD_WIDTH))
                 .min_h(px(100.0))
+                .max_h(px(320.0))
+                .overflow_y_scroll()
                 .flex()
                 .flex_col()
                 .gap(px(8.0));
 
-            for (item_idx, item) in self.items.iter().enumerate() {
-                let card = match (&item.active, &item.saved) {
-                    (Some((ws_idx, summary)), _) => {
-                        let index = *ws_idx;
-                        let (status_label, status_color): (&str, u32) = match &summary.connect_phase
-                        {
-                            zedra_session::ConnectPhase::Connected => {
-                                ("Connected", theme::ACCENT_GREEN)
-                            }
-                            p if p.is_connecting() => ("Connecting\u{2026}", theme::ACCENT_YELLOW),
-                            zedra_session::ConnectPhase::Reconnecting { .. } => {
-                                ("Reconnecting\u{2026}", theme::ACCENT_YELLOW)
-                            }
-                            zedra_session::ConnectPhase::Failed(_) => ("Error", theme::ACCENT_RED),
-                            _ => ("Disconnected", theme::ACCENT_RED),
-                        };
-                        let path_label = summary
-                            .project_path
-                            .as_deref()
-                            .unwrap_or("Workspace")
-                            .rsplit('/')
-                            .next()
-                            .unwrap_or("Workspace")
-                            .to_string();
-                        let term_label = if summary.terminal_count == 1 {
-                            "1 terminal".to_string()
-                        } else {
-                            format!("{} terminals", summary.terminal_count)
-                        };
-                        active_workspace_card(
-                            item_idx,
-                            index,
-                            path_label,
-                            status_label,
-                            status_color,
-                            term_label,
-                            cx,
-                        )
-                        .into_any_element()
+            for (item_idx, state) in self.states.iter().enumerate() {
+                let (status_label, status_color) = match state.connect_phase() {
+                    Some(zedra_session::ConnectPhase::Connected) => {
+                        ("Connected", theme::ACCENT_GREEN)
                     }
-                    (None, Some((_, sw))) => {
-                        let label = sw
-                            .last_hostname
-                            .as_deref()
-                            .unwrap_or("Saved host")
-                            .to_string();
-                        let path_label = sw.project_name().unwrap_or_default().to_string();
-                        saved_workspace_card(item_idx, label, path_label, cx).into_any_element()
+                    Some(p) if p.is_connecting() => ("Connecting\u{2026}", theme::ACCENT_YELLOW),
+                    Some(zedra_session::ConnectPhase::Reconnecting { .. }) => {
+                        ("Reconnecting\u{2026}", theme::ACCENT_YELLOW)
                     }
-                    (None, None) => div().into_any_element(),
+                    Some(zedra_session::ConnectPhase::Failed(_)) => ("Error", theme::ACCENT_RED),
+                    _ => ("Disconnected", theme::ACCENT_RED),
                 };
+                let (status_label, status_color) = if state.workspace_index().is_some() {
+                    (status_label, status_color)
+                } else {
+                    ("Reconnect", theme::TEXT_MUTED)
+                };
+
+                let project_name = if state.project_name().is_empty() {
+                    "Workspace".to_string()
+                } else {
+                    state.project_name().to_string()
+                };
+                let strip_path = state.strip_path().to_string();
+                let hostname = state.hostname().to_string();
+                let subtitle = match (hostname.is_empty(), strip_path.is_empty()) {
+                    (false, false) => format!("{hostname}@{strip_path}"),
+                    (false, true) => hostname,
+                    (true, false) => strip_path,
+                    (true, true) => String::new(),
+                };
+
+                let card = workspace_card(
+                    item_idx,
+                    state.workspace_index(),
+                    project_name,
+                    subtitle,
+                    status_label,
+                    status_color,
+                    None,
+                    cx,
+                );
                 cards = cards.child(card);
             }
 
@@ -164,11 +147,12 @@ impl Render for HomeView {
         }
 
         // Install guide — shown only when there are no items at all
-        if self.items.is_empty() {
+        if self.states.is_empty() {
             content = content.child(
                 div()
                     .w(px(theme::HOME_GUIDE_WIDTH))
                     .min_h(px(100.0))
+                    .bg(rgb(theme::ACCENT_BLUE))
                     .rounded(px(8.0))
                     .bg(rgb(theme::BG_CARD))
                     .border_1()
@@ -208,8 +192,6 @@ impl Render for HomeView {
         // "Scan QR Code" button (always shown)
         content = content.child(
             div()
-                .mt_4()
-                .mb_8()
                 .w(px(theme::HOME_CARD_WIDTH))
                 .py(px(12.0))
                 .rounded(px(8.0))
@@ -218,7 +200,7 @@ impl Render for HomeView {
                 .flex()
                 .justify_center()
                 .cursor_pointer()
-                .hover(|s| s.bg(theme::hover_bg()))
+                .bg(rgb(theme::BG_PRIMARY))
                 .text_color(rgb(theme::TEXT_PRIMARY))
                 .text_size(px(theme::FONT_BODY))
                 .on_mouse_down(
@@ -233,7 +215,7 @@ impl Render for HomeView {
         let bottom_inset = platform_bridge::home_indicator_inset();
 
         div()
-            .id("home-starting")
+            .id("home-footer")
             .track_focus(&self.focus_handle)
             .size_full()
             .bg(rgb(theme::BG_PRIMARY))
@@ -256,6 +238,7 @@ impl Render for HomeView {
                             .flex()
                             .flex_row()
                             .gap(px(theme::SPACING_LG))
+                            .opacity(0.8)
                             .child(social_button("btn-xcom", "icons/xcom.svg", XCOM_URL, cx))
                             .child(social_button(
                                 "btn-github",
@@ -280,17 +263,21 @@ impl Render for HomeView {
     }
 }
 
-fn active_workspace_card(
+fn workspace_card(
     item_idx: usize,
-    index: usize,
-    path_label: String,
+    workspace_index: Option<usize>,
+    project_name: String,
+    subtitle: String,
     status_label: &'static str,
     status_color: u32,
-    term_label: String,
+    bottom_label: Option<String>,
     cx: &mut Context<HomeView>,
 ) -> impl IntoElement {
     div()
-        .id(SharedString::from(format!("ws-home-card-{}", index)))
+        .id(SharedString::from(match workspace_index {
+            Some(index) => format!("ws-home-card-{}", index),
+            None => format!("ws-saved-card-{}", item_idx),
+        }))
         .w_full()
         .rounded(px(8.0))
         .bg(rgb(theme::BG_CARD))
@@ -298,10 +285,14 @@ fn active_workspace_card(
         .border_color(rgb(theme::BORDER_SUBTLE))
         .p(px(12.0))
         .cursor_pointer()
-        .hover(|s| s.bg(theme::hover_bg()))
-        .active(|s| s.opacity(0.6))
-        .on_click(cx.listener(move |_this, _event, _window, cx| {
-            cx.emit(HomeEvent::WorkspaceTapped(index));
+        .on_click(cx.listener(move |this, _event, _window, cx| {
+            if let Some(index) = workspace_index {
+                cx.emit(HomeEvent::WorkspaceTapped(index));
+            } else if let Some(state) = this.states.get(item_idx) {
+                if let Some(saved_index) = state.saved_index() {
+                    cx.emit(HomeEvent::SavedWorkspaceTapped(saved_index));
+                }
+            }
         }))
         .on_long_press(cx.listener(move |_this, _event, _window, cx| {
             cx.emit(HomeEvent::WorkspaceRemoved(item_idx));
@@ -325,7 +316,7 @@ fn active_workspace_card(
                         .text_color(rgb(theme::TEXT_PRIMARY))
                         .text_size(px(theme::FONT_BODY))
                         .font_weight(FontWeight::MEDIUM)
-                        .child(path_label),
+                        .child(project_name),
                 )
                 .child(
                     div()
@@ -334,71 +325,7 @@ fn active_workspace_card(
                         .child(status_label),
                 ),
         )
-        .child(
-            div()
-                .mt(px(4.0))
-                .text_color(rgb(theme::TEXT_MUTED))
-                .text_size(px(theme::FONT_DETAIL))
-                .child(term_label),
-        )
-}
-
-fn saved_workspace_card(
-    item_idx: usize,
-    label: String,
-    path_label: String,
-    cx: &mut Context<HomeView>,
-) -> impl IntoElement {
-    div()
-        .id(SharedString::from(format!("ws-saved-card-{}", item_idx)))
-        .w_full()
-        .rounded(px(8.0))
-        .bg(rgb(theme::BG_CARD))
-        .border_1()
-        .border_color(rgb(theme::BORDER_SUBTLE))
-        .p(px(12.0))
-        .cursor_pointer()
-        .hover(|s| s.bg(theme::hover_bg()))
-        .active(|s| s.opacity(0.6))
-        .on_click(cx.listener(move |this, _event, _window, cx| {
-            if let Some(item) = this.items.get(item_idx) {
-                if let Some((saved_index, _)) = &item.saved {
-                    cx.emit(HomeEvent::SavedWorkspaceTapped(*saved_index));
-                }
-            }
-        }))
-        .on_long_press(cx.listener(move |_this, _event, _window, cx| {
-            cx.emit(HomeEvent::WorkspaceRemoved(item_idx));
-        }))
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(6.0))
-                .child(
-                    div()
-                        .w(px(theme::ICON_STATUS))
-                        .h(px(theme::ICON_STATUS))
-                        .rounded(px(3.0))
-                        .bg(rgb(theme::TEXT_MUTED)),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .text_color(rgb(theme::TEXT_PRIMARY))
-                        .text_size(px(theme::FONT_BODY))
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(label),
-                )
-                .child(
-                    div()
-                        .text_color(rgb(theme::TEXT_MUTED))
-                        .text_size(px(theme::FONT_DETAIL))
-                        .child("Reconnect"),
-                ),
-        )
-        .children(if path_label.is_empty() {
+        .children(if subtitle.is_empty() {
             None
         } else {
             Some(
@@ -406,9 +333,17 @@ fn saved_workspace_card(
                     .mt(px(4.0))
                     .text_color(rgb(theme::TEXT_MUTED))
                     .text_size(px(theme::FONT_DETAIL))
-                    .child(path_label),
+                    .text_overflow(TextOverflow::Truncate(SharedString::new("...")))
+                    .child(subtitle),
             )
         })
+        .children(bottom_label.map(|label| {
+            div()
+                .mt(px(4.0))
+                .text_color(rgb(theme::TEXT_MUTED))
+                .text_size(px(theme::FONT_DETAIL))
+                .child(label)
+        }))
 }
 
 fn social_button(
@@ -433,7 +368,7 @@ fn social_button(
         .child(
             svg()
                 .path(icon)
-                .size(px(36.0))
+                .size(px(32.0))
                 .text_color(rgb(theme::TEXT_MUTED)),
         )
 }

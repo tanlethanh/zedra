@@ -66,21 +66,7 @@ impl Render for FileTooLargeView {
     }
 }
 
-/// Published to HomeView and QuickActionPanel.
-#[derive(Clone, Debug)]
-pub struct WorkspaceSummary {
-    pub index: usize,
-    pub project_path: Option<String>,
-    pub is_connected: bool,
-    pub connect_phase: zedra_session::ConnectPhase,
-    pub terminal_count: usize,
-    /// Excludes `__pending__` slots; used for direct terminal navigation.
-    pub terminal_ids: Vec<String>,
-    /// The currently focused terminal ID, if any.
-    pub active_terminal_id: Option<String>,
-    /// base64-url encoded endpoint address for matching saved workspaces.
-    pub endpoint_addr_encoded: Option<String>,
-}
+use crate::workspace_state::WorkspaceState;
 
 #[derive(Clone, Debug)]
 pub enum WorkspaceEvent {
@@ -231,19 +217,29 @@ impl Render for WorkspaceContent {
                             ),
                     )
                     .child(
-                        div().flex_1().flex().items_center().justify_center().child(
+                        div().flex_1().min_w_0().flex().items_center().justify_center().child(
                             div()
                                 .flex()
                                 .flex_col()
                                 .items_center()
+                                .w_full()
+                                .min_w_0()
                                 .children(project_name.map(|name| {
                                     div()
+                                        .w_full()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_center()
                                         .text_color(rgb(theme::TEXT_MUTED))
                                         .text_size(px(theme::FONT_DETAIL))
                                         .child(name)
                                 }))
                                 .child(
                                     div()
+                                        .w_full()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_center()
                                         .text_color(rgb(theme::TEXT_SECONDARY))
                                         .text_size(px(theme::FONT_BODY))
                                         .font_weight(FontWeight::MEDIUM)
@@ -639,37 +635,32 @@ impl WorkspaceView {
         }
     }
 
-    /// Returns a summary of this workspace for HomeView / QuickActionPanel.
-    pub fn summary(&self, index: usize) -> WorkspaceSummary {
+    /// Returns state for this workspace for HomeView / QuickActionPanel.
+    pub fn summary(&self, index: usize) -> WorkspaceState {
         let cs = self.session_handle.connect_state();
-        let is_connected = cs.phase.is_connected();
-        let workdir = self.session_handle.workdir();
-        let project_path = if workdir.is_empty() {
-            None
-        } else {
-            Some(workdir)
-        };
+        let endpoint_addr_encoded = self
+            .session_handle
+            .endpoint_addr()
+            .and_then(|addr| zedra_rpc::pairing::encode_endpoint_addr(&addr).ok());
+        let endpoint_addr = endpoint_addr_encoded.clone().unwrap_or_default();
         let terminal_ids: Vec<String> = self
             .terminal_views
             .iter()
             .filter(|(id, _)| id != PENDING_TERMINAL_ID)
             .map(|(id, _)| id.clone())
             .collect();
-        let terminal_count = terminal_ids.len();
-        let endpoint_addr_encoded = self
-            .session_handle
-            .endpoint_addr()
-            .and_then(|addr| zedra_rpc::pairing::encode_endpoint_addr(&addr).ok());
-        WorkspaceSummary {
+        WorkspaceState::from_summary(
+            endpoint_addr,
+            self.session_handle.strip_path(),
+            self.session_handle.project_name(),
+            self.session_handle.hostname(),
             index,
-            project_path,
-            is_connected,
-            connect_phase: cs.phase,
-            terminal_count,
+            cs.phase,
+            terminal_ids.len(),
             terminal_ids,
-            active_terminal_id: self.active_terminal_id.clone(),
+            self.active_terminal_id.clone(),
             endpoint_addr_encoded,
-        }
+        )
     }
 
     /// Called when this workspace becomes the active workspace.

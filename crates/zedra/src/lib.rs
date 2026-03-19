@@ -63,8 +63,8 @@ pub mod file_explorer;
 // Platform abstraction (trait + StubBridge fallback)
 pub mod platform_bridge;
 
-// Workspace persistence (load/save workspace connection data)
-pub mod workspace_store;
+// Workspace state and persistence (single model, serializable fields saved to store)
+pub mod workspace_state;
 
 // Embedded assets (SVG icons) — shared across platforms
 use rust_embed::RustEmbed;
