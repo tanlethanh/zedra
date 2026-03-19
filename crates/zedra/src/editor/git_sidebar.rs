@@ -191,7 +191,6 @@ impl GitSidebar {
             .h(px(28.0))
             .px(px(theme::DRAWER_PADDING))
             .cursor_pointer()
-            .hover(|s| s.bg(hsla(0.0, 0.0, 1.0, 0.05)))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.toggle_section(section_idx, cx);
             }))
