@@ -57,10 +57,11 @@ fn cwd_last(cwd: &str) -> &str {
 /// Detect a known AI agent from the raw OSC 2 title and return its brand icon path.
 /// Returns `None` when the title doesn't match any known agent.
 fn agent_icon(title: Option<&str>) -> Option<&'static str> {
-    let t = title?.to_ascii_lowercase();
+    let title = title.as_deref().unwrap_or("");
+    let t = title.to_ascii_lowercase();
     if t.contains("claude") {
         Some("icons/claude.svg")
-    } else if t.contains("opencode") {
+    } else if t.contains("opencode") || title.contains("OC |") {
         Some("icons/opencode.svg")
     } else if t.contains("codex") || t.contains("openai") {
         Some("icons/openai.svg")
