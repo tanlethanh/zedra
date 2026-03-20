@@ -1,14 +1,19 @@
 // Terminal view - GPUI Render implementation for the terminal
 // Manages terminal state, handles keyboard input, and renders the terminal grid
 
+use std::cmp::min;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use alacritty_terminal::index::{Column as GridColumn, Line as GridLine, Point as GridPoint};
+use alacritty_terminal::term::TermMode;
 use gpui::*;
 
 use crate::element::TerminalElement;
 use crate::{TerminalSize, TerminalState};
+
+const REMOTE_TOUCH_SCROLL_STEP_PX: f32 = 12.0;
 
 /// Callback for sending bytes to the remote PTY.
 pub type SendBytesFn = Box<dyn Fn(Vec<u8>) + Send + 'static>;
@@ -68,6 +73,9 @@ pub struct TerminalView {
     /// Keyboard show fires in mouse_up only when the finger displacement
     /// is within tap slop (i.e. the gesture was a tap, not a swipe).
     mouse_down_pos: Option<Point<Pixels>>,
+    /// Top-left origin of the painted terminal grid within the window.
+    /// Used to turn touch scroll positions into terminal cell coordinates.
+    grid_origin: Option<Point<Pixels>>,
 }
 
 impl TerminalView {
@@ -93,6 +101,7 @@ impl TerminalView {
             base_rows: rows,
             last_keyboard_rows: rows,
             mouse_down_pos: None,
+            grid_origin: None,
         }
     }
 
@@ -226,6 +235,104 @@ impl TerminalView {
         self.terminal.scroll(lines);
     }
 
+    pub fn set_grid_origin(&mut self, origin: Point<Pixels>) {
+        self.grid_origin = Some(origin);
+    }
+
+    fn mouse_mode(&self, event: &ScrollWheelEvent) -> bool {
+        self.send_bytes.is_some()
+            && !event.modifiers.shift
+            && self.terminal.mode().intersects(TermMode::MOUSE_MODE)
+    }
+
+    fn should_send_alt_scroll(&self, event: &ScrollWheelEvent) -> bool {
+        if self.mouse_mode(event) || self.send_bytes.is_none() || event.modifiers.shift {
+            return false;
+        }
+
+        let mode = self.terminal.mode();
+        if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
+            return true;
+        }
+
+        // Some mobile TUI sessions appear to expose Alternate Scroll without the
+        // ALT_SCREEN bit making it through the local emulator state. Preserve the
+        // previous touch-scroll behavior for gesture-based scroll in that case.
+        matches!(event.delta, ScrollDelta::Pixels(_)) && mode.contains(TermMode::ALTERNATE_SCROLL)
+    }
+
+    fn scroll_step_px(&self, event: &ScrollWheelEvent) -> f32 {
+        if self.mouse_mode(event) || self.should_send_alt_scroll(event) {
+            REMOTE_TOUCH_SCROLL_STEP_PX
+        } else {
+            (self.terminal.size().line_height / px(1.0)) as f32
+        }
+    }
+
+    fn should_snap_touch_release(&self, event: &ScrollWheelEvent) -> bool {
+        !self.mouse_mode(event) && !self.should_send_alt_scroll(event)
+    }
+
+    fn scroll_point(&self, event: &ScrollWheelEvent) -> Option<GridPoint> {
+        let size = self.terminal.size();
+        let columns = size.columns.max(1);
+        let rows = size.rows.max(1);
+
+        let (column, line) = if matches!(event.delta, ScrollDelta::Pixels(_)) {
+            // Touch scroll is a gesture, not a hover-wheel. Route it through the
+            // middle of the viewport so TUIs don't depend on the finger resting on
+            // an exact widget the way desktop pointer wheels do.
+            (columns / 2, (rows / 2) as i32)
+        } else {
+            let origin = self.grid_origin?;
+            let relative = event.position - origin;
+            let x = relative.x.max(px(0.0));
+            let y = relative.y.max(px(0.0));
+            (
+                min((x / size.cell_width) as usize, columns.saturating_sub(1)),
+                min((y / size.line_height) as usize, rows.saturating_sub(1)) as i32,
+            )
+        };
+
+        let line = line - self.terminal.display_offset() as i32;
+
+        Some(GridPoint::new(GridLine(line), GridColumn(column)))
+    }
+
+    fn send_mouse_scroll(&self, lines: i32, event: &ScrollWheelEvent) -> bool {
+        let Some(point) = self.scroll_point(event) else {
+            return false;
+        };
+        let Some(report) = scroll_report_bytes(point, event, self.terminal.mode()) else {
+            return false;
+        };
+
+        for _ in 0..lines.unsigned_abs() {
+            self.send_bytes_to_remote(report.clone());
+        }
+
+        true
+    }
+
+    fn commit_scroll_lines(&mut self, lines: i32, event: &ScrollWheelEvent) -> bool {
+        if lines == 0 {
+            return false;
+        }
+
+        if self.mouse_mode(event) {
+            return self.send_mouse_scroll(lines, event);
+        }
+
+        if self.should_send_alt_scroll(event) {
+            self.send_bytes_to_remote(alt_scroll_bytes(lines));
+            return true;
+        }
+
+        let before = self.terminal.display_offset();
+        self.scroll(lines);
+        self.terminal.display_offset() != before
+    }
+
     /// Whether the terminal is connected
     pub fn is_connected(&self) -> bool {
         self.connected
@@ -343,56 +450,60 @@ impl Render for TerminalView {
                         this.scroll_offset_px = 0.0;
                         let lines = l.y as i32;
                         if lines != 0 {
-                            this.scroll(lines);
+                            this.commit_scroll_lines(lines, event);
                         }
                     }
                     ScrollDelta::Pixels(pixels) => {
                         if matches!(event.touch_phase, TouchPhase::Ended) {
-                            // Touch lifted: snap remaining offset to nearest line
-                            let lh: f32 = (this.terminal.size().line_height / px(1.0)) as f32;
-                            if this.scroll_offset_px.abs() > lh * 0.5 {
+                            if this.should_snap_touch_release(event)
+                                && this.scroll_offset_px.abs()
+                                    > this.scroll_step_px(event) * 0.5
+                            {
+                                // Local scrollback benefits from snapping the partial drag
+                                // to the nearest line, but remote TUIs should emit while
+                                // dragging instead of waiting for finger lift.
                                 if this.scroll_offset_px > 0.0 {
-                                    this.scroll(1);
+                                    this.commit_scroll_lines(1, event);
                                 } else {
-                                    this.scroll(-1);
+                                    this.commit_scroll_lines(-1, event);
                                 }
                             }
                             this.scroll_offset_px = 0.0;
                         } else {
-                            let lh: f32 = (this.terminal.size().line_height / px(1.0)) as f32;
+                            let step_px = this.scroll_step_px(event);
                             let py: f32 = (pixels.y / px(1.0)) as f32;
                             this.scroll_offset_px += py;
 
-                            // Commit whole lines, clamping at scrollback boundaries.
-                            while this.scroll_offset_px >= lh {
-                                let before = this.terminal.display_offset();
-                                this.scroll(1);
-                                if this.terminal.display_offset() == before {
+                            // Remote terminal scroll should emit small, repeated wheel
+                            // ticks while dragging; local scrollback keeps line-based steps.
+                            while this.scroll_offset_px >= step_px {
+                                if !this.commit_scroll_lines(1, event) {
                                     // Hit top of scrollback — clamp offset
                                     this.scroll_offset_px = 0.0;
                                     break;
                                 }
-                                this.scroll_offset_px -= lh;
+                                this.scroll_offset_px -= step_px;
                             }
-                            while this.scroll_offset_px <= -lh {
-                                let before = this.terminal.display_offset();
-                                this.scroll(-1);
-                                if this.terminal.display_offset() == before {
+                            while this.scroll_offset_px <= -step_px {
+                                if !this.commit_scroll_lines(-1, event) {
                                     // Hit bottom of scrollback — clamp offset
                                     this.scroll_offset_px = 0.0;
                                     break;
                                 }
-                                this.scroll_offset_px += lh;
+                                this.scroll_offset_px += step_px;
                             }
 
-                            // Also clamp sub-line drift at boundaries
-                            let offset = this.terminal.display_offset();
-                            let history = this.terminal.history_size();
-                            if offset == 0 && this.scroll_offset_px < 0.0 {
-                                this.scroll_offset_px = 0.0; // at bottom
-                            }
-                            if offset >= history && this.scroll_offset_px > 0.0 {
-                                this.scroll_offset_px = 0.0; // at top
+                            // Local scrollback clamps at the history bounds, but alt-screen
+                            // scroll should keep producing cursor-up/down bytes for the PTY.
+                            if !this.should_send_alt_scroll(event) {
+                                let offset = this.terminal.display_offset();
+                                let history = this.terminal.history_size();
+                                if offset == 0 && this.scroll_offset_px < 0.0 {
+                                    this.scroll_offset_px = 0.0; // at bottom
+                                }
+                                if offset >= history && this.scroll_offset_px > 0.0 {
+                                    this.scroll_offset_px = 0.0; // at top
+                                }
                             }
                         }
                     }
@@ -408,4 +519,98 @@ impl Render for TerminalView {
                 self.focus_handle.is_focused(window),
             ))
     }
+}
+
+fn alt_scroll_bytes(lines: i32) -> Vec<u8> {
+    let command = if lines > 0 { b'A' } else { b'B' };
+    let mut bytes = Vec::with_capacity(lines.unsigned_abs() as usize * 3);
+
+    for _ in 0..lines.abs() {
+        bytes.push(0x1b);
+        bytes.push(b'O');
+        bytes.push(command);
+    }
+
+    bytes
+}
+
+fn scroll_report_bytes(
+    point: GridPoint,
+    event: &ScrollWheelEvent,
+    mode: TermMode,
+) -> Option<Vec<u8>> {
+    if !mode.intersects(TermMode::MOUSE_MODE) || point.line < GridLine(0) {
+        return None;
+    }
+
+    let mut button = if scroll_is_up(event) { 64 } else { 65 };
+    if event.modifiers.shift {
+        button += 4;
+    }
+    if event.modifiers.alt {
+        button += 8;
+    }
+    if event.modifiers.control {
+        button += 16;
+    }
+
+    if mode.contains(TermMode::SGR_MOUSE) {
+        Some(
+            format!(
+                "\x1b[<{};{};{}M",
+                button,
+                point.column.0 + 1,
+                point.line.0 + 1
+            )
+            .into_bytes(),
+        )
+    } else {
+        normal_mouse_scroll_report(point, button, mode.contains(TermMode::UTF8_MOUSE))
+    }
+}
+
+fn scroll_is_up(event: &ScrollWheelEvent) -> bool {
+    match event.delta {
+        ScrollDelta::Pixels(delta) => delta.y > px(0.0),
+        ScrollDelta::Lines(delta) => delta.y > 0.0,
+    }
+}
+
+fn normal_mouse_scroll_report(
+    point: GridPoint,
+    button: u8,
+    utf8: bool,
+) -> Option<Vec<u8>> {
+    let line = point.line.0;
+    let column = point.column.0;
+    let max_point = if utf8 { 2015usize } else { 223usize };
+
+    if line < 0 || line as usize >= max_point || column >= max_point {
+        return None;
+    }
+
+    let mut report = vec![b'\x1b', b'[', b'M', 32 + button];
+
+    if utf8 && column >= 95 {
+        report.extend(encode_mouse_position(column));
+    } else {
+        report.push(32 + 1 + column as u8);
+    }
+
+    let line = line as usize;
+    if utf8 && line >= 95 {
+        report.extend(encode_mouse_position(line));
+    } else {
+        report.push(32 + 1 + line as u8);
+    }
+
+    Some(report)
+}
+
+fn encode_mouse_position(position: usize) -> [u8; 2] {
+    let position = 32 + 1 + position;
+    [
+        (0xC0 + position / 64) as u8,
+        (0x80 + (position & 63)) as u8,
+    ]
 }

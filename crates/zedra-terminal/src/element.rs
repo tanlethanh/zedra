@@ -497,10 +497,11 @@ impl Element for TerminalElement {
         // Center the grid horizontally when it's narrower than the allocated bounds
         let grid_width = cell_width * layout.content.grid_cols as f32;
         let x_offset = ((bounds.size.width - grid_width) * 0.5).max(px(0.0));
+        let grid_origin = point(bounds.origin.x + x_offset, bounds.origin.y);
         // Apply smooth scroll offset: shifts grid vertically for sub-line scrolling
         let origin = point(
-            bounds.origin.x + x_offset,
-            bounds.origin.y + px(self.scroll_offset_px),
+            grid_origin.x,
+            grid_origin.y + px(self.scroll_offset_px),
         );
 
         let theme = TerminalTheme::one_dark();
@@ -547,6 +548,13 @@ impl Element for TerminalElement {
             self.focused,
             &theme,
         );
+
+        let entity = self.entity.clone();
+        window.defer(cx, move |_window, cx| {
+            let _ = entity.update(cx, |view, _cx| {
+                view.set_grid_origin(grid_origin);
+            });
+        });
 
         // Resize PTY to match actual element bounds if they changed.
         let actual_rows = (bounds.size.height / line_height).floor() as usize;
