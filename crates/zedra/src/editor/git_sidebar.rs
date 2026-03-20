@@ -181,7 +181,12 @@ pub struct GitSidebar {
 
 impl GitSidebar {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let commit_input = cx.new(|cx| Input::new(cx).compact(true).placeholder("Commit message"));
+        let commit_input = cx.new(|cx| {
+            Input::new(cx)
+                .compact(true)
+                .placeholder("Commit message")
+                .trailing_gutter(38.0)
+        });
         let mut subscriptions = Vec::new();
 
         subscriptions.push(cx.subscribe(
@@ -429,6 +434,9 @@ impl GitSidebar {
                 0.35
             })
             .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation();
+            })
             .on_click(cx.listener(|this, _, _, cx| {
                 this.request_commit(cx);
             }))
@@ -442,17 +450,25 @@ impl GitSidebar {
 
     fn render_commit_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .pl(px(theme::DRAWER_PADDING))
-            .pr(px(theme::DRAWER_PADDING / 2.0))
+            .px(px(theme::DRAWER_PADDING))
             .pt(px(theme::SPACING_SM))
             .pb(px(theme::SPACING_SM))
             .child(
                 div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .child(div().flex_1().child(self.commit_input.clone()))
-                    .child(self.render_commit_button(cx)),
+                    .relative()
+                    .w_full()
+                    .child(self.commit_input.clone())
+                    .child(
+                        div()
+                            .absolute()
+                            .right(px(4.0))
+                            .top_0()
+                            .bottom_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(self.render_commit_button(cx)),
+                    ),
             )
     }
 }

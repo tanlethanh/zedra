@@ -39,6 +39,8 @@ pub struct Input {
     last_keystroke: Option<Instant>,
     /// Compact mode for denser tool-style inputs.
     compact: bool,
+    /// Extra space reserved on the right inside the field (e.g. trailing icon button).
+    trailing_gutter: f32,
 }
 
 impl Input {
@@ -51,6 +53,7 @@ impl Input {
             focus_handle: cx.focus_handle(),
             last_keystroke: None,
             compact: false,
+            trailing_gutter: 0.0,
         }
     }
 
@@ -78,6 +81,12 @@ impl Input {
     /// Use a smaller, denser layout for compact toolbars and sidebars.
     pub fn compact(mut self, compact: bool) -> Self {
         self.compact = compact;
+        self
+    }
+
+    /// Reserve horizontal space on the right for a control overlaid inside the field.
+    pub fn trailing_gutter(mut self, px: f32) -> Self {
+        self.trailing_gutter = px;
         self
     }
 
@@ -239,7 +248,8 @@ impl Render for Input {
             .flex()
             .flex_row()
             .items_center()
-            .px(px(horizontal_padding))
+            .pl(px(horizontal_padding))
+            .pr(px(horizontal_padding + self.trailing_gutter))
             .py(px(vertical_padding))
             .w_full()
             .min_h(px(min_height))
