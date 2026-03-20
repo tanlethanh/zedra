@@ -113,11 +113,8 @@ void ios_present_alert(
             alertControllerWithTitle:titleStr
             message:messageStr
             preferredStyle:UIAlertControllerStyleAlert];
-        ZedraPresentationDismissDelegate *delegate = [ZedraPresentationDismissDelegate new];
-        delegate.callbackId = callback_id;
-        delegate.isSelection = NO;
-        alert.presentationController.delegate = delegate;
-        objc_setAssociatedObject(alert, "zedra_alert_delegate", delegate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        // Do not set alert.presentationController.delegate: UIKit asserts on iOS 18+
+        // ("must not have its delegate modified") for UIAlertControllerStyleAlert.
 
         for (int i = 0; i < button_count; i++) {
             UIAlertActionStyle actionStyle;
@@ -128,12 +125,10 @@ void ios_present_alert(
             }
             int captured_i = i;
             unsigned int captured_id = callback_id;
-            ZedraPresentationDismissDelegate *captured_delegate = delegate;
             [alert addAction:[UIAlertAction
                 actionWithTitle:labelArr[i]
                 style:actionStyle
                 handler:^(UIAlertAction *action) {
-                    captured_delegate.handled = YES;
                     zedra_ios_alert_result(captured_id, captured_i);
                 }]];
         }
