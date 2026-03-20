@@ -26,8 +26,11 @@ impl IosLogger {
 }
 
 impl Log for IosLogger {
-    fn enabled(&self, _: &Metadata) -> bool {
-        true
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        !matches!(
+            metadata.target(),
+            "tracing::span" | "tracing::span::active"
+        )
     }
 
     fn log(&self, record: &Record) {

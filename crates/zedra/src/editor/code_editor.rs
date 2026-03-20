@@ -223,13 +223,6 @@ impl Render for EditorView {
         // During scroll, this is skipped entirely.
         if self.lines_dirty {
             self.rebuild_line_cache();
-            let line_count = self.cached_lines.len();
-            let char_count: usize = self.cached_lines.iter().map(|l| l.text.len()).sum();
-            log::debug!(
-                "[PERF] editor: rebuilt cache, {} lines, {} chars",
-                line_count,
-                char_count
-            );
         }
 
         let line_count = self.cached_lines.len();

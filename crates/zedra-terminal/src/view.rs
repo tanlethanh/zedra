@@ -138,18 +138,12 @@ impl TerminalView {
     /// Returns true if any data was processed.
     fn process_output(&mut self) -> bool {
         let mut had_data = false;
-        let mut total_bytes = 0usize;
 
         if let Ok(mut buffer) = self.output_buffer.try_lock() {
             while let Some(data) = buffer.pop_front() {
-                total_bytes += data.len();
                 self.terminal.advance_bytes(&data);
                 had_data = true;
             }
-        }
-
-        if had_data {
-            log::debug!("[TERM DATA] processed {} bytes from PTY", total_bytes);
         }
 
         if had_data && !self.connected {
@@ -261,14 +255,8 @@ impl Render for TerminalView {
             .needs_render
             .as_ref()
             .map_or(true, |nr| nr.swap(false, Ordering::AcqRel));
-        let had_data = if should_process { self.process_output() } else { false };
-        if had_data {
-            let size = self.terminal.size();
-            log::info!(
-                "[PERF] terminal: processed data, grid={}x{}",
-                size.columns,
-                size.rows
-            );
+        if should_process {
+            self.process_output();
         }
 
         // Adjust terminal rows based on soft keyboard height.

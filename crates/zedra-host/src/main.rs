@@ -102,8 +102,16 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let log_filter = if cli.verbose {
-        tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+        let mut filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        // `tracing` can forward span enter/exit to the `log` crate as TRACE on targets
+        // `tracing::span` / `tracing::span::active` (very noisy with iroh QUIC poll loops).
+        for directive in ["tracing::span=off", "tracing::span::active=off"] {
+            if let Ok(d) = directive.parse::<tracing_subscriber::filter::Directive>() {
+                filter = filter.add_directive(d);
+            }
+        }
+        filter
     } else {
         tracing_subscriber::EnvFilter::new("error")
     };

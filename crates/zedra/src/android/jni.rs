@@ -81,7 +81,12 @@ fn init_logging() {
         android_logger::init_once(
             android_logger::Config::default()
                 .with_max_level(log::LevelFilter::Info)
-                .with_tag("zedra"),
+                .with_tag("zedra")
+                .with_filter(
+                    android_logger::FilterBuilder::new()
+                        .parse("info,tracing::span=off,tracing::span::active=off")
+                        .build(),
+                ),
         );
 
         install_panic_hook();

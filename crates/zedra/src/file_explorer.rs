@@ -767,11 +767,6 @@ impl Render for FileExplorer {
 
         if self.flat_dirty {
             self.flat_entries = self.flatten();
-            log::debug!(
-                "[PERF] file_explorer: {} entries, remote={}",
-                self.flat_entries.len(),
-                self.remote_loaded
-            );
             self.flat_dirty = false;
         }
 

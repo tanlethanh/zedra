@@ -81,15 +81,12 @@ impl AndroidApp {
         jvm: Arc<JavaVM>,
         activity: Arc<Mutex<GlobalRef>>,
     ) -> Result<()> {
-        let start = std::time::Instant::now();
-
         if self.platform_initialized {
             log::warn!("AndroidApp already initialized");
             return Ok(());
         }
 
         // Extract owned values from Arc
-        let extract_start = std::time::Instant::now();
         let jvm_owned = Arc::try_unwrap(jvm).unwrap_or_else(|arc| {
             // If Arc has multiple references, we need to work around JavaVM not being Clone.
             // SAFETY: JavaVM is a thin JNI handle (pointer + vtable pointer). The JVM process
@@ -104,14 +101,8 @@ impl AndroidApp {
             let guard = activity.lock().unwrap();
             guard.clone()
         };
-        log::info!(
-            "[TIMING] Extract JVM/Activity: {:?}",
-            extract_start.elapsed()
-        );
 
         // Create the Android platform
-        let platform_start = std::time::Instant::now();
-        log::info!("[TIMING] Starting AndroidPlatform::new()...");
         let android_platform = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             AndroidPlatform::new(jvm_owned, activity_owned)
         })) {
@@ -128,10 +119,6 @@ impl AndroidApp {
                 return Err(anyhow::anyhow!("Failed to create AndroidPlatform: {}", msg));
             }
         };
-        log::info!(
-            "[TIMING] AndroidPlatform::new() completed: {:?}",
-            platform_start.elapsed()
-        );
 
         // Wrap in Rc - no need to specify dyn Platform since we're passing it directly
         let platform = Rc::new(android_platform);
@@ -149,28 +136,20 @@ impl AndroidApp {
         self.platform = Some(platform.clone());
 
         // Create the GPUI AppCell
-        let app_cell_start = std::time::Instant::now();
-        log::info!("[TIMING] Starting App::new_app()...");
         let app_cell = App::new_app(
             platform,
             Arc::new(ZedraAssets),                    // Embedded SVG icons
             Arc::new(http_client::BlockedHttpClient), // Use BlockedHttpClient
         );
-        log::info!(
-            "[TIMING] App::new_app() completed: {:?}",
-            app_cell_start.elapsed()
-        );
 
         self.app_cell = Some(app_cell);
         self.platform_initialized = true;
 
-        log::info!("[TIMING] Total handle_initialize: {:?}", start.elapsed());
         Ok(())
     }
 
     /// Handle surface created - create window with ZedraApp and attach native surface
     fn handle_surface_created(&mut self, width: u32, height: u32) -> Result<()> {
-        let start = std::time::Instant::now();
         log::info!("Surface created: {}x{}", width, height);
 
         if !self.platform_initialized {
@@ -182,9 +161,6 @@ impl AndroidApp {
 
         // Create window if not already created (first time only)
         if self.window.is_none() {
-            let window_start = std::time::Instant::now();
-            log::info!("[TIMING] Starting window creation...");
-
             if let Some(app_cell) = &self.app_cell {
                 let mut app = app_cell.borrow_mut();
 
@@ -218,10 +194,6 @@ impl AndroidApp {
                 match app::open_zedra_window(&mut app, window_options) {
                     Ok(window_handle) => {
                         self.window = Some(window_handle);
-                        log::info!(
-                            "[TIMING] Window creation completed: {:?}",
-                            window_start.elapsed()
-                        );
                     }
                     Err(e) => {
                         log::error!("Failed to open window: {:?}", e);
@@ -236,20 +208,12 @@ impl AndroidApp {
 
         // ALWAYS attach the native window when surface is created
         // This handles both initial creation and recreation after background/foreground cycle
-        let attach_start = std::time::Instant::now();
-        log::info!("[TIMING] Starting native window attachment...");
-
         if let Some(platform) = &self.platform {
             if let Some(native_window) = jni::take_native_window() {
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     platform.attach_native_window(native_window)
                 })) {
-                    Ok(Ok(())) => {
-                        log::info!(
-                            "[TIMING] Native window attachment completed: {:?}",
-                            attach_start.elapsed()
-                        );
-                    }
+                    Ok(Ok(())) => {}
                     Ok(Err(e)) => {
                         log::error!("Failed to attach native window: {:?}", e);
                         return Err(e);
@@ -272,10 +236,6 @@ impl AndroidApp {
             }
         }
 
-        log::info!(
-            "[TIMING] Total handle_surface_created: {:?}",
-            start.elapsed()
-        );
         Ok(())
     }
 
