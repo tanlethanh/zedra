@@ -62,8 +62,11 @@ if [ "$BUILD_SIM" = true ]; then
     fi
 fi
 
-echo "==> Creating XCFramework..."
-rm -rf "ios/${FRAMEWORK_NAME}.xcframework"
+echo "==> XCFramework..."
+OUT="ios/${FRAMEWORK_NAME}.xcframework"
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
 XCF_ARGS=()
 if [ "$BUILD_DEVICE" = true ]; then
     XCF_ARGS+=(-library "target/aarch64-apple-ios/${PROFILE_DIR}/lib${LIB_NAME}.a" -headers include/)
@@ -71,6 +74,40 @@ fi
 if [ "$BUILD_SIM" = true ]; then
     XCF_ARGS+=(-library "target/aarch64-apple-ios-sim/${PROFILE_DIR}/lib${LIB_NAME}.a" -headers include/)
 fi
-xcodebuild -create-xcframework "${XCF_ARGS[@]}" -output "ios/${FRAMEWORK_NAME}.xcframework"
 
-echo "==> Done! Created ios/${FRAMEWORK_NAME}.xcframework"
+NEW="$TMP/${FRAMEWORK_NAME}.xcframework"
+xcodebuild -create-xcframework "${XCF_ARGS[@]}" -output "$NEW"
+
+# Full replace when missing or both slices built; else swap only built slice(s) into existing bundle.
+if [ ! -d "$OUT" ] || { [ "$BUILD_DEVICE" = true ] && [ "$BUILD_SIM" = true ]; }; then
+    rm -rf "$OUT"
+    mv "$NEW" "$OUT"
+else
+    [ "$BUILD_DEVICE" = true ] && { rm -rf "$OUT/ios-arm64" && cp -R "$NEW/ios-arm64" "$OUT/"; }
+    [ "$BUILD_SIM" = true ] && { rm -rf "$OUT/ios-arm64-simulator" && cp -R "$NEW/ios-arm64-simulator" "$OUT/"; }
+    SLICES=()
+    [ "$BUILD_DEVICE" = true ] && SLICES+=(ios-arm64)
+    [ "$BUILD_SIM" = true ] && SLICES+=(ios-arm64-simulator)
+    python3 - "$OUT/Info.plist" "$NEW/Info.plist" "${SLICES[@]}" <<'PY'
+import plistlib, sys
+from pathlib import Path
+
+o, n = Path(sys.argv[1]), Path(sys.argv[2])
+replace = set(sys.argv[3:])
+new = plistlib.load(n.open("rb"))["AvailableLibraries"]
+p = plistlib.load(o.open("rb"))
+kept = [x for x in p.get("AvailableLibraries", []) if x.get("LibraryIdentifier") not in replace]
+by_id = {}
+for lib in kept + new:
+    i = lib.get("LibraryIdentifier")
+    if i:
+        by_id[i] = lib
+p["AvailableLibraries"] = sorted(
+    by_id.values(), key=lambda x: x.get("LibraryIdentifier") != "ios-arm64"
+)
+with o.open("wb") as f:
+    plistlib.dump(p, f, fmt=plistlib.FMT_XML)
+PY
+fi
+
+echo "==> Done: $OUT"
