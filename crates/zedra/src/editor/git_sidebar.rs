@@ -185,7 +185,9 @@ impl GitSidebar {
             Input::new(cx)
                 .compact(true)
                 .placeholder("Commit message")
-                .trailing_gutter(38.0)
+                .trailing_gutter(40.0)
+                .multiline(true)
+                .max_lines(8)
         });
         let mut subscriptions = Vec::new();
 
@@ -420,6 +422,7 @@ impl GitSidebar {
         } else {
             theme::TEXT_MUTED
         };
+        let icon_size = if self.committing { px(14.0) } else { px(20.0) };
 
         div()
             .id("git-commit-button")
@@ -443,12 +446,13 @@ impl GitSidebar {
             .child(
                 svg()
                     .path(icon_path)
-                    .size(px(theme::ICON_GIT_COMMIT))
+                    .size(icon_size)
                     .text_color(rgb(icon_color)),
             )
     }
 
     fn render_commit_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let explicit_multiline = self.commit_message.contains('\n');
         div()
             .px(px(theme::DRAWER_PADDING))
             .pt(px(theme::SPACING_SM))
@@ -458,7 +462,16 @@ impl GitSidebar {
                     .relative()
                     .w_full()
                     .child(self.commit_input.clone())
-                    .child(
+                    .child(if explicit_multiline {
+                        div()
+                            .absolute()
+                            .right(px(4.0))
+                            .top(px(8.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(self.render_commit_button(cx))
+                    } else {
                         div()
                             .absolute()
                             .right(px(4.0))
@@ -467,8 +480,8 @@ impl GitSidebar {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(self.render_commit_button(cx)),
-                    ),
+                            .child(self.render_commit_button(cx))
+                    }),
             )
     }
 }

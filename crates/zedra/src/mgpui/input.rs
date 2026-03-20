@@ -11,6 +11,104 @@ use gpui::*;
 
 use crate::{platform_bridge, theme};
 
+fn clamp_byte_index(s: &str, mut i: usize) -> usize {
+    i = i.min(s.len());
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Multiline wrapped text with a caret at `cursor_byte`, using the same layout as `SharedString`.
+struct MultilineInputText {
+    text: SharedString,
+    cursor_byte: usize,
+    draw_caret: bool,
+}
+
+impl Element for MultilineInputText {
+    type RequestLayoutState = TextLayout;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let state = TextLayout::default();
+        let layout_id = state.uniform_request_layout(self.text.clone(), window, cx);
+        (layout_id, state)
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        text_layout: &mut Self::RequestLayoutState,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Self::PrepaintState {
+        text_layout.uniform_prepaint(bounds, self.text.as_ref());
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        text_layout: &mut Self::RequestLayoutState,
+        _: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        text_layout.uniform_paint(self.text.as_ref(), window, cx);
+        if !self.draw_caret {
+            return;
+        }
+        let ix = clamp_byte_index(self.text.as_ref(), self.cursor_byte);
+        let origin = if self.text.is_empty() {
+            bounds.origin
+        } else {
+            text_layout
+                .position_for_index(ix)
+                .unwrap_or(bounds.origin)
+        };
+        let line_height = if self.text.is_empty() {
+            let style = window.text_style();
+            let font_size = style.font_size.to_pixels(window.rem_size());
+            style
+                .line_height
+                .to_pixels(font_size.into(), window.rem_size())
+        } else {
+            text_layout.line_height()
+        };
+        let caret = fill(
+            Bounds::new(origin, size(px(2.0), line_height)),
+            rgb(theme::TEXT_SECONDARY),
+        );
+        window.paint_quad(caret);
+    }
+}
+
+impl IntoElement for MultilineInputText {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
 /// Event emitted when the input value changes
 #[derive(Clone, Debug)]
 pub struct InputChanged {
@@ -41,6 +139,12 @@ pub struct Input {
     compact: bool,
     /// Extra space reserved on the right inside the field (e.g. trailing icon button).
     trailing_gutter: f32,
+    /// When true, text wraps and Enter inserts a newline instead of submitting.
+    multiline: bool,
+    /// When set (multiline only), inner text area scrolls after this many lines of height.
+    max_lines: Option<usize>,
+    /// UTF-8 byte index of the caret (multiline only).
+    cursor_byte: usize,
 }
 
 impl Input {
@@ -54,6 +158,9 @@ impl Input {
             last_keystroke: None,
             compact: false,
             trailing_gutter: 0.0,
+            multiline: false,
+            max_lines: None,
+            cursor_byte: 0,
         }
     }
 
@@ -90,10 +197,24 @@ impl Input {
         self
     }
 
+    pub fn multiline(mut self, multiline: bool) -> Self {
+        self.multiline = multiline;
+        self
+    }
+
+    /// Cap vertical growth (scrolls inside). Only applies with `multiline(true)`.
+    pub fn max_lines(mut self, lines: usize) -> Self {
+        self.max_lines = Some(lines);
+        self
+    }
+
     /// Set the initial value
     pub fn value(mut self, value: impl Into<String>) -> Self {
         self.value = value.into();
         self.refresh_display_value();
+        if self.multiline {
+            self.cursor_byte = self.value.len();
+        }
         self
     }
 
@@ -106,6 +227,9 @@ impl Input {
     pub fn set_value(&mut self, value: impl Into<String>) {
         self.value = value.into();
         self.refresh_display_value();
+        if self.multiline {
+            self.cursor_byte = self.value.len();
+        }
     }
 
     fn handle_click(&mut self, _event: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -131,7 +255,21 @@ impl Input {
 
         match key.as_str() {
             "backspace" => {
-                if !self.value.is_empty() {
+                if self.multiline {
+                    let i = clamp_byte_index(&self.value, self.cursor_byte);
+                    if i == 0 {
+                        return;
+                    }
+                    let prev = self.value[..i].chars().next_back().unwrap();
+                    let start = i - prev.len_utf8();
+                    self.value.replace_range(start..i, "");
+                    self.cursor_byte = start;
+                    self.refresh_display_value();
+                    cx.emit(InputChanged {
+                        value: self.value.clone(),
+                    });
+                    cx.notify();
+                } else if !self.value.is_empty() {
                     self.value.pop();
                     self.refresh_display_value();
                     cx.emit(InputChanged {
@@ -141,19 +279,64 @@ impl Input {
                 }
             }
             "enter" => {
-                cx.emit(InputSubmit {
-                    value: self.value.clone(),
-                });
-            }
-            _ => {
-                // Handle character input
-                if let Some(ch) = &event.keystroke.key_char {
-                    self.value.push_str(ch);
+                if self.multiline {
+                    let i = clamp_byte_index(&self.value, self.cursor_byte);
+                    self.value.insert_str(i, "\n");
+                    self.cursor_byte = i + 1;
                     self.refresh_display_value();
                     cx.emit(InputChanged {
                         value: self.value.clone(),
                     });
                     cx.notify();
+                } else {
+                    cx.emit(InputSubmit {
+                        value: self.value.clone(),
+                    });
+                }
+            }
+            "left" => {
+                if !self.multiline {
+                    return;
+                }
+                let i = clamp_byte_index(&self.value, self.cursor_byte);
+                if i == 0 {
+                    return;
+                }
+                let prev = self.value[..i].chars().next_back().unwrap();
+                self.cursor_byte = i - prev.len_utf8();
+                cx.notify();
+            }
+            "right" => {
+                if !self.multiline {
+                    return;
+                }
+                let i = clamp_byte_index(&self.value, self.cursor_byte);
+                if i >= self.value.len() {
+                    return;
+                }
+                let c = self.value[i..].chars().next().unwrap();
+                self.cursor_byte = i + c.len_utf8();
+                cx.notify();
+            }
+            _ => {
+                if let Some(ch) = &event.keystroke.key_char {
+                    if self.multiline {
+                        let i = clamp_byte_index(&self.value, self.cursor_byte);
+                        self.value.insert_str(i, ch);
+                        self.cursor_byte = i + ch.len();
+                        self.refresh_display_value();
+                        cx.emit(InputChanged {
+                            value: self.value.clone(),
+                        });
+                        cx.notify();
+                    } else {
+                        self.value.push_str(ch);
+                        self.refresh_display_value();
+                        cx.emit(InputChanged {
+                            value: self.value.clone(),
+                        });
+                        cx.notify();
+                    }
                 }
             }
         }
@@ -229,6 +412,12 @@ impl Render for Input {
         let min_height = if self.compact { 36.0 } else { 44.0 };
         let horizontal_padding = if self.compact { 10.0 } else { 12.0 };
         let vertical_padding = if self.compact { 8.0 } else { 10.0 };
+        let line_height = text_size * 1.45;
+        let inner_max_h_px = self
+            .multiline
+            .then(|| self.max_lines)
+            .flatten()
+            .map(|n| n as f32 * line_height);
 
         // Build display text
         let display_text = if show_placeholder {
@@ -237,7 +426,7 @@ impl Render for Input {
             display_value
         };
 
-        div()
+        let shell = div()
             .id(("input", cx.entity_id()))
             .track_focus(&self.focus_handle)
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
@@ -245,9 +434,6 @@ impl Render for Input {
             })
             .on_click(cx.listener(Self::handle_click))
             .on_key_down(cx.listener(Self::handle_key_down))
-            .flex()
-            .flex_row()
-            .items_center()
             .pl(px(horizontal_padding))
             .pr(px(horizontal_padding + self.trailing_gutter))
             .py(px(vertical_padding))
@@ -259,8 +445,43 @@ impl Render for Input {
             .border_color(border_color)
             .text_color(text_color)
             .text_size(px(text_size))
-            .cursor_text()
-            .child(display_text)
-            .when(is_focused, |this| this.child(self.render_cursor(cx)))
+            .cursor_text();
+
+        if self.multiline {
+            let scroll_child: AnyElement = if is_focused {
+                MultilineInputText {
+                    text: SharedString::from(display_text.clone()),
+                    cursor_byte: clamp_byte_index(self.display_value.as_str(), self.cursor_byte),
+                    draw_caret: true,
+                }
+                .into_any_element()
+            } else {
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .whitespace_normal()
+                    .text_left()
+                    .child(display_text)
+                    .into_any_element()
+            };
+            let mut body = div()
+                .id(("input-multiline-scroll", cx.entity_id()))
+                .w_full();
+            if let Some(h) = inner_max_h_px {
+                body = body.max_h(px(h)).overflow_y_scroll();
+            }
+            shell
+                .flex()
+                .flex_col()
+                .items_stretch()
+                .child(body.child(scroll_child))
+        } else {
+            shell
+                .flex()
+                .flex_row()
+                .items_center()
+                .child(display_text)
+                .when(is_focused, |this| this.child(self.render_cursor(cx)))
+        }
     }
 }
