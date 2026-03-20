@@ -76,15 +76,12 @@ pub fn render_terminal_tab(
             let is_active = active_id.as_deref() == Some(tid.as_str());
             let tid_tap = tid.clone();
             let tid_del = tid.clone();
-            let tid_drop = tid.clone();
+            let _tid_drop = tid.clone();
 
-            let meta = handle
-                .terminal(tid)
-                .map(|t| t.meta())
-                .unwrap_or_default();
+            let meta = handle.terminal(tid).map(|t| t.meta()).unwrap_or_default();
 
             // Label used for the drag ghost preview (owned copy — SharedString is 'static).
-            let ghost_label: SharedString = meta
+            let _ghost_label: SharedString = meta
                 .title
                 .as_deref()
                 .map(|s| SharedString::from(s.to_owned()))
@@ -106,38 +103,45 @@ pub fn render_terminal_tab(
                 cx.emit(WorkspaceDrawerEvent::TerminalDeleteRequested(
                     tid_del.clone(),
                 ));
-            }))
-            // Drag to reorder: dragging this card initiates a DragTerminal gesture.
-            .on_drag(DragTerminal(tid.clone()), move |_drag, _offset, _window, cx| {
-                let label = ghost_label.clone();
-                cx.new(|_| DragGhost { label })
-            })
-            // Drop on this card: insert the dragged terminal just before this one.
-            .on_drop::<DragTerminal>(cx.listener(move |_this, dragged: &DragTerminal, _window, cx| {
-                if dragged.0 != tid_drop {
-                    cx.emit(WorkspaceDrawerEvent::TerminalReordered {
-                        dragged_id: dragged.0.clone(),
-                        target_id: tid_drop.clone(),
-                    });
-                }
             }));
+
+            // TODO: disabled as it's not working yet
+            // Drag to reorder: dragging this card initiates a DragTerminal gesture.
+            // .on_drag(
+            //     DragTerminal(tid.clone()),
+            //     move |_drag, _offset, _window, cx| {
+            //         let label = ghost_label.clone();
+            //         cx.new(|_| DragGhost { label })
+            //     },
+            // )
+            // Drop on this card: insert the dragged terminal just before this one.
+            // .on_drop::<DragTerminal>(cx.listener(
+            //     move |_this, dragged: &DragTerminal, _window, cx| {
+            //         if dragged.0 != tid_drop {
+            //             cx.emit(WorkspaceDrawerEvent::TerminalReordered {
+            //                 dragged_id: dragged.0.clone(),
+            //                 target_id: tid_drop.clone(),
+            //             });
+            //         }
+            //     },
+            // ));
 
             content = content.child(card);
         }
 
         // Drop zone at the end of the list — dropping here appends the card last.
-        content = content.child(
-            div()
-                .id("terminal-drop-end")
-                .h(px(24.0))
-                .mx(px(theme::DRAWER_PADDING))
-                .on_drop::<DragTerminal>(cx.listener(|_this, dragged: &DragTerminal, _window, cx| {
-                    cx.emit(WorkspaceDrawerEvent::TerminalReordered {
-                        dragged_id: dragged.0.clone(),
-                        target_id: String::new(),
-                    });
-                })),
-        );
+        // content = content.child(
+        //     div()
+        //         .id("terminal-drop-end")
+        //         .h(px(24.0))
+        //         .mx(px(theme::DRAWER_PADDING))
+        //         .on_drop::<DragTerminal>(cx.listener(|_this, dragged: &DragTerminal, _window, cx| {
+        //             cx.emit(WorkspaceDrawerEvent::TerminalReordered {
+        //                 dragged_id: dragged.0.clone(),
+        //                 target_id: String::new(),
+        //             });
+        //         })),
+        // );
     }
 
     // "New Terminal" inline link — no box, dim text, directly below the list
