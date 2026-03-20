@@ -77,8 +77,7 @@ impl Render for QuickActionPanel {
             // Panel header
             .child(
                 div()
-                    // !!!!!!!!!! should be 48px
-                    .h(px(44.0))
+                    .h(px(theme::HEADER_HEIGHT))
                     .flex()
                     .flex_row()
                     .items_center()

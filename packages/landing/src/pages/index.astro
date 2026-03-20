@@ -1,0 +1,745 @@
+---
+const installTabs = [
+  {
+    id: "curl",
+    label: "curl",
+    icon: `<svg class="tab-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>`,
+    commands: ["curl -fsSL https://zedra.dev/install.sh | sh", "zedra start"],
+  },
+  {
+    id: "claude",
+    label: "claude",
+    icon: `<svg class="tab-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="currentColor" d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"></path></svg>`,
+    commands: [
+      "/plugin marketplace add tanlethanh/zedra",
+      "/plugin install claude-code@zedra",
+      "/zedra-start",
+    ],
+  },
+  {
+    id: "codex",
+    label: "codex",
+    icon: `<svg class="tab-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="currentColor" d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"></path></svg>`,
+    commands: [
+      "curl -fsSL https://zedra.dev/install.sh | sh",
+      "zedra start --workdir .",
+    ],
+  },
+  {
+    id: "opencode",
+    label: "opencode",
+    icon: `<svg class="tab-icon" viewBox="-3 3 30 36" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M0 6H24V36H0V6ZM6 12V30H18V12H6Z"></path></svg>`,
+    commands: [
+      "curl -fsSL https://zedra.dev/install.sh | sh",
+      "zedra start --workdir .",
+    ],
+  },
+  {
+    id: "gemini",
+    label: "gemini",
+    icon: `<svg class="tab-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="currentColor" d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81"></path></svg>`,
+    commands: [
+      "curl -fsSL https://zedra.dev/install.sh | sh",
+      "zedra start --workdir .",
+    ],
+  },
+];
+
+const storeLinks = [
+  {
+    href: "#",
+    className: "store-btn",
+    ariaLabel: "Get Zedra on iOS TestFlight",
+    analyticsName: "ios",
+    icon: `<svg class="store-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"></path></svg>`,
+    title: "iOS",
+    subtitle: "TestFlight",
+  },
+  {
+    href: "#",
+    className: "store-btn secondary",
+    ariaLabel: "Zedra on Android coming soon",
+    analyticsName: "android",
+    icon: `<svg class="store-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.4395 5.5586c-.675 1.1664-1.352 2.3318-2.0274 3.498-.0366-.0155-.0742-.0286-.1113-.043-1.8249-.6957-3.484-.8-4.42-.787-1.8551.0185-3.3544.4643-4.2597.8203-.084-.1494-1.7526-3.021-2.0215-3.4864a1.1451 1.1451 0 0 0-.1406-.1914c-.3312-.364-.9054-.4859-1.379-.203-.475.282-.7136.9361-.3886 1.5019 1.9466 3.3696-.0966-.2158 1.9473 3.3593.0172.031-.4946.2642-1.3926 1.0177C2.8987 12.176.452 14.772 0 18.9902h24c-.119-1.1108-.3686-2.099-.7461-3.0683-.7438-1.9118-1.8435-3.2928-2.7402-4.1836a12.1048 12.1048 0 0 0-2.1309-1.6875c.6594-1.122 1.312-2.2559 1.9649-3.3848.2077-.3615.1886-.7956-.0079-1.1191a1.1001 1.1001 0 0 0-.8515-.5332c-.5225-.0536-.9392.3128-1.0488.5449zm-.0391 8.461c.3944.5926.324 1.3306-.1563 1.6503-.4799.3197-1.188.0985-1.582-.4941-.3944-.5927-.324-1.3307.1563-1.6504.4727-.315 1.1812-.1086 1.582.4941zM7.207 13.5273c.4803.3197.5506 1.0577.1563 1.6504-.394.5926-1.1038.8138-1.584.4941-.48-.3197-.5503-1.0577-.1563-1.6504.4008-.6021 1.1087-.8106 1.584-.4941z"></path></svg>`,
+    title: "Android",
+    subtitle: "Coming soon",
+  },
+];
+
+const socialLinks = [
+  {
+    href: "https://x.com/zedradev",
+    ariaLabel: "Zedra on X",
+    analyticsName: "x",
+    icon: `<svg class="social-icon" id="xcom" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M14.234 10.162 22.977 0h-2.072l-7.591 8.824L7.251 0H.258l9.168 13.343L.258 24H2.33l8.016-9.318L16.749 24h6.993zm-2.837 3.299-.929-1.329L3.076 1.56h3.182l5.965 8.532.929 1.329 7.754 11.09h-3.182z" fill="currentColor"></path></svg>`,
+  },
+  {
+    href: "https://github.com/tanlethanh/zedra",
+    ariaLabel: "Zedra on GitHub",
+    analyticsName: "github",
+    icon: `<svg class="social-icon" id="github" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" fill="currentColor"></path></svg>`,
+  },
+  {
+    href: "https://discord.gg/39MmkSS8sc",
+    ariaLabel: "Zedra on Discord",
+    analyticsName: "discord",
+    icon: `<svg class="social-icon" id="discord" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z" fill="currentColor"></path></svg>`,
+  },
+];
+
+const pageTitle = "Zedra — Remote editor on mobile";
+const pageDescription =
+  "One QR scan connects you to your desktop — full terminal, file browser, git, and AI coding agents, all over an encrypted P2P tunnel. No port forwarding. No cloud.";
+const canonicalUrl = "https://zedra.dev/";
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{pageTitle}</title>
+    <meta name="description" content={pageDescription} />
+    <meta name="robots" content="index, follow" />
+    <meta name="theme-color" content="#090909" />
+    <meta name="format-detection" content="telephone=no" />
+    <meta name="application-name" content="Zedra" />
+    <meta name="apple-mobile-web-app-title" content="Zedra" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={pageDescription} />
+    <meta property="og:url" content={canonicalUrl} />
+    <meta property="og:site_name" content="Zedra" />
+    <meta property="og:locale" content="en_US" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content={pageTitle} />
+    <meta name="twitter:description" content={pageDescription} />
+    <link rel="canonical" href={canonicalUrl} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Lora:wght@400&display=swap");
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      :root {
+        --bg: #090909;
+        --border: rgba(255, 255, 255, 0.08);
+        --border-strong: rgba(255, 255, 255, 0.14);
+        --text: #f3f4f6;
+        --muted: #a1a1aa;
+        --green: #3dd68c;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "IBM Plex Mono", "SF Mono", "Fira Code", monospace;
+      }
+
+      body {
+        padding: 32px;
+      }
+
+      .page {
+        max-width: 1280px;
+        margin: 0 auto;
+        min-height: calc(100vh - 64px);
+        display: grid;
+        grid-template-rows: 1fr auto;
+        gap: 32px;
+      }
+
+      .logo {
+        display: inline-flex;
+        align-items: center;
+        gap: 16px;
+        color: var(--text);
+        text-decoration: none;
+        font-size: 2.1rem;
+        font-weight: 400;
+        letter-spacing: 0.02em;
+        font-family: "Lora", Georgia, serif;
+      }
+
+      .logo span {
+        color: var(--green);
+      }
+
+      .placeholder-link {
+        color: var(--muted);
+        text-decoration: none;
+        transition: color 0.18s ease;
+      }
+
+      .placeholder-link:hover {
+        color: var(--text);
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
+        gap: 32px;
+        align-items: stretch;
+      }
+
+      .left,
+      .right {
+        min-width: 0;
+      }
+
+      .left {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 28px;
+      }
+
+      .hero-copy {
+        display: grid;
+        gap: 18px;
+      }
+
+      .hero-intro {
+        display: grid;
+        gap: 14px;
+      }
+
+      h1 {
+        margin: 0;
+        max-width: 10ch;
+        font-size: clamp(3rem, 6vw, 5.5rem);
+        line-height: 0.96;
+        letter-spacing: -0.05em;
+      }
+
+      .description {
+        margin: 0;
+        max-width: 620px;
+        color: var(--muted);
+        font-size: 1.05rem;
+        line-height: 1.75;
+      }
+
+      .install-widget {
+        display: grid;
+        gap: 12px;
+      }
+
+      .tab-input {
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .install-card {
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.09);
+        border-radius: 12px;
+        background: #111112;
+      }
+
+      .terminal-topbar {
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        padding: 12px 14px 0;
+      }
+
+      .tab-list {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-start;
+        gap: 12px;
+        min-width: 0;
+      }
+
+      .tab-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 2px 9px;
+        border-radius: 0;
+        border: 0;
+        border-bottom: 1px solid transparent;
+        background: transparent;
+        color: var(--muted);
+        font-size: 0.78rem;
+        line-height: 1;
+        cursor: pointer;
+        transition:
+          border-color 0.18s ease,
+          color 0.18s ease,
+          transform 0.18s ease;
+      }
+
+      .tab-label:hover {
+        color: var(--text);
+        border-bottom-color: rgba(255, 255, 255, 0.3);
+        transform: translateY(-1px);
+      }
+
+      :global(.tab-icon) {
+        width: 15px;
+        height: 15px;
+        flex: 0 0 auto;
+        display: block;
+        transform: translateY(-0.5px);
+      }
+
+      .tab-panels {
+        padding: 12px 14px 16px;
+      }
+
+      .tab-panel {
+        display: none;
+      }
+
+      .terminal-code {
+        margin: 0;
+        display: grid;
+        gap: 8px;
+        min-height: 96px;
+      }
+
+      .terminal-line {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        align-items: start;
+        gap: 10px;
+      }
+
+      .terminal-prompt {
+        color: var(--green);
+        font-size: 0.92rem;
+        line-height: 1.7;
+      }
+
+      .terminal-command {
+        margin: 0;
+        overflow-x: auto;
+        color: #f4f4f5;
+        font-size: 0.9rem;
+        line-height: 1.7;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .download-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .social-links {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        color: var(--muted);
+      }
+
+      .social-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        color: inherit;
+        text-decoration: none;
+        opacity: 0.8;
+        transition:
+          opacity 0.18s ease,
+          transform 0.18s ease,
+          color 0.18s ease;
+      }
+
+      .social-btn:hover {
+        color: var(--text);
+        opacity: 1;
+        transform: translateY(-1px);
+      }
+
+      :global(.social-icon) {
+        flex: 0 0 auto;
+        display: block;
+      }
+
+      :global(.social-icon#xcom) {
+        width: 24px;
+        height: 24px;
+      }
+
+      :global(.social-icon#github) {
+        width: 28px;
+        height: 28px;
+      }
+
+      :global(.social-icon#discord) {
+        width: 30px;
+        height: 30px;
+      }
+
+      #tab-curl:checked ~ .install-card .label-curl,
+      #tab-claude:checked ~ .install-card .label-claude,
+      #tab-codex:checked ~ .install-card .label-codex,
+      #tab-opencode:checked ~ .install-card .label-opencode,
+      #tab-gemini:checked ~ .install-card .label-gemini {
+        color: var(--text);
+        border-bottom-color: var(--text);
+      }
+
+      #tab-curl:checked ~ .install-card .panel-curl,
+      #tab-claude:checked ~ .install-card .panel-claude,
+      #tab-codex:checked ~ .install-card .panel-codex,
+      #tab-opencode:checked ~ .install-card .panel-opencode,
+      #tab-gemini:checked ~ .install-card .panel-gemini {
+        display: grid;
+      }
+
+      .store-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        justify-content: flex-start;
+        width: 100%;
+        padding: 12px 14px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.02);
+        color: var(--text);
+        text-decoration: none;
+        font-weight: 500;
+        transition:
+          border-color 0.18s ease,
+          transform 0.18s ease;
+      }
+
+      .store-btn:hover {
+        border-color: var(--border-strong);
+        transform: translateY(-1px);
+      }
+
+      .store-btn.secondary {
+        color: var(--muted);
+      }
+
+      :global(.store-icon) {
+        width: 18px;
+        height: 18px;
+        flex: 0 0 auto;
+        display: block;
+      }
+
+      .store-copy {
+        display: grid;
+        gap: 2px;
+        align-content: center;
+      }
+
+      .store-copy strong,
+      .store-copy span {
+        display: block;
+      }
+
+      .store-copy strong {
+        font-size: 0.92rem;
+      }
+
+      .store-copy span {
+        color: var(--muted);
+        font-size: 0.78rem;
+      }
+
+      .right {
+        display: flex;
+        align-items: center;
+      }
+
+      .demo-card {
+        width: 100%;
+        height: 100%;
+        min-height: 640px;
+        padding: 28px;
+        border-radius: 28px;
+        border: 1px solid var(--border);
+        background: linear-gradient(
+          180deg,
+          rgba(255, 255, 255, 0.025),
+          rgba(255, 255, 255, 0.01)
+        );
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+
+      .demo-meta {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      .demo-frame {
+        flex: 1;
+        min-height: 0;
+        display: grid;
+        place-items: center;
+        border: 1px dashed rgba(255, 255, 255, 0.14);
+        border-radius: 22px;
+        background:
+          linear-gradient(
+            180deg,
+            rgba(255, 255, 255, 0.02),
+            rgba(255, 255, 255, 0.01)
+          ),
+          #0c0c0c;
+        text-align: center;
+        padding: 32px;
+      }
+
+      .demo-placeholder {
+        display: grid;
+        gap: 16px;
+        justify-items: center;
+        max-width: 360px;
+      }
+
+      .play {
+        width: 82px;
+        height: 82px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        display: grid;
+        place-items: center;
+        background: rgba(255, 255, 255, 0.03);
+      }
+
+      .demo-placeholder h3 {
+        margin: 0;
+        font-size: 1.4rem;
+      }
+
+      .demo-placeholder p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.7;
+      }
+
+      @media (max-width: 1024px) {
+        body {
+          padding: 24px;
+        }
+
+        .hero {
+          grid-template-columns: 1fr;
+        }
+
+        .demo-card {
+          min-height: 480px;
+        }
+
+        h1 {
+          max-width: 12ch;
+        }
+      }
+
+      @media (max-width: 640px) {
+        body {
+          padding: 18px;
+        }
+
+        .page {
+          min-height: auto;
+          gap: 24px;
+        }
+
+        .install-card,
+        .demo-card {
+          padding: 20px;
+          border-radius: 22px;
+        }
+
+        .terminal-topbar {
+          padding: 12px 12px 0;
+        }
+
+        .tab-list {
+          justify-content: flex-start;
+        }
+
+        .tab-panels {
+          padding: 16px;
+        }
+
+        .download-actions {
+          grid-template-columns: 1fr;
+        }
+
+        h1 {
+          font-size: clamp(2.6rem, 15vw, 4rem);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <main class="hero">
+        <section class="left">
+          <div class="hero-copy">
+            <a class="logo" href="/">
+              <svg
+                width="48"
+                height="62"
+                viewBox="0 0 351 442"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                aria-hidden="true"
+              >
+                <path
+                  d="M18.3179 221.467L256.976 20.945L163.07 154.216L338.989 154.216L95.8202 420.758L211.868 221.467L18.3179 221.467Z"
+                  fill="white"
+                  fill-opacity="0.2"></path>
+                <path
+                  d="M83.5193 208.633L230.794 57.4409L171.954 169.12H271.329L120.967 378.111L197.026 208.633H83.5193Z"
+                  fill="white"></path>
+              </svg>
+              Zedra
+            </a>
+
+            <div class="hero-intro">
+              <h1>Code from anywhere.</h1>
+              <p class="description">
+                One QR scan connects you to your desktop — full terminal, file
+                browser, git, and AI coding agents, all over an encrypted P2P
+                tunnel. No port forwarding. No cloud.
+              </p>
+            </div>
+          </div>
+
+          <section class="install-widget" aria-label="Install">
+            {
+              installTabs.map((tab, index) => (
+                <input
+                  class="tab-input"
+                  type="radio"
+                  name="install-tabs"
+                  id={`tab-${tab.id}`}
+                  data-analytics-install-tab={tab.id}
+                  checked={index === 0}
+                />
+              ))
+            }
+
+            <div class="install-card">
+              <div class="terminal-topbar">
+                <div
+                  class="tab-list"
+                  role="tablist"
+                  aria-label="Installation methods"
+                >
+                  {
+                    installTabs.map((tab) => (
+                      <label
+                        class={`tab-label label-${tab.id}`}
+                        for={`tab-${tab.id}`}
+                      >
+                        <Fragment set:html={tab.icon} />
+                        {tab.label}
+                      </label>
+                    ))
+                  }
+                </div>
+              </div>
+
+              <div class="tab-panels">
+                {
+                  installTabs.map((tab) => (
+                    <section class={`tab-panel panel-${tab.id}`}>
+                      <div class="terminal-code">
+                        {tab.commands.map((command) => (
+                          <div class="terminal-line">
+                            <span class="terminal-prompt">$</span>
+                            <code class="terminal-command">{command}</code>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ))
+                }
+              </div>
+            </div>
+
+            <div class="download-actions">
+              {
+                storeLinks.map((link) => (
+                  <a
+                    class={link.className}
+                    href={link.href}
+                    aria-label={link.ariaLabel}
+                    data-analytics-store={link.analyticsName}
+                  >
+                    <Fragment set:html={link.icon} />
+                    <span class="store-copy">
+                      <strong>{link.title}</strong>
+                      <span>{link.subtitle}</span>
+                    </span>
+                  </a>
+                ))
+              }
+            </div>
+
+            <div class="social-links" aria-label="Zedra social links">
+              {
+                socialLinks.map((link) => (
+                  <a
+                    class="social-btn"
+                    href={link.href}
+                    aria-label={link.ariaLabel}
+                    data-analytics-social={link.analyticsName}
+                  >
+                    <Fragment set:html={link.icon} />
+                  </a>
+                ))
+              }
+            </div>
+          </section>
+        </section>
+
+        <aside class="right">
+          <section class="demo-card" aria-label="Demo video placeholder">
+            <div class="demo-meta">
+              <span>Demo video</span>
+              <a class="placeholder-link" href="#">Placeholder</a>
+            </div>
+
+            <div class="demo-frame">
+              <div class="demo-placeholder">
+                <div class="play" aria-hidden="true">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                    <path d="M8 6.5V17.5L17 12L8 6.5Z" fill="currentColor"
+                    ></path>
+                  </svg>
+                </div>
+                <h3>Demo video placeholder</h3>
+                <p>
+                  Use this area for the product walkthrough. A recorded mobile
+                  session or editor pairing demo will fit here cleanly without
+                  extra visual effects.
+                </p>
+              </div>
+            </div>
+          </section>
+        </aside>
+      </main>
+    </div>
+    <script src="../scripts/analytics.ts"></script>
+  </body>
+</html>
