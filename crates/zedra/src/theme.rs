@@ -60,7 +60,6 @@ pub const ICON_FILE: f32 = 12.0; // File tree icons
 pub const ICON_FILE_DIR: f32 = 14.0; // Directory icons (slightly larger than file)
 pub const ICON_STATUS: f32 = 6.0; // Status dots (connected/disconnected)
 pub const ICON_TERMINAL: f32 = 16.0; // Terminal icon
-pub const ICON_GIT_COMMIT: f32 = 20.0; // Git commit icon
 
 // Editor / diff code view constants
 pub const EDITOR_FONT_SIZE: f32 = 12.0; // Code text in editor and diff views
