@@ -1,0 +1,7 @@
+{
+  "name": "zedra",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ]
+}
