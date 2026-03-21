@@ -48,7 +48,7 @@ pub(crate) fn transport_badge_info(state: &ConnectState) -> (String, u32) {
             };
             (label, theme::ACCENT_RED)
         }
-        ConnectPhase::Failed(_) => ("Error".into(), theme::ACCENT_RED),
+        ConnectPhase::Failed(err) => (err.user_message(), theme::ACCENT_RED),
         p if p.is_connecting() => (
             format!("Connecting\u{2026} {}", p.display_name()),
             theme::ACCENT_YELLOW,

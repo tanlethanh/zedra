@@ -383,30 +383,6 @@ fn render_detail(cs: &ConnectState) -> Div {
         );
     }
 
-    // Error banner
-    if let ConnectPhase::Failed(e) = &cs.phase {
-        col = col.child(
-            div()
-                .mt(px(4.0))
-                .flex()
-                .flex_col()
-                .gap(px(4.0))
-                .child(
-                    div()
-                        .text_color(rgb(theme::ACCENT_RED))
-                        .text_size(px(theme::FONT_BODY))
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(e.user_message()),
-                )
-                .children(e.action_hint().map(|hint| {
-                    div()
-                        .text_color(rgb(theme::TEXT_MUTED))
-                        .text_size(px(theme::FONT_DETAIL))
-                        .child(hint)
-                })),
-        );
-    }
-
     // Reconnecting banner
     if let ConnectPhase::Reconnecting {
         attempt,
