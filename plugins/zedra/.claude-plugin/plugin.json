@@ -1,0 +1,12 @@
+{
+  "name": "zedra",
+  "version": "0.1.0",
+  "description": "Start and manage Zedra Host daemon for remote mobile development. Checks installation, launches the daemon, and prints a QR code to pair with the Zedra mobile app.",
+  "author": {
+    "name": "Zedra",
+    "url": "https://github.com/tanlethanh/zedra"
+  },
+  "repository": "https://github.com/tanlethanh/zedra",
+  "license": "MIT",
+  "keywords": ["zedra", "mobile", "remote", "terminal", "android", "ios", "qr"]
+}
