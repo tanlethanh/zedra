@@ -181,9 +181,10 @@ pub struct TransportSnapshot {
     pub path_upgraded: bool,
     /// Network classification for direct connections (`None` when relayed).
     pub network_hint: Option<NetworkHint>,
-    /// Seconds since a non-zero RTT was last observed on this path.
-    /// 0 = path is currently alive; >0 = path may be stale.
-    pub last_alive_secs_ago: u64,
+    /// Wall-clock instant when a non-zero RTT was last observed.
+    /// `None` = never seen alive on this connection.
+    /// Render code computes elapsed from this to get a live ticking counter.
+    pub last_alive_at: Option<std::time::Instant>,
 }
 
 /// All data accumulated during the connection process.
@@ -215,8 +216,8 @@ pub struct ConnectSnapshot {
     // ── Discovery (live, updated during BindingEndpoint / HolePunching) ───
     /// True once the local endpoint has connected to its home relay.
     pub relay_connected: bool,
-    /// Number of direct (non-relay) addresses discovered for the local endpoint.
-    pub direct_addrs_count: usize,
+    /// Discovered direct endpoint addresses shown in the connecting UI.
+    pub direct_addrs: Vec<String>,
     /// IPv4 UDP reachability confirmed by net-report.
     pub has_ipv4: bool,
     /// IPv6 UDP reachability confirmed by net-report.
@@ -259,6 +260,11 @@ pub struct ConnectState {
     /// start of `connect()` and reset on each new attempt.  Used by the UI to
     /// detect a stuck connection (elapsed > 30 s → show prominent retry button).
     pub started_at: Option<std::time::Instant>,
+    /// Set to `Some(N)` when a reconnect loop is active (attempt number).
+    /// `None` for initial connects.  Persists across the `Reconnecting →
+    /// BindingEndpoint → …` phase transitions so the transport badge can show
+    /// "Retry N" during the actual attempt phases, not just the countdown.
+    pub reconnect_attempt: Option<u32>,
 }
 
 impl ConnectState {
@@ -267,6 +273,7 @@ impl ConnectState {
             phase: ConnectPhase::Idle,
             snapshot: ConnectSnapshot::default(),
             started_at: None,
+            reconnect_attempt: None,
         }
     }
 
