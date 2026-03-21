@@ -12,89 +12,13 @@ use gpui::{Animation, AnimationExt as _, Transformation, prelude::FluentBuilder 
 // Each new value produces a unique animation element ID, causing GPUI to start
 // a fresh oneshot rotation for exactly that press.
 static RETRY_GENERATION: AtomicU64 = AtomicU64::new(0);
-use zedra_session::{
-    ConnectPhase, ConnectSnapshot, ConnectState, STEPPER_STEP_NAMES, TransportSnapshot,
-};
+use zedra_session::{ConnectSnapshot, ConnectState, STEPPER_STEP_NAMES, TransportSnapshot};
 
+use crate::platform_bridge::{self, AlertButton};
 use crate::theme;
 use crate::transport_badge::{format_bytes, render_transport_badge, transport_badge_info};
 
 // ─── Public entry points ─────────────────────────────────────────────────────
-
-/// Semi-transparent reconnecting overlay — rendered on top of the workspace
-/// while the session is in the Reconnecting phase so the user can see the
-/// workspace content underneath.
-pub fn render_reconnecting_overlay(handle: &zedra_session::SessionHandle) -> impl IntoElement {
-    let cs = handle.connect_state();
-    let (attempt, next_retry_secs, reason_str) =
-        if let zedra_session::ConnectPhase::Reconnecting {
-            attempt,
-            next_retry_secs,
-            reason,
-        } = &cs.phase
-        {
-            let r = match reason {
-                zedra_session::ReconnectReason::AppForegrounded => "app resumed",
-                zedra_session::ReconnectReason::ConnectionLost => "connection lost",
-            };
-            (*attempt, *next_retry_secs, r)
-        } else {
-            (0, 0, "")
-        };
-
-    let status_msg = if next_retry_secs > 0 {
-        format!("Retry in {next_retry_secs}s \u{00b7} {reason_str}")
-    } else {
-        format!("Retrying\u{2026} \u{00b7} {reason_str}")
-    };
-
-    div()
-        .absolute()
-        .top_0()
-        .left_0()
-        .right_0()
-        .bottom_0()
-        // 0.6 opacity BG_PRIMARY (0x0e0c0c at alpha 0x99)
-        .bg(rgba(0x0e0c0c99u32))
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_end()
-        .pb(px(48.0))
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(8.0))
-                .child(
-                    div()
-                        .w(px(8.0))
-                        .h(px(8.0))
-                        .rounded(px(4.0))
-                        .bg(rgb(theme::ACCENT_YELLOW)),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.0))
-                        .child(
-                            div()
-                                .text_color(rgb(theme::TEXT_PRIMARY))
-                                .text_size(px(theme::FONT_BODY))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(format!("Reconnecting ({attempt})")),
-                        )
-                        .child(
-                            div()
-                                .text_color(rgb(theme::TEXT_MUTED))
-                                .text_size(px(theme::FONT_DETAIL))
-                                .child(status_msg),
-                        ),
-                ),
-        )
-}
 
 /// Render the full-screen opaque connecting overlay.
 /// Call this for initial connect, resume, and failed phases.
@@ -347,7 +271,7 @@ fn completed_step_count(cs: &ConnectState) -> usize {
 /// Returns true if the snapshot has any discovery data worth showing.
 fn has_discovery_data(snap: &ConnectSnapshot) -> bool {
     snap.relay_connected
-        || snap.direct_addrs_count > 0
+        || !snap.direct_addrs.is_empty()
         || snap.has_ipv4
         || snap.has_ipv6
         || snap.relay_latency_ms.is_some()
@@ -369,11 +293,51 @@ fn render_discovery_rows(snap: &ConnectSnapshot) -> Div {
     d = d.child(kv_row("Relay", &relay_status));
 
     // Direct addresses discovered
-    if snap.direct_addrs_count > 0 {
-        d = d.child(kv_row(
-            "Direct",
-            &format!("{} addr(s) discovered", snap.direct_addrs_count),
-        ));
+    if !snap.direct_addrs.is_empty() {
+        let count = snap.direct_addrs.len();
+        let direct_addrs = snap.direct_addrs.clone();
+        let direct_label = format!(
+            "{count} addr{} - tap to view",
+            if count == 1 { "" } else { "s" }
+        );
+        d = d.child(
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(6.0))
+                .cursor_pointer()
+                .hover(|style| style.bg(theme::hover_bg()))
+                .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                    if direct_addrs.is_empty() {
+                        return;
+                    }
+
+                    let message = direct_addrs.join("\n");
+                    platform_bridge::show_alert(
+                        "Direct addresses",
+                        &message,
+                        vec![AlertButton::default("OK")],
+                        |_| {},
+                    );
+                })
+                .child(
+                    div()
+                        .w(px(60.0))
+                        .flex_shrink_0()
+                        .text_color(rgb(theme::TEXT_MUTED))
+                        .text_size(px(theme::FONT_DETAIL))
+                        .child("Direct"),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(rgb(theme::TEXT_SECONDARY))
+                        .text_size(px(theme::FONT_DETAIL))
+                        .child(direct_label),
+                ),
+        );
     }
 
     // IPv4 / IPv6 reachability
@@ -449,33 +413,6 @@ fn render_detail(cs: &ConnectState) -> Div {
         );
     }
 
-    // Reconnecting banner
-    if let ConnectPhase::Reconnecting {
-        attempt,
-        next_retry_secs,
-        reason,
-    } = &cs.phase
-    {
-        let reason_str = match reason {
-            zedra_session::ReconnectReason::AppForegrounded => "app resumed",
-            zedra_session::ReconnectReason::ConnectionLost => "connection lost",
-        };
-        let msg = if *next_retry_secs > 0 {
-            format!(
-                "Attempt {attempt} \u{00b7} {next_retry_secs}s until retry \u{00b7} {reason_str}"
-            )
-        } else {
-            format!("Attempt {attempt} \u{00b7} retrying\u{2026} \u{00b7} {reason_str}")
-        };
-        col = col.child(
-            div()
-                .mt(px(4.0))
-                .text_color(rgb(theme::ACCENT_YELLOW))
-                .text_size(px(theme::FONT_DETAIL))
-                .child(msg),
-        );
-    }
-
     col
 }
 
@@ -521,10 +458,16 @@ fn render_transport_rows(t: &TransportSnapshot) -> Div {
         "Relayed".into()
     };
 
-    let alive = if t.last_alive_secs_ago == 0 {
-        "now".into()
-    } else {
-        format!("{}s ago", t.last_alive_secs_ago)
+    let alive = match t.last_alive_at {
+        Some(at) => {
+            let secs = at.elapsed().as_secs();
+            if secs == 0 {
+                "now".into()
+            } else {
+                format!("{secs}s ago")
+            }
+        }
+        None => "\u{2014}".into(),
     };
 
     let mut d = div()
@@ -541,7 +484,7 @@ fn render_transport_rows(t: &TransportSnapshot) -> Div {
         d = d.child(kv_row("Relay", relay));
     }
     let net = format!(
-        "{} - {} \u{2191} / {} \u{2193}",
+        "{}ms - {} \u{2191} / {} \u{2193}",
         t.rtt_ms,
         format_bytes(t.bytes_sent),
         format_bytes(t.bytes_recv)
