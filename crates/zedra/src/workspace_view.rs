@@ -42,6 +42,28 @@ impl Render for FileLoadingView {
     }
 }
 
+/// Full-screen centered placeholder shown when all terminals have been deleted.
+struct NoTerminalPlaceholder;
+
+impl Render for NoTerminalPlaceholder {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .top(px(-32.0))
+                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_size(px(theme::FONT_BODY))
+                    .text_align(TextAlign::Center)
+                    .child("No terminals"),
+            )
+    }
+}
+
 /// Full-screen centered placeholder shown when a file is too large to preview.
 struct FileTooLargeView {
     message: String,
@@ -1198,16 +1220,18 @@ impl Render for WorkspaceView {
             });
 
             self.sync_terminal_order_to_drawer(cx);
-            if was_active {
-                if let Some((new_id, _)) = self.terminal_views.first() {
-                    let new_id = new_id.clone();
-                    self.switch_to_terminal(&new_id, cx);
-                } else {
-                    self.active_terminal_id = None;
-                    self.workspace_drawer.update(cx, |drawer, cx| {
-                        drawer.set_active_terminal(None, cx);
-                    });
-                }
+            if self.terminal_views.is_empty() {
+                self.active_terminal_id = None;
+                self.workspace_drawer.update(cx, |drawer, cx| {
+                    drawer.set_active_terminal(None, cx);
+                });
+                let placeholder = cx.new(|_| NoTerminalPlaceholder);
+                self.workspace_content.update(cx, |content, cx| {
+                    content.set_main_view(placeholder.into(), "Terminals", cx);
+                });
+            } else if was_active {
+                let new_id = self.terminal_views[0].0.clone();
+                self.switch_to_terminal(&new_id, cx);
             }
         }
 
