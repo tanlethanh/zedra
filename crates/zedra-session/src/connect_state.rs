@@ -212,6 +212,22 @@ pub struct ConnectSnapshot {
     /// ALPN protocol identifier (e.g. "zedra/rpc/3").
     pub alpn: Option<String>,
 
+    // ── Discovery (live, updated during BindingEndpoint / HolePunching) ───
+    /// True once the local endpoint has connected to its home relay.
+    pub relay_connected: bool,
+    /// Number of direct (non-relay) addresses discovered for the local endpoint.
+    pub direct_addrs_count: usize,
+    /// IPv4 UDP reachability confirmed by net-report.
+    pub has_ipv4: bool,
+    /// IPv6 UDP reachability confirmed by net-report.
+    pub has_ipv6: bool,
+    /// Whether NAT mapping varies by destination (symmetric NAT → harder hole-punch).
+    pub mapping_varies: Option<bool>,
+    /// RTT to the preferred relay server (ms).
+    pub relay_latency_ms: Option<u64>,
+    /// Captive portal detected.
+    pub captive_portal: Option<bool>,
+
     // ── Transport (live, updated by path watcher after HolePunching) ──────
     pub transport: Option<TransportSnapshot>,
 

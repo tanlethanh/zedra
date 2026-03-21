@@ -411,11 +411,58 @@ impl SessionHandle {
         }
         self.notify_state_change();
 
+        // Spawn discovery watchers — update snapshot.discovery fields while
+        // endpoint.connect() is in flight, so the UI shows live progress.
+        let discovery_handle = self.clone();
+        let discovery_endpoint = endpoint.clone();
+        let discovery_task = tokio::spawn(async move {
+            use iroh::Watcher;
+
+            let mut addr_watcher = discovery_endpoint.watch_addr();
+            let mut report_watcher = discovery_endpoint.net_report();
+
+            loop {
+                tokio::select! {
+                    res = addr_watcher.updated() => {
+                        if res.is_err() { break; }
+                        let ep_addr = addr_watcher.get();
+                        let has_relay = ep_addr.relay_urls().next().is_some();
+                        let direct_count = ep_addr.ip_addrs().count();
+
+                        if let Ok(mut cs) = discovery_handle.0.connect_state.lock() {
+                            cs.snapshot.relay_connected = has_relay;
+                            cs.snapshot.direct_addrs_count = direct_count;
+                        }
+                        discovery_handle.notify_state_change();
+                    }
+                    res = report_watcher.updated() => {
+                        if res.is_err() { break; }
+                        if let Some(report) = report_watcher.get() {
+                            let relay_lat = report.relay_latency.iter().next().map(|(_, _, lat)| {
+                                lat.as_millis() as u64
+                            });
+                            if let Ok(mut cs) = discovery_handle.0.connect_state.lock() {
+                                cs.snapshot.has_ipv4 = report.udp_v4;
+                                cs.snapshot.has_ipv6 = report.udp_v6;
+                                cs.snapshot.mapping_varies = report.mapping_varies_by_dest();
+                                cs.snapshot.relay_latency_ms = relay_lat;
+                                cs.snapshot.captive_portal = report.captive_portal;
+                            }
+                            discovery_handle.notify_state_change();
+                        }
+                    }
+                }
+            }
+        });
+
         let t1 = Instant::now();
         let conn = endpoint.connect(addr, ZEDRA_ALPN).await.map_err(|e| {
             self.set_failed(ConnectError::QuicConnectFailed(e.to_string()));
             anyhow::anyhow!("quic connect failed: {e}")
         })?;
+
+        // Stop discovery watchers — connection is established.
+        discovery_task.abort();
 
         let remote_node_id = conn.remote_id().fmt_short().to_string();
         let alpn_str = String::from_utf8_lossy(conn.alpn()).to_string();

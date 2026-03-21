@@ -5,11 +5,17 @@ use zedra_session::{ConnectPhase, ConnectState};
 use crate::theme;
 
 /// Compute badge label and dot color from connect state.
-/// Returns `(label, dot_color)` for rendering in the workspace header.
+/// Returns `(label, dot_color)` for rendering in the workspace header and
+/// as the phase subtitle in the connecting view.
+///
+/// For connecting phases the label includes live discovery data (relay latency,
+/// NAT type, elapsed time) so the user can follow progress.
 pub(crate) fn transport_badge_info(state: &ConnectState) -> (String, u32) {
+    let snap = &state.snapshot;
+    let elapsed = state.elapsed_secs();
+
     match &state.phase {
         ConnectPhase::Connected => {
-            let snap = &state.snapshot;
             let (conn_type, relay): (String, Option<&str>) = match &snap.transport {
                 Some(t) if t.is_direct => {
                     let hint = t
@@ -49,10 +55,61 @@ pub(crate) fn transport_badge_info(state: &ConnectState) -> (String, u32) {
             (label, theme::ACCENT_RED)
         }
         ConnectPhase::Failed(err) => (err.user_message(), theme::ACCENT_RED),
-        p if p.is_connecting() => (
-            format!("Connecting\u{2026} {}", p.display_name()),
-            theme::ACCENT_YELLOW,
-        ),
+        ConnectPhase::BindingEndpoint => {
+            let label = if elapsed > 0 {
+                format!("Binding endpoint \u{00b7} {elapsed}s")
+            } else {
+                "Binding endpoint".into()
+            };
+            (label, theme::ACCENT_YELLOW)
+        }
+        ConnectPhase::HolePunching => {
+            let mut parts: Vec<String> = Vec::new();
+            // Relay status
+            if snap.relay_connected {
+                match snap.relay_latency_ms {
+                    Some(ms) => parts.push(format!("relay {ms}ms")),
+                    None => parts.push("relay ok".into()),
+                }
+            } else {
+                parts.push("relay\u{2026}".into());
+            }
+            // NAT / IP hints
+            if let Some(varies) = snap.mapping_varies {
+                parts.push(if varies { "symmetric NAT".into() } else { "cone NAT".into() });
+            } else {
+                match (snap.has_ipv4, snap.has_ipv6) {
+                    (true, true) => parts.push("v4+v6".into()),
+                    (true, false) => parts.push("v4".into()),
+                    (false, true) => parts.push("v6".into()),
+                    _ => {}
+                }
+            }
+            // Elapsed
+            if elapsed > 0 {
+                parts.push(format!("{elapsed}s"));
+            }
+            let label = if parts.is_empty() {
+                "Connecting\u{2026}".into()
+            } else {
+                parts.join(" \u{00b7} ")
+            };
+            (label, theme::ACCENT_YELLOW)
+        }
+        ConnectPhase::EstablishingRpc => {
+            let label = if elapsed > 0 {
+                format!("RPC setup \u{00b7} {elapsed}s")
+            } else {
+                "RPC setup".into()
+            };
+            (label, theme::ACCENT_YELLOW)
+        }
+        ConnectPhase::Registering => ("Registering device".into(), theme::ACCENT_YELLOW),
+        ConnectPhase::Authenticating | ConnectPhase::Proving => {
+            ("PKI challenge".into(), theme::ACCENT_YELLOW)
+        }
+        ConnectPhase::FetchingInfo => ("Fetching workspace info".into(), theme::ACCENT_YELLOW),
+        ConnectPhase::ResumingTerminals => ("Resuming terminals".into(), theme::ACCENT_YELLOW),
         _ => ("Disconnected".into(), theme::ACCENT_RED),
     }
 }

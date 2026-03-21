@@ -342,6 +342,67 @@ fn completed_step_count(cs: &ConnectState) -> usize {
     n
 }
 
+// ─── Phase status helpers ────────────────────────────────────────────────────
+
+/// Returns true if the snapshot has any discovery data worth showing.
+fn has_discovery_data(snap: &ConnectSnapshot) -> bool {
+    snap.relay_connected
+        || snap.direct_addrs_count > 0
+        || snap.has_ipv4
+        || snap.has_ipv6
+        || snap.relay_latency_ms.is_some()
+}
+
+/// Render the Discovery section rows (network probing results).
+fn render_discovery_rows(snap: &ConnectSnapshot) -> Div {
+    let mut d = div().flex().flex_col().gap(px(2.0));
+
+    // Relay status
+    let relay_status = if snap.relay_connected {
+        match snap.relay_latency_ms {
+            Some(ms) => format!("Connected ({ms}ms)"),
+            None => "Connected".into(),
+        }
+    } else {
+        "Connecting\u{2026}".into()
+    };
+    d = d.child(kv_row("Relay", &relay_status));
+
+    // Direct addresses discovered
+    if snap.direct_addrs_count > 0 {
+        d = d.child(kv_row(
+            "Direct",
+            &format!("{} addr(s) discovered", snap.direct_addrs_count),
+        ));
+    }
+
+    // IPv4 / IPv6 reachability
+    let ip_status = match (snap.has_ipv4, snap.has_ipv6) {
+        (true, true) => "IPv4 + IPv6",
+        (true, false) => "IPv4 only",
+        (false, true) => "IPv6 only",
+        (false, false) => "probing\u{2026}",
+    };
+    d = d.child(kv_row("UDP", ip_status));
+
+    // NAT type
+    if let Some(varies) = snap.mapping_varies {
+        let nat = if varies {
+            "Symmetric (hard NAT)"
+        } else {
+            "Cone / direct"
+        };
+        d = d.child(kv_row("NAT", nat));
+    }
+
+    // Captive portal
+    if snap.captive_portal == Some(true) {
+        d = d.child(kv_row("Portal", "Captive portal detected"));
+    }
+
+    d
+}
+
 // ─── Vertical detail panel ───────────────────────────────────────────────────
 
 fn render_detail(cs: &ConnectState) -> Div {
@@ -355,6 +416,11 @@ fn render_detail(cs: &ConnectState) -> Div {
     // Endpoint section
     if snap.local_node_id.is_some() || snap.remote_node_id.is_some() || snap.relay_url.is_some() {
         col = col.child(render_section("Endpoint", render_endpoint_rows(snap)));
+    }
+
+    // Discovery section (live during HolePunching)
+    if has_discovery_data(snap) {
+        col = col.child(render_section("Discovery", render_discovery_rows(snap)));
     }
 
     // Transport section
