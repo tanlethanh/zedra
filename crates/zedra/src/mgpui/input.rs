@@ -233,7 +233,7 @@ impl Input {
     }
 
     fn handle_click(&mut self, _event: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
-        log::info!("Input clicked - focusing and requesting keyboard");
+        tracing::info!("Input clicked - focusing and requesting keyboard");
         // Focus this element
         self.focus_handle.focus(window, cx);
         // Request keyboard
@@ -248,7 +248,7 @@ impl Input {
         cx: &mut Context<Self>,
     ) {
         let key = &event.keystroke.key;
-        log::debug!("Input key down: {:?}", event.keystroke);
+        tracing::debug!("Input key down: {:?}", event.keystroke);
 
         // Record keystroke time to pause cursor blinking
         self.last_keystroke = Some(Instant::now());

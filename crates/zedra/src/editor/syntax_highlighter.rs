@@ -182,7 +182,7 @@ impl Highlighter {
                         language,
                     },
                     Err(e) => {
-                        log::warn!("Failed to parse highlight query for {:?}: {}", language, e);
+                        tracing::warn!("Failed to parse highlight query for {:?}: {}", language, e);
                         Self {
                             parser: None,
                             query: None,

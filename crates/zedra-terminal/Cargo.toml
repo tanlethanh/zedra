@@ -6,6 +6,6 @@ edition.workspace = true
 [dependencies]
 gpui = { path = "../../vendor/zed/crates/gpui", default-features = false }
 alacritty_terminal.workspace = true
-log.workspace = true
+tracing.workspace = true
 itertools.workspace = true
 

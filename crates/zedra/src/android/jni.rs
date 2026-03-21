@@ -110,13 +110,12 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_gpuiInit(
     activity: JObject,
 ) -> jlong {
     init_logging();
-    log::info!("gpuiInit called");
 
     // Get the JavaVM
     let jvm = match env.get_java_vm() {
         Ok(vm) => Arc::new(vm),
         Err(e) => {
-            log::error!("Failed to get JavaVM: {:?}", e);
+            tracing::error!("Failed to get JavaVM: {:?}", e);
             return 0;
         }
     };
@@ -128,7 +127,7 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_gpuiInit(
     let activity_ref = match env.new_global_ref(activity) {
         Ok(r) => Arc::new(Mutex::new(r)),
         Err(e) => {
-            log::error!("Failed to create global ref to activity: {:?}", e);
+            tracing::error!("Failed to create global ref to activity: {:?}", e);
             return 0;
         }
     };
@@ -143,7 +142,7 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_gpuiInit(
                 let jstr = jni::objects::JString::from(path_str);
                 if let Ok(path) = env.get_string(&jstr) {
                     let path: String = path.into();
-                    log::info!("Files dir: {}", path);
+                    tracing::debug!(path = %path, "jni: files dir");
                     *FILES_DIR.lock().unwrap() = Some(path);
                 }
             }
@@ -162,13 +161,13 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_gpuiInit(
         jvm: jvm.clone(),
         activity: activity_ref.clone(),
     }) {
-        log::error!("Failed to send Initialize command: {:?}", e);
+        tracing::error!("Failed to send Initialize command: {:?}", e);
         return 0;
     }
 
     // Return the handle pointer
     let handle_ptr = Arc::into_raw(handle) as jlong;
-    log::info!("gpuiInit completed successfully, handle: {}", handle_ptr);
+    tracing::debug!(handle = handle_ptr, "jni: init");
     handle_ptr
 }
 
@@ -180,7 +179,7 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_gpuiInitMainThread(
     _env: JNIEnv,
     _class: JClass,
 ) {
-    log::info!("gpuiInitMainThread called - initializing thread-local AndroidApp");
+    tracing::debug!("jni: init main thread");
     app::init_android_app();
 }
 
@@ -194,7 +193,7 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_gpuiProcessCommands(
 ) {
     // Process all pending commands
     if let Err(e) = app::process_commands_from_queue() {
-        log::error!("Error processing commands: {:?}", e);
+        tracing::error!("Error processing commands: {:?}", e);
     }
 }
 
@@ -207,9 +206,8 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_gpuiProcessCriticalComman
     _env: JNIEnv,
     _class: JClass,
 ) {
-    log::info!("Processing critical commands immediately");
     if let Err(e) = app::process_commands_from_queue() {
-        log::error!("Error processing critical commands: {:?}", e);
+        tracing::error!("jni: process critical commands failed: {:?}", e);
     }
 }
 
@@ -222,32 +220,30 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_gpuiDestroy(
     _class: JClass,
     handle: jlong,
 ) {
-    log::info!("gpuiDestroy called");
-
     if handle == 0 {
-        log::warn!("gpuiDestroy called with null handle");
+        tracing::warn!("jni: destroy called with null handle");
         return;
     }
 
     // Send destroy command to queue
     let sender = get_command_sender();
     if let Err(e) = sender.send(AndroidCommand::Destroy) {
-        log::error!("Failed to send Destroy command: {:?}", e);
+        tracing::error!("jni: send Destroy failed: {:?}", e);
     }
 
     // Guard against double-free: Arc::from_raw on the same pointer twice is UB.
     if DESTROYED.swap(true, Ordering::SeqCst) {
-        log::warn!("gpuiDestroy called more than once — skipping Arc drop");
+        tracing::warn!("jni: destroy called more than once — skipping Arc drop");
         return;
     }
+
+    tracing::debug!("jni: destroy");
 
     // SAFETY: `handle` was produced by Arc::into_raw in gpuiCreate and has not
     // been reconstructed before (DESTROYED flag ensures single call).
     unsafe {
         let _ = Arc::from_raw(handle as *const AndroidPlatformHandle);
     }
-
-    log::info!("gpuiDestroy completed");
 }
 
 /// Surface created callback
@@ -263,10 +259,8 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeSurfaceCreated(
     handle: jlong,
     surface: JObject,
 ) {
-    log::info!("nativeSurfaceCreated called");
-
     if handle == 0 {
-        log::error!("nativeSurfaceCreated called with null handle");
+        tracing::error!("jni: surface created with null handle");
         return;
     }
 
@@ -275,14 +269,13 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeSurfaceCreated(
     {
         Some(window) => window,
         None => {
-            log::error!("Failed to get ANativeWindow from Surface");
+            tracing::error!("jni: failed to get ANativeWindow from Surface");
             return;
         }
     };
 
     let width = native_window.width() as u32;
     let height = native_window.height() as u32;
-    log::info!("Surface created: {}x{}", width, height);
 
     // Store the native window globally so it can be retrieved when processing the command
     *NATIVE_WINDOW.lock().unwrap() = Some(native_window);
@@ -290,10 +283,8 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeSurfaceCreated(
     // Send command to queue
     let sender = get_command_sender();
     if let Err(e) = sender.send(AndroidCommand::SurfaceCreated { width, height }) {
-        log::error!("Failed to send SurfaceCreated command: {:?}", e);
+        tracing::error!("jni: send SurfaceCreated failed: {:?}", e);
     }
-
-    log::info!("nativeSurfaceCreated completed");
 }
 
 /// Process surface commands immediately (called from GpuiSurfaceView callbacks)
@@ -305,7 +296,7 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeProcessSurfaceCo
     _class: JClass,
 ) {
     if let Err(e) = app::process_commands_from_queue() {
-        log::error!("Error processing surface commands: {:?}", e);
+        tracing::error!("Error processing surface commands: {:?}", e);
     }
 }
 
@@ -326,17 +317,12 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeSurfaceChanged(
     width: jint,
     height: jint,
 ) {
-    log::info!(
-        "nativeSurfaceChanged: {}x{}, format: {}",
-        width,
-        height,
-        format
-    );
-
     if handle == 0 {
-        log::error!("nativeSurfaceChanged called with null handle");
+        tracing::error!("jni: surface changed with null handle");
         return;
     }
+
+    tracing::debug!(width, height, format, "jni: surface changed");
 
     // Send command to queue
     let sender = get_command_sender();
@@ -344,10 +330,8 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeSurfaceChanged(
         width: width as u32,
         height: height as u32,
     }) {
-        log::error!("Failed to send SurfaceChanged command: {:?}", e);
+        tracing::error!("jni: send SurfaceChanged failed: {:?}", e);
     }
-
-    log::info!("nativeSurfaceChanged completed");
 }
 
 /// Surface destroyed callback
@@ -359,20 +343,18 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeSurfaceDestroyed
     _class: JClass,
     handle: jlong,
 ) {
-    log::info!("nativeSurfaceDestroyed called");
-
     if handle == 0 {
-        log::error!("nativeSurfaceDestroyed called with null handle");
+        tracing::error!("jni: surface destroyed with null handle");
         return;
     }
+
+    tracing::debug!("jni: surface destroyed");
 
     // Send command to queue
     let sender = get_command_sender();
     if let Err(e) = sender.send(AndroidCommand::SurfaceDestroyed) {
-        log::error!("Failed to send SurfaceDestroyed command: {:?}", e);
+        tracing::error!("jni: send SurfaceDestroyed failed: {:?}", e);
     }
-
-    log::info!("nativeSurfaceDestroyed completed");
 }
 
 /// Touch event callback
@@ -398,13 +380,7 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeTouchEvent(
         return;
     }
 
-    log::debug!(
-        "nativeTouchEvent: action={}, x={}, y={}, pointer_id={}",
-        action,
-        x,
-        y,
-        pointer_id
-    );
+    tracing::trace!(action, x, y, pointer_id, "jni: touch");
 
     // Send command to queue
     let sender = get_command_sender();
@@ -437,12 +413,7 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeKeyEvent(
         return;
     }
 
-    log::debug!(
-        "nativeKeyEvent: action={}, key_code={}, unicode={}",
-        action,
-        key_code,
-        unicode
-    );
+    tracing::debug!(action, key_code, unicode, "jni: key event");
 
     // Send command to queue
     let sender = get_command_sender();
@@ -462,20 +433,18 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_gpuiResume(
     _class: JClass,
     handle: jlong,
 ) {
-    log::info!("gpuiResume called");
-
     if handle == 0 {
-        log::error!("gpuiResume called with null handle");
+        tracing::error!("jni: resume called with null handle");
         return;
     }
+
+    tracing::debug!("jni: resume");
 
     // Send command to queue
     let sender = get_command_sender();
     if let Err(e) = sender.send(AndroidCommand::Resume) {
-        log::error!("Failed to send Resume command: {:?}", e);
+        tracing::error!("jni: send Resume failed: {:?}", e);
     }
-
-    log::info!("gpuiResume completed");
 }
 
 /// Pause callback
@@ -487,20 +456,18 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_gpuiPause(
     _class: JClass,
     handle: jlong,
 ) {
-    log::info!("gpuiPause called");
-
     if handle == 0 {
-        log::error!("gpuiPause called with null handle");
+        tracing::error!("jni: pause called with null handle");
         return;
     }
+
+    tracing::debug!("jni: pause");
 
     // Send command to queue
     let sender = get_command_sender();
     if let Err(e) = sender.send(AndroidCommand::Pause) {
-        log::error!("Failed to send Pause command: {:?}", e);
+        tracing::error!("jni: send Pause failed: {:?}", e);
     }
-
-    log::info!("gpuiPause completed");
 }
 
 /// Get display density
@@ -512,8 +479,6 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_getDisplayDensity(
     _class: JClass,
     activity: JObject,
 ) -> jfloat {
-    log::debug!("getDisplayDensity called");
-
     // Get DisplayMetrics via JNI
     let result: Result<jfloat, jni::errors::Error> = (|| {
         // Get the WindowManager
@@ -553,14 +518,14 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_getDisplayDensity(
 
     match result {
         Ok(density) => {
-            log::info!("Display density: {}", density);
+            tracing::debug!(density, "jni: display density");
             *DISPLAY_DENSITY.lock().unwrap() = density;
             // Also update the terminal crate's global for keyboard resize calculations
             zedra_terminal::set_display_density(density);
             density
         }
         Err(e) => {
-            log::error!("Failed to get display density: {:?}", e);
+            tracing::error!("Failed to get display density: {:?}", e);
             1.0 // Default density
         }
     }
@@ -578,12 +543,12 @@ pub extern "system" fn Java_dev_zedra_app_QRScannerActivity_nativeOnQrCodeScanne
     let qr_data: String = match env.get_string(&data) {
         Ok(s) => s.into(),
         Err(e) => {
-            log::error!("Failed to get QR data string: {:?}", e);
+            tracing::error!("Failed to get QR data string: {:?}", e);
             return;
         }
     };
 
-    log::info!("QR code scanned: {}", &qr_data[..qr_data.len().min(50)]);
+    tracing::info!(url = &qr_data[..qr_data.len().min(50)], "jni: qr scanned");
 
     // Route through the unified deeplink path
     let sender = get_command_sender();
@@ -602,15 +567,12 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeDeeplinkReceived(
     let deeplink_url: String = match env.get_string(&url) {
         Ok(s) => s.into(),
         Err(e) => {
-            log::error!("Failed to get deeplink URL string: {:?}", e);
+            tracing::error!("Failed to get deeplink URL string: {:?}", e);
             return;
         }
     };
 
-    log::info!(
-        "Deeplink received: {}",
-        &deeplink_url[..deeplink_url.len().min(80)]
-    );
+    tracing::info!(url = &deeplink_url[..deeplink_url.len().min(80)], "jni: deeplink");
 
     let sender = get_command_sender();
     let _ = sender.send(AndroidCommand::Deeplink { url: deeplink_url });
@@ -689,7 +651,7 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeFlingEvent(
     velocity_x: jfloat,
     velocity_y: jfloat,
 ) {
-    log::debug!("nativeFlingEvent: vx={}, vy={}", velocity_x, velocity_y);
+    tracing::debug!(velocity_x, velocity_y, "jni: fling");
 
     let sender = get_command_sender();
     let _ = sender.send(AndroidCommand::Fling {
@@ -713,7 +675,7 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeSystemInsetsChan
     let b = bottom.max(0) as u32;
     SYSTEM_INSET_TOP.store(t, Ordering::Relaxed);
     SYSTEM_INSET_BOTTOM.store(b, Ordering::Relaxed);
-    log::info!("System insets changed: top={}px, bottom={}px", t, b);
+    tracing::debug!(top = t, bottom = b, "jni: system insets");
 }
 
 /// Keyboard height changed callback
@@ -730,7 +692,7 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeKeyboardHeightCh
     KEYBOARD_HEIGHT.store(h, Ordering::Relaxed);
     // Also update the terminal crate's global so TerminalView can read it
     zedra_terminal::set_keyboard_height(h);
-    log::info!("Keyboard height changed: {}px", h);
+    tracing::debug!(height = h, "jni: keyboard height");
 
     let sender = get_command_sender();
     let _ = sender.send(AndroidCommand::KeyboardHeightChanged { height: h });
@@ -745,7 +707,6 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeRequestShowKeybo
     _class: JClass,
     _handle: jlong,
 ) {
-    log::debug!("Keyboard show requested");
     // The Java side handles actually showing the keyboard via InputMethodManager
 }
 
@@ -756,7 +717,6 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeRequestHideKeybo
     _class: JClass,
     _handle: jlong,
 ) {
-    log::debug!("Keyboard hide requested");
 }
 
 /// IME text input callback
@@ -772,12 +732,12 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeImeInput(
     let input: String = match env.get_string(&text) {
         Ok(s) => s.into(),
         Err(e) => {
-            log::error!("Failed to get IME text: {:?}", e);
+            tracing::error!("Failed to get IME text: {:?}", e);
             return;
         }
     };
 
-    log::debug!("IME input: {}", input);
+    tracing::debug!(len = input.len(), "jni: ime input");
 
     // Send entire text as a single ImeText command to avoid reentrancy issues
     let sender = get_command_sender();
@@ -794,7 +754,7 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeImeInput(
 /// behaviour if a Rust panic unwinds into C/Java frames).
 fn jni_call(name: &'static str, f: impl FnOnce() + std::panic::UnwindSafe) {
     if let Err(e) = std::panic::catch_unwind(f) {
-        log::error!("Panic in {}: {:?}", name, e);
+        tracing::error!(name, err = ?e, "jni: panic");
     }
 }
 
@@ -802,7 +762,6 @@ fn jni_call(name: &'static str, f: impl FnOnce() + std::panic::UnwindSafe) {
 ///
 /// Call this when a text input gains focus
 pub fn show_keyboard() {
-    log::info!("show_keyboard() called");
     jni_call("show_keyboard", show_keyboard_inner);
 }
 
@@ -811,12 +770,12 @@ fn show_keyboard_inner() {
         Ok(guard) => match guard.as_ref() {
             Some(jvm) => jvm.clone(),
             None => {
-                log::error!("JVM not available for keyboard call");
+                tracing::error!("JVM not available for keyboard call");
                 return;
             }
         },
         Err(e) => {
-            log::error!("Failed to lock JVM mutex: {:?}", e);
+            tracing::error!("Failed to lock JVM mutex: {:?}", e);
             return;
         }
     };
@@ -829,7 +788,7 @@ fn show_keyboard_inner() {
             match jvm.attach_current_thread_as_daemon() {
                 Ok(env) => env,
                 Err(e) => {
-                    log::error!("Failed to attach thread for keyboard: {:?}", e);
+                    tracing::error!("Failed to attach thread for keyboard: {:?}", e);
                     return;
                 }
             }
@@ -840,7 +799,7 @@ fn show_keyboard_inner() {
     let class = match env.find_class("dev/zedra/app/MainActivity") {
         Ok(c) => c,
         Err(e) => {
-            log::error!("Failed to find MainActivity class: {:?}", e);
+            tracing::error!("Failed to find MainActivity class: {:?}", e);
             // Check for pending exception
             if env.exception_check().unwrap_or(false) {
                 env.exception_describe().ok();
@@ -851,14 +810,13 @@ fn show_keyboard_inner() {
     };
 
     if let Err(e) = env.call_static_method(&class, "showKeyboard", "()V", &[]) {
-        log::error!("Failed to call showKeyboard: {:?}", e);
-        // Check for pending exception
+        tracing::error!("jni: showKeyboard failed: {:?}", e);
         if env.exception_check().unwrap_or(false) {
             env.exception_describe().ok();
             env.exception_clear().ok();
         }
     } else {
-        log::info!("showKeyboard JNI call succeeded");
+        tracing::debug!("jni: show keyboard");
     }
 }
 
@@ -866,7 +824,6 @@ fn show_keyboard_inner() {
 ///
 /// Call this to open the camera for QR code scanning
 pub fn launch_qr_scanner() {
-    log::info!("launch_qr_scanner() called");
     jni_call("launch_qr_scanner", launch_qr_scanner_inner);
 }
 
@@ -875,12 +832,12 @@ fn launch_qr_scanner_inner() {
         Ok(guard) => match guard.as_ref() {
             Some(jvm) => jvm.clone(),
             None => {
-                log::error!("JVM not available for QR scanner");
+                tracing::error!("JVM not available for QR scanner");
                 return;
             }
         },
         Err(e) => {
-            log::error!("Failed to lock JVM mutex: {:?}", e);
+            tracing::error!("Failed to lock JVM mutex: {:?}", e);
             return;
         }
     };
@@ -890,7 +847,7 @@ fn launch_qr_scanner_inner() {
         Err(_) => match jvm.attach_current_thread_as_daemon() {
             Ok(env) => env,
             Err(e) => {
-                log::error!("Failed to attach thread for QR scanner: {:?}", e);
+                tracing::error!("Failed to attach thread for QR scanner: {:?}", e);
                 return;
             }
         },
@@ -899,7 +856,7 @@ fn launch_qr_scanner_inner() {
     let class = match env.find_class("dev/zedra/app/MainActivity") {
         Ok(c) => c,
         Err(e) => {
-            log::error!("Failed to find MainActivity class: {:?}", e);
+            tracing::error!("Failed to find MainActivity class: {:?}", e);
             if env.exception_check().unwrap_or(false) {
                 env.exception_describe().ok();
                 env.exception_clear().ok();
@@ -909,19 +866,18 @@ fn launch_qr_scanner_inner() {
     };
 
     if let Err(e) = env.call_static_method(&class, "launchQrScanner", "()V", &[]) {
-        log::error!("Failed to call launchQrScanner: {:?}", e);
+        tracing::error!("jni: launchQrScanner failed: {:?}", e);
         if env.exception_check().unwrap_or(false) {
             env.exception_describe().ok();
             env.exception_clear().ok();
         }
     } else {
-        log::info!("launchQrScanner JNI call succeeded");
+        tracing::debug!("jni: launch qr scanner");
     }
 }
 
 /// Open a URL in the system browser
 pub fn open_url(url: &str) {
-    log::info!("open_url() called");
     let url_owned = url.to_string();
     jni_call("open_url", move || open_url_inner(url_owned));
 }
@@ -931,12 +887,12 @@ fn open_url_inner(url: String) {
         Ok(guard) => match guard.as_ref() {
             Some(jvm) => jvm.clone(),
             None => {
-                log::error!("JVM not available for open_url");
+                tracing::error!("JVM not available for open_url");
                 return;
             }
         },
         Err(e) => {
-            log::error!("Failed to lock JVM mutex: {:?}", e);
+            tracing::error!("Failed to lock JVM mutex: {:?}", e);
             return;
         }
     };
@@ -946,7 +902,7 @@ fn open_url_inner(url: String) {
         Err(_) => match jvm.attach_current_thread_as_daemon() {
             Ok(env) => env,
             Err(e) => {
-                log::error!("Failed to attach thread for open_url: {:?}", e);
+                tracing::error!("Failed to attach thread for open_url: {:?}", e);
                 return;
             }
         },
@@ -955,7 +911,7 @@ fn open_url_inner(url: String) {
     let class = match env.find_class("dev/zedra/app/MainActivity") {
         Ok(c) => c,
         Err(e) => {
-            log::error!("Failed to find MainActivity class: {:?}", e);
+            tracing::error!("Failed to find MainActivity class: {:?}", e);
             if env.exception_check().unwrap_or(false) {
                 env.exception_describe().ok();
                 env.exception_clear().ok();
@@ -967,7 +923,7 @@ fn open_url_inner(url: String) {
     let j_url = match env.new_string(&url) {
         Ok(s) => s,
         Err(e) => {
-            log::error!("Failed to create JString for URL: {:?}", e);
+            tracing::error!("Failed to create JString for URL: {:?}", e);
             return;
         }
     };
@@ -978,7 +934,7 @@ fn open_url_inner(url: String) {
         "(Ljava/lang/String;)V",
         &[(&j_url).into()],
     ) {
-        log::error!("Failed to call openUrl: {:?}", e);
+        tracing::error!("Failed to call openUrl: {:?}", e);
         if env.exception_check().unwrap_or(false) {
             env.exception_describe().ok();
             env.exception_clear().ok();
@@ -1033,12 +989,12 @@ fn show_alert_inner(
         Ok(guard) => match guard.as_ref() {
             Some(jvm) => jvm.clone(),
             None => {
-                log::error!("JVM not available for alert call");
+                tracing::error!("JVM not available for alert call");
                 return;
             }
         },
         Err(error) => {
-            log::error!("Failed to lock JVM mutex: {:?}", error);
+            tracing::error!("Failed to lock JVM mutex: {:?}", error);
             return;
         }
     };
@@ -1048,7 +1004,7 @@ fn show_alert_inner(
         Err(_) => match jvm.attach_current_thread_as_daemon() {
             Ok(env) => env,
             Err(error) => {
-                log::error!("Failed to attach thread for alert: {:?}", error);
+                tracing::error!("Failed to attach thread for alert: {:?}", error);
                 return;
             }
         },
@@ -1057,7 +1013,7 @@ fn show_alert_inner(
     let class = match env.find_class("dev/zedra/app/MainActivity") {
         Ok(class) => class,
         Err(error) => {
-            log::error!("Failed to find MainActivity class: {:?}", error);
+            tracing::error!("Failed to find MainActivity class: {:?}", error);
             if env.exception_check().unwrap_or(false) {
                 env.exception_describe().ok();
                 env.exception_clear().ok();
@@ -1069,21 +1025,21 @@ fn show_alert_inner(
     let title_value = match env.new_string(&title) {
         Ok(value) => value,
         Err(error) => {
-            log::error!("Failed to create alert title string: {:?}", error);
+            tracing::error!("Failed to create alert title string: {:?}", error);
             return;
         }
     };
     let message_value = match env.new_string(&message) {
         Ok(value) => value,
         Err(error) => {
-            log::error!("Failed to create alert message string: {:?}", error);
+            tracing::error!("Failed to create alert message string: {:?}", error);
             return;
         }
     };
     let string_class = match env.find_class("java/lang/String") {
         Ok(class) => class,
         Err(error) => {
-            log::error!("Failed to find String class: {:?}", error);
+            tracing::error!("Failed to find String class: {:?}", error);
             return;
         }
     };
@@ -1091,7 +1047,7 @@ fn show_alert_inner(
         match env.new_object_array(button_labels.len() as i32, string_class, JObject::null()) {
             Ok(array) => array,
             Err(error) => {
-                log::error!("Failed to create alert label array: {:?}", error);
+                tracing::error!("Failed to create alert label array: {:?}", error);
                 return;
             }
         };
@@ -1099,12 +1055,12 @@ fn show_alert_inner(
         let label_value = match env.new_string(label) {
             Ok(value) => value,
             Err(error) => {
-                log::error!("Failed to create alert label string: {:?}", error);
+                tracing::error!("Failed to create alert label string: {:?}", error);
                 return;
             }
         };
         if let Err(error) = env.set_object_array_element(&label_array, index as i32, &label_value) {
-            log::error!("Failed to populate alert label array: {:?}", error);
+            tracing::error!("Failed to populate alert label array: {:?}", error);
             return;
         }
     }
@@ -1112,12 +1068,12 @@ fn show_alert_inner(
     let style_array = match env.new_int_array(button_styles.len() as i32) {
         Ok(array) => array,
         Err(error) => {
-            log::error!("Failed to create alert style array: {:?}", error);
+            tracing::error!("Failed to create alert style array: {:?}", error);
             return;
         }
     };
     if let Err(error) = env.set_int_array_region(&style_array, 0, &button_styles) {
-        log::error!("Failed to populate alert style array: {:?}", error);
+        tracing::error!("Failed to populate alert style array: {:?}", error);
         return;
     }
 
@@ -1133,7 +1089,7 @@ fn show_alert_inner(
             (&style_array).into(),
         ],
     ) {
-        log::error!("Failed to call showAlert: {:?}", error);
+        tracing::error!("Failed to call showAlert: {:?}", error);
         if env.exception_check().unwrap_or(false) {
             env.exception_describe().ok();
             env.exception_clear().ok();
@@ -1152,12 +1108,12 @@ fn show_selection_inner(
         Ok(guard) => match guard.as_ref() {
             Some(jvm) => jvm.clone(),
             None => {
-                log::error!("JVM not available for selection call");
+                tracing::error!("JVM not available for selection call");
                 return;
             }
         },
         Err(error) => {
-            log::error!("Failed to lock JVM mutex: {:?}", error);
+            tracing::error!("Failed to lock JVM mutex: {:?}", error);
             return;
         }
     };
@@ -1167,7 +1123,7 @@ fn show_selection_inner(
         Err(_) => match jvm.attach_current_thread_as_daemon() {
             Ok(env) => env,
             Err(error) => {
-                log::error!("Failed to attach thread for selection: {:?}", error);
+                tracing::error!("Failed to attach thread for selection: {:?}", error);
                 return;
             }
         },
@@ -1176,7 +1132,7 @@ fn show_selection_inner(
     let class = match env.find_class("dev/zedra/app/MainActivity") {
         Ok(class) => class,
         Err(error) => {
-            log::error!("Failed to find MainActivity class: {:?}", error);
+            tracing::error!("Failed to find MainActivity class: {:?}", error);
             if env.exception_check().unwrap_or(false) {
                 env.exception_describe().ok();
                 env.exception_clear().ok();
@@ -1188,21 +1144,21 @@ fn show_selection_inner(
     let title_value = match env.new_string(&title) {
         Ok(value) => value,
         Err(error) => {
-            log::error!("Failed to create selection title string: {:?}", error);
+            tracing::error!("Failed to create selection title string: {:?}", error);
             return;
         }
     };
     let message_value = match env.new_string(&message) {
         Ok(value) => value,
         Err(error) => {
-            log::error!("Failed to create selection message string: {:?}", error);
+            tracing::error!("Failed to create selection message string: {:?}", error);
             return;
         }
     };
     let string_class = match env.find_class("java/lang/String") {
         Ok(class) => class,
         Err(error) => {
-            log::error!("Failed to find String class: {:?}", error);
+            tracing::error!("Failed to find String class: {:?}", error);
             return;
         }
     };
@@ -1210,7 +1166,7 @@ fn show_selection_inner(
         match env.new_object_array(button_labels.len() as i32, string_class, JObject::null()) {
             Ok(array) => array,
             Err(error) => {
-                log::error!("Failed to create selection label array: {:?}", error);
+                tracing::error!("Failed to create selection label array: {:?}", error);
                 return;
             }
         };
@@ -1218,12 +1174,12 @@ fn show_selection_inner(
         let label_value = match env.new_string(label) {
             Ok(value) => value,
             Err(error) => {
-                log::error!("Failed to create selection label string: {:?}", error);
+                tracing::error!("Failed to create selection label string: {:?}", error);
                 return;
             }
         };
         if let Err(error) = env.set_object_array_element(&label_array, index as i32, &label_value) {
-            log::error!("Failed to populate selection label array: {:?}", error);
+            tracing::error!("Failed to populate selection label array: {:?}", error);
             return;
         }
     }
@@ -1231,12 +1187,12 @@ fn show_selection_inner(
     let style_array = match env.new_int_array(button_styles.len() as i32) {
         Ok(array) => array,
         Err(error) => {
-            log::error!("Failed to create selection style array: {:?}", error);
+            tracing::error!("Failed to create selection style array: {:?}", error);
             return;
         }
     };
     if let Err(error) = env.set_int_array_region(&style_array, 0, &button_styles) {
-        log::error!("Failed to populate selection style array: {:?}", error);
+        tracing::error!("Failed to populate selection style array: {:?}", error);
         return;
     }
 
@@ -1252,7 +1208,7 @@ fn show_selection_inner(
             (&style_array).into(),
         ],
     ) {
-        log::error!("Failed to call showSelection: {:?}", error);
+        tracing::error!("Failed to call showSelection: {:?}", error);
         if env.exception_check().unwrap_or(false) {
             env.exception_describe().ok();
             env.exception_clear().ok();
@@ -1264,7 +1220,6 @@ fn show_selection_inner(
 ///
 /// Call this when a text input loses focus
 pub fn hide_keyboard() {
-    log::info!("hide_keyboard() called");
     jni_call("hide_keyboard", hide_keyboard_inner);
 }
 
@@ -1273,12 +1228,12 @@ fn hide_keyboard_inner() {
         Ok(guard) => match guard.as_ref() {
             Some(jvm) => jvm.clone(),
             None => {
-                log::error!("JVM not available for keyboard call");
+                tracing::error!("JVM not available for keyboard call");
                 return;
             }
         },
         Err(e) => {
-            log::error!("Failed to lock JVM mutex: {:?}", e);
+            tracing::error!("Failed to lock JVM mutex: {:?}", e);
             return;
         }
     };
@@ -1291,7 +1246,7 @@ fn hide_keyboard_inner() {
             match jvm.attach_current_thread_as_daemon() {
                 Ok(env) => env,
                 Err(e) => {
-                    log::error!("Failed to attach thread for keyboard: {:?}", e);
+                    tracing::error!("Failed to attach thread for keyboard: {:?}", e);
                     return;
                 }
             }
@@ -1302,7 +1257,7 @@ fn hide_keyboard_inner() {
     let class = match env.find_class("dev/zedra/app/MainActivity") {
         Ok(c) => c,
         Err(e) => {
-            log::error!("Failed to find MainActivity class: {:?}", e);
+            tracing::error!("Failed to find MainActivity class: {:?}", e);
             // Check for pending exception
             if env.exception_check().unwrap_or(false) {
                 env.exception_describe().ok();
@@ -1313,14 +1268,13 @@ fn hide_keyboard_inner() {
     };
 
     if let Err(e) = env.call_static_method(&class, "hideKeyboard", "()V", &[]) {
-        log::error!("Failed to call hideKeyboard: {:?}", e);
-        // Check for pending exception
+        tracing::error!("jni: hideKeyboard failed: {:?}", e);
         if env.exception_check().unwrap_or(false) {
             env.exception_describe().ok();
             env.exception_clear().ok();
         }
     } else {
-        log::info!("hideKeyboard JNI call succeeded");
+        tracing::debug!("jni: hide keyboard");
     }
 }
 

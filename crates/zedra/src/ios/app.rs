@@ -55,7 +55,7 @@ pub extern "C" fn zedra_launch_gpui() {
 
     platform_bridge::set_bridge(super::bridge::IosBridge);
 
-    log::info!("Zedra iOS: Creating GPUI application with IosPlatform");
+    tracing::info!("Zedra iOS: Creating GPUI application with IosPlatform");
 
     let platform: Rc<dyn Platform> = Rc::new(IosPlatform::new());
 
@@ -71,7 +71,7 @@ pub extern "C" fn zedra_launch_gpui() {
     // and opens the Metal window with ZedraApp.
     let app_cell_for_callback = app_cell.clone();
     platform.run(Box::new(move || {
-        log::info!("Zedra iOS: finish-launching callback — opening window");
+        tracing::info!("Zedra iOS: finish-launching callback — opening window");
         let cx = &mut *app_cell_for_callback.borrow_mut();
 
         let window_options = WindowOptions {
@@ -82,14 +82,14 @@ pub extern "C" fn zedra_launch_gpui() {
 
         match app::open_zedra_window(cx, window_options) {
             Ok(handle) => {
-                log::info!("Zedra iOS: Window opened: {:?}", handle);
+                tracing::info!("Zedra iOS: Window opened: {:?}", handle);
                 IOS_WINDOW.with(|w| *w.borrow_mut() = Some(handle));
             }
-            Err(err) => log::error!("Zedra iOS: Failed to open window: {:?}", err),
+            Err(err) => tracing::error!("Zedra iOS: Failed to open window: {:?}", err),
         }
     }));
 
-    log::info!("Zedra iOS: Callback registered, waiting for didFinishLaunching");
+    tracing::info!("Zedra iOS: Callback registered, waiting for didFinishLaunching");
 
     // Store the AppCell in a thread-local so window.refresh() can be called from
     // zedra_ios_check_pending_frame(). UIKit owns the run loop on iOS; keeping it

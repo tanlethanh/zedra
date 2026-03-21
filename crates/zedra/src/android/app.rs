@@ -82,7 +82,7 @@ impl AndroidApp {
         activity: Arc<Mutex<GlobalRef>>,
     ) -> Result<()> {
         if self.platform_initialized {
-            log::warn!("AndroidApp already initialized");
+            tracing::warn!("AndroidApp already initialized");
             return Ok(());
         }
 
@@ -93,7 +93,7 @@ impl AndroidApp {
             // outlives the Rust side, so bitwise copying the handle does not create a
             // dangling pointer. The original Arc continues to keep the JVM alive; the copy
             // here is used only for platform initialization and is not dropped independently.
-            log::warn!("JVM Arc has multiple references — bitwise-copying handle");
+            tracing::warn!("JVM Arc has multiple references — bitwise-copying handle");
             unsafe { std::ptr::read(&*arc) }
         });
 
@@ -115,7 +115,7 @@ impl AndroidApp {
                 } else {
                     "Unknown panic".to_string()
                 };
-                log::error!("Panic while creating AndroidPlatform: {}", msg);
+                tracing::error!("Panic while creating AndroidPlatform: {}", msg);
                 return Err(anyhow::anyhow!("Failed to create AndroidPlatform: {}", msg));
             }
         };
@@ -130,7 +130,7 @@ impl AndroidApp {
         // The platform defaults to 3.0 but the actual device density may differ (e.g. 2.75).
         let density = platform_bridge::bridge().density();
         platform.set_display_scale(density);
-        log::info!("Set platform display_scale to {}", density);
+        tracing::info!("Set platform display_scale to {}", density);
 
         // Store a reference to the platform for frame requests
         self.platform = Some(platform.clone());
@@ -150,10 +150,10 @@ impl AndroidApp {
 
     /// Handle surface created - create window with ZedraApp and attach native surface
     fn handle_surface_created(&mut self, width: u32, height: u32) -> Result<()> {
-        log::info!("Surface created: {}x{}", width, height);
+        tracing::info!("Surface created: {}x{}", width, height);
 
         if !self.platform_initialized {
-            log::error!("Cannot create surface before platform initialization");
+            tracing::error!("Cannot create surface before platform initialization");
             return Err(anyhow::anyhow!("Platform not initialized"));
         }
 
@@ -168,7 +168,7 @@ impl AndroidApp {
                 let screen_width_px = width as f32;
                 let screen_height_px = height as f32;
                 let scale = platform_bridge::bridge().density();
-                log::info!(
+                tracing::info!(
                     "Window dimensions: {}x{} physical, scale={}, logical={}x{}",
                     screen_width_px,
                     screen_height_px,
@@ -196,12 +196,12 @@ impl AndroidApp {
                         self.window = Some(window_handle);
                     }
                     Err(e) => {
-                        log::error!("Failed to open window: {:?}", e);
+                        tracing::error!("Failed to open window: {:?}", e);
                         return Err(e);
                     }
                 }
             } else {
-                log::error!("AppCell not available");
+                tracing::error!("AppCell not available");
                 return Err(anyhow::anyhow!("AppCell not available"));
             }
         }
@@ -215,7 +215,7 @@ impl AndroidApp {
                 })) {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => {
-                        log::error!("Failed to attach native window: {:?}", e);
+                        tracing::error!("Failed to attach native window: {:?}", e);
                         return Err(e);
                     }
                     Err(panic_info) => {
@@ -226,12 +226,12 @@ impl AndroidApp {
                         } else {
                             "Unknown panic".to_string()
                         };
-                        log::error!("Panic while attaching native window: {}", msg);
+                        tracing::error!("Panic while attaching native window: {}", msg);
                         return Err(anyhow::anyhow!("Panic during surface attachment: {}", msg));
                     }
                 }
             } else {
-                log::error!("Native window not found in global storage");
+                tracing::error!("Native window not found in global storage");
                 return Err(anyhow::anyhow!("Native window not available"));
             }
         }
@@ -241,13 +241,13 @@ impl AndroidApp {
 
     /// Handle surface changed (resize/rotation)
     fn handle_surface_changed(&mut self, width: u32, height: u32) -> Result<()> {
-        log::info!("Surface changed: {}x{}", width, height);
+        tracing::info!("Surface changed: {}x{}", width, height);
 
         // Resize the AndroidWindow's blade renderer surface
         if let Some(platform) = &self.platform {
             platform.handle_surface_resize(width, height)?;
         } else {
-            log::warn!("Platform not available for surface resize");
+            tracing::warn!("Platform not available for surface resize");
         }
 
         Ok(())
@@ -255,14 +255,14 @@ impl AndroidApp {
 
     /// Handle surface destroyed
     fn handle_surface_destroyed(&mut self) -> Result<()> {
-        log::info!("Surface destroyed");
+        tracing::info!("Surface destroyed");
         self.surface_available = false;
 
         // Notify the platform to destroy the renderer
         // The window persists, but the renderer must be destroyed
         if let Some(platform) = &self.platform {
             platform.detach_native_window();
-            log::info!("Native window detached, renderer destroyed");
+            tracing::info!("Native window detached, renderer destroyed");
         }
 
         Ok(())
@@ -309,7 +309,7 @@ impl AndroidApp {
             None => return Ok(()),
         };
 
-        log::debug!("IME text: {} char(s)", text.chars().count());
+        tracing::debug!("IME text: {} char(s)", text.chars().count());
 
         // Dispatch each character as a key event
         for ch in text.chars() {
@@ -346,7 +346,7 @@ impl AndroidApp {
 
     /// Handle keyboard height change — trigger a re-render so TerminalView picks up the new height
     fn handle_keyboard_height(&mut self, height: u32) -> Result<()> {
-        log::info!("Keyboard height changed: {}px", height);
+        tracing::debug!(height, "app: keyboard height");
         if let (Some(app_cell), Some(window)) = (&self.app_cell, self.window) {
             let mut borrow = app_cell.borrow_mut();
             let _ = window.update(&mut **borrow, |_, window, _| window.refresh());
@@ -359,13 +359,13 @@ impl AndroidApp {
 
     /// Handle app resume
     fn handle_resume(&mut self) -> Result<()> {
-        log::info!("App resumed");
+        tracing::debug!("app: resumed");
         Ok(())
     }
 
     /// Handle app pause
     fn handle_pause(&mut self) -> Result<()> {
-        log::info!("App paused");
+        tracing::debug!("app: paused");
         platform_bridge::clear_pending_alerts();
         Ok(())
     }
@@ -421,16 +421,16 @@ impl AndroidApp {
     }
 
     fn handle_deeplink_url(&mut self, url: String) -> Result<()> {
-        log::info!("Deeplink received: {}", &url[..url.len().min(80)]);
+        tracing::info!("Deeplink received: {}", &url[..url.len().min(80)]);
         match deeplink::parse(&url) {
             Ok(action) => deeplink::enqueue(action),
-            Err(e) => log::error!("Invalid deeplink URL: {}", e),
+            Err(e) => tracing::error!("Invalid deeplink URL: {}", e),
         }
         Ok(())
     }
 
     fn handle_connect_to_host(&mut self, host_id: String) -> Result<()> {
-        log::info!("Connect to host requested: {}", host_id);
+        tracing::info!("Connect to host requested: {}", host_id);
         Ok(())
     }
 }
@@ -519,7 +519,7 @@ pub fn process_commands_from_queue() -> Result<()> {
             // Process queued commands
             for command in commands {
                 if let Err(e) = app.process_command(command) {
-                    log::error!("Error processing command: {}", e);
+                    tracing::error!("Error processing command: {}", e);
                 }
             }
 
@@ -530,7 +530,7 @@ pub fn process_commands_from_queue() -> Result<()> {
 
             // Request frame refresh (called every Choreographer frame @ 60 FPS)
             if let Err(e) = app.handle_frame_request() {
-                log::error!("Error in frame request: {}", e);
+                tracing::error!("Error in frame request: {}", e);
             }
 
             Ok(())

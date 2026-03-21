@@ -75,7 +75,7 @@ fn load_client_signer() -> Option<std::sync::Arc<dyn zedra_session::signer::Clie
     match zedra_session::signer::FileClientSigner::load_or_generate(&key_path) {
         Ok(signer) => Some(std::sync::Arc::new(signer)),
         Err(e) => {
-            log::error!("Failed to load client signing key: {}", e);
+            tracing::error!("Failed to load client signing key: {}", e);
             None
         }
     }
@@ -97,7 +97,7 @@ impl ZedraApp {
             window,
             |this: &mut Self, _emitter, event: &HomeEvent, window, cx| match event {
                 HomeEvent::ScanQrTapped => {
-                    log::info!("Home: Scan QR tapped");
+                    tracing::info!("Home: Scan QR tapped");
                     platform_bridge::bridge().launch_qr_scanner();
                 }
                 HomeEvent::WorkspaceTapped(index) => {
@@ -165,7 +165,7 @@ impl ZedraApp {
         // --- Window activation (foreground/background) ---
         let sub = cx.observe_window_activation(window, |this: &mut Self, window, _cx| {
             if window.is_window_active() {
-                log::info!(
+                tracing::info!(
                     "ZedraApp: window activated, notifying {} workspace(s)",
                     this.workspaces.len()
                 );
@@ -217,7 +217,7 @@ impl ZedraApp {
 
     fn refresh_saved_workspaces(&mut self, cx: &mut Context<Self>) {
         self.saved_workspaces = WorkspaceState::load();
-        log::info!("Saved workspaces: {}", self.saved_workspaces.len());
+        tracing::info!("Saved workspaces: {}", self.saved_workspaces.len());
         self.sync_workspace_states(self.build_home_items(), cx);
     }
 
@@ -321,14 +321,14 @@ impl ZedraApp {
         let ws = match self.saved_workspaces.get(saved_index) {
             Some(ws) => ws.clone(),
             None => {
-                log::error!("Saved workspace index {} out of range", saved_index);
+                tracing::error!("Saved workspace index {} out of range", saved_index);
                 return;
             }
         };
 
         match zedra_rpc::pairing::decode_endpoint_addr(ws.endpoint_addr()) {
             Ok(addr) => {
-                log::info!("Reconnecting to saved workspace: {}", addr.id.fmt_short());
+                tracing::info!("Reconnecting to saved workspace: {}", addr.id.fmt_short());
                 self.connect_with_iroh_addr(
                     addr,
                     Some(ws.session_id().to_string()),
@@ -338,7 +338,7 @@ impl ZedraApp {
                 );
             }
             Err(e) => {
-                log::error!("Failed to decode saved endpoint addr: {}", e);
+                tracing::error!("Failed to decode saved endpoint addr: {}", e);
                 WorkspaceState::remove(ws.endpoint_addr());
                 self.refresh_saved_workspaces(cx);
             }
@@ -353,7 +353,7 @@ impl ZedraApp {
     ) {
         match action {
             DeeplinkAction::Connect(ticket) => {
-                log::info!("Deeplink: connect action");
+                tracing::info!("Deeplink: connect action");
                 self.connect_with_pairing_ticket(ticket, window, cx);
             }
         }
@@ -391,7 +391,7 @@ impl ZedraApp {
         cx: &mut Context<Self>,
     ) {
         let endpoint_short = addr.id.fmt_short().to_string();
-        log::info!("QR connect: starting iroh connection to {}", endpoint_short);
+        tracing::info!("QR connect: starting iroh connection to {}", endpoint_short);
 
         // Build initial WorkspaceState for this entry.
         // For reconnects, seed from saved (preserves display fields during connecting phase).
@@ -413,7 +413,7 @@ impl ZedraApp {
         if let Some(signer) = load_client_signer() {
             session_handle.set_signer(signer);
         } else {
-            log::warn!("connect: no client signer available — PKI auth will be skipped");
+            tracing::warn!("connect: no client signer available — PKI auth will be skipped");
         }
 
         // Store session ID BEFORE persist and BEFORE spawning the async task.
@@ -455,7 +455,7 @@ impl ZedraApp {
                     }
                     WorkspaceEvent::Disconnected => {
                         this.workspaces.retain(|e| e.view != view_entity);
-                        log::info!(
+                        tracing::info!(
                             "Workspace disconnected; {} remaining",
                             this.workspaces.len()
                         );
@@ -507,16 +507,16 @@ impl ZedraApp {
         let handle_for_connect = session_handle.clone();
         let endpoint_display = endpoint_short.clone();
         zedra_session::session_runtime().spawn(async move {
-            log::info!("connecting via iroh to {}...", endpoint_display);
+            tracing::info!("connecting via iroh to {}...", endpoint_display);
             match handle_for_connect.connect(addr).await {
                 Ok(()) => {
-                    log::info!("connected via iroh!");
+                    tracing::info!("connected via iroh!");
 
                     // Check for existing server-side terminals (session resume case).
                     // If found, attach them and restore the UI; otherwise create a new terminal.
                     match handle_for_connect.terminal_list().await {
                         Ok(server_ids) if !server_ids.is_empty() => {
-                            log::info!(
+                            tracing::info!(
                                 "Session resumed: attaching {} existing terminal(s)",
                                 server_ids.len()
                             );
@@ -527,7 +527,7 @@ impl ZedraApp {
                                 match handle_for_connect.terminal_attach_existing(id).await {
                                     Ok(()) => attached.push(id.clone()),
                                     Err(e) => {
-                                        log::warn!("Failed to attach terminal {}: {}", id, e)
+                                        tracing::warn!("Failed to attach terminal {}: {}", id, e)
                                     }
                                 }
                             }
@@ -541,7 +541,7 @@ impl ZedraApp {
                                 match handle_for_connect.terminal_create(cols_u16, rows_u16).await {
                                     Ok(term_id) => pending_term_id.set(term_id),
                                     Err(e) => {
-                                        log::error!("Failed to create remote terminal: {}", e)
+                                        tracing::error!("Failed to create remote terminal: {}", e)
                                     }
                                 }
                             }
@@ -550,20 +550,20 @@ impl ZedraApp {
                             // No existing terminals (new session) — create one
                             match handle_for_connect.terminal_create(cols_u16, rows_u16).await {
                                 Ok(term_id) => {
-                                    log::info!("Remote terminal created: {}", term_id);
+                                    tracing::info!("Remote terminal created: {}", term_id);
                                     pending_term_id.set(term_id);
                                 }
-                                Err(e) => log::error!("Failed to create remote terminal: {}", e),
+                                Err(e) => tracing::error!("Failed to create remote terminal: {}", e),
                             }
                         }
                         Err(e) => {
-                            log::warn!("terminal_list failed ({}), creating new terminal", e);
+                            tracing::warn!("terminal_list failed ({}), creating new terminal", e);
                             match handle_for_connect.terminal_create(cols_u16, rows_u16).await {
                                 Ok(term_id) => {
-                                    log::info!("Remote terminal created: {}", term_id);
+                                    tracing::info!("Remote terminal created: {}", term_id);
                                     pending_term_id.set(term_id);
                                 }
-                                Err(e) => log::error!("Failed to create remote terminal: {}", e),
+                                Err(e) => tracing::error!("Failed to create remote terminal: {}", e),
                             }
                         }
                     }
@@ -575,7 +575,7 @@ impl ZedraApp {
                     zedra_session::push_callback(Box::new(|| {}));
                 }
                 Err(e) => {
-                    log::error!("iroh connect failed: {}", e);
+                    tracing::error!("iroh connect failed: {}", e);
                 }
             }
         });

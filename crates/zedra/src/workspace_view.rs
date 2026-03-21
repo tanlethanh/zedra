@@ -441,7 +441,7 @@ impl WorkspaceView {
         let sub = cx.subscribe(
             &terminal_view,
             |this: &mut WorkspaceView, _terminal, _event: &DisconnectRequested, cx| {
-                log::info!("DisconnectRequested from terminal view");
+                tracing::info!("DisconnectRequested from terminal view");
                 this.disconnect(cx);
             },
         );
@@ -517,7 +517,7 @@ impl WorkspaceView {
                             drawer_host_clone.update(cx, |host, cx| host.close(cx));
                         }
                         WorkspaceDrawerEvent::DisconnectRequested => {
-                            log::info!("DisconnectRequested from session panel");
+                            tracing::info!("DisconnectRequested from session panel");
                             drawer_host_clone.update(cx, |host, cx| host.close(cx));
                             workspace_drawer_clone.update(cx, |drawer, cx| {
                                 drawer.reset_for_disconnect(cx);
@@ -554,12 +554,12 @@ impl WorkspaceView {
                             zedra_session::session_runtime().spawn(async move {
                                 match handle.terminal_create(cols_u16, rows_u16).await {
                                     Ok(term_id) => {
-                                        log::info!("terminal created: id={}", term_id);
+                                        tracing::info!("terminal created: id={}", term_id);
                                         ptid.set(term_id);
                                         zedra_session::push_callback(Box::new(|| {}));
                                     }
                                     Err(e) => {
-                                        log::error!("Failed to create terminal: {}", e);
+                                        tracing::error!("Failed to create terminal: {}", e);
                                     }
                                 }
                             });
@@ -593,7 +593,7 @@ impl WorkspaceView {
                                             zedra_session::push_callback(Box::new(|| {}));
                                         }
                                         Err(e) => {
-                                            log::error!("fs/read failed for {}: {}", path, e);
+                                            tracing::error!("fs/read failed for {}: {}", path, e);
                                         }
                                     }
                                 });
@@ -828,7 +828,7 @@ impl WorkspaceView {
                 let t2 = t.clone();
                 zedra_session::session_runtime().spawn(async move {
                     if let Err(e) = h2.terminal_resize(&t2, cols, rows).await {
-                        log::warn!("Remote PTY resize failed: {}", e);
+                        tracing::warn!("Remote PTY resize failed: {}", e);
                     }
                 });
             }));
@@ -852,7 +852,7 @@ impl WorkspaceView {
         });
 
         if !self.session_handle.is_connected() {
-            log::warn!("git diff requested while disconnected, ignoring");
+            tracing::warn!("git diff requested while disconnected, ignoring");
             return;
         }
 
@@ -887,7 +887,7 @@ impl WorkspaceView {
                         }
                     }
                     Err(error) => {
-                        log::error!("fs_read failed for {}: {}", path, error);
+                        tracing::error!("fs_read failed for {}: {}", path, error);
                         return;
                     }
                 },
@@ -896,7 +896,7 @@ impl WorkspaceView {
                     let diff_text = match handle.git_diff(Some(&path), staged).await {
                         Ok(text) => text,
                         Err(error) => {
-                            log::error!("git_diff RPC failed for {}: {}", path, error);
+                            tracing::error!("git_diff RPC failed for {}: {}", path, error);
                             return;
                         }
                     };
@@ -1009,7 +1009,7 @@ impl Render for WorkspaceView {
                             .terminal_resize(&tid_resize, cols_u16, rows_u16)
                             .await
                         {
-                            log::warn!("Initial resize on session resume failed: {}", e);
+                            tracing::warn!("Initial resize on session resume failed: {}", e);
                         }
                         ready_slot.set(tid_resize);
                         zedra_session::push_callback(Box::new(|| {}));
@@ -1195,7 +1195,7 @@ impl Render for WorkspaceView {
             let tid_close = tid.clone();
             zedra_session::session_runtime().spawn(async move {
                 if let Err(e) = handle.terminal_close(&tid_close).await {
-                    log::error!("terminal_close failed: {}", e);
+                    tracing::error!("terminal_close failed: {}", e);
                 }
             });
 

@@ -44,9 +44,9 @@ pub fn load_fonts(window: &mut gpui::Window) {
         let fonts: Vec<Cow<'static, [u8]>> = FONTS.iter().map(|&b| Cow::Borrowed(b)).collect();
         let count = fonts.len();
         if let Err(e) = text_system.add_fonts(fonts) {
-            log::error!("Failed to load fonts: {:?}", e);
+            tracing::error!(err = %e, "fonts: load failed");
         } else {
-            log::info!("Loaded {} font files", count);
+            tracing::info!(count, "fonts: loaded");
         }
     });
 }

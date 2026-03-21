@@ -143,7 +143,7 @@ impl Render for PreviewApp {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         self.render_count += 1;
         if self.render_count % 60 == 1 {
-            log::warn!("PreviewApp::render #{}", self.render_count);
+            tracing::debug!(n = self.render_count, "preview: render");
         }
 
         div()

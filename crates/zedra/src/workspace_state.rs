@@ -83,7 +83,7 @@ fn store_path() -> Option<PathBuf> {
     let dir = PathBuf::from(data_dir).join(STORE_DIR);
     if !dir.exists() {
         if let Err(e) = std::fs::create_dir_all(&dir) {
-            log::error!("WorkspaceState: failed to create dir {:?}: {}", dir, e);
+            tracing::error!(dir = ?dir, err = %e, "store: create dir failed");
             return None;
         }
     }
@@ -101,18 +101,18 @@ impl WorkspaceState {
         let path = match store_path() {
             Some(p) => p,
             None => {
-                log::warn!("WorkspaceState: no data directory available");
+                tracing::warn!("WorkspaceState: no data directory available");
                 return Vec::new();
             }
         };
         if !path.exists() {
-            log::info!("WorkspaceState: no store file yet at {:?}", path);
+            tracing::info!("WorkspaceState: no store file yet at {:?}", path);
             return Vec::new();
         }
         match std::fs::read_to_string(&path) {
             Ok(json) => match serde_json::from_str::<StoreFile>(&json) {
                 Ok(state) => {
-                    log::info!(
+                    tracing::info!(
                         "WorkspaceState: loaded {} workspace(s) from {:?}",
                         state.workspaces.len(),
                         path
@@ -124,12 +124,12 @@ impl WorkspaceState {
                         .collect()
                 }
                 Err(e) => {
-                    log::error!("WorkspaceState: parse error: {}", e);
+                    tracing::error!("WorkspaceState: parse error: {}", e);
                     Vec::new()
                 }
             },
             Err(e) => {
-                log::error!("WorkspaceState: read error: {}", e);
+                tracing::error!("WorkspaceState: read error: {}", e);
                 Vec::new()
             }
         }
@@ -139,7 +139,7 @@ impl WorkspaceState {
         let path = match store_path() {
             Some(p) => p,
             None => {
-                log::warn!("WorkspaceState: no data directory, skipping save");
+                tracing::warn!("WorkspaceState: no data directory, skipping save");
                 return;
             }
         };
@@ -149,10 +149,10 @@ impl WorkspaceState {
         };
         match serde_json::to_string_pretty(&file) {
             Ok(json) => match std::fs::write(&path, json.as_bytes()) {
-                Ok(()) => log::info!("WorkspaceState: saved {} workspace(s) to {:?}", len, path),
-                Err(e) => log::error!("WorkspaceState: write error: {}", e),
+                Ok(()) => tracing::info!("WorkspaceState: saved {} workspace(s) to {:?}", len, path),
+                Err(e) => tracing::error!("WorkspaceState: write error: {}", e),
             },
-            Err(e) => log::error!("WorkspaceState: serialize error: {}", e),
+            Err(e) => tracing::error!("WorkspaceState: serialize error: {}", e),
         }
     }
 

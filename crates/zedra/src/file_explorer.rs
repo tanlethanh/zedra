@@ -208,7 +208,7 @@ impl FileExplorer {
                     zedra_session::push_callback(Box::new(|| {}));
                 }
                 Err(e) => {
-                    log::error!("fs/list failed: {}", e);
+                    tracing::error!("fs/list failed: {}", e);
                     pending.set((
                         vec![FileEntry {
                             name: format!("Error: {}", e),
@@ -299,7 +299,7 @@ impl FileExplorer {
                     zedra_session::push_callback(Box::new(|| {}));
                 }
                 Err(e) => {
-                    log::error!("fs/list for {:?} failed: {}", dir_path, e);
+                    tracing::error!("fs/list for {:?} failed: {}", dir_path, e);
                     // Ensure error paths still clear spinner state for this dir.
                     pending.lock().unwrap().push((dir_path, None));
                     zedra_session::push_callback(Box::new(|| {}));
@@ -398,7 +398,7 @@ impl FileExplorer {
                     zedra_session::push_callback(Box::new(|| {}));
                 }
                 Err(e) => {
-                    log::error!("fs/list load_more for {:?} failed: {}", dir_path, e);
+                    tracing::error!("fs/list load_more for {:?} failed: {}", dir_path, e);
                 }
             }
         });
@@ -551,8 +551,8 @@ impl FileExplorer {
         zedra_session::session_runtime().spawn(async move {
             match handle.fs_watch(&watch_path).await {
                 Ok(zedra_rpc::proto::FsWatchResult::Ok) => {}
-                Ok(other) => log::debug!("fs_watch({watch_path}) rejected: {other:?}"),
-                Err(e) => log::debug!("fs_watch({watch_path}) failed: {e}"),
+                Ok(other) => tracing::debug!("fs_watch({watch_path}) rejected: {other:?}"),
+                Err(e) => tracing::debug!("fs_watch({watch_path}) failed: {e}"),
             }
         });
     }
@@ -569,8 +569,8 @@ impl FileExplorer {
         zedra_session::session_runtime().spawn(async move {
             match handle.fs_unwatch(&watch_path).await {
                 Ok(zedra_rpc::proto::FsUnwatchResult::Ok) => {}
-                Ok(other) => log::debug!("fs_unwatch({watch_path}) rejected: {other:?}"),
-                Err(e) => log::debug!("fs_unwatch({watch_path}) failed: {e}"),
+                Ok(other) => tracing::debug!("fs_unwatch({watch_path}) rejected: {other:?}"),
+                Err(e) => tracing::debug!("fs_unwatch({watch_path}) failed: {e}"),
             }
         });
     }

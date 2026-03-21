@@ -144,7 +144,7 @@ pub fn clear_pending_alerts() {
         let count = map.len();
         map.clear();
         if count > 0 {
-            log::debug!(
+            tracing::debug!(
                 "clear_pending_alerts: dropped {} unacknowledged alert(s)",
                 count
             );
@@ -154,7 +154,7 @@ pub fn clear_pending_alerts() {
         let count = map.len();
         map.clear();
         if count > 0 {
-            log::debug!(
+            tracing::debug!(
                 "clear_pending_alerts: dropped {} unacknowledged selection sheet(s)",
                 count
             );

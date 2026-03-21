@@ -9477,13 +9477,13 @@ dependencies = [
  "http_client",
  "iroh",
  "jni",
- "log",
  "ndk",
  "ndk-context",
  "once_cell",
  "rust-embed",
  "serde",
  "serde_json",
+ "tracing",
  "tree-sitter",
  "tree-sitter-bash",
  "tree-sitter-c",
@@ -9583,7 +9583,7 @@ dependencies = [
  "alacritty_terminal",
  "gpui",
  "itertools 0.14.0",
- "log",
+ "tracing",
 ]
 
 [[package]]

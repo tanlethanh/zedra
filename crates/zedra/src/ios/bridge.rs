@@ -30,7 +30,7 @@ pub extern "C" fn zedra_ios_set_screen_scale(scale: f32) {
     SCREEN_SCALE.store(scale.to_bits(), Ordering::Relaxed);
     // Sync display density to zedra-terminal for keyboard-avoiding-view row math.
     zedra_terminal::set_display_density(scale);
-    log::debug!("iOS screen scale: {}", scale);
+    tracing::debug!("iOS screen scale: {}", scale);
 }
 
 /// Called from Obj-C when the software keyboard is about to appear or change height.
@@ -44,7 +44,7 @@ pub extern "C" fn zedra_ios_set_keyboard_height(height_px: u32) {
     // Signal a forced render so the terminal resizes immediately on the next
     // CADisplayLink tick rather than waiting for the next user interaction.
     zedra_session::push_callback(Box::new(|| {}));
-    log::debug!("iOS keyboard height: {}px", height_px);
+    tracing::debug!("iOS keyboard height: {}px", height_px);
 }
 
 /// Called from Obj-C with the current safe area insets in physical pixels
@@ -55,7 +55,7 @@ pub extern "C" fn zedra_ios_set_keyboard_height(height_px: u32) {
 pub extern "C" fn zedra_ios_set_safe_area_insets(top: f32, bottom: f32, _left: f32, _right: f32) {
     SAFE_AREA_TOP.store(top as u32, Ordering::Relaxed);
     SAFE_AREA_BOTTOM.store(bottom as u32, Ordering::Relaxed);
-    log::debug!(
+    tracing::debug!(
         "iOS safe area insets: top={}px bottom={}px",
         top as u32,
         bottom as u32
@@ -321,9 +321,9 @@ pub extern "C" fn zedra_deeplink_received(url: *const std::ffi::c_char) {
     match s.to_str() {
         Ok(v) => match deeplink::parse(v) {
             Ok(action) => deeplink::enqueue(action),
-            Err(e) => log::error!("Invalid deeplink URL: {}", e),
+            Err(e) => tracing::error!("Invalid deeplink URL: {}", e),
         },
-        Err(e) => log::error!("Deeplink: invalid UTF-8: {}", e),
+        Err(e) => tracing::error!("Deeplink: invalid UTF-8: {}", e),
     }
 }
 
@@ -339,8 +339,8 @@ pub extern "C" fn zedra_qr_scanner_result(qr_string: *const std::ffi::c_char) {
     match s.to_str() {
         Ok(v) => match deeplink::parse(v) {
             Ok(action) => deeplink::enqueue(action),
-            Err(e) => log::error!("QR scan: invalid deeplink: {}", e),
+            Err(e) => tracing::error!("QR scan: invalid deeplink: {}", e),
         },
-        Err(e) => log::error!("QR result: invalid UTF-8: {}", e),
+        Err(e) => tracing::error!("QR result: invalid UTF-8: {}", e),
     }
 }

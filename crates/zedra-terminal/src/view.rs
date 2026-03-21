@@ -374,13 +374,13 @@ impl Render for TerminalView {
                 };
                 let effective_rows = self.base_rows.saturating_sub(kb_rows).max(2);
                 if effective_rows != self.last_keyboard_rows {
-                    log::info!(
-                        "Keyboard resize: kb={}px logical={:.0} kb_rows={} base={} effective={}",
+                    tracing::info!(
                         kb_px,
                         kb_logical,
                         kb_rows,
-                        self.base_rows,
-                        effective_rows
+                        base = self.base_rows,
+                        effective = effective_rows,
+                        "terminal: keyboard resize"
                     );
 
                     let size = self.terminal.size();

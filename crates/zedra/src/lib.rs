@@ -87,7 +87,7 @@ impl gpui::AssetSource for ZedraAssets {
     }
 }
 
-/// Install a panic hook that logs panics via `log::error!`.
+/// Install a panic hook that logs panics via `tracing::error!`.
 /// Call this once during platform initialization, after the logger is set up.
 pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
@@ -103,7 +103,7 @@ pub fn install_panic_hook() {
             .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
             .unwrap_or_else(|| "unknown".to_string());
 
-        log::error!("PANIC at {}: {}", location, payload);
+        tracing::error!("PANIC at {}: {}", location, payload);
 
         // Forward to Crashlytics as a non-fatal event.
         // In release builds (panic = "abort") this line is never reached —

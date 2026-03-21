@@ -270,7 +270,7 @@ impl WorkspaceDrawer {
                     zedra_session::push_callback(Box::new(|| {}));
                 }
                 Err(e) => {
-                    log::error!("git_status RPC failed: {}", e);
+                    tracing::error!("git_status RPC failed: {}", e);
                 }
             }
         });

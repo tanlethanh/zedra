@@ -75,7 +75,7 @@ impl AndroidCommandQueue {
     pub fn send(&self, command: AndroidCommand) -> Result<()> {
         self.sender.try_send(command).map_err(|e| match e {
             crossbeam_channel::TrySendError::Full(cmd) => {
-                log::warn!("command queue full, dropping {:?}", cmd);
+                tracing::warn!("command queue full, dropping {:?}", cmd);
                 anyhow::anyhow!("command queue full")
             }
             crossbeam_channel::TrySendError::Disconnected(cmd) => {
