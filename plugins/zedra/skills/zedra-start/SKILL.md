@@ -50,50 +50,11 @@ If `NOT_RUNNING`, proceed to Step 4.
 
 ## Step 4 — Start the daemon
 
-Start zedra-host in the background with `--launch-cmd` so every new terminal
-on the phone automatically resumes the current coding agent session.
+Start zedra-host in the background. The daemon itself does NOT take `--launch-cmd`;
+the launch command is passed per-terminal via `zedra terminal --launch-cmd`.
 
-**Build the launch command based on which agent tool is invoking this skill:**
-
-| Agent tool | launch-cmd value | How resume works |
-|------------|-----------------|-----------------|
-| Claude Code | `claude --resume ${CLAUDE_SESSION_ID}` | Resumes exact session by ID |
-| Codex | `codex resume --last` | Resumes most recent session |
-| OpenCode | `opencode --continue` | Continues last session |
-| Gemini CLI | `gemini --resume` | Resumes most recent session |
-| Unknown / none | _(omit --launch-cmd)_ | Plain shell |
-
-**Detection logic** — run this to pick the right command:
-1. If `${CLAUDE_SESSION_ID}` is set and non-empty → Claude Code
-2. Else `command -v codex` succeeds → Codex
-3. Else `command -v opencode` succeeds → OpenCode
-4. Else `command -v gemini` succeeds → Gemini CLI
-5. Else → omit `--launch-cmd` (plain shell)
-
-**For Claude Code** (most common — `${CLAUDE_SESSION_ID}` is available):
 ```bash
-nohup zedra start --workdir "${1:-.}" --launch-cmd "claude --resume ${CLAUDE_SESSION_ID}" > /tmp/zedra-start.log 2>&1 &
-sleep 3
-cat /tmp/zedra-start.log
-```
-
-**For Codex:**
-```bash
-nohup zedra start --workdir "${1:-.}" --launch-cmd "codex resume --last" > /tmp/zedra-start.log 2>&1 &
-sleep 3
-cat /tmp/zedra-start.log
-```
-
-**For OpenCode:**
-```bash
-nohup zedra start --workdir "${1:-.}" --launch-cmd "opencode --continue" > /tmp/zedra-start.log 2>&1 &
-sleep 3
-cat /tmp/zedra-start.log
-```
-
-**For Gemini CLI:**
-```bash
-nohup zedra start --workdir "${1:-.}" --launch-cmd "gemini --resume" > /tmp/zedra-start.log 2>&1 &
+nohup zedra start --workdir "${1:-.}" > /tmp/zedra-start.log 2>&1 &
 sleep 3
 cat /tmp/zedra-start.log
 ```
@@ -105,10 +66,28 @@ cat /tmp/zedra-start.log
 
 If the log shows errors, diagnose and report them.
 
-## Step 5 — Already running: open a resumed terminal
+After the daemon is running and QR is displayed, open a terminal with the agent
+resume command so the phone gets a live session immediately (Step 5).
 
-If the daemon was already running, open a new terminal on the connected phone
-with the same agent-resume logic:
+## Step 5 — Open a resumed terminal on the phone
+
+Open a new terminal with `--launch-cmd` to resume the current agent session.
+Pick the right command based on which agent tool is invoking this skill:
+
+| Agent tool | launch-cmd value | How resume works |
+|------------|-----------------|-----------------|
+| Claude Code | `claude --resume ${CLAUDE_SESSION_ID}` | Resumes exact session by ID |
+| Codex | `codex resume --last` | Resumes most recent session |
+| OpenCode | `opencode --continue` | Continues last session |
+| Gemini CLI | `gemini --resume` | Resumes most recent session |
+| Unknown / none | _(omit --launch-cmd)_ | Plain shell |
+
+**Detection logic:**
+1. If `${CLAUDE_SESSION_ID}` is set and non-empty → Claude Code
+2. Else `command -v codex` succeeds → Codex
+3. Else `command -v opencode` succeeds → OpenCode
+4. Else `command -v gemini` succeeds → Gemini CLI
+5. Else → omit `--launch-cmd` (plain shell)
 
 **Claude Code:**
 ```bash
@@ -137,5 +116,6 @@ Report the result to the user.
 - The daemon runs in the background and survives shell exit
 - Use `/zedra-stop` to stop it, or `zedra list` to see all instances
 - The QR code encodes a one-time pairing ticket; after first scan, the phone reconnects automatically via PKI
-- `--launch-cmd` injects a command into every new terminal opened from the phone — so the user lands directly in their agent session
+- `--launch-cmd` is per-terminal, not global — only terminals opened with it get the agent session
+- `/zedra-terminal` opens additional terminals with agent resume
 - `/zedra-status` checks if the daemon is healthy

@@ -43,12 +43,6 @@ enum Commands {
         /// Override relay URL (e.g. https://sg1.relay.zedra.dev)
         #[arg(long)]
         relay_url: Option<String>,
-
-        /// Command to inject into every new terminal on startup.
-        /// Example: --launch-cmd "claude --resume" drops the user straight
-        /// into a resumed Claude Code session each time a terminal is opened.
-        #[arg(long)]
-        launch_cmd: Option<String>,
     },
     /// Connect to a running daemon and measure end-to-end RTT
     Client {
@@ -133,7 +127,6 @@ async fn main() -> Result<()> {
             workdir,
             json,
             relay_url,
-            launch_cmd,
         } => {
             let workdir = std::path::PathBuf::from(workdir)
                 .canonicalize()
@@ -194,7 +187,6 @@ async fn main() -> Result<()> {
             }
 
             let mut state = rpc_daemon::DaemonState::new(workdir.clone(), host_identity.clone());
-            state.default_launch_cmd = launch_cmd;
             state.analytics = analytics.clone();
             let state = Arc::new(state);
 

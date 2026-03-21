@@ -135,10 +135,7 @@ async fn create_terminal_handler(
         .workdir
         .clone()
         .or_else(|| Some(s.daemon_state.workdir.clone()));
-    let launch_cmd = req
-        .launch_cmd
-        .clone()
-        .or_else(|| s.daemon_state.default_launch_cmd.clone());
+    let launch_cmd = req.launch_cmd.clone();
     let opts = SpawnOptions {
         workdir,
         launch_cmd: launch_cmd.clone(),

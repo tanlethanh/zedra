@@ -11,9 +11,10 @@ use crate::git::GitRepo;
 use crate::identity::SharedIdentity;
 use crate::pty::{ShellSession, SpawnOptions};
 use crate::session_registry::{
-    AttachResult, ConsumeSlotResult, OutputSenderSlot, ServerSession, SessionRegistry, TermSession,
-    MAX_WATCHED_PATHS_PER_SESSION,
+    AttachResult, ConsumeSlotResult, HostTermMeta, OutputSenderSlot, ServerSession, SessionRegistry,
+    TermSession, MAX_WATCHED_PATHS_PER_SESSION,
 };
+use zedra_rpc::osc::{OscEvent, encode_meta_preamble};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -234,9 +235,6 @@ pub struct DaemonState {
     pub identity: SharedIdentity,
     /// Product analytics (no-op when credentials are not compiled in).
     pub analytics: Arc<Analytics>,
-    /// Default command injected into every new terminal on startup (e.g. "claude --resume").
-    /// Can be overridden per-terminal via `TermCreateReq::launch_cmd`.
-    pub default_launch_cmd: Option<String>,
     /// When the daemon started; used to compute uptime.
     pub started_at: std::time::Instant,
 }
@@ -256,7 +254,6 @@ impl DaemonState {
             workdir,
             identity,
             analytics: Arc::new(Analytics::disabled()),
-            default_launch_cmd: None,
             started_at: std::time::Instant::now(),
         }
     }
@@ -700,6 +697,7 @@ pub async fn create_terminal(
         gen: 0,
         sender: None,
     }));
+    let host_meta = Arc::new(std::sync::Mutex::new(HostTermMeta::default()));
 
     session.terminals.lock().await.insert(
         id.clone(),
@@ -707,6 +705,7 @@ pub async fn create_terminal(
             writer: pty_writer,
             master,
             output_sender: output_sender.clone(),
+            host_meta: host_meta.clone(),
         },
     );
 
@@ -721,6 +720,23 @@ pub async fn create_terminal(
                 Ok(0) => break,
                 Ok(n) => {
                     let data = buf[..n].to_vec();
+
+                    // Scan for OSC sequences to keep the per-terminal metadata
+                    // cache (title, CWD) up to date. This runs on every PTY
+                    // chunk so the host always has the latest values even after
+                    // old backlog entries have been evicted.
+                    if let Ok(mut m) = host_meta.lock() {
+                        let events = m.scanner.feed(&data);
+                        for ev in events {
+                            match ev {
+                                OscEvent::Title(t) => m.title = Some(t),
+                                OscEvent::ResetTitle => m.title = None,
+                                OscEvent::Cwd(c) => m.cwd = Some(c),
+                                _ => {}
+                            }
+                        }
+                    }
+
                     let seq = rt.block_on(async {
                         let s = sess_for_reader.next_backlog_seq().await;
                         sess_for_reader
@@ -1016,11 +1032,8 @@ async fn dispatch(
                 .workdir
                 .clone()
                 .or_else(|| Some(state.workdir.clone()));
-            let has_launch_cmd = msg.launch_cmd.is_some() || state.default_launch_cmd.is_some();
-            let launch_cmd = msg
-                .launch_cmd
-                .clone()
-                .or_else(|| state.default_launch_cmd.clone());
+            let has_launch_cmd = msg.launch_cmd.is_some();
+            let launch_cmd = msg.launch_cmd.clone();
             match create_terminal(
                 &session,
                 msg.cols,
@@ -1081,6 +1094,28 @@ async fn dispatch(
                 let terms = session.terminals.lock().await;
                 if !terms.contains_key(&term_id) {
                     tracing::warn!("TermAttach: unknown terminal {}", term_id);
+                    return Ok(());
+                }
+            }
+
+            // Synthetic metadata preamble (seq=0): inject cached title/CWD so
+            // the client seeds TerminalMeta even when those OSC sequences were
+            // evicted from the backlog. seq=0 is a reserved marker; the client
+            // pump processes its data but skips seq tracking and gap detection.
+            // Extract the preamble bytes while holding the sync lock, then send
+            // after releasing it to avoid holding a MutexGuard across an await.
+            let preamble: Option<Vec<u8>> = {
+                let terms = session.terminals.lock().await;
+                terms.get(&term_id).and_then(|term| {
+                    term.host_meta.lock().ok().and_then(|meta| {
+                        let p = encode_meta_preamble(&meta.title, &meta.cwd);
+                        if p.is_empty() { None } else { Some(p) }
+                    })
+                })
+            };
+            if let Some(p) = preamble {
+                tracing::debug!("TermAttach: sending meta preamble ({} bytes) for {}", p.len(), term_id);
+                if irpc_tx.send(TermOutput { data: p, seq: 0 }).await.is_err() {
                     return Ok(());
                 }
             }
