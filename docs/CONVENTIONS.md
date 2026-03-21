@@ -99,6 +99,104 @@ Alert callbacks hold closures. Call `platform_bridge::clear_pending_alerts()` on
 app background (Android `onPause`, iOS `applicationDidEnterBackground`) to release
 captured resources and prevent accumulation across sessions.
 
+## Logging
+
+Use `tracing::` macros everywhere across all crates. Never use `log::` directly —
+`tracing` is a superset that provides structured fields, span context, and callsite
+metadata (file, line, module). It bridges to the `log` backend automatically via
+`features = ["log"]` in the workspace `Cargo.toml`.
+
+**Level guidelines:**
+
+| Level | When to use |
+|---|---|
+| `error` | Unrecoverable failure; something is definitely broken |
+| `warn` | Expected failure path; operation skipped, degraded but continuing |
+| `info` | Meaningful lifecycle events: connect, disconnect, surface, terminal create/close, auth |
+| `debug` | JNI bookkeeping, keyboard events, routine platform calls, per-operation detail |
+| `trace` | Not used |
+
+**Message format:** `"<component>: <verb> <noun> [key=value ...]"`
+
+- Lowercase first letter, no trailing period
+- Use structured fields for key=value data, not string interpolation
+- Errors: `{}` (Display), not `{:?}` (Debug), unless the type has no Display impl
+- One log site per event — don't log entry and exit for short operations
+
+```rust
+// Good
+tracing::info!(endpoint = %addr.id.fmt_short(), gen = my_gen, "session: connecting");
+tracing::warn!(id = %terminal_id, err = %e, "terminal: attach failed");
+tracing::debug!("jni: init complete");
+
+// Bad — log::, prose format, entry+exit pair, Debug for error
+log::info!("SessionHandle: connecting (endpoint: {}, gen: {})", addr, gen);
+log::info!("gpuiInit called");
+log::info!("gpuiInit completed successfully, handle: {}", ptr);
+log::error!("Failed to open window: {:?}", e);
+```
+
+**Component prefixes** (lowercase, consistent within a file):
+
+| Subsystem | Prefix |
+|---|---|
+| Session connect / state machine | `session:` |
+| PKI auth phases | `auth:` |
+| Terminal pump / attach | `terminal:` |
+| Reconnect loop | `reconnect:` |
+| Surface lifecycle | `surface:` |
+| Workspace state / persistence | `store:` |
+| JNI bridge (Android) | `jni:` |
+| iOS lifecycle / FFI | `ios:` |
+| Android lifecycle | `android:` |
+
+See `docs/LOGGING_MIGRATION.md` for the current migration status and file-by-file
+checklist.
+
+## WorkspaceState as Single Source of Truth
+
+All UI display components **must** read workspace display data from `WorkspaceState`,
+never directly from `SessionHandle` or any other source.
+
+**Rule:** If a field needed for display doesn't exist on `WorkspaceState`/`WorkspaceStateInner`,
+add it there. Do not use `SessionHandle` methods as a fallback or shortcut.
+
+**Why:** `SessionHandle` fields (project_name, hostname, workdir, etc.) are empty during
+the connecting phase — they are only populated after a successful RPC round-trip.
+`WorkspaceState` is seeded from persisted data before the connection starts, so it always
+has something useful to show. Once connected, `ZedraApp::render()` copies live handle
+fields back into the state, keeping everything in sync.
+
+**Data flow:**
+```
+Persisted JSON → WorkspaceState (seeded at connect time)
+                        ↓
+           ZedraApp::render() updates entry.state from handle (non-empty fields only)
+                        ↓
+           ZedraApp::render() pushes state → WorkspaceView → WorkspaceContent + WorkspaceDrawer
+                        ↓
+           All display reads self.workspace_state.*
+```
+
+**Do:**
+```rust
+// In any display component render
+let name = self.workspace_state.project_name();
+let wd   = self.workspace_state.workdir();
+```
+
+**Don't:**
+```rust
+// Never do this in display code
+let name = self.session_handle.project_name();     // empty during connecting
+let name = if handle_name.is_empty() { fallback }  // no fallbacks
+```
+
+**Adding a new field:** Add it to `WorkspaceStateInner` in `workspace_state.rs`, add a
+getter on `WorkspaceState`, and populate it in `ZedraApp::render()`'s state-update loop.
+If the field comes from the server post-connect, copy it with the "non-empty only" guard
+(same pattern as `project_name`, `hostname`, etc.).
+
 ## File Structure
 
 - `crates/zedra/src/platform_bridge.rs` — platform-agnostic bridge trait + global
