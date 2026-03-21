@@ -78,7 +78,7 @@ impl Render for QuickActionPanel {
             // Panel header
             .child(
                 div()
-                    .h(px(theme::HEADER_HEIGHT - 4.0)) // TODO: should remove this magic offset
+                    .h(px(theme::HEADER_HEIGHT))
                     .flex()
                     .flex_row()
                     .items_center()
@@ -143,6 +143,13 @@ impl Render for QuickActionPanel {
                     ),
             );
 
+        let mut content = div()
+            .id("quick-action-panel-content")
+            .flex_1()
+            .flex()
+            .flex_col()
+            .overflow_y_scroll();
+
         // Workspace sections
         for ws in &workspaces {
             let index = ws.workspace_index().unwrap_or(0);
@@ -156,14 +163,14 @@ impl Render for QuickActionPanel {
                 theme::ACCENT_RED
             };
             let subtitle = match (ws.hostname().is_empty(), ws.strip_path().is_empty()) {
-                (false, false) => format!("{}@{}", ws.hostname(), ws.strip_path()),
+                (false, false) => format!("{}:{}", ws.hostname(), ws.strip_path()),
                 (false, true) => ws.hostname().to_string(),
                 (true, false) => ws.strip_path().to_string(),
                 (true, true) => String::new(),
             };
 
             // Section header row
-            panel = panel.child(
+            content = content.child(
                 div()
                     .id(SharedString::from(format!("ws-section-{}", index)))
                     .flex()
@@ -221,7 +228,7 @@ impl Render for QuickActionPanel {
 
             if ws.terminal_ids().is_empty() {
                 // No terminals placeholder
-                panel = panel.child(
+                content = content.child(
                     div()
                         .px(px(16.0))
                         .pb(px(8.0))
@@ -230,7 +237,7 @@ impl Render for QuickActionPanel {
                         .child("No terminals"),
                 );
             } else {
-                panel = panel.gap_1();
+                content = content.gap_1();
                 for (i, tid) in ws.terminal_ids().iter().enumerate() {
                     let tid_click = tid.clone();
                     let tid_del = tid.clone();
@@ -266,12 +273,12 @@ impl Render for QuickActionPanel {
                         },
                     ));
 
-                    panel = panel.child(card);
+                    content = content.child(card);
                 }
             }
 
             // Divider between workspace sections
-            panel = panel.child(
+            content = content.child(
                 div()
                     .h(px(1.0))
                     .mx(px(16.0))
@@ -281,7 +288,7 @@ impl Render for QuickActionPanel {
         }
 
         if workspaces.is_empty() {
-            panel = panel.child(
+            content = content.child(
                 div()
                     .px(px(16.0))
                     .py(px(16.0))
@@ -292,8 +299,10 @@ impl Render for QuickActionPanel {
         }
 
         // Spacer + bottom inset
-        panel = panel.child(div().flex_1()).child(div().h(px(bottom_inset)));
+        content = content
+            .child(div().flex_1())
+            .child(div().h(px(bottom_inset)));
 
-        panel.track_focus(&self.focus_handle)
+        panel.track_focus(&self.focus_handle).child(content)
     }
 }
