@@ -88,8 +88,6 @@
 
 #define ICON_TERMINAL 16.0
 
-#define ICON_GIT_COMMIT 24.0
-
 #define EDITOR_FONT_SIZE 12.0
 
 #define EDITOR_GUTTER_FONT_SIZE 11.0
@@ -97,6 +95,13 @@
 #define EDITOR_LINE_HEIGHT 15.0
 
 #define EDITOR_GUTTER_WIDTH 36.0
+
+/**
+ * Seconds after last received bytes before a path is considered stale.
+ * Shared between session_panel and connecting_view stale display logic.
+ * Set slightly above the 2s heartbeat interval (1 missed heartbeat + 1s tolerance).
+ */
+#define STALE_THRESHOLD_SECS 3
 
 /**
  * Called from Obj-C whenever the screen scale is known (once, at launch).
