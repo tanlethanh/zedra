@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::Instant;
 
@@ -9,8 +9,8 @@ use anyhow::Result;
 use zedra_rpc::proto::*;
 
 use crate::connect_state::{
-    AuthOutcome, ConnectError, ConnectPhase, ConnectSnapshot, ConnectState, NetworkHint,
-    ReconnectReason, TransportSnapshot,
+    AuthOutcome, ConnectError, ConnectPhase, ConnectState, NetworkHint, ReconnectReason,
+    TransportSnapshot,
 };
 
 /// Classify a remote IP address for debugging display.
@@ -184,12 +184,21 @@ impl SessionHandle {
         }
     }
 
+    /// Returns only the current phase without cloning the full snapshot.
+    /// Prefer this over `connect_state().phase` when only the phase is needed.
+    pub fn connect_phase(&self) -> ConnectPhase {
+        match self.0.connect_state.lock() {
+            Ok(cs) => cs.phase.clone(),
+            Err(_) => ConnectPhase::Idle,
+        }
+    }
+
     pub fn is_connected(&self) -> bool {
-        self.connect_state().phase.is_connected()
+        self.connect_phase().is_connected()
     }
 
     pub fn is_reconnecting(&self) -> bool {
-        self.connect_state().phase.is_reconnecting()
+        self.connect_phase().is_reconnecting()
     }
 
     /// User-initiated disconnect — clears session and suppresses auto-reconnect.
@@ -371,12 +380,34 @@ impl SessionHandle {
             let mut cs = self.0.connect_state.lock().unwrap();
             cs.phase = ConnectPhase::BindingEndpoint;
             cs.started_at = Some(Instant::now());
-            cs.snapshot = ConnectSnapshot {
-                remote_node_id: Some(addr.id.fmt_short().to_string()),
-                relay_url: Some(zedra_rpc::ZEDRA_RELAY_URL.to_string()),
-                alpn: Some(String::from_utf8_lossy(ZEDRA_ALPN).to_string()),
-                ..Default::default()
-            };
+            // Reset per-attempt timing and discovery fields so stale values from
+            // the previous attempt don't linger in the connecting view.
+            // Host identity fields (hostname, workdir, transport, session_id,
+            // auth_outcome, etc.) are intentionally preserved so the workspace
+            // header and session panel stay populated during auto-reconnect.
+            let s = &mut cs.snapshot;
+            s.binding_ms = None;
+            s.hole_punch_ms = None;
+            s.rpc_ms = None;
+            s.register_ms = None;
+            s.auth_ms = None;
+            s.fetch_ms = None;
+            s.resume_ms = None;
+            s.local_node_id = None;
+            s.remote_node_id = Some(addr.id.fmt_short().to_string());
+            s.relay_url = Some(zedra_rpc::ZEDRA_RELAY_URL.to_string());
+            s.alpn = Some(String::from_utf8_lossy(ZEDRA_ALPN).to_string());
+            s.relay_connected = false;
+            s.direct_addrs.clear();
+            s.has_ipv4 = false;
+            s.has_ipv6 = false;
+            s.mapping_varies = None;
+            s.relay_latency_ms = None;
+            s.captive_portal = None;
+            s.failed_at_step = None;
+            s.is_first_pairing = false;
+            // transport, hostname, username, workdir, os, arch, os_version,
+            // host_version, session_id, auth_outcome — preserved from previous session.
         }
         self.notify_state_change();
 
@@ -387,8 +418,24 @@ impl SessionHandle {
             quic: Some(iroh_relay::RelayQuicConfig::default()),
         }]);
 
+        // Tighten QUIC timeouts for fast disconnect detection.
+        // PING frames are tiny UDP packets — cheap even on mobile.
+        // Default iroh heartbeat is 5 s; we lower to 2 s so bytes_recv ticks
+        // every ~2 s and the stale counter in the session tab reacts quickly.
+        let transport_config = iroh::endpoint::QuicTransportConfig::builder()
+            .keep_alive_interval(std::time::Duration::from_secs(2))
+            .default_path_keep_alive_interval(std::time::Duration::from_secs(2))
+            .default_path_max_idle_timeout(std::time::Duration::from_millis(3500))
+            .max_idle_timeout(Some(
+                std::time::Duration::from_secs(6)
+                    .try_into()
+                    .expect("6s fits in QUIC VarInt"),
+            ))
+            .build();
+
         let t0 = Instant::now();
         let endpoint = iroh::Endpoint::builder()
+            .transport_config(transport_config)
             .relay_mode(iroh::RelayMode::Custom(relay_map))
             .alpns(vec![ZEDRA_ALPN.to_vec()])
             .address_lookup(iroh::address_lookup::PkarrResolver::n0_dns())
@@ -427,11 +474,12 @@ impl SessionHandle {
                         if res.is_err() { break; }
                         let ep_addr = addr_watcher.get();
                         let has_relay = ep_addr.relay_urls().next().is_some();
-                        let direct_count = ep_addr.ip_addrs().count();
+                        let direct_addrs: Vec<String> =
+                            ep_addr.ip_addrs().map(|addr| addr.to_string()).collect();
 
                         if let Ok(mut cs) = discovery_handle.0.connect_state.lock() {
                             cs.snapshot.relay_connected = has_relay;
-                            cs.snapshot.direct_addrs_count = direct_count;
+                            cs.snapshot.direct_addrs = direct_addrs;
                         }
                         discovery_handle.notify_state_change();
                     }
@@ -495,21 +543,32 @@ impl SessionHandle {
         }
 
         // Spawn path watcher: updates snapshot.transport live.
+        //
+        // Wakes on iroh path events (fires within ~3.5 s of a path going silent, when
+        // iroh prunes it via PATH_MAX_IDLE_TIMEOUT) and falls back to polling at 1 s so
+        // `last_alive_at` increments promptly in the session tab.
+        // Reconnect is handled by max_idle_timeout (6 s) + conn.closed() below — the
+        // path watcher is display-only.
         {
             use iroh::Watcher;
             let mut paths = conn_for_paths.paths();
             let handle_for_paths = self.clone();
             tokio::spawn(async move {
                 let mut watcher_active = true;
-                // Tracks when a non-zero RTT was last observed; used to compute last_alive_secs_ago.
-                let mut last_rtt_alive: Option<std::time::Instant> = None;
+                // `last_alive_at` tracks when bytes_recv last increased.
+                // iroh sends PONG probes every 2 s (keep_alive_interval); if bytes_recv
+                // stops growing the path is no longer receiving responses.
+                // We do NOT use rtt > 0 — iroh's RTT estimator retains its last measured
+                // value even after a path goes silent, which would give false "alive" reads.
+                let mut last_alive_at: Option<std::time::Instant> = None;
+                let mut prev_bytes_recv: u64 = 0;
                 loop {
                     // Stop if the connection has been superseded.
-                    let current_gen = handle_for_paths.0.conn_generation.load(Ordering::Acquire);
-                    if current_gen != my_gen {
+                    if handle_for_paths.0.conn_generation.load(Ordering::Acquire) != my_gen {
                         break;
                     }
 
+                    let mut bytes_increased = false;
                     let path_list = paths.get();
                     if let Some(path) = path_list.iter().find(|p| p.is_selected()) {
                         let stats = path.stats();
@@ -526,12 +585,15 @@ impl SessionHandle {
                             _ => (format!("{:?}", path.remote_addr()), None, None),
                         };
                         let rtt = stats.rtt.as_millis() as u64;
+                        let bytes_recv = stats.udp_rx.bytes;
 
-                        if rtt > 0 {
-                            last_rtt_alive = Some(std::time::Instant::now());
+                        // Update alive timestamp only when new bytes arrive.
+                        // PONG responses from iroh's 2-s heartbeat probes keep this fresh.
+                        if bytes_recv > prev_bytes_recv {
+                            last_alive_at = Some(std::time::Instant::now());
+                            prev_bytes_recv = bytes_recv;
+                            bytes_increased = true;
                         }
-                        let last_alive_secs_ago =
-                            last_rtt_alive.map(|t| t.elapsed().as_secs()).unwrap_or(0);
 
                         if let Ok(mut cs) = handle_for_paths.0.connect_state.lock() {
                             let prev_direct = cs
@@ -559,13 +621,21 @@ impl SessionHandle {
                                 num_paths: path_list.len(),
                                 rtt_ms: rtt,
                                 bytes_sent: stats.udp_tx.bytes,
-                                bytes_recv: stats.udp_rx.bytes,
+                                bytes_recv,
                                 path_upgraded,
                                 network_hint,
-                                last_alive_secs_ago,
+                                last_alive_at,
                             });
                         }
-                        // Notify outside the lock to avoid holding it during the callback.
+                    }
+
+                    // Notify when bytes arrived (path alive) or while the stale counter
+                    // is actively ticking.  Skip when idle/long-dead to avoid a continuous
+                    // 1 Hz re-render drain on the workspace header badge.
+                    // The session drawer has its own 2 s polling refresh for the session tab.
+                    let stale_window = last_alive_at
+                        .map_or(false, |t| t.elapsed().as_secs() < 10);
+                    if bytes_increased || stale_window {
                         handle_for_paths.notify_state_change();
                     }
 
@@ -639,6 +709,7 @@ impl SessionHandle {
             let mut cs = self.0.connect_state.lock().unwrap();
             cs.snapshot.fetch_ms = Some(t_fetch.elapsed().as_millis() as u64);
             cs.phase = ConnectPhase::Connected;
+            cs.reconnect_attempt = None;
         }
         self.notify_state_change();
 
@@ -1145,6 +1216,10 @@ impl SessionHandle {
                         reason: reason.clone(),
                         next_retry_secs,
                     };
+                    // Persist the attempt number across the Reconnecting →
+                    // BindingEndpoint → … phase transitions so the transport
+                    // badge can show "Retry N" during the actual attempt phases.
+                    cs.reconnect_attempt = Some(attempt);
                 }
                 handle.notify_state_change();
 
