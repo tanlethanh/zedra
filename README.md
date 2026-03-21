@@ -18,8 +18,8 @@ zedra start
 
 **Claude Code**
 ```
-/plugin marketplace add anthropics/claude-code
-/plugin install github@tanlethanh/zedra
+/plugin marketplace add tanlethanh/zedra
+/plugin install claude-code@zedra
 /zedra-start
 ```
 

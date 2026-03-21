@@ -24,8 +24,8 @@ const installTabs = [
     blocks: [
       [
         { text: "# Inside Claude Code session", comment: true },
-        { text: "/plugin marketplace add anthropics/claude-code" },
-        { text: "/plugin install github@tanlethanh/zedra" },
+        { text: "/plugin marketplace add tanlethanh/zedra" },
+        { text: "/plugin install claude-code@zedra" },
         { text: "/zedra-start" },
       ],
     ],
@@ -594,7 +594,6 @@ const canonicalUrl = "zedra.dev/";
           min-height: 180px;
         }
 
-
         .demo-card {
           padding: 20px;
           border-radius: 22px;
@@ -862,7 +861,9 @@ const canonicalUrl = "zedra.dev/";
 
       document.querySelectorAll(".copy-btn").forEach((btn) => {
         btn.addEventListener("click", async () => {
-          const installBlock = btn.closest(".install-block") as HTMLElement | null;
+          const installBlock = btn.closest(
+            ".install-block",
+          ) as HTMLElement | null;
           const text = installBlock?.dataset.copy ?? "";
           try {
             await navigator.clipboard.writeText(text);
