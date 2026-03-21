@@ -51,8 +51,7 @@ pub async fn create_endpoint(
     tracing::info!("iroh endpoint bound: {}", endpoint.id().fmt_short());
     tracing::info!("iroh endpoint addr: {:?}", endpoint.addr());
 
-    // Log the STUN result once it arrives (async, ~1-2s after bind).
-    // global_v4/v6 = STUN-discovered public IP; mapping_varies_by_dest = symmetric NAT flag.
+    // Fire analytics for the first STUN result (details logged by net_monitor).
     {
         use iroh::Watcher;
         let mut watcher = endpoint.net_report();
@@ -68,22 +67,7 @@ pub async fn create_endpoint(
                         r.preferred_relay,
                     );
                     let sym_nat = r.mapping_varies_by_dest().unwrap_or(false);
-                    let has_ipv4 = r.global_v4.is_some();
-                    let has_ipv6 = r.global_v6.is_some();
-                    analytics.net_report(has_ipv4, has_ipv6, sym_nat);
-                    match (r.global_v4, r.global_v6) {
-                        (None, None) => eprintln!("[{}] network:  no public IP found — relay only", ts()),
-                        (v4, v6) => {
-                            let addr = v4.map(|a| a.to_string())
-                                .or_else(|| v6.map(|a| a.to_string()))
-                                .unwrap_or_default();
-                            if sym_nat {
-                                eprintln!("[{}] network:  {} (symmetric NAT — P2P may fail)", ts(), addr);
-                            } else {
-                                eprintln!("[{}] network:  {} (P2P available)", ts(), addr);
-                            }
-                        }
-                    }
+                    analytics.net_report(r.global_v4.is_some(), r.global_v6.is_some(), sym_nat);
                     break;
                 }
                 if tokio::time::timeout(
@@ -94,7 +78,6 @@ pub async fn create_endpoint(
                 .is_err()
                 {
                     tracing::warn!("net_report: STUN did not complete within 10s");
-                    eprintln!("[{}] network:  STUN timed out — relay only", ts());
                     break;
                 }
             }

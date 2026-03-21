@@ -7,6 +7,7 @@ pub mod fs;
 pub mod git;
 pub mod identity;
 pub mod iroh_listener;
+pub mod net_monitor;
 pub mod pty;
 pub mod qr;
 pub mod rpc_daemon;

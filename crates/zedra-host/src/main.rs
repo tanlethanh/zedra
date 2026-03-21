@@ -14,7 +14,9 @@ use clap::{Parser, Subcommand};
 use std::sync::Arc;
 use zedra_host::analytics::Analytics;
 use zedra_host::client as zedra_client;
-use zedra_host::{api, identity, iroh_listener, qr, rpc_daemon, session_registry, workspace_lock};
+use zedra_host::{
+    api, identity, iroh_listener, net_monitor, qr, rpc_daemon, session_registry, workspace_lock,
+};
 use zedra_rpc::ZedraPairingTicket;
 
 #[derive(Parser)]
@@ -180,7 +182,8 @@ async fn main() -> Result<()> {
             // Initialize analytics. The analytics_id is machine-level (not per-workspace)
             // so connection counts roll up to a single host in the dashboard.
             let analytics = Arc::new(Analytics::new(
-                &identity::analytics_id_path().unwrap_or_else(|_| workdir.join(".zedra-analytics-id")),
+                &identity::analytics_id_path()
+                    .unwrap_or_else(|_| workdir.join(".zedra-analytics-id")),
             ));
             if analytics.is_enabled() {
                 eprintln!("[init]     analytics enabled");
@@ -250,6 +253,11 @@ async fn main() -> Result<()> {
                     tracing::info!("Wrote host-info.json to {}", config_dir.display());
                 }
             }
+
+            // 1b. Start background network diagnostics monitor.
+            //     Watches for IP changes, relay changes, NAT changes, and logs
+            //     DNS re-registration when the endpoint address updates.
+            net_monitor::spawn_net_monitor(&endpoint);
 
             // 2. Generate QR code
             // Note: The QR encodes only endpoint_id (pubkey) — no IPs. The client
@@ -324,7 +332,10 @@ async fn main() -> Result<()> {
                     println!("zedra host v{}", version);
                     println!("  uptime:      {}", uptime);
                     println!("  workdir:     {}", workdir);
-                    println!("  endpoint_id: {}", &endpoint_id[..endpoint_id.len().min(8)]);
+                    println!(
+                        "  endpoint_id: {}",
+                        &endpoint_id[..endpoint_id.len().min(8)]
+                    );
                 }
                 Err(e) => {
                     eprintln!("Failed to reach daemon: {}", e);
@@ -411,7 +422,10 @@ async fn main() -> Result<()> {
                         .unwrap_or_else(|| "?".to_string());
 
                     println!("  v{version}  {workdir}");
-                    println!("    endpoint:  {}", &endpoint_id[..endpoint_id.len().min(8)]);
+                    println!(
+                        "    endpoint:  {}",
+                        &endpoint_id[..endpoint_id.len().min(8)]
+                    );
                     println!(
                         "    pid:       {}  started {}",
                         lock.pid,
