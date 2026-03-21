@@ -632,7 +632,7 @@ impl Render for ZedraApp {
         for state in self.workspace_states.iter_mut() {
             if let Some(ws_idx) = state.workspace_index() {
                 if let Some(entry) = self.workspaces.get(ws_idx) {
-                    let connect_phase = entry.handle.connect_state().phase;
+                    let connect_phase = entry.handle.connect_phase();
                     let (terminal_ids, active_terminal_id) = entry.view.read(cx).terminal_state();
                     let project_name = entry.handle.project_name();
                     let hostname = entry.handle.hostname();

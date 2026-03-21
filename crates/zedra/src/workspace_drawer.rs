@@ -439,7 +439,7 @@ impl Render for WorkspaceDrawer {
         let status_color = match self
             .session_handle
             .as_ref()
-            .map(|h| h.connect_state().phase)
+            .map(|h| h.connect_phase())
         {
             Some(ConnectPhase::Connected) => theme::ACCENT_GREEN,
             Some(ref p) if p.is_connecting() || p.is_reconnecting() => theme::ACCENT_YELLOW,

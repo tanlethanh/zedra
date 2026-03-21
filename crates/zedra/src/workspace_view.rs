@@ -5,13 +5,13 @@ use gpui::{prelude::FluentBuilder as _, *};
 use crate::active_terminal;
 use crate::connecting_view;
 use crate::editor::code_editor::EditorView;
-use crate::editor::git_diff_view::{parse_unified_diff, FileDiff, GitDiffView};
+use crate::editor::git_diff_view::{FileDiff, GitDiffView, parse_unified_diff};
 use crate::editor::git_sidebar::GitFileSection;
 use crate::fonts;
 use crate::keyboard;
 use crate::mgpui::DrawerHost;
-use crate::pending::{shared_pending_slot, SharedPendingSlot};
-use crate::platform_bridge::{self, status_bar_inset, AlertButton};
+use crate::pending::{SharedPendingSlot, shared_pending_slot};
+use crate::platform_bridge::{self, AlertButton, status_bar_inset};
 use crate::theme;
 use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
 use zedra_session::SessionHandle;
@@ -66,7 +66,6 @@ impl Render for FileTooLargeView {
             )
     }
 }
-
 
 #[derive(Clone, Debug)]
 pub enum WorkspaceEvent {
@@ -181,10 +180,8 @@ impl Focusable for WorkspaceContent {
 impl Render for WorkspaceContent {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Manage the full opaque overlay (initial connect, resume, failed).
-        // Reconnecting gets its own semi-transparent overlay rendered separately.
-        let phase = self.session_handle.connect_state().phase;
-        let needs_full_overlay =
-            !phase.is_connected() && !phase.is_idle() && !phase.is_reconnecting();
+        let phase = self.session_handle.connect_phase();
+        let needs_full_overlay = !phase.is_connected() && !phase.is_idle();
 
         if needs_full_overlay {
             // Active connect/failed phase — ensure full overlay is showing.
@@ -220,11 +217,7 @@ impl Render for WorkspaceContent {
                     let s = if let Some(at) = raw.find('@') {
                         if let Some(colon_off) = raw[at..].find(':') {
                             let path = &raw[at + colon_off + 1..];
-                            if !path.is_empty() {
-                                path
-                            } else {
-                                raw.as_str()
-                            }
+                            if !path.is_empty() { path } else { raw.as_str() }
                         } else {
                             raw.as_str()
                         }
@@ -352,7 +345,6 @@ impl Render for WorkspaceContent {
                     ),
             )
             .child({
-                let is_reconnecting = phase.is_reconnecting();
                 let overlay_visible = self.overlay_visible;
                 let handle = self.session_handle.clone();
                 div()
@@ -374,9 +366,6 @@ impl Render for WorkspaceContent {
                                 })
                                 .child(connecting_view::render_connecting(&handle)),
                         )
-                    })
-                    .when(is_reconnecting, |d: Div| {
-                        d.child(connecting_view::render_reconnecting_overlay(&handle))
                     })
             })
     }
@@ -771,9 +760,14 @@ impl WorkspaceView {
 
     /// Update the workspace state used for header display and drawer subtitle.
     /// Called by ZedraApp to propagate the live WorkspaceState into all display components.
-    pub fn set_workspace_state(&mut self, state: crate::workspace_state::WorkspaceState, cx: &mut Context<Self>) {
+    pub fn set_workspace_state(
+        &mut self,
+        state: crate::workspace_state::WorkspaceState,
+        cx: &mut Context<Self>,
+    ) {
         self.workspace_state = state.clone();
-        self.workspace_content.update(cx, |c, cx| c.set_workspace_state(state.clone(), cx));
+        self.workspace_content
+            .update(cx, |c, cx| c.set_workspace_state(state.clone(), cx));
         self.workspace_drawer.update(cx, |drawer, cx| {
             drawer.set_workspace_state(state, cx);
         });
