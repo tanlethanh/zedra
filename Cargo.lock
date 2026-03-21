@@ -9477,6 +9477,7 @@ dependencies = [
  "http_client",
  "iroh",
  "jni",
+ "log",
  "ndk",
  "ndk-context",
  "once_cell",
