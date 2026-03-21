@@ -1,5 +1,27 @@
 {
   "buildCommand": "bun run build",
   "outputDirectory": "dist",
-  "installCommand": "bun install"
+  "installCommand": "bun install",
+  "redirects": [
+    {
+      "source": "/install.sh",
+      "destination": "https://raw.githubusercontent.com/tanlethanh/zedra/main/scripts/install.sh",
+      "statusCode": 302
+    },
+    {
+      "source": "/opencode.sh",
+      "destination": "https://raw.githubusercontent.com/tanlethanh/zedra/main/scripts/opencode.sh",
+      "statusCode": 302
+    },
+    {
+      "source": "/codex.sh",
+      "destination": "https://raw.githubusercontent.com/tanlethanh/zedra/main/scripts/codex.sh",
+      "statusCode": 302
+    },
+    {
+      "source": "/gemini.sh",
+      "destination": "https://raw.githubusercontent.com/tanlethanh/zedra/main/scripts/gemini.sh",
+      "statusCode": 302
+    }
+  ]
 }
