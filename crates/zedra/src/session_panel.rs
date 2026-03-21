@@ -4,9 +4,11 @@
 use gpui::*;
 
 use crate::theme;
-use crate::transport_badge::format_bytes;
+use crate::transport_badge::{
+    format_bytes, render_transport_badge, transport_badge_info, STALE_THRESHOLD_SECS,
+};
 use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
-use zedra_session::{ConnectPhase, ConnectState};
+use zedra_session::ConnectState;
 
 /// Render the session tab content for the workspace drawer.
 pub fn render_session_tab(
@@ -15,10 +17,7 @@ pub fn render_session_tab(
 ) -> Div {
     let cs: Option<ConnectState> = handle.map(|h| h.connect_state());
 
-    let is_empty = cs
-        .as_ref()
-        .map(|s| s.phase.is_idle())
-        .unwrap_or(true);
+    let is_empty = cs.as_ref().map(|s| s.phase.is_idle()).unwrap_or(true);
     if is_empty {
         return div()
             .size_full()
@@ -33,10 +32,7 @@ pub fn render_session_tab(
     let cs = cs.unwrap();
     let snap = &cs.snapshot;
 
-    let mut content = div()
-        .px(px(theme::DRAWER_PADDING))
-        .flex()
-        .flex_col();
+    let mut content = div().px(px(theme::DRAWER_PADDING)).flex().flex_col();
 
     // --- Host section ---
     if let Some(hostname) = &snap.hostname {
@@ -70,22 +66,9 @@ pub fn render_session_tab(
         content = content.child(info_row("Directory", wd.clone()));
     }
 
-    // --- Connection section ---
-    if let Some(t) = &snap.transport {
-        let conn_type_label = if t.is_direct {
-            match &t.network_hint {
-                Some(h) => format!("P2P \u{00b7} {}", h.label()),
-                None => "P2P".into(),
-            }
-        } else {
-            "Relayed".into()
-        };
-        let conn_type_color = if t.is_direct {
-            theme::ACCENT_GREEN
-        } else {
-            theme::ACCENT_YELLOW
-        };
-
+    // --- Connection badge (reflects actual phase: connected/reconnecting/stale) ---
+    {
+        let (badge_label, badge_color) = transport_badge_info(&cs);
         content = content.child(
             div()
                 .py(px(4.0))
@@ -95,45 +78,49 @@ pub fn render_session_tab(
                         .text_size(px(theme::FONT_DETAIL))
                         .child("Connection"),
                 )
-                .child(
-                    div()
-                        .mt(px(1.0))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(4.0))
-                        .child(
-                            div()
-                                .w(px(theme::ICON_STATUS))
-                                .h(px(theme::ICON_STATUS))
-                                .rounded(px(3.0))
-                                .bg(rgb(conn_type_color)),
-                        )
-                        .child(
-                            div()
-                                .text_color(rgb(conn_type_color))
-                                .text_size(px(theme::FONT_BODY))
-                                .child(conn_type_label),
-                        ),
-                ),
+                .child(render_transport_badge(badge_label, badge_color).mt(px(2.0))),
         );
+    }
 
+    // --- Transport details (last-known values; RTT marked stale when path is silent) ---
+    if let Some(t) = &snap.transport {
         content = content.child(info_row("Remote Address", t.remote_addr.clone()));
 
         if let Some(relay) = &t.relay_url {
             content = content.child(info_row("Relay", relay.clone()));
         }
 
-        if t.rtt_ms > 0 {
-            content = content.child(info_row("RTT", format!("{}ms", t.rtt_ms)));
-        }
-
-        let alive_label = if t.last_alive_secs_ago == 0 {
-            "now".into()
-        } else {
-            format!("{}s ago", t.last_alive_secs_ago)
+        // Heartbeat interval is 2s — bytes_recv grows every ~2 s on a live path.
+        // Elapsed computed at render time — ticks even after path watcher exits.
+        let stale_secs = t.last_alive_at.map(|at| at.elapsed().as_secs());
+        let is_stale = stale_secs.map_or(false, |s| s >= STALE_THRESHOLD_SECS);
+        let rtt_label = match stale_secs {
+            Some(secs) if secs < STALE_THRESHOLD_SECS => format!("{}ms", t.rtt_ms),
+            Some(secs) => format!("stale {}s", secs),
+            None => "\u{2014}".into(),
         };
-        content = content.child(info_row("Last Alive", alive_label));
+        let rtt_color = if is_stale {
+            theme::ACCENT_YELLOW
+        } else {
+            theme::TEXT_SECONDARY
+        };
+        content = content.child(
+            div()
+                .py(px(4.0))
+                .child(
+                    div()
+                        .text_color(rgb(theme::TEXT_MUTED))
+                        .text_size(px(theme::FONT_DETAIL))
+                        .child("RTT"),
+                )
+                .child(
+                    div()
+                        .mt(px(1.0))
+                        .text_color(rgb(rtt_color))
+                        .text_size(px(theme::FONT_BODY))
+                        .child(rtt_label),
+                ),
+        );
 
         content = content.child(info_row("Paths", format!("{}", t.num_paths)));
 
@@ -168,8 +155,8 @@ pub fn render_session_tab(
     // --- Phase timing section ---
     content = content.child(render_timing(snap));
 
-    // --- Error banner ---
-    if let ConnectPhase::Failed(e) = &cs.phase {
+    // --- Error banner (failed phase only) ---
+    if let zedra_session::ConnectPhase::Failed(e) = &cs.phase {
         content = content.child(
             div()
                 .mt(px(8.0))
@@ -188,27 +175,6 @@ pub fn render_session_tab(
                         .text_size(px(theme::FONT_DETAIL))
                         .child(hint)
                 })),
-        );
-    }
-
-    // --- Reconnecting banner ---
-    if let ConnectPhase::Reconnecting {
-        attempt,
-        next_retry_secs,
-        ..
-    } = &cs.phase
-    {
-        let msg = if *next_retry_secs > 0 {
-            format!("Reconnecting (attempt {attempt}) — {next_retry_secs}s until next retry")
-        } else {
-            format!("Reconnecting (attempt {attempt})\u{2026}")
-        };
-        content = content.child(
-            div()
-                .mt(px(8.0))
-                .text_color(rgb(theme::ACCENT_YELLOW))
-                .text_size(px(theme::FONT_DETAIL))
-                .child(msg),
         );
     }
 
