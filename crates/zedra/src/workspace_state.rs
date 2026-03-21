@@ -37,8 +37,6 @@ pub struct WorkspaceStateInner {
     #[serde(skip)]
     pub workspace_index: Option<usize>,
     #[serde(skip)]
-    pub saved_index: Option<usize>,
-    #[serde(skip)]
     pub connect_phase: Option<zedra_session::ConnectPhase>,
     #[serde(skip)]
     pub terminal_count: usize,
@@ -46,8 +44,6 @@ pub struct WorkspaceStateInner {
     pub terminal_ids: Vec<String>,
     #[serde(skip)]
     pub active_terminal_id: Option<String>,
-    #[serde(skip)]
-    pub endpoint_addr_encoded: Option<String>,
 }
 
 /// Shareable workspace state. Clone copies the Arc only. Read via methods (non-blocking).
@@ -224,7 +220,7 @@ impl WorkspaceState {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         Some(Self(Arc::new(WorkspaceStateInner {
-            endpoint_addr: encoded.clone(),
+            endpoint_addr: encoded,
             session_id: handle.session_id().unwrap_or_default(),
             strip_path: handle.strip_path(),
             project_name: handle.project_name(),
@@ -234,17 +230,11 @@ impl WorkspaceState {
             created_at: now,
             updated_at: now,
             workspace_index: None,
-            saved_index: None,
             connect_phase: None,
             terminal_count: 0,
             terminal_ids: Vec::new(),
             active_terminal_id: None,
-            endpoint_addr_encoded: Some(encoded),
         })))
-    }
-
-    pub fn for_saved_row(self, saved_index: usize) -> Self {
-        Self::update_inner(self, |i| i.saved_index = Some(saved_index))
     }
 
     pub fn display_name(&self) -> &str {
@@ -258,10 +248,6 @@ impl WorkspaceState {
 
     pub fn workspace_index(&self) -> Option<usize> {
         self.0.workspace_index
-    }
-
-    pub fn saved_index(&self) -> Option<usize> {
-        self.0.saved_index
     }
 
     pub fn connect_phase(&self) -> Option<&zedra_session::ConnectPhase> {
@@ -278,10 +264,6 @@ impl WorkspaceState {
 
     pub fn active_terminal_id(&self) -> Option<&String> {
         self.0.active_terminal_id.as_ref()
-    }
-
-    pub fn endpoint_addr_encoded(&self) -> Option<&str> {
-        self.0.endpoint_addr_encoded.as_deref()
     }
 
     pub fn endpoint_addr(&self) -> &str {
@@ -312,7 +294,4 @@ impl WorkspaceState {
         &self.0.homedir
     }
 
-    pub fn with_saved_index(self, saved_index: usize) -> Self {
-        Self::update_inner(self, |i| i.saved_index = Some(saved_index))
-    }
 }

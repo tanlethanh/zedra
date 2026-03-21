@@ -37,7 +37,6 @@ enum AppScreen {
 struct WorkspaceEntry {
     view: Entity<WorkspaceView>,
     handle: SessionHandle,
-    state: WorkspaceState,
 }
 
 impl PartialEq for WorkspaceEntry {
@@ -54,7 +53,7 @@ pub struct ZedraApp {
     screen: AppScreen,
     home_view: Entity<HomeView>,
     workspaces: Vec<WorkspaceEntry>,
-    saved_workspaces: Vec<WorkspaceState>,
+    workspace_states: Vec<WorkspaceState>,
     active_workspace: Option<usize>,
     quick_action: Entity<QuickActionPanel>,
     qa_drawer: Entity<DrawerHost>,
@@ -100,27 +99,31 @@ impl ZedraApp {
                     tracing::info!("Home: Scan QR tapped");
                     platform_bridge::bridge().launch_qr_scanner();
                 }
-                HomeEvent::WorkspaceTapped(index) => {
-                    this.switch_to_workspace(*index, window, cx);
-                }
-                HomeEvent::SavedWorkspaceTapped(index) => {
-                    this.reconnect_saved_workspace(*index, window, cx);
+                HomeEvent::WorkspaceTapped(item_idx) => {
+                    if let Some(state) = this.workspace_states.get(*item_idx) {
+                        if let Some(ws_idx) = state.workspace_index() {
+                            this.switch_to_workspace(ws_idx, window, cx);
+                        } else {
+                            this.reconnect_workspace(*item_idx, window, cx);
+                        }
+                    }
                 }
                 HomeEvent::WorkspaceRemoved(item_idx) => {
-                    let item = this.home_view.read(cx).states.get(*item_idx).cloned();
-                    if let Some(item) = item {
-                        let saved_index_opt = item.saved_index();
+                    if let Some(item) = this.workspace_states.get(*item_idx) {
+                        let endpoint_addr = item.endpoint_addr().to_string();
                         let ws_index_opt = item.workspace_index();
+                        let display = item.display_name().to_string();
                         platform_bridge::show_alert(
                             "",
-                            &format!("Remove {} workspace?", item.display_name()),
+                            &format!("Remove {} workspace?", display),
                             vec![
                                 AlertButton::destructive("Delete"),
                                 AlertButton::cancel("Cancel"),
                             ],
                             move |button_index| {
                                 if button_index == 0 {
-                                    PENDING_WORKSPACE_DELETE.set((saved_index_opt, ws_index_opt));
+                                    PENDING_WORKSPACE_DELETE
+                                        .set((endpoint_addr.clone(), ws_index_opt));
                                 }
                             },
                         );
@@ -187,7 +190,7 @@ impl ZedraApp {
             screen: AppScreen::Home,
             home_view,
             workspaces: Vec::new(),
-            saved_workspaces: Vec::new(),
+            workspace_states: Vec::new(),
             active_workspace: None,
             quick_action,
             qa_drawer,
@@ -197,7 +200,7 @@ impl ZedraApp {
         };
 
         // Load saved workspaces from disk
-        app.refresh_saved_workspaces(cx);
+        app.reload_workspace_states(cx);
 
         app
     }
@@ -215,44 +218,51 @@ impl ZedraApp {
         }
     }
 
-    fn refresh_saved_workspaces(&mut self, cx: &mut Context<Self>) {
-        self.saved_workspaces = WorkspaceState::load();
-        tracing::info!("Saved workspaces: {}", self.saved_workspaces.len());
-        self.sync_workspace_states(self.build_home_items(), cx);
+    /// Reload workspace_states from disk, preserving workspace_index for active connections.
+    fn reload_workspace_states(&mut self, cx: &mut Context<Self>) {
+        let saved = WorkspaceState::load();
+        tracing::info!("Loaded {} workspace(s) from disk", saved.len());
+        // Re-link active workspaces by endpoint_addr
+        self.workspace_states = saved;
+        for (ws_idx, entry) in self.workspaces.iter().enumerate() {
+            let encoded = entry
+                .handle
+                .endpoint_addr()
+                .and_then(|a| zedra_rpc::pairing::encode_endpoint_addr(&a).ok());
+            if let Some(addr) = &encoded {
+                if let Some(pos) = self
+                    .workspace_states
+                    .iter()
+                    .position(|s| s.endpoint_addr() == addr.as_str())
+                {
+                    self.workspace_states[pos] =
+                        WorkspaceState::update_inner(self.workspace_states[pos].clone(), |s| {
+                            s.workspace_index = Some(ws_idx);
+                        });
+                }
+            }
+        }
+        self.push_states_to_views(cx);
     }
 
-    /// Build the unified home list from saved workspaces and active `entry.state` values.
-    /// Active entries whose endpoint matches a saved entry take the saved slot (with state
-    /// fields kept current); unmatched active entries (new pairings) prepend the list.
-    fn build_home_items(&self) -> Vec<WorkspaceState> {
-        let mut matched_ws = vec![false; self.workspaces.len()];
-        let mut items: Vec<WorkspaceState> = Vec::new();
-        for (saved_idx, sw) in self.saved_workspaces.iter().enumerate() {
-            if let Some((ws_idx, entry)) = self
-                .workspaces
-                .iter()
-                .enumerate()
-                .find(|(_, e)| e.state.endpoint_addr_encoded() == Some(sw.endpoint_addr()))
-            {
-                matched_ws[ws_idx] = true;
-                items.push(WorkspaceState::update_inner(entry.state.clone(), |s| {
-                    s.workspace_index = Some(ws_idx);
-                    s.saved_index = Some(saved_idx);
-                }));
-            } else {
-                items.push(sw.clone().for_saved_row(saved_idx));
-            }
+    /// Push workspace_states to home view and quick action panel.
+    fn push_states_to_views(&mut self, cx: &mut Context<Self>) {
+        let revision = Self::states_revision(&self.workspace_states);
+        if self.last_states_revision == Some(revision) {
+            return;
         }
-        for (ws_idx, entry) in self.workspaces.iter().enumerate() {
-            if !matched_ws[ws_idx] {
-                let item = WorkspaceState::update_inner(entry.state.clone(), |s| {
-                    s.workspace_index = Some(ws_idx);
-                    s.saved_index = None;
-                });
-                items.insert(0, item);
-            }
-        }
-        items
+        self.last_states_revision = Some(revision);
+        let shared: SharedWorkspaceStates = Arc::new(self.workspace_states.clone());
+        self.home_view.update(cx, |hv, cx| {
+            hv.set_states(Arc::clone(&shared));
+            cx.notify();
+        });
+        let handles: Vec<_> = self.workspaces.iter().map(|e| e.handle.clone()).collect();
+        self.quick_action.update(cx, |qa, cx| {
+            qa.set_states(Arc::clone(&shared));
+            qa.set_handles(handles);
+            cx.notify();
+        });
     }
 
     fn states_revision(items: &[WorkspaceState]) -> u64 {
@@ -260,9 +270,7 @@ impl ZedraApp {
         items.len().hash(&mut hasher);
         for state in items {
             state.workspace_index().hash(&mut hasher);
-            state.saved_index().hash(&mut hasher);
             state.endpoint_addr().hash(&mut hasher);
-            state.endpoint_addr_encoded().hash(&mut hasher);
             state.session_id().hash(&mut hasher);
             state.project_name().hash(&mut hasher);
             state.strip_path().hash(&mut hasher);
@@ -279,25 +287,6 @@ impl ZedraApp {
         hasher.finish()
     }
 
-    fn sync_workspace_states(&mut self, items: Vec<WorkspaceState>, cx: &mut Context<Self>) {
-        let revision = Self::states_revision(&items);
-        if self.last_states_revision == Some(revision) {
-            return;
-        }
-        self.last_states_revision = Some(revision);
-        let shared: SharedWorkspaceStates = Arc::new(items);
-        self.home_view.update(cx, |hv, cx| {
-            hv.set_states(Arc::clone(&shared));
-            cx.notify();
-        });
-        let handles: Vec<_> = self.workspaces.iter().map(|e| e.handle.clone()).collect();
-        self.quick_action.update(cx, |qa, cx| {
-            qa.set_states(Arc::clone(&shared));
-            qa.set_handles(handles);
-            cx.notify();
-        });
-    }
-
     fn persist_current_workspaces(&self) {
         let persisted: Vec<_> = self
             .workspaces
@@ -312,23 +301,23 @@ impl ZedraApp {
         }
     }
 
-    fn reconnect_saved_workspace(
+    fn reconnect_workspace(
         &mut self,
-        saved_index: usize,
+        item_idx: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let ws = match self.saved_workspaces.get(saved_index) {
+        let ws = match self.workspace_states.get(item_idx) {
             Some(ws) => ws.clone(),
             None => {
-                tracing::error!("Saved workspace index {} out of range", saved_index);
+                tracing::error!("Workspace state index {} out of range", item_idx);
                 return;
             }
         };
 
         match zedra_rpc::pairing::decode_endpoint_addr(ws.endpoint_addr()) {
             Ok(addr) => {
-                tracing::info!("Reconnecting to saved workspace: {}", addr.id.fmt_short());
+                tracing::info!("Reconnecting to workspace: {}", addr.id.fmt_short());
                 self.connect_with_iroh_addr(
                     addr,
                     Some(ws.session_id().to_string()),
@@ -338,9 +327,9 @@ impl ZedraApp {
                 );
             }
             Err(e) => {
-                tracing::error!("Failed to decode saved endpoint addr: {}", e);
+                tracing::error!("Failed to decode endpoint addr: {}", e);
                 WorkspaceState::remove(ws.endpoint_addr());
-                self.refresh_saved_workspaces(cx);
+                self.reload_workspace_states(cx);
             }
         }
     }
@@ -393,18 +382,7 @@ impl ZedraApp {
         let endpoint_short = addr.id.fmt_short().to_string();
         tracing::info!("QR connect: starting iroh connection to {}", endpoint_short);
 
-        // Build initial WorkspaceState for this entry.
-        // For reconnects, seed from saved (preserves display fields during connecting phase).
-        // For new pairings, build a minimal state with just the encoded endpoint addr.
         let encoded_addr = zedra_rpc::pairing::encode_endpoint_addr(&addr).unwrap_or_default();
-        let initial_state = if let Some(s) = saved {
-            s
-        } else {
-            WorkspaceState::update_inner(WorkspaceState::default(), |i| {
-                i.endpoint_addr = encoded_addr.clone();
-                i.endpoint_addr_encoded = Some(encoded_addr);
-            })
-        };
 
         // Create a per-workspace session handle
         let session_handle = SessionHandle::new();
@@ -469,8 +447,8 @@ impl ZedraApp {
                         } else {
                             AppScreen::Workspace
                         };
-                        // Refresh saved workspaces; render() will rebuild the unified home list
-                        this.refresh_saved_workspaces(cx);
+                        // Reload from disk; workspace_index links are rebuilt
+                        this.reload_workspace_states(cx);
                         cx.notify();
                     }
                 }
@@ -481,16 +459,48 @@ impl ZedraApp {
         self.workspaces.push(WorkspaceEntry {
             view: workspace_view,
             handle: session_handle.clone(),
-            state: initial_state,
         });
-        self.active_workspace = Some(self.workspaces.len() - 1);
+        let ws_idx = self.workspaces.len() - 1;
+        self.active_workspace = Some(ws_idx);
         self.screen = AppScreen::Workspace;
 
-        // Push the initial WorkspaceState into the view/drawer so the header shows
-        // the saved title immediately, before the handle fields are populated post-connect.
-        if let Some(entry) = self.workspaces.last() {
-            let state = entry.state.clone();
-            entry.view.update(cx, |v, cx| v.set_workspace_state(state, cx));
+        // Update workspace_states: find matching entry or append a new one.
+        // Set workspace_index so the home screen links this entry to the active connection.
+        if let Some(pos) = self
+            .workspace_states
+            .iter()
+            .position(|s| s.endpoint_addr() == encoded_addr)
+        {
+            self.workspace_states[pos] =
+                WorkspaceState::update_inner(self.workspace_states[pos].clone(), |s| {
+                    s.workspace_index = Some(ws_idx);
+                });
+        } else {
+            // New pairing — create a minimal entry from the saved state or defaults
+            let new_state = if let Some(s) = saved {
+                WorkspaceState::update_inner(s, |s| {
+                    s.workspace_index = Some(ws_idx);
+                })
+            } else {
+                WorkspaceState::update_inner(WorkspaceState::default(), |s| {
+                    s.endpoint_addr = encoded_addr.clone();
+                    s.workspace_index = Some(ws_idx);
+                })
+            };
+            self.workspace_states.push(new_state);
+        }
+
+        // Push the initial WorkspaceState into the view so the header shows
+        // the saved title immediately, before the handle fields are populated.
+        if let Some(state) = self
+            .workspace_states
+            .iter()
+            .find(|s| s.workspace_index() == Some(ws_idx))
+        {
+            let state = state.clone();
+            self.workspaces[ws_idx]
+                .view
+                .update(cx, |v, cx| v.set_workspace_state(state, cx));
         }
 
         // Store endpoint addr synchronously so persist_current_workspaces can snapshot it now.
@@ -553,7 +563,9 @@ impl ZedraApp {
                                     tracing::info!("Remote terminal created: {}", term_id);
                                     pending_term_id.set(term_id);
                                 }
-                                Err(e) => tracing::error!("Failed to create remote terminal: {}", e),
+                                Err(e) => {
+                                    tracing::error!("Failed to create remote terminal: {}", e)
+                                }
                             }
                         }
                         Err(e) => {
@@ -563,7 +575,9 @@ impl ZedraApp {
                                     tracing::info!("Remote terminal created: {}", term_id);
                                     pending_term_id.set(term_id);
                                 }
-                                Err(e) => tracing::error!("Failed to create remote terminal: {}", e),
+                                Err(e) => {
+                                    tracing::error!("Failed to create remote terminal: {}", e)
+                                }
                             }
                         }
                     }
@@ -592,13 +606,8 @@ impl Render for ZedraApp {
         }
 
         // Check for workspace delete confirmed via native action sheet
-        if let Some((saved_index_opt, ws_index_opt)) = PENDING_WORKSPACE_DELETE.take() {
-            if let Some(saved_index) = saved_index_opt {
-                let saved = WorkspaceState::load();
-                if let Some(ws) = saved.get(saved_index) {
-                    WorkspaceState::remove(ws.endpoint_addr());
-                }
-            }
+        if let Some((endpoint_addr, ws_index_opt)) = PENDING_WORKSPACE_DELETE.take() {
+            WorkspaceState::remove(&endpoint_addr);
             // Also disconnect the active workspace if it is currently connected
             if let Some(ws_index) = ws_index_opt {
                 if ws_index < self.workspaces.len() {
@@ -609,7 +618,7 @@ impl Render for ZedraApp {
                         });
                 }
             }
-            self.refresh_saved_workspaces(cx);
+            self.reload_workspace_states(cx);
         }
 
         // Periodically persist workspace state (~every 5 seconds)
@@ -617,58 +626,66 @@ impl Render for ZedraApp {
             self.persist_current_workspaces();
         }
 
-        // Update each entry's WorkspaceState from the live handle and view.
-        // Display fields (project_name, hostname, etc.) are only overwritten when
-        // non-empty so saved info persists while the connection is in progress.
-        for entry in self.workspaces.iter_mut() {
-            let connect_phase = entry.handle.connect_state().phase;
-            let (terminal_ids, active_terminal_id) = entry.view.read(cx).terminal_state();
-            let project_name = entry.handle.project_name();
-            let hostname = entry.handle.hostname();
-            let workdir = entry.handle.workdir();
-            let homedir = entry.handle.homedir();
-            let strip_path = entry.handle.strip_path();
-            let session_id = entry.handle.session_id().unwrap_or_default();
-            entry.state = WorkspaceState::update_inner(entry.state.clone(), |s| {
-                s.connect_phase = Some(connect_phase);
-                s.terminal_count = terminal_ids.len();
-                s.terminal_ids = terminal_ids;
-                s.active_terminal_id = active_terminal_id;
-                if !project_name.is_empty() {
-                    s.project_name = project_name;
+        // Update workspace_states from live handles.
+        // Display fields are only overwritten when non-empty so saved info persists
+        // while the connection is in progress.
+        for state in self.workspace_states.iter_mut() {
+            if let Some(ws_idx) = state.workspace_index() {
+                if let Some(entry) = self.workspaces.get(ws_idx) {
+                    let connect_phase = entry.handle.connect_state().phase;
+                    let (terminal_ids, active_terminal_id) = entry.view.read(cx).terminal_state();
+                    let project_name = entry.handle.project_name();
+                    let hostname = entry.handle.hostname();
+                    let workdir = entry.handle.workdir();
+                    let homedir = entry.handle.homedir();
+                    let strip_path = entry.handle.strip_path();
+                    let session_id = entry.handle.session_id().unwrap_or_default();
+                    *state = WorkspaceState::update_inner(state.clone(), |s| {
+                        s.connect_phase = Some(connect_phase);
+                        s.terminal_count = terminal_ids.len();
+                        s.terminal_ids = terminal_ids;
+                        s.active_terminal_id = active_terminal_id;
+                        if !project_name.is_empty() {
+                            s.project_name = project_name;
+                        }
+                        if !hostname.is_empty() {
+                            s.hostname = hostname;
+                        }
+                        if !workdir.is_empty() {
+                            s.workdir = workdir;
+                        }
+                        if !homedir.is_empty() {
+                            s.homedir = homedir;
+                        }
+                        if !strip_path.is_empty() {
+                            s.strip_path = strip_path;
+                        }
+                        if !session_id.is_empty() {
+                            s.session_id = session_id;
+                        }
+                    });
+                } else {
+                    // workspace entry was removed — clear the link
+                    *state = WorkspaceState::update_inner(state.clone(), |s| {
+                        s.workspace_index = None;
+                        s.connect_phase = None;
+                    });
                 }
-                if !hostname.is_empty() {
-                    s.hostname = hostname;
-                }
-                if !workdir.is_empty() {
-                    s.workdir = workdir;
-                }
-                if !homedir.is_empty() {
-                    s.homedir = homedir;
-                }
-                if !strip_path.is_empty() {
-                    s.strip_path = strip_path;
-                }
-                if !session_id.is_empty() {
-                    s.session_id = session_id;
-                }
-            });
+            }
         }
 
-        // Push updated WorkspaceState into each workspace's view/drawer/header.
-        // Collect first to avoid holding a mutable borrow on self.workspaces
-        // while calling entry.view.update().
-        let view_states: Vec<_> = self
-            .workspaces
-            .iter()
-            .map(|e| (e.view.clone(), e.state.clone()))
-            .collect();
-        for (view, state) in view_states {
-            view.update(cx, |v, cx| v.set_workspace_state(state, cx));
+        // Push updated WorkspaceState into each workspace view.
+        for state in &self.workspace_states {
+            if let Some(ws_idx) = state.workspace_index() {
+                if let Some(entry) = self.workspaces.get(ws_idx) {
+                    let s = state.clone();
+                    entry.view.update(cx, |v, cx| v.set_workspace_state(s, cx));
+                }
+            }
         }
 
-        // Keep home and quick-action in sync from one shared snapshot.
-        self.sync_workspace_states(self.build_home_items(), cx);
+        // Push workspace_states to home view and quick action panel.
+        self.push_states_to_views(cx);
 
         // Sync qa_drawer content to the current active screen view
         let screen_view: AnyView = match self.screen {
@@ -694,7 +711,7 @@ impl Render for ZedraApp {
 
 use crate::pending::PendingSlot;
 
-static PENDING_WORKSPACE_DELETE: PendingSlot<(Option<usize>, Option<usize>)> = PendingSlot::new();
+static PENDING_WORKSPACE_DELETE: PendingSlot<(String, Option<usize>)> = PendingSlot::new();
 
 /// Open a GPUI window with the correct app view for the current feature flags.
 pub fn open_zedra_window(app: &mut App, window_options: WindowOptions) -> Result<AnyWindowHandle> {

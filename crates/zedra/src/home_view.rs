@@ -13,10 +13,8 @@ const XCOM_URL: &str = "https://x.com/zedradev";
 #[derive(Clone, Debug)]
 pub enum HomeEvent {
     ScanQrTapped,
-    /// Tap on an active workspace card. Carries workspace_index.
+    /// Tap on a workspace card. Carries item index into HomeView::states.
     WorkspaceTapped(usize),
-    /// Tap on a saved-only workspace card to reconnect. Carries saved_index.
-    SavedWorkspaceTapped(usize),
     /// Long-press / delete. Carries the item index into HomeView::states.
     WorkspaceRemoved(usize),
 }
@@ -82,7 +80,7 @@ impl Render for HomeView {
                         div()
                             .text_color(rgb(theme::TEXT_MUTED))
                             .text_size(px(theme::FONT_BODY))
-                            .child("Mobile IDE, desktop-powered"),
+                            .child("Code from anywhere. Visit https://zedra.dev"),
                     ),
             );
 
@@ -132,12 +130,10 @@ impl Render for HomeView {
 
                 let card = workspace_card(
                     item_idx,
-                    state.workspace_index(),
                     project_name,
                     subtitle,
                     status_label,
                     status_color,
-                    None,
                     cx,
                 );
                 cards = cards.child(card);
@@ -265,19 +261,14 @@ impl Render for HomeView {
 
 fn workspace_card(
     item_idx: usize,
-    workspace_index: Option<usize>,
     project_name: String,
     subtitle: String,
     status_label: &'static str,
     status_color: u32,
-    bottom_label: Option<String>,
     cx: &mut Context<HomeView>,
 ) -> impl IntoElement {
     div()
-        .id(SharedString::from(match workspace_index {
-            Some(index) => format!("ws-home-card-{}", index),
-            None => format!("ws-saved-card-{}", item_idx),
-        }))
+        .id(SharedString::from(format!("ws-card-{}", item_idx)))
         .w_full()
         .rounded(px(8.0))
         .bg(rgb(theme::BG_CARD))
@@ -285,14 +276,8 @@ fn workspace_card(
         .border_color(rgb(theme::BORDER_SUBTLE))
         .p(px(12.0))
         .cursor_pointer()
-        .on_click(cx.listener(move |this, _event, _window, cx| {
-            if let Some(index) = workspace_index {
-                cx.emit(HomeEvent::WorkspaceTapped(index));
-            } else if let Some(state) = this.states.get(item_idx) {
-                if let Some(saved_index) = state.saved_index() {
-                    cx.emit(HomeEvent::SavedWorkspaceTapped(saved_index));
-                }
-            }
+        .on_click(cx.listener(move |_this, _event, _window, cx| {
+            cx.emit(HomeEvent::WorkspaceTapped(item_idx));
         }))
         .on_long_press(cx.listener(move |_this, _event, _window, cx| {
             cx.emit(HomeEvent::WorkspaceRemoved(item_idx));
@@ -337,13 +322,6 @@ fn workspace_card(
                     .child(subtitle),
             )
         })
-        .children(bottom_label.map(|label| {
-            div()
-                .mt(px(4.0))
-                .text_color(rgb(theme::TEXT_MUTED))
-                .text_size(px(theme::FONT_DETAIL))
-                .child(label)
-        }))
 }
 
 fn social_button(
