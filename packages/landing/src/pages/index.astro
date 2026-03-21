@@ -804,6 +804,8 @@ const canonicalUrl = "zedra.dev/";
                     href={link.href}
                     aria-label={link.ariaLabel}
                     data-analytics-store={link.analyticsName}
+                    target="_blank"
+                    rel="noopener noreferrer"
                   >
                     <Fragment set:html={link.icon} />
                     <span class="store-copy">
@@ -823,6 +825,8 @@ const canonicalUrl = "zedra.dev/";
                     href={link.href}
                     aria-label={link.ariaLabel}
                     data-analytics-social={link.analyticsName}
+                    target="_blank"
+                    rel="noopener noreferrer"
                   >
                     <Fragment set:html={link.icon} />
                   </a>
