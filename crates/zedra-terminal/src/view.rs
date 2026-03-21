@@ -251,14 +251,7 @@ impl TerminalView {
         }
 
         let mode = self.terminal.mode();
-        if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
-            return true;
-        }
-
-        // Some mobile TUI sessions appear to expose Alternate Scroll without the
-        // ALT_SCREEN bit making it through the local emulator state. Preserve the
-        // previous touch-scroll behavior for gesture-based scroll in that case.
-        matches!(event.delta, ScrollDelta::Pixels(_)) && mode.contains(TermMode::ALTERNATE_SCROLL)
+        mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL)
     }
 
     fn scroll_step_px(&self, event: &ScrollWheelEvent) -> f32 {
