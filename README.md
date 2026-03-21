@@ -4,6 +4,8 @@
 
 One QR scan connects you to your desktop. Full terminal, file browser, git, and AI agents over an encrypted P2P tunnel. No port forwarding. No cloud.
 
+![Zedra](https://raw.githubusercontent.com/tanlethanh/zedra/main/packages/landing/public/OG.png)
+
 <video src="https://raw.githubusercontent.com/tanlethanh/zedra/main/packages/landing/public/zedra-demo.mp4" autoplay muted loop playsinline width="100%"></video>
 
 ## Quick Start
