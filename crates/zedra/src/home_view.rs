@@ -5,7 +5,7 @@ use crate::platform_bridge;
 use crate::theme;
 use crate::workspace_state::SharedWorkspaceStates;
 
-const _WEBSITE_URL: &str = "https://www.zedra.dev";
+const WEBSITE_URL: &str = "https://www.zedra.dev";
 const GITHUB_URL: &str = "https://github.com/tanlethanh/zedra";
 const DISCORD_URL: &str = "https://discord.gg/39MmkSS8sc";
 const XCOM_URL: &str = "https://x.com/zedradev";
@@ -78,9 +78,23 @@ impl Render for HomeView {
                     // Subtitle
                     .child(
                         div()
+                            .flex()
+                            .items_center()
                             .text_color(rgb(theme::TEXT_MUTED))
                             .text_size(px(theme::FONT_BODY))
-                            .child("Code from anywhere. Visit https://zedra.dev"),
+                            .child("Code from anywhere. ")
+                            .child(
+                                div()
+                                    .underline()
+                                    .cursor_pointer()
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|_this, _event, _window, _cx| {
+                                            platform_bridge::bridge().open_url(WEBSITE_URL);
+                                        }),
+                                    )
+                                    .child("zedra.dev"),
+                            ),
                     ),
             );
 
