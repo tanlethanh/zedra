@@ -13,6 +13,7 @@ pub enum QuickActionEvent {
     GoHome,
     SwitchToWorkspace(usize),
     SwitchToTerminal(usize, String),
+    TerminalDeleteRequested(usize, String),
     Close,
 }
 
@@ -232,6 +233,7 @@ impl Render for QuickActionPanel {
                 panel = panel.gap_1();
                 for (i, tid) in ws.terminal_ids().iter().enumerate() {
                     let tid_click = tid.clone();
+                    let tid_del = tid.clone();
                     let is_active = ws.active_terminal_id().is_some_and(|id| id == tid);
                     let meta = self
                         .handles
@@ -239,6 +241,15 @@ impl Render for QuickActionPanel {
                         .and_then(|h| h.terminal(tid))
                         .map(|t| t.meta())
                         .unwrap_or_default();
+
+                    let on_close = Box::new(cx.listener(
+                        move |_this, _event: &ClickEvent, _window, cx| {
+                            cx.emit(QuickActionEvent::TerminalDeleteRequested(
+                                index,
+                                tid_del.clone(),
+                            ));
+                        },
+                    ));
 
                     let card = render_terminal_card(TerminalCardProps {
                         id: format!("{}-{}", index, tid),
@@ -248,6 +259,7 @@ impl Render for QuickActionPanel {
                         cwd: meta.cwd,
                         shell_state: meta.shell_state,
                         last_exit_code: meta.last_exit_code,
+                        on_close: Some(on_close),
                     })
                     .on_click(cx.listener(
                         move |_this, _event, _window, cx| {

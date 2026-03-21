@@ -87,6 +87,12 @@ pub fn render_terminal_tab(
                 .map(|s| SharedString::from(s.to_owned()))
                 .unwrap_or_else(|| SharedString::from(format!("Terminal {}", index + 1)));
 
+            let on_close = Box::new(cx.listener(move |_this, _event: &ClickEvent, _window, cx| {
+                cx.emit(WorkspaceDrawerEvent::TerminalDeleteRequested(
+                    tid_del.clone(),
+                ));
+            }));
+
             let card = render_terminal_card(TerminalCardProps {
                 id: tid.clone(),
                 index: index + 1,
@@ -95,14 +101,10 @@ pub fn render_terminal_tab(
                 cwd: meta.cwd,
                 shell_state: meta.shell_state,
                 last_exit_code: meta.last_exit_code,
+                on_close: Some(on_close),
             })
             .on_click(cx.listener(move |_this, _event, _window, cx| {
                 cx.emit(WorkspaceDrawerEvent::TerminalSelected(tid_tap.clone()));
-            }))
-            .on_long_press(cx.listener(move |_this, _event, _window, cx| {
-                cx.emit(WorkspaceDrawerEvent::TerminalDeleteRequested(
-                    tid_del.clone(),
-                ));
             }));
 
             // TODO: disabled as it's not working yet

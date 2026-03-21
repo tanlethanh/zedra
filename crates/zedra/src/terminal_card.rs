@@ -31,6 +31,9 @@ pub struct TerminalCardProps {
     pub shell_state: zedra_session::ShellState,
     /// Exit code of the last completed command (OSC 133;D).
     pub last_exit_code: Option<i32>,
+    /// When set, replaces the status dot with a close (×) button that calls
+    /// this handler on tap. Propagation is stopped so the card click does not fire.
+    pub on_close: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
 }
 
 /// Colour of the status dot based on shell state and last exit code.
@@ -122,8 +125,42 @@ pub fn render_terminal_card(props: TerminalCardProps) -> Stateful<Div> {
 
     let status_color = dot_color(&props.shell_state, props.last_exit_code);
     let card_id = SharedString::from(format!("term-card-{}", props.id));
+    let close_btn_id = SharedString::from(format!("term-close-{}", props.id));
     let is_active = props.is_active;
     let icon_path = agent_icon(props.title.as_deref()).unwrap_or("icons/terminal.svg");
+
+    // Build the right-side indicator up front so we can move on_close without borrow issues.
+    let right_element: AnyElement = if let Some(close_fn) = props.on_close {
+        div()
+            .id(close_btn_id)
+            .w(px(24.0))
+            .h(px(24.0))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hit_slop(px(12.0))
+            .on_click(move |event, window, cx| {
+                close_fn(event, window, cx);
+                cx.stop_propagation();
+            })
+            .child(
+                svg()
+                    .path("icons/x.svg")
+                    .size(px(14.0))
+                    .text_color(rgb(theme::TEXT_MUTED)),
+            )
+            .into_any_element()
+    } else {
+        div()
+            .w(px(theme::ICON_STATUS))
+            .h(px(theme::ICON_STATUS))
+            .flex_shrink_0()
+            .rounded(px(3.0))
+            .bg(rgb(status_color))
+            .into_any_element()
+    };
 
     div()
         .id(card_id)
@@ -191,13 +228,6 @@ pub fn render_terminal_card(props: TerminalCardProps) -> Stateful<Div> {
                         .child(subtitle),
                 ),
         )
-        // Shell state dot — always shown; colour encodes state.
-        .child(
-            div()
-                .w(px(theme::ICON_STATUS))
-                .h(px(theme::ICON_STATUS))
-                .flex_shrink_0()
-                .rounded(px(3.0))
-                .bg(rgb(status_color)),
-        )
+        // Right-hand indicator: close button or status dot (built above).
+        .child(right_element)
 }

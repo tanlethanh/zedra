@@ -589,28 +589,7 @@ impl WorkspaceView {
                             }
                         }
                         WorkspaceDrawerEvent::TerminalDeleteRequested(tid) => {
-                            let tid = tid.clone();
-                            let index = this
-                                .terminal_views
-                                .iter()
-                                .position(|(id, _)| id == &tid)
-                                .map(|i| i + 1)
-                                .unwrap_or(1);
-                            let pending = this.pending_terminal_delete.clone();
-                            platform_bridge::show_alert(
-                                "",
-                                &format!("Delete Terminal {}?", index),
-                                vec![
-                                    AlertButton::destructive("Delete"),
-                                    AlertButton::cancel("Cancel"),
-                                ],
-                                move |button_index| {
-                                    if button_index == 0 {
-                                        pending.set(tid.clone());
-                                        zedra_session::push_callback(Box::new(|| {}));
-                                    }
-                                },
-                            );
+                            this.request_terminal_delete(tid.clone(), cx);
                         }
                         WorkspaceDrawerEvent::TerminalReordered {
                             dragged_id,
@@ -929,6 +908,31 @@ impl WorkspaceView {
         self.workspace_drawer.update(cx, |drawer, cx| {
             drawer.set_terminal_order(order, cx);
         });
+    }
+
+    /// Show a native confirmation dialog and delete the terminal on confirm.
+    pub fn request_terminal_delete(&mut self, tid: String, _cx: &mut Context<Self>) {
+        let index = self
+            .terminal_views
+            .iter()
+            .position(|(id, _)| id == &tid)
+            .map(|i| i + 1)
+            .unwrap_or(1);
+        let pending = self.pending_terminal_delete.clone();
+        platform_bridge::show_alert(
+            "",
+            &format!("Delete Terminal {}?", index),
+            vec![
+                AlertButton::destructive("Delete"),
+                AlertButton::cancel("Cancel"),
+            ],
+            move |button_index| {
+                if button_index == 0 {
+                    pending.set(tid.clone());
+                    zedra_session::push_callback(Box::new(|| {}));
+                }
+            },
+        );
     }
 
     /// Switch the main view to a specific terminal by ID.

@@ -161,6 +161,15 @@ impl ZedraApp {
                         });
                     }
                 }
+                QuickActionEvent::TerminalDeleteRequested(ws_index, tid) => {
+                    let ws_index = *ws_index;
+                    let tid = tid.clone();
+                    if let Some(entry) = this.workspaces.get(ws_index) {
+                        entry.view.update(cx, |ws, cx| {
+                            ws.request_terminal_delete(tid, cx);
+                        });
+                    }
+                }
             },
         );
         subscriptions.push(sub);
