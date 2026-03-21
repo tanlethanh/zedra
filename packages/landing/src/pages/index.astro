@@ -441,7 +441,11 @@ const canonicalUrl = "zedra.dev/";
 
       .store-copy strong {
         font-size: 0.92rem;
-        color: inherit;
+        color: var(--text);
+      }
+
+      .store-btn.secondary .store-copy strong {
+        color: var(--muted);
       }
 
       /* --- social links --- */
@@ -573,7 +577,7 @@ const canonicalUrl = "zedra.dev/";
 
       @media (max-width: 640px) {
         body {
-          padding: 18px;
+          padding: 18px 12px;
         }
 
         .page {
@@ -596,16 +600,25 @@ const canonicalUrl = "zedra.dev/";
         }
 
         .logo {
-          font-size: 1.6rem;
+          font-size: 1.4rem;
         }
 
         .logo-icon {
-          width: 26px;
-          height: 33px;
+          width: 30px;
+          height: 36px;
         }
 
         .description {
-          font-size: 0.92rem;
+          font-size: 0.85rem;
+          line-height: 1.65;
+        }
+
+        .store-copy strong {
+          font-size: 0.82rem;
+        }
+
+        .store-copy span {
+          font-size: 0.72rem;
         }
 
         .store-btn {
@@ -637,12 +650,21 @@ const canonicalUrl = "zedra.dev/";
           justify-content: center;
         }
 
+        .tab-panels {
+          padding: 10px;
+        }
+
+        .tab-list {
+          padding: 6px 10px 0;
+          gap: 4px;
+        }
+
         .terminal-code {
-          font-size: 0.82rem;
+          font-size: 0.76rem;
         }
 
         h1 {
-          font-size: clamp(2.6rem, 15vw, 4rem);
+          font-size: clamp(2.2rem, 12vw, 3.5rem);
         }
       }
 
@@ -831,7 +853,8 @@ const canonicalUrl = "zedra.dev/";
 
       document.querySelectorAll(".copy-btn").forEach((btn) => {
         btn.addEventListener("click", async () => {
-          const text = btn.closest(".install-block")?.dataset.copy ?? "";
+          const installBlock = btn.closest(".install-block") as HTMLElement | null;
+          const text = installBlock?.dataset.copy ?? "";
           try {
             await navigator.clipboard.writeText(text);
             btn.innerHTML = CHECK_ICON;
