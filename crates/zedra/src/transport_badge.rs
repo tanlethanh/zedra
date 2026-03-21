@@ -4,6 +4,11 @@ use zedra_session::{ConnectPhase, ConnectState};
 
 use crate::theme;
 
+/// Seconds after last received bytes before a path is considered stale.
+/// Shared between session_panel and connecting_view stale display logic.
+/// Set slightly above the 2s heartbeat interval (1 missed heartbeat + 1s tolerance).
+pub const STALE_THRESHOLD_SECS: u64 = 3;
+
 /// Compute badge label and dot color from connect state.
 /// Returns `(label, dot_color)` for rendering in the workspace header and
 /// as the phase subtitle in the connecting view.
@@ -13,6 +18,12 @@ use crate::theme;
 pub(crate) fn transport_badge_info(state: &ConnectState) -> (String, u32) {
     let snap = &state.snapshot;
     let elapsed = state.elapsed_secs();
+
+    // Prefix connecting-phase labels with "Retry N · " during auto-reconnect.
+    let retry_prefix: String = match state.reconnect_attempt {
+        Some(n) => format!("Retry {n} \u{00b7} "),
+        None => String::new(),
+    };
 
     match &state.phase {
         ConnectPhase::Connected => {
@@ -56,12 +67,12 @@ pub(crate) fn transport_badge_info(state: &ConnectState) -> (String, u32) {
         }
         ConnectPhase::Failed(err) => (err.user_message(), theme::ACCENT_RED),
         ConnectPhase::BindingEndpoint => {
-            let label = if elapsed > 0 {
+            let inner = if elapsed > 0 {
                 format!("Binding endpoint \u{00b7} {elapsed}s")
             } else {
                 "Binding endpoint".into()
             };
-            (label, theme::ACCENT_YELLOW)
+            (format!("{retry_prefix}{inner}"), theme::ACCENT_YELLOW)
         }
         ConnectPhase::HolePunching => {
             let mut parts: Vec<String> = Vec::new();
@@ -89,27 +100,33 @@ pub(crate) fn transport_badge_info(state: &ConnectState) -> (String, u32) {
             if elapsed > 0 {
                 parts.push(format!("{elapsed}s"));
             }
-            let label = if parts.is_empty() {
+            let inner = if parts.is_empty() {
                 "Connecting\u{2026}".into()
             } else {
                 parts.join(" \u{00b7} ")
             };
-            (label, theme::ACCENT_YELLOW)
+            (format!("{retry_prefix}{inner}"), theme::ACCENT_YELLOW)
         }
         ConnectPhase::EstablishingRpc => {
-            let label = if elapsed > 0 {
+            let inner = if elapsed > 0 {
                 format!("RPC setup \u{00b7} {elapsed}s")
             } else {
                 "RPC setup".into()
             };
-            (label, theme::ACCENT_YELLOW)
+            (format!("{retry_prefix}{inner}"), theme::ACCENT_YELLOW)
         }
-        ConnectPhase::Registering => ("Registering device".into(), theme::ACCENT_YELLOW),
+        ConnectPhase::Registering => {
+            (format!("{retry_prefix}Registering device"), theme::ACCENT_YELLOW)
+        }
         ConnectPhase::Authenticating | ConnectPhase::Proving => {
-            ("PKI challenge".into(), theme::ACCENT_YELLOW)
+            (format!("{retry_prefix}PKI challenge"), theme::ACCENT_YELLOW)
         }
-        ConnectPhase::FetchingInfo => ("Fetching workspace info".into(), theme::ACCENT_YELLOW),
-        ConnectPhase::ResumingTerminals => ("Resuming terminals".into(), theme::ACCENT_YELLOW),
+        ConnectPhase::FetchingInfo => {
+            (format!("{retry_prefix}Fetching workspace info"), theme::ACCENT_YELLOW)
+        }
+        ConnectPhase::ResumingTerminals => {
+            (format!("{retry_prefix}Resuming terminals"), theme::ACCENT_YELLOW)
+        }
         _ => ("Disconnected".into(), theme::ACCENT_RED),
     }
 }
