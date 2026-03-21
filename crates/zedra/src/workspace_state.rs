@@ -174,12 +174,26 @@ impl WorkspaceState {
         let entry_addr = entry.endpoint_addr();
         if let Some(idx) = workspaces.iter().position(|w| w.endpoint_addr() == entry_addr) {
             let mut i = workspaces[idx].inner().clone();
+            // Always update session_id (set before connect attempt).
+            // Only overwrite display fields when non-empty — the handle is empty
+            // during the connecting phase, so we preserve saved info until the
+            // connection succeeds and the server populates these fields.
             i.session_id = entry.inner().session_id.clone();
-            i.strip_path = entry.inner().strip_path.clone();
-            i.hostname = entry.inner().hostname.clone();
-            i.project_name = entry.inner().project_name.clone();
-            i.workdir = entry.inner().workdir.clone();
-            i.homedir = entry.inner().homedir.clone();
+            if !entry.inner().strip_path.is_empty() {
+                i.strip_path = entry.inner().strip_path.clone();
+            }
+            if !entry.inner().hostname.is_empty() {
+                i.hostname = entry.inner().hostname.clone();
+            }
+            if !entry.inner().project_name.is_empty() {
+                i.project_name = entry.inner().project_name.clone();
+            }
+            if !entry.inner().workdir.is_empty() {
+                i.workdir = entry.inner().workdir.clone();
+            }
+            if !entry.inner().homedir.is_empty() {
+                i.homedir = entry.inner().homedir.clone();
+            }
             i.updated_at = now;
             workspaces[idx] = Self(Arc::new(i));
         } else {
@@ -193,46 +207,13 @@ impl WorkspaceState {
         Self::save_all(&workspaces);
     }
 
-    fn update_inner<F>(s: Self, f: F) -> Self
+    pub(crate) fn update_inner<F>(s: Self, f: F) -> Self
     where
         F: FnOnce(&mut WorkspaceStateInner),
     {
         let mut i = (*s.0).clone();
         f(&mut i);
         Self(Arc::new(i))
-    }
-
-    /// Build from runtime summary (workspace view → home/QA). Persisted fields are minimal.
-    pub fn from_summary(
-        endpoint_addr: String,
-        strip_path: String,
-        project_name: String,
-        hostname: String,
-        workspace_index: usize,
-        connect_phase: zedra_session::ConnectPhase,
-        terminal_count: usize,
-        terminal_ids: Vec<String>,
-        active_terminal_id: Option<String>,
-        endpoint_addr_encoded: Option<String>,
-    ) -> Self {
-        Self(Arc::new(WorkspaceStateInner {
-            endpoint_addr,
-            session_id: String::new(),
-            strip_path,
-            project_name,
-            workdir: String::new(),
-            homedir: String::new(),
-            hostname,
-            created_at: 0,
-            updated_at: 0,
-            workspace_index: Some(workspace_index),
-            saved_index: None,
-            connect_phase: Some(connect_phase),
-            terminal_count,
-            terminal_ids,
-            active_terminal_id,
-            endpoint_addr_encoded,
-        }))
     }
 
     pub fn from_handle(handle: &zedra_session::SessionHandle) -> Option<Self> {
@@ -321,6 +302,14 @@ impl WorkspaceState {
 
     pub fn hostname(&self) -> &str {
         &self.0.hostname
+    }
+
+    pub fn workdir(&self) -> &str {
+        &self.0.workdir
+    }
+
+    pub fn homedir(&self) -> &str {
+        &self.0.homedir
     }
 
     pub fn with_saved_index(self, saved_index: usize) -> Self {
