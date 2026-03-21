@@ -78,7 +78,7 @@ impl Render for QuickActionPanel {
             // Panel header
             .child(
                 div()
-                    .h(px(theme::HEADER_HEIGHT))
+                    .h(px(theme::HEADER_HEIGHT - 4.0)) // TODO: should remove this magic offset
                     .flex()
                     .flex_row()
                     .items_center()
@@ -242,14 +242,13 @@ impl Render for QuickActionPanel {
                         .map(|t| t.meta())
                         .unwrap_or_default();
 
-                    let on_close = Box::new(cx.listener(
-                        move |_this, _event: &ClickEvent, _window, cx| {
+                    let on_close =
+                        Box::new(cx.listener(move |_this, _event: &ClickEvent, _window, cx| {
                             cx.emit(QuickActionEvent::TerminalDeleteRequested(
                                 index,
                                 tid_del.clone(),
                             ));
-                        },
-                    ));
+                        }));
 
                     let card = render_terminal_card(TerminalCardProps {
                         id: format!("{}-{}", index, tid),
