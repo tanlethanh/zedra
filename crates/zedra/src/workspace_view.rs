@@ -67,7 +67,6 @@ impl Render for FileTooLargeView {
     }
 }
 
-use crate::workspace_state::WorkspaceState;
 
 #[derive(Clone, Debug)]
 pub enum WorkspaceEvent {
@@ -109,6 +108,7 @@ pub struct WorkspaceContent {
     active_terminal_id: Option<String>,
     focus_handle: FocusHandle,
     session_handle: SessionHandle,
+    workspace_state: crate::workspace_state::WorkspaceState,
     /// Whether the connecting overlay is currently shown.
     overlay_visible: bool,
     /// True once Connected is detected; waiting for the 1s dismiss timer.
@@ -130,6 +130,7 @@ impl WorkspaceContent {
             active_terminal_id: None,
             focus_handle: cx.focus_handle(),
             session_handle,
+            workspace_state: crate::workspace_state::WorkspaceState::default(),
             overlay_visible: true,
             overlay_pending_hide: false,
             _overlay_task: None,
@@ -156,6 +157,15 @@ impl WorkspaceContent {
     ) {
         self.main_view = view;
         self.active_terminal_id = Some(terminal_id);
+        cx.notify();
+    }
+
+    pub fn set_workspace_state(
+        &mut self,
+        state: crate::workspace_state::WorkspaceState,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspace_state = state;
         cx.notify();
     }
 }
@@ -233,7 +243,7 @@ impl Render for WorkspaceContent {
         };
 
         let project_name: Option<SharedString> = {
-            let name = self.session_handle.project_name();
+            let name = self.workspace_state.project_name().to_string();
             if name.is_empty() {
                 None
             } else {
@@ -377,6 +387,7 @@ pub struct WorkspaceView {
     workspace_content: Entity<WorkspaceContent>,
     workspace_drawer: Entity<WorkspaceDrawer>,
     session_handle: SessionHandle,
+    workspace_state: crate::workspace_state::WorkspaceState,
     /// `(terminal_id, view)` pairs in creation order; pending slots use `PENDING_TERMINAL_ID`.
     terminal_views: Vec<(String, Entity<TerminalView>)>,
     pub active_terminal_id: Option<String>,
@@ -741,36 +752,31 @@ impl WorkspaceView {
             pending_git_commit_result,
             pending_terminal_delete: shared_pending_slot(),
             pending_terminal_ready,
+            workspace_state: crate::workspace_state::WorkspaceState::default(),
             _subscriptions: subscriptions,
         }
     }
 
-    /// Returns state for this workspace for HomeView / QuickActionPanel.
-    pub fn summary(&self, index: usize) -> WorkspaceState {
-        let cs = self.session_handle.connect_state();
-        let endpoint_addr_encoded = self
-            .session_handle
-            .endpoint_addr()
-            .and_then(|addr| zedra_rpc::pairing::encode_endpoint_addr(&addr).ok());
-        let endpoint_addr = endpoint_addr_encoded.clone().unwrap_or_default();
-        let terminal_ids: Vec<String> = self
+    /// Returns the live terminal IDs (excluding pending) and the active terminal ID.
+    /// Used by ZedraApp to update the workspace's WorkspaceState each render.
+    pub fn terminal_state(&self) -> (Vec<String>, Option<String>) {
+        let ids: Vec<String> = self
             .terminal_views
             .iter()
-            .filter(|(id, _)| id != PENDING_TERMINAL_ID)
+            .filter(|(id, _)| id.as_str() != PENDING_TERMINAL_ID)
             .map(|(id, _)| id.clone())
             .collect();
-        WorkspaceState::from_summary(
-            endpoint_addr,
-            self.session_handle.strip_path(),
-            self.session_handle.project_name(),
-            self.session_handle.hostname(),
-            index,
-            cs.phase,
-            terminal_ids.len(),
-            terminal_ids,
-            self.active_terminal_id.clone(),
-            endpoint_addr_encoded,
-        )
+        (ids, self.active_terminal_id.clone())
+    }
+
+    /// Update the workspace state used for header display and drawer subtitle.
+    /// Called by ZedraApp to propagate the live WorkspaceState into all display components.
+    pub fn set_workspace_state(&mut self, state: crate::workspace_state::WorkspaceState, cx: &mut Context<Self>) {
+        self.workspace_state = state.clone();
+        self.workspace_content.update(cx, |c, cx| c.set_workspace_state(state.clone(), cx));
+        self.workspace_drawer.update(cx, |drawer, cx| {
+            drawer.set_workspace_state(state, cx);
+        });
     }
 
     /// Called when this workspace becomes the active workspace.

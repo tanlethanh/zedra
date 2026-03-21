@@ -37,6 +37,7 @@ enum AppScreen {
 struct WorkspaceEntry {
     view: Entity<WorkspaceView>,
     handle: SessionHandle,
+    state: WorkspaceState,
 }
 
 impl PartialEq for WorkspaceEntry {
@@ -217,27 +218,38 @@ impl ZedraApp {
     fn refresh_saved_workspaces(&mut self, cx: &mut Context<Self>) {
         self.saved_workspaces = WorkspaceState::load();
         log::info!("Saved workspaces: {}", self.saved_workspaces.len());
-        self.sync_workspace_states(self.build_home_items(&[]), cx);
+        self.sync_workspace_states(self.build_home_items(), cx);
     }
 
-    fn build_home_items(&self, summaries: &[WorkspaceState]) -> Vec<WorkspaceState> {
-        let mut matched_ws = vec![false; summaries.len()];
+    /// Build the unified home list from saved workspaces and active `entry.state` values.
+    /// Active entries whose endpoint matches a saved entry take the saved slot (with state
+    /// fields kept current); unmatched active entries (new pairings) prepend the list.
+    fn build_home_items(&self) -> Vec<WorkspaceState> {
+        let mut matched_ws = vec![false; self.workspaces.len()];
         let mut items: Vec<WorkspaceState> = Vec::new();
         for (saved_idx, sw) in self.saved_workspaces.iter().enumerate() {
-            if let Some((ws_idx, summary)) = summaries
+            if let Some((ws_idx, entry)) = self
+                .workspaces
                 .iter()
                 .enumerate()
-                .find(|(_, s)| s.endpoint_addr_encoded() == Some(sw.endpoint_addr()))
+                .find(|(_, e)| e.state.endpoint_addr_encoded() == Some(sw.endpoint_addr()))
             {
                 matched_ws[ws_idx] = true;
-                items.push(summary.clone().with_saved_index(saved_idx));
+                items.push(WorkspaceState::update_inner(entry.state.clone(), |s| {
+                    s.workspace_index = Some(ws_idx);
+                    s.saved_index = Some(saved_idx);
+                }));
             } else {
                 items.push(sw.clone().for_saved_row(saved_idx));
             }
         }
-        for (ws_idx, summary) in summaries.iter().enumerate() {
+        for (ws_idx, entry) in self.workspaces.iter().enumerate() {
             if !matched_ws[ws_idx] {
-                items.insert(0, summary.clone());
+                let item = WorkspaceState::update_inner(entry.state.clone(), |s| {
+                    s.workspace_index = Some(ws_idx);
+                    s.saved_index = None;
+                });
+                items.insert(0, item);
             }
         }
         items
@@ -317,7 +329,13 @@ impl ZedraApp {
         match zedra_rpc::pairing::decode_endpoint_addr(ws.endpoint_addr()) {
             Ok(addr) => {
                 log::info!("Reconnecting to saved workspace: {}", addr.id.fmt_short());
-                self.connect_with_iroh_addr(addr, Some(ws.session_id().to_string()), window, cx);
+                self.connect_with_iroh_addr(
+                    addr,
+                    Some(ws.session_id().to_string()),
+                    Some(ws.clone()),
+                    window,
+                    cx,
+                );
             }
             Err(e) => {
                 log::error!("Failed to decode saved endpoint addr: {}", e);
@@ -352,7 +370,7 @@ impl ZedraApp {
         cx: &mut Context<Self>,
     ) {
         let addr = iroh::EndpointAddr::from(ticket.endpoint_id);
-        self.connect_with_iroh_addr(addr, None, window, cx);
+        self.connect_with_iroh_addr(addr, None, None, window, cx);
         // Store the ticket and signer on the just-created handle
         if let Some(entry) = self.workspaces.last() {
             entry.handle.set_pending_ticket(ticket);
@@ -366,11 +384,27 @@ impl ZedraApp {
         addr: iroh::EndpointAddr,
         // If `None`, a new session ID will be generated.
         session_id: Option<String>,
+        // Pre-seeded display state from a saved workspace entry (reconnect case).
+        // For new pairings pass `None`; the state starts minimal and fills in post-connect.
+        saved: Option<WorkspaceState>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let endpoint_short = addr.id.fmt_short().to_string();
         log::info!("QR connect: starting iroh connection to {}", endpoint_short);
+
+        // Build initial WorkspaceState for this entry.
+        // For reconnects, seed from saved (preserves display fields during connecting phase).
+        // For new pairings, build a minimal state with just the encoded endpoint addr.
+        let encoded_addr = zedra_rpc::pairing::encode_endpoint_addr(&addr).unwrap_or_default();
+        let initial_state = if let Some(s) = saved {
+            s
+        } else {
+            WorkspaceState::update_inner(WorkspaceState::default(), |i| {
+                i.endpoint_addr = encoded_addr.clone();
+                i.endpoint_addr_encoded = Some(encoded_addr);
+            })
+        };
 
         // Create a per-workspace session handle
         let session_handle = SessionHandle::new();
@@ -447,9 +481,17 @@ impl ZedraApp {
         self.workspaces.push(WorkspaceEntry {
             view: workspace_view,
             handle: session_handle.clone(),
+            state: initial_state,
         });
         self.active_workspace = Some(self.workspaces.len() - 1);
         self.screen = AppScreen::Workspace;
+
+        // Push the initial WorkspaceState into the view/drawer so the header shows
+        // the saved title immediately, before the handle fields are populated post-connect.
+        if let Some(entry) = self.workspaces.last() {
+            let state = entry.state.clone();
+            entry.view.update(cx, |v, cx| v.set_workspace_state(state, cx));
+        }
 
         // Store endpoint addr synchronously so persist_current_workspaces can snapshot it now.
         session_handle.set_endpoint_addr(addr.clone());
@@ -575,19 +617,58 @@ impl Render for ZedraApp {
             self.persist_current_workspaces();
         }
 
-        // Build workspace summaries (needed for QuickActionPanel and live home list).
-        // Only computed when there are active workspaces; with none, home items are
-        // stable and already up-to-date from refresh_saved_workspaces.
-        let summaries: Vec<_> = self
+        // Update each entry's WorkspaceState from the live handle and view.
+        // Display fields (project_name, hostname, etc.) are only overwritten when
+        // non-empty so saved info persists while the connection is in progress.
+        for entry in self.workspaces.iter_mut() {
+            let connect_phase = entry.handle.connect_state().phase;
+            let (terminal_ids, active_terminal_id) = entry.view.read(cx).terminal_state();
+            let project_name = entry.handle.project_name();
+            let hostname = entry.handle.hostname();
+            let workdir = entry.handle.workdir();
+            let homedir = entry.handle.homedir();
+            let strip_path = entry.handle.strip_path();
+            let session_id = entry.handle.session_id().unwrap_or_default();
+            entry.state = WorkspaceState::update_inner(entry.state.clone(), |s| {
+                s.connect_phase = Some(connect_phase);
+                s.terminal_count = terminal_ids.len();
+                s.terminal_ids = terminal_ids;
+                s.active_terminal_id = active_terminal_id;
+                if !project_name.is_empty() {
+                    s.project_name = project_name;
+                }
+                if !hostname.is_empty() {
+                    s.hostname = hostname;
+                }
+                if !workdir.is_empty() {
+                    s.workdir = workdir;
+                }
+                if !homedir.is_empty() {
+                    s.homedir = homedir;
+                }
+                if !strip_path.is_empty() {
+                    s.strip_path = strip_path;
+                }
+                if !session_id.is_empty() {
+                    s.session_id = session_id;
+                }
+            });
+        }
+
+        // Push updated WorkspaceState into each workspace's view/drawer/header.
+        // Collect first to avoid holding a mutable borrow on self.workspaces
+        // while calling entry.view.update().
+        let view_states: Vec<_> = self
             .workspaces
             .iter()
-            .enumerate()
-            .map(|(i, e)| e.view.read(cx).summary(i))
+            .map(|e| (e.view.clone(), e.state.clone()))
             .collect();
+        for (view, state) in view_states {
+            view.update(cx, |v, cx| v.set_workspace_state(state, cx));
+        }
 
-        // Keep home and quick-action in sync from one shared snapshot regardless of
-        // current screen, while avoiding redundant per-frame updates.
-        self.sync_workspace_states(self.build_home_items(&summaries), cx);
+        // Keep home and quick-action in sync from one shared snapshot.
+        self.sync_workspace_states(self.build_home_items(), cx);
 
         // Sync qa_drawer content to the current active screen view
         let screen_view: AnyView = match self.screen {

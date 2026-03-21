@@ -55,6 +55,7 @@ pub struct WorkspaceDrawer {
     /// Client-side terminal display order (persists across reconnects, updated on drag-reorder).
     terminal_order: Vec<String>,
     session_handle: Option<zedra_session::SessionHandle>,
+    workspace_state: crate::workspace_state::WorkspaceState,
     /// Kept alive to poll session state every 2 s and re-render the session tab.
     /// Dropped (and cancelled) when replaced by a new session.
     _session_refresh_task: Option<Task<()>>,
@@ -120,6 +121,7 @@ impl WorkspaceDrawer {
             active_terminal_id: None,
             terminal_order: Vec::new(),
             session_handle: None,
+            workspace_state: crate::workspace_state::WorkspaceState::default(),
             _session_refresh_task: None,
             _subscriptions: subscriptions,
         }
@@ -278,30 +280,23 @@ impl WorkspaceDrawer {
         self.active_section
     }
 
+    pub fn set_workspace_state(&mut self, state: crate::workspace_state::WorkspaceState, cx: &mut Context<Self>) {
+        self.workspace_state = state;
+        cx.notify();
+    }
+
     fn project_name(&self) -> String {
-        self.session_handle
-            .as_ref()
-            .map(|h| h.project_name())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_default()
+        self.workspace_state.project_name().to_string()
     }
 
     fn tab_subtitle(&self, cx: &App) -> String {
         match self.active_section {
             DrawerSection::Files => {
-                let wd = self
-                    .session_handle
-                    .as_ref()
-                    .map(|h| h.workdir())
-                    .unwrap_or_default();
+                let wd = self.workspace_state.workdir().to_string();
                 if wd.is_empty() {
                     return String::new();
                 }
-                let home = self
-                    .session_handle
-                    .as_ref()
-                    .map(|h| h.homedir())
-                    .unwrap_or_default();
+                let home = self.workspace_state.homedir().to_string();
                 if !home.is_empty() {
                     if let Some(rest) = wd.strip_prefix(&home) {
                         return format!("~{rest}");
