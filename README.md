@@ -1,28 +1,47 @@
 # Zedra
 
-**Your desktop, in your pocket.**
+**Remote editor on mobile. Code from anywhere.**
 
-Run Claude Code from your phone. One QR scan connects you to your desktop — full terminal, file browser, git, and AI coding agents, all over an encrypted P2P tunnel. No port forwarding. No cloud. Just your machine.
+One QR scan connects you to your desktop. Full terminal, file browser, git, and AI agents over an encrypted P2P tunnel. No port forwarding. No cloud.
 
-<!-- TODO: demo GIF or screenshot -->
+<video src="https://raw.githubusercontent.com/tanlethanh/zedra/main/packages/landing/public/zedra-demo.mp4" autoplay muted loop playsinline width="100%"></video>
 
 ## Quick Start
 
+**curl**
 ```bash
-# On your desktop
-curl -fsSL https://zedra.dev/install.sh | sh
+curl -fsSL zedra.dev/install.sh | sh
 zedra start
 ```
 
-Scan the QR code with the Zedra app. That's it.
+**Claude Code**
+```
+/plugin marketplace add anthropics/claude-code
+/plugin install github@tanlethanh/zedra
+/zedra-start
+```
 
-> Using Claude Code? Install the plugin instead:
->
-> ```
-> /plugin marketplace add tanlethanh/zedra
-> /plugin install claude-code@zedra
-> /zedra-start
-> ```
+**Codex**
+```bash
+curl -fsSL zedra.dev/codex.sh | sh
+# then in Codex:
+/zedra-start
+```
+
+**OpenCode**
+```bash
+curl -fsSL zedra.dev/opencode.sh | sh
+# then in OpenCode:
+/zedra-start
+```
+
+**Gemini CLI**
+```bash
+gemini skills install https://github.com/tanlethanh/zedra.git --path plugins/zedra
+/zedra-start
+```
+
+Scan the QR code with the Zedra app. That's it.
 
 ## What You Get
 
@@ -48,8 +67,8 @@ Phone ←──── encrypted QUIC tunnel ────→ Desktop
 
 ## Get the App
 
-- [Android](https://play.google.com/store/apps/details?id=dev.zedra.app)
-- iOS — coming soon
+- Android — coming soon
+- iOS — [TestFlight](https://testflight.apple.com/join/1EWe2kRH)
 
 ## Status
 
