@@ -886,6 +886,17 @@ impl SessionHandle {
             loop {
                 match irpc_output_rx.recv().await {
                     Ok(Some(output)) => {
+                        // seq=0 is a synthetic metadata preamble injected by the
+                        // host on TermAttach to seed title/CWD from its OSC cache.
+                        // Pass the bytes through for OSC parsing but skip seq
+                        // tracking and the backlog-gap check so this doesn't
+                        // interfere with the real output stream.
+                        if output.seq == 0 {
+                            terminal_pump.push_output(output.data);
+                            terminal_pump.signal_needs_render();
+                            continue;
+                        }
+
                         if first_msg {
                             first_msg = false;
                             if last_seq > 0 && output.seq > last_seq + 1 {

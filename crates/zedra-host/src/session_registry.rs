@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
+use zedra_rpc::osc::OscScanner;
 use zedra_rpc::proto::{BacklogEntry, HostEvent, TermOutput};
 
 // ---------------------------------------------------------------------------
@@ -134,12 +135,35 @@ pub struct OutputSenderSlot {
     pub sender: Option<tokio::sync::mpsc::Sender<TermOutput>>,
 }
 
+/// Per-terminal OSC metadata tracked by the host PTY reader.
+///
+/// Updated in real-time as PTY output flows through, so the host always has
+/// the latest known title and CWD regardless of backlog eviction.
+pub struct HostTermMeta {
+    pub scanner: OscScanner,
+    pub title: Option<String>,
+    pub cwd: Option<String>,
+}
+
+impl Default for HostTermMeta {
+    fn default() -> Self {
+        Self {
+            scanner: OscScanner::new(),
+            title: None,
+            cwd: None,
+        }
+    }
+}
+
 /// A live terminal session owned by a ServerSession.
 pub struct TermSession {
     pub writer: Box<dyn Write + Send>,
     pub master: Box<dyn portable_pty::MasterPty + Send>,
     /// Swappable output sender. Updated on each TermAttach.
     pub output_sender: Arc<std::sync::Mutex<OutputSenderSlot>>,
+    /// Host-side OSC metadata cache (title, CWD). Updated by the PTY reader
+    /// task as output bytes flow through. Used to seed the client on attach.
+    pub host_meta: Arc<std::sync::Mutex<HostTermMeta>>,
 }
 
 /// Summary of a session for listing purposes.

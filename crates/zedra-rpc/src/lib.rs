@@ -3,6 +3,7 @@
 // Provides the typed irpc protocol between mobile client and desktop host,
 // and QR pairing (EndpointAddr encoding).
 
+pub mod osc;
 pub mod pairing;
 pub mod proto;
 
