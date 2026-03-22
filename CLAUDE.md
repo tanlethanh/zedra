@@ -233,15 +233,8 @@ vendor/zed/crates/gpui_wgpu/src/
   ├── shaders.wgsl              # Base shaders (all primitives except subpixel sprites)
   └── shaders_subpixel.wgsl     # Subpixel sprite shaders (requires dual-source blending)
 
-packages/relay-worker/              # Cloudflare Worker relay server (relay.zedra.dev)
-  ├── wrangler.toml             # CF Worker config + KV + DO bindings
-  └── src/
-      ├── index.ts              # Router: /ping, /generate_204, /relay (WS upgrade)
-      ├── relay-endpoint.ts     # RelayEndpoint Durable Object (per-endpoint WS relay)
-      ├── frame-codec.ts        # iroh relay wire protocol (13 frame types)
-      ├── crypto.ts             # BLAKE3 KDF + Ed25519 handshake verification
-      ├── types.ts              # TypeScript types + CF bindings
-      └── utils.ts              # JSON responses, error helpers
+packages/relay-worker/              # [DEPRECATED] Experimental Cloudflare Worker relay — do not use
+                                    # Production relay now uses official iroh-relay binary (see deploy/relay/)
 
 docs/
   ├── ARCHITECTURE.md           # Design decisions
