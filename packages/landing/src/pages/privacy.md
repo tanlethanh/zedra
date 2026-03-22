@@ -82,6 +82,11 @@ If we materially change what data is collected, we will update this page and not
 at the top. We will not begin collecting new categories of personal data without updating
 this policy first.
 
+## License
+
+Zedra is open source software released under the [MIT License](https://github.com/tanlethanh/zedra/blob/main/LICENSE).
+Copyright &copy; 2026 Tan Le.
+
 ## Contact
 
 Questions or concerns? Open an issue on [GitHub](https://github.com/tanlethanh/zedra).
