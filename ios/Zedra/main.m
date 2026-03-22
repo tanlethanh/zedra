@@ -30,6 +30,7 @@ extern void gpui_ios_did_become_active(void* app_ptr);
 extern void gpui_ios_will_resign_active(void* app_ptr);
 extern void gpui_ios_did_enter_background(void* app_ptr);
 extern void gpui_ios_will_terminate(void* app_ptr);
+extern void gpui_ios_handle_view_resize(void* window_ptr, float width_pts, float height_pts);
 
 // Zedra FFI (from zedra-ios crate)
 extern void zedra_ios_send_key_input(const char* key);
@@ -244,6 +245,15 @@ static const char *kAccessoryKeyNames[] = {"escape", "tab", "left", "down", "up"
     zedra_ios_set_screen_scale(scale);
 }
 
+/// Push the current screen size (in logical points) to the GPUI window.
+///
+/// Must be called after orientation changes so GPUI reflows layout at the new dimensions.
+- (void)pushWindowSize {
+    if (!self.gpuiWindow) { return; }
+    CGSize size = [UIScreen mainScreen].bounds.size;
+    gpui_ios_handle_view_resize(self.gpuiWindow, (float)size.width, (float)size.height);
+}
+
 /// Push the current safe area insets (in physical pixels) to Rust.
 ///
 /// UIEdgeInsets are in points; multiply by screen scale to get physical pixels,
@@ -311,10 +321,15 @@ static const char *kAccessoryKeyNames[] = {"escape", "tab", "left", "down", "up"
         [self pushSafeAreaInsets];
     });
 
-    // Re-push insets on orientation change so landscape insets stay correct.
+    // Re-push insets and window size on orientation change so landscape layout stays correct.
     [[NSNotificationCenter defaultCenter]
         addObserver:self
            selector:@selector(pushSafeAreaInsets)
+               name:UIApplicationDidChangeStatusBarOrientationNotification
+             object:nil];
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self
+           selector:@selector(pushWindowSize)
                name:UIApplicationDidChangeStatusBarOrientationNotification
              object:nil];
 
