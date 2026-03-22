@@ -1,5 +1,0 @@
-{
-  "name": "claude-code",
-  "description": "Zedra integration for Claude Code — start the host daemon and pair mobile devices",
-  "version": "0.1.0"
-}

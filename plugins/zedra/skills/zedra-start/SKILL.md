@@ -42,7 +42,7 @@ If it fails, check that `~/.local/bin` or `~/.cargo/bin` is in PATH and advise t
 ## Step 3 — Check if daemon is already running
 
 ```bash
-zedra status --workdir "${1:-.}" 2>/dev/null && echo "RUNNING" || echo "NOT_RUNNING"
+zedra status --workdir "." 2>/dev/null && echo "RUNNING" || echo "NOT_RUNNING"
 ```
 
 If `RUNNING`, skip to Step 5 (open terminal on existing daemon).
@@ -54,7 +54,7 @@ Start zedra-host in the background. The daemon itself does NOT take `--launch-cm
 the launch command is passed per-terminal via `zedra terminal --launch-cmd`.
 
 ```bash
-nohup zedra start --workdir "${1:-.}" > /tmp/zedra-start.log 2>&1 &
+nohup zedra start --workdir "." > /tmp/zedra-start.log 2>&1 &
 sleep 3
 cat /tmp/zedra-start.log
 ```
@@ -91,22 +91,22 @@ Pick the right command based on which agent tool is invoking this skill:
 
 **Claude Code:**
 ```bash
-zedra terminal --workdir "${1:-.}" --launch-cmd "claude --resume ${CLAUDE_SESSION_ID}"
+zedra terminal --workdir "." --launch-cmd "claude --resume ${CLAUDE_SESSION_ID}"
 ```
 
 **Codex:**
 ```bash
-zedra terminal --workdir "${1:-.}" --launch-cmd "codex resume --last"
+zedra terminal --workdir "." --launch-cmd "codex resume --last"
 ```
 
 **OpenCode:**
 ```bash
-zedra terminal --workdir "${1:-.}" --launch-cmd "opencode --continue"
+zedra terminal --workdir "." --launch-cmd "opencode --continue"
 ```
 
 **Gemini CLI:**
 ```bash
-zedra terminal --workdir "${1:-.}" --launch-cmd "gemini --resume"
+zedra terminal --workdir "." --launch-cmd "gemini --resume"
 ```
 
 Report the result to the user.
@@ -114,8 +114,8 @@ Report the result to the user.
 ## Notes
 
 - The daemon runs in the background and survives shell exit
-- Use `/zedra-stop` to stop it, or `zedra list` to see all instances
+- Use `/zedra:zedra-stop` to stop it, or `zedra list` to see all instances
 - The QR code encodes a one-time pairing ticket; after first scan, the phone reconnects automatically via PKI
 - `--launch-cmd` is per-terminal, not global — only terminals opened with it get the agent session
-- `/zedra-terminal` opens additional terminals with agent resume
-- `/zedra-status` checks if the daemon is healthy
+- `/zedra:zedra-terminal` opens additional terminals with agent resume
+- `/zedra:zedra-status` checks if the daemon is healthy

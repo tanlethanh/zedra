@@ -12,7 +12,7 @@ Show the status of the running Zedra Host daemon and all active instances.
 ## Step 1 — Check specific workspace
 
 ```bash
-zedra status --workdir "${1:-.}" 2>&1
+zedra status --workdir "." 2>&1
 ```
 
 ## Step 2 — List all instances

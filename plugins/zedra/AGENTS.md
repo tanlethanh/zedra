@@ -7,10 +7,10 @@ that lets you control your development environment from the Zedra mobile app.
 
 | Skill | Description |
 |-------|-------------|
-| `zedra-start` | Check/install zedra CLI, launch daemon, print QR for mobile pairing |
-| `zedra-status` | Show daemon status and active sessions |
-| `zedra-stop` | Stop the running daemon |
-| `zedra-terminal` | Open a new terminal on the connected phone |
+| `zedra:zedra-start` | Check/install zedra CLI, launch daemon, print QR for mobile pairing |
+| `zedra:zedra-status` | Show daemon status and active sessions |
+| `zedra:zedra-stop` | Stop the running daemon |
+| `zedra:zedra-terminal` | Open a new terminal on the connected phone |
 
 ## Prerequisites
 
@@ -18,6 +18,13 @@ that lets you control your development environment from the Zedra mobile app.
   ```bash
   curl -fsSL https://raw.githubusercontent.com/tanlethanh/zedra/main/scripts/install.sh | sh
   ```
+
+## Claude Code Installation
+
+```
+/plugin marketplace add tanlethanh/zedra
+/plugin install zedra@zedra
+```
 - **Zedra mobile app**: Install on your Android/iOS device to scan the pairing QR code
 
 ## How It Works

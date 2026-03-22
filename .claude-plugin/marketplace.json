@@ -8,9 +8,9 @@
   },
   "plugins": [
     {
-      "name": "claude-code",
-      "source": "./plugins/claude-code",
-      "description": "Start zedra-host daemon and pair mobile devices with /zedra-start"
+      "name": "zedra",
+      "source": "./plugins/zedra",
+      "description": "Start Zedra Host daemon and pair mobile devices with /zedra-start, manage sessions with /zedra-status and /zedra-stop, and open terminals with /zedra-terminal"
     }
   ]
 }

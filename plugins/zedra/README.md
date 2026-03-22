@@ -12,8 +12,10 @@ Works with Claude Code, Codex, OpenCode, and any tool supporting the
 # Local development
 claude --plugin-dir ./plugins/zedra
 
-# Or install permanently
-claude plugin install zedra@<marketplace>
+# Or install from marketplace
+# (inside a Claude Code session)
+/plugin marketplace add tanlethanh/zedra
+/plugin install zedra@zedra
 ```
 
 ### Codex / OpenCode
@@ -32,12 +34,14 @@ opencode --add-dir ./plugins/zedra
 
 ## Usage
 
+Plugin skills are namespaced by the plugin name in Claude Code:
+
 | Command | What it does |
 |---------|-------------|
-| `/zedra-start` | Check install, launch daemon, print QR |
-| `/zedra-status` | Show daemon status |
-| `/zedra-stop` | Stop the daemon |
-| `/zedra-terminal` | Open a terminal on the connected phone |
+| `/zedra:zedra-start` | Check install, launch daemon, print QR |
+| `/zedra:zedra-status` | Show daemon status |
+| `/zedra:zedra-stop` | Stop the daemon |
+| `/zedra:zedra-terminal` | Open a terminal on the connected phone |
 
 ## Skills
 
