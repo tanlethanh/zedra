@@ -19,8 +19,8 @@ zedra start
 **Claude Code**
 ```
 /plugin marketplace add tanlethanh/zedra
-/plugin install claude-code@zedra
-/zedra-start
+/plugin install zedra@zedra
+/zedra:zedra-start
 ```
 
 **Codex**
