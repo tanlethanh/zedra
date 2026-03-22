@@ -126,7 +126,7 @@ const demoVideo = "/zedra-demo.mp4";
 const pageTitle = "Zedra — Remote editor on mobile. Code from anywhere.";
 const pageDescription =
   "One QR scan connects you to your desktop. Full terminal, file browser, git, and AI agents over an encrypted P2P tunnel. No port forwarding. No cloud.";
-const canonicalUrl = "zedra.dev/";
+const canonicalUrl = "https://zedra.dev/";
 ---
 
 <!doctype html>
@@ -151,11 +151,28 @@ const canonicalUrl = "zedra.dev/";
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="@zedradev" />
+    <meta name="twitter:creator" content="@zedradev" />
     <meta name="twitter:title" content={pageTitle} />
     <meta name="twitter:description" content={pageDescription} />
     <meta name="twitter:image" content="https://www.zedra.dev/OG.png" />
+    <meta name="twitter:image:alt" content="Zedra — remote coding on mobile" />
+    <meta property="og:image:alt" content="Zedra — remote coding on mobile" />
     <link rel="canonical" href={canonicalUrl} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <script type="application/ld+json" set:html={JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "Zedra",
+      "description": pageDescription,
+      "url": canonicalUrl,
+      "applicationCategory": "DeveloperApplication",
+      "operatingSystem": "iOS, Android",
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+      "author": { "@type": "Organization", "name": "Zedra", "url": canonicalUrl },
+    })}></script>
     <style>
       @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Lora:wght@400&display=swap");
 
@@ -579,6 +596,28 @@ const canonicalUrl = "zedra.dev/";
         }
       }
 
+      footer {
+        padding: 24px 0 8px;
+        border-top: 1px solid var(--border);
+      }
+
+      footer nav {
+        display: flex;
+        gap: 24px;
+        flex-wrap: wrap;
+      }
+
+      footer a {
+        color: var(--muted);
+        text-decoration: none;
+        font-size: 0.78rem;
+        transition: color 0.18s;
+      }
+
+      footer a:hover {
+        color: var(--text);
+      }
+
       @media (max-width: 640px) {
         body {
           padding: 18px 12px;
@@ -853,6 +892,13 @@ const canonicalUrl = "zedra.dev/";
           </div>
         </aside>
       </main>
+      <footer>
+        <nav aria-label="Site links">
+          <a href="/privacy">Privacy Policy</a>
+          <a href="/support">Support</a>
+          <a href="https://github.com/tanlethanh/zedra" target="_blank" rel="noopener noreferrer">GitHub</a>
+        </nav>
+      </footer>
     </div>
     <script src="../scripts/analytics.ts"></script>
     <script>

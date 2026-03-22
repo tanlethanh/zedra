@@ -9,6 +9,7 @@
     "astro": "astro"
   },
   "dependencies": {
+    "@astrojs/sitemap": "^3.2.1",
     "@astrojs/vercel": "^9.0.4",
     "astro": "^5.17.1",
     "firebase": "^12.11.0"

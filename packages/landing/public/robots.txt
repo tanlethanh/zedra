@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://zedra.dev/sitemap-index.xml
