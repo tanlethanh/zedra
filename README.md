@@ -74,8 +74,8 @@ Phone ←──── encrypted QUIC tunnel ────→ Desktop
 
 ## Status
 
-Zedra is in active development. I need your feedbacks.
+Zedra is under active development. Core features are stable and in use — bugs, rough edges, and breaking changes should be expected. Feedback and issues are welcome on [GitHub](https://github.com/tanlethanh/zedra/issues).
 
 ## License
 
-MIT
+MIT © [Tan Le](https://github.com/tanlethanh)
