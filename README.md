@@ -18,7 +18,7 @@ zedra start
 
 **Claude Code**
 ```
-/plugin marketplace add tanlethanh/zedra
+/plugin marketplace add tanlethanh/zedra-plugin
 /plugin install zedra@zedra
 /zedra:zedra-start
 ```
@@ -39,7 +39,7 @@ curl -fsSL zedra.dev/opencode.sh | sh
 
 **Gemini CLI**
 ```bash
-gemini skills install https://github.com/tanlethanh/zedra.git --path plugins/zedra
+gemini skills install https://github.com/tanlethanh/zedra-plugin.git --path plugins/zedra
 /zedra-start
 ```
 

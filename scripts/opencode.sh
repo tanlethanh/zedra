@@ -7,7 +7,9 @@
 set -eu
 
 REPO="tanlethanh/zedra"
+PLUGIN_REPO="tanlethanh/zedra-plugin"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
+PLUGIN_RAW_BASE="https://raw.githubusercontent.com/${PLUGIN_REPO}/main"
 SKILL_NAMES="zedra-start zedra-status zedra-stop zedra-terminal"
 
 # --- Install zedra CLI ---
@@ -53,7 +55,7 @@ install_skills() {
     for skill in $SKILL_NAMES; do
         target="${skills_dir}/${skill}/SKILL.md"
         mkdir -p "$(dirname "$target")"
-        if curl -fsSL -o "$target" "${RAW_BASE}/plugins/zedra/skills/${skill}/SKILL.md" 2>/dev/null; then
+        if curl -fsSL -o "$target" "${PLUGIN_RAW_BASE}/plugins/zedra/skills/${skill}/SKILL.md" 2>/dev/null; then
             echo "  ${skill}"
         else
             echo "  ${skill} (skipped — download failed)"
