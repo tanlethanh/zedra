@@ -204,7 +204,10 @@ pub fn kill_and_unlock(workdir: &Path, grace_secs: u64) -> Result<()> {
     })?;
 
     if !is_process_alive(info.pid) {
-        tracing::info!("Process {} is already gone; removing stale lock file.", info.pid);
+        tracing::info!(
+            "Process {} is already gone; removing stale lock file.",
+            info.pid
+        );
         let _ = std::fs::remove_file(&lock_path);
         return Ok(());
     }

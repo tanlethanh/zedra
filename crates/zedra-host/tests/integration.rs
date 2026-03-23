@@ -103,7 +103,7 @@ async fn connect_client(
     registry: &Arc<SessionRegistry>,
     host_identity: &Arc<HostIdentity>,
 ) -> anyhow::Result<(irpc::Client<ZedraProto>, String)> {
-    use ed25519_dalek::{SigningKey, VerifyingKey, Verifier};
+    use ed25519_dalek::{SigningKey, Verifier, VerifyingKey};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     // Generate ephemeral client keypair
@@ -118,7 +118,9 @@ async fn connect_client(
     registry.add_pairing_slot(&session.id, handshake_key).await;
     // Pre-authorize client so Authenticate can proceed even if Register fails
     // (in tests we always register, so this is belt-and-suspenders)
-    registry.add_client_to_session(&session.id, client_pubkey).await;
+    registry
+        .add_client_to_session(&session.id, client_pubkey)
+        .await;
 
     // Connect
     let client_endpoint = make_endpoint(relay_url).await?;
@@ -147,7 +149,8 @@ async fn connect_client(
         .await?;
     assert!(
         matches!(reg_result, RegisterResult::Ok),
-        "register failed: {:?}", reg_result
+        "register failed: {:?}",
+        reg_result
     );
 
     // Step 2: Authenticate — get challenge
@@ -170,7 +173,8 @@ async fn connect_client(
         .await?;
     assert!(
         matches!(prove_result, AuthProveResult::Ok),
-        "auth prove failed: {:?}", prove_result
+        "auth prove failed: {:?}",
+        prove_result
     );
 
     Ok((client, session.id.clone()))
@@ -210,10 +214,7 @@ async fn test_relay_endpoint_connectivity() {
         let _ = done_rx.await;
     });
 
-    let conn = ep_b
-        .connect(ep_a_addr, proto::ZEDRA_ALPN)
-        .await
-        .unwrap();
+    let conn = ep_b.connect(ep_a_addr, proto::ZEDRA_ALPN).await.unwrap();
     let (mut send, mut recv) = conn.open_bi().await.unwrap();
 
     send.write_all(b"hello").await.unwrap();
@@ -247,9 +248,7 @@ async fn test_iroh_transport_framing() {
         let incoming = ep_a_clone.accept().await.expect("no incoming");
         let conn = incoming.accept().unwrap().await.unwrap();
 
-        let msg = irpc_iroh::read_request::<ZedraProto>(&conn)
-            .await
-            .unwrap();
+        let msg = irpc_iroh::read_request::<ZedraProto>(&conn).await.unwrap();
 
         match msg {
             Some(ZedraMessage::Ping(ping)) => {
@@ -263,15 +262,14 @@ async fn test_iroh_transport_framing() {
     });
 
     // Client side: connect and send a Ping
-    let conn = ep_b
-        .connect(ep_a_addr, proto::ZEDRA_ALPN)
-        .await
-        .unwrap();
+    let conn = ep_b.connect(ep_a_addr, proto::ZEDRA_ALPN).await.unwrap();
     let remote = irpc_iroh::IrohRemoteConnection::new(conn);
     let client = irpc::Client::<ZedraProto>::boxed(remote);
 
     let result: PongResult = client
-        .rpc(PingReq { timestamp_ms: 12345 })
+        .rpc(PingReq {
+            timestamp_ms: 12345,
+        })
         .await
         .unwrap();
     assert_eq!(result.timestamp_ms, 12345);
@@ -286,10 +284,9 @@ async fn test_full_rpc_over_iroh() {
     let (_relay, relay_url) = spawn_test_relay().await.unwrap();
     let (host_ep, registry, identity, _dir) = setup_host(relay_url.clone()).await.unwrap();
 
-    let (client, session_id) =
-        connect_client(relay_url, &host_ep, &registry, &identity)
-            .await
-            .unwrap();
+    let (client, session_id) = connect_client(relay_url, &host_ep, &registry, &identity)
+        .await
+        .unwrap();
     assert!(!session_id.is_empty());
 
     let info: SessionInfoResult = client.rpc(SessionInfoReq {}).await.unwrap();
@@ -304,13 +301,19 @@ async fn test_rpc_terminal_over_relay() {
     let (_relay, relay_url) = spawn_test_relay().await.unwrap();
     let (host_ep, registry, identity, _dir) = setup_host(relay_url.clone()).await.unwrap();
 
-    let (client, _session_id) =
-        connect_client(relay_url, &host_ep, &registry, &identity)
-            .await
-            .unwrap();
+    let (client, _session_id) = connect_client(relay_url, &host_ep, &registry, &identity)
+        .await
+        .unwrap();
 
     // Create terminal
-    let result: TermCreateResult = client.rpc(TermCreateReq { cols: 80, rows: 24, launch_cmd: None }).await.unwrap();
+    let result: TermCreateResult = client
+        .rpc(TermCreateReq {
+            cols: 80,
+            rows: 24,
+            launch_cmd: None,
+        })
+        .await
+        .unwrap();
     assert!(result.id.starts_with("term-"));
 
     // Attach to terminal via bidi streaming
@@ -416,7 +419,9 @@ async fn test_auth_rejects_unauthorized_client() {
     // Try to authenticate without registering
     let unknown_pubkey = [99u8; 32];
     let challenge = client
-        .rpc(AuthReq { client_pubkey: unknown_pubkey })
+        .rpc(AuthReq {
+            client_pubkey: unknown_pubkey,
+        })
         .await;
 
     // The connection should be dropped by the host since pubkey is not authorized
@@ -467,6 +472,7 @@ async fn test_register_bad_hmac_rejected() {
 
     assert!(
         matches!(result, RegisterResult::InvalidHandshake),
-        "expected InvalidHandshake, got {:?}", result
+        "expected InvalidHandshake, got {:?}",
+        result
     );
 }

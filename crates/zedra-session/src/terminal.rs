@@ -15,10 +15,9 @@
 /// The UI thread reads `meta()` for immediate display (title, cwd, shell
 /// state colour dot) and may drain `osc_events` to react to one-shot events
 /// such as bell notifications.
-
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 // Re-export shared OSC types from zedra-rpc so crate consumers continue
 // to import from zedra_session::terminal (no breaking change).

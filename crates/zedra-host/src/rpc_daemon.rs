@@ -11,10 +11,9 @@ use crate::git::GitRepo;
 use crate::identity::SharedIdentity;
 use crate::pty::{ShellSession, SpawnOptions};
 use crate::session_registry::{
-    AttachResult, ConsumeSlotResult, HostTermMeta, OutputSenderSlot, ServerSession, SessionRegistry,
-    TermSession, MAX_WATCHED_PATHS_PER_SESSION,
+    AttachResult, ConsumeSlotResult, HostTermMeta, OutputSenderSlot, ServerSession,
+    SessionRegistry, TermSession, MAX_WATCHED_PATHS_PER_SESSION,
 };
-use zedra_rpc::osc::{OscEvent, encode_meta_preamble};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -23,6 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use zedra_rpc::osc::{encode_meta_preamble, OscEvent};
 use zedra_rpc::proto::*;
 
 fn ts() -> String {
@@ -1109,12 +1109,20 @@ async fn dispatch(
                 terms.get(&term_id).and_then(|term| {
                     term.host_meta.lock().ok().and_then(|meta| {
                         let p = encode_meta_preamble(&meta.title, &meta.cwd);
-                        if p.is_empty() { None } else { Some(p) }
+                        if p.is_empty() {
+                            None
+                        } else {
+                            Some(p)
+                        }
                     })
                 })
             };
             if let Some(p) = preamble {
-                tracing::debug!("TermAttach: sending meta preamble ({} bytes) for {}", p.len(), term_id);
+                tracing::debug!(
+                    "TermAttach: sending meta preamble ({} bytes) for {}",
+                    p.len(),
+                    term_id
+                );
                 if irpc_tx.send(TermOutput { data: p, seq: 0 }).await.is_err() {
                     return Ok(());
                 }

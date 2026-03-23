@@ -9,7 +9,7 @@
 use gpui::*;
 use gpui_ios::IosPlatform;
 
-use crate::{app, install_panic_hook, platform_bridge, ZedraAssets};
+use crate::{ZedraAssets, app, install_panic_hook, platform_bridge};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;

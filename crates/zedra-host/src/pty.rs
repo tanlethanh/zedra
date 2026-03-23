@@ -54,8 +54,15 @@ impl ShellSession {
         // This prevents daemon secrets (AWS keys, tokens, etc.) from leaking into shells.
         cmd.env_clear();
         let allowed = [
-            "HOME", "PATH", "SHELL", "TERM", "LANG", "USER", "LOGNAME",
-            "COLORTERM", "XDG_RUNTIME_DIR",
+            "HOME",
+            "PATH",
+            "SHELL",
+            "TERM",
+            "LANG",
+            "USER",
+            "LOGNAME",
+            "COLORTERM",
+            "XDG_RUNTIME_DIR",
         ];
         for key in &allowed {
             if let Ok(val) = std::env::var(key) {

@@ -58,7 +58,7 @@ pub fn drain_callbacks() -> VecDeque<MainCallback> {
 // Re-exports for crate consumers.
 pub use connect_state::{
     AuthOutcome, ConnectError, ConnectPhase, ConnectSnapshot, ConnectState, ReconnectReason,
-    TransportSnapshot, STEPPER_STEP_NAMES,
+    STEPPER_STEP_NAMES, TransportSnapshot,
 };
 pub use handle::SessionHandle;
 pub use terminal::{OscEvent, RemoteTerminal, ShellState, TerminalMeta};

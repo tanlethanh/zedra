@@ -8,7 +8,6 @@
 ///
 /// Nothing in `zedra-session` is involved — the routing is entirely
 /// within the `zedra` crate.
-
 use std::sync::{Mutex, OnceLock};
 
 type InputFn = Box<dyn Fn(Vec<u8>) + Send + 'static>;

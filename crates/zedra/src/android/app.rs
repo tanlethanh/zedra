@@ -9,9 +9,9 @@ use jni::{JavaVM, objects::GlobalRef};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use crate::ZedraAssets;
 use crate::android::{bridge::AndroidBridge, command_queue, command_queue::AndroidCommand, jni};
 use crate::{app, deeplink, platform_bridge};
-use crate::ZedraAssets;
 
 /// Android app state - must only be accessed from the main UI thread
 pub struct AndroidApp {
@@ -386,7 +386,10 @@ impl AndroidApp {
         // Process active fling momentum scrolling
         self.process_fling();
 
-        let fling_active = self.platform.as_ref().map_or(false, |p| p.has_active_fling());
+        let fling_active = self
+            .platform
+            .as_ref()
+            .map_or(false, |p| p.has_active_fling());
 
         // Drain and execute any main-thread callbacks from the session runtime.
         // Non-empty drain means something signaled a forced render (terminal data, etc.).

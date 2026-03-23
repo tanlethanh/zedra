@@ -15,8 +15,16 @@ use crate::identity::SharedIdentity;
 
 fn ts() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let s = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    format!("{:02}:{:02}:{:02}", (s % 86400) / 3600, (s % 3600) / 60, s % 60)
+    let s = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!(
+        "{:02}:{:02}:{:02}",
+        (s % 86400) / 3600,
+        (s % 3600) / 60,
+        s % 60
+    )
 }
 
 /// Build a relay map from the given URL.
@@ -37,9 +45,9 @@ pub async fn create_endpoint(
     relay_url: Option<&str>,
     analytics: std::sync::Arc<Analytics>,
 ) -> Result<iroh::Endpoint> {
-    let relay_mode = iroh::RelayMode::Custom(
-        relay_map_from_url(relay_url.unwrap_or(zedra_rpc::ZEDRA_RELAY_URL))?
-    );
+    let relay_mode = iroh::RelayMode::Custom(relay_map_from_url(
+        relay_url.unwrap_or(zedra_rpc::ZEDRA_RELAY_URL),
+    )?);
     let endpoint = iroh::Endpoint::builder()
         .secret_key(identity.iroh_secret_key().clone())
         .alpns(vec![ZEDRA_ALPN.to_vec()])
@@ -70,12 +78,9 @@ pub async fn create_endpoint(
                     analytics.net_report(r.global_v4.is_some(), r.global_v6.is_some(), sym_nat);
                     break;
                 }
-                if tokio::time::timeout(
-                    std::time::Duration::from_secs(10),
-                    watcher.updated(),
-                )
-                .await
-                .is_err()
+                if tokio::time::timeout(std::time::Duration::from_secs(10), watcher.updated())
+                    .await
+                    .is_err()
                 {
                     tracing::warn!("net_report: STUN did not complete within 10s");
                     break;

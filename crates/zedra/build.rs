@@ -32,9 +32,7 @@ fn main() {
         // Weak stub for ios_present_qr_scanner — lets the cdylib link succeed.
         // The real ObjC implementation in ZedraQRScanner.m overrides this at Xcode link time.
         println!("cargo:rerun-if-changed=src/ios_stub.c");
-        cc::Build::new()
-            .file("src/ios_stub.c")
-            .compile("ios_stub");
+        cc::Build::new().file("src/ios_stub.c").compile("ios_stub");
 
         // NSLog bridge — routes Rust log output through NSLog so it appears
         // in idevicesyslog (os_log goes to the unified log, not ASL relay).

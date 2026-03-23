@@ -14,7 +14,6 @@ pub fn is_drawer_overlay_visible() -> bool {
     DRAWER_OVERLAY_VISIBLE.load(Ordering::Relaxed)
 }
 
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DrawerSide {
     Left,
@@ -254,7 +253,8 @@ impl Render for DrawerHost {
                 let new_offset = this.drawer_state.offset;
                 const VELOCITY_THRESHOLD: f32 = theme::DRAWER_VELOCITY_THRESHOLD;
                 let position_threshold = width * 0.3;
-                if eff_dx > 0.0 && (new_offset > position_threshold || eff_dx > VELOCITY_THRESHOLD) {
+                if eff_dx > 0.0 && (new_offset > position_threshold || eff_dx > VELOCITY_THRESHOLD)
+                {
                     this.start_snap(width, cx);
                     cx.emit(DrawerEvent::Opened);
                 } else if eff_dx < 0.0

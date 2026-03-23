@@ -20,7 +20,9 @@ unsafe extern "C" {
 }
 
 pub fn log_event(name: &str, params: &[(&str, &str)]) {
-    let Ok(cname) = CString::new(name) else { return };
+    let Ok(cname) = CString::new(name) else {
+        return;
+    };
 
     let ckeys: Vec<CString> = params
         .iter()
@@ -44,14 +46,22 @@ pub fn log_event(name: &str, params: &[(&str, &str)]) {
 }
 
 pub fn record_error(message: &str, file: &str, line: u32) {
-    let Ok(cmsg) = CString::new(message) else { return };
-    let Ok(cfile) = CString::new(file) else { return };
+    let Ok(cmsg) = CString::new(message) else {
+        return;
+    };
+    let Ok(cfile) = CString::new(file) else {
+        return;
+    };
     unsafe { zedra_record_error(cmsg.as_ptr(), cfile.as_ptr(), line as c_int) };
 }
 
 pub fn record_panic(message: &str, location: &str) {
-    let Ok(cmsg) = CString::new(message) else { return };
-    let Ok(cloc) = CString::new(location) else { return };
+    let Ok(cmsg) = CString::new(message) else {
+        return;
+    };
+    let Ok(cloc) = CString::new(location) else {
+        return;
+    };
     unsafe { zedra_record_panic(cmsg.as_ptr(), cloc.as_ptr()) };
 }
 

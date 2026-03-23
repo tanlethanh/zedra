@@ -145,7 +145,9 @@ impl WorkspaceState {
         };
         match serde_json::to_string_pretty(&file) {
             Ok(json) => match std::fs::write(&path, json.as_bytes()) {
-                Ok(()) => tracing::info!("WorkspaceState: saved {} workspace(s) to {:?}", len, path),
+                Ok(()) => {
+                    tracing::info!("WorkspaceState: saved {} workspace(s) to {:?}", len, path)
+                }
                 Err(e) => tracing::error!("WorkspaceState: write error: {}", e),
             },
             Err(e) => tracing::error!("WorkspaceState: serialize error: {}", e),
@@ -168,7 +170,10 @@ impl WorkspaceState {
             .unwrap_or(0);
         let mut workspaces = Self::load();
         let entry_addr = entry.endpoint_addr();
-        if let Some(idx) = workspaces.iter().position(|w| w.endpoint_addr() == entry_addr) {
+        if let Some(idx) = workspaces
+            .iter()
+            .position(|w| w.endpoint_addr() == entry_addr)
+        {
             let mut i = workspaces[idx].inner().clone();
             // Always update session_id (set before connect attempt).
             // Only overwrite display fields when non-empty — the handle is empty
@@ -239,11 +244,7 @@ impl WorkspaceState {
 
     pub fn display_name(&self) -> &str {
         let p = &self.0.project_name;
-        if p.is_empty() {
-            "Workspace"
-        } else {
-            p
-        }
+        if p.is_empty() { "Workspace" } else { p }
     }
 
     pub fn workspace_index(&self) -> Option<usize> {
@@ -293,5 +294,4 @@ impl WorkspaceState {
     pub fn homedir(&self) -> &str {
         &self.0.homedir
     }
-
 }

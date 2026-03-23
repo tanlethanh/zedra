@@ -279,9 +279,7 @@ impl ConnectState {
 
     /// Seconds elapsed since the current connect attempt started, or 0.
     pub fn elapsed_secs(&self) -> u64 {
-        self.started_at
-            .map(|t| t.elapsed().as_secs())
-            .unwrap_or(0)
+        self.started_at.map(|t| t.elapsed().as_secs()).unwrap_or(0)
     }
 }
 

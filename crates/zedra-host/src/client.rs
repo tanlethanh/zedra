@@ -46,8 +46,12 @@ pub fn write_host_info(config_dir: &Path, info: &HostInfo) -> Result<()> {
 /// Read host info written by the running daemon.
 pub fn read_host_info(config_dir: &Path) -> Result<HostInfo> {
     let path = host_info_path(config_dir);
-    let json = std::fs::read_to_string(&path)
-        .with_context(|| format!("host-info.json not found at {} — is `zedra start` running?", path.display()))?;
+    let json = std::fs::read_to_string(&path).with_context(|| {
+        format!(
+            "host-info.json not found at {} — is `zedra start` running?",
+            path.display()
+        )
+    })?;
     serde_json::from_str(&json).context("failed to parse host-info.json")
 }
 
@@ -71,7 +75,10 @@ pub fn load_or_generate_cli_key(config_dir: &Path) -> Result<SigningKey> {
         let bytes = std::fs::read(&path)
             .with_context(|| format!("failed to read cli-client.key at {}", path.display()))?;
         if bytes.len() != 32 {
-            anyhow::bail!("invalid cli-client.key: expected 32 bytes, got {}", bytes.len());
+            anyhow::bail!(
+                "invalid cli-client.key: expected 32 bytes, got {}",
+                bytes.len()
+            );
         }
         let mut arr = [0u8; 32];
         arr.copy_from_slice(&bytes);
@@ -103,7 +110,10 @@ pub async fn run(workdir: &Path, count: u32, relay_only: bool) -> Result<()> {
 
     // Read connection info written by the running host.
     let info = read_host_info(&config_dir)?;
-    eprintln!("Connecting to host endpoint: {}...", &info.endpoint_id[..16]);
+    eprintln!(
+        "Connecting to host endpoint: {}...",
+        &info.endpoint_id[..16]
+    );
     eprintln!("  Relay: {}", info.relay_url);
     eprintln!("  Session: {}", info.session_id);
     if relay_only {
@@ -115,7 +125,9 @@ pub async fn run(workdir: &Path, count: u32, relay_only: bool) -> Result<()> {
     let client_pubkey: [u8; 32] = cli_key.verifying_key().to_bytes();
 
     // Parse host endpoint ID.
-    let host_pubkey: iroh::PublicKey = info.endpoint_id.parse()
+    let host_pubkey: iroh::PublicKey = info
+        .endpoint_id
+        .parse()
         .context("invalid endpoint_id in host-info.json")?;
 
     // Create an ephemeral iroh endpoint.
@@ -124,7 +136,9 @@ pub async fn run(workdir: &Path, count: u32, relay_only: bool) -> Result<()> {
     // In normal mode: RelayMode::Default uses n0's relay + pkarr for P2P.
     let mut builder = iroh::Endpoint::builder();
     if relay_only {
-        let relay_url: iroh::RelayUrl = info.relay_url.parse()
+        let relay_url: iroh::RelayUrl = info
+            .relay_url
+            .parse()
             .context("invalid relay_url in host-info.json")?;
         let relay_map = iroh::RelayMap::from_iter([iroh::RelayConfig {
             url: relay_url,
@@ -147,7 +161,9 @@ pub async fn run(workdir: &Path, count: u32, relay_only: bool) -> Result<()> {
     // iroh connects via relay immediately and never attempts direct P2P paths.
     // In normal mode we provide just the pubkey and let pkarr resolve addresses.
     let host_addr = if relay_only {
-        let relay_url: iroh::RelayUrl = info.relay_url.parse()
+        let relay_url: iroh::RelayUrl = info
+            .relay_url
+            .parse()
             .context("invalid relay_url in host-info.json")?;
         iroh::EndpointAddr::new(host_pubkey).with_relay_url(relay_url)
     } else {
@@ -160,7 +176,8 @@ pub async fn run(workdir: &Path, count: u32, relay_only: bool) -> Result<()> {
 
     eprintln!("Connected. Path: {:?}", {
         use iroh::Watcher;
-        conn.paths().get()
+        conn.paths()
+            .get()
             .iter()
             .find(|p| p.is_selected())
             .map(|p| format!("{:?}", p.remote_addr()))
@@ -183,7 +200,8 @@ pub async fn run(workdir: &Path, count: u32, relay_only: bool) -> Result<()> {
         let host_vk = ed25519_dalek::VerifyingKey::from_bytes(host_pubkey.as_bytes())
             .context("invalid host public key")?;
         let sig = ed25519_dalek::Signature::from_bytes(&challenge.host_signature);
-        host_vk.verify(&challenge.nonce, &sig)
+        host_vk
+            .verify(&challenge.nonce, &sig)
             .context("host signature verification failed — wrong host?")?;
     }
 

@@ -52,8 +52,7 @@ impl Analytics {
         if mid.is_empty() || secret.is_empty() {
             return Self { inner: None };
         }
-        let host_id =
-            load_or_generate_id(analytics_id_path).unwrap_or_else(|_| random_uuid());
+        let host_id = load_or_generate_id(analytics_id_path).unwrap_or_else(|_| random_uuid());
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(5))
             .build()
@@ -90,19 +89,25 @@ impl Analytics {
     /// `relay_type`: "cf_worker" | "custom" | "default".
     /// `os`, `arch`, and `host_version` are injected automatically on every event.
     pub fn daemon_start(&self, relay_type: &str) {
-        self.track("daemon_start", json!({
-            "relay_type": relay_type,
-        }));
+        self.track(
+            "daemon_start",
+            json!({
+                "relay_type": relay_type,
+            }),
+        );
     }
 
     /// STUN completed. Reports network topology of the host machine.
     /// Called once at startup after the iroh endpoint is bound.
     pub fn net_report(&self, has_ipv4: bool, has_ipv6: bool, symmetric_nat: bool) {
-        self.track("net_report", json!({
-            "has_ipv4": has_ipv4 as i64,
-            "has_ipv6": has_ipv6 as i64,
-            "symmetric_nat": symmetric_nat as i64,
-        }));
+        self.track(
+            "net_report",
+            json!({
+                "has_ipv4": has_ipv4 as i64,
+                "has_ipv6": has_ipv6 as i64,
+                "symmetric_nat": symmetric_nat as i64,
+            }),
+        );
     }
 
     /// A new device paired via QR code (Register flow, first-time only).
@@ -116,11 +121,14 @@ impl Analytics {
     /// `duration_ms`: wall time from inbound accept to RPC loop entry.
     /// `path_type`: "direct" | "relay" | "unknown" (iroh connection path at auth time).
     pub fn auth_success(&self, is_new_client: bool, duration_ms: u64, path_type: &str) {
-        self.track("auth_success", json!({
-            "is_new_client": is_new_client as i64,
-            "duration_ms": duration_ms,
-            "path_type": path_type,
-        }));
+        self.track(
+            "auth_success",
+            json!({
+                "is_new_client": is_new_client as i64,
+                "duration_ms": duration_ms,
+                "path_type": path_type,
+            }),
+        );
     }
 
     /// Authentication was rejected before the client entered the RPC loop.
@@ -137,30 +145,39 @@ impl Analytics {
     /// `terminal_count`: number of terminals that existed during the session.
     /// `path_type`: iroh connection path (captured at auth time).
     pub fn session_end(&self, duration_ms: u64, terminal_count: u64, path_type: &str) {
-        self.track("session_end", json!({
-            "duration_ms": duration_ms,
-            "terminal_count": terminal_count,
-            "path_type": path_type,
-        }));
+        self.track(
+            "session_end",
+            json!({
+                "duration_ms": duration_ms,
+                "terminal_count": terminal_count,
+                "path_type": path_type,
+            }),
+        );
     }
 
     /// A new terminal PTY was spawned.
     ///
     /// `has_launch_cmd`: whether a launch command was injected (e.g. "claude --resume").
     pub fn terminal_open(&self, has_launch_cmd: bool) {
-        self.track("terminal_open", json!({
-            "has_launch_cmd": has_launch_cmd as i64,
-        }));
+        self.track(
+            "terminal_open",
+            json!({
+                "has_launch_cmd": has_launch_cmd as i64,
+            }),
+        );
     }
 
     /// Periodic bandwidth sample from the active iroh path.
     /// Intended to be fired every 60 seconds while a client is connected.
     pub fn bandwidth_sample(&self, bytes_sent: u64, bytes_recv: u64, interval_secs: u64) {
-        self.track("bandwidth_sample", json!({
-            "bytes_sent": bytes_sent,
-            "bytes_recv": bytes_recv,
-            "interval_secs": interval_secs,
-        }));
+        self.track(
+            "bandwidth_sample",
+            json!({
+                "bytes_sent": bytes_sent,
+                "bytes_recv": bytes_recv,
+                "interval_secs": interval_secs,
+            }),
+        );
     }
 
     // -----------------------------------------------------------------------

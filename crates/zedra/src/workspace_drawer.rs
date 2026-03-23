@@ -5,7 +5,7 @@ use crate::editor::git_sidebar::{
     GitFileStatus, GitRepoState, GitSidebar,
 };
 use crate::file_explorer::{FileExplorer, FileSelected};
-use crate::pending::{shared_pending_slot, SharedPendingSlot};
+use crate::pending::{SharedPendingSlot, shared_pending_slot};
 use crate::platform_bridge;
 use crate::theme;
 use crate::{session_panel, terminal_panel};
@@ -158,12 +158,14 @@ impl WorkspaceDrawer {
         // Spawn a polling task that triggers a re-render every 2 s so that
         // live transport stats (RTT, bytes, etc.) stay up to date in the session tab.
         // Dropping the old task cancels it before the new one starts.
-        self._session_refresh_task = Some(cx.spawn(async move |this, cx| loop {
-            cx.background_executor()
-                .timer(std::time::Duration::from_secs(2))
-                .await;
-            if this.update(cx, |_, cx| cx.notify()).is_err() {
-                break;
+        self._session_refresh_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(2))
+                    .await;
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
             }
         }));
     }
@@ -280,7 +282,11 @@ impl WorkspaceDrawer {
         self.active_section
     }
 
-    pub fn set_workspace_state(&mut self, state: crate::workspace_state::WorkspaceState, cx: &mut Context<Self>) {
+    pub fn set_workspace_state(
+        &mut self,
+        state: crate::workspace_state::WorkspaceState,
+        cx: &mut Context<Self>,
+    ) {
         self.workspace_state = state;
         cx.notify();
     }
@@ -436,11 +442,7 @@ impl Render for WorkspaceDrawer {
 
         let project_name = self.project_name();
         let tab_subtitle = self.tab_subtitle(cx);
-        let status_color = match self
-            .session_handle
-            .as_ref()
-            .map(|h| h.connect_phase())
-        {
+        let status_color = match self.session_handle.as_ref().map(|h| h.connect_phase()) {
             Some(ConnectPhase::Connected) => theme::ACCENT_GREEN,
             Some(ref p) if p.is_connecting() || p.is_reconnecting() => theme::ACCENT_YELLOW,
             _ => theme::ACCENT_RED,

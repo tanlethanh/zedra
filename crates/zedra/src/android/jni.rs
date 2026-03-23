@@ -1,7 +1,7 @@
 use jni::{
+    JNIEnv, JavaVM,
     objects::{GlobalRef, JClass, JObject},
     sys::{jfloat, jint, jlong},
-    JNIEnv, JavaVM,
 };
 use ndk::native_window::NativeWindow;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, Once};
 
 use crate::android::{
     app,
-    command_queue::{get_command_sender, AndroidCommand},
+    command_queue::{AndroidCommand, get_command_sender},
 };
 use crate::install_panic_hook;
 use crate::platform_bridge::{self, AlertButton, AlertButtonStyle};
@@ -572,7 +572,10 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeDeeplinkReceived(
         }
     };
 
-    tracing::info!(url = &deeplink_url[..deeplink_url.len().min(80)], "jni: deeplink");
+    tracing::info!(
+        url = &deeplink_url[..deeplink_url.len().min(80)],
+        "jni: deeplink"
+    );
 
     let sender = get_command_sender();
     let _ = sender.send(AndroidCommand::Deeplink { url: deeplink_url });

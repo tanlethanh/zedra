@@ -119,18 +119,14 @@ impl Language {
                 tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
                 TYPESCRIPT_HIGHLIGHTS,
             )),
-            Language::Tsx => {
-                Some((tree_sitter_typescript::LANGUAGE_TSX.into(), TSX_HIGHLIGHTS))
-            }
+            Language::Tsx => Some((tree_sitter_typescript::LANGUAGE_TSX.into(), TSX_HIGHLIGHTS)),
             Language::C => Some((tree_sitter_c::LANGUAGE.into(), C_HIGHLIGHTS)),
             Language::Cpp => Some((tree_sitter_cpp::LANGUAGE.into(), CPP_HIGHLIGHTS)),
             Language::Css => Some((tree_sitter_css::LANGUAGE.into(), CSS_HIGHLIGHTS)),
             Language::Json => Some((tree_sitter_json::LANGUAGE.into(), JSON_HIGHLIGHTS)),
             Language::Yaml => Some((tree_sitter_yaml::LANGUAGE.into(), YAML_HIGHLIGHTS)),
             Language::Bash => Some((tree_sitter_bash::LANGUAGE.into(), BASH_HIGHLIGHTS)),
-            Language::Markdown => {
-                Some((tree_sitter_md::LANGUAGE.into(), MARKDOWN_HIGHLIGHTS))
-            }
+            Language::Markdown => Some((tree_sitter_md::LANGUAGE.into(), MARKDOWN_HIGHLIGHTS)),
             Language::Html => Some((
                 tree_sitter_html::LANGUAGE.into(),
                 tree_sitter_html::HIGHLIGHTS_QUERY,
@@ -143,10 +139,7 @@ impl Language {
                 tree_sitter_java::LANGUAGE.into(),
                 tree_sitter_java::HIGHLIGHTS_QUERY,
             )),
-            Language::CSharp => Some((
-                tree_sitter_c_sharp::LANGUAGE.into(),
-                CSHARP_HIGHLIGHTS,
-            )),
+            Language::CSharp => Some((tree_sitter_c_sharp::LANGUAGE.into(), CSHARP_HIGHLIGHTS)),
             Language::Php => Some((
                 tree_sitter_php::LANGUAGE_PHP.into(),
                 tree_sitter_php::HIGHLIGHTS_QUERY,
@@ -281,32 +274,78 @@ mod tests {
 
     fn check_query(name: &str, lang: TSLanguage, query_src: &'static str) -> bool {
         match Query::new(&lang, query_src) {
-            Ok(_)  => { println!("{name}: OK"); true }
-            Err(e) => { println!("{name}: ERROR - {e}"); false }
+            Ok(_) => {
+                println!("{name}: OK");
+                true
+            }
+            Err(e) => {
+                println!("{name}: ERROR - {e}");
+                false
+            }
         }
     }
 
     #[test]
     fn all_queries_parse() {
         let mut ok = true;
-        ok &= check_query("rust",       tree_sitter_rust::LANGUAGE.into(),       RUST_HIGHLIGHTS);
-        ok &= check_query("python",     tree_sitter_python::LANGUAGE.into(),     PYTHON_HIGHLIGHTS);
-        ok &= check_query("go",         tree_sitter_go::LANGUAGE.into(),         GO_HIGHLIGHTS);
-        ok &= check_query("javascript", tree_sitter_typescript::LANGUAGE_TSX.into(), JAVASCRIPT_HIGHLIGHTS);
-        ok &= check_query("typescript", tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(), TYPESCRIPT_HIGHLIGHTS);
-        ok &= check_query("tsx",        tree_sitter_typescript::LANGUAGE_TSX.into(), TSX_HIGHLIGHTS);
-        ok &= check_query("c",          tree_sitter_c::LANGUAGE.into(),          C_HIGHLIGHTS);
-        ok &= check_query("cpp",        tree_sitter_cpp::LANGUAGE.into(),        CPP_HIGHLIGHTS);
-        ok &= check_query("css",        tree_sitter_css::LANGUAGE.into(),        CSS_HIGHLIGHTS);
-        ok &= check_query("json",       tree_sitter_json::LANGUAGE.into(),       JSON_HIGHLIGHTS);
-        ok &= check_query("yaml",       tree_sitter_yaml::LANGUAGE.into(),       YAML_HIGHLIGHTS);
-        ok &= check_query("bash",       tree_sitter_bash::LANGUAGE.into(),       BASH_HIGHLIGHTS);
-        ok &= check_query("markdown",   tree_sitter_md::LANGUAGE.into(),         MARKDOWN_HIGHLIGHTS);
-        ok &= check_query("html",       tree_sitter_html::LANGUAGE.into(),       tree_sitter_html::HIGHLIGHTS_QUERY);
-        ok &= check_query("ruby",       tree_sitter_ruby::LANGUAGE.into(),       tree_sitter_ruby::HIGHLIGHTS_QUERY);
-        ok &= check_query("java",       tree_sitter_java::LANGUAGE.into(),       tree_sitter_java::HIGHLIGHTS_QUERY);
-        ok &= check_query("csharp",     tree_sitter_c_sharp::LANGUAGE.into(),    CSHARP_HIGHLIGHTS);
-        ok &= check_query("php",        tree_sitter_php::LANGUAGE_PHP.into(),    tree_sitter_php::HIGHLIGHTS_QUERY);
+        ok &= check_query("rust", tree_sitter_rust::LANGUAGE.into(), RUST_HIGHLIGHTS);
+        ok &= check_query(
+            "python",
+            tree_sitter_python::LANGUAGE.into(),
+            PYTHON_HIGHLIGHTS,
+        );
+        ok &= check_query("go", tree_sitter_go::LANGUAGE.into(), GO_HIGHLIGHTS);
+        ok &= check_query(
+            "javascript",
+            tree_sitter_typescript::LANGUAGE_TSX.into(),
+            JAVASCRIPT_HIGHLIGHTS,
+        );
+        ok &= check_query(
+            "typescript",
+            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            TYPESCRIPT_HIGHLIGHTS,
+        );
+        ok &= check_query(
+            "tsx",
+            tree_sitter_typescript::LANGUAGE_TSX.into(),
+            TSX_HIGHLIGHTS,
+        );
+        ok &= check_query("c", tree_sitter_c::LANGUAGE.into(), C_HIGHLIGHTS);
+        ok &= check_query("cpp", tree_sitter_cpp::LANGUAGE.into(), CPP_HIGHLIGHTS);
+        ok &= check_query("css", tree_sitter_css::LANGUAGE.into(), CSS_HIGHLIGHTS);
+        ok &= check_query("json", tree_sitter_json::LANGUAGE.into(), JSON_HIGHLIGHTS);
+        ok &= check_query("yaml", tree_sitter_yaml::LANGUAGE.into(), YAML_HIGHLIGHTS);
+        ok &= check_query("bash", tree_sitter_bash::LANGUAGE.into(), BASH_HIGHLIGHTS);
+        ok &= check_query(
+            "markdown",
+            tree_sitter_md::LANGUAGE.into(),
+            MARKDOWN_HIGHLIGHTS,
+        );
+        ok &= check_query(
+            "html",
+            tree_sitter_html::LANGUAGE.into(),
+            tree_sitter_html::HIGHLIGHTS_QUERY,
+        );
+        ok &= check_query(
+            "ruby",
+            tree_sitter_ruby::LANGUAGE.into(),
+            tree_sitter_ruby::HIGHLIGHTS_QUERY,
+        );
+        ok &= check_query(
+            "java",
+            tree_sitter_java::LANGUAGE.into(),
+            tree_sitter_java::HIGHLIGHTS_QUERY,
+        );
+        ok &= check_query(
+            "csharp",
+            tree_sitter_c_sharp::LANGUAGE.into(),
+            CSHARP_HIGHLIGHTS,
+        );
+        ok &= check_query(
+            "php",
+            tree_sitter_php::LANGUAGE_PHP.into(),
+            tree_sitter_php::HIGHLIGHTS_QUERY,
+        );
         assert!(ok, "one or more highlight queries failed to parse");
     }
 
@@ -348,6 +387,10 @@ import { foo } from './bar';
         for (range, name) in &caps2 {
             println!("  {:?} -> {name}", &complex_js[range.clone()]);
         }
-        assert!(caps2.len() > 14, "Complex JS should produce more than 14 captures, got {}", caps2.len());
+        assert!(
+            caps2.len() > 14,
+            "Complex JS should produce more than 14 captures, got {}",
+            caps2.len()
+        );
     }
 }

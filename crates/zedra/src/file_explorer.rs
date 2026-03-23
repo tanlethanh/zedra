@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::pending::{shared_pending_slot, SharedPendingSlot};
+use crate::pending::{SharedPendingSlot, shared_pending_slot};
 use crate::theme;
 
 #[derive(Clone, Debug)]
@@ -600,11 +600,7 @@ impl FileExplorer {
         match p.strip_prefix(wd) {
             Ok(rest) => {
                 let rel = rest.to_string_lossy().trim_start_matches('/').to_string();
-                if rel.is_empty() {
-                    ".".to_string()
-                } else {
-                    rel
-                }
+                if rel.is_empty() { ".".to_string() } else { rel }
             }
             Err(_) => ".".to_string(),
         }

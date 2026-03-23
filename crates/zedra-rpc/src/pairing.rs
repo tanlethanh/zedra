@@ -48,8 +48,8 @@ impl ZedraPairingTicket {
 
     /// Decode from base64url string.
     pub fn decode(s: &str) -> Result<Self> {
-        let bytes =
-            base64_url::decode(s).map_err(|e| anyhow::anyhow!("invalid base64url in ticket: {}", e))?;
+        let bytes = base64_url::decode(s)
+            .map_err(|e| anyhow::anyhow!("invalid base64url in ticket: {}", e))?;
         let ticket: Self = postcard::from_bytes(&bytes)?;
         Ok(ticket)
     }

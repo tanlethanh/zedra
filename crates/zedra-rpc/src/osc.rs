@@ -107,7 +107,11 @@ impl OscScanner {
         for &b in bytes {
             self.state = match std::mem::take(&mut self.state) {
                 ScanState::Idle => {
-                    if b == 0x1B { ScanState::SawEsc } else { ScanState::Idle }
+                    if b == 0x1B {
+                        ScanState::SawEsc
+                    } else {
+                        ScanState::Idle
+                    }
                 }
                 ScanState::SawEsc => match b {
                     b']' => ScanState::SawBracket,
@@ -117,10 +121,19 @@ impl OscScanner {
                 ScanState::SawBracket => match b {
                     // Immediately terminated — empty OSC, ignore.
                     0x07 => ScanState::Idle,
-                    0x1B => ScanState::CollectingOsc { buf: Vec::new(), esc_pending: true },
-                    _ => ScanState::CollectingOsc { buf: vec![b], esc_pending: false },
+                    0x1B => ScanState::CollectingOsc {
+                        buf: Vec::new(),
+                        esc_pending: true,
+                    },
+                    _ => ScanState::CollectingOsc {
+                        buf: vec![b],
+                        esc_pending: false,
+                    },
                 },
-                ScanState::CollectingOsc { mut buf, esc_pending } => {
+                ScanState::CollectingOsc {
+                    mut buf,
+                    esc_pending,
+                } => {
                     if esc_pending {
                         match b {
                             // ESC `\` — String Terminator, OSC complete.
@@ -136,7 +149,10 @@ impl OscScanner {
                             _ => {
                                 buf.push(0x1B);
                                 buf.push(b);
-                                ScanState::CollectingOsc { buf, esc_pending: false }
+                                ScanState::CollectingOsc {
+                                    buf,
+                                    esc_pending: false,
+                                }
                             }
                         }
                     } else {
@@ -149,10 +165,16 @@ impl OscScanner {
                                 ScanState::Idle
                             }
                             // Start of potential ST.
-                            0x1B => ScanState::CollectingOsc { buf, esc_pending: true },
+                            0x1B => ScanState::CollectingOsc {
+                                buf,
+                                esc_pending: true,
+                            },
                             _ => {
                                 buf.push(b);
-                                ScanState::CollectingOsc { buf, esc_pending: false }
+                                ScanState::CollectingOsc {
+                                    buf,
+                                    esc_pending: false,
+                                }
                             }
                         }
                     }

@@ -167,7 +167,10 @@ pub fn write_secret_file(path: &Path, data: &[u8]) -> Result<()> {
 fn stable_path_hash(path_str: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(path_str.as_bytes());
-    format!("{:016x}", u64::from_le_bytes(digest[..8].try_into().unwrap()))
+    format!(
+        "{:016x}",
+        u64::from_le_bytes(digest[..8].try_into().unwrap())
+    )
 }
 
 /// Shared host identity, passed through the daemon.

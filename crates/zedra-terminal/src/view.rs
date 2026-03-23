@@ -3,8 +3,8 @@
 
 use std::cmp::min;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::index::{Column as GridColumn, Line as GridLine, Point as GridPoint};
 use alacritty_terminal::term::TermMode;
@@ -427,7 +427,8 @@ impl Render for TerminalView {
                         let dx = ((event.position.x - down.x) / px(1.0)) as f32;
                         let dy = ((event.position.y - down.y) / px(1.0)) as f32;
                         if dx.abs() < 10.0 && dy.abs() < 10.0 {
-                            let current = this.is_keyboard_visible_fn.as_ref().map_or(false, |f| f());
+                            let current =
+                                this.is_keyboard_visible_fn.as_ref().map_or(false, |f| f());
                             this.request_keyboard(!current);
                         }
                     }
@@ -449,8 +450,7 @@ impl Render for TerminalView {
                     ScrollDelta::Pixels(pixels) => {
                         if matches!(event.touch_phase, TouchPhase::Ended) {
                             if this.should_snap_touch_release(event)
-                                && this.scroll_offset_px.abs()
-                                    > this.scroll_step_px(event) * 0.5
+                                && this.scroll_offset_px.abs() > this.scroll_step_px(event) * 0.5
                             {
                                 // Local scrollback benefits from snapping the partial drag
                                 // to the nearest line, but remote TUIs should emit while
@@ -569,11 +569,7 @@ fn scroll_is_up(event: &ScrollWheelEvent) -> bool {
     }
 }
 
-fn normal_mouse_scroll_report(
-    point: GridPoint,
-    button: u8,
-    utf8: bool,
-) -> Option<Vec<u8>> {
+fn normal_mouse_scroll_report(point: GridPoint, button: u8, utf8: bool) -> Option<Vec<u8>> {
     let line = point.line.0;
     let column = point.column.0;
     let max_point = if utf8 { 2015usize } else { 223usize };
@@ -602,8 +598,5 @@ fn normal_mouse_scroll_report(
 
 fn encode_mouse_position(position: usize) -> [u8; 2] {
     let position = 32 + 1 + position;
-    [
-        (0xC0 + position / 64) as u8,
-        (0x80 + (position & 63)) as u8,
-    ]
+    [(0xC0 + position / 64) as u8, (0x80 + (position & 63)) as u8]
 }

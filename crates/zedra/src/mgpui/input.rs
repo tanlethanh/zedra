@@ -80,9 +80,7 @@ impl Element for MultilineInputText {
         let origin = if self.text.is_empty() {
             bounds.origin
         } else {
-            text_layout
-                .position_for_index(ix)
-                .unwrap_or(bounds.origin)
+            text_layout.position_for_index(ix).unwrap_or(bounds.origin)
         };
         let line_height = if self.text.is_empty() {
             let style = window.text_style();

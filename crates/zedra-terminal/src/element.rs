@@ -499,10 +499,7 @@ impl Element for TerminalElement {
         let x_offset = ((bounds.size.width - grid_width) * 0.5).max(px(0.0));
         let grid_origin = point(bounds.origin.x + x_offset, bounds.origin.y);
         // Apply smooth scroll offset: shifts grid vertically for sub-line scrolling
-        let origin = point(
-            grid_origin.x,
-            grid_origin.y + px(self.scroll_offset_px),
-        );
+        let origin = point(grid_origin.x, grid_origin.y + px(self.scroll_offset_px));
 
         let theme = TerminalTheme::one_dark();
 

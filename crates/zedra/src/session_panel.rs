@@ -5,7 +5,7 @@ use gpui::*;
 
 use crate::theme;
 use crate::transport_badge::{
-    format_bytes, render_transport_badge, transport_badge_info, STALE_THRESHOLD_SECS,
+    STALE_THRESHOLD_SECS, format_bytes, render_transport_badge, transport_badge_info,
 };
 use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
 use zedra_session::ConnectState;

@@ -295,36 +295,39 @@ impl Render for EditorView {
                 }
                 cx.notify();
             }))
-            .on_scroll_wheel(cx.listener(move |this, event: &ScrollWheelEvent, _window, cx| {
-                let (delta_x, delta_y) = match event.delta {
-                    ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y)),
-                    ScrollDelta::Lines(l) => (l.x * 20.0, l.y * 20.0),
-                };
-                // Enter H-scroll mode: strict threshold (2.5×, 5 px min) to commit.
-                // Exit H-scroll mode: a strongly vertical event (3× vertical) overrides.
-                // While locked, accept any event with non-zero horizontal delta so a
-                // drifting finger doesn't break the scroll mid-gesture.
-                if delta_y.abs() > delta_x.abs() * 3.0 {
-                    this.h_scroll_active = false;
-                } else if delta_x.abs() > delta_y.abs() * 2.5 && delta_x.abs() > 5.0 {
-                    this.h_scroll_active = true;
-                }
-                if this.h_scroll_active && delta_x.abs() > 0.1 {
-                    let char_width = FONT_SIZE * 0.6;
-                    let max_offset = (this.max_line_chars as f32 * char_width).max(0.0);
-                    this.h_scroll_offset = (this.h_scroll_offset - delta_x).clamp(0.0, max_offset);
-                    // Undo any vertical drift: the uniform_list overflow scroll already fired
-                    // (bubble phase, inner first) and may have nudged y. Restore it to the
-                    // value captured at the start of this render so vertical position is locked
-                    // for the duration of the horizontal gesture.
-                    this.scroll_handle
-                        .0
-                        .borrow()
-                        .base_handle
-                        .set_offset(point(px(0.0), scroll_y_lock));
-                    cx.notify();
-                }
-            }))
+            .on_scroll_wheel(
+                cx.listener(move |this, event: &ScrollWheelEvent, _window, cx| {
+                    let (delta_x, delta_y) = match event.delta {
+                        ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y)),
+                        ScrollDelta::Lines(l) => (l.x * 20.0, l.y * 20.0),
+                    };
+                    // Enter H-scroll mode: strict threshold (2.5×, 5 px min) to commit.
+                    // Exit H-scroll mode: a strongly vertical event (3× vertical) overrides.
+                    // While locked, accept any event with non-zero horizontal delta so a
+                    // drifting finger doesn't break the scroll mid-gesture.
+                    if delta_y.abs() > delta_x.abs() * 3.0 {
+                        this.h_scroll_active = false;
+                    } else if delta_x.abs() > delta_y.abs() * 2.5 && delta_x.abs() > 5.0 {
+                        this.h_scroll_active = true;
+                    }
+                    if this.h_scroll_active && delta_x.abs() > 0.1 {
+                        let char_width = FONT_SIZE * 0.6;
+                        let max_offset = (this.max_line_chars as f32 * char_width).max(0.0);
+                        this.h_scroll_offset =
+                            (this.h_scroll_offset - delta_x).clamp(0.0, max_offset);
+                        // Undo any vertical drift: the uniform_list overflow scroll already fired
+                        // (bubble phase, inner first) and may have nudged y. Restore it to the
+                        // value captured at the start of this render so vertical position is locked
+                        // for the duration of the horizontal gesture.
+                        this.scroll_handle
+                            .0
+                            .borrow()
+                            .base_handle
+                            .set_offset(point(px(0.0), scroll_y_lock));
+                        cx.notify();
+                    }
+                }),
+            )
             .child(
                 uniform_list("editor-lines", line_count + extra_items, {
                     let text_style = text_style.clone();

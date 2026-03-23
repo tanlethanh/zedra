@@ -227,7 +227,11 @@ impl GitDiffView {
                     Some(l) => (Vec::new(), l.content.chars().count()),
                     None => (Vec::new(), 0),
                 };
-                CachedDiffLine { line, highlights, char_len }
+                CachedDiffLine {
+                    line,
+                    highlights,
+                    char_len,
+                }
             })
             .collect();
         self.max_line_chars = lines.iter().map(|l| l.char_len).max().unwrap_or(0);
@@ -339,28 +343,31 @@ impl Render for GitDiffView {
             .size_full()
             .bg(rgb(0x0e0c0c))
             .track_focus(&self.focus_handle)
-            .on_scroll_wheel(cx.listener(move |this, event: &ScrollWheelEvent, _window, cx| {
-                let (delta_x, delta_y) = match event.delta {
-                    ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y)),
-                    ScrollDelta::Lines(l) => (l.x * 20.0, l.y * 20.0),
-                };
-                if delta_y.abs() > delta_x.abs() * 3.0 {
-                    this.h_scroll_active = false;
-                } else if delta_x.abs() > delta_y.abs() * 2.5 && delta_x.abs() > 5.0 {
-                    this.h_scroll_active = true;
-                }
-                if this.h_scroll_active && delta_x.abs() > 0.1 {
-                    let char_width = FONT_SIZE * 0.6;
-                    let max_offset = (this.max_line_chars as f32 * char_width).max(0.0);
-                    this.h_scroll_offset = (this.h_scroll_offset - delta_x).clamp(0.0, max_offset);
-                    this.scroll_handle
-                        .0
-                        .borrow()
-                        .base_handle
-                        .set_offset(point(px(0.0), scroll_y_lock));
-                    cx.notify();
-                }
-            }))
+            .on_scroll_wheel(
+                cx.listener(move |this, event: &ScrollWheelEvent, _window, cx| {
+                    let (delta_x, delta_y) = match event.delta {
+                        ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y)),
+                        ScrollDelta::Lines(l) => (l.x * 20.0, l.y * 20.0),
+                    };
+                    if delta_y.abs() > delta_x.abs() * 3.0 {
+                        this.h_scroll_active = false;
+                    } else if delta_x.abs() > delta_y.abs() * 2.5 && delta_x.abs() > 5.0 {
+                        this.h_scroll_active = true;
+                    }
+                    if this.h_scroll_active && delta_x.abs() > 0.1 {
+                        let char_width = FONT_SIZE * 0.6;
+                        let max_offset = (this.max_line_chars as f32 * char_width).max(0.0);
+                        this.h_scroll_offset =
+                            (this.h_scroll_offset - delta_x).clamp(0.0, max_offset);
+                        this.scroll_handle
+                            .0
+                            .borrow()
+                            .base_handle
+                            .set_offset(point(px(0.0), scroll_y_lock));
+                        cx.notify();
+                    }
+                }),
+            )
             .child(
                 uniform_list("git-diff-view-lines", line_count + extra_items, {
                     let text_style = text_style.clone();

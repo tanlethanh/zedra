@@ -118,7 +118,11 @@ fn spawn_addr_watcher(endpoint: &iroh::Endpoint) {
             if relays_changed {
                 let added: Vec<_> = new_relays.difference(&prev_relays).collect();
                 let removed: Vec<_> = prev_relays.difference(&new_relays).collect();
-                tracing::info!("net_monitor: relay changed, added={:?} removed={:?}", added, removed);
+                tracing::info!(
+                    "net_monitor: relay changed, added={:?} removed={:?}",
+                    added,
+                    removed
+                );
                 if new_relays.is_empty() {
                     tracing::warn!("net_monitor: no relay connection");
                 }
@@ -126,7 +130,11 @@ fn spawn_addr_watcher(endpoint: &iroh::Endpoint) {
             if addrs_changed {
                 let added: Vec<_> = new_addrs.difference(&prev_addrs).collect();
                 let removed: Vec<_> = prev_addrs.difference(&new_addrs).collect();
-                tracing::info!("net_monitor: addrs changed, added={:?} removed={:?}", added, removed);
+                tracing::info!(
+                    "net_monitor: addrs changed, added={:?} removed={:?}",
+                    added,
+                    removed
+                );
             }
 
             // User-facing: one-line summary of the change
@@ -162,7 +170,11 @@ fn spawn_addr_watcher(endpoint: &iroh::Endpoint) {
                         relay_count,
                         addr_count,
                     );
-                    tracing::info!("net_monitor: re-registration OK, relays={} addrs={}", relay_count, addr_count);
+                    tracing::info!(
+                        "net_monitor: re-registration OK, relays={} addrs={}",
+                        relay_count,
+                        addr_count
+                    );
                 }
             });
 
@@ -223,13 +235,21 @@ fn spawn_report_watcher(endpoint: &iroh::Endpoint) {
                 tracing::info!("net_monitor: IPv6 {:?} → {:?}", prev.global_v6, new_v6);
             }
             if new_sym != prev.symmetric_nat {
-                tracing::info!("net_monitor: symmetric_nat {:?} → {:?}", prev.symmetric_nat, new_sym);
+                tracing::info!(
+                    "net_monitor: symmetric_nat {:?} → {:?}",
+                    prev.symmetric_nat,
+                    new_sym
+                );
             }
             if new_udp != prev.has_udp {
                 tracing::info!("net_monitor: udp {} → {}", prev.has_udp, new_udp);
             }
             if new_captive != prev.captive_portal {
-                tracing::info!("net_monitor: captive_portal {:?} → {:?}", prev.captive_portal, new_captive);
+                tracing::info!(
+                    "net_monitor: captive_portal {:?} → {:?}",
+                    prev.captive_portal,
+                    new_captive
+                );
             }
 
             // User-facing: only print if the IP actually changed (= real network switch)

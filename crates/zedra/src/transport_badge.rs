@@ -87,7 +87,11 @@ pub(crate) fn transport_badge_info(state: &ConnectState) -> (String, u32) {
             }
             // NAT / IP hints
             if let Some(varies) = snap.mapping_varies {
-                parts.push(if varies { "symmetric NAT".into() } else { "cone NAT".into() });
+                parts.push(if varies {
+                    "symmetric NAT".into()
+                } else {
+                    "cone NAT".into()
+                });
             } else {
                 match (snap.has_ipv4, snap.has_ipv6) {
                     (true, true) => parts.push("v4+v6".into()),
@@ -115,18 +119,21 @@ pub(crate) fn transport_badge_info(state: &ConnectState) -> (String, u32) {
             };
             (format!("{retry_prefix}{inner}"), theme::ACCENT_YELLOW)
         }
-        ConnectPhase::Registering => {
-            (format!("{retry_prefix}Registering device"), theme::ACCENT_YELLOW)
-        }
+        ConnectPhase::Registering => (
+            format!("{retry_prefix}Registering device"),
+            theme::ACCENT_YELLOW,
+        ),
         ConnectPhase::Authenticating | ConnectPhase::Proving => {
             (format!("{retry_prefix}PKI challenge"), theme::ACCENT_YELLOW)
         }
-        ConnectPhase::FetchingInfo => {
-            (format!("{retry_prefix}Fetching workspace info"), theme::ACCENT_YELLOW)
-        }
-        ConnectPhase::ResumingTerminals => {
-            (format!("{retry_prefix}Resuming terminals"), theme::ACCENT_YELLOW)
-        }
+        ConnectPhase::FetchingInfo => (
+            format!("{retry_prefix}Fetching workspace info"),
+            theme::ACCENT_YELLOW,
+        ),
+        ConnectPhase::ResumingTerminals => (
+            format!("{retry_prefix}Resuming terminals"),
+            theme::ACCENT_YELLOW,
+        ),
         _ => ("Disconnected".into(), theme::ACCENT_RED),
     }
 }

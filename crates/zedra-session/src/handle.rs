@@ -633,8 +633,7 @@ impl SessionHandle {
                     // is actively ticking.  Skip when idle/long-dead to avoid a continuous
                     // 1 Hz re-render drain on the workspace header badge.
                     // The session drawer has its own 2 s polling refresh for the session tab.
-                    let stale_window = last_alive_at
-                        .map_or(false, |t| t.elapsed().as_secs() < 10);
+                    let stale_window = last_alive_at.map_or(false, |t| t.elapsed().as_secs() < 10);
                     if bytes_increased || stale_window {
                         handle_for_paths.notify_state_change();
                     }
