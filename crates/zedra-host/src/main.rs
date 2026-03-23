@@ -15,7 +15,8 @@ use std::sync::Arc;
 use zedra_host::client as zedra_client;
 use zedra_host::ga4::Ga4;
 use zedra_host::{
-    api, identity, iroh_listener, net_monitor, qr, rpc_daemon, session_registry, workspace_lock,
+    api, identity, iroh_listener, net_monitor, qr, rpc_daemon, session_registry, version_check,
+    workspace_lock,
 };
 use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
@@ -102,6 +103,17 @@ enum Commands {
         /// Command to inject into the terminal on startup (e.g. "claude --resume <id>")
         #[arg(long)]
         launch_cmd: Option<String>,
+    },
+
+    /// Update zedra to the latest version
+    Update {
+        /// Install a specific version (e.g. v0.2.0)
+        #[arg(long)]
+        version: Option<String>,
+
+        /// Skip confirmation prompt
+        #[arg(long, short)]
+        yes: bool,
     },
 }
 
@@ -294,6 +306,18 @@ async fn main() -> Result<()> {
                     tracing::info!("Wrote host-info.json to {}", config_dir.display());
                 }
             }
+
+            // 1a. Async version check (non-blocking, silent on failure).
+            tokio::spawn(async {
+                match version_check::check_latest_version().await {
+                    Ok(Some(latest)) => eprintln!(
+                        "[update]   new version available: {} (current: v{}). Run `zedra update`.",
+                        latest,
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                    _ => {}
+                }
+            });
 
             // 1b. Start background network diagnostics monitor.
             //     Watches for IP changes, relay changes, NAT changes, and logs
@@ -526,6 +550,71 @@ async fn main() -> Result<()> {
                         }
                     }
                     println!();
+                }
+            }
+        }
+
+        Commands::Update { version, yes } => {
+            let current = env!("CARGO_PKG_VERSION");
+            eprintln!("zedra v{current}");
+
+            // Check what's available
+            let target_tag = if let Some(ref v) = version {
+                v.clone()
+            } else {
+                eprintln!("Checking for updates...");
+                match version_check::check_latest_version().await {
+                    Ok(Some(tag)) => tag,
+                    Ok(None) => {
+                        eprintln!("Already up to date.");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to check for updates: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            };
+
+            eprintln!("Update available: {target_tag}");
+
+            // Warn about running daemons
+            let instances = workspace_lock::scan_all_instances();
+            let alive: Vec<_> = instances.iter().filter(|(_, _, alive)| *alive).collect();
+            if !alive.is_empty() {
+                eprintln!(
+                    "\nWarning: {} running daemon(s) found. Restart them after update:",
+                    alive.len()
+                );
+                for (_, lock, _) in &alive {
+                    eprintln!("  pid {}  {}", lock.pid, lock.workdir);
+                }
+                eprintln!();
+            }
+
+            // Confirm unless --yes
+            if !yes {
+                eprint!("Proceed with update? [y/N] ");
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    eprintln!("Cancelled.");
+                    return Ok(());
+                }
+            }
+
+            match version_check::self_update(&target_tag).await {
+                Ok(tag) => {
+                    eprintln!("\nUpdated to {tag}.");
+                    if !alive.is_empty() {
+                        eprintln!(
+                            "Restart running daemons: `zedra stop -w <dir> && zedra start -w <dir>`"
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Update failed: {e}");
+                    std::process::exit(1);
                 }
             }
         }
