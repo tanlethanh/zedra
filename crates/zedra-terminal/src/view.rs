@@ -36,6 +36,10 @@ pub type ResizeFn = Box<dyn Fn(u16, u16) + Send + 'static>;
 /// Event emitted when user requests disconnect
 pub struct DisconnectRequested;
 
+/// Event emitted when the user taps a hyperlink in the terminal.
+/// The payload is the raw URI from the OSC 8 sequence (e.g. `https://…` or `file:///…`).
+pub struct LinkTapped(pub String);
+
 /// Terminal view that implements GPUI's Render trait.
 ///
 /// Self-contained: it holds its own `TerminalState` (the emulator grid),
@@ -239,6 +243,20 @@ impl TerminalView {
         self.grid_origin = Some(origin);
     }
 
+    fn link_at_position(&self, position: Point<Pixels>) -> Option<String> {
+        let origin = self.grid_origin?;
+        let size = self.terminal.size();
+        // The painted grid origin is offset by the sub-line scroll amount.
+        let rel_x = position.x - origin.x;
+        let rel_y = position.y - (origin.y + px(self.scroll_offset_px));
+        if rel_x < px(0.0) || rel_y < px(0.0) {
+            return None;
+        }
+        let col = (rel_x / size.cell_width) as usize;
+        let row = (rel_y / size.line_height) as usize;
+        self.terminal.link_at(col, row)
+    }
+
     fn mouse_mode(&self, event: &ScrollWheelEvent) -> bool {
         self.send_bytes.is_some()
             && !event.modifiers.shift
@@ -343,8 +361,8 @@ impl Focusable for TerminalView {
     }
 }
 
-// Retained for future use: will be emitted when the PTY output stream closes.
 impl gpui::EventEmitter<DisconnectRequested> for TerminalView {}
+impl gpui::EventEmitter<LinkTapped> for TerminalView {}
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -422,14 +440,18 @@ impl Render for TerminalView {
             )
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, event: &MouseUpEvent, _window, _cx| {
+                cx.listener(|this, event: &MouseUpEvent, _window, cx| {
                     if let Some(down) = this.mouse_down_pos.take() {
                         let dx = ((event.position.x - down.x) / px(1.0)) as f32;
                         let dy = ((event.position.y - down.y) / px(1.0)) as f32;
                         if dx.abs() < 10.0 && dy.abs() < 10.0 {
-                            let current =
-                                this.is_keyboard_visible_fn.as_ref().map_or(false, |f| f());
-                            this.request_keyboard(!current);
+                            if let Some(url) = this.link_at_position(event.position) {
+                                cx.emit(LinkTapped(url));
+                            } else {
+                                let current =
+                                    this.is_keyboard_visible_fn.as_ref().map_or(false, |f| f());
+                                this.request_keyboard(!current);
+                            }
                         }
                     }
                 }),

@@ -229,4 +229,19 @@ impl TerminalState {
     pub fn history_size(&self) -> usize {
         self.term.grid().history_size()
     }
+
+    pub fn link_at(&self, col: usize, screen_row: usize) -> Option<String> {
+        if col >= self.size.columns || screen_row >= self.size.rows {
+            return None;
+        }
+        let display_offset = self.term.grid().display_offset() as i32;
+        let grid_row = screen_row as i32 - display_offset;
+        let point = alacritty_terminal::index::Point::new(
+            alacritty_terminal::index::Line(grid_row),
+            alacritty_terminal::index::Column(col),
+        );
+        self.term.grid()[point]
+            .hyperlink()
+            .map(|h| h.uri().to_owned())
+    }
 }

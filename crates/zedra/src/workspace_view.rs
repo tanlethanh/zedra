@@ -16,7 +16,7 @@ use crate::platform_bridge::{self, AlertButton, status_bar_inset};
 use crate::theme;
 use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
 use zedra_session::SessionHandle;
-use zedra_terminal::view::{DisconnectRequested, TerminalView};
+use zedra_terminal::view::{DisconnectRequested, LinkTapped, TerminalView};
 
 /// Sentinel terminal ID used before the server assigns a real ID.
 const PENDING_TERMINAL_ID: &str = "__pending__";
@@ -434,14 +434,22 @@ impl WorkspaceView {
             view.set_status("Connecting...".to_string());
         });
 
-        let sub = cx.subscribe(
+        let sub_disconnect = cx.subscribe(
             &terminal_view,
             |this: &mut WorkspaceView, _terminal, _event: &DisconnectRequested, cx| {
                 tracing::info!("DisconnectRequested from terminal view");
                 this.disconnect(cx);
             },
         );
-        subscriptions.push(sub);
+        subscriptions.push(sub_disconnect);
+
+        let sub_link = cx.subscribe(
+            &terminal_view,
+            |this: &mut WorkspaceView, _, event: &LinkTapped, cx| {
+                this.handle_link_tapped(event.0.clone(), cx);
+            },
+        );
+        subscriptions.push(sub_link);
 
         let initial_terminals = vec![(PENDING_TERMINAL_ID.to_string(), terminal_view.clone())];
 
@@ -490,7 +498,7 @@ impl WorkspaceView {
             let drawer_host_clone = drawer_host.clone();
             let workspace_drawer_clone = workspace_drawer.clone();
             let workspace_content_clone = workspace_content.clone();
-            let pending_file_clone = pending_file.clone();
+
             let pending_git_diff_clone = pending_git_diff.clone();
             let pending_git_item_action_clone = pending_git_item_action.clone();
             let pending_git_commit_request_clone = pending_git_commit_request.clone();
@@ -537,6 +545,7 @@ impl WorkspaceView {
                                 );
                                 view.set_status("Creating terminal...".to_string());
                             });
+                            this.subscribe_link_tapped(&terminal_view, cx);
                             workspace_content_clone.update(cx, |content, cx| {
                                 // Active terminal ID not yet known (pending RPC); set to None so
                                 // the header shows "Terminal" until switch_to_terminal is called.
@@ -576,30 +585,7 @@ impl WorkspaceView {
                         WorkspaceDrawerEvent::FileSelected(path) => {
                             drawer_host_clone.update(cx, |host, cx| host.close(cx));
                             if !path.is_empty() {
-                                let path = path.clone();
-                                let filename = path.rsplit('/').next().unwrap_or(&path).to_string();
-                                let loading = cx.new(|_cx| FileLoadingView);
-                                workspace_content_clone.update(cx, |c, cx| {
-                                    c.set_main_view(loading.into(), filename.clone(), cx);
-                                });
-                                let handle = this.session_handle.clone();
-                                let filename_clone = filename.clone();
-                                let pfile = pending_file_clone.clone();
-                                zedra_session::session_runtime().spawn(async move {
-                                    match handle.fs_read(&path).await {
-                                        Ok(result) => {
-                                            pfile.set((
-                                                filename_clone,
-                                                result.content,
-                                                result.too_large,
-                                            ));
-                                            zedra_session::push_callback(Box::new(|| {}));
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("fs/read failed for {}: {}", path, e);
-                                        }
-                                    }
-                                });
+                                this.load_file_path(path.clone(), cx);
                             }
                         }
                         WorkspaceDrawerEvent::TerminalDeleteRequested(tid) => {
@@ -824,6 +810,46 @@ impl WorkspaceView {
         });
     }
 
+    fn handle_link_tapped(&mut self, url: String, cx: &mut Context<Self>) {
+        if url.starts_with("https://") || url.starts_with("http://") || url.starts_with("mailto:") {
+            platform_bridge::bridge().open_url(&url);
+        } else if let Some(path) = zedra_rpc::osc::parse_cwd_url(&url) {
+            self.load_file_path(path, cx);
+        }
+    }
+
+    fn load_file_path(&mut self, path: String, cx: &mut Context<Self>) {
+        let filename = path.rsplit('/').next().unwrap_or(&path).to_string();
+        let loading = cx.new(|_cx| FileLoadingView);
+        self.workspace_content.update(cx, |c, cx| {
+            c.set_main_view(loading.into(), filename.clone(), cx);
+        });
+        let handle = self.session_handle.clone();
+        let pfile = self.pending_file.clone();
+        zedra_session::session_runtime().spawn(async move {
+            match handle.fs_read(&path).await {
+                Ok(result) => {
+                    pfile.set((filename, result.content, result.too_large));
+                    zedra_session::push_callback(Box::new(|| {}));
+                }
+                Err(e) => {
+                    tracing::error!("fs/read failed for {}: {}", path, e);
+                }
+            }
+        });
+    }
+
+    /// Subscribe `view` to `LinkTapped` and store the subscription so it stays alive.
+    fn subscribe_link_tapped(&mut self, view: &Entity<TerminalView>, cx: &mut Context<Self>) {
+        let sub = cx.subscribe(
+            view,
+            |this: &mut WorkspaceView, _, event: &LinkTapped, cx| {
+                this.handle_link_tapped(event.0.clone(), cx);
+            },
+        );
+        self._subscriptions.push(sub);
+    }
+
     fn open_git_diff(
         &mut self,
         path: String,
@@ -1011,6 +1037,7 @@ impl Render for WorkspaceView {
                         "Resuming",
                         cx,
                     );
+                    self.subscribe_link_tapped(&terminal_view, cx);
                     terminal_view.update(cx, |v, _cx| v.set_connected(false));
                     // Sync terminal dimensions to server PTY; mark connected on success.
                     let handle_resize = self.session_handle.clone();
