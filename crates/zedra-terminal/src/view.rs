@@ -5,13 +5,14 @@ use std::cmp::min;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use alacritty_terminal::index::{Column as GridColumn, Line as GridLine, Point as GridPoint};
 use alacritty_terminal::term::TermMode;
 use gpui::*;
 
 use crate::element::TerminalElement;
-use crate::{TerminalSize, TerminalState};
+use crate::{LinkMatch, TerminalSize, TerminalState};
 
 const REMOTE_TOUCH_SCROLL_STEP_PX: f32 = 12.0;
 
@@ -39,6 +40,9 @@ pub struct DisconnectRequested;
 /// Event emitted when the user taps a hyperlink in the terminal.
 /// The payload is the raw URI from the OSC 8 sequence (e.g. `https://…` or `file:///…`).
 pub struct LinkTapped(pub String);
+
+/// Event emitted when the user long-presses a hyperlink to show the action sheet.
+pub struct ShowLinkMenu(pub String);
 
 /// Terminal view that implements GPUI's Render trait.
 ///
@@ -80,6 +84,11 @@ pub struct TerminalView {
     /// Top-left origin of the painted terminal grid within the window.
     /// Used to turn touch scroll positions into terminal cell coordinates.
     grid_origin: Option<Point<Pixels>>,
+    /// The link under the current tap-down, if any. Used for underline feedback
+    /// and as the tap target for mouse_up.
+    active_link: Option<LinkMatch>,
+    /// 500 ms long-press timer: fires `ShowLinkMenu`; dropping cancels it.
+    long_press_task: Option<Task<()>>,
 }
 
 impl TerminalView {
@@ -106,6 +115,8 @@ impl TerminalView {
             last_keyboard_rows: rows,
             mouse_down_pos: None,
             grid_origin: None,
+            active_link: None,
+            long_press_task: None,
         }
     }
 
@@ -243,7 +254,7 @@ impl TerminalView {
         self.grid_origin = Some(origin);
     }
 
-    fn link_at_position(&mut self, position: Point<Pixels>) -> Option<String> {
+    fn link_at_position_match(&mut self, position: Point<Pixels>) -> Option<LinkMatch> {
         let origin = self.grid_origin?;
         let size = self.terminal.size();
         // The painted grid origin is offset by the sub-line scroll amount.
@@ -363,6 +374,7 @@ impl Focusable for TerminalView {
 
 impl gpui::EventEmitter<DisconnectRequested> for TerminalView {}
 impl gpui::EventEmitter<LinkTapped> for TerminalView {}
+impl gpui::EventEmitter<ShowLinkMenu> for TerminalView {}
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -433,20 +445,47 @@ impl Render for TerminalView {
             .key_context("Terminal")
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, window, _cx| {
-                    this.focus_handle.focus(window, _cx);
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    this.focus_handle.focus(window, cx);
                     this.mouse_down_pos = Some(event.position);
+
+                    if let Some(link) = this.link_at_position_match(event.position) {
+                        this.active_link = Some(link.clone());
+                        cx.notify();
+                        let url = link.url.clone();
+                        let task = cx.spawn(async move |this, cx| {
+                            cx.background_executor()
+                                .timer(Duration::from_millis(500))
+                                .await;
+                            let _ = this.update(cx, |view, cx| {
+                                if view.active_link.is_some() {
+                                    view.active_link = None;
+                                    view.mouse_down_pos = None;
+                                    view.long_press_task = None;
+                                    cx.emit(ShowLinkMenu(url));
+                                    cx.notify();
+                                }
+                            });
+                        });
+                        this.long_press_task = Some(task);
+                    } else {
+                        this.active_link = None;
+                        this.long_press_task = None;
+                    }
                 }),
             )
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseUpEvent, _window, cx| {
+                    this.long_press_task = None;
+                    let had_active_link = this.active_link.is_some();
+                    let active = this.active_link.take();
                     if let Some(down) = this.mouse_down_pos.take() {
                         let dx = ((event.position.x - down.x) / px(1.0)) as f32;
                         let dy = ((event.position.y - down.y) / px(1.0)) as f32;
                         if dx.abs() < 10.0 && dy.abs() < 10.0 {
-                            if let Some(url) = this.link_at_position(event.position) {
-                                cx.emit(LinkTapped(url));
+                            if let Some(link) = active {
+                                cx.emit(LinkTapped(link.url));
                             } else {
                                 let current =
                                     this.is_keyboard_visible_fn.as_ref().map_or(false, |f| f());
@@ -454,12 +493,21 @@ impl Render for TerminalView {
                             }
                         }
                     }
+                    if had_active_link {
+                        cx.notify();
+                    }
                 }),
             )
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, _cx| {
                 this.handle_keystroke(&event.keystroke);
             }))
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
+                // A scroll gesture cancels any pending long-press and link highlight.
+                if this.long_press_task.is_some() {
+                    this.long_press_task = None;
+                    this.active_link = None;
+                    this.mouse_down_pos = None;
+                }
                 match event.delta {
                     ScrollDelta::Lines(l) => {
                         // Line-based scroll (e.g. mouse wheel): commit immediately
@@ -532,6 +580,7 @@ impl Render for TerminalView {
                 self.scroll_offset_px,
                 cx.weak_entity(),
                 self.focus_handle.is_focused(window),
+                self.active_link.clone(),
             ))
     }
 }

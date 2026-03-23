@@ -96,6 +96,8 @@ unsafe extern "C" {
     );
     /// Open a URL in the system browser via UIApplication.
     fn ios_open_url(url: *const std::ffi::c_char);
+    /// Copy text to the system clipboard via UIPasteboard.
+    fn ios_copy_to_clipboard(text: *const std::ffi::c_char);
 }
 
 impl PlatformBridge for IosBridge {
@@ -163,6 +165,13 @@ impl PlatformBridge for IosBridge {
         use std::ffi::CString;
         if let Ok(c_url) = CString::new(url) {
             unsafe { ios_open_url(c_url.as_ptr()) };
+        }
+    }
+
+    fn copy_to_clipboard(&self, text: &str) {
+        use std::ffi::CString;
+        if let Ok(c_text) = CString::new(text) {
+            unsafe { ios_copy_to_clipboard(c_text.as_ptr()) };
         }
     }
 

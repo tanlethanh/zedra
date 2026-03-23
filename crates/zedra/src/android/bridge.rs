@@ -48,6 +48,10 @@ impl PlatformBridge for AndroidBridge {
         jni::open_url(url);
     }
 
+    fn copy_to_clipboard(&self, text: &str) {
+        jni::copy_to_clipboard(text);
+    }
+
     fn present_alert(&self, id: u32, title: &str, message: &str, buttons: &[AlertButton]) {
         jni::show_alert(id, title, message, buttons);
     }

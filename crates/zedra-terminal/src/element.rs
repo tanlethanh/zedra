@@ -9,7 +9,8 @@ use gpui::*;
 use itertools::Itertools;
 
 use crate::{
-    CursorState, IndexedCell, MONO_FONT_FAMILY, TerminalContent, TerminalSize, view::TerminalView,
+    CursorState, IndexedCell, LinkMatch, MONO_FONT_FAMILY, TerminalContent, TerminalSize,
+    view::TerminalView,
 };
 
 /// Per-terminal color palette. Construct with `TerminalTheme::one_dark()` for the default
@@ -282,6 +283,8 @@ pub struct TerminalElement {
     entity: WeakEntity<TerminalView>,
     /// Whether the terminal view is currently focused (controls cursor blink).
     focused: bool,
+    /// Link being held/tapped — rendered with an underline for visual feedback.
+    active_link: Option<LinkMatch>,
 }
 
 impl TerminalElement {
@@ -291,6 +294,7 @@ impl TerminalElement {
         scroll_offset_px: f32,
         entity: WeakEntity<TerminalView>,
         focused: bool,
+        active_link: Option<LinkMatch>,
     ) -> Self {
         Self {
             content,
@@ -298,6 +302,7 @@ impl TerminalElement {
             scroll_offset_px,
             entity,
             focused,
+            active_link,
         }
     }
 
@@ -545,6 +550,47 @@ impl Element for TerminalElement {
             self.focused,
             &theme,
         );
+
+        // Paint active-link underline (visual tap feedback).
+        if let Some(ref link) = self.active_link {
+            let underline_height = px(1.0);
+            let display_offset = layout.content.display_offset as i32;
+            let grid_rows = layout.content.grid_rows as i32;
+            let link_color: Hsla = rgb(0x61afef).into();
+
+            let start_screen = link.start_line + display_offset;
+            let end_screen = link.end_line + display_offset;
+
+            for screen_line in start_screen..=end_screen {
+                if screen_line < 0 || screen_line >= grid_rows {
+                    continue;
+                }
+                let col_start = if screen_line == start_screen {
+                    link.start_col
+                } else {
+                    0
+                };
+                let col_end = if screen_line == end_screen {
+                    link.end_col
+                } else {
+                    self.size.columns.saturating_sub(1)
+                };
+                let x = origin.x + col_start as f32 * cell_width;
+                let y =
+                    origin.y + screen_line as f32 * line_height + line_height - underline_height;
+                let width = cell_width * (col_end - col_start + 1) as f32;
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(x, y),
+                        gpui::Size {
+                            width,
+                            height: underline_height,
+                        },
+                    ),
+                    link_color,
+                ));
+            }
+        }
 
         let entity = self.entity.clone();
         window.defer(cx, move |_window, cx| {

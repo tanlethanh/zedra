@@ -217,3 +217,11 @@ void ios_open_url(const char *url) {
         [[UIApplication sharedApplication] openURL:nsUrl options:@{} completionHandler:nil];
     });
 }
+
+void ios_copy_to_clipboard(const char *text) {
+    if (!text) return;
+    NSString *str = [NSString stringWithUTF8String:text];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [UIPasteboard generalPasteboard].string = str;
+    });
+}

@@ -39,8 +39,19 @@ pub const MONO_FONT_FAMILY: &str = "JetBrainsMonoNL Nerd Font Mono";
 
 use alacritty_terminal::event::{Event as AlacTermEvent, EventListener};
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::Direction;
+use alacritty_terminal::index::{Column, Direction, Line, Point as AlacPoint};
 use alacritty_terminal::term::Config;
+
+/// A detected hyperlink span in the terminal grid.
+#[derive(Clone, Debug)]
+pub struct LinkMatch {
+    pub url: String,
+    /// Absolute alacritty grid line (before display_offset adjustment).
+    pub start_line: i32,
+    pub start_col: usize,
+    pub end_line: i32,
+    pub end_col: usize,
+}
 use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::term::search::{RegexIter, RegexSearch};
 use alacritty_terminal::term::{Term, TermMode};
@@ -242,23 +253,27 @@ impl TerminalState {
         self.term.grid().history_size()
     }
 
-    pub fn link_at(&mut self, col: usize, screen_row: usize) -> Option<String> {
+    pub fn link_at(&mut self, col: usize, screen_row: usize) -> Option<LinkMatch> {
         if col >= self.size.columns || screen_row >= self.size.rows {
             return None;
         }
         let display_offset = self.term.grid().display_offset() as i32;
         let grid_row = screen_row as i32 - display_offset;
-        let point = alacritty_terminal::index::Point::new(
-            alacritty_terminal::index::Line(grid_row),
-            alacritty_terminal::index::Column(col),
-        );
+        let point = AlacPoint::new(Line(grid_row), Column(col));
 
-        // OSC 8 hyperlink takes priority.
-        let osc = self.term.grid()[point]
+        // OSC 8 hyperlink takes priority — find the full span of adjacent cells.
+        if let Some(uri) = self.term.grid()[point]
             .hyperlink()
-            .map(|h| h.uri().to_owned());
-        if osc.is_some() {
-            return osc;
+            .map(|h| h.uri().to_owned())
+        {
+            let (start, end) = self.osc_link_span(point, &uri);
+            return Some(LinkMatch {
+                url: uri,
+                start_line: start.line.0,
+                start_col: start.column.0,
+                end_line: end.line.0,
+                end_col: end.column.0,
+            });
         }
 
         // Regex scan the line for bare URLs (https://, file://, etc.).
@@ -273,9 +288,59 @@ impl TerminalState {
                 url_regex,
             )
             .find(|m| m.contains(&point))
-            .map(|m| self.term.bounds_to_string(*m.start(), *m.end()));
+            .map(|m| {
+                let url = self.term.bounds_to_string(*m.start(), *m.end());
+                LinkMatch {
+                    url,
+                    start_line: m.start().line.0,
+                    start_col: m.start().column.0,
+                    end_line: m.end().line.0,
+                    end_col: m.end().column.0,
+                }
+            });
         }
 
         None
+    }
+
+    /// Find the full horizontal span of an OSC 8 hyperlink by scanning adjacent cells
+    /// on the same line that share the same URI.
+    fn osc_link_span(&self, point: AlacPoint, uri: &str) -> (AlacPoint, AlacPoint) {
+        let line = point.line;
+        let max_col = self.size.columns.saturating_sub(1);
+
+        let mut start = point;
+        loop {
+            if start.column.0 == 0 {
+                break;
+            }
+            let prev = AlacPoint::new(line, Column(start.column.0 - 1));
+            let matches = self.term.grid()[prev]
+                .hyperlink()
+                .map_or(false, |h| h.uri() == uri);
+            if matches {
+                start = prev;
+            } else {
+                break;
+            }
+        }
+
+        let mut end = point;
+        loop {
+            if end.column.0 >= max_col {
+                break;
+            }
+            let next = AlacPoint::new(line, Column(end.column.0 + 1));
+            let matches = self.term.grid()[next]
+                .hyperlink()
+                .map_or(false, |h| h.uri() == uri);
+            if matches {
+                end = next;
+            } else {
+                break;
+            }
+        }
+
+        (start, end)
     }
 }

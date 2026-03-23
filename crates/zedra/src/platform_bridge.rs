@@ -191,6 +191,8 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn present_selection(&self, _id: u32, _title: &str, _message: &str, _buttons: &[AlertButton]) {}
     /// Open a URL in the system browser.
     fn open_url(&self, _url: &str) {}
+    /// Copy text to the system clipboard.
+    fn copy_to_clipboard(&self, _text: &str) {}
 }
 
 static BRIDGE: OnceLock<Box<dyn PlatformBridge>> = OnceLock::new();

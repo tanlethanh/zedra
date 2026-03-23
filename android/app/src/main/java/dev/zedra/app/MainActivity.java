@@ -5,6 +5,9 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.splashscreen.SplashScreen;
 
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
@@ -67,6 +70,18 @@ public class MainActivity extends AppCompatActivity {
             sActivity.runOnUiThread(() -> {
                 Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
                 sActivity.startActivity(intent);
+            });
+        }
+    }
+
+    /**
+     * Copy text to the system clipboard (called from Rust via JNI)
+     */
+    public static void copyToClipboard(String text) {
+        if (sActivity != null) {
+            sActivity.runOnUiThread(() -> {
+                ClipboardManager cm = (ClipboardManager) sActivity.getSystemService(Context.CLIPBOARD_SERVICE);
+                cm.setPrimaryClip(ClipData.newPlainText("", text));
             });
         }
     }

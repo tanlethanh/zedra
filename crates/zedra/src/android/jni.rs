@@ -946,6 +946,74 @@ fn open_url_inner(url: String) {
     }
 }
 
+/// Copy text to the system clipboard.
+pub fn copy_to_clipboard(text: &str) {
+    let text_owned = text.to_string();
+    jni_call("copy_to_clipboard", move || {
+        copy_to_clipboard_inner(text_owned)
+    });
+}
+
+fn copy_to_clipboard_inner(text: String) {
+    let jvm = match JVM.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(jvm) => jvm.clone(),
+            None => {
+                tracing::error!("JVM not available for copy_to_clipboard");
+                return;
+            }
+        },
+        Err(e) => {
+            tracing::error!("Failed to lock JVM mutex: {:?}", e);
+            return;
+        }
+    };
+
+    let mut env = match jvm.get_env() {
+        Ok(env) => env,
+        Err(_) => match jvm.attach_current_thread_as_daemon() {
+            Ok(env) => env,
+            Err(e) => {
+                tracing::error!("Failed to attach thread for copy_to_clipboard: {:?}", e);
+                return;
+            }
+        },
+    };
+
+    let class = match env.find_class("dev/zedra/app/MainActivity") {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Failed to find MainActivity class: {:?}", e);
+            if env.exception_check().unwrap_or(false) {
+                env.exception_describe().ok();
+                env.exception_clear().ok();
+            }
+            return;
+        }
+    };
+
+    let j_text = match env.new_string(&text) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("Failed to create JString for clipboard text: {:?}", e);
+            return;
+        }
+    };
+
+    if let Err(e) = env.call_static_method(
+        &class,
+        "copyToClipboard",
+        "(Ljava/lang/String;)V",
+        &[(&j_text).into()],
+    ) {
+        tracing::error!("Failed to call copyToClipboard: {:?}", e);
+        if env.exception_check().unwrap_or(false) {
+            env.exception_describe().ok();
+            env.exception_clear().ok();
+        }
+    }
+}
+
 /// Present a native Android alert dialog.
 pub fn show_alert(id: u32, title: &str, message: &str, buttons: &[AlertButton]) {
     let title = title.to_string();

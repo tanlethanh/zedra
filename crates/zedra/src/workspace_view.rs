@@ -16,7 +16,7 @@ use crate::platform_bridge::{self, AlertButton, status_bar_inset};
 use crate::theme;
 use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
 use zedra_session::SessionHandle;
-use zedra_terminal::view::{DisconnectRequested, LinkTapped, TerminalView};
+use zedra_terminal::view::{DisconnectRequested, LinkTapped, ShowLinkMenu, TerminalView};
 
 /// Sentinel terminal ID used before the server assigns a real ID.
 const PENDING_TERMINAL_ID: &str = "__pending__";
@@ -545,7 +545,7 @@ impl WorkspaceView {
                                 );
                                 view.set_status("Creating terminal...".to_string());
                             });
-                            this.subscribe_link_tapped(&terminal_view, cx);
+                            this.subscribe_terminal_events(&terminal_view, cx);
                             workspace_content_clone.update(cx, |content, cx| {
                                 // Active terminal ID not yet known (pending RPC); set to None so
                                 // the header shows "Terminal" until switch_to_terminal is called.
@@ -839,15 +839,43 @@ impl WorkspaceView {
         });
     }
 
-    /// Subscribe `view` to `LinkTapped` and store the subscription so it stays alive.
-    fn subscribe_link_tapped(&mut self, view: &Entity<TerminalView>, cx: &mut Context<Self>) {
-        let sub = cx.subscribe(
+    /// Subscribe `view` to terminal events (`LinkTapped`, `ShowLinkMenu`) and store the
+    /// subscriptions so they stay alive.
+    fn subscribe_terminal_events(&mut self, view: &Entity<TerminalView>, cx: &mut Context<Self>) {
+        let sub_tap = cx.subscribe(
             view,
             |this: &mut WorkspaceView, _, event: &LinkTapped, cx| {
                 this.handle_link_tapped(event.0.clone(), cx);
             },
         );
-        self._subscriptions.push(sub);
+        let sub_menu = cx.subscribe(
+            view,
+            |this: &mut WorkspaceView, _, event: &ShowLinkMenu, _cx| {
+                this.handle_link_menu(event.0.clone());
+            },
+        );
+        self._subscriptions.push(sub_tap);
+        self._subscriptions.push(sub_menu);
+    }
+
+    fn handle_link_menu(&self, url: String) {
+        use crate::platform_bridge::{self, AlertButton};
+        let url_open = url.clone();
+        let url_copy = url.clone();
+        let url_display = url.clone();
+        platform_bridge::show_selection(
+            "Link",
+            &url_display,
+            vec![
+                AlertButton::default("Open"),
+                AlertButton::default("Copy URL"),
+            ],
+            move |choice| match choice {
+                Some(0) => platform_bridge::bridge().open_url(&url_open),
+                Some(1) => platform_bridge::bridge().copy_to_clipboard(&url_copy),
+                _ => {}
+            },
+        );
     }
 
     fn open_git_diff(
@@ -1037,7 +1065,7 @@ impl Render for WorkspaceView {
                         "Resuming",
                         cx,
                     );
-                    self.subscribe_link_tapped(&terminal_view, cx);
+                    self.subscribe_terminal_events(&terminal_view, cx);
                     terminal_view.update(cx, |v, _cx| v.set_connected(false));
                     // Sync terminal dimensions to server PTY; mark connected on success.
                     let handle_resize = self.session_handle.clone();
