@@ -201,25 +201,11 @@ impl Render for HomeView {
 
         // "Scan QR Code" button (always shown)
         content = content.child(
-            div()
+            crate::button::outline_button("home-scan-qr", "Scan QR Code")
                 .w(px(theme::HOME_CARD_WIDTH))
-                .py(px(12.0))
-                .rounded(px(8.0))
-                .border_1()
-                .border_color(rgb(theme::BORDER_DEFAULT))
-                .flex()
-                .justify_center()
-                .cursor_pointer()
-                .bg(rgb(theme::BG_PRIMARY))
-                .text_color(rgb(theme::TEXT_PRIMARY))
-                .text_size(px(theme::FONT_BODY))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|_this, _event, _window, cx| {
-                        cx.emit(HomeEvent::ScanQrTapped);
-                    }),
-                )
-                .child("Scan QR Code"),
+                .on_click(cx.listener(|_this, _event, _window, cx| {
+                    cx.emit(HomeEvent::ScanQrTapped);
+                })),
         );
 
         let bottom_inset = platform_bridge::home_indicator_inset();

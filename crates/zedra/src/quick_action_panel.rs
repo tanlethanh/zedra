@@ -11,6 +11,7 @@ use crate::workspace_state::SharedWorkspaceStates;
 #[derive(Clone, Debug)]
 pub enum QuickActionEvent {
     GoHome,
+    ScanQr,
     SwitchToWorkspace(usize),
     SwitchToTerminal(usize, String),
     TerminalDeleteRequested(usize, String),
@@ -297,6 +298,16 @@ impl Render for QuickActionPanel {
                     .child("No active workspaces"),
             );
         }
+
+        // Scan QR Code button
+        content = content.child(
+            crate::button::outline_button("quick-action-scan-qr", "Scan QR Code")
+                .mx(px(16.0))
+                .mt(px(12.0))
+                .on_click(cx.listener(|_this, _event, _window, cx| {
+                    cx.emit(QuickActionEvent::ScanQr);
+                })),
+        );
 
         // Spacer + bottom inset
         content = content

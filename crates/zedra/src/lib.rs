@@ -10,6 +10,9 @@ pub mod keyboard;
 // Shared color constants (Figma palette)
 pub mod theme;
 
+// Reusable UI components
+pub mod button;
+
 // Embedded fonts
 pub mod fonts;
 

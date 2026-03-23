@@ -146,6 +146,10 @@ impl ZedraApp {
                     this.qa_drawer.update(cx, |h, cx| h.close(cx));
                     this.screen = AppScreen::Home;
                 }
+                QuickActionEvent::ScanQr => {
+                    this.qa_drawer.update(cx, |h, cx| h.close(cx));
+                    platform_bridge::bridge().launch_qr_scanner();
+                }
                 QuickActionEvent::SwitchToWorkspace(index) => {
                     this.qa_drawer.update(cx, |h, cx| h.close(cx));
                     this.switch_to_workspace(*index, window, cx);
