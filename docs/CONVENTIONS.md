@@ -204,4 +204,5 @@ If the field comes from the server post-connect, copy it with the "non-empty onl
 - `crates/zedra/src/ios/bridge.rs` — `IosBridge` impl + iOS FFI exports
 - `crates/zedra/src/theme.rs` — color constants, inset helpers
 - `crates/zedra/src/keyboard.rs` — keyboard handler factories (no UI code)
-- `crates/zedra/src/analytics.rs` — platform-dispatched analytics API
+- `crates/zedra-telemetry/src/lib.rs` — typed Event enum, TelemetryBackend trait, runtime injection
+- `crates/zedra/src/analytics.rs` — FirebaseBackend: registers with zedra-telemetry at app startup

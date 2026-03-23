@@ -17,6 +17,7 @@ unsafe extern "C" {
     fn zedra_record_panic(message: *const c_char, location: *const c_char);
     fn zedra_set_user_id(user_id: *const c_char);
     fn zedra_set_custom_key(key: *const c_char, value: *const c_char);
+    fn zedra_set_collection_enabled(enabled: c_int);
 }
 
 pub fn log_event(name: &str, params: &[(&str, &str)]) {
@@ -74,4 +75,8 @@ pub fn set_custom_key(key: &str, value: &str) {
     let Ok(ck) = CString::new(key) else { return };
     let Ok(cv) = CString::new(value) else { return };
     unsafe { zedra_set_custom_key(ck.as_ptr(), cv.as_ptr()) };
+}
+
+pub fn set_collection_enabled(enabled: bool) {
+    unsafe { zedra_set_collection_enabled(enabled as c_int) };
 }

@@ -97,6 +97,24 @@ impl ConnectPhase {
         }
     }
 
+    /// Short machine-readable label for telemetry events.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::BindingEndpoint => "binding_endpoint",
+            Self::HolePunching => "hole_punching",
+            Self::EstablishingRpc => "establishing_rpc",
+            Self::Registering => "registering",
+            Self::Authenticating => "authenticating",
+            Self::Proving => "proving",
+            Self::FetchingInfo => "fetching_info",
+            Self::Connected => "connected",
+            Self::ResumingTerminals => "resuming_terminals",
+            Self::Reconnecting { .. } => "reconnecting",
+            Self::Failed(_) => "failed",
+        }
+    }
+
     pub fn display_name(&self) -> &'static str {
         match self {
             Self::Idle => "Idle",
@@ -357,6 +375,27 @@ impl ConnectError {
             Self::SessionInfoFailed(e) => format!("Failed to fetch session info: {e}"),
             Self::HostUnreachable => "Host unreachable after repeated attempts.".into(),
             Self::Other(e) => e.clone(),
+        }
+    }
+
+    /// Short machine-readable label for telemetry events.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::EndpointBindFailed(_) => "endpoint_bind_failed",
+            Self::QuicConnectFailed(_) => "quic_connect_failed",
+            Self::HandshakeConsumed => "handshake_consumed",
+            Self::InvalidHandshake => "invalid_handshake",
+            Self::StaleTimestamp => "stale_timestamp",
+            Self::SlotNotFound => "slot_not_found",
+            Self::Unauthorized => "unauthorized",
+            Self::NotInSessionAcl => "not_in_session_acl",
+            Self::SessionOccupied => "session_occupied",
+            Self::SessionNotFound => "session_not_found",
+            Self::InvalidSignature => "invalid_signature",
+            Self::HostSignatureInvalid => "host_signature_invalid",
+            Self::SessionInfoFailed(_) => "session_info_failed",
+            Self::HostUnreachable => "host_unreachable",
+            Self::Other(_) => "other",
         }
     }
 

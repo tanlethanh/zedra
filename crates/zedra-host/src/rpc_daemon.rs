@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zedra_rpc::osc::{encode_meta_preamble, OscEvent};
 use zedra_rpc::proto::*;
+use zedra_telemetry::*;
 
 fn ts() -> String {
     let s = SystemTime::now()
@@ -277,32 +278,29 @@ pub async fn handle_connection(
 
     // Auth phase: returns (session, client_pubkey, is_new_client) or closes connection
     let auth_start = std::time::Instant::now();
-    let (session, client_pubkey, is_new_client) = match auth_phase(
-        &conn,
-        &registry,
-        &state.identity,
-        &state.workdir,
-        &state.analytics,
-    )
-    .await
-    {
-        Ok(triple) => triple,
-        Err(e) => {
-            state.analytics.auth_failed("auth_error");
-            tracing::warn!("auth failed from {}: {}", remote.fmt_short(), e);
-            // Wait for the client to close the connection (up to 500ms) so any
-            // error response we sent has time to be delivered before CONNECTION_CLOSE.
-            let _ =
-                tokio::time::timeout(std::time::Duration::from_millis(500), conn.closed()).await;
-            return Ok(());
-        }
-    };
+    let (session, client_pubkey, is_new_client) =
+        match auth_phase(&conn, &registry, &state.identity, &state.workdir).await {
+            Ok(triple) => triple,
+            Err(e) => {
+                zedra_telemetry::send(Event::AuthFailed(AuthFailed {
+                    reason: "auth_error",
+                }));
+                tracing::warn!("auth failed from {}: {}", remote.fmt_short(), e);
+                // Wait for the client to close the connection (up to 500ms) so any
+                // error response we sent has time to be delivered before CONNECTION_CLOSE.
+                let _ = tokio::time::timeout(std::time::Duration::from_millis(500), conn.closed())
+                    .await;
+                return Ok(());
+            }
+        };
 
     let auth_duration_ms = auth_start.elapsed().as_millis() as u64;
     let path_type = initial_path_type(&conn);
-    state
-        .analytics
-        .auth_success(is_new_client, auth_duration_ms, path_type);
+    zedra_telemetry::send(Event::AuthSuccess(AuthSuccess {
+        is_new_client,
+        duration_ms: auth_duration_ms,
+        path_type,
+    }));
 
     tracing::info!(
         "Authenticated client {:?}... → session={}",
@@ -322,30 +320,41 @@ pub async fn handle_connection(
     {
         use iroh::Watcher;
         let conn_for_bw = conn.clone();
-        let analytics_for_bw = state.analytics.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
             interval.tick().await; // skip immediate first tick
             let mut paths = conn_for_bw.paths(); // hold watcher for the lifetime of the task
+            let mut prev_tx: u64 = 0;
+            let mut prev_rx: u64 = 0;
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
                         let path_list = paths.get();
-                        let mut bw_tx = 0u64;
-                        let mut bw_rx = 0u64;
+                        let mut cur_tx = 0u64;
+                        let mut cur_rx = 0u64;
                         let mut bw_found = false;
                         for p in path_list.iter() {
                             if p.is_selected() {
                                 let s = p.stats();
-                                bw_tx = s.udp_tx.bytes;
-                                bw_rx = s.udp_rx.bytes;
+                                cur_tx = s.udp_tx.bytes;
+                                cur_rx = s.udp_rx.bytes;
                                 bw_found = true;
                                 break;
                             }
                         }
                         drop(path_list);
                         if bw_found {
-                            analytics_for_bw.bandwidth_sample(bw_tx, bw_rx, 60);
+                            let delta_tx = cur_tx.saturating_sub(prev_tx);
+                            let delta_rx = cur_rx.saturating_sub(prev_rx);
+                            prev_tx = cur_tx;
+                            prev_rx = cur_rx;
+                            zedra_telemetry::send(Event::BandwidthSample(
+                                BandwidthSample {
+                                    bytes_sent: delta_tx,
+                                    bytes_recv: delta_rx,
+                                    interval_secs: 60,
+                                },
+                            ));
                         }
                     }
                     _ = conn_for_bw.closed() => break,
@@ -384,9 +393,11 @@ pub async fn handle_connection(
     // the new client's output.
     let session_duration_ms = session_start.elapsed().as_millis() as u64;
     let terminal_count = session.terminals.lock().await.len() as u64;
-    state
-        .analytics
-        .session_end(session_duration_ms, terminal_count, path_type);
+    zedra_telemetry::send(Event::SessionEnd(SessionEnd {
+        duration_ms: session_duration_ms,
+        terminal_count,
+        path_type,
+    }));
 
     registry.detach_client(&session.id, client_pubkey).await;
 
@@ -418,7 +429,6 @@ async fn auth_phase(
     registry: &Arc<SessionRegistry>,
     identity: &SharedIdentity,
     workdir: &std::path::Path,
-    analytics: &Arc<Analytics>,
 ) -> Result<(Arc<ServerSession>, [u8; 32], bool)> {
     // Step 1: Optional Register
     let first = irpc_iroh::read_request::<ZedraProto>(conn).await?;
@@ -426,7 +436,7 @@ async fn auth_phase(
     let client_pubkey: [u8; 32] = match first {
         Some(ZedraMessage::Register(msg)) => {
             let pubkey = msg.client_pubkey;
-            let result = handle_register(&msg, registry, analytics).await;
+            let result = handle_register(&msg, registry).await;
             let ok = matches!(result, RegisterResult::Ok);
             let _ = msg.tx.send(result).await;
             if !ok {
@@ -467,7 +477,6 @@ async fn auth_phase(
 async fn handle_register(
     msg: &irpc::WithChannels<RegisterReq, ZedraProto>,
     registry: &Arc<SessionRegistry>,
-    analytics: &Arc<Analytics>,
 ) -> RegisterResult {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -517,7 +526,7 @@ async fn handle_register(
                 short_key(&msg.client_pubkey),
                 &slot.session_id[..8.min(slot.session_id.len())]
             );
-            analytics.client_paired();
+            zedra_telemetry::send(Event::ClientPaired);
             RegisterResult::Ok
         }
         ConsumeSlotResult::Consumed => {
@@ -1046,7 +1055,9 @@ async fn dispatch(
             .await
             {
                 Ok(id) => {
-                    state.analytics.terminal_open(has_launch_cmd);
+                    zedra_telemetry::send(Event::HostTerminalOpen(HostTerminalOpen {
+                        has_launch_cmd,
+                    }));
                     let _ = msg.tx.send(TermCreateResult { id }).await;
                 }
                 Err(e) => {

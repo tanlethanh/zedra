@@ -21,6 +21,78 @@ Any change that touches protocol-layer behavior MUST:
 
 If code and doc ever diverge, align both immediately in the same PR.
 
+## Telemetry Governance (Required)
+
+`crates/zedra-telemetry/src/lib.rs` defines the canonical `Event` enum — the single source of truth for all telemetry events across app, host, and shared crates.
+
+### Adding telemetry for new features
+
+Any change that adds a **user-facing feature or significant behavior** MUST define telemetry events for it:
+
+1. **Add a typed `Event` variant** in `crates/zedra-telemetry/src/lib.rs` with a dedicated context struct carrying relevant fields (timing, counts, transport state, enum labels).
+2. **Implement `to_params()`** serialization for the new variant.
+3. **Instrument the call site** using `zedra_telemetry::send(Event::Variant(...))`.
+4. **Include meaningful context**: connection timing/phase, transport path (direct/relay), ALPN, relay URL, network classification, version info — whatever is relevant to understanding the feature's behavior in production.
+
+### Privacy rules
+
+- **Never** include personal data: usernames, file paths, file contents, IP addresses, hostnames.
+- Use opaque IDs only (node ID short forms, session IDs, terminal IDs).
+- Durations, counts, enum labels, and boolean flags are always safe.
+- `record_panic` strips filesystem paths via `sanitize_panic_message()`.
+
+### Architecture
+
+```
+zedra-telemetry (pure crate, no platform deps)
+  ├── Event enum        — typed variants with context structs
+  ├── TelemetryBackend  — trait: send(), record_error(), record_panic(), ...
+  ├── send(Event)       — global free function, delegates to registered backend
+  └── init(Box<dyn TelemetryBackend>)  — called once at startup
+
+App (iOS/Android):  FirebaseBackend  → crates/zedra/src/analytics.rs
+Host (GA4):         HostBackend      → crates/zedra-host/src/telemetry.rs
+No backend:         silent no-op (default)
+```
+
+### Current event catalog
+
+**App events** (mobile + shared crates):
+
+| Event | Context | Crate |
+|-------|---------|-------|
+| `AppOpen` | saved_workspaces, app_version, platform, arch | zedra |
+| `ScreenView` | screen name | zedra |
+| `QrScanInitiated` | — | zedra |
+| `ConnectSuccess` | phase timings, path, network, relay, ALPN, NAT, ipv4/6 | zedra-session |
+| `ConnectFailed` | phase, error label, relay, ALPN, discovery state | zedra-session |
+| `SessionResumed` | terminal_count, resume_ms | zedra |
+| `Disconnect` | — | zedra |
+| `ReconnectStarted` | reason | zedra-session |
+| `ReconnectSuccess` | attempt, elapsed_ms, reason | zedra-session |
+| `ReconnectExhausted` | attempts, elapsed_ms, reason | zedra-session |
+| `PathUpgraded` | network, rtt_ms, from_relay | zedra-session |
+| `TerminalOpened` | source, terminal_count | zedra, workspace_view |
+| `TerminalClosed` | remaining count | workspace_view |
+
+**Host events** (desktop daemon):
+
+| Event | Context | Crate |
+|-------|---------|-------|
+| `DaemonStart` | relay_type | zedra-host |
+| `NetReport` | has_ipv4, has_ipv6, symmetric_nat | zedra-host |
+| `ClientPaired` | — | zedra-host |
+| `AuthSuccess` | is_new_client, duration_ms, path_type | zedra-host |
+| `AuthFailed` | reason | zedra-host |
+| `SessionEnd` | duration_ms, terminal_count, path_type | zedra-host |
+| `HostTerminalOpen` | has_launch_cmd | zedra-host |
+| `BandwidthSample` | bytes_sent, bytes_recv, interval_secs | zedra-host |
+
+### Runtime opt-out
+
+- **Host**: `--no-telemetry` flag or `ZEDRA_TELEMETRY=0` env var.
+- **App**: `zedra_telemetry::set_enabled(false)` at runtime (also disables Firebase SDK collection).
+
 ## Quick Start
 
 ### Build and Deploy
@@ -155,6 +227,9 @@ crates/
   │       ├── element.rs        # GPUI Element for terminal grid
   │       ├── keys.rs           # Keystroke → escape sequence mapping
   │       └── view.rs           # TerminalView + GPUI Render
+  ├── zedra-telemetry/           # Pure telemetry: typed Event enum + TelemetryBackend trait
+  │   └── src/
+  │       └── lib.rs            # Event enum, context structs, global dispatch, backend trait
   ├── zedra-rpc/                # irpc protocol types + QR pairing codec
   │   └── src/
   │       ├── lib.rs            # Re-exports
@@ -198,6 +273,7 @@ crates/
   │       ├── transport_badge.rs # Connection status badge rendering
   │       ├── terminal_panel.rs # Terminal tab panel for app drawer
   │       ├── session_panel.rs  # Session info panel for app drawer
+  │       ├── analytics.rs      # FirebaseBackend: bridges Firebase ↔ zedra-telemetry
   │       ├── platform_bridge.rs # PlatformBridge trait + global accessor
   │       └── theme.rs          # Color constants and theme helpers
   └── zedra-host/               # Desktop host daemon
@@ -209,6 +285,8 @@ crates/
           ├── iroh_listener.rs  # iroh Endpoint creation + accept loop
           ├── identity.rs       # Persistent Ed25519 host identity (~/.config/zedra/)
           ├── qr.rs             # QR code generation (terminal + JSON output)
+          ├── analytics.rs      # GA4 Measurement Protocol (host-specific events + sync panic hook)
+          ├── telemetry.rs      # HostBackend: bridges GA4 Analytics ↔ zedra-telemetry
           ├── fs.rs             # Filesystem RPC handlers (list, read, write, stat, remove, mkdir)
           ├── git.rs            # Git RPC handlers (status, diff, log, commit, branches, checkout)
           └── pty.rs            # PTY management (spawn, resize, I/O streaming)
@@ -246,17 +324,19 @@ docs/
 ### Dependency Graph
 
 ```
+zedra-telemetry (pure: typed Event enum, TelemetryBackend trait, global dispatch)
+    ↑
 zedra-rpc (irpc protocol types, QR pairing codec)
     ↑
-zedra-session (RemoteSession, iroh connection, terminal buffers, auto-reconnect)
+zedra-session (iroh connection, RPC, auto-reconnect — emits telemetry events)
     ↑
 zedra-terminal (terminal emulation, sends input via zedra-session)
     ↑
-zedra (Android cdylib, GPUI app, touch handling, editor, navigation)
+zedra (app cdylib — registers FirebaseBackend, emits app-level events)
 
-zedra-host (iroh listener, irpc RPC daemon, session registry, host identity)
+zedra-host (iroh listener, irpc RPC daemon — registers GA4 HostBackend)
     ↑
-zedra-rpc
+zedra-rpc + zedra-telemetry
 ```
 
 ## What Works

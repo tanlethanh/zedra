@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use zedra_rpc::proto::*;
+use zedra_telemetry::*;
 
 use crate::connect_state::{
     AuthOutcome, ConnectError, ConnectPhase, ConnectState, NetworkHint, ReconnectReason,
@@ -597,6 +598,7 @@ impl SessionHandle {
                             bytes_increased = true;
                         }
 
+                        let mut path_upgrade_event = None;
                         if let Ok(mut cs) = handle_for_paths.0.connect_state.lock() {
                             let prev_direct = cs
                                 .snapshot
@@ -612,9 +614,23 @@ impl SessionHandle {
                                     .map(|t| t.path_upgraded)
                                     .unwrap_or(false);
 
-                            if !prev_direct && is_direct {
+                            path_upgrade_event = if !prev_direct && is_direct {
                                 tracing::info!("iroh path upgraded: relay → direct P2P");
-                            }
+                                Some(PathUpgraded {
+                                    network: network_hint
+                                        .as_ref()
+                                        .map(|h| h.label())
+                                        .unwrap_or("unknown"),
+                                    rtt_ms: rtt,
+                                    from_relay: cs
+                                        .snapshot
+                                        .relay_url
+                                        .clone()
+                                        .unwrap_or_else(|| "none".into()),
+                                })
+                            } else {
+                                None
+                            };
 
                             cs.snapshot.transport = Some(TransportSnapshot {
                                 is_direct,
@@ -628,6 +644,9 @@ impl SessionHandle {
                                 network_hint,
                                 last_alive_at,
                             });
+                        }
+                        if let Some(upgrade) = path_upgrade_event {
+                            zedra_telemetry::send(Event::PathUpgraded(upgrade));
                         }
                     }
 
@@ -742,6 +761,39 @@ impl SessionHandle {
         });
 
         tracing::info!("SessionHandle: connected (gen={my_gen})");
+
+        // Telemetry: connect success with phase timings + transport context.
+        {
+            let cs = self.0.connect_state.lock().unwrap();
+            let s = &cs.snapshot;
+            let total_ms = cs
+                .started_at
+                .map(|t| t.elapsed().as_millis() as u64)
+                .unwrap_or(0);
+            let transport = s.transport.as_ref();
+            let is_direct = transport.map(|t| t.is_direct).unwrap_or(false);
+            zedra_telemetry::send(Event::ConnectSuccess(ConnectSuccess {
+                total_ms,
+                binding_ms: s.binding_ms.unwrap_or(0),
+                hole_punch_ms: s.hole_punch_ms.unwrap_or(0),
+                auth_ms: s.auth_ms.unwrap_or(0),
+                fetch_ms: s.fetch_ms.unwrap_or(0),
+                path: if is_direct { "direct" } else { "relay" },
+                network: transport
+                    .and_then(|t| t.network_hint.as_ref())
+                    .map(|h| h.label())
+                    .unwrap_or("unknown"),
+                rtt_ms: transport.map(|t| t.rtt_ms).unwrap_or(0),
+                relay: s.relay_url.clone().unwrap_or_else(|| "none".into()),
+                relay_latency_ms: s.relay_latency_ms.unwrap_or(0),
+                alpn: s.alpn.clone().unwrap_or_else(|| "unknown".into()),
+                has_ipv4: s.has_ipv4,
+                has_ipv6: s.has_ipv6,
+                symmetric_nat: s.mapping_varies.unwrap_or(false),
+                is_first_pairing: s.is_first_pairing,
+            }));
+        }
+
         Ok(())
     }
 
@@ -1196,6 +1248,14 @@ impl SessionHandle {
             let max_attempts = 10u32;
             let mut attempt = 1u32;
             let mut reason = initial_reason;
+            let reconnect_start = std::time::Instant::now();
+            let reason_label = match &reason {
+                ReconnectReason::ConnectionLost => "connection_lost",
+                ReconnectReason::AppForegrounded => "app_foregrounded",
+            };
+            zedra_telemetry::send(Event::ReconnectStarted(ReconnectStarted {
+                reason: reason_label,
+            }));
 
             'reconnect: loop {
                 if handle.0.user_disconnect.load(Ordering::Acquire) {
@@ -1269,6 +1329,11 @@ impl SessionHandle {
                 match handle.connect(addr).await {
                     Ok(()) => {
                         tracing::info!("reconnect: success on attempt {}", attempt);
+                        zedra_telemetry::send(Event::ReconnectSuccess(ReconnectSuccess {
+                            attempt,
+                            elapsed_ms: reconnect_start.elapsed().as_millis() as u64,
+                            reason: reason_label,
+                        }));
                         match handle.terminal_list().await {
                             Ok(ids) => tracing::info!(
                                 "reconnect: server has {} terminals: {:?}",
@@ -1300,6 +1365,11 @@ impl SessionHandle {
                 let phase = handle.connect_state().phase;
                 let is_fatal = matches!(&phase, ConnectPhase::Failed(err) if err.is_fatal());
                 if !phase.is_connected() && !is_fatal {
+                    zedra_telemetry::send(Event::ReconnectExhausted(ReconnectExhausted {
+                        attempts: max_attempts,
+                        elapsed_ms: reconnect_start.elapsed().as_millis() as u64,
+                        reason: reason_label,
+                    }));
                     if let Ok(mut cs) = handle.0.connect_state.lock() {
                         cs.phase = ConnectPhase::Failed(ConnectError::HostUnreachable);
                     }
@@ -1316,10 +1386,42 @@ impl SessionHandle {
     // -----------------------------------------------------------------------
 
     fn set_failed(&self, error: ConnectError) {
+        let phase_label;
+        let relay;
+        let alpn;
+        let has_ipv4;
+        let has_ipv6;
+        let relay_connected;
         if let Ok(mut cs) = self.0.connect_state.lock() {
+            phase_label = cs.phase.label();
+            relay = cs
+                .snapshot
+                .relay_url
+                .clone()
+                .unwrap_or_else(|| "none".into());
+            alpn = cs.snapshot.alpn.clone().unwrap_or_else(|| "unknown".into());
+            has_ipv4 = cs.snapshot.has_ipv4;
+            has_ipv6 = cs.snapshot.has_ipv6;
+            relay_connected = cs.snapshot.relay_connected;
             cs.snapshot.failed_at_step = cs.phase.step_index();
-            cs.phase = ConnectPhase::Failed(error);
+            cs.phase = ConnectPhase::Failed(error.clone());
+        } else {
+            phase_label = "unknown";
+            relay = "none".into();
+            alpn = "unknown".into();
+            has_ipv4 = false;
+            has_ipv6 = false;
+            relay_connected = false;
         }
+        zedra_telemetry::send(Event::ConnectFailed(ConnectFailed {
+            phase: phase_label,
+            error: error.label(),
+            relay,
+            alpn,
+            has_ipv4,
+            has_ipv6,
+            relay_connected,
+        }));
         self.notify_state_change();
     }
 

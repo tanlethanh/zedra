@@ -89,6 +89,7 @@ fn init_logging() {
                 ),
         );
 
+        crate::analytics::init();
         install_panic_hook();
     });
 }

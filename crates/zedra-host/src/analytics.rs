@@ -80,123 +80,39 @@ impl Analytics {
         self.inner.is_some()
     }
 
-    // -----------------------------------------------------------------------
-    // Events
-    // -----------------------------------------------------------------------
-
-    /// Daemon started (`zedra start`).
+    /// Record a host panic. Uses **synchronous** HTTP so the event is sent
+    /// before the process aborts. Call from a panic hook only.
     ///
-    /// `relay_type`: "cf_worker" | "custom" | "default".
-    /// `os`, `arch`, and `host_version` are injected automatically on every event.
-    pub fn daemon_start(&self, relay_type: &str) {
-        self.track(
-            "daemon_start",
-            json!({
-                "relay_type": relay_type,
-            }),
-        );
-    }
-
-    /// STUN completed. Reports network topology of the host machine.
-    /// Called once at startup after the iroh endpoint is bound.
-    pub fn net_report(&self, has_ipv4: bool, has_ipv6: bool, symmetric_nat: bool) {
-        self.track(
-            "net_report",
-            json!({
-                "has_ipv4": has_ipv4 as i64,
-                "has_ipv6": has_ipv6 as i64,
-                "symmetric_nat": symmetric_nat as i64,
-            }),
-        );
-    }
-
-    /// A new device paired via QR code (Register flow, first-time only).
-    pub fn client_paired(&self) {
-        self.track("client_paired", json!({}));
-    }
-
-    /// Client authenticated and entered the RPC loop.
-    ///
-    /// `is_new_client`: true for first-ever pairing (Register), false for reconnect.
-    /// `duration_ms`: wall time from inbound accept to RPC loop entry.
-    /// `path_type`: "direct" | "relay" | "unknown" (iroh connection path at auth time).
-    pub fn auth_success(&self, is_new_client: bool, duration_ms: u64, path_type: &str) {
-        self.track(
-            "auth_success",
-            json!({
-                "is_new_client": is_new_client as i64,
-                "duration_ms": duration_ms,
-                "path_type": path_type,
-            }),
-        );
-    }
-
-    /// Authentication was rejected before the client entered the RPC loop.
-    ///
-    /// `reason`: short category string, never contains personal data.
-    pub fn auth_failed(&self, reason: &str) {
-        let reason = &reason[..reason.len().min(50)];
-        self.track("auth_failed", json!({ "reason": reason }));
-    }
-
-    /// Client disconnected. Session stays alive in the registry.
-    ///
-    /// `duration_ms`: how long the authenticated RPC session lasted.
-    /// `terminal_count`: number of terminals that existed during the session.
-    /// `path_type`: iroh connection path (captured at auth time).
-    pub fn session_end(&self, duration_ms: u64, terminal_count: u64, path_type: &str) {
-        self.track(
-            "session_end",
-            json!({
-                "duration_ms": duration_ms,
-                "terminal_count": terminal_count,
-                "path_type": path_type,
-            }),
-        );
-    }
-
-    /// A new terminal PTY was spawned.
-    ///
-    /// `has_launch_cmd`: whether a launch command was injected (e.g. "claude --resume").
-    pub fn terminal_open(&self, has_launch_cmd: bool) {
-        self.track(
-            "terminal_open",
-            json!({
-                "has_launch_cmd": has_launch_cmd as i64,
-            }),
-        );
-    }
-
-    /// Periodic bandwidth sample from the active iroh path.
-    /// Intended to be fired every 60 seconds while a client is connected.
-    pub fn bandwidth_sample(&self, bytes_sent: u64, bytes_recv: u64, interval_secs: u64) {
-        self.track(
-            "bandwidth_sample",
-            json!({
-                "bytes_sent": bytes_sent,
-                "bytes_recv": bytes_recv,
-                "interval_secs": interval_secs,
-            }),
-        );
+    /// `message`: first 100 chars of the panic payload (paths stripped).
+    /// `location`: file:line of the panic site.
+    pub fn host_panic_sync(&self, message: &str, location: &str) {
+        let Some(inner) = &self.inner else { return };
+        let message = sanitize_panic_message(message);
+        let params = json!({
+            "message": &message[..message.len().min(100)],
+            "location": &location[..location.len().min(100)],
+        });
+        inner.send_sync("host_panic", params);
     }
 
     // -----------------------------------------------------------------------
     // Internal
     // -----------------------------------------------------------------------
 
-    fn track(&self, name: &'static str, params: Value) {
+    /// Send an event with pre-built params. Used by the telemetry bridge.
+    pub fn track_raw(&self, name: &str, params: Value) {
         let Some(inner) = self.inner.clone() else {
             return;
         };
+        let name = name.to_string();
         tokio::spawn(async move {
-            inner.send(name, params).await;
+            inner.send(&name, params).await;
         });
     }
 }
 
 impl Inner {
-    async fn send(&self, event_name: &str, mut params: Value) {
-        // Inject common fields into every event so they're filterable in GA4.
+    fn build_payload(&self, event_name: &str, mut params: Value) -> (String, Value) {
         if let Some(obj) = params.as_object_mut() {
             obj.insert("host_version".into(), self.host_version.into());
             obj.insert("os".into(), self.os.into());
@@ -210,10 +126,43 @@ impl Inner {
             "{}?measurement_id={}&api_secret={}",
             GA_ENDPOINT, self.measurement_id, self.api_secret,
         );
+        (url, body)
+    }
+
+    async fn send(&self, event_name: &str, params: Value) {
+        let (url, body) = self.build_payload(event_name, params);
         if let Err(e) = self.http.post(&url).json(&body).send().await {
             tracing::debug!("analytics: send failed ({}): {}", event_name, e);
         }
     }
+
+    /// Blocking send for use in panic hooks where the tokio runtime may be gone.
+    fn send_sync(&self, event_name: &str, params: Value) {
+        let (url, body) = self.build_payload(event_name, params);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .unwrap_or_default();
+        let _ = client.post(&url).json(&body).send();
+    }
+}
+
+/// Strip filesystem paths from panic messages to avoid leaking usernames/dirs.
+/// Replaces `/Users/foo/...` or `/home/foo/...` style paths with `<path>`.
+fn sanitize_panic_message(msg: &str) -> String {
+    // Simple heuristic: replace any token that looks like an absolute path.
+    let mut result = String::with_capacity(msg.len());
+    for token in msg.split_whitespace() {
+        if !result.is_empty() {
+            result.push(' ');
+        }
+        if token.starts_with('/') || token.starts_with("C:\\") || token.contains("/src/") {
+            result.push_str("<path>");
+        } else {
+            result.push_str(token);
+        }
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------

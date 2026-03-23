@@ -18,6 +18,7 @@ use zedra_host::{
     api, identity, iroh_listener, net_monitor, qr, rpc_daemon, session_registry, workspace_lock,
 };
 use zedra_rpc::ZedraPairingTicket;
+use zedra_telemetry::*;
 
 #[derive(Parser)]
 #[command(name = "zedra", about = "Desktop companion daemon for Zedra")]
@@ -46,6 +47,11 @@ enum Commands {
         /// (e.g. --relay-url https://sg1.relay.zedra.dev --relay-url https://us1.relay.zedra.dev)
         #[arg(long)]
         relay_url: Vec<String>,
+
+        /// Disable anonymous telemetry (usage events sent to Google Analytics).
+        /// Can also be set via ZEDRA_TELEMETRY=0 environment variable.
+        #[arg(long)]
+        no_telemetry: bool,
     },
     /// Connect to a running daemon and measure end-to-end RTT
     Client {
@@ -130,6 +136,7 @@ async fn main() -> Result<()> {
             workdir,
             json,
             relay_url,
+            no_telemetry,
         } => {
             let workdir = std::path::PathBuf::from(workdir)
                 .canonicalize()
@@ -180,15 +187,45 @@ async fn main() -> Result<()> {
                 session_id: session.id.clone(),
             };
 
-            // Initialize analytics. The analytics_id is machine-level (not per-workspace)
-            // so connection counts roll up to a single host in the dashboard.
-            let analytics = Arc::new(Analytics::new(
-                &identity::analytics_id_path()
-                    .unwrap_or_else(|_| workdir.join(".zedra-analytics-id")),
-            ));
-            if analytics.is_enabled() {
-                eprintln!("[init]     analytics enabled");
-            }
+            // Initialize telemetry. Disabled by --no-telemetry flag or ZEDRA_TELEMETRY=0.
+            let telemetry_disabled = no_telemetry
+                || std::env::var("ZEDRA_TELEMETRY")
+                    .map(|v| v == "0" || v.eq_ignore_ascii_case("false"))
+                    .unwrap_or(false);
+            let analytics = Arc::new(if telemetry_disabled {
+                eprintln!("[init]     telemetry disabled");
+                Analytics::disabled()
+            } else {
+                let a = Analytics::new(
+                    &identity::analytics_id_path()
+                        .unwrap_or_else(|_| workdir.join(".zedra-analytics-id")),
+                );
+                if a.is_enabled() {
+                    eprintln!("[init]     telemetry enabled");
+                }
+                a
+            });
+
+            // Register host GA4 backend as the global telemetry provider.
+            zedra_host::telemetry::init(analytics.clone());
+
+            // Install panic hook that sends host_panic event via zedra_telemetry
+            // before the process aborts. record_panic bypasses the enabled flag.
+            let prev_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                let message = info
+                    .payload()
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| info.payload().downcast_ref::<String>().map(|s| s.as_str()))
+                    .unwrap_or("unknown");
+                let location = info
+                    .location()
+                    .map(|l| format!("{}:{}", l.file(), l.line()))
+                    .unwrap_or_default();
+                zedra_telemetry::record_panic(message, &location);
+                prev_hook(info);
+            }));
 
             let mut state = rpc_daemon::DaemonState::new(workdir.clone(), host_identity.clone());
             state.analytics = analytics.clone();
@@ -209,14 +246,10 @@ async fn main() -> Result<()> {
             } else {
                 "default"
             };
-            analytics.daemon_start(relay_type);
+            zedra_telemetry::send(Event::DaemonStart(DaemonStart { relay_type }));
 
-            let endpoint = iroh_listener::create_endpoint(
-                &host_identity,
-                &endpoint_relay_urls,
-                analytics.clone(),
-            )
-            .await?;
+            let endpoint =
+                iroh_listener::create_endpoint(&host_identity, &endpoint_relay_urls).await?;
 
             // Pre-authorize the persistent CLI client key so `zedra client` can
             // connect without QR pairing. The key is generated once per workspace.
