@@ -18,24 +18,80 @@ use crate::platform_bridge::{self, AlertButton};
 use crate::theme;
 use crate::transport_badge::{format_bytes, render_transport_badge, transport_badge_info};
 
-// ─── Public entry points ─────────────────────────────────────────────────────
+// ─── Public view ─────────────────────────────────────────────────────────────
 
-/// Render the full-screen opaque connecting overlay.
-/// Call this for initial connect, resume, and failed phases.
-pub fn render_connecting(handle: &zedra_session::SessionHandle) -> impl IntoElement {
-    let cs = handle.connect_state();
+pub struct ConnectingView {
+    session_handle: zedra_session::SessionHandle,
+    details_expanded: bool,
+}
+
+impl ConnectingView {
+    pub fn new(handle: zedra_session::SessionHandle) -> Self {
+        Self {
+            session_handle: handle,
+            details_expanded: false,
+        }
+    }
+}
+
+impl Render for ConnectingView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let cs = self.session_handle.connect_state();
+        let expanded = self.details_expanded;
+        div()
+            .id("connecting-view")
+            .size_full()
+            .bg(rgb(theme::BG_PRIMARY))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_start()
+            .pt(px(32.0))
+            .child(render_phase_title(&cs, &self.session_handle))
+            .child(render_stepper(&cs))
+            .child(render_details_toggle(expanded, cx))
+            .when(expanded, |d| d.child(render_detail(&cs)))
+    }
+}
+
+
+// ─── Details toggle ─────────────────────────────────────────────────────────
+
+fn render_details_toggle(expanded: bool, cx: &mut Context<ConnectingView>) -> Stateful<Div> {
+    let label = if expanded {
+        "Hide Details"
+    } else {
+        "View Details"
+    };
+    let chevron: SharedString = if expanded {
+        "icons/chevron-up.svg".into()
+    } else {
+        "icons/chevron-down.svg".into()
+    };
+
     div()
-        .id("connecting-view")
-        .size_full()
-        .bg(rgb(theme::BG_PRIMARY))
+        .id("details-toggle")
+        .cursor_pointer()
         .flex()
-        .flex_col()
+        .flex_row()
         .items_center()
-        .justify_start()
-        .pt(px(32.0))
-        .child(render_phase_title(&cs, handle))
-        .child(render_stepper(&cs))
-        .child(render_detail(&cs))
+        .gap(px(4.0))
+        .mb(px(theme::SPACING_SM))
+        .on_click(cx.listener(|this, _event, _window, _cx| {
+            this.details_expanded = !this.details_expanded;
+        }))
+        .child(
+            div()
+                .text_size(px(theme::FONT_DETAIL))
+                .text_color(rgb(theme::TEXT_MUTED))
+                .child(label),
+        )
+        .child(
+            svg()
+                .path(chevron)
+                .size(px(12.0))
+                .text_color(rgb(theme::TEXT_MUTED)),
+        )
 }
 
 // ─── Retry button (reusable) ─────────────────────────────────────────────────

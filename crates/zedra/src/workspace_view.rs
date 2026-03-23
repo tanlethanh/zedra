@@ -132,10 +132,7 @@ pub struct WorkspaceContent {
     workspace_state: crate::workspace_state::WorkspaceState,
     /// Whether the connecting overlay is currently shown.
     overlay_visible: bool,
-    /// True once Connected is detected; waiting for the 1s dismiss timer.
-    overlay_pending_hide: bool,
-    /// Kept alive so the dismiss timer is not cancelled.
-    _overlay_task: Option<Task<()>>,
+    connecting_view: Entity<connecting_view::ConnectingView>,
 }
 
 impl WorkspaceContent {
@@ -145,6 +142,9 @@ impl WorkspaceContent {
         session_handle: SessionHandle,
         cx: &mut Context<Self>,
     ) -> Self {
+        let connecting_view = cx.new(|_cx| {
+            connecting_view::ConnectingView::new(session_handle.clone())
+        });
         Self {
             main_view,
             header_title: title.into(),
@@ -153,8 +153,7 @@ impl WorkspaceContent {
             session_handle,
             workspace_state: crate::workspace_state::WorkspaceState::default(),
             overlay_visible: true,
-            overlay_pending_hide: false,
-            _overlay_task: None,
+            connecting_view,
         }
     }
 
@@ -208,23 +207,9 @@ impl Render for WorkspaceContent {
         if needs_full_overlay {
             // Active connect/failed phase — ensure full overlay is showing.
             self.overlay_visible = true;
-            self.overlay_pending_hide = false;
-            self._overlay_task = None;
-        } else if self.overlay_visible && !self.overlay_pending_hide {
-            // Just became Connected — start 2s linger before hiding.
-            self.overlay_pending_hide = true;
-            self._overlay_task = Some(cx.spawn(async move |this, cx| {
-                cx.background_executor()
-                    // Better UX, make sure the terminal resuming is fully completed
-                    .timer(std::time::Duration::from_millis(2000))
-                    .await;
-                let _ = this.update(cx, |this: &mut WorkspaceContent, cx| {
-                    this.overlay_visible = false;
-                    this.overlay_pending_hide = false;
-                    this._overlay_task = None;
-                    cx.notify();
-                });
-            }));
+        } else if self.overlay_visible {
+            // Connected — hide overlay immediately.
+            self.overlay_visible = false;
         }
 
         let top_inset = status_bar_inset();
@@ -368,7 +353,7 @@ impl Render for WorkspaceContent {
             )
             .child({
                 let overlay_visible = self.overlay_visible;
-                let handle = self.session_handle.clone();
+                let connecting_view = self.connecting_view.clone();
                 div()
                     .flex_1()
                     .relative()
@@ -386,7 +371,7 @@ impl Render for WorkspaceContent {
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                     cx.stop_propagation();
                                 })
-                                .child(connecting_view::render_connecting(&handle)),
+                                .child(connecting_view),
                         )
                     })
             })
