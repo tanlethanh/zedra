@@ -54,7 +54,6 @@ impl Render for ConnectingView {
     }
 }
 
-
 // ─── Details toggle ─────────────────────────────────────────────────────────
 
 fn render_details_toggle(expanded: bool, cx: &mut Context<ConnectingView>) -> Stateful<Div> {

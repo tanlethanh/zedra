@@ -23,7 +23,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Format check
-        run: cargo fmt --all -- --check
+        run: cargo fmt --check
 
       - name: Check (host crates only)
         run: |

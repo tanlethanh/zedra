@@ -142,9 +142,8 @@ impl WorkspaceContent {
         session_handle: SessionHandle,
         cx: &mut Context<Self>,
     ) -> Self {
-        let connecting_view = cx.new(|_cx| {
-            connecting_view::ConnectingView::new(session_handle.clone())
-        });
+        let connecting_view =
+            cx.new(|_cx| connecting_view::ConnectingView::new(session_handle.clone()));
         Self {
             main_view,
             header_title: title.into(),

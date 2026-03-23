@@ -6,8 +6,8 @@
     "@biomejs/biome": "^1.9.0"
   },
   "scripts": {
-    "format": "biome format --write packages/",
+    "format": "biome check --write packages/",
     "lint": "biome lint packages/",
-    "check": "biome check packages/"
+    "check": "biome ci packages/"
   }
 }
