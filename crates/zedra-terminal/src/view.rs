@@ -450,9 +450,9 @@ impl Render for TerminalView {
                     this.mouse_down_pos = Some(event.position);
 
                     if let Some(link) = this.link_at_position_match(event.position) {
-                        this.active_link = Some(link.clone());
-                        cx.notify();
                         let url = link.url.clone();
+                        this.active_link = Some(link);
+                        cx.notify();
                         let task = cx.spawn(async move |this, cx| {
                             cx.background_executor()
                                 .timer(Duration::from_millis(500))
@@ -468,9 +468,6 @@ impl Render for TerminalView {
                             });
                         });
                         this.long_press_task = Some(task);
-                    } else {
-                        this.active_link = None;
-                        this.long_press_task = None;
                     }
                 }),
             )
@@ -502,12 +499,10 @@ impl Render for TerminalView {
                 this.handle_keystroke(&event.keystroke);
             }))
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
-                // A scroll gesture cancels any pending long-press and link highlight.
-                if this.long_press_task.is_some() {
-                    this.long_press_task = None;
-                    this.active_link = None;
-                    this.mouse_down_pos = None;
-                }
+                // Cancel any pending long-press and link highlight on scroll.
+                this.long_press_task = None;
+                this.active_link = None;
+                this.mouse_down_pos = None;
                 match event.delta {
                     ScrollDelta::Lines(l) => {
                         // Line-based scroll (e.g. mouse wheel): commit immediately

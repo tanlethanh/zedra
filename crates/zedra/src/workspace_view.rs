@@ -862,10 +862,9 @@ impl WorkspaceView {
         use crate::platform_bridge::{self, AlertButton};
         let url_open = url.clone();
         let url_copy = url.clone();
-        let url_display = url.clone();
         platform_bridge::show_selection(
             "Link",
-            &url_display,
+            &url,
             vec![
                 AlertButton::default("Open"),
                 AlertButton::default("Copy URL"),

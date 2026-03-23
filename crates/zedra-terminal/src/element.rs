@@ -246,6 +246,9 @@ impl LayoutRect {
     }
 }
 
+/// Blue used for active-link underline feedback (matches One Dark link blue).
+const LINK_UNDERLINE_COLOR: u32 = 0x61afef;
+
 /// Check if a cell is blank (following Zed's is_blank function)
 fn is_blank(cell: &IndexedCell) -> bool {
     if cell.cell.c != ' ' {
@@ -556,7 +559,7 @@ impl Element for TerminalElement {
             let underline_height = px(1.0);
             let display_offset = layout.content.display_offset as i32;
             let grid_rows = layout.content.grid_rows as i32;
-            let link_color: Hsla = rgb(0x61afef).into();
+            let link_color: Hsla = rgb(LINK_UNDERLINE_COLOR).into();
 
             let start_screen = link.start_line + display_offset;
             let end_screen = link.end_line + display_offset;

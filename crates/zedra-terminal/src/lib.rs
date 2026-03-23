@@ -41,6 +41,16 @@ use alacritty_terminal::event::{Event as AlacTermEvent, EventListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Direction, Line, Point as AlacPoint};
 use alacritty_terminal::term::Config;
+use alacritty_terminal::term::cell::Cell;
+use alacritty_terminal::term::search::{RegexIter, RegexSearch};
+use alacritty_terminal::term::{Term, TermMode};
+use alacritty_terminal::vte::ansi::{CursorShape, Processor};
+use gpui::Pixels;
+
+use crate::keys::to_esc_str;
+
+// Same URL regex used by Zed's terminal_hyperlinks module.
+const URL_REGEX: &str = r#"(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|file://|git://|ssh:|ftp://)[^\u{0000}-\u{001F}\u{007F}-\u{009F}<>"\s{-}\^⟨⟩`']+"#;
 
 /// A detected hyperlink span in the terminal grid.
 #[derive(Clone, Debug)]
@@ -52,16 +62,6 @@ pub struct LinkMatch {
     pub end_line: i32,
     pub end_col: usize,
 }
-use alacritty_terminal::term::cell::Cell;
-use alacritty_terminal::term::search::{RegexIter, RegexSearch};
-use alacritty_terminal::term::{Term, TermMode};
-use alacritty_terminal::vte::ansi::{CursorShape, Processor};
-use gpui::Pixels;
-
-// Same URL regex used by Zed's terminal_hyperlinks module.
-const URL_REGEX: &str = r#"(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|file://|git://|ssh:|ftp://)[^\u{0000}-\u{001F}\u{007F}-\u{009F}<>"\s{-}\^⟨⟩`']+"#;
-
-use crate::keys::to_esc_str;
 
 /// Event listener that collects terminal events
 #[derive(Clone)]
