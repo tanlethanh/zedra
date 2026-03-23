@@ -5,8 +5,6 @@ RUN apt-get update && apt-get install -y pkg-config libssl-dev git && rm -rf /va
 # Build from iroh main which includes the TCP_NODELAY fix (PR #3995, commit 82e0695).
 # The fix will ship as v0.98 on crates.io. Once published, switch to:
 #   cargo install iroh-relay --version 0.98 --features server --locked
-# We clone the workspace and build from source because `cargo install --git`
-# fails on unpublished workspace dependencies (noq ^0.16.1).
 RUN git clone --depth 1 https://github.com/n0-computer/iroh.git /build/iroh \
     && cd /build/iroh \
     && git fetch origin 82e06959335f1ddbb6c53487395294c6388563f2 --depth 1 \
@@ -16,12 +14,14 @@ RUN git clone --depth 1 https://github.com/n0-computer/iroh.git /build/iroh \
 
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates netcat-openbsd && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /usr/local/cargo/bin/iroh-relay /usr/local/bin/iroh-relay
-COPY relay.toml /etc/iroh-relay/relay.toml
+COPY --from=builder /usr/local/bin/iroh-relay /usr/local/bin/iroh-relay
+COPY relay.toml /etc/iroh-relay/relay.toml.tmpl
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 # HTTP (ACME challenge + relay upgrade), HTTPS (relay), QUIC (addr discovery)
 EXPOSE 80 443 7842/udp
 
-CMD ["iroh-relay", "--config-path", "/etc/iroh-relay/relay.toml"]
+ENTRYPOINT ["/entrypoint.sh"]
