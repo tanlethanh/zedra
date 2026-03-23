@@ -39,11 +39,16 @@ pub const MONO_FONT_FAMILY: &str = "JetBrainsMonoNL Nerd Font Mono";
 
 use alacritty_terminal::event::{Event as AlacTermEvent, EventListener};
 use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::Direction;
 use alacritty_terminal::term::Config;
 use alacritty_terminal::term::cell::Cell;
+use alacritty_terminal::term::search::{RegexIter, RegexSearch};
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, Processor};
 use gpui::Pixels;
+
+// Same URL regex used by Zed's terminal_hyperlinks module.
+const URL_REGEX: &str = r#"(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|file://|git://|ssh:|ftp://)[^\u{0000}-\u{001F}\u{007F}-\u{009F}<>"\s{-}\^⟨⟩`']+"#;
 
 use crate::keys::to_esc_str;
 
@@ -120,6 +125,8 @@ pub struct TerminalState {
     processor: Processor,
     mode: TermMode,
     size: TerminalSize,
+    /// Compiled URL regex for tap-to-open link detection (fallback when no OSC 8 hyperlink).
+    url_regex: Option<RegexSearch>,
 }
 
 impl TerminalState {
@@ -132,6 +139,10 @@ impl TerminalState {
         };
         let term = Term::new(config, &term_size, ZedraListener);
 
+        let url_regex = RegexSearch::new(URL_REGEX)
+            .map_err(|e| tracing::warn!("terminal URL regex init failed: {e}"))
+            .ok();
+
         Self {
             term,
             processor: Processor::new(),
@@ -142,6 +153,7 @@ impl TerminalState {
                 columns,
                 rows,
             },
+            url_regex,
         }
     }
 
@@ -230,7 +242,7 @@ impl TerminalState {
         self.term.grid().history_size()
     }
 
-    pub fn link_at(&self, col: usize, screen_row: usize) -> Option<String> {
+    pub fn link_at(&mut self, col: usize, screen_row: usize) -> Option<String> {
         if col >= self.size.columns || screen_row >= self.size.rows {
             return None;
         }
@@ -240,8 +252,30 @@ impl TerminalState {
             alacritty_terminal::index::Line(grid_row),
             alacritty_terminal::index::Column(col),
         );
-        self.term.grid()[point]
+
+        // OSC 8 hyperlink takes priority.
+        let osc = self.term.grid()[point]
             .hyperlink()
-            .map(|h| h.uri().to_owned())
+            .map(|h| h.uri().to_owned());
+        if osc.is_some() {
+            return osc;
+        }
+
+        // Regex scan the line for bare URLs (https://, file://, etc.).
+        if let Some(ref mut url_regex) = self.url_regex {
+            let line_start = self.term.line_search_left(point);
+            let line_end = self.term.line_search_right(point);
+            return RegexIter::new(
+                line_start,
+                line_end,
+                Direction::Right,
+                &self.term,
+                url_regex,
+            )
+            .find(|m| m.contains(&point))
+            .map(|m| self.term.bounds_to_string(*m.start(), *m.end()));
+        }
+
+        None
     }
 }

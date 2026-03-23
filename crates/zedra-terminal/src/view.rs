@@ -243,7 +243,7 @@ impl TerminalView {
         self.grid_origin = Some(origin);
     }
 
-    fn link_at_position(&self, position: Point<Pixels>) -> Option<String> {
+    fn link_at_position(&mut self, position: Point<Pixels>) -> Option<String> {
         let origin = self.grid_origin?;
         let size = self.terminal.size();
         // The painted grid origin is offset by the sub-line scroll amount.
