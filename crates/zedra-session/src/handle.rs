@@ -395,7 +395,7 @@ impl SessionHandle {
             s.resume_ms = None;
             s.local_node_id = None;
             s.remote_node_id = Some(addr.id.fmt_short().to_string());
-            s.relay_url = Some(zedra_rpc::ZEDRA_RELAY_URL.to_string());
+            s.relay_url = Some(zedra_rpc::ZEDRA_RELAY_URLS[0].to_string());
             s.alpn = Some(String::from_utf8_lossy(ZEDRA_ALPN).to_string());
             s.relay_connected = false;
             s.direct_addrs.clear();
@@ -411,12 +411,14 @@ impl SessionHandle {
         }
         self.notify_state_change();
 
-        let relay_url: iroh::RelayUrl =
-            zedra_rpc::ZEDRA_RELAY_URL.parse().expect("valid relay url");
-        let relay_map = iroh::RelayMap::from_iter([iroh::RelayConfig {
-            url: relay_url,
-            quic: Some(iroh_relay::RelayQuicConfig::default()),
-        }]);
+        let relay_configs: Vec<iroh::RelayConfig> = zedra_rpc::ZEDRA_RELAY_URLS
+            .iter()
+            .map(|u| iroh::RelayConfig {
+                url: u.parse().expect("valid relay url"),
+                quic: Some(iroh_relay::RelayQuicConfig::default()),
+            })
+            .collect();
+        let relay_map = iroh::RelayMap::from_iter(relay_configs);
 
         // Tighten QUIC timeouts for fast disconnect detection.
         // PING frames are tiny UDP packets — cheap even on mobile.

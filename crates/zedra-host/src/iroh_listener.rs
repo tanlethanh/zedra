@@ -27,27 +27,37 @@ fn ts() -> String {
     )
 }
 
-/// Build a relay map from the given URL.
-fn relay_map_from_url(url_str: &str) -> Result<iroh::RelayMap> {
-    let url: iroh::RelayUrl = url_str.parse()?;
-    Ok(iroh::RelayMap::from_iter([iroh::RelayConfig {
-        url,
-        quic: Some(iroh_relay::RelayQuicConfig::default()), // QUIC addr discovery on port 7842
-    }]))
+/// Build a relay map from one or more URLs.
+fn relay_map_from_urls(urls: &[&str]) -> Result<iroh::RelayMap> {
+    let configs = urls
+        .iter()
+        .map(|u| {
+            let url: iroh::RelayUrl = u.parse()?;
+            Ok(iroh::RelayConfig {
+                url,
+                quic: Some(iroh_relay::RelayQuicConfig::default()),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(iroh::RelayMap::from_iter(configs))
 }
 
 /// Create and bind an iroh endpoint with the host's identity.
 ///
-/// `relay_url` overrides the default relay; falls back to `ZEDRA_RELAY_URL`.
+/// `relay_urls` overrides the default relays; falls back to `ZEDRA_RELAY_URLS`.
+/// iroh probes all relays and picks the lowest-latency one as preferred.
 /// Returns the endpoint ready for accepting connections and QR code generation.
 pub async fn create_endpoint(
     identity: &SharedIdentity,
-    relay_url: Option<&str>,
+    relay_urls: &[String],
     analytics: std::sync::Arc<Analytics>,
 ) -> Result<iroh::Endpoint> {
-    let relay_mode = iroh::RelayMode::Custom(relay_map_from_url(
-        relay_url.unwrap_or(zedra_rpc::ZEDRA_RELAY_URL),
-    )?);
+    let urls: Vec<&str> = if relay_urls.is_empty() {
+        zedra_rpc::ZEDRA_RELAY_URLS.to_vec()
+    } else {
+        relay_urls.iter().map(|s| s.as_str()).collect()
+    };
+    let relay_mode = iroh::RelayMode::Custom(relay_map_from_urls(&urls)?);
     let endpoint = iroh::Endpoint::builder()
         .secret_key(identity.iroh_secret_key().clone())
         .alpns(vec![ZEDRA_ALPN.to_vec()])

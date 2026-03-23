@@ -42,9 +42,10 @@ enum Commands {
         #[arg(long)]
         json: bool,
 
-        /// Override relay URL (e.g. https://sg1.relay.zedra.dev)
+        /// Override relay URL(s). Can be specified multiple times for multi-relay.
+        /// (e.g. --relay-url https://sg1.relay.zedra.dev --relay-url https://us1.relay.zedra.dev)
         #[arg(long)]
-        relay_url: Option<String>,
+        relay_url: Vec<String>,
     },
     /// Connect to a running daemon and measure end-to-end RTT
     Client {
@@ -193,24 +194,17 @@ async fn main() -> Result<()> {
             state.analytics = analytics.clone();
             let state = Arc::new(state);
 
-            // 1. Bind iroh endpoint.
-            //    For relay.zedra.dev (CF Worker) append ?host=<base64url(pubkey)> so the
-            //    Worker routes both host and client into the same RelayRoom DO. iroh's
-            //    relay client preserves query params when constructing the WebSocket URL.
-            //    EC2 iroh-relay and other relays ignore unknown query parameters, but we
-            //    only add the param when actually talking to the CF Worker.
-            let base_relay_url = relay_url.as_deref().unwrap_or(zedra_rpc::ZEDRA_RELAY_URL);
-            let endpoint_relay_url = if is_cf_worker_relay(base_relay_url) {
-                let host_b64 = base64_url::encode(host_identity.endpoint_id().as_bytes());
-                format!("{}?host={}", base_relay_url, host_b64)
+            // 1. Bind iroh endpoint with configured relay URLs.
+            let endpoint_relay_urls: Vec<String> = if relay_url.is_empty() {
+                zedra_rpc::ZEDRA_RELAY_URLS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect()
             } else {
-                base_relay_url.to_string()
+                relay_url.clone()
             };
 
-            // Determine relay_type label for analytics before the endpoint is created.
-            let relay_type = if is_cf_worker_relay(base_relay_url) {
-                "cf_worker"
-            } else if relay_url.is_some() {
+            let relay_type = if !relay_url.is_empty() {
                 "custom"
             } else {
                 "default"
@@ -219,7 +213,7 @@ async fn main() -> Result<()> {
 
             let endpoint = iroh_listener::create_endpoint(
                 &host_identity,
-                Some(&endpoint_relay_url),
+                &endpoint_relay_urls,
                 analytics.clone(),
             )
             .await?;
@@ -239,13 +233,10 @@ async fn main() -> Result<()> {
                 }
 
                 // Write host-info.json for `zedra client` auto-discovery.
-                // Use endpoint_relay_url so `zedra client --relay-only` connects
-                // to the same RelayRoom DO as the host (when using CF Worker relay).
-                let relay_url_str = endpoint_relay_url.clone();
                 let host_info = zedra_client::HostInfo {
                     endpoint_id: host_identity.endpoint_id().to_string(),
                     session_id: session.id.clone(),
-                    relay_url: relay_url_str,
+                    relay_urls: endpoint_relay_urls.clone(),
                 };
                 if let Err(e) = zedra_client::write_host_info(&config_dir, &host_info) {
                     tracing::warn!("Failed to write host-info.json: {}", e);
@@ -510,17 +501,4 @@ fn format_duration(secs: u64) -> String {
     } else {
         format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
     }
-}
-
-/// Returns true if the relay URL points to the Cloudflare Worker relay (relay.zedra.dev).
-/// Only the CF Worker uses the ?host= room-routing mechanism.
-fn is_cf_worker_relay(url: &str) -> bool {
-    // Strip scheme, then check the host portion is exactly "relay.zedra.dev".
-    let rest = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .unwrap_or(url);
-    rest == "relay.zedra.dev"
-        || rest.starts_with("relay.zedra.dev/")
-        || rest.starts_with("relay.zedra.dev?")
 }
