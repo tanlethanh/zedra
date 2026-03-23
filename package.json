@@ -1,7 +1,13 @@
 {
   "name": "zedra",
   "private": true,
-  "workspaces": [
-    "packages/*"
-  ]
+  "workspaces": ["packages/*"],
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0"
+  },
+  "scripts": {
+    "format": "biome format --write packages/",
+    "lint": "biome lint packages/",
+    "check": "biome check packages/"
+  }
 }

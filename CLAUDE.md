@@ -399,6 +399,30 @@ See `docs/DEBUGGING.md` for complete workflow.
 4. **Test**: Launch app and check `adb logcat | grep zedra`
 5. **Verify**: Look for frame logs and rendering confirmation
 
+## Pre-Commit Checks (Required)
+
+Run these before every commit. CI enforces them on push/PR.
+
+### Rust
+
+```bash
+# Format check (must pass before committing)
+cargo fmt
+
+# Check host crates compile cleanly (no Android NDK needed)
+cargo check -p zedra-rpc -p zedra-session -p zedra-terminal -p zedra-host
+```
+
+### JS/TS
+
+```bash
+# Format + lint all packages (auto-fix)
+bun run format
+
+# Check only (what CI runs)
+bun run check
+```
+
 ## Roadmap
 
 - **Phase 1**: Foundation ✅ Complete

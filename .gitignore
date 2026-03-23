@@ -1,5 +1,4 @@
 .DS_Store
-.vscode
 
 /target
 target
@@ -44,3 +43,6 @@ ios/Zedra/GoogleService-Info.plist
 .private
 
 node_modules
+
+screenshots
+docs
