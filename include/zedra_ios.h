@@ -103,6 +103,30 @@
  */
 #define STALE_THRESHOLD_SECS 3
 
+extern void zedra_log_event(const char *name,
+                            const char *const *keys,
+                            const char *const *values,
+                            int count);
+
+extern void zedra_record_error(const char *message, const char *file, int line);
+
+extern void zedra_record_panic(const char *message, const char *location);
+
+extern void zedra_set_user_id(const char *user_id);
+
+extern void zedra_set_custom_key(const char *key, const char *value);
+
+/**
+ * Called each frame from main.m before gpui_ios_request_frame.
+ *
+ * Drains main-thread callbacks and checks whether terminal data is pending.
+ * Returns `true` when a forced render is needed (mirrors Android's
+ * `check_and_clear_terminal_data` + `drain_callbacks` in `handle_frame_request`).
+ */
+bool zedra_ios_check_pending_frame(void);
+
+void zedra_launch_gpui(void);
+
 /**
  * Called from Obj-C whenever the screen scale is known (once, at launch).
  *
@@ -225,30 +249,6 @@ void zedra_deeplink_received(const char *url);
  */
 void zedra_qr_scanner_result(const char *qr_string);
 
-/**
- * Called each frame from main.m before gpui_ios_request_frame.
- *
- * Drains main-thread callbacks and checks whether terminal data is pending.
- * Returns `true` when a forced render is needed (mirrors Android's
- * `check_and_clear_terminal_data` + `drain_callbacks` in `handle_frame_request`).
- */
-bool zedra_ios_check_pending_frame(void);
-
-void zedra_launch_gpui(void);
-
 extern void zedra_nslog(const char *msg);
-
-extern void zedra_log_event(const char *name,
-                            const char *const *keys,
-                            const char *const *values,
-                            int count);
-
-extern void zedra_record_error(const char *message, const char *file, int line);
-
-extern void zedra_record_panic(const char *message, const char *location);
-
-extern void zedra_set_user_id(const char *user_id);
-
-extern void zedra_set_custom_key(const char *key, const char *value);
 
 #endif  /* ZEDRA_IOS_H */
