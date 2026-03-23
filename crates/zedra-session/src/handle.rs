@@ -76,6 +76,12 @@ struct SessionHandleInner {
     project_name: Mutex<String>,
     strip_path: Mutex<String>,
 
+    // ── Cumulative byte counters (survive reconnect) ─────────────────────────
+    /// Sum of bytes_sent from all prior connections. Reset on user disconnect.
+    bytes_sent_accum: AtomicU64,
+    /// Sum of bytes_recv from all prior connections. Reset on user disconnect.
+    bytes_recv_accum: AtomicU64,
+
     // ── Reconnect control signals ───────────────────────────────────────────
     /// Set to true by user-initiated disconnect; suppresses automatic reconnect.
     user_disconnect: AtomicBool,
@@ -113,6 +119,8 @@ impl SessionHandle {
             hostname: Mutex::new(String::new()),
             project_name: Mutex::new(String::new()),
             strip_path: Mutex::new(String::new()),
+            bytes_sent_accum: AtomicU64::new(0),
+            bytes_recv_accum: AtomicU64::new(0),
             user_disconnect: AtomicBool::new(false),
             skip_next_backoff: AtomicBool::new(false),
             reconnect_running: AtomicBool::new(false),
@@ -211,6 +219,8 @@ impl SessionHandle {
             *cs = ConnectState::idle();
         }
         self.0.reconnect_running.store(false, Ordering::Release);
+        self.0.bytes_sent_accum.store(0, Ordering::Release);
+        self.0.bytes_recv_accum.store(0, Ordering::Release);
         tracing::info!("SessionHandle: session cleared (user disconnect)");
     }
 
@@ -562,9 +572,18 @@ impl SessionHandle {
                 // value even after a path goes silent, which would give false "alive" reads.
                 let mut last_alive_at: Option<std::time::Instant> = None;
                 let mut prev_bytes_recv: u64 = 0;
+                let mut last_sent: u64 = 0;
                 loop {
                     // Stop if the connection has been superseded.
                     if handle_for_paths.0.conn_generation.load(Ordering::Acquire) != my_gen {
+                        handle_for_paths
+                            .0
+                            .bytes_sent_accum
+                            .fetch_add(last_sent, Ordering::Release);
+                        handle_for_paths
+                            .0
+                            .bytes_recv_accum
+                            .fetch_add(prev_bytes_recv, Ordering::Release);
                         break;
                     }
 
@@ -586,6 +605,7 @@ impl SessionHandle {
                         };
                         let rtt = stats.rtt.as_millis() as u64;
                         let bytes_recv = stats.udp_rx.bytes;
+                        last_sent = stats.udp_tx.bytes;
 
                         // Update alive timestamp only when new bytes arrive.
                         // PONG responses from iroh's 2-s heartbeat probes keep this fresh.
@@ -595,6 +615,14 @@ impl SessionHandle {
                             bytes_increased = true;
                         }
 
+                        let prior_sent = handle_for_paths
+                            .0
+                            .bytes_sent_accum
+                            .load(Ordering::Acquire);
+                        let prior_recv = handle_for_paths
+                            .0
+                            .bytes_recv_accum
+                            .load(Ordering::Acquire);
                         if let Ok(mut cs) = handle_for_paths.0.connect_state.lock() {
                             let prev_direct = cs
                                 .snapshot
@@ -620,8 +648,8 @@ impl SessionHandle {
                                 relay_url,
                                 num_paths: path_list.len(),
                                 rtt_ms: rtt,
-                                bytes_sent: stats.udp_tx.bytes,
-                                bytes_recv,
+                                bytes_sent: prior_sent + stats.udp_tx.bytes,
+                                bytes_recv: prior_recv + bytes_recv,
                                 path_upgraded,
                                 network_hint,
                                 last_alive_at,
