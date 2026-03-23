@@ -13,7 +13,7 @@ const firebaseConfig = {
 
 function hasFirebaseConfig() {
   return Object.values(firebaseConfig).every(
-    (value) => typeof value === "string" && value.length > 0,
+    (value) => typeof value === "string" && value.length > 0
   );
 }
 
@@ -29,16 +29,11 @@ async function setupAnalytics() {
   const app = initializeApp(firebaseConfig);
   const analytics = getAnalytics(app);
 
-  const track = (
-    eventName: string,
-    params: Record<string, string | number | boolean>,
-  ) => {
+  const track = (eventName: string, params: Record<string, string | number | boolean>) => {
     logEvent(analytics, eventName, params);
   };
 
-  for (const input of document.querySelectorAll<HTMLInputElement>(
-    "[data-analytics-install-tab]",
-  )) {
+  for (const input of document.querySelectorAll<HTMLInputElement>("[data-analytics-install-tab]")) {
     input.addEventListener("change", () => {
       if (!input.checked) {
         return;
@@ -50,9 +45,7 @@ async function setupAnalytics() {
     });
   }
 
-  for (const link of document.querySelectorAll<HTMLAnchorElement>(
-    "[data-analytics-store]",
-  )) {
+  for (const link of document.querySelectorAll<HTMLAnchorElement>("[data-analytics-store]")) {
     link.addEventListener("click", () => {
       track("store_click", {
         platform: link.dataset.analyticsStore ?? "unknown",
@@ -60,9 +53,7 @@ async function setupAnalytics() {
     });
   }
 
-  for (const link of document.querySelectorAll<HTMLAnchorElement>(
-    "[data-analytics-social]",
-  )) {
+  for (const link of document.querySelectorAll<HTMLAnchorElement>("[data-analytics-social]")) {
     link.addEventListener("click", () => {
       track("social_click", {
         network: link.dataset.analyticsSocial ?? "unknown",
