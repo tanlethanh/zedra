@@ -32,6 +32,7 @@ pub mod workspace_drawer;
 pub mod session_panel;
 pub mod terminal_card;
 pub mod terminal_panel;
+pub mod web_preview_panel;
 
 // Per-session workspace view (DrawerHost + WorkspaceContent + WorkspaceDrawer)
 pub mod workspace_view;

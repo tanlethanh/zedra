@@ -7,6 +7,7 @@
 
 pub mod connect_state;
 pub mod handle;
+pub mod proxy;
 pub mod signer;
 pub mod terminal;
 
@@ -61,4 +62,5 @@ pub use connect_state::{
     STEPPER_STEP_NAMES, TransportSnapshot,
 };
 pub use handle::SessionHandle;
+pub use proxy::TcpProxyServer;
 pub use terminal::{OscEvent, RemoteTerminal, ShellState, TerminalMeta};

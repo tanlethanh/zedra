@@ -9575,6 +9575,14 @@ dependencies = [
  "tokio",
  "tracing",
  "zedra-rpc",
+ "zedra-telemetry",
+]
+
+[[package]]
+name = "zedra-telemetry"
+version = "0.1.1"
+dependencies = [
+ "log",
 ]
 
 [[package]]

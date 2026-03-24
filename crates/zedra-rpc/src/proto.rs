@@ -133,6 +133,13 @@ pub enum ZedraProto {
 
     #[rpc(tx = oneshot::Sender<FsUnwatchResult>)]
     FsUnwatch(FsUnwatchReq),
+
+    // -- TCP Proxy --
+    /// Open a raw TCP tunnel to a port on the host's loopback interface.
+    /// One stream instance per accepted TCP connection on the mobile proxy server.
+    /// Host sends TcpData { data: [], closed: true } immediately if the port is unreachable.
+    #[rpc(rx = mpsc::Receiver<TcpData>, tx = mpsc::Sender<TcpData>)]
+    TcpTunnel(TcpTunnelReq),
 }
 
 // ---------------------------------------------------------------------------
@@ -695,6 +702,30 @@ pub struct LspHoverReq {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LspHoverResult {
     pub contents: String,
+}
+
+// ---------------------------------------------------------------------------
+// TCP Proxy types
+// ---------------------------------------------------------------------------
+
+/// Request to open a raw TCP tunnel to a port on the host's loopback.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TcpTunnelReq {
+    /// Target port on the host's loopback (e.g. 3000 for a local dev server).
+    pub port: u16,
+}
+
+/// A chunk of raw TCP data, flowing in either direction through a TcpTunnel stream.
+///
+/// When `closed` is true and `data` is empty, signals connection end (FIN) or
+/// refused (host sends this immediately on the first message if the target port
+/// is unreachable).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TcpData {
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+    /// True on the final message — signals TCP half-close (FIN) or connection refused.
+    pub closed: bool,
 }
 
 // ---------------------------------------------------------------------------

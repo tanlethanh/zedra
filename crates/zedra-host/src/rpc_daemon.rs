@@ -1415,6 +1415,19 @@ async fn dispatch(
                 })
                 .await;
         }
+
+        // -- TCP Proxy --
+        ZedraMessage::TcpTunnel(msg) => {
+            session.touch().await;
+            let port = msg.port;
+            let rx = msg.rx;
+            let tx = msg.tx;
+            tokio::spawn(async move {
+                if let Err(e) = crate::tcp_proxy::handle_tcp_tunnel(port, rx, tx).await {
+                    tracing::debug!("TcpTunnel error (port {}): {}", port, e);
+                }
+            });
+        }
     }
 
     Ok(())

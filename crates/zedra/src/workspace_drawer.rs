@@ -8,7 +8,8 @@ use crate::file_explorer::{FileExplorer, FileSelected};
 use crate::pending::{SharedPendingSlot, shared_pending_slot};
 use crate::platform_bridge;
 use crate::theme;
-use crate::{session_panel, terminal_panel};
+use crate::web_preview_panel::WebPreviewState;
+use crate::{session_panel, terminal_panel, web_preview_panel};
 use zedra_session::ConnectPhase;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -17,6 +18,7 @@ pub enum DrawerSection {
     Git,
     Terminal,
     Session,
+    Preview,
 }
 
 #[derive(Clone, Debug)]
@@ -56,6 +58,8 @@ pub struct WorkspaceDrawer {
     terminal_order: Vec<String>,
     session_handle: Option<zedra_session::SessionHandle>,
     workspace_state: crate::workspace_state::WorkspaceState,
+    /// Web preview panel state: port input, running proxy server, error message.
+    pub web_preview: WebPreviewState,
     /// Kept alive to poll session state every 2 s and re-render the session tab.
     /// Dropped (and cancelled) when replaced by a new session.
     _session_refresh_task: Option<Task<()>>,
@@ -122,6 +126,7 @@ impl WorkspaceDrawer {
             terminal_order: Vec::new(),
             session_handle: None,
             workspace_state: crate::workspace_state::WorkspaceState::default(),
+            web_preview: WebPreviewState::default(),
             _session_refresh_task: None,
             _subscriptions: subscriptions,
         }
@@ -319,6 +324,15 @@ impl WorkspaceDrawer {
                 }
             }
             DrawerSection::Terminal => "terminals".into(),
+            DrawerSection::Preview => {
+                let port = &self.web_preview.port_input;
+                let active = self.web_preview.proxy.is_some();
+                if active {
+                    format!(":{} — active", port)
+                } else {
+                    format!(":{}", port)
+                }
+            }
             DrawerSection::Session => {
                 let cs = self.session_handle.as_ref().map(|h| h.connect_state());
                 let phase = cs.as_ref().map(|s| &s.phase);
@@ -413,6 +427,14 @@ impl WorkspaceDrawer {
     fn render_session_tab(&self, cx: &mut Context<Self>) -> Div {
         session_panel::render_session_tab(self.session_handle.as_ref(), cx)
     }
+
+    fn render_web_preview_tab(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        web_preview_panel::render_web_preview_tab(
+            &mut self.web_preview,
+            self.session_handle.as_ref(),
+            cx,
+        )
+    }
 }
 
 impl Focusable for WorkspaceDrawer {
@@ -467,6 +489,12 @@ impl Render for WorkspaceDrawer {
                 .flex_1()
                 .overflow_y_scroll()
                 .child(self.render_session_tab(cx))
+                .into_any_element(),
+            DrawerSection::Preview => div()
+                .id("preview-scroll")
+                .flex_1()
+                .overflow_y_scroll()
+                .child(self.render_web_preview_tab(cx))
                 .into_any_element(),
         };
 
@@ -576,7 +604,8 @@ impl Render for WorkspaceDrawer {
                     .child(self.nav_icon("icons/folder.svg", DrawerSection::Files, cx))
                     .child(self.nav_icon("icons/git-branch.svg", DrawerSection::Git, cx))
                     .child(self.nav_icon("icons/terminal.svg", DrawerSection::Terminal, cx))
-                    .child(self.nav_icon("icons/server.svg", DrawerSection::Session, cx)),
+                    .child(self.nav_icon("icons/server.svg", DrawerSection::Session, cx))
+                    .child(self.nav_icon("icons/cube.svg", DrawerSection::Preview, cx)),
             )
     }
 }

@@ -1321,7 +1321,7 @@ impl SessionHandle {
         self.notify_state_change();
     }
 
-    fn client(&self) -> Result<irpc::Client<ZedraProto>> {
+    pub(crate) fn client(&self) -> Result<irpc::Client<ZedraProto>> {
         self.0
             .client
             .lock()
@@ -1625,5 +1625,19 @@ impl SessionHandle {
     pub async fn terminal_list(&self) -> Result<Vec<String>> {
         let result: TermListResult = self.client()?.rpc(TermListReq {}).await?;
         Ok(result.terminals.into_iter().map(|e| e.id).collect())
+    }
+
+    // -----------------------------------------------------------------------
+    // TCP Proxy
+    // -----------------------------------------------------------------------
+
+    /// Start a local TCP proxy server that tunnels connections to `target_port`
+    /// on the host's loopback through the active iroh session.
+    ///
+    /// The returned `TcpProxyServer` binds to `127.0.0.1:0`; call
+    /// `server.local_port()` to get the port to open in the WebView.
+    /// Dropping the server shuts down the listener and all active tunnels.
+    pub async fn open_proxy(&self, target_port: u16) -> Result<crate::proxy::TcpProxyServer> {
+        crate::proxy::TcpProxyServer::start(self.clone(), target_port).await
     }
 }

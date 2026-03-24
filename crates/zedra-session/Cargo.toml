@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 zedra-rpc = { path = "../zedra-rpc" }
+zedra-telemetry = { path = "../zedra-telemetry" }
 iroh.workspace = true
 iroh-relay.workspace = true
 irpc.workspace = true

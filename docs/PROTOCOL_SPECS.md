@@ -191,6 +191,47 @@ The protocol layer includes:
 - `LspDiagnostics(LspDiagnosticsReq) -> LspDiagnosticsResult`
 - `LspHover(LspHoverReq) -> LspHoverResult`
 
+## 5.8 TCP Proxy
+
+- `TcpTunnel(TcpTunnelReq) <-> TcpData/TcpData` (bidirectional stream)
+
+### Purpose
+
+Tunnels raw TCP connections from the mobile device to a port on the host's loopback interface, enabling the mobile WebView to preview a local dev server (Vite, Next.js, etc.) running on the desktop.
+
+### TcpTunnelReq
+
+```
+port: u16   // Target port on host's 127.0.0.1 (e.g. 3000)
+```
+
+### TcpData (both directions)
+
+```
+data:   Vec<u8>   // Raw TCP bytes (may be empty on FIN)
+closed: bool      // true = connection end signal (FIN or refused)
+```
+
+### Stream lifecycle
+
+1. Client opens a `TcpTunnel` stream with `TcpTunnelReq { port }`.
+2. Host attempts `TcpStream::connect("127.0.0.1:<port>")`.
+   - **Refused**: Host immediately sends `TcpData { data: [], closed: true }` and closes the stream.
+   - **Connected**: Host starts forwarding TCP data as `TcpData` chunks.
+3. Both sides forward raw bytes as `TcpData { data: <bytes>, closed: false }`.
+4. When either TCP side closes, the closer sends `TcpData { data: [], closed: true }` and stops.
+5. The other side tears down its TCP half and closes the stream.
+
+### Mobile-side proxy architecture
+
+`TcpProxyServer` (`zedra-session/src/proxy.rs`) binds `127.0.0.1:0` and accepts local TCP connections from the WebView. For each accepted connection it opens a new `TcpTunnel` stream. Multiple concurrent connections to the same target port are supported.
+
+### Notes
+
+- One iroh QUIC stream per TCP connection (cheap — multiplexed over existing transport).
+- No content inspection — the tunnel is protocol-transparent (HTTP/1.1, HTTP/2, WebSockets, SSE, HMR all work).
+- The proxy server is tied to the `SessionHandle` lifecycle. It shuts down on disconnect and must be restarted after reconnect.
+
 ---
 
 ## 6) Host Events
@@ -293,6 +334,18 @@ Any protocol-layer change must include all applicable steps:
 ---
 
 ## 11) Protocol Changelog
+
+### 2026-03-24
+
+- Added TCP proxy RPC:
+  - `TcpTunnel(TcpTunnelReq) <-> TcpData/TcpData` (bidirectional stream)
+  - `TcpTunnelReq { port: u16 }` — target port on host loopback
+  - `TcpData { data: Vec<u8>, closed: bool }` — raw byte framing with FIN signal
+- Host handler: `crates/zedra-host/src/tcp_proxy.rs` — connects to `127.0.0.1:<port>`, pipes bidirectionally
+- Client proxy server: `crates/zedra-session/src/proxy.rs` — `TcpProxyServer` binds loopback, one stream per connection
+- Mobile API: `SessionHandle::open_proxy(port)` starts a `TcpProxyServer`
+- UI: Web Preview panel (`zedra/src/web_preview_panel.rs`) in workspace drawer (cube icon)
+- Telemetry: `TcpTunnelOpened { port }`, `TcpTunnelClosed { bytes_proxied_in, bytes_proxied_out, duration_ms }`
 
 ### 2026-03-19
 
