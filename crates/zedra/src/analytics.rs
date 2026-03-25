@@ -13,6 +13,11 @@ impl zedra_telemetry::TelemetryBackend for FirebaseBackend {
     fn send(&self, event: &zedra_telemetry::Event) {
         let name = event.name();
         let params = event.to_params();
+        #[cfg(feature = "debug-analytics")]
+        {
+            let kv: Vec<String> = params.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+            eprintln!("[telemetry] >> {} {}", name, kv.join(" "));
+        }
         let param_refs: Vec<(&str, &str)> = params.iter().map(|(k, v)| (*k, v.as_str())).collect();
         #[cfg(target_os = "ios")]
         ios_analytics::log_event(name, &param_refs);
@@ -27,6 +32,8 @@ impl zedra_telemetry::TelemetryBackend for FirebaseBackend {
     }
 
     fn record_panic(&self, message: &str, location: &str) {
+        #[cfg(feature = "debug-analytics")]
+        eprintln!("[telemetry] panic: {} at {}", message, location);
         #[cfg(target_os = "ios")]
         ios_analytics::record_panic(message, location);
         let _ = (message, location);

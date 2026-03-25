@@ -11,6 +11,8 @@ crate-type = ["cdylib", "staticlib"]
 android-platform = []
 ios-platform = []
 preview = []
+# Log every telemetry event to stderr/logcat. Never enable in production builds.
+debug-analytics = []
 
 [dependencies]
 gpui = { path = "../../vendor/zed/crates/gpui", default-features = false }

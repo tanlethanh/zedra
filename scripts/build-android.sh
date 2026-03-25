@@ -15,6 +15,10 @@ for arg in "$@"; do
             PROFILE=""
             echo "Debug mode enabled"
             ;;
+        --debug-analytics)
+            FEATURES="$FEATURES,debug-analytics"
+            echo "Debug analytics enabled (events logged to logcat)"
+            ;;
         --target=*)
             TARGETS="$TARGETS -t ${arg#--target=}"
             ;;

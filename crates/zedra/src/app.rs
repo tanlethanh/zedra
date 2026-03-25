@@ -104,8 +104,10 @@ impl ZedraApp {
                 HomeEvent::WorkspaceTapped(item_idx) => {
                     if let Some(state) = this.workspace_states.get(*item_idx) {
                         if let Some(ws_idx) = state.workspace_index() {
+                            zedra_telemetry::send(Event::WorkspaceSelected { source: "active" });
                             this.switch_to_workspace(ws_idx, window, cx);
                         } else {
+                            zedra_telemetry::send(Event::WorkspaceSelected { source: "saved" });
                             this.reconnect_workspace(*item_idx, window, cx);
                         }
                     }

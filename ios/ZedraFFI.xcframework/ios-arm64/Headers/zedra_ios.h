@@ -116,6 +116,8 @@ extern void zedra_set_user_id(const char *user_id);
 
 extern void zedra_set_custom_key(const char *key, const char *value);
 
+extern void zedra_set_collection_enabled(int enabled);
+
 /**
  * Called each frame from main.m before gpui_ios_request_frame.
  *

@@ -69,7 +69,7 @@ No backend:         silent no-op (default)
 | `SessionResumed` | terminal_count, resume_ms | zedra |
 | `Disconnect` | — | zedra |
 | `ReconnectStarted` | reason | zedra-session |
-| `ReconnectSuccess` | attempt, elapsed_ms, reason | zedra-session |
+| `ReconnectSuccess` | attempt, elapsed_ms, reason, phase timings, path, network, rtt_ms, relay, alpn, has_ipv4/6 | zedra-session |
 | `ReconnectExhausted` | attempts, elapsed_ms, reason | zedra-session |
 | `PathUpgraded` | network, rtt_ms, from_relay | zedra-session |
 | `TerminalOpened` | source, terminal_count | zedra, workspace_view |

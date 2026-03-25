@@ -299,6 +299,11 @@ impl ConnectState {
     pub fn elapsed_secs(&self) -> u64 {
         self.started_at.map(|t| t.elapsed().as_secs()).unwrap_or(0)
     }
+
+    /// Milliseconds elapsed since the current connect attempt started, or 0.
+    pub fn elapsed_ms(&self) -> u64 {
+        self.started_at.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0)
+    }
 }
 
 impl Default for ConnectState {
@@ -397,6 +402,11 @@ impl ConnectError {
             Self::HostUnreachable => "host_unreachable",
             Self::Other(_) => "other",
         }
+    }
+
+    /// Returns `Some(label)` if this error is fatal (retrying won't help), else `None`.
+    pub fn fatal_label(&self) -> Option<&'static str> {
+        if self.is_fatal() { Some(self.label()) } else { None }
     }
 
     pub fn action_hint(&self) -> Option<&'static str> {

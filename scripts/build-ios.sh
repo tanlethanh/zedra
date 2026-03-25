@@ -20,6 +20,10 @@ for arg in "$@"; do
             FEATURES="$FEATURES,preview"
             echo "Preview mode enabled"
             ;;
+        --debug-analytics)
+            FEATURES="$FEATURES,debug-analytics"
+            echo "Debug analytics enabled (events logged to console)"
+            ;;
         --release)
             PROFILE="--release"
             PROFILE_DIR="release"

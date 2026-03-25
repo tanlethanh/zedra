@@ -53,6 +53,12 @@ pub enum Event {
     // ── QR / pairing ──────────────────────────────────────────────────────
     /// User tapped the "Scan QR" button.
     QrScanInitiated,
+    /// User tapped a saved workspace on the home screen to connect/switch to it.
+    WorkspaceSelected {
+        /// "active" = workspace already open (just switching to it),
+        /// "saved" = reconnecting to a saved workspace from history.
+        source: &'static str,
+    },
 
     // ── Connection (client-side) ───────────────────────────────────────────
     /// Connection established successfully.
@@ -86,6 +92,8 @@ pub enum Event {
         phase: &'static str,
         /// Error label (e.g. "quic_connect_failed", "host_signature_invalid")
         error: &'static str,
+        /// Time from connect() call to failure.
+        elapsed_ms: u64,
         relay: String,
         alpn: String,
         has_ipv4: bool,
@@ -109,14 +117,34 @@ pub enum Event {
     /// Reconnect succeeded after N attempts.
     ReconnectSuccess {
         attempt: u32,
+        /// Wall time from reconnect loop start to success.
         elapsed_ms: u64,
         reason: &'static str,
+        // Phase timings (ms) for the successful attempt
+        binding_ms: u64,
+        hole_punch_ms: u64,
+        auth_ms: u64,
+        fetch_ms: u64,
+        // Transport context
+        /// "direct" or "relay"
+        path: &'static str,
+        /// Network classification: "LAN", "Tailscale", "Internet", "unknown"
+        network: &'static str,
+        rtt_ms: u64,
+        relay: String,
+        alpn: String,
+        has_ipv4: bool,
+        has_ipv6: bool,
     },
-    /// All reconnect attempts exhausted.
+    /// Reconnect loop ended without success.
+    /// Covers both attempt exhaustion and fatal auth errors that stop retrying early.
     ReconnectExhausted {
         attempts: u32,
         elapsed_ms: u64,
         reason: &'static str,
+        /// Set when a fatal auth error (e.g. "unauthorized") stopped retrying early.
+        /// None when all max attempts were used.
+        fatal_error: Option<&'static str>,
     },
 
     // ── Transport (client-side) ────────────────────────────────────────────
@@ -274,6 +302,7 @@ impl Event {
             Self::AppOpen { .. } => "app_open",
             Self::ScreenView { .. } => "screen_view",
             Self::QrScanInitiated => "qr_scan_initiated",
+            Self::WorkspaceSelected { .. } => "workspace_selected",
             Self::ConnectSuccess { .. } => "connect_success",
             Self::ConnectFailed { .. } => "connect_failed",
             Self::SessionResumed { .. } => "session_resumed",
@@ -315,6 +344,7 @@ impl Event {
             ],
             Self::ScreenView { screen } => vec![("screen", screen.to_string())],
             Self::QrScanInitiated | Self::Disconnect | Self::ClientPaired => vec![],
+            Self::WorkspaceSelected { source } => vec![("source", source.to_string())],
             Self::ConnectSuccess {
                 total_ms,
                 binding_ms,
@@ -351,6 +381,7 @@ impl Event {
             Self::ConnectFailed {
                 phase,
                 error,
+                elapsed_ms,
                 relay,
                 alpn,
                 has_ipv4,
@@ -359,6 +390,7 @@ impl Event {
             } => vec![
                 ("phase", phase.to_string()),
                 ("error", error.to_string()),
+                ("elapsed_ms", elapsed_ms.to_string()),
                 ("relay", relay.clone()),
                 ("alpn", alpn.clone()),
                 ("has_ipv4", bool_str(*has_ipv4)),
@@ -377,20 +409,49 @@ impl Event {
                 attempt,
                 elapsed_ms,
                 reason,
+                binding_ms,
+                hole_punch_ms,
+                auth_ms,
+                fetch_ms,
+                path,
+                network,
+                rtt_ms,
+                relay,
+                alpn,
+                has_ipv4,
+                has_ipv6,
             } => vec![
                 ("attempt", attempt.to_string()),
                 ("elapsed_ms", elapsed_ms.to_string()),
                 ("reason", reason.to_string()),
+                ("binding_ms", binding_ms.to_string()),
+                ("hole_punch_ms", hole_punch_ms.to_string()),
+                ("auth_ms", auth_ms.to_string()),
+                ("fetch_ms", fetch_ms.to_string()),
+                ("path", path.to_string()),
+                ("network", network.to_string()),
+                ("rtt_ms", rtt_ms.to_string()),
+                ("relay", relay.clone()),
+                ("alpn", alpn.clone()),
+                ("has_ipv4", bool_str(*has_ipv4)),
+                ("has_ipv6", bool_str(*has_ipv6)),
             ],
             Self::ReconnectExhausted {
                 attempts,
                 elapsed_ms,
                 reason,
-            } => vec![
-                ("attempts", attempts.to_string()),
-                ("elapsed_ms", elapsed_ms.to_string()),
-                ("reason", reason.to_string()),
-            ],
+                fatal_error,
+            } => {
+                let mut v = vec![
+                    ("attempts", attempts.to_string()),
+                    ("elapsed_ms", elapsed_ms.to_string()),
+                    ("reason", reason.to_string()),
+                ];
+                if let Some(e) = fatal_error {
+                    v.push(("fatal_error", e.to_string()));
+                }
+                v
+            }
             Self::PathUpgraded {
                 network,
                 rtt_ms,
