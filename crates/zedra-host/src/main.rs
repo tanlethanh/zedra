@@ -209,7 +209,7 @@ async fn main() -> Result<()> {
                 );
                 if debug_telemetry {
                     eprintln!(
-                        "[init]     telemetry debug mode (GA4 validation endpoint, not recorded)"
+                        "[telemetry] telemetry debug mode (GA4 validation endpoint, not recorded)"
                     );
                 }
                 a
