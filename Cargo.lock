@@ -9513,7 +9513,6 @@ version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
- "base64-url",
  "clap",
  "directories",
  "ed25519-dalek 2.2.0",

@@ -1,160 +1,97 @@
 # Zedra Relay Architecture
 
-Two relay options are maintained:
+Production uses self-hosted `iroh-relay` instances on EC2. Multiple regions are
+supported — iroh probes all relays and picks the lowest-latency one as preferred.
+If the preferred relay goes down, iroh fails over to the next best.
 
-| Option | URL | Purpose |
-|--------|-----|---------|
-| **EC2 iroh-relay** | `https://sg1.relay.zedra.dev` | Production — self-hosted stateless iroh-relay on EC2 Singapore |
-| **CF Worker relay** | `https://relay.zedra.dev` | Alternative — Cloudflare Workers + Durable Objects |
+The relay URL list is `ZEDRA_RELAY_URLS` in `crates/zedra-rpc/src/lib.rs`.
+See `deploy/relay/README.md` for deployment, cost estimates, and operations.
 
-The active relay URL is the constant `ZEDRA_RELAY_URL` in `crates/zedra-rpc/src/lib.rs`.
+| Instance | Region | Hostname |
+|----------|--------|----------|
+| **sg1** | ap-southeast-1 (Singapore) | `sg1.relay.zedra.dev` |
+| **us1** | us-east-1 (N. Virginia) | `us1.relay.zedra.dev` |
+| **eu1** | eu-central-1 (Frankfurt) | `eu1.relay.zedra.dev` |
 
-## EC2 iroh-relay (production)
+## How iroh-relay Works
 
-Standard open-source `iroh-relay` binary. See `deploy/relay/README.md` and
-`deploy/relay/deploy.sh`.
+iroh-relay is a stateless QUIC/WebSocket relay. When two iroh endpoints cannot
+establish a direct P2P path (symmetric NAT, firewalls), traffic flows through
+the relay instead. The relay never decrypts payload — it forwards opaque QUIC
+datagrams between authenticated endpoints.
 
-**Measured latency (Vietnam → Singapore EC2):**
+```
+  Client A                    iroh-relay                    Client B
+     │                            │                            │
+     │── WS upgrade (TLS 1.3) ──▶│◀── WS upgrade (TLS 1.3) ──│
+     │── ClientAuth(pubkey,sig) ─▶│◀── ClientAuth(pubkey,sig) ─│
+     │◀── ServerConfirmsAuth ─────│──── ServerConfirmsAuth ───▶│
+     │                            │                            │
+     │── Datagram(dst=B, data) ──▶│──── Datagram(src=A, data) ▶│
+     │◀── Datagram(src=B, data) ──│◀── Datagram(dst=A, data) ──│
+```
+
+**Handshake**: On WebSocket connect, the relay sends a 16-byte challenge. The
+client signs it with Ed25519 (BLAKE3 KDF domain separation) and sends
+`ClientAuth(pubkey, signature)`. The relay verifies and maps the pubkey to the
+WebSocket — all subsequent datagrams are routed by destination pubkey.
+
+**Relay selection**: Each iroh endpoint connects to all relays in its
+`RelayMap` and reports RTT via STUN/HTTPS probes. The lowest-latency relay
+becomes the `preferred_relay` published in pkarr. If it goes down, the next
+best relay is promoted automatically.
+
+**Path upgrade**: Even while relaying, iroh continues hole-punch attempts in
+the background. If a direct UDP path is established, traffic migrates off the
+relay seamlessly.
+
+## Ports
+
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| 80 | TCP | HTTP for ACME (Let's Encrypt cert issuance) |
+| 443 | TCP | HTTPS/WebSocket relay + STUN probe (`/generate_204`) |
+| 7842 | UDP | QUIC address discovery (lets clients discover their public IP) |
+| 9090 | TCP (localhost) | Prometheus metrics (not exposed externally) |
+
+## Configuration (`relay.toml`)
+
+```toml
+http_bind_addr = "[::]:80"
+enable_relay = true
+enable_quic_addr_discovery = true
+enable_metrics = true
+metrics_bind_addr = "127.0.0.1:9090"
+
+[tls]
+cert_mode = "LetsEncrypt"
+hostname = "__HOSTNAME__"       # substituted at container start
+contact = "admin@zedra.dev"
+prod_tls = true
+cert_dir = "/data/certs"
+```
+
+`__HOSTNAME__` is replaced by `entrypoint.sh` with `${REGION}.relay.zedra.dev`.
+
+## Metrics
+
+The relay exposes Prometheus metrics on `localhost:9090/metrics`:
+
+| Metric | Description |
+|--------|-------------|
+| `relay_accepts_total` | Total WebSocket connections accepted |
+| `relay_disconnects_total` | Total disconnections |
+| `relay_bytes_sent_total` | Bytes forwarded to clients |
+| `relay_bytes_recv_total` | Bytes received from clients |
+| `relay_send_packets_total` | Packets forwarded |
+| `relay_send_packets_dropped_total` | Packets dropped (slow client, queue full) |
+| `relay_websocket_connections` | Current active WebSocket connections |
+
+The monitor service polls these and sends hourly summaries to Discord.
+
+## Latency
+
+**Vietnam → Singapore EC2:**
 ```
 30 pings  min=112ms  avg=131ms  max=200ms
-```
-
-## CF Worker Relay
-
-A re-implementation of the iroh relay wire protocol on Cloudflare Workers.
-Wire-compatible with standard iroh clients — no fork required.
-
-### Architecture
-
-One `RelayRoom` Durable Object per host. Both the host and all its clients
-connect to the same DO via the `?host=<hex>` query parameter. Datagram
-forwarding is a pure in-memory `Map<hex, WebSocket>.send()` — no KV, no
-DO-to-DO HTTP calls.
-
-```
-                  iroh Host                         iroh Client
-                     │                                   │
-         WS /relay?host=<hex>                 WS /relay?host=<hex>
-                     │                                   │
-                     ▼                                   ▼
-              ┌─────────────────────────────────────────────┐
-              │            CF Worker (edge)                 │
-              │   routes both to same RelayRoom DO          │
-              └─────────────────────────────────────────────┘
-                                    │
-                                    ▼
-                     ┌─────────────────────────┐
-                     │  RelayRoom DO           │
-                     │  name: "room:<hostHex>" │
-                     │                         │
-                     │  _clients Map<hex, WS>  │
-                     │  (in-memory, O(1))      │
-                     └─────────────────────────┘
-```
-
-The DO is placed at the CF edge PoP nearest to whoever connects first (the
-host). Subsequent connections are routed to the same PoP by CF's DO routing.
-
-**Measured latency (Vietnam → Singapore CF PoP):**
-```
-30 pings  min=114ms  avg=143ms  max=241ms
-```
-
-The occasional spikes (200–240ms) are Durable Object hibernation wake-ups
-(~80ms cold-start cost after ~5s idle).
-
-### HTTP Endpoints
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `GET` | `/` | Health check (`{"ok": true}`) |
-| `GET` | `/ping` | HTTPS probe for iroh `net_report` |
-| `GET` | `/generate_204` | Captive portal detection |
-| `GET` | `/relay?host=<64-hex>` | WebSocket upgrade to RelayRoom DO |
-
-### Wire Protocol
-
-All frames: `[1B type][body]`. Type byte is a QUIC VarInt (single byte for
-types 0–12).
-
-| Type | Name | Direction | Body |
-|------|------|-----------|------|
-| 0x00 | ServerChallenge | S→C | `[16B]` random challenge |
-| 0x01 | ClientAuth | C→S | `[32B pubkey][varint sigLen][sig]` (postcard) |
-| 0x02 | ServerConfirmsAuth | S→C | (empty) |
-| 0x03 | ServerDeniesAuth | S→C | `[varint len][UTF-8 reason]` |
-| 0x04 | ClientToRelayDatagram | C→S | `[32B dst][1B ECN][data…]` |
-| 0x05 | ClientToRelayDatagramBatch | C→S | `[32B dst][1B ECN][2B BE seg][data…]` |
-| 0x06 | RelayToClientDatagram | S→C | `[32B src][1B ECN][data…]` |
-| 0x07 | RelayToClientDatagramBatch | S→C | `[32B src][1B ECN][2B BE seg][data…]` |
-| 0x08 | EndpointGone | S→C | `[32B endpoint_id]` |
-| 0x09 | Ping | bidir | `[8B payload]` |
-| 0x0a | Pong | bidir | `[8B payload]` |
-| 0x0b | Health | S→C | `[UTF-8]` (raw, no length prefix) |
-| 0x0c | Restarting | S→C | `[4B BE reconnect_ms][4B BE try_for_ms]` |
-
-### ClientAuth Encoding
-
-`ClientAuth` is postcard-serialized. The `signature` field uses
-`#[serde(with = "serde_bytes")]`, which emits a varint length prefix:
-
-```
-[32B pubkey] [0x40] [64B signature]   = 97 bytes total
-              ^^^^
-         varint(64) = 1 byte
-```
-
-The challenge is not signed directly. BLAKE3 key derivation provides domain
-separation:
-
-```
-context  = "iroh-relay handshake v1 challenge signature"
-derived  = BLAKE3_derive_key(context, challenge_16B)
-signature = Ed25519_sign(secret_key, derived)
-```
-
-### Handshake Flow
-
-```
-Client                               RelayRoom DO
-  │                                       │
-  │── GET /relay?host=<hex> (WS) ────────▶│  acceptWebSocket(server, ["pid:<uuid>"])
-  │                                       │  store chal:<uuid> = random[16]
-  │◀── ServerChallenge(challenge) ────────│
-  │                                       │
-  │── ClientAuth(pubkey, sig) ───────────▶│  verify Ed25519
-  │                                       │  store pid:<uuid> = endpointIdHex
-  │◀── ServerConfirmsAuth ────────────────│
-  │                                       │
-  │══ authenticated ═══════════════════════│
-```
-
-### Hibernation Recovery
-
-CF hibernates the DO between messages. State is persisted in DO storage so
-it survives:
-
-- Each WebSocket is accepted with tag `["pid:<uuid>"]`
-- On auth success: `storage["pid:<uuid>"] = endpointIdHex`
-- On wake: `ensureClientsMap()` calls `storage.list("pid:")` + `getWebSockets()`
-  to rebuild `_authed` and `_clients` maps
-
-### Keepalive
-
-An alarm fires every 15 ± 5 seconds. It sends a `Ping` frame to all
-authenticated sockets to keep connections alive and detect stale ones.
-The alarm is deleted when the last WebSocket disconnects.
-
-### Source Files
-
-```
-packages/relay-worker/
-  src/
-    index.ts          — Worker router: health, ping, generate_204, relay WS upgrade
-    relay-room.ts     — RelayRoom Durable Object
-    frame-codec.ts    — Encode/decode all 13 frame types
-    crypto.ts         — BLAKE3 KDF + Ed25519 verify
-    types.ts          — Env bindings
-    utils.ts          — jsonResponse, errorResponse
-  wrangler.toml       — CF Worker config, DO migrations, Smart Placement
 ```
