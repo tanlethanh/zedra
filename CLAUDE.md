@@ -86,6 +86,7 @@ No backend:         silent no-op (default)
 | `AuthFailed` | reason | zedra-host |
 | `SessionEnd` | duration_ms, terminal_count, path_type | zedra-host |
 | `HostTerminalOpen` | has_launch_cmd | zedra-host |
+| `DaemonHeartbeat` | uptime_secs, session_count, terminal_count | zedra-host |
 | `BandwidthSample` | bytes_sent, bytes_recv, interval_secs | zedra-host |
 
 ### Runtime opt-out

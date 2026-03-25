@@ -1,7 +1,7 @@
 // iroh_listener: accept incoming connections via iroh endpoint.
 //
-// Uses irpc typed protocol over QUIC. Each connection goes through session
-// binding (first message must be ResumeOrCreate) then enters the dispatch loop.
+// Uses irpc typed protocol over QUIC. Each connection goes through PKI auth
+// (Register/Authenticate/AuthProve) then enters the dispatch loop.
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::rpc_daemon::{self, DaemonState};
 use crate::session_registry::SessionRegistry;
 use zedra_rpc::proto::ZEDRA_ALPN;
-use zedra_telemetry::*;
+use zedra_telemetry::Event;
 
 use crate::identity::SharedIdentity;
 

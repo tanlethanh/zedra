@@ -26,11 +26,13 @@ const GA_API_SECRET: Option<&str> = option_env!("ZEDRA_GA_API_SECRET");
 
 pub struct Analytics {
     inner: Option<Arc<Inner>>,
+    /// True if the analytics_id file did not exist before this run (first ever start).
+    pub is_first_run: bool,
 }
 
 struct Inner {
-    measurement_id: String,
-    api_secret: String,
+    /// Pre-built GA4 URL (includes measurement_id + api_secret query params).
+    url: String,
     /// Stable, opaque, machine-level ID (random UUID, persisted to disk).
     host_id: String,
     http: reqwest::Client,
@@ -52,22 +54,34 @@ impl Analytics {
     /// When `debug` is true the GA4 validation endpoint is used and every
     /// request/response is printed to stderr. Events are NOT recorded in GA4.
     pub fn new(analytics_id_path: &std::path::Path, debug: bool) -> Self {
+        // Detect first run before load_or_generate_id creates the file.
+        let is_first_run = !analytics_id_path.exists();
         let (Some(mid), Some(secret)) = (GA_MEASUREMENT_ID, GA_API_SECRET) else {
-            eprintln!("ZEDRA_GA_MEASUREMENT_ID or ZEDRA_GA_API_SECRET is not set");
-            return Self { inner: None };
+            return Self {
+                inner: None,
+                is_first_run,
+            };
         };
         if mid.is_empty() || secret.is_empty() {
-            return Self { inner: None };
+            return Self {
+                inner: None,
+                is_first_run,
+            };
         }
         let host_id = load_or_generate_id(analytics_id_path).unwrap_or_else(|_| random_uuid());
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(5))
             .build()
             .unwrap_or_default();
+        let endpoint = if debug {
+            GA_DEBUG_ENDPOINT
+        } else {
+            GA_ENDPOINT
+        };
+        let url = format!("{}?measurement_id={}&api_secret={}", endpoint, mid, secret);
         Self {
             inner: Some(Arc::new(Inner {
-                measurement_id: mid.to_string(),
-                api_secret: secret.to_string(),
+                url,
                 host_id,
                 http,
                 host_version: env!("CARGO_PKG_VERSION"),
@@ -75,17 +89,16 @@ impl Analytics {
                 arch: std::env::consts::ARCH,
                 debug,
             })),
+            is_first_run,
         }
     }
 
-    /// No-op instance used when credentials are absent.
+    /// No-op instance (telemetry opted out or credentials absent).
     pub fn disabled() -> Self {
-        Self { inner: None }
-    }
-
-    /// Returns true if analytics is active (credentials were compiled in).
-    pub fn is_enabled(&self) -> bool {
-        self.inner.is_some()
+        Self {
+            inner: None,
+            is_first_run: false,
+        }
     }
 
     /// Record a host panic. Uses **synchronous** HTTP so the event is sent
@@ -108,47 +121,37 @@ impl Analytics {
     // Internal
     // -----------------------------------------------------------------------
 
-    /// Send an event with pre-built params. Used by the telemetry bridge.
-    pub fn track_raw(&self, name: &str, params: Value) {
+    /// Spawns a background task to send an event, satisfying the non-blocking
+    /// contract of `TelemetryBackend::send()`. Called by `telemetry::HostBackend`.
+    pub(crate) fn track_raw(&self, name: &'static str, params: Value) {
         let Some(inner) = self.inner.clone() else {
             return;
         };
-        let name = name.to_string();
         tokio::spawn(async move {
-            inner.send(&name, params).await;
+            inner.send(name, params).await;
         });
     }
 }
 
 impl Inner {
-    fn build_payload(&self, event_name: &str, mut params: Value) -> (String, Value) {
+    fn build_payload(&self, event_name: &str, mut params: Value) -> Value {
         if let Some(obj) = params.as_object_mut() {
             obj.insert("host_version".into(), self.host_version.into());
             obj.insert("os".into(), self.os.into());
             obj.insert("arch".into(), self.arch.into());
         }
-        let body = json!({
+        json!({
             "client_id": self.host_id,
             "events": [{ "name": event_name, "params": params }],
-        });
-        let endpoint = if self.debug {
-            GA_DEBUG_ENDPOINT
-        } else {
-            GA_ENDPOINT
-        };
-        let url = format!(
-            "{}?measurement_id={}&api_secret={}",
-            endpoint, self.measurement_id, self.api_secret,
-        );
-        (url, body)
+        })
     }
 
     async fn send(&self, event_name: &str, params: Value) {
-        let (url, body) = self.build_payload(event_name, params);
+        let body = self.build_payload(event_name, params);
         if self.debug {
-            eprintln!("[telemetry] >> {event_name} {}", body);
+            eprintln!("[telemetry] >> {event_name} {body}");
         }
-        match self.http.post(&url).json(&body).send().await {
+        match self.http.post(&self.url).json(&body).send().await {
             Ok(resp) if self.debug => {
                 let status = resp.status();
                 let text = resp.text().await.unwrap_or_default();
@@ -161,22 +164,22 @@ impl Inner {
 
     /// Blocking send for use in panic hooks where the tokio runtime may be gone.
     fn send_sync(&self, event_name: &str, params: Value) {
-        let (url, body) = self.build_payload(event_name, params);
+        let body = self.build_payload(event_name, params);
         if self.debug {
-            eprintln!("[telemetry] >> {event_name} {}", body);
+            eprintln!("[telemetry] >> {event_name} {body}");
         }
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(3))
             .build()
             .unwrap_or_default();
         if self.debug {
-            if let Ok(resp) = client.post(&url).json(&body).send() {
+            if let Ok(resp) = client.post(&self.url).json(&body).send() {
                 let status = resp.status();
                 let text = resp.text().unwrap_or_default();
                 eprintln!("[telemetry] << {event_name} HTTP {status}: {text}");
             }
         } else {
-            let _ = client.post(&url).json(&body).send();
+            let _ = client.post(&self.url).json(&body).send();
         }
     }
 }
@@ -184,13 +187,11 @@ impl Inner {
 /// Strip filesystem paths from panic messages to avoid leaking usernames/dirs.
 /// Replaces `/Users/foo/...` or `/home/foo/...` style paths with `<path>`.
 fn sanitize_panic_message(msg: &str) -> String {
-    // Simple heuristic: replace any token that looks like an absolute path.
     let mut result = String::with_capacity(msg.len());
     for token in msg.split_whitespace() {
         if !result.is_empty() {
             result.push(' ');
         }
-        // Strip tokens that look like absolute/relative filesystem paths.
         // Using a broad match to avoid false negatives leaking usernames.
         let t = token.trim_start_matches('"').trim_start_matches('\'');
         if t.starts_with('/')

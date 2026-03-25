@@ -18,7 +18,7 @@ use zedra_host::{
     api, identity, iroh_listener, net_monitor, qr, rpc_daemon, session_registry, workspace_lock,
 };
 use zedra_rpc::ZedraPairingTicket;
-use zedra_telemetry::*;
+use zedra_telemetry::Event;
 
 #[derive(Parser)]
 #[command(name = "zedra", about = "Desktop companion daemon for Zedra")]
@@ -144,6 +144,7 @@ async fn main() -> Result<()> {
             no_telemetry,
             debug_telemetry,
         } => {
+            let startup_start = std::time::Instant::now();
             let workdir = std::path::PathBuf::from(workdir)
                 .canonicalize()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -199,7 +200,6 @@ async fn main() -> Result<()> {
                     .map(|v| v == "0" || v.eq_ignore_ascii_case("false"))
                     .unwrap_or(false);
             let analytics = Arc::new(if telemetry_disabled {
-                eprintln!("[init]     telemetry disabled");
                 Analytics::disabled()
             } else {
                 let a = Analytics::new(
@@ -207,15 +207,14 @@ async fn main() -> Result<()> {
                         .unwrap_or_else(|_| workdir.join(".zedra-analytics-id")),
                     debug_telemetry,
                 );
-                if a.is_enabled() {
-                    if debug_telemetry {
-                        eprintln!("[init]     telemetry debug mode (GA4 validation endpoint, not recorded)");
-                    } else {
-                        eprintln!("[init]     telemetry enabled");
-                    }
+                if debug_telemetry {
+                    eprintln!(
+                        "[init]     telemetry debug mode (GA4 validation endpoint, not recorded)"
+                    );
                 }
                 a
             });
+            let is_first_run = analytics.is_first_run;
 
             // Register host GA4 backend as the global telemetry provider.
             zedra_host::telemetry::init(analytics.clone());
@@ -238,9 +237,10 @@ async fn main() -> Result<()> {
                 prev_hook(info);
             }));
 
-            let mut state = rpc_daemon::DaemonState::new(workdir.clone(), host_identity.clone());
-            state.analytics = analytics.clone();
-            let state = Arc::new(state);
+            let state = Arc::new(rpc_daemon::DaemonState::new(
+                workdir.clone(),
+                host_identity.clone(),
+            ));
 
             // 1. Bind iroh endpoint with configured relay URLs.
             let endpoint_relay_urls: Vec<String> = if relay_url.is_empty() {
@@ -257,10 +257,16 @@ async fn main() -> Result<()> {
             } else {
                 "default"
             };
-            zedra_telemetry::send(Event::DaemonStart { relay_type });
+            zedra_telemetry::send(Event::DaemonStart {
+                relay_type,
+                is_first_run,
+            });
 
+            let init_ms = startup_start.elapsed().as_millis() as u64;
+            let endpoint_bind_start = std::time::Instant::now();
             let endpoint =
                 iroh_listener::create_endpoint(&host_identity, &endpoint_relay_urls).await?;
+            let endpoint_bind_ms = endpoint_bind_start.elapsed().as_millis() as u64;
 
             // Pre-authorize the persistent CLI client key so `zedra client` can
             // connect without QR pairing. The key is generated once per workspace.
@@ -311,6 +317,11 @@ async fn main() -> Result<()> {
                     tracing::warn!("Failed to generate QR code: {}", e);
                 }
             }
+            zedra_telemetry::send(Event::StartupComplete {
+                init_ms,
+                endpoint_bind_ms,
+                total_ms: startup_start.elapsed().as_millis() as u64,
+            });
 
             // 3. Start local REST API server (127.0.0.1, OS-assigned port).
             //    Write the bound address and bearer token to the config dir so
@@ -336,7 +347,30 @@ async fn main() -> Result<()> {
                 }
             }
 
-            // 4. Run iroh accept loop (blocks main)
+            // 4. Spawn periodic heartbeat for uptime tracking (every 10 minutes).
+            {
+                let registry = registry.clone();
+                let started_at = state.started_at;
+                tokio::spawn(async move {
+                    let mut interval =
+                        tokio::time::interval(std::time::Duration::from_secs(10 * 60));
+                    interval.tick().await; // skip the immediate first tick
+                    loop {
+                        interval.tick().await;
+                        let uptime_secs = started_at.elapsed().as_secs();
+                        let sessions = registry.list_sessions().await;
+                        let session_count = sessions.len();
+                        let terminal_count: usize = sessions.iter().map(|s| s.terminal_count).sum();
+                        zedra_telemetry::send(Event::DaemonHeartbeat {
+                            uptime_secs,
+                            session_count,
+                            terminal_count,
+                        });
+                    }
+                });
+            }
+
+            // 5. Run iroh accept loop (blocks main)
             iroh_listener::run_accept_loop(&endpoint, registry, state).await?;
         }
 

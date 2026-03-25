@@ -148,10 +148,21 @@ pub enum Event {
     // ═══════════════════════════════════════════════════════════════════════
 
     // ── Daemon lifecycle ───────────────────────────────────────────────────
-    /// Daemon started (`zedra start`).
+    /// Daemon started (`zedra start`). Fires early, before endpoint bind.
     DaemonStart {
         /// "custom" or "default"
         relay_type: &'static str,
+        /// True on the very first `zedra start` on this machine (analytics_id did not exist).
+        is_first_run: bool,
+    },
+    /// Startup complete: endpoint bound and QR printed, daemon is accepting connections.
+    StartupComplete {
+        /// Time from process start to `create_endpoint()` call (identity/registry load).
+        init_ms: u64,
+        /// Time for iroh endpoint to bind (STUN probing, relay negotiation).
+        endpoint_bind_ms: u64,
+        /// Total time from process start to QR printed.
+        total_ms: u64,
     },
     /// STUN/network report completed at startup.
     NetReport {
@@ -167,15 +178,31 @@ pub enum Event {
     AuthSuccess {
         /// true for first-ever pairing (Register), false for reconnect.
         is_new_client: bool,
-        /// Wall time from inbound accept to RPC loop entry.
-        duration_ms: u64,
+        /// Time for the Register phase (HMAC verify + slot consume). 0 on reconnect.
+        register_ms: u64,
+        /// Time for the Authenticate → AuthChallenge round-trip.
+        challenge_ms: u64,
+        /// Time for the AuthProve round-trip (signature verify + session attach).
+        prove_ms: u64,
+        /// Total wall time from inbound accept to RPC loop entry.
+        total_ms: u64,
         /// "direct", "relay", or "unknown"
         path_type: &'static str,
     },
     /// Authentication rejected.
     AuthFailed {
-        /// Short category string (e.g. "auth_error", "bad_hmac").
+        /// Specific failure label:
+        /// "stale_timestamp", "bad_hmac", "slot_consumed", "slot_not_found",
+        /// "not_authorized", "unexpected_message", "nonce_mismatch",
+        /// "invalid_signature", "session_occupied", "session_not_found",
+        /// "not_in_session_acl", "io_error"
         reason: &'static str,
+        /// Time elapsed in the auth handshake before failure.
+        elapsed_ms: u64,
+        /// Whether the failure was on a new pairing (Register) vs reconnect (Authenticate).
+        is_new_client: bool,
+        /// Connection path at time of failure: "direct", "relay", or "unknown"
+        path_type: &'static str,
     },
 
     // ── Session (server-side) ──────────────────────────────────────────────
@@ -187,6 +214,30 @@ pub enum Event {
         terminal_count: u64,
         /// "direct", "relay", or "unknown"
         path_type: &'static str,
+        // ── Lifetime RPC usage counters for this session ──
+        fs_reads: u64,
+        fs_writes: u64,
+        /// Read-only git ops: status, diff, log, branches, stage, unstage.
+        git_ops: u64,
+        git_commits: u64,
+        ai_prompts: u64,
+    },
+
+    // ── Feature usage (server-side, high-value individual events) ──────────
+    /// An AI prompt was sent to the Claude CLI and completed.
+    AiPromptSent {
+        success: bool,
+        duration_ms: u64,
+        /// Length of the prompt in bytes (not content).
+        prompt_bytes: usize,
+        /// Length of the response in bytes.
+        response_bytes: usize,
+    },
+    /// A git commit was made via the app.
+    GitCommitMade {
+        /// Number of paths included in the commit.
+        files_staged: usize,
+        success: bool,
     },
 
     // ── Terminal (server-side) ─────────────────────────────────────────────
@@ -197,6 +248,13 @@ pub enum Event {
     },
 
     // ── Monitoring (server-side) ───────────────────────────────────────────
+    /// Periodic daemon heartbeat (every 10 minutes) for uptime tracking.
+    DaemonHeartbeat {
+        uptime_secs: u64,
+        session_count: usize,
+        terminal_count: usize,
+    },
+
     /// Periodic bandwidth sample from the active iroh path (per-interval deltas).
     BandwidthSample {
         bytes_sent: u64,
@@ -227,12 +285,16 @@ impl Event {
             Self::TerminalOpened { .. } => "terminal_opened",
             Self::TerminalClosed { .. } => "terminal_closed",
             Self::DaemonStart { .. } => "daemon_start",
+            Self::StartupComplete { .. } => "startup_complete",
             Self::NetReport { .. } => "net_report",
             Self::ClientPaired => "client_paired",
             Self::AuthSuccess { .. } => "auth_success",
             Self::AuthFailed { .. } => "auth_failed",
             Self::SessionEnd { .. } => "session_end",
+            Self::AiPromptSent { .. } => "ai_prompt_sent",
+            Self::GitCommitMade { .. } => "git_commit_made",
             Self::HostTerminalOpen { .. } => "terminal_open",
+            Self::DaemonHeartbeat { .. } => "daemon_heartbeat",
             Self::BandwidthSample { .. } => "bandwidth_sample",
         }
     }
@@ -346,7 +408,22 @@ impl Event {
                 ("terminal_count", terminal_count.to_string()),
             ],
             Self::TerminalClosed { remaining } => vec![("remaining", remaining.to_string())],
-            Self::DaemonStart { relay_type } => vec![("relay_type", relay_type.to_string())],
+            Self::DaemonStart {
+                relay_type,
+                is_first_run,
+            } => vec![
+                ("relay_type", relay_type.to_string()),
+                ("is_first_run", bool_str(*is_first_run)),
+            ],
+            Self::StartupComplete {
+                init_ms,
+                endpoint_bind_ms,
+                total_ms,
+            } => vec![
+                ("init_ms", init_ms.to_string()),
+                ("endpoint_bind_ms", endpoint_bind_ms.to_string()),
+                ("total_ms", total_ms.to_string()),
+            ],
             Self::NetReport {
                 has_ipv4,
                 has_ipv6,
@@ -358,26 +435,79 @@ impl Event {
             ],
             Self::AuthSuccess {
                 is_new_client,
-                duration_ms,
+                register_ms,
+                challenge_ms,
+                prove_ms,
+                total_ms,
                 path_type,
             } => vec![
                 ("is_new_client", bool_str(*is_new_client)),
-                ("duration_ms", duration_ms.to_string()),
+                ("register_ms", register_ms.to_string()),
+                ("challenge_ms", challenge_ms.to_string()),
+                ("prove_ms", prove_ms.to_string()),
+                ("total_ms", total_ms.to_string()),
                 ("path_type", path_type.to_string()),
             ],
-            Self::AuthFailed { reason } => vec![("reason", reason.to_string())],
+            Self::AuthFailed {
+                reason,
+                elapsed_ms,
+                is_new_client,
+                path_type,
+            } => vec![
+                ("reason", reason.to_string()),
+                ("elapsed_ms", elapsed_ms.to_string()),
+                ("is_new_client", bool_str(*is_new_client)),
+                ("path_type", path_type.to_string()),
+            ],
             Self::SessionEnd {
                 duration_ms,
                 terminal_count,
                 path_type,
+                fs_reads,
+                fs_writes,
+                git_ops,
+                git_commits,
+                ai_prompts,
             } => vec![
                 ("duration_ms", duration_ms.to_string()),
                 ("terminal_count", terminal_count.to_string()),
                 ("path_type", path_type.to_string()),
+                ("fs_reads", fs_reads.to_string()),
+                ("fs_writes", fs_writes.to_string()),
+                ("git_ops", git_ops.to_string()),
+                ("git_commits", git_commits.to_string()),
+                ("ai_prompts", ai_prompts.to_string()),
+            ],
+            Self::AiPromptSent {
+                success,
+                duration_ms,
+                prompt_bytes,
+                response_bytes,
+            } => vec![
+                ("success", bool_str(*success)),
+                ("duration_ms", duration_ms.to_string()),
+                ("prompt_bytes", prompt_bytes.to_string()),
+                ("response_bytes", response_bytes.to_string()),
+            ],
+            Self::GitCommitMade {
+                files_staged,
+                success,
+            } => vec![
+                ("files_staged", files_staged.to_string()),
+                ("success", bool_str(*success)),
             ],
             Self::HostTerminalOpen { has_launch_cmd } => {
                 vec![("has_launch_cmd", bool_str(*has_launch_cmd))]
             }
+            Self::DaemonHeartbeat {
+                uptime_secs,
+                session_count,
+                terminal_count,
+            } => vec![
+                ("uptime_secs", uptime_secs.to_string()),
+                ("session_count", session_count.to_string()),
+                ("terminal_count", terminal_count.to_string()),
+            ],
             Self::BandwidthSample {
                 bytes_sent,
                 bytes_recv,
@@ -391,6 +521,8 @@ impl Event {
     }
 }
 
+// GA4 Measurement Protocol stores all event params as strings. "1"/"0" lets
+// BigQuery promote them to integer_value automatically, enabling numeric filters.
 fn bool_str(v: bool) -> String {
     if v { "1" } else { "0" }.to_string()
 }

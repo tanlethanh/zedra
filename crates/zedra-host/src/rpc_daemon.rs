@@ -5,7 +5,6 @@
 //   Reconnect:      Authenticate → AuthProve → (RPC calls)
 //   Health:         Ping (every 2s, foreground only, 5 misses = client reconnects)
 
-use crate::analytics::Analytics;
 use crate::fs::{Filesystem, LocalFs};
 use crate::git::GitRepo;
 use crate::identity::SharedIdentity;
@@ -24,7 +23,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zedra_rpc::osc::{encode_meta_preamble, OscEvent};
 use zedra_rpc::proto::*;
-use zedra_telemetry::*;
+use zedra_telemetry::Event;
 
 fn ts() -> String {
     let s = SystemTime::now()
@@ -234,8 +233,6 @@ pub struct DaemonState {
     pub workdir: std::path::PathBuf,
     /// Host identity for signing challenges in the Authenticate step.
     pub identity: SharedIdentity,
-    /// Product analytics (no-op when credentials are not compiled in).
-    pub analytics: Arc<Analytics>,
     /// When the daemon started; used to compute uptime.
     pub started_at: std::time::Instant,
 }
@@ -254,7 +251,6 @@ impl DaemonState {
             fs: Arc::new(LocalFs),
             workdir,
             identity,
-            analytics: Arc::new(Analytics::disabled()),
             started_at: std::time::Instant::now(),
         }
     }
@@ -278,27 +274,42 @@ pub async fn handle_connection(
 
     // Auth phase: returns (session, client_pubkey, is_new_client) or closes connection
     let auth_start = std::time::Instant::now();
-    let (session, client_pubkey, is_new_client) =
-        match auth_phase(&conn, &registry, &state.identity, &state.workdir).await {
-            Ok(triple) => triple,
-            Err(e) => {
-                zedra_telemetry::send(Event::AuthFailed {
-                    reason: "auth_error",
-                });
-                tracing::warn!("auth failed from {}: {}", remote.fmt_short(), e);
-                // Wait for the client to close the connection (up to 500ms) so any
-                // error response we sent has time to be delivered before CONNECTION_CLOSE.
-                let _ = tokio::time::timeout(std::time::Duration::from_millis(500), conn.closed())
-                    .await;
-                return Ok(());
-            }
-        };
-
-    let auth_duration_ms = auth_start.elapsed().as_millis() as u64;
     let path_type = initial_path_type(&conn);
+    let mut failure_reason: &'static str = "io_error";
+    let mut failure_is_new_client = false;
+    let (session, client_pubkey, is_new_client, auth_timing) = match auth_phase(
+        &conn,
+        &registry,
+        &state.identity,
+        &state.workdir,
+        &mut failure_reason,
+        &mut failure_is_new_client,
+    )
+    .await
+    {
+        Ok(quad) => quad,
+        Err(e) => {
+            zedra_telemetry::send(Event::AuthFailed {
+                reason: failure_reason,
+                elapsed_ms: auth_start.elapsed().as_millis() as u64,
+                is_new_client: failure_is_new_client,
+                path_type,
+            });
+            tracing::warn!("auth failed from {}: {}", remote.fmt_short(), e);
+            // Wait for the client to close the connection (up to 500ms) so any
+            // error response we sent has time to be delivered before CONNECTION_CLOSE.
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_millis(500), conn.closed()).await;
+            return Ok(());
+        }
+    };
+
     zedra_telemetry::send(Event::AuthSuccess {
         is_new_client,
-        duration_ms: auth_duration_ms,
+        register_ms: auth_timing.register_ms,
+        challenge_ms: auth_timing.challenge_ms,
+        prove_ms: auth_timing.prove_ms,
+        total_ms: auth_start.elapsed().as_millis() as u64,
         path_type,
     });
 
@@ -395,6 +406,11 @@ pub async fn handle_connection(
         duration_ms: session_duration_ms,
         terminal_count,
         path_type,
+        fs_reads: session.rpc_fs_reads.load(Ordering::Relaxed),
+        fs_writes: session.rpc_fs_writes.load(Ordering::Relaxed),
+        git_ops: session.rpc_git_ops.load(Ordering::Relaxed),
+        git_commits: session.rpc_git_commits.load(Ordering::Relaxed),
+        ai_prompts: session.rpc_ai_prompts.load(Ordering::Relaxed),
     });
 
     registry.detach_client(&session.id, client_pubkey).await;
@@ -416,6 +432,12 @@ pub async fn handle_connection(
 // Auth phase
 // ---------------------------------------------------------------------------
 
+struct AuthTiming {
+    register_ms: u64,
+    challenge_ms: u64,
+    prove_ms: u64,
+}
+
 /// Perform the full auth handshake for a new connection.
 ///
 /// Flow:
@@ -427,47 +449,103 @@ async fn auth_phase(
     registry: &Arc<SessionRegistry>,
     identity: &SharedIdentity,
     workdir: &std::path::Path,
-) -> Result<(Arc<ServerSession>, [u8; 32], bool)> {
+    failure_reason: &mut &'static str,
+    failure_is_new_client: &mut bool,
+) -> Result<(Arc<ServerSession>, [u8; 32], bool, AuthTiming)> {
     // Step 1: Optional Register
     let first = irpc_iroh::read_request::<ZedraProto>(conn).await?;
 
-    let client_pubkey: [u8; 32] = match first {
+    let (client_pubkey, register_ms): ([u8; 32], u64) = match first {
         Some(ZedraMessage::Register(msg)) => {
+            *failure_is_new_client = true;
+            let t = std::time::Instant::now();
             let pubkey = msg.client_pubkey;
             let result = handle_register(&msg, registry).await;
             let ok = matches!(result, RegisterResult::Ok);
+            let elapsed = t.elapsed().as_millis() as u64;
+            *failure_reason = match &result {
+                RegisterResult::StaleTimestamp => "stale_timestamp",
+                RegisterResult::InvalidHandshake => "bad_hmac",
+                RegisterResult::HandshakeConsumed => "slot_consumed",
+                RegisterResult::SlotNotFound => "slot_not_found",
+                RegisterResult::Ok => "io_error",
+            };
             let _ = msg.tx.send(result).await;
             if !ok {
                 anyhow::bail!("register rejected");
             }
-            // Now expect Authenticate
-            pubkey
+            (pubkey, elapsed)
         }
         Some(ZedraMessage::Authenticate(msg)) => {
             // Reconnect path: skip register, issue challenge directly
             let pubkey = msg.client_pubkey;
-            // Check global auth first
             if !registry.is_globally_authorized(&pubkey).await {
-                drop(msg.tx); // signal error by dropping
+                *failure_reason = "not_authorized";
+                drop(msg.tx);
                 anyhow::bail!("client not authorized");
             }
+            let t = std::time::Instant::now();
             let nonce = issue_challenge(msg.tx, identity).await?;
-            // is_new_client = false: this is a reconnect
-            return finish_auth(conn, registry, pubkey, nonce, workdir, false).await;
+            let challenge_ms = t.elapsed().as_millis() as u64;
+            let (session, pubkey, is_new, prove_ms) = finish_auth(
+                conn,
+                registry,
+                pubkey,
+                nonce,
+                workdir,
+                false,
+                failure_reason,
+            )
+            .await?;
+            return Ok((
+                session,
+                pubkey,
+                is_new,
+                AuthTiming {
+                    register_ms: 0,
+                    challenge_ms,
+                    prove_ms,
+                },
+            ));
         }
-        _ => anyhow::bail!("expected Register or Authenticate as first message"),
+        _ => {
+            *failure_reason = "unexpected_message";
+            anyhow::bail!("expected Register or Authenticate as first message")
+        }
     };
 
     // After Register: expect Authenticate
     let auth_msg = irpc_iroh::read_request::<ZedraProto>(conn).await?;
     match auth_msg {
         Some(ZedraMessage::Authenticate(msg)) => {
-            // After fresh registration, client is authorized
+            let t = std::time::Instant::now();
             let nonce = issue_challenge(msg.tx, identity).await?;
-            // is_new_client = true: came through the Register path
-            finish_auth(conn, registry, client_pubkey, nonce, workdir, true).await
+            let challenge_ms = t.elapsed().as_millis() as u64;
+            let (session, pubkey, is_new, prove_ms) = finish_auth(
+                conn,
+                registry,
+                client_pubkey,
+                nonce,
+                workdir,
+                true,
+                failure_reason,
+            )
+            .await?;
+            Ok((
+                session,
+                pubkey,
+                is_new,
+                AuthTiming {
+                    register_ms,
+                    challenge_ms,
+                    prove_ms,
+                },
+            ))
         }
-        _ => anyhow::bail!("expected Authenticate after Register"),
+        _ => {
+            *failure_reason = "unexpected_message";
+            anyhow::bail!("expected Authenticate after Register")
+        }
     }
 }
 
@@ -563,6 +641,7 @@ async fn issue_challenge(
 }
 
 /// Read AuthProve, verify client signature, attach to session.
+/// Returns (session, pubkey, is_new_client, prove_ms).
 async fn finish_auth(
     conn: &iroh::endpoint::Connection,
     registry: &Arc<SessionRegistry>,
@@ -570,12 +649,17 @@ async fn finish_auth(
     nonce: [u8; 32],
     workdir: &std::path::Path,
     is_new_client: bool,
-) -> Result<(Arc<ServerSession>, [u8; 32], bool)> {
+    failure_reason: &mut &'static str,
+) -> Result<(Arc<ServerSession>, [u8; 32], bool, u64)> {
+    let prove_start = std::time::Instant::now();
     let prove_msg = irpc_iroh::read_request::<ZedraProto>(conn).await?;
 
     let msg = match prove_msg {
         Some(ZedraMessage::AuthProve(m)) => m,
-        _ => anyhow::bail!("expected AuthProve"),
+        _ => {
+            *failure_reason = "unexpected_message";
+            anyhow::bail!("expected AuthProve")
+        }
     };
 
     // Extract fields before any moves
@@ -586,6 +670,7 @@ async fn finish_auth(
 
     // Verify nonce echo
     if prove_nonce != nonce {
+        *failure_reason = "nonce_mismatch";
         let _ = tx.send(AuthProveResult::InvalidSignature).await;
         anyhow::bail!("AuthProve: nonce mismatch");
     }
@@ -597,6 +682,7 @@ async fn finish_auth(
             .map_err(|e| anyhow::anyhow!("invalid client pubkey: {e}"))?;
         let sig = ed25519_dalek::Signature::from_bytes(&prove_sig);
         if vk.verify(&nonce, &sig).is_err() {
+            *failure_reason = "invalid_signature";
             let _ = tx.send(AuthProveResult::InvalidSignature).await;
             anyhow::bail!("AuthProve: signature invalid");
         }
@@ -646,17 +732,25 @@ async fn finish_auth(
                 anyhow::bail!("session {} vanished after attach", resolved_session_id);
             };
             let _ = tx.send(AuthProveResult::Ok).await;
-            Ok((session, client_pubkey, is_new_client))
+            Ok((
+                session,
+                client_pubkey,
+                is_new_client,
+                prove_start.elapsed().as_millis() as u64,
+            ))
         }
         AttachResult::SessionNotFound => {
+            *failure_reason = "session_not_found";
             let _ = tx.send(AuthProveResult::SessionNotFound).await;
             anyhow::bail!("session {} not found", resolved_session_id)
         }
         AttachResult::NotInSessionAcl => {
+            *failure_reason = "not_in_session_acl";
             let _ = tx.send(AuthProveResult::NotInSessionAcl).await;
             anyhow::bail!("client not in session ACL")
         }
         AttachResult::SessionOccupied => {
+            *failure_reason = "session_occupied";
             let _ = tx.send(AuthProveResult::SessionOccupied).await;
             anyhow::bail!("session {} is occupied", resolved_session_id)
         }
@@ -908,6 +1002,7 @@ async fn dispatch(
         }
 
         ZedraMessage::FsRead(msg) => {
+            session.rpc_fs_reads.fetch_add(1, Ordering::Relaxed);
             let path = match resolve_path(&state.workdir, &msg.path) {
                 Ok(p) => p,
                 Err(e) => {
@@ -942,6 +1037,7 @@ async fn dispatch(
         }
 
         ZedraMessage::FsWrite(msg) => {
+            session.rpc_fs_writes.fetch_add(1, Ordering::Relaxed);
             let path = match resolve_path(&state.workdir, &msg.path) {
                 Ok(p) => p,
                 Err(e) => {
@@ -1260,101 +1356,139 @@ async fn dispatch(
         }
 
         // -- Git --
-        ZedraMessage::GitStatus(msg) => match GitRepo::open(&state.workdir) {
-            Ok(repo) => {
-                let branch = repo.branch().unwrap_or_default();
-                let entries = repo
-                    .status()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|e| GitStatusEntry {
-                        path: e.path,
-                        staged_status: e
-                            .staged_status
-                            .map(|status| format!("{:?}", status).to_lowercase()),
-                        unstaged_status: e
-                            .unstaged_status
-                            .map(|status| format!("{:?}", status).to_lowercase()),
-                    })
-                    .collect();
-                let _ = msg.tx.send(GitStatusResult { branch, entries }).await;
-            }
-            Err(_) => drop(msg.tx),
-        },
-
-        ZedraMessage::GitDiff(msg) => match GitRepo::open(&state.workdir) {
-            Ok(repo) => {
-                let diff = repo
-                    .diff(msg.path.as_deref(), msg.staged)
-                    .unwrap_or_default();
-                let _ = msg.tx.send(GitDiffResult { diff }).await;
-            }
-            Err(_) => drop(msg.tx),
-        },
-
-        ZedraMessage::GitLog(msg) => match GitRepo::open(&state.workdir) {
-            Ok(repo) => {
-                let entries = repo
-                    .log(msg.limit.unwrap_or(20).min(500))
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|e| GitLogEntry {
-                        id: e.id,
-                        message: e.message,
-                        author: e.author,
-                        timestamp: e.timestamp,
-                    })
-                    .collect();
-                let _ = msg.tx.send(GitLogResult { entries }).await;
-            }
-            Err(_) => drop(msg.tx),
-        },
-
-        ZedraMessage::GitCommit(msg) => match GitRepo::open(&state.workdir) {
-            Ok(repo) => match repo.commit(&msg.message, &msg.paths) {
-                Ok(hash) => {
-                    let _ = msg.tx.send(GitCommitResult { hash }).await;
+        ZedraMessage::GitStatus(msg) => {
+            session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
+            match GitRepo::open(&state.workdir) {
+                Ok(repo) => {
+                    let branch = repo.branch().unwrap_or_default();
+                    let entries = repo
+                        .status()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|e| GitStatusEntry {
+                            path: e.path,
+                            staged_status: e
+                                .staged_status
+                                .map(|status| format!("{:?}", status).to_lowercase()),
+                            unstaged_status: e
+                                .unstaged_status
+                                .map(|status| format!("{:?}", status).to_lowercase()),
+                        })
+                        .collect();
+                    let _ = msg.tx.send(GitStatusResult { branch, entries }).await;
                 }
                 Err(_) => drop(msg.tx),
-            },
-            Err(_) => drop(msg.tx),
-        },
-
-        ZedraMessage::GitStage(msg) => match GitRepo::open(&state.workdir) {
-            Ok(repo) => match repo.stage(&msg.paths) {
-                Ok(()) => {
-                    let _ = msg.tx.send(GitStageResult {}).await;
-                }
-                Err(_) => drop(msg.tx),
-            },
-            Err(_) => drop(msg.tx),
-        },
-
-        ZedraMessage::GitUnstage(msg) => match GitRepo::open(&state.workdir) {
-            Ok(repo) => match repo.unstage(&msg.paths) {
-                Ok(()) => {
-                    let _ = msg.tx.send(GitUnstageResult {}).await;
-                }
-                Err(_) => drop(msg.tx),
-            },
-            Err(_) => drop(msg.tx),
-        },
-
-        ZedraMessage::GitBranches(msg) => match GitRepo::open(&state.workdir) {
-            Ok(repo) => {
-                let branches = repo
-                    .branches()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|b| GitBranchEntry {
-                        name: b.name,
-                        is_head: b.is_head,
-                    })
-                    .collect();
-                let _ = msg.tx.send(GitBranchesResult { branches }).await;
             }
-            Err(_) => drop(msg.tx),
-        },
+        }
+
+        ZedraMessage::GitDiff(msg) => {
+            session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
+            match GitRepo::open(&state.workdir) {
+                Ok(repo) => {
+                    let diff = repo
+                        .diff(msg.path.as_deref(), msg.staged)
+                        .unwrap_or_default();
+                    let _ = msg.tx.send(GitDiffResult { diff }).await;
+                }
+                Err(_) => drop(msg.tx),
+            }
+        }
+
+        ZedraMessage::GitLog(msg) => {
+            session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
+            match GitRepo::open(&state.workdir) {
+                Ok(repo) => {
+                    let entries = repo
+                        .log(msg.limit.unwrap_or(20).min(500))
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|e| GitLogEntry {
+                            id: e.id,
+                            message: e.message,
+                            author: e.author,
+                            timestamp: e.timestamp,
+                        })
+                        .collect();
+                    let _ = msg.tx.send(GitLogResult { entries }).await;
+                }
+                Err(_) => drop(msg.tx),
+            }
+        }
+
+        ZedraMessage::GitCommit(msg) => {
+            let files_staged = msg.paths.len();
+            match GitRepo::open(&state.workdir) {
+                Ok(repo) => match repo.commit(&msg.message, &msg.paths) {
+                    Ok(hash) => {
+                        session.rpc_git_commits.fetch_add(1, Ordering::Relaxed);
+                        zedra_telemetry::send(Event::GitCommitMade {
+                            files_staged,
+                            success: true,
+                        });
+                        let _ = msg.tx.send(GitCommitResult { hash }).await;
+                    }
+                    Err(_) => {
+                        zedra_telemetry::send(Event::GitCommitMade {
+                            files_staged,
+                            success: false,
+                        });
+                        drop(msg.tx);
+                    }
+                },
+                Err(_) => {
+                    zedra_telemetry::send(Event::GitCommitMade {
+                        files_staged,
+                        success: false,
+                    });
+                    drop(msg.tx);
+                }
+            }
+        }
+
+        ZedraMessage::GitStage(msg) => {
+            session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
+            match GitRepo::open(&state.workdir) {
+                Ok(repo) => match repo.stage(&msg.paths) {
+                    Ok(()) => {
+                        let _ = msg.tx.send(GitStageResult {}).await;
+                    }
+                    Err(_) => drop(msg.tx),
+                },
+                Err(_) => drop(msg.tx),
+            }
+        }
+
+        ZedraMessage::GitUnstage(msg) => {
+            session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
+            match GitRepo::open(&state.workdir) {
+                Ok(repo) => match repo.unstage(&msg.paths) {
+                    Ok(()) => {
+                        let _ = msg.tx.send(GitUnstageResult {}).await;
+                    }
+                    Err(_) => drop(msg.tx),
+                },
+                Err(_) => drop(msg.tx),
+            }
+        }
+
+        ZedraMessage::GitBranches(msg) => {
+            session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
+            match GitRepo::open(&state.workdir) {
+                Ok(repo) => {
+                    let branches = repo
+                        .branches()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|b| GitBranchEntry {
+                            name: b.name,
+                            is_head: b.is_head,
+                        })
+                        .collect();
+                    let _ = msg.tx.send(GitBranchesResult { branches }).await;
+                }
+                Err(_) => drop(msg.tx),
+            }
+        }
 
         ZedraMessage::GitCheckout(msg) => {
             let ok = GitRepo::open(&state.workdir)
@@ -1370,18 +1504,21 @@ async fn dispatch(
             // that might appear earlier in $PATH.
             let claude_bin =
                 std::env::var("ZEDRA_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string());
+            let prompt_bytes = msg.prompt.len();
+            let ai_start = std::time::Instant::now();
             let output = std::process::Command::new(&claude_bin)
                 .args(["--print", &msg.prompt])
                 .current_dir(&state.workdir)
                 .output();
+            let duration_ms = ai_start.elapsed().as_millis() as u64;
 
-            let (text, done) = match output {
+            let (text, done, success) = match output {
                 Ok(out) if out.status.success() => {
-                    (String::from_utf8_lossy(&out.stdout).into_owned(), true)
+                    (String::from_utf8_lossy(&out.stdout).into_owned(), true, true)
                 }
                 Ok(out) => {
                     let err = String::from_utf8_lossy(&out.stderr).into_owned();
-                    (format!("Error: {}", err), true)
+                    (format!("Error: {}", err), true, false)
                 }
                 Err(_) => (
                     format!(
@@ -1389,8 +1526,16 @@ async fn dispatch(
                         msg.prompt
                     ),
                     true,
+                    false,
                 ),
             };
+            session.rpc_ai_prompts.fetch_add(1, Ordering::Relaxed);
+            zedra_telemetry::send(Event::AiPromptSent {
+                success,
+                duration_ms,
+                prompt_bytes,
+                response_bytes: text.len(),
+            });
             let _ = msg.tx.send(AiPromptResult { text, done }).await;
         }
 
