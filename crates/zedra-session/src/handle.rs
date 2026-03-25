@@ -643,7 +643,7 @@ impl SessionHandle {
 
                             path_upgrade_event = if !prev_direct && is_direct {
                                 tracing::info!("iroh path upgraded: relay → direct P2P");
-                                Some(PathUpgraded {
+                                Some(Event::PathUpgraded {
                                     network: network_hint
                                         .as_ref()
                                         .map(|h| h.label())
@@ -668,8 +668,8 @@ impl SessionHandle {
                                 last_alive_at,
                             });
                         }
-                        if let Some(upgrade) = path_upgrade_event {
-                            zedra_telemetry::send(Event::PathUpgraded(upgrade));
+                        if let Some(event) = path_upgrade_event {
+                            zedra_telemetry::send(event);
                         }
                     }
 
@@ -795,7 +795,7 @@ impl SessionHandle {
                 .unwrap_or(0);
             let transport = s.transport.as_ref();
             let is_direct = transport.map(|t| t.is_direct).unwrap_or(false);
-            zedra_telemetry::send(Event::ConnectSuccess(ConnectSuccess {
+            zedra_telemetry::send(Event::ConnectSuccess {
                 total_ms,
                 binding_ms: s.binding_ms.unwrap_or(0),
                 hole_punch_ms: s.hole_punch_ms.unwrap_or(0),
@@ -814,7 +814,7 @@ impl SessionHandle {
                 has_ipv6: s.has_ipv6,
                 symmetric_nat: s.mapping_varies.unwrap_or(false),
                 is_first_pairing: s.is_first_pairing,
-            }));
+            });
         }
 
         Ok(())
@@ -1276,9 +1276,9 @@ impl SessionHandle {
                 ReconnectReason::ConnectionLost => "connection_lost",
                 ReconnectReason::AppForegrounded => "app_foregrounded",
             };
-            zedra_telemetry::send(Event::ReconnectStarted(ReconnectStarted {
+            zedra_telemetry::send(Event::ReconnectStarted {
                 reason: reason_label,
-            }));
+            });
 
             'reconnect: loop {
                 if handle.0.user_disconnect.load(Ordering::Acquire) {
@@ -1352,11 +1352,11 @@ impl SessionHandle {
                 match handle.connect(addr).await {
                     Ok(()) => {
                         tracing::info!("reconnect: success on attempt {}", attempt);
-                        zedra_telemetry::send(Event::ReconnectSuccess(ReconnectSuccess {
+                        zedra_telemetry::send(Event::ReconnectSuccess {
                             attempt,
                             elapsed_ms: reconnect_start.elapsed().as_millis() as u64,
                             reason: reason_label,
-                        }));
+                        });
                         match handle.terminal_list().await {
                             Ok(ids) => tracing::info!(
                                 "reconnect: server has {} terminals: {:?}",
@@ -1388,11 +1388,11 @@ impl SessionHandle {
                 let phase = handle.connect_state().phase;
                 let is_fatal = matches!(&phase, ConnectPhase::Failed(err) if err.is_fatal());
                 if !phase.is_connected() && !is_fatal {
-                    zedra_telemetry::send(Event::ReconnectExhausted(ReconnectExhausted {
+                    zedra_telemetry::send(Event::ReconnectExhausted {
                         attempts: max_attempts,
                         elapsed_ms: reconnect_start.elapsed().as_millis() as u64,
                         reason: reason_label,
-                    }));
+                    });
                     if let Ok(mut cs) = handle.0.connect_state.lock() {
                         cs.phase = ConnectPhase::Failed(ConnectError::HostUnreachable);
                     }
@@ -1432,7 +1432,7 @@ impl SessionHandle {
             has_ipv6 = false;
             relay_connected = false;
         }
-        zedra_telemetry::send(Event::ConnectFailed(ConnectFailed {
+        zedra_telemetry::send(Event::ConnectFailed {
             phase: phase_label,
             error: error.label(),
             relay,
@@ -1440,7 +1440,7 @@ impl SessionHandle {
             has_ipv4,
             has_ipv6,
             relay_connected,
-        }));
+        });
         self.notify_state_change();
     }
 

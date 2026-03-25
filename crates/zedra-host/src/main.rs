@@ -246,7 +246,7 @@ async fn main() -> Result<()> {
             } else {
                 "default"
             };
-            zedra_telemetry::send(Event::DaemonStart(DaemonStart { relay_type }));
+            zedra_telemetry::send(Event::DaemonStart { relay_type });
 
             let endpoint =
                 iroh_listener::create_endpoint(&host_identity, &endpoint_relay_urls).await?;

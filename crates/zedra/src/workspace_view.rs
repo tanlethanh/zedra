@@ -552,12 +552,10 @@ impl WorkspaceView {
                                 match handle.terminal_create(cols_u16, rows_u16).await {
                                     Ok(term_id) => {
                                         tracing::info!("terminal created: id={}", term_id);
-                                        zedra_telemetry::send(Event::TerminalOpened(
-                                            TerminalOpened {
-                                                source: "user_action",
-                                                terminal_count: term_count,
-                                            },
-                                        ));
+                                        zedra_telemetry::send(Event::TerminalOpened {
+                                            source: "user_action",
+                                            terminal_count: term_count,
+                                        });
                                         ptid.set(term_id);
                                         zedra_session::push_callback(Box::new(|| {}));
                                     }
@@ -1202,9 +1200,9 @@ impl Render for WorkspaceView {
         if let Some(tid) = self.pending_terminal_delete.take() {
             let was_active = self.active_terminal_id.as_deref() == Some(tid.as_str());
             self.terminal_views.retain(|(id, _)| id != &tid);
-            zedra_telemetry::send(Event::TerminalClosed(TerminalClosed {
+            zedra_telemetry::send(Event::TerminalClosed {
                 remaining: self.terminal_views.len(),
-            }));
+            });
 
             let handle = self.session_handle.clone();
             let tid_close = tid.clone();

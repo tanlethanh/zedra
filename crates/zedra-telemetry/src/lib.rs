@@ -27,9 +27,9 @@ static ENABLED: AtomicBool = AtomicBool::new(true);
 /// - **App events** — emitted by the mobile app (iOS/Android) and shared crates (zedra-session).
 /// - **Host events** — emitted by the desktop daemon (zedra-host).
 ///
-/// When adding a new feature, define a new variant here with a dedicated struct
-/// that includes timing, counts, path/transport info, and version fields as
-/// appropriate. Never include personal data (usernames, file contents, IPs).
+/// When adding a new feature, define a new variant here with inline fields
+/// covering timing, counts, path/transport info, and version as appropriate.
+/// Never include personal data (usernames, file contents, IPs).
 #[derive(Clone, Debug)]
 pub enum Event {
     // ═══════════════════════════════════════════════════════════════════════
@@ -38,9 +38,17 @@ pub enum Event {
 
     // ── App lifecycle ──────────────────────────────────────────────────────
     /// App launched (cold start).
-    AppOpen(AppOpen),
+    AppOpen {
+        saved_workspaces: usize,
+        app_version: &'static str,
+        platform: &'static str,
+        arch: &'static str,
+    },
     /// User navigated to a new screen.
-    ScreenView(ScreenView),
+    ScreenView {
+        /// e.g. "home", "workspace"
+        screen: &'static str,
+    },
 
     // ── QR / pairing ──────────────────────────────────────────────────────
     /// User tapped the "Scan QR" button.
@@ -48,31 +56,92 @@ pub enum Event {
 
     // ── Connection (client-side) ───────────────────────────────────────────
     /// Connection established successfully.
-    ConnectSuccess(ConnectSuccess),
+    ConnectSuccess {
+        // Phase timings (ms)
+        total_ms: u64,
+        binding_ms: u64,
+        hole_punch_ms: u64,
+        auth_ms: u64,
+        fetch_ms: u64,
+        // Transport context
+        /// "direct" or "relay"
+        path: &'static str,
+        /// Network classification: "LAN", "Tailscale", "Internet", "unknown"
+        network: &'static str,
+        rtt_ms: u64,
+        /// Relay hostname (e.g. "sg1.relay.zedra.dev") or "none" / "custom"
+        relay: String,
+        relay_latency_ms: u64,
+        /// ALPN protocol (e.g. "zedra/rpc/3")
+        alpn: String,
+        // Discovery
+        has_ipv4: bool,
+        has_ipv6: bool,
+        symmetric_nat: bool,
+        is_first_pairing: bool,
+    },
     /// Connection attempt failed.
-    ConnectFailed(ConnectFailed),
+    ConnectFailed {
+        /// Phase label where failure occurred (e.g. "hole_punching", "authenticating")
+        phase: &'static str,
+        /// Error label (e.g. "quic_connect_failed", "host_signature_invalid")
+        error: &'static str,
+        relay: String,
+        alpn: String,
+        has_ipv4: bool,
+        has_ipv6: bool,
+        relay_connected: bool,
+    },
     /// Session resumed with existing server-side terminals.
-    SessionResumed(SessionResumed),
+    SessionResumed {
+        terminal_count: usize,
+        resume_ms: u64,
+    },
     /// User-initiated disconnect.
     Disconnect,
 
     // ── Reconnect (client-side) ────────────────────────────────────────────
     /// Auto-reconnect loop started.
-    ReconnectStarted(ReconnectStarted),
+    ReconnectStarted {
+        /// "connection_lost" or "app_foregrounded"
+        reason: &'static str,
+    },
     /// Reconnect succeeded after N attempts.
-    ReconnectSuccess(ReconnectSuccess),
+    ReconnectSuccess {
+        attempt: u32,
+        elapsed_ms: u64,
+        reason: &'static str,
+    },
     /// All reconnect attempts exhausted.
-    ReconnectExhausted(ReconnectExhausted),
+    ReconnectExhausted {
+        attempts: u32,
+        elapsed_ms: u64,
+        reason: &'static str,
+    },
 
     // ── Transport (client-side) ────────────────────────────────────────────
     /// Connection path upgraded from relay to direct P2P.
-    PathUpgraded(PathUpgraded),
+    PathUpgraded {
+        /// Network classification of the new direct path.
+        network: &'static str,
+        rtt_ms: u64,
+        /// Relay hostname the connection upgraded from.
+        from_relay: String,
+    },
 
     // ── Terminal (client-side) ─────────────────────────────────────────────
     /// A new terminal was created (PTY spawned on server).
-    TerminalOpened(TerminalOpened),
+    TerminalOpened {
+        /// "new_session", "user_action"
+        source: &'static str,
+        /// Total terminal count after opening.
+        terminal_count: usize,
+    },
     /// A terminal was closed by the user.
-    TerminalClosed(TerminalClosed),
+    TerminalClosed {
+        /// Remaining terminal count after closing.
+        remaining: usize,
+    },
 
     // ═══════════════════════════════════════════════════════════════════════
     // HOST EVENTS — desktop daemon (zedra-host)
@@ -80,189 +149,60 @@ pub enum Event {
 
     // ── Daemon lifecycle ───────────────────────────────────────────────────
     /// Daemon started (`zedra start`).
-    DaemonStart(DaemonStart),
+    DaemonStart {
+        /// "custom" or "default"
+        relay_type: &'static str,
+    },
     /// STUN/network report completed at startup.
-    NetReport(NetReport),
+    NetReport {
+        has_ipv4: bool,
+        has_ipv6: bool,
+        symmetric_nat: bool,
+    },
 
     // ── Auth (server-side) ─────────────────────────────────────────────────
     /// New device paired via QR code (first-time Register flow).
     ClientPaired,
     /// Client authenticated and entered the RPC loop.
-    AuthSuccess(AuthSuccess),
+    AuthSuccess {
+        /// true for first-ever pairing (Register), false for reconnect.
+        is_new_client: bool,
+        /// Wall time from inbound accept to RPC loop entry.
+        duration_ms: u64,
+        /// "direct", "relay", or "unknown"
+        path_type: &'static str,
+    },
     /// Authentication rejected.
-    AuthFailed(AuthFailed),
+    AuthFailed {
+        /// Short category string (e.g. "auth_error", "bad_hmac").
+        reason: &'static str,
+    },
 
     // ── Session (server-side) ──────────────────────────────────────────────
     /// Client disconnected; session stays alive in registry.
-    SessionEnd(SessionEnd),
+    SessionEnd {
+        /// How long the authenticated RPC session lasted.
+        duration_ms: u64,
+        /// Number of terminals that existed during the session.
+        terminal_count: u64,
+        /// "direct", "relay", or "unknown"
+        path_type: &'static str,
+    },
 
     // ── Terminal (server-side) ─────────────────────────────────────────────
     /// A new terminal PTY was spawned on the host.
-    HostTerminalOpen(HostTerminalOpen),
+    HostTerminalOpen {
+        /// Whether a launch command was injected (e.g. "claude --resume").
+        has_launch_cmd: bool,
+    },
 
     // ── Monitoring (server-side) ───────────────────────────────────────────
-    /// Periodic bandwidth sample from the active iroh path.
-    BandwidthSample(BandwidthSample),
-}
-
-// ---------------------------------------------------------------------------
-// Event context structs
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Debug)]
-pub struct AppOpen {
-    pub saved_workspaces: usize,
-    pub app_version: &'static str,
-    pub platform: &'static str,
-    pub arch: &'static str,
-}
-
-#[derive(Clone, Debug)]
-pub struct ScreenView {
-    /// e.g. "home", "workspace"
-    pub screen: &'static str,
-}
-
-#[derive(Clone, Debug)]
-pub struct ConnectSuccess {
-    // Phase timings (ms)
-    pub total_ms: u64,
-    pub binding_ms: u64,
-    pub hole_punch_ms: u64,
-    pub auth_ms: u64,
-    pub fetch_ms: u64,
-    // Transport context
-    /// "direct" or "relay"
-    pub path: &'static str,
-    /// Network classification: "LAN", "Tailscale", "Internet", "unknown"
-    pub network: &'static str,
-    pub rtt_ms: u64,
-    /// Preferred relay URL (e.g. "sg1.relay.zedra.dev") or "none"
-    pub relay: String,
-    pub relay_latency_ms: u64,
-    /// ALPN protocol (e.g. "zedra/rpc/3")
-    pub alpn: String,
-    // Discovery
-    pub has_ipv4: bool,
-    pub has_ipv6: bool,
-    pub symmetric_nat: bool,
-    pub is_first_pairing: bool,
-}
-
-#[derive(Clone, Debug)]
-pub struct ConnectFailed {
-    /// Phase label where failure occurred (e.g. "hole_punching", "authenticating")
-    pub phase: &'static str,
-    /// Error label (e.g. "quic_connect_failed", "host_signature_invalid")
-    pub error: &'static str,
-    pub relay: String,
-    pub alpn: String,
-    pub has_ipv4: bool,
-    pub has_ipv6: bool,
-    pub relay_connected: bool,
-}
-
-#[derive(Clone, Debug)]
-pub struct SessionResumed {
-    pub terminal_count: usize,
-    pub resume_ms: u64,
-}
-
-#[derive(Clone, Debug)]
-pub struct ReconnectStarted {
-    /// "connection_lost" or "app_foregrounded"
-    pub reason: &'static str,
-}
-
-#[derive(Clone, Debug)]
-pub struct ReconnectSuccess {
-    pub attempt: u32,
-    pub elapsed_ms: u64,
-    pub reason: &'static str,
-}
-
-#[derive(Clone, Debug)]
-pub struct ReconnectExhausted {
-    pub attempts: u32,
-    pub elapsed_ms: u64,
-    pub reason: &'static str,
-}
-
-#[derive(Clone, Debug)]
-pub struct PathUpgraded {
-    /// Network classification of the new direct path.
-    pub network: &'static str,
-    pub rtt_ms: u64,
-    /// Relay URL the connection upgraded from.
-    pub from_relay: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct TerminalOpened {
-    /// "new_session", "user_action"
-    pub source: &'static str,
-    /// Total terminal count after opening.
-    pub terminal_count: usize,
-}
-
-#[derive(Clone, Debug)]
-pub struct TerminalClosed {
-    /// Remaining terminal count after closing.
-    pub remaining: usize,
-}
-
-// ── Host event context structs ─────────────────────────────────────────────
-
-#[derive(Clone, Debug)]
-pub struct DaemonStart {
-    /// "custom" or "default"
-    pub relay_type: &'static str,
-}
-
-#[derive(Clone, Debug)]
-pub struct NetReport {
-    pub has_ipv4: bool,
-    pub has_ipv6: bool,
-    pub symmetric_nat: bool,
-}
-
-#[derive(Clone, Debug)]
-pub struct AuthSuccess {
-    /// true for first-ever pairing (Register), false for reconnect.
-    pub is_new_client: bool,
-    /// Wall time from inbound accept to RPC loop entry.
-    pub duration_ms: u64,
-    /// "direct", "relay", or "unknown"
-    pub path_type: &'static str,
-}
-
-#[derive(Clone, Debug)]
-pub struct AuthFailed {
-    /// Short category string (e.g. "auth_error", "bad_hmac").
-    pub reason: &'static str,
-}
-
-#[derive(Clone, Debug)]
-pub struct SessionEnd {
-    /// How long the authenticated RPC session lasted.
-    pub duration_ms: u64,
-    /// Number of terminals that existed during the session.
-    pub terminal_count: u64,
-    /// "direct", "relay", or "unknown"
-    pub path_type: &'static str,
-}
-
-#[derive(Clone, Debug)]
-pub struct HostTerminalOpen {
-    /// Whether a launch command was injected (e.g. "claude --resume").
-    pub has_launch_cmd: bool,
-}
-
-#[derive(Clone, Debug)]
-pub struct BandwidthSample {
-    pub bytes_sent: u64,
-    pub bytes_recv: u64,
-    pub interval_secs: u64,
+    /// Periodic bandwidth sample from the active iroh path (per-interval deltas).
+    BandwidthSample {
+        bytes_sent: u64,
+        bytes_recv: u64,
+        interval_secs: u64,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -273,119 +213,179 @@ impl Event {
     /// Event name for the analytics backend (Firebase event name / GA4 event name).
     pub fn name(&self) -> &'static str {
         match self {
-            Self::AppOpen(_) => "app_open",
-            Self::ScreenView(_) => "screen_view",
+            Self::AppOpen { .. } => "app_open",
+            Self::ScreenView { .. } => "screen_view",
             Self::QrScanInitiated => "qr_scan_initiated",
-            Self::ConnectSuccess(_) => "connect_success",
-            Self::ConnectFailed(_) => "connect_failed",
-            Self::SessionResumed(_) => "session_resumed",
+            Self::ConnectSuccess { .. } => "connect_success",
+            Self::ConnectFailed { .. } => "connect_failed",
+            Self::SessionResumed { .. } => "session_resumed",
             Self::Disconnect => "disconnect",
-            Self::ReconnectStarted(_) => "reconnect_started",
-            Self::ReconnectSuccess(_) => "reconnect_success",
-            Self::ReconnectExhausted(_) => "reconnect_exhausted",
-            Self::PathUpgraded(_) => "path_upgraded",
-            Self::TerminalOpened(_) => "terminal_opened",
-            Self::TerminalClosed(_) => "terminal_closed",
-            // Host events
-            Self::DaemonStart(_) => "daemon_start",
-            Self::NetReport(_) => "net_report",
+            Self::ReconnectStarted { .. } => "reconnect_started",
+            Self::ReconnectSuccess { .. } => "reconnect_success",
+            Self::ReconnectExhausted { .. } => "reconnect_exhausted",
+            Self::PathUpgraded { .. } => "path_upgraded",
+            Self::TerminalOpened { .. } => "terminal_opened",
+            Self::TerminalClosed { .. } => "terminal_closed",
+            Self::DaemonStart { .. } => "daemon_start",
+            Self::NetReport { .. } => "net_report",
             Self::ClientPaired => "client_paired",
-            Self::AuthSuccess(_) => "auth_success",
-            Self::AuthFailed(_) => "auth_failed",
-            Self::SessionEnd(_) => "session_end",
-            Self::HostTerminalOpen(_) => "terminal_open",
-            Self::BandwidthSample(_) => "bandwidth_sample",
+            Self::AuthSuccess { .. } => "auth_success",
+            Self::AuthFailed { .. } => "auth_failed",
+            Self::SessionEnd { .. } => "session_end",
+            Self::HostTerminalOpen { .. } => "terminal_open",
+            Self::BandwidthSample { .. } => "bandwidth_sample",
         }
     }
 
     /// Serialize event fields as key-value string pairs for platform backends.
-    /// Values are borrowed from the event — caller must not outlive the event.
     pub fn to_params(&self) -> Vec<(&str, String)> {
         match self {
-            Self::AppOpen(e) => vec![
-                ("saved_workspaces", e.saved_workspaces.to_string()),
-                ("app_version", e.app_version.to_string()),
-                ("platform", e.platform.to_string()),
-                ("arch", e.arch.to_string()),
+            Self::AppOpen {
+                saved_workspaces,
+                app_version,
+                platform,
+                arch,
+            } => vec![
+                ("saved_workspaces", saved_workspaces.to_string()),
+                ("app_version", app_version.to_string()),
+                ("platform", platform.to_string()),
+                ("arch", arch.to_string()),
             ],
-            Self::ScreenView(e) => vec![("screen", e.screen.to_string())],
+            Self::ScreenView { screen } => vec![("screen", screen.to_string())],
             Self::QrScanInitiated | Self::Disconnect | Self::ClientPaired => vec![],
-            Self::ConnectSuccess(e) => vec![
-                ("total_ms", e.total_ms.to_string()),
-                ("binding_ms", e.binding_ms.to_string()),
-                ("hole_punch_ms", e.hole_punch_ms.to_string()),
-                ("auth_ms", e.auth_ms.to_string()),
-                ("fetch_ms", e.fetch_ms.to_string()),
-                ("path", e.path.to_string()),
-                ("network", e.network.to_string()),
-                ("rtt_ms", e.rtt_ms.to_string()),
-                ("relay", e.relay.clone()),
-                ("relay_latency_ms", e.relay_latency_ms.to_string()),
-                ("alpn", e.alpn.clone()),
-                ("has_ipv4", bool_str(e.has_ipv4)),
-                ("has_ipv6", bool_str(e.has_ipv6)),
-                ("symmetric_nat", bool_str(e.symmetric_nat)),
-                ("is_first_pairing", bool_str(e.is_first_pairing)),
+            Self::ConnectSuccess {
+                total_ms,
+                binding_ms,
+                hole_punch_ms,
+                auth_ms,
+                fetch_ms,
+                path,
+                network,
+                rtt_ms,
+                relay,
+                relay_latency_ms,
+                alpn,
+                has_ipv4,
+                has_ipv6,
+                symmetric_nat,
+                is_first_pairing,
+            } => vec![
+                ("total_ms", total_ms.to_string()),
+                ("binding_ms", binding_ms.to_string()),
+                ("hole_punch_ms", hole_punch_ms.to_string()),
+                ("auth_ms", auth_ms.to_string()),
+                ("fetch_ms", fetch_ms.to_string()),
+                ("path", path.to_string()),
+                ("network", network.to_string()),
+                ("rtt_ms", rtt_ms.to_string()),
+                ("relay", relay.clone()),
+                ("relay_latency_ms", relay_latency_ms.to_string()),
+                ("alpn", alpn.clone()),
+                ("has_ipv4", bool_str(*has_ipv4)),
+                ("has_ipv6", bool_str(*has_ipv6)),
+                ("symmetric_nat", bool_str(*symmetric_nat)),
+                ("is_first_pairing", bool_str(*is_first_pairing)),
             ],
-            Self::ConnectFailed(e) => vec![
-                ("phase", e.phase.to_string()),
-                ("error", e.error.to_string()),
-                ("relay", e.relay.clone()),
-                ("alpn", e.alpn.clone()),
-                ("has_ipv4", bool_str(e.has_ipv4)),
-                ("has_ipv6", bool_str(e.has_ipv6)),
-                ("relay_connected", bool_str(e.relay_connected)),
+            Self::ConnectFailed {
+                phase,
+                error,
+                relay,
+                alpn,
+                has_ipv4,
+                has_ipv6,
+                relay_connected,
+            } => vec![
+                ("phase", phase.to_string()),
+                ("error", error.to_string()),
+                ("relay", relay.clone()),
+                ("alpn", alpn.clone()),
+                ("has_ipv4", bool_str(*has_ipv4)),
+                ("has_ipv6", bool_str(*has_ipv6)),
+                ("relay_connected", bool_str(*relay_connected)),
             ],
-            Self::SessionResumed(e) => vec![
-                ("terminal_count", e.terminal_count.to_string()),
-                ("resume_ms", e.resume_ms.to_string()),
+            Self::SessionResumed {
+                terminal_count,
+                resume_ms,
+            } => vec![
+                ("terminal_count", terminal_count.to_string()),
+                ("resume_ms", resume_ms.to_string()),
             ],
-            Self::ReconnectStarted(e) => vec![("reason", e.reason.to_string())],
-            Self::ReconnectSuccess(e) => vec![
-                ("attempt", e.attempt.to_string()),
-                ("elapsed_ms", e.elapsed_ms.to_string()),
-                ("reason", e.reason.to_string()),
+            Self::ReconnectStarted { reason } => vec![("reason", reason.to_string())],
+            Self::ReconnectSuccess {
+                attempt,
+                elapsed_ms,
+                reason,
+            } => vec![
+                ("attempt", attempt.to_string()),
+                ("elapsed_ms", elapsed_ms.to_string()),
+                ("reason", reason.to_string()),
             ],
-            Self::ReconnectExhausted(e) => vec![
-                ("attempts", e.attempts.to_string()),
-                ("elapsed_ms", e.elapsed_ms.to_string()),
-                ("reason", e.reason.to_string()),
+            Self::ReconnectExhausted {
+                attempts,
+                elapsed_ms,
+                reason,
+            } => vec![
+                ("attempts", attempts.to_string()),
+                ("elapsed_ms", elapsed_ms.to_string()),
+                ("reason", reason.to_string()),
             ],
-            Self::PathUpgraded(e) => vec![
-                ("network", e.network.to_string()),
-                ("rtt_ms", e.rtt_ms.to_string()),
-                ("from_relay", e.from_relay.clone()),
+            Self::PathUpgraded {
+                network,
+                rtt_ms,
+                from_relay,
+            } => vec![
+                ("network", network.to_string()),
+                ("rtt_ms", rtt_ms.to_string()),
+                ("from_relay", from_relay.clone()),
             ],
-            Self::TerminalOpened(e) => vec![
-                ("source", e.source.to_string()),
-                ("terminal_count", e.terminal_count.to_string()),
+            Self::TerminalOpened {
+                source,
+                terminal_count,
+            } => vec![
+                ("source", source.to_string()),
+                ("terminal_count", terminal_count.to_string()),
             ],
-            Self::TerminalClosed(e) => vec![("remaining", e.remaining.to_string())],
-            // Host events
-            Self::DaemonStart(e) => vec![("relay_type", e.relay_type.to_string())],
-            Self::NetReport(e) => vec![
-                ("has_ipv4", bool_str(e.has_ipv4)),
-                ("has_ipv6", bool_str(e.has_ipv6)),
-                ("symmetric_nat", bool_str(e.symmetric_nat)),
+            Self::TerminalClosed { remaining } => vec![("remaining", remaining.to_string())],
+            Self::DaemonStart { relay_type } => vec![("relay_type", relay_type.to_string())],
+            Self::NetReport {
+                has_ipv4,
+                has_ipv6,
+                symmetric_nat,
+            } => vec![
+                ("has_ipv4", bool_str(*has_ipv4)),
+                ("has_ipv6", bool_str(*has_ipv6)),
+                ("symmetric_nat", bool_str(*symmetric_nat)),
             ],
-            Self::AuthSuccess(e) => vec![
-                ("is_new_client", bool_str(e.is_new_client)),
-                ("duration_ms", e.duration_ms.to_string()),
-                ("path_type", e.path_type.to_string()),
+            Self::AuthSuccess {
+                is_new_client,
+                duration_ms,
+                path_type,
+            } => vec![
+                ("is_new_client", bool_str(*is_new_client)),
+                ("duration_ms", duration_ms.to_string()),
+                ("path_type", path_type.to_string()),
             ],
-            Self::AuthFailed(e) => vec![("reason", e.reason.to_string())],
-            Self::SessionEnd(e) => vec![
-                ("duration_ms", e.duration_ms.to_string()),
-                ("terminal_count", e.terminal_count.to_string()),
-                ("path_type", e.path_type.to_string()),
+            Self::AuthFailed { reason } => vec![("reason", reason.to_string())],
+            Self::SessionEnd {
+                duration_ms,
+                terminal_count,
+                path_type,
+            } => vec![
+                ("duration_ms", duration_ms.to_string()),
+                ("terminal_count", terminal_count.to_string()),
+                ("path_type", path_type.to_string()),
             ],
-            Self::HostTerminalOpen(e) => {
-                vec![("has_launch_cmd", bool_str(e.has_launch_cmd))]
+            Self::HostTerminalOpen { has_launch_cmd } => {
+                vec![("has_launch_cmd", bool_str(*has_launch_cmd))]
             }
-            Self::BandwidthSample(e) => vec![
-                ("bytes_sent", e.bytes_sent.to_string()),
-                ("bytes_recv", e.bytes_recv.to_string()),
-                ("interval_secs", e.interval_secs.to_string()),
+            Self::BandwidthSample {
+                bytes_sent,
+                bytes_recv,
+                interval_secs,
+            } => vec![
+                ("bytes_sent", bytes_sent.to_string()),
+                ("bytes_recv", bytes_recv.to_string()),
+                ("interval_secs", interval_secs.to_string()),
             ],
         }
     }

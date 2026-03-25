@@ -282,9 +282,9 @@ pub async fn handle_connection(
         match auth_phase(&conn, &registry, &state.identity, &state.workdir).await {
             Ok(triple) => triple,
             Err(e) => {
-                zedra_telemetry::send(Event::AuthFailed(AuthFailed {
+                zedra_telemetry::send(Event::AuthFailed {
                     reason: "auth_error",
-                }));
+                });
                 tracing::warn!("auth failed from {}: {}", remote.fmt_short(), e);
                 // Wait for the client to close the connection (up to 500ms) so any
                 // error response we sent has time to be delivered before CONNECTION_CLOSE.
@@ -296,11 +296,11 @@ pub async fn handle_connection(
 
     let auth_duration_ms = auth_start.elapsed().as_millis() as u64;
     let path_type = initial_path_type(&conn);
-    zedra_telemetry::send(Event::AuthSuccess(AuthSuccess {
+    zedra_telemetry::send(Event::AuthSuccess {
         is_new_client,
         duration_ms: auth_duration_ms,
         path_type,
-    }));
+    });
 
     tracing::info!(
         "Authenticated client {:?}... → session={}",
@@ -348,13 +348,11 @@ pub async fn handle_connection(
                             let delta_rx = cur_rx.saturating_sub(prev_rx);
                             prev_tx = cur_tx;
                             prev_rx = cur_rx;
-                            zedra_telemetry::send(Event::BandwidthSample(
-                                BandwidthSample {
-                                    bytes_sent: delta_tx,
-                                    bytes_recv: delta_rx,
-                                    interval_secs: 60,
-                                },
-                            ));
+                            zedra_telemetry::send(Event::BandwidthSample {
+                                bytes_sent: delta_tx,
+                                bytes_recv: delta_rx,
+                                interval_secs: 60,
+                            });
                         }
                     }
                     _ = conn_for_bw.closed() => break,
@@ -393,11 +391,11 @@ pub async fn handle_connection(
     // the new client's output.
     let session_duration_ms = session_start.elapsed().as_millis() as u64;
     let terminal_count = session.terminals.lock().await.len() as u64;
-    zedra_telemetry::send(Event::SessionEnd(SessionEnd {
+    zedra_telemetry::send(Event::SessionEnd {
         duration_ms: session_duration_ms,
         terminal_count,
         path_type,
-    }));
+    });
 
     registry.detach_client(&session.id, client_pubkey).await;
 
@@ -1055,9 +1053,7 @@ async fn dispatch(
             .await
             {
                 Ok(id) => {
-                    zedra_telemetry::send(Event::HostTerminalOpen(HostTerminalOpen {
-                        has_launch_cmd,
-                    }));
+                    zedra_telemetry::send(Event::HostTerminalOpen { has_launch_cmd });
                     let _ = msg.tx.send(TermCreateResult { id }).await;
                 }
                 Err(e) => {

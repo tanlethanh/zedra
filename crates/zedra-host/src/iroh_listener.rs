@@ -84,11 +84,11 @@ pub async fn create_endpoint(
                         r.preferred_relay,
                     );
                     let sym_nat = r.mapping_varies_by_dest().unwrap_or(false);
-                    zedra_telemetry::send(Event::NetReport(NetReport {
+                    zedra_telemetry::send(Event::NetReport {
                         has_ipv4: r.global_v4.is_some(),
                         has_ipv6: r.global_v6.is_some(),
                         symmetric_nat: sym_nat,
-                    }));
+                    });
                     break;
                 }
                 if tokio::time::timeout(std::time::Duration::from_secs(10), watcher.updated())

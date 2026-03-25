@@ -217,21 +217,21 @@ impl ZedraApp {
         // Load saved workspaces from disk
         app.reload_workspace_states(cx);
 
-        zedra_telemetry::send(Event::AppOpen(AppOpen {
+        zedra_telemetry::send(Event::AppOpen {
             saved_workspaces: app.workspace_states.len(),
             app_version: env!("CARGO_PKG_VERSION"),
             platform: std::env::consts::OS,
             arch: std::env::consts::ARCH,
-        }));
+        });
 
         app
     }
 
     fn switch_to_workspace(&mut self, index: usize, _window: &mut Window, cx: &mut Context<Self>) {
         if index < self.workspaces.len() {
-            zedra_telemetry::send(Event::ScreenView(ScreenView {
+            zedra_telemetry::send(Event::ScreenView {
                 screen: "workspace",
-            }));
+            });
             self.active_workspace = Some(index);
             self.screen = AppScreen::Workspace;
             // Notify the workspace's content and drawer so they re-render with the
@@ -450,7 +450,7 @@ impl ZedraApp {
                   cx| {
                 match event {
                     WorkspaceEvent::GoHome => {
-                        zedra_telemetry::send(Event::ScreenView(ScreenView { screen: "home" }));
+                        zedra_telemetry::send(Event::ScreenView { screen: "home" });
                         this.screen = AppScreen::Home;
                         cx.notify();
                     }
@@ -570,10 +570,10 @@ impl ZedraApp {
                             }
                             let resume_ms = t_resume.elapsed().as_millis() as u64;
                             if !attached.is_empty() {
-                                zedra_telemetry::send(Event::SessionResumed(SessionResumed {
+                                zedra_telemetry::send(Event::SessionResumed {
                                     terminal_count: attached.len(),
                                     resume_ms,
-                                }));
+                                });
                                 handle_for_connect.mark_connected_after_resume(resume_ms);
                                 pending_existing_terminals.set(attached);
                             } else {
@@ -592,10 +592,10 @@ impl ZedraApp {
                             match handle_for_connect.terminal_create(cols_u16, rows_u16).await {
                                 Ok(term_id) => {
                                     tracing::info!("Remote terminal created: {}", term_id);
-                                    zedra_telemetry::send(Event::TerminalOpened(TerminalOpened {
+                                    zedra_telemetry::send(Event::TerminalOpened {
                                         source: "new_session",
                                         terminal_count: 1,
-                                    }));
+                                    });
                                     pending_term_id.set(term_id);
                                 }
                                 Err(e) => {
