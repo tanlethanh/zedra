@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 const GA_ENDPOINT: &str = "https://www.google-analytics.com/mp/collect";
+const GA_DEBUG_ENDPOINT: &str = "https://www.google-analytics.com/debug/mp/collect";
 
 const GA_MEASUREMENT_ID: Option<&str> = option_env!("ZEDRA_GA_MEASUREMENT_ID");
 const GA_API_SECRET: Option<&str> = option_env!("ZEDRA_GA_API_SECRET");
@@ -37,6 +38,8 @@ struct Inner {
     host_version: &'static str,
     os: &'static str,
     arch: &'static str,
+    /// When true, use the GA4 validation endpoint and log request/response.
+    debug: bool,
 }
 
 impl Analytics {
@@ -45,8 +48,12 @@ impl Analytics {
     /// `analytics_id_path` points to `~/.config/zedra/analytics_id`.
     /// A random UUID is generated on first run and reused on subsequent runs.
     /// Returns a no-op instance if credentials were not compiled in.
-    pub fn new(analytics_id_path: &std::path::Path) -> Self {
+    ///
+    /// When `debug` is true the GA4 validation endpoint is used and every
+    /// request/response is printed to stderr. Events are NOT recorded in GA4.
+    pub fn new(analytics_id_path: &std::path::Path, debug: bool) -> Self {
         let (Some(mid), Some(secret)) = (GA_MEASUREMENT_ID, GA_API_SECRET) else {
+            eprintln!("ZEDRA_GA_MEASUREMENT_ID or ZEDRA_GA_API_SECRET is not set");
             return Self { inner: None };
         };
         if mid.is_empty() || secret.is_empty() {
@@ -66,6 +73,7 @@ impl Analytics {
                 host_version: env!("CARGO_PKG_VERSION"),
                 os: std::env::consts::OS,
                 arch: std::env::consts::ARCH,
+                debug,
             })),
         }
     }
@@ -123,28 +131,53 @@ impl Inner {
             "client_id": self.host_id,
             "events": [{ "name": event_name, "params": params }],
         });
+        let endpoint = if self.debug {
+            GA_DEBUG_ENDPOINT
+        } else {
+            GA_ENDPOINT
+        };
         let url = format!(
             "{}?measurement_id={}&api_secret={}",
-            GA_ENDPOINT, self.measurement_id, self.api_secret,
+            endpoint, self.measurement_id, self.api_secret,
         );
         (url, body)
     }
 
     async fn send(&self, event_name: &str, params: Value) {
         let (url, body) = self.build_payload(event_name, params);
-        if let Err(e) = self.http.post(&url).json(&body).send().await {
-            tracing::debug!("analytics: send failed ({}): {}", event_name, e);
+        if self.debug {
+            eprintln!("[telemetry] >> {event_name} {}", body);
+        }
+        match self.http.post(&url).json(&body).send().await {
+            Ok(resp) if self.debug => {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                eprintln!("[telemetry] << {event_name} HTTP {status}: {text}");
+            }
+            Ok(_) => {}
+            Err(e) => tracing::debug!("analytics: send failed ({}): {}", event_name, e),
         }
     }
 
     /// Blocking send for use in panic hooks where the tokio runtime may be gone.
     fn send_sync(&self, event_name: &str, params: Value) {
         let (url, body) = self.build_payload(event_name, params);
+        if self.debug {
+            eprintln!("[telemetry] >> {event_name} {}", body);
+        }
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(3))
             .build()
             .unwrap_or_default();
-        let _ = client.post(&url).json(&body).send();
+        if self.debug {
+            if let Ok(resp) = client.post(&url).json(&body).send() {
+                let status = resp.status();
+                let text = resp.text().unwrap_or_default();
+                eprintln!("[telemetry] << {event_name} HTTP {status}: {text}");
+            }
+        } else {
+            let _ = client.post(&url).json(&body).send();
+        }
     }
 }
 

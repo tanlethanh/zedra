@@ -52,6 +52,11 @@ enum Commands {
         /// Can also be set via ZEDRA_TELEMETRY=0 environment variable.
         #[arg(long)]
         no_telemetry: bool,
+
+        /// Debug telemetry: log every event payload and GA4 validation response to
+        /// stderr. Uses the GA4 debug endpoint — events are NOT recorded in GA4.
+        #[arg(long)]
+        debug_telemetry: bool,
     },
     /// Connect to a running daemon and measure end-to-end RTT
     Client {
@@ -137,6 +142,7 @@ async fn main() -> Result<()> {
             json,
             relay_url,
             no_telemetry,
+            debug_telemetry,
         } => {
             let workdir = std::path::PathBuf::from(workdir)
                 .canonicalize()
@@ -199,9 +205,14 @@ async fn main() -> Result<()> {
                 let a = Analytics::new(
                     &identity::analytics_id_path()
                         .unwrap_or_else(|_| workdir.join(".zedra-analytics-id")),
+                    debug_telemetry,
                 );
                 if a.is_enabled() {
-                    eprintln!("[init]     telemetry enabled");
+                    if debug_telemetry {
+                        eprintln!("[init]     telemetry debug mode (GA4 validation endpoint, not recorded)");
+                    } else {
+                        eprintln!("[init]     telemetry enabled");
+                    }
                 }
                 a
             });
