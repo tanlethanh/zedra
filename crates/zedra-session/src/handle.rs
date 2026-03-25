@@ -15,6 +15,33 @@ use crate::connect_state::{
 };
 
 /// Classify a remote IP address for debugging display.
+/// Return the relay hostname for telemetry, redacting custom/private relays.
+/// Built-in zedra.dev relays are kept verbatim; anything else becomes "custom"
+/// to avoid leaking private IPs or internal hostnames.
+fn sanitize_relay(relay_url: Option<&str>) -> String {
+    match relay_url {
+        None => "none".into(),
+        Some(url) if url == "none" => "none".into(),
+        Some(url) => {
+            // Extract hostname from a full URL or bare hostname string.
+            // Strip scheme ("https://"), port (":443"), and path ("/relay").
+            let after_scheme = url.find("://").map(|i| &url[i + 3..]).unwrap_or(url);
+            let host = after_scheme
+                .split('/')
+                .next()
+                .unwrap_or(after_scheme)
+                .split(':')
+                .next()
+                .unwrap_or(after_scheme);
+            if host.ends_with(".zedra.dev") || host == "zedra.dev" {
+                host.to_string()
+            } else {
+                "custom".into()
+            }
+        }
+    }
+}
+
 fn classify_ip(ip: std::net::IpAddr) -> NetworkHint {
     match ip {
         std::net::IpAddr::V4(v4) => {
@@ -622,11 +649,7 @@ impl SessionHandle {
                                         .map(|h| h.label())
                                         .unwrap_or("unknown"),
                                     rtt_ms: rtt,
-                                    from_relay: cs
-                                        .snapshot
-                                        .relay_url
-                                        .clone()
-                                        .unwrap_or_else(|| "none".into()),
+                                    from_relay: sanitize_relay(cs.snapshot.relay_url.as_deref()),
                                 })
                             } else {
                                 None
@@ -784,7 +807,7 @@ impl SessionHandle {
                     .map(|h| h.label())
                     .unwrap_or("unknown"),
                 rtt_ms: transport.map(|t| t.rtt_ms).unwrap_or(0),
-                relay: s.relay_url.clone().unwrap_or_else(|| "none".into()),
+                relay: sanitize_relay(s.relay_url.as_deref()),
                 relay_latency_ms: s.relay_latency_ms.unwrap_or(0),
                 alpn: s.alpn.clone().unwrap_or_else(|| "unknown".into()),
                 has_ipv4: s.has_ipv4,
@@ -1394,11 +1417,7 @@ impl SessionHandle {
         let relay_connected;
         if let Ok(mut cs) = self.0.connect_state.lock() {
             phase_label = cs.phase.label();
-            relay = cs
-                .snapshot
-                .relay_url
-                .clone()
-                .unwrap_or_else(|| "none".into());
+            relay = sanitize_relay(cs.snapshot.relay_url.as_deref());
             alpn = cs.snapshot.alpn.clone().unwrap_or_else(|| "unknown".into());
             has_ipv4 = cs.snapshot.has_ipv4;
             has_ipv6 = cs.snapshot.has_ipv6;

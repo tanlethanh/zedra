@@ -88,6 +88,7 @@ impl Analytics {
     pub fn host_panic_sync(&self, message: &str, location: &str) {
         let Some(inner) = &self.inner else { return };
         let message = sanitize_panic_message(message);
+        let location = sanitize_panic_message(location);
         let params = json!({
             "message": &message[..message.len().min(100)],
             "location": &location[..location.len().min(100)],
@@ -156,7 +157,15 @@ fn sanitize_panic_message(msg: &str) -> String {
         if !result.is_empty() {
             result.push(' ');
         }
-        if token.starts_with('/') || token.starts_with("C:\\") || token.contains("/src/") {
+        // Strip tokens that look like absolute/relative filesystem paths.
+        // Using a broad match to avoid false negatives leaking usernames.
+        let t = token.trim_start_matches('"').trim_start_matches('\'');
+        if t.starts_with('/')
+            || t.starts_with('~')
+            || t.contains("/src/")
+            || t.contains('\\')
+            || (t.len() >= 3 && t.as_bytes()[1] == b':' && t.as_bytes()[2] == b'\\')
+        {
             result.push_str("<path>");
         } else {
             result.push_str(token);
