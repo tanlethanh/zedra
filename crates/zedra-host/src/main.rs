@@ -12,7 +12,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use std::sync::Arc;
-use zedra_host::analytics::Analytics;
+use zedra_host::ga4::Ga4;
 use zedra_host::client as zedra_client;
 use zedra_host::{
     api, identity, iroh_listener, net_monitor, qr, rpc_daemon, session_registry, workspace_lock,
@@ -199,12 +199,12 @@ async fn main() -> Result<()> {
                 || std::env::var("ZEDRA_TELEMETRY")
                     .map(|v| v == "0" || v.eq_ignore_ascii_case("false"))
                     .unwrap_or(false);
-            let analytics = Arc::new(if telemetry_disabled {
-                Analytics::disabled()
+            let ga4 = Arc::new(if telemetry_disabled {
+                Ga4::disabled()
             } else {
-                let a = Analytics::new(
-                    &identity::analytics_id_path()
-                        .unwrap_or_else(|_| workdir.join(".zedra-analytics-id")),
+                let g = Ga4::new(
+                    &identity::telemetry_id_path()
+                        .unwrap_or_else(|_| workdir.join(".zedra-telemetry-id")),
                     debug_telemetry,
                 );
                 if debug_telemetry {
@@ -212,12 +212,12 @@ async fn main() -> Result<()> {
                         "[telemetry] telemetry debug mode (GA4 validation endpoint, not recorded)"
                     );
                 }
-                a
+                g
             });
-            let is_first_run = analytics.is_first_run;
+            let is_first_run = ga4.is_first_run;
 
             // Register host GA4 backend as the global telemetry provider.
-            zedra_host::telemetry::init(analytics.clone());
+            zedra_host::telemetry::init(ga4.clone());
 
             // Install panic hook that sends host_panic event via zedra_telemetry
             // before the process aborts. record_panic bypasses the enabled flag.

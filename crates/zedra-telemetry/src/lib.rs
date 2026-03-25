@@ -180,7 +180,7 @@ pub enum Event {
     DaemonStart {
         /// "custom" or "default"
         relay_type: &'static str,
-        /// True on the very first `zedra start` on this machine (analytics_id did not exist).
+        /// True on the very first `zedra start` on this machine (telemetry_id did not exist).
         is_first_run: bool,
     },
     /// Startup complete: endpoint bound and QR printed, daemon is accepting connections.
@@ -296,7 +296,7 @@ pub enum Event {
 // ---------------------------------------------------------------------------
 
 impl Event {
-    /// Event name for the analytics backend (Firebase event name / GA4 event name).
+    /// Event name for the telemetry backend (Firebase event name / GA4 event name).
     pub fn name(&self) -> &'static str {
         match self {
             Self::AppOpen { .. } => "app_open",

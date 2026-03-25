@@ -1,4 +1,4 @@
-// Registers the host's GA4 Analytics as a zedra_telemetry backend.
+// Registers the host's GA4 backend as a zedra_telemetry backend.
 //
 // This allows shared crates (zedra-session, zedra-rpc) to call
 // `zedra_telemetry::send(Event::...)` and have events flow through the
@@ -6,11 +6,11 @@
 
 use std::sync::Arc;
 
-use crate::analytics::Analytics;
+use crate::ga4::Ga4;
 
-/// Wraps the host's GA4 `Analytics` as a `TelemetryBackend`.
+/// Wraps the host's `Ga4` transport as a `TelemetryBackend`.
 struct HostBackend {
-    analytics: Arc<Analytics>,
+    ga4: Arc<Ga4>,
 }
 
 impl zedra_telemetry::TelemetryBackend for HostBackend {
@@ -21,16 +21,16 @@ impl zedra_telemetry::TelemetryBackend for HostBackend {
         for (k, v) in params {
             obj.insert(k.to_string(), serde_json::Value::String(v));
         }
-        self.analytics
+        self.ga4
             .track_raw(name, serde_json::Value::Object(obj));
     }
 
     fn record_panic(&self, message: &str, location: &str) {
-        self.analytics.host_panic_sync(message, location);
+        self.ga4.host_panic_sync(message, location);
     }
 }
 
-/// Register the host's GA4 analytics as the global telemetry backend.
-pub fn init(analytics: Arc<Analytics>) {
-    let _ = zedra_telemetry::init(Box::new(HostBackend { analytics }));
+/// Register the host's GA4 backend as the global telemetry backend.
+pub fn init(ga4: Arc<Ga4>) {
+    let _ = zedra_telemetry::init(Box::new(HostBackend { ga4 }));
 }

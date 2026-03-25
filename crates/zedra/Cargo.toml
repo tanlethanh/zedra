@@ -12,7 +12,7 @@ android-platform = []
 ios-platform = []
 preview = []
 # Log every telemetry event to stderr/logcat. Never enable in production builds.
-debug-analytics = []
+debug-telemetry = []
 
 [dependencies]
 gpui = { path = "../../vendor/zed/crates/gpui", default-features = false }

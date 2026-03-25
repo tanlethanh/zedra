@@ -31,9 +31,9 @@ use crate::editor::git_diff_view::{FileDiff, parse_unified_diff};
 For cfg-gated platform modules, use cfg-gated `use` items:
 ```rust
 #[cfg(target_os = "android")]
-use crate::android::analytics as android_analytics;
+use crate::android::telemetry as android_telemetry;
 #[cfg(target_os = "ios")]
-use crate::ios::analytics as ios_analytics;
+use crate::ios::telemetry as ios_telemetry;
 ```
 
 ## GPUI Render Purity
@@ -205,4 +205,4 @@ If the field comes from the server post-connect, copy it with the "non-empty onl
 - `crates/zedra/src/theme.rs` — color constants, inset helpers
 - `crates/zedra/src/keyboard.rs` — keyboard handler factories (no UI code)
 - `crates/zedra-telemetry/src/lib.rs` — typed Event enum, TelemetryBackend trait, runtime injection
-- `crates/zedra/src/analytics.rs` — FirebaseBackend: registers with zedra-telemetry at app startup
+- `crates/zedra/src/telemetry.rs` — FirebaseBackend: registers with zedra-telemetry at app startup

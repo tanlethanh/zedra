@@ -68,7 +68,7 @@ pub async fn create_endpoint(
     tracing::info!("iroh endpoint bound: {}", endpoint.id().fmt_short());
     tracing::info!("iroh endpoint addr: {:?}", endpoint.addr());
 
-    // Fire analytics for the first STUN result (details logged by net_monitor).
+    // Fire telemetry for the first STUN result (details logged by net_monitor).
     {
         use iroh::Watcher;
         let mut watcher = endpoint.net_report();

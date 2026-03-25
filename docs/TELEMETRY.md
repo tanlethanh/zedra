@@ -16,12 +16,12 @@ zedra-telemetry (pure crate, no platform deps)
   |-- send(Event)         global free function, delegates to backend
   |-- init(backend)       called once at startup
   |
-  +-- App backend: FirebaseBackend  (crates/zedra/src/analytics.rs)
+  +-- App backend: FirebaseBackend  (crates/zedra/src/telemetry.rs)
   |     iOS:     extern "C" FFI --> Firebase iOS SDK
   |     Android: JNI --> ZedraFirebase.java --> Firebase Android SDK
   |
   +-- Host backend: HostBackend  (crates/zedra-host/src/telemetry.rs)
-        Wraps GA4 Analytics --> tokio::spawn --> HTTPS POST
+        Wraps Ga4 transport --> tokio::spawn --> HTTPS POST
 ```
 
 ### Non-blocking guarantee
@@ -30,7 +30,7 @@ zedra-telemetry (pure crate, no platform deps)
 
 - **Firebase SDK** (iOS/Android): `logEvent` queues internally — the FFI/JNI call
   returns immediately.
-- **GA4 HostBackend**: calls `Analytics::track_raw()` which does `tokio::spawn` —
+- **GA4 HostBackend**: calls `Ga4::track_raw()` which does `tokio::spawn` —
   the HTTP POST runs in the background.
 - **`record_panic`** is the one exception: it MAY block briefly (synchronous HTTP
   with 3s timeout) to flush the event before the process aborts.
@@ -58,12 +58,13 @@ Emitted by `zedra` (app crate) and `zedra-session`.
 | `screen_view` | `screen` | `app.rs` — navigation |
 | `qr_scan_initiated` | — | `app.rs` — Scan QR tapped |
 | `connect_success` | `total_ms`, `binding_ms`, `hole_punch_ms`, `auth_ms`, `fetch_ms`, `path`, `network`, `rtt_ms`, `relay`, `relay_latency_ms`, `alpn`, `has_ipv4`, `has_ipv6`, `symmetric_nat`, `is_first_pairing` | `handle.rs` — connect() |
-| `connect_failed` | `phase`, `error`, `relay`, `alpn`, `has_ipv4`, `has_ipv6`, `relay_connected` | `handle.rs` — set_failed() |
+| `connect_failed` | `phase`, `error`, `elapsed_ms`, `relay`, `alpn`, `has_ipv4`, `has_ipv6`, `relay_connected` | `handle.rs` — set_failed() |
 | `session_resumed` | `terminal_count`, `resume_ms` | `app.rs` — reconnect to existing session |
 | `disconnect` | — | `app.rs` — user disconnect |
-| `reconnect_started` | `attempt`, `reason` | `handle.rs` — reconnect loop |
-| `reconnect_success` | `attempt`, `elapsed_ms`, `reason` | `handle.rs` |
-| `reconnect_exhausted` | `attempts`, `elapsed_ms`, `reason` | `handle.rs` |
+| `workspace_selected` | `source` (`"active"` or `"saved"`) | `app.rs` — workspace tapped |
+| `reconnect_started` | `reason` | `handle.rs` — reconnect loop |
+| `reconnect_success` | `attempt`, `elapsed_ms`, `reason`, `binding_ms`, `hole_punch_ms`, `auth_ms`, `fetch_ms`, `path`, `network`, `rtt_ms`, `relay`, `alpn`, `has_ipv4`, `has_ipv6` | `handle.rs` |
+| `reconnect_exhausted` | `attempts`, `elapsed_ms`, `reason`, `fatal_error` (optional) | `handle.rs` |
 | `path_upgraded` | `network`, `rtt_ms`, `from_relay` | `handle.rs` — path watcher |
 | `terminal_opened` | `source`, `terminal_count` | `workspace_view.rs` |
 | `terminal_closed` | `remaining` | `workspace_view.rs` |
@@ -74,7 +75,7 @@ Emitted by `zedra-host` via the same `zedra_telemetry::send()` mechanism.
 
 | Event | Context fields | Emitted from |
 |-------|---------------|-------------|
-| `daemon_start` | `relay_type` | `main.rs` — `zedra start` |
+| `daemon_start` | `relay_type`, `is_first_run` | `main.rs` — `zedra start` |
 | `net_report` | `has_ipv4`, `has_ipv6`, `symmetric_nat` | `iroh_listener.rs` — STUN complete |
 | `client_paired` | — | `rpc_daemon.rs` — QR Register flow |
 | `auth_success` | `is_new_client`, `duration_ms`, `path_type` | `rpc_daemon.rs` — auth complete |
@@ -84,7 +85,7 @@ Emitted by `zedra-host` via the same `zedra_telemetry::send()` mechanism.
 | `bandwidth_sample` | `bytes_sent`, `bytes_recv`, `interval_secs` | `rpc_daemon.rs` — every 60s |
 
 Host events also carry `host_version`, `os`, and `arch` — injected automatically
-by `Analytics::build_payload()` before the GA4 HTTP POST.
+by `Ga4::build_payload()` before the GA4 HTTP POST.
 
 ---
 
@@ -124,8 +125,8 @@ Firebase is integrated via CocoaPods. Key files:
 | `ios/Zedra/GoogleService-Info.plist` | Firebase project config (from console) |
 | `ios/Zedra/ZedraFirebase.m` | Obj-C bridge: `logEvent`, `recordError`, `recordPanic` |
 | `ios/Zedra/SwiftCompatibilityShim.swift` | Empty file required by Firebase static pods |
-| `crates/zedra/src/ios/analytics.rs` | Rust FFI declarations calling into `ZedraFirebase.m` |
-| `crates/zedra/src/analytics.rs` | `FirebaseBackend` — registers with `zedra_telemetry` |
+| `crates/zedra/src/ios/telemetry.rs` | Rust FFI declarations calling into `ZedraFirebase.m` |
+| `crates/zedra/src/telemetry.rs` | `FirebaseBackend` — registers with `zedra_telemetry` |
 
 **Build**: `pod install` in `ios/`, then build via `.xcworkspace`.
 
@@ -136,7 +137,7 @@ Firebase is integrated via CocoaPods. Key files:
 | `android/google-services.json` | Firebase project config |
 | `android/build.gradle` | `firebase-analytics`, `firebase-crashlytics`, `firebase-crashlytics-ndk` |
 | `android/.../ZedraFirebase.java` | Java wrapper: `logEvent`, `recordError`, `recordPanic` |
-| `crates/zedra/src/android/analytics.rs` | Rust JNI bridge |
+| `crates/zedra/src/android/telemetry.rs` | Rust JNI bridge |
 
 ### Crashlytics NDK (release builds)
 
@@ -163,13 +164,13 @@ ZEDRA_GA_API_SECRET=your_secret
 Get the API secret from: Firebase console -> GA4 property -> Data Streams ->
 Web stream -> Measurement Protocol API secrets.
 
-If either variable is absent or empty, analytics is silently disabled (no HTTP
+If either variable is absent or empty, telemetry is silently disabled (no HTTP
 calls, no overhead). Source builds without credentials send no data.
 
 ### GitHub Actions release workflow
 
 The release workflow (`.github/workflows/release.yml`) builds `zedra-host`
-for distribution. To enable analytics in release builds, add the credentials
+for distribution. To enable telemetry in release builds, add the credentials
 as GitHub repository secrets and pass them as env vars during the build step:
 
 ```yaml
@@ -188,11 +189,11 @@ as GitHub repository secrets and pass them as env vars during the build step:
 | `ZEDRA_GA_MEASUREMENT_ID` | GA4 Measurement ID (e.g. `G-XXXXXXXXXX`) |
 | `ZEDRA_GA_API_SECRET` | Measurement Protocol API secret |
 
-Without these secrets, CI builds produce binaries with analytics disabled.
+Without these secrets, CI builds produce binaries with telemetry disabled.
 
-### Analytics ID
+### Telemetry ID
 
-A random UUID is generated on first run and stored at `~/.config/zedra/analytics_id`.
+A random UUID is generated on first run and stored at `~/.config/zedra/telemetry_id`.
 It is machine-level (shared across workspaces), never tied to cryptographic identity,
 and never transmitted alongside it.
 
@@ -203,10 +204,10 @@ and never transmitted alongside it.
 | File | Role |
 |------|------|
 | `crates/zedra-telemetry/src/lib.rs` | `Event` enum, `TelemetryBackend` trait, `send()`, `init()` |
-| `crates/zedra/src/analytics.rs` | `FirebaseBackend` — bridges Firebase <-> `zedra-telemetry` |
-| `crates/zedra/src/ios/analytics.rs` | iOS FFI: Rust -> `ZedraFirebase.m` -> Firebase SDK |
-| `crates/zedra-host/src/telemetry.rs` | `HostBackend` — bridges GA4 `Analytics` <-> `zedra-telemetry` |
-| `crates/zedra-host/src/analytics.rs` | GA4 Measurement Protocol transport (`track_raw`, `host_panic_sync`) |
+| `crates/zedra/src/telemetry.rs` | `FirebaseBackend` — registers Firebase with `zedra-telemetry` |
+| `crates/zedra/src/ios/telemetry.rs` | iOS FFI: Rust -> `ZedraFirebase.m` -> Firebase SDK |
+| `crates/zedra-host/src/telemetry.rs` | `HostBackend` — bridges GA4 `Ga4` <-> `zedra-telemetry` |
+| `crates/zedra-host/src/ga4.rs` | GA4 Measurement Protocol transport (`track_raw`, `host_panic_sync`) |
 
 ---
 

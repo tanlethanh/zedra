@@ -1,4 +1,4 @@
-// Analytics: send product events to GA4 via the Measurement Protocol.
+// GA4 Measurement Protocol backend — sends telemetry events via GA4.
 //
 // Credentials are compiled in at build time via environment variables:
 //   ZEDRA_GA_MEASUREMENT_ID   e.g. "G-XXXXXXXXXX"
@@ -7,8 +7,8 @@
 // If either variable is absent or empty the module is silently disabled —
 // binaries built from source without credentials send no data.
 //
-// Privacy: no personal data is collected. The analytics_id is a random UUID
-// stored at ~/.config/zedra/analytics_id, separate from the cryptographic
+// Privacy: no personal data is collected. The telemetry_id is a random UUID
+// stored at ~/.config/zedra/telemetry_id, separate from the cryptographic
 // host identity and never transmitted alongside it.
 
 use serde_json::{json, Value};
@@ -24,9 +24,9 @@ const GA_API_SECRET: Option<&str> = option_env!("ZEDRA_GA_API_SECRET");
 // Public API
 // ---------------------------------------------------------------------------
 
-pub struct Analytics {
+pub struct Ga4 {
     inner: Option<Arc<Inner>>,
-    /// True if the analytics_id file did not exist before this run (first ever start).
+    /// True if the telemetry_id file did not exist before this run (first ever start).
     pub is_first_run: bool,
 }
 
@@ -44,18 +44,18 @@ struct Inner {
     debug: bool,
 }
 
-impl Analytics {
+impl Ga4 {
     /// Build from compile-time credentials.
     ///
-    /// `analytics_id_path` points to `~/.config/zedra/analytics_id`.
+    /// `telemetry_id_path` points to `~/.config/zedra/telemetry_id`.
     /// A random UUID is generated on first run and reused on subsequent runs.
     /// Returns a no-op instance if credentials were not compiled in.
     ///
     /// When `debug` is true the GA4 validation endpoint is used and every
     /// request/response is printed to stderr. Events are NOT recorded in GA4.
-    pub fn new(analytics_id_path: &std::path::Path, debug: bool) -> Self {
+    pub fn new(telemetry_id_path: &std::path::Path, debug: bool) -> Self {
         // Detect first run before load_or_generate_id creates the file.
-        let is_first_run = !analytics_id_path.exists();
+        let is_first_run = !telemetry_id_path.exists();
         let (Some(mid), Some(secret)) = (GA_MEASUREMENT_ID, GA_API_SECRET) else {
             return Self {
                 inner: None,
@@ -68,7 +68,7 @@ impl Analytics {
                 is_first_run,
             };
         }
-        let host_id = load_or_generate_id(analytics_id_path).unwrap_or_else(|_| random_uuid());
+        let host_id = load_or_generate_id(telemetry_id_path).unwrap_or_else(|_| random_uuid());
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(5))
             .build()
@@ -158,7 +158,7 @@ impl Inner {
                 eprintln!("[telemetry] << {event_name} HTTP {status}: {text}");
             }
             Ok(_) => {}
-            Err(e) => tracing::debug!("analytics: send failed ({}): {}", event_name, e),
+            Err(e) => tracing::debug!("telemetry: send failed ({}): {}", event_name, e),
         }
     }
 
@@ -209,7 +209,7 @@ fn sanitize_panic_message(msg: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Analytics ID (stable, opaque, machine-level random UUID)
+// Telemetry ID (stable, opaque, machine-level random UUID)
 // ---------------------------------------------------------------------------
 
 fn load_or_generate_id(path: &std::path::Path) -> anyhow::Result<String> {

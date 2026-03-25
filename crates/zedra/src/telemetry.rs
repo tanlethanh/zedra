@@ -1,10 +1,10 @@
-// App analytics — registers the platform Firebase backend with zedra-telemetry.
+// App telemetry — registers the platform Firebase backend with zedra-telemetry.
 //
 // Call `init()` once at app startup (before any events fire).
 // After init, all crates can use `zedra_telemetry::send(Event::...)` etc.
 
 #[cfg(target_os = "ios")]
-use crate::ios::analytics as ios_analytics;
+use crate::ios::telemetry as ios_telemetry;
 
 /// Platform-specific Firebase backend that implements TelemetryBackend.
 struct FirebaseBackend;
@@ -13,47 +13,47 @@ impl zedra_telemetry::TelemetryBackend for FirebaseBackend {
     fn send(&self, event: &zedra_telemetry::Event) {
         let name = event.name();
         let params = event.to_params();
-        #[cfg(feature = "debug-analytics")]
+        #[cfg(feature = "debug-telemetry")]
         {
             let kv: Vec<String> = params.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
             eprintln!("[telemetry] >> {} {}", name, kv.join(" "));
         }
         let param_refs: Vec<(&str, &str)> = params.iter().map(|(k, v)| (*k, v.as_str())).collect();
         #[cfg(target_os = "ios")]
-        ios_analytics::log_event(name, &param_refs);
+        ios_telemetry::log_event(name, &param_refs);
         // Android Firebase not yet implemented; events are no-ops on Android.
         let _ = (name, param_refs);
     }
 
     fn record_error(&self, message: &str, file: &str, line: u32) {
         #[cfg(target_os = "ios")]
-        ios_analytics::record_error(message, file, line);
+        ios_telemetry::record_error(message, file, line);
         let _ = (message, file, line);
     }
 
     fn record_panic(&self, message: &str, location: &str) {
-        #[cfg(feature = "debug-analytics")]
+        #[cfg(feature = "debug-telemetry")]
         eprintln!("[telemetry] panic: {} at {}", message, location);
         #[cfg(target_os = "ios")]
-        ios_analytics::record_panic(message, location);
+        ios_telemetry::record_panic(message, location);
         let _ = (message, location);
     }
 
     fn set_user_id(&self, id: &str) {
         #[cfg(target_os = "ios")]
-        ios_analytics::set_user_id(id);
+        ios_telemetry::set_user_id(id);
         let _ = id;
     }
 
     fn set_custom_key(&self, key: &str, value: &str) {
         #[cfg(target_os = "ios")]
-        ios_analytics::set_custom_key(key, value);
+        ios_telemetry::set_custom_key(key, value);
         let _ = (key, value);
     }
 
     fn set_collection_enabled(&self, enabled: bool) {
         #[cfg(target_os = "ios")]
-        ios_analytics::set_collection_enabled(enabled);
+        ios_telemetry::set_collection_enabled(enabled);
         let _ = enabled;
     }
 }

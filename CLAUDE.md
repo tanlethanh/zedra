@@ -50,7 +50,7 @@ zedra-telemetry (pure crate, no platform deps)
   ├── send(Event)       — global free function, delegates to registered backend
   └── init(Box<dyn TelemetryBackend>)  — called once at startup
 
-App (iOS/Android):  FirebaseBackend  → crates/zedra/src/analytics.rs
+App (iOS/Android):  FirebaseBackend  → crates/zedra/src/telemetry.rs
 Host (GA4):         HostBackend      → crates/zedra-host/src/telemetry.rs
 No backend:         silent no-op (default)
 ```
@@ -274,7 +274,7 @@ crates/
   │       ├── transport_badge.rs # Connection status badge rendering
   │       ├── terminal_panel.rs # Terminal tab panel for app drawer
   │       ├── session_panel.rs  # Session info panel for app drawer
-  │       ├── analytics.rs      # FirebaseBackend: bridges Firebase ↔ zedra-telemetry
+  │       ├── telemetry.rs      # FirebaseBackend: registers Firebase backend with zedra-telemetry
   │       ├── platform_bridge.rs # PlatformBridge trait + global accessor
   │       └── theme.rs          # Color constants and theme helpers
   └── zedra-host/               # Desktop host daemon
@@ -286,8 +286,8 @@ crates/
           ├── iroh_listener.rs  # iroh Endpoint creation + accept loop
           ├── identity.rs       # Persistent Ed25519 host identity (~/.config/zedra/)
           ├── qr.rs             # QR code generation (terminal + JSON output)
-          ├── analytics.rs      # GA4 Measurement Protocol (host-specific events + sync panic hook)
-          ├── telemetry.rs      # HostBackend: bridges GA4 Analytics ↔ zedra-telemetry
+          ├── ga4.rs            # GA4 Measurement Protocol HTTP transport (telemetry_id, send, panic hook)
+          ├── telemetry.rs      # HostBackend: bridges GA4 ↔ zedra-telemetry
           ├── fs.rs             # Filesystem RPC handlers (list, read, write, stat, remove, mkdir)
           ├── git.rs            # Git RPC handlers (status, diff, log, commit, branches, checkout)
           └── pty.rs            # PTY management (spawn, resize, I/O streaming)
