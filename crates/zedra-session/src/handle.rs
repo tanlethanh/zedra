@@ -9,8 +9,8 @@ use anyhow::Result;
 use zedra_rpc::proto::*;
 
 use crate::connect_state::{
-    AuthOutcome, ConnectError, ConnectPhase, ConnectState, NetworkHint, ReconnectReason,
-    TransportSnapshot,
+    AuthOutcome, ConnectError, ConnectPhase, ConnectSnapshot, ConnectState, NetworkHint,
+    ReconnectReason, TransportSnapshot,
 };
 
 /// Classify a remote IP address for debugging display.
@@ -43,6 +43,12 @@ fn classify_ip(ip: std::net::IpAddr) -> NetworkHint {
     }
 }
 use crate::{push_callback, session_runtime, signer::ClientSigner, terminal::RemoteTerminal};
+
+fn snapshot_has_cached_session_info(snapshot: &ConnectSnapshot) -> bool {
+    snapshot.hostname.as_ref().is_some_and(|s| !s.is_empty())
+        && snapshot.workdir.as_ref().is_some_and(|s| !s.is_empty())
+        && snapshot.session_id.as_ref().is_some_and(|s| !s.is_empty())
+}
 
 /// Workspace-scoped durable session state. Arc-wrapped — clone freely to share
 /// with async tasks. Survives transport failures and reconnect cycles.
@@ -354,6 +360,11 @@ impl SessionHandle {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_default()
+    }
+
+    fn has_cached_session_info(&self) -> bool {
+        let cs = self.connect_state();
+        snapshot_has_cached_session_info(&cs.snapshot)
     }
 
     // -----------------------------------------------------------------------
@@ -696,23 +707,33 @@ impl SessionHandle {
             }
         }
 
-        // ── Phase: FetchingInfo ────────────────────────────────────────────
-        {
-            let mut cs = self.0.connect_state.lock().unwrap();
-            cs.phase = ConnectPhase::FetchingInfo;
-        }
-        self.notify_state_change();
+        let needs_session_info = !self.has_cached_session_info();
+        if needs_session_info {
+            // ── Phase: FetchingInfo ────────────────────────────────────────
+            {
+                let mut cs = self.0.connect_state.lock().unwrap();
+                cs.phase = ConnectPhase::FetchingInfo;
+            }
+            self.notify_state_change();
 
-        let t_fetch = Instant::now();
-        self.fetch_session_info(&client).await;
+            let t_fetch = Instant::now();
+            self.fetch_session_info(&client).await;
 
-        {
-            let mut cs = self.0.connect_state.lock().unwrap();
-            cs.snapshot.fetch_ms = Some(t_fetch.elapsed().as_millis() as u64);
-            cs.phase = ConnectPhase::Connected;
-            cs.reconnect_attempt = None;
+            {
+                let mut cs = self.0.connect_state.lock().unwrap();
+                cs.snapshot.fetch_ms = Some(t_fetch.elapsed().as_millis() as u64);
+                cs.phase = ConnectPhase::Connected;
+                cs.reconnect_attempt = None;
+            }
+            self.notify_state_change();
+        } else {
+            if let Ok(mut cs) = self.0.connect_state.lock() {
+                cs.snapshot.fetch_ms = None;
+                cs.phase = ConnectPhase::Connected;
+                cs.reconnect_attempt = None;
+            }
+            self.notify_state_change();
         }
-        self.notify_state_change();
 
         self.reattach_terminals(&client).await;
 
@@ -1627,5 +1648,29 @@ impl SessionHandle {
     pub async fn terminal_list(&self) -> Result<Vec<String>> {
         let result: TermListResult = self.client()?.rpc(TermListReq {}).await?;
         Ok(result.terminals.into_iter().map(|e| e.id).collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cached_session_info_requires_host_workdir_and_session_id() {
+        let mut snapshot = ConnectSnapshot {
+            hostname: Some("host".into()),
+            workdir: Some("/workspace".into()),
+            session_id: Some("sid-1".into()),
+            ..Default::default()
+        };
+
+        assert!(snapshot_has_cached_session_info(&snapshot));
+
+        snapshot.workdir = Some(String::new());
+        assert!(!snapshot_has_cached_session_info(&snapshot));
+
+        snapshot.workdir = Some("/workspace".into());
+        snapshot.session_id = None;
+        assert!(!snapshot_has_cached_session_info(&snapshot));
     }
 }

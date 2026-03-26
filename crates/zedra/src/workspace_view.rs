@@ -13,6 +13,7 @@ use crate::mgpui::DrawerHost;
 use crate::pending::{SharedPendingSlot, shared_pending_slot};
 use crate::platform_bridge::{self, AlertButton, status_bar_inset};
 use crate::theme;
+use crate::transport_badge::transport_badge_info;
 use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
 use zedra_session::SessionHandle;
 use zedra_terminal::view::{DisconnectRequested, TerminalView};
@@ -136,6 +137,17 @@ pub struct WorkspaceContent {
 }
 
 impl WorkspaceContent {
+    fn workspace_has_cached_context(state: &crate::workspace_state::WorkspaceState) -> bool {
+        !state.session_id().is_empty()
+            && (!state.project_name().is_empty()
+                || !state.hostname().is_empty()
+                || !state.strip_path().is_empty())
+    }
+
+    fn has_cached_workspace_context(&self) -> bool {
+        Self::workspace_has_cached_context(&self.workspace_state)
+    }
+
     pub fn new(
         main_view: AnyView,
         title: impl Into<SharedString>,
@@ -199,15 +211,16 @@ impl Focusable for WorkspaceContent {
 
 impl Render for WorkspaceContent {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Manage the full opaque overlay (initial connect, resume, failed).
+        // Keep reconnects inside the workspace once we already have session context.
+        // The full overlay is only useful for first connect / hard-failure states.
         let phase = self.session_handle.connect_phase();
-        let needs_full_overlay = !phase.is_connected() && !phase.is_idle();
+        let show_inline_status = self.has_cached_workspace_context()
+            && (phase.is_connecting() || phase.is_reconnecting() || phase.is_failed());
+        let needs_full_overlay = !phase.is_connected() && !phase.is_idle() && !show_inline_status;
 
         if needs_full_overlay {
-            // Active connect/failed phase — ensure full overlay is showing.
             self.overlay_visible = true;
         } else if self.overlay_visible {
-            // Connected — hide overlay immediately.
             self.overlay_visible = false;
         }
 
@@ -248,6 +261,11 @@ impl Render for WorkspaceContent {
             } else {
                 Some(name.into())
             }
+        };
+        let header_status = if show_inline_status {
+            Some(transport_badge_info(&self.session_handle.connect_state()))
+        } else {
+            None
         };
 
         div()
@@ -325,6 +343,35 @@ impl Render for WorkspaceContent {
                                     ),
                             ),
                     )
+                    .children(header_status.map(|(label, dot_color)| {
+                        div()
+                            .mr(px(4.0))
+                            .px(px(8.0))
+                            .py(px(4.0))
+                            .max_w(px(150.0))
+                            .min_w_0()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(5.0))
+                            .rounded(px(999.0))
+                            .bg(theme::badge_bg())
+                            .child(
+                                div()
+                                    .w(px(theme::ICON_STATUS))
+                                    .h(px(theme::ICON_STATUS))
+                                    .rounded(px(3.0))
+                                    .bg(rgb(dot_color)),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(theme::FONT_DETAIL))
+                                    .text_color(rgb(dot_color))
+                                    .child(label),
+                            )
+                    }))
                     .child(
                         div()
                             .id("quick-action-btn")
@@ -1230,6 +1277,37 @@ impl Render for WorkspaceView {
         }
 
         div().size_full().child(self.drawer_host.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WorkspaceContent;
+    use crate::workspace_state::WorkspaceState;
+
+    #[test]
+    fn cached_workspace_context_requires_session_and_display_data() {
+        let with_context = WorkspaceState::update_inner(WorkspaceState::default(), |s| {
+            s.session_id = "session-1".into();
+            s.project_name = "zedra".into();
+        });
+        assert!(WorkspaceContent::workspace_has_cached_context(
+            &with_context
+        ));
+
+        let without_session = WorkspaceState::update_inner(WorkspaceState::default(), |s| {
+            s.project_name = "zedra".into();
+        });
+        assert!(!WorkspaceContent::workspace_has_cached_context(
+            &without_session
+        ));
+
+        let without_display_fields = WorkspaceState::update_inner(WorkspaceState::default(), |s| {
+            s.session_id = "session-1".into();
+        });
+        assert!(!WorkspaceContent::workspace_has_cached_context(
+            &without_display_fields
+        ));
     }
 }
 
