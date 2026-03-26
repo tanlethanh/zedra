@@ -11,6 +11,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use std::io::IsTerminal;
 use std::sync::Arc;
 use zedra_host::analytics::Analytics;
 use zedra_host::client as zedra_client;
@@ -161,24 +162,14 @@ async fn main() -> Result<()> {
                 .unwrap_or("default")
                 .to_string();
             let session = registry.create_named(&session_name, workdir.clone()).await;
+            let session_id = session.id.clone();
             tracing::info!(
                 "Created session '{}' (id={}) for {}",
                 session_name,
-                session.id,
+                session_id,
                 workdir.display()
             );
-
-            // Create a one-use pairing slot and encode as QR ticket
-            let handshake_secret: [u8; 16] = rand::random();
-            registry
-                .add_pairing_slot(&session.id, handshake_secret)
-                .await;
-
-            let ticket = ZedraPairingTicket {
-                endpoint_id: host_identity.endpoint_id(),
-                handshake_secret,
-                session_id: session.id.clone(),
-            };
+            let endpoint_id = host_identity.endpoint_id();
 
             // Initialize analytics. The analytics_id is machine-level (not per-workspace)
             // so connection counts roll up to a single host in the dashboard.
@@ -225,9 +216,9 @@ async fn main() -> Result<()> {
                     Ok(cli_key) => {
                         let cli_pubkey: [u8; 32] = cli_key.verifying_key().to_bytes();
                         registry
-                            .add_client_to_session(&session.id, cli_pubkey)
+                            .add_client_to_session(&session_id, cli_pubkey)
                             .await;
-                        tracing::info!("Pre-authorized CLI client key for session {}", session.id);
+                        tracing::info!("Pre-authorized CLI client key for session {}", session_id);
                     }
                     Err(e) => tracing::warn!("Failed to load/generate CLI client key: {}", e),
                 }
@@ -235,7 +226,7 @@ async fn main() -> Result<()> {
                 // Write host-info.json for `zedra client` auto-discovery.
                 let host_info = zedra_client::HostInfo {
                     endpoint_id: host_identity.endpoint_id().to_string(),
-                    session_id: session.id.clone(),
+                    session_id: session_id.clone(),
                     relay_urls: endpoint_relay_urls.clone(),
                 };
                 if let Err(e) = zedra_client::write_host_info(&config_dir, &host_info) {
@@ -250,22 +241,29 @@ async fn main() -> Result<()> {
             //     DNS re-registration when the endpoint address updates.
             net_monitor::spawn_net_monitor(&endpoint);
 
-            // 2. Generate QR code
+            // 2. Generate startup QR code
             // Note: The QR encodes only endpoint_id (pubkey) — no IPs. The client
             // resolves addresses at connect time via pkarr. STUN runs in the
             // background and PkarrPublisher will republish once the public IP is
             // discovered, before any user could reasonably scan and connect.
-            match qr::build_pairing_info(&ticket, &endpoint) {
-                Ok(info) => {
-                    if json {
-                        qr::print_pairing_json(&info);
-                    } else {
-                        qr::generate_pairing_qr(&ticket, &endpoint).ok();
+            if let Err(e) =
+                generate_pairing_qr(&registry, &session_id, endpoint_id, &endpoint, json).await
+            {
+                tracing::warn!("Failed to generate QR code: {}", e);
+            }
+
+            // Allow live QR regeneration while daemon is running.
+            #[cfg(unix)]
+            if !json && std::io::stdin().is_terminal() {
+                eprintln!("Press 'r' to regenerate pairing QR.");
+                let endpoint = endpoint.clone();
+                let registry = registry.clone();
+                let session_id = session_id.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = run_qr_key_listener(registry, session_id, endpoint_id, endpoint).await {
+                        tracing::warn!("QR key listener stopped: {}", e);
                     }
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to generate QR code: {}", e);
-                }
+                });
             }
 
             // 3. Start local REST API server (127.0.0.1, OS-assigned port).
@@ -500,5 +498,112 @@ fn format_duration(secs: u64) -> String {
         format!("{}m{}s", secs / 60, secs % 60)
     } else {
         format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+async fn generate_pairing_qr(
+    registry: &Arc<session_registry::SessionRegistry>,
+    session_id: &str,
+    endpoint_id: iroh::PublicKey,
+    endpoint: &iroh::Endpoint,
+    json: bool,
+) -> Result<()> {
+    let ticket = ZedraPairingTicket {
+        endpoint_id,
+        handshake_secret: rand::random(),
+        session_id: session_id.to_string(),
+    };
+    registry
+        .add_pairing_slot(session_id, ticket.handshake_secret)
+        .await;
+
+    if json {
+        let info = qr::build_pairing_info(&ticket, endpoint)?;
+        qr::print_pairing_json(&info);
+    } else {
+        qr::generate_pairing_qr(&ticket, endpoint)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn run_qr_key_listener(
+    registry: Arc<session_registry::SessionRegistry>,
+    session_id: String,
+    endpoint_id: iroh::PublicKey,
+    endpoint: iroh::Endpoint,
+) -> Result<()> {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    use tokio::sync::mpsc;
+
+    let (tx, mut rx) = mpsc::unbounded_channel::<u8>();
+    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        let stdin = std::io::stdin();
+        let _raw = RawModeGuard::new(stdin.as_raw_fd())?;
+        let mut handle = stdin.lock();
+        let mut byte = [0_u8; 1];
+
+        loop {
+            handle.read_exact(&mut byte)?;
+            if tx.send(byte[0]).is_err() {
+                break;
+            }
+        }
+        Ok(())
+    });
+
+    while let Some(key) = rx.recv().await {
+        if matches!(key, b'r' | b'R') {
+            if let Err(e) = generate_pairing_qr(&registry, &session_id, endpoint_id, &endpoint, false).await
+            {
+                tracing::warn!("Failed to regenerate QR code: {}", e);
+            } else {
+                eprintln!("Regenerated pairing QR (press 'r' again to refresh).");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+struct RawModeGuard {
+    fd: std::os::fd::RawFd,
+    original: libc::termios,
+}
+
+#[cfg(unix)]
+impl RawModeGuard {
+    fn new(fd: std::os::fd::RawFd) -> std::io::Result<Self> {
+        let mut original = std::mem::MaybeUninit::<libc::termios>::uninit();
+        // SAFETY: libc validates the fd and initializes the termios struct on success.
+        let ret = unsafe { libc::tcgetattr(fd, original.as_mut_ptr()) };
+        if ret != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        // SAFETY: `original` was initialized by `tcgetattr` above.
+        let original = unsafe { original.assume_init() };
+        let mut raw = original;
+        raw.c_lflag &= !(libc::ICANON | libc::ECHO);
+        raw.c_cc[libc::VMIN] = 1;
+        raw.c_cc[libc::VTIME] = 0;
+
+        // SAFETY: `raw` points to a valid termios struct for this fd.
+        let ret = unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) };
+        if ret != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        Ok(Self { fd, original })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        // SAFETY: `self.original` came from a successful `tcgetattr` on this fd.
+        let _ = unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, &self.original) };
     }
 }
