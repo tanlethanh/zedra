@@ -253,10 +253,18 @@ impl Render for HomeView {
                         div()
                             .text_color(rgb(theme::TEXT_MUTED))
                             .text_size(px(theme::FONT_DETAIL))
-                            .child(concat!("zedra v", env!("CARGO_PKG_VERSION"))),
+                            .child(app_version_text()),
                     ),
             )
     }
+}
+
+fn app_version_text() -> String {
+    let version = platform_bridge::bridge()
+        .app_version()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    format!("zedra v{version}")
 }
 
 fn workspace_card(
