@@ -1,8 +1,9 @@
 // RPC daemon: exposes filesystem, git, terminal, LSP, and AI operations over irpc.
 //
-// Connection lifecycle (Phase 1 PKI):
-//   First pairing:  Register → Authenticate → AuthProve → (RPC calls)
-//   Reconnect:      Authenticate → AuthProve → (RPC calls)
+// Connection lifecycle:
+//   First pairing:  Register → Authenticate → AuthProve → SyncSession → (RPC calls)
+//   Reconnect:      Reconnect → (RPC calls)
+//   Fallback:       Authenticate → AuthProve → SyncSession → (RPC calls)
 //   Health:         Ping (every 2s, foreground only, 5 misses = client reconnects)
 
 use crate::analytics::Analytics;
@@ -24,6 +25,34 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zedra_rpc::osc::{encode_meta_preamble, OscEvent};
 use zedra_rpc::proto::*;
+
+async fn build_sync_result(
+    session: &Arc<ServerSession>,
+    state: &DaemonState,
+    reconnect_token: [u8; 32],
+) -> SyncSessionResult {
+    let hostname = hostname::get()
+        .ok()
+        .and_then(|h| h.into_string().ok())
+        .unwrap_or_else(|| "unknown".to_string());
+    let username = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
+    let workdir = state.workdir.to_string_lossy().into_owned();
+    let home_dir = std::env::var("HOME").ok();
+
+    SyncSessionResult {
+        session_id: session.id.clone(),
+        reconnect_token,
+        hostname,
+        workdir,
+        username,
+        home_dir,
+        os: Some(std::env::consts::OS.to_string()),
+        arch: Some(std::env::consts::ARCH.to_string()),
+        os_version: os_version_string(),
+        host_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        terminals: session.terminal_sync_entries().await,
+    }
+}
 
 fn ts() -> String {
     let s = SystemTime::now()
@@ -277,15 +306,7 @@ pub async fn handle_connection(
 
     // Auth phase: returns (session, client_pubkey, is_new_client) or closes connection
     let auth_start = std::time::Instant::now();
-    let (session, client_pubkey, is_new_client) = match auth_phase(
-        &conn,
-        &registry,
-        &state.identity,
-        &state.workdir,
-        &state.analytics,
-    )
-    .await
-    {
+    let (session, client_pubkey, is_new_client) = match auth_phase(&conn, &registry, &state).await {
         Ok(triple) => triple,
         Err(e) => {
             state.analytics.auth_failed("auth_error");
@@ -410,20 +431,64 @@ pub async fn handle_connection(
 /// Perform the full auth handshake for a new connection.
 ///
 /// Flow:
-///   1. Optional Register (first-time only, proves QR possession via HMAC)
-///   2. Authenticate (get nonce + host signature from us)
-///   3. AuthProve (client signs nonce, specifies session to attach)
+///   1. Reconnect (fast path, host-issued reconnect token), or
+///   2. Optional Register (first-time only, proves QR possession via HMAC)
+///   3. Authenticate (get nonce + host signature from us)
+///   4. AuthProve (client signs nonce, specifies session to attach)
 async fn auth_phase(
     conn: &iroh::endpoint::Connection,
     registry: &Arc<SessionRegistry>,
-    identity: &SharedIdentity,
-    workdir: &std::path::Path,
-    analytics: &Arc<Analytics>,
+    state: &Arc<DaemonState>,
 ) -> Result<(Arc<ServerSession>, [u8; 32], bool)> {
+    let analytics = &state.analytics;
     // Step 1: Optional Register
     let first = irpc_iroh::read_request::<ZedraProto>(conn).await?;
 
     let client_pubkey: [u8; 32] = match first {
+        Some(ZedraMessage::Reconnect(msg)) => {
+            let pubkey = msg.client_pubkey;
+            let requested_session_id = msg.session_id.clone();
+            let session = registry.get(&requested_session_id).await;
+            let attach_result = match session {
+                Some(session) => {
+                    if !session
+                        .validate_reconnect_token(&pubkey, &msg.reconnect_token)
+                        .await
+                    {
+                        Err(AttachResult::SessionNotFound)
+                    } else {
+                        match registry.attach_client(&requested_session_id, pubkey).await {
+                            AttachResult::Ok => Ok(session),
+                            err => Err(err),
+                        }
+                    }
+                }
+                None => Err(AttachResult::SessionNotFound),
+            };
+            let result = match attach_result {
+                Ok(session) => {
+                    let reconnect_token = session.issue_reconnect_token(pubkey).await;
+                    ReconnectResult::Ok(build_sync_result(&session, state, reconnect_token).await)
+                }
+                Err(AttachResult::SessionNotFound) => ReconnectResult::SessionNotFound,
+                Err(AttachResult::NotInSessionAcl) => ReconnectResult::NotInSessionAcl,
+                Err(AttachResult::SessionOccupied) => ReconnectResult::SessionOccupied,
+                Err(AttachResult::Ok) => unreachable!("resume_with_token never returns Ok error"),
+            };
+            let success = matches!(result, ReconnectResult::Ok(_));
+            let _ = msg.tx.send(result).await;
+            if !success {
+                anyhow::bail!("reconnect rejected");
+            }
+            return Ok((
+                registry
+                    .get(&requested_session_id)
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("session missing after reconnect"))?,
+                pubkey,
+                false,
+            ));
+        }
         Some(ZedraMessage::Register(msg)) => {
             let pubkey = msg.client_pubkey;
             let result = handle_register(&msg, registry, analytics).await;
@@ -443,11 +508,11 @@ async fn auth_phase(
                 drop(msg.tx); // signal error by dropping
                 anyhow::bail!("client not authorized");
             }
-            let nonce = issue_challenge(msg.tx, identity).await?;
+            let nonce = issue_challenge(msg.tx, &state.identity).await?;
             // is_new_client = false: this is a reconnect
-            return finish_auth(conn, registry, pubkey, nonce, workdir, false).await;
+            return finish_auth(conn, registry, pubkey, nonce, &state.workdir, false).await;
         }
-        _ => anyhow::bail!("expected Register or Authenticate as first message"),
+        _ => anyhow::bail!("expected Reconnect, Register, or Authenticate as first message"),
     };
 
     // After Register: expect Authenticate
@@ -455,9 +520,9 @@ async fn auth_phase(
     match auth_msg {
         Some(ZedraMessage::Authenticate(msg)) => {
             // After fresh registration, client is authorized
-            let nonce = issue_challenge(msg.tx, identity).await?;
+            let nonce = issue_challenge(msg.tx, &state.identity).await?;
             // is_new_client = true: came through the Register path
-            finish_auth(conn, registry, client_pubkey, nonce, workdir, true).await
+            finish_auth(conn, registry, client_pubkey, nonce, &state.workdir, true).await
         }
         _ => anyhow::bail!("expected Authenticate after Register"),
     }
@@ -777,8 +842,11 @@ async fn dispatch(
     client_pubkey: [u8; 32],
 ) -> Result<()> {
     match msg {
-        // -- Auth (should not appear in dispatch loop) --
-        ZedraMessage::Register(_) | ZedraMessage::Authenticate(_) | ZedraMessage::AuthProve(_) => {
+        // -- Auth / bootstrap (should not appear in dispatch loop) --
+        ZedraMessage::Register(_)
+        | ZedraMessage::Authenticate(_)
+        | ZedraMessage::AuthProve(_)
+        | ZedraMessage::Reconnect(_) => {
             tracing::warn!("auth message received in dispatch loop (ignored)");
         }
 
@@ -811,6 +879,14 @@ async fn dispatch(
                     os_version: os_version_string(),
                     host_version: Some(env!("CARGO_PKG_VERSION").to_string()),
                 })
+                .await;
+        }
+
+        ZedraMessage::SyncSession(msg) => {
+            let reconnect_token = session.issue_reconnect_token(client_pubkey).await;
+            let _ = msg
+                .tx
+                .send(build_sync_result(&session, &state, reconnect_token).await)
                 .await;
         }
 

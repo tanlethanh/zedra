@@ -26,6 +26,7 @@ struct StoreFile {
 pub struct WorkspaceStateInner {
     pub endpoint_addr: String,
     pub session_id: String,
+    pub reconnect_token: Option<[u8; 32]>,
     pub strip_path: String,
     pub project_name: String,
     pub workdir: String,
@@ -180,6 +181,7 @@ impl WorkspaceState {
             // during the connecting phase, so we preserve saved info until the
             // connection succeeds and the server populates these fields.
             i.session_id = entry.inner().session_id.clone();
+            i.reconnect_token = entry.inner().reconnect_token;
             if !entry.inner().strip_path.is_empty() {
                 i.strip_path = entry.inner().strip_path.clone();
             }
@@ -227,6 +229,7 @@ impl WorkspaceState {
         Some(Self(Arc::new(WorkspaceStateInner {
             endpoint_addr: encoded,
             session_id: handle.session_id().unwrap_or_default(),
+            reconnect_token: handle.reconnect_token(),
             strip_path: handle.strip_path(),
             project_name: handle.project_name(),
             workdir: handle.workdir(),
@@ -273,6 +276,10 @@ impl WorkspaceState {
 
     pub fn session_id(&self) -> &str {
         &self.0.session_id
+    }
+
+    pub fn reconnect_token(&self) -> Option<[u8; 32]> {
+        self.0.reconnect_token
     }
 
     pub fn project_name(&self) -> &str {

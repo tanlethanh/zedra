@@ -102,7 +102,12 @@ async fn connect_client(
     host_endpoint: &iroh::Endpoint,
     registry: &Arc<SessionRegistry>,
     host_identity: &Arc<HostIdentity>,
-) -> anyhow::Result<(irpc::Client<ZedraProto>, String)> {
+) -> anyhow::Result<(
+    irpc::Client<ZedraProto>,
+    String,
+    [u8; 32],
+    SyncSessionResult,
+)> {
     use ed25519_dalek::{SigningKey, Verifier, VerifyingKey};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -177,7 +182,9 @@ async fn connect_client(
         prove_result
     );
 
-    Ok((client, session.id.clone()))
+    let sync: SyncSessionResult = client.rpc(SyncSessionReq {}).await?;
+
+    Ok((client, session.id.clone(), client_pubkey, sync))
 }
 
 // ---------------------------------------------------------------------------
@@ -284,10 +291,13 @@ async fn test_full_rpc_over_iroh() {
     let (_relay, relay_url) = spawn_test_relay().await.unwrap();
     let (host_ep, registry, identity, _dir) = setup_host(relay_url.clone()).await.unwrap();
 
-    let (client, session_id) = connect_client(relay_url, &host_ep, &registry, &identity)
-        .await
-        .unwrap();
+    let (client, session_id, _client_pubkey, sync) =
+        connect_client(relay_url, &host_ep, &registry, &identity)
+            .await
+            .unwrap();
     assert!(!session_id.is_empty());
+    assert_eq!(sync.session_id, session_id);
+    assert_ne!(sync.reconnect_token, [0u8; 32]);
 
     let info: SessionInfoResult = client.rpc(SessionInfoReq {}).await.unwrap();
     assert!(!info.hostname.is_empty());
@@ -301,9 +311,10 @@ async fn test_rpc_terminal_over_relay() {
     let (_relay, relay_url) = spawn_test_relay().await.unwrap();
     let (host_ep, registry, identity, _dir) = setup_host(relay_url.clone()).await.unwrap();
 
-    let (client, _session_id) = connect_client(relay_url, &host_ep, &registry, &identity)
-        .await
-        .unwrap();
+    let (client, _session_id, _client_pubkey, _sync) =
+        connect_client(relay_url, &host_ep, &registry, &identity)
+            .await
+            .unwrap();
 
     // Create terminal
     let result: TermCreateResult = client

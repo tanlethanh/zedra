@@ -3,8 +3,9 @@
 // Typed, binary-serialized (postcard) messages over iroh QUIC streams.
 //
 // Connection lifecycle:
-//   First pairing:   Register → Authenticate → AuthProve → (RPC calls)
-//   Reconnect:       Authenticate → AuthProve → (RPC calls)
+//   First pairing:   Register → Authenticate → AuthProve → SyncSession → (RPC calls)
+//   Reconnect:       Reconnect → (RPC calls)
+//   Fallback:        Authenticate → AuthProve → SyncSession → (RPC calls)
 //   Health:          Ping → Pong (every 2s, foreground only)
 
 use irpc::channel::{mpsc, oneshot};
@@ -38,6 +39,11 @@ pub enum ZedraProto {
     /// Also specifies which session to attach to.
     #[rpc(tx = oneshot::Sender<AuthProveResult>)]
     AuthProve(AuthProveReq),
+
+    /// Fast reconnect path for a previously bootstrapped session.
+    /// Validates a host-issued reconnect token and returns the latest sync state.
+    #[rpc(tx = oneshot::Sender<ReconnectResult>)]
+    Reconnect(ReconnectReq),
 
     // -- Health / RTT --
     /// Ping the host. Host echoes timestamp_ms back for RTT measurement.
@@ -133,6 +139,12 @@ pub enum ZedraProto {
 
     #[rpc(tx = oneshot::Sender<FsUnwatchResult>)]
     FsUnwatch(FsUnwatchReq),
+
+    /// Bootstrap session state after a successful PKI auth attach.
+    /// Returns the canonical session id, a fresh reconnect token, and resumable
+    /// terminal state so the client can avoid a follow-up info/list round trip.
+    #[rpc(tx = oneshot::Sender<SyncSessionResult>)]
+    SyncSession(SyncSessionReq),
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +280,34 @@ pub enum AuthProveResult {
     InvalidSignature,
 }
 
+/// Fast reconnect request using a host-issued session token.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ReconnectReq {
+    /// Client's Ed25519 application public key (32 bytes).
+    pub client_pubkey: [u8; 32],
+    /// Session the client expects to resume.
+    pub session_id: String,
+    /// Opaque host-issued reconnect token bound to `(session_id, client_pubkey)`.
+    pub reconnect_token: [u8; 32],
+}
+
+/// Result of a reconnect-token resume attempt.
+#[derive(Debug, Serialize, Deserialize)]
+pub enum ReconnectResult {
+    /// Token accepted and session attached; payload contains the latest state.
+    Ok(SyncSessionResult),
+    /// Token invalid, expired, or missing. Client should fall back to PKI auth.
+    InvalidToken,
+    /// Client pubkey is no longer globally authorized.
+    Unauthorized,
+    /// Session exists but this client is not in the session ACL.
+    NotInSessionAcl,
+    /// Another client currently owns the session.
+    SessionOccupied,
+    /// Session not found (host restart / session removal).
+    SessionNotFound,
+}
+
 // ---------------------------------------------------------------------------
 // Ping / Pong
 // ---------------------------------------------------------------------------
@@ -321,6 +361,32 @@ pub struct SessionInfoResult {
     pub os_version: Option<String>,
     pub host_version: Option<String>,
     pub home_dir: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SyncSessionReq {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncSessionResult {
+    pub session_id: String,
+    pub reconnect_token: [u8; 32],
+    pub hostname: String,
+    pub workdir: String,
+    pub username: String,
+    pub home_dir: Option<String>,
+    pub os: Option<String>,
+    pub arch: Option<String>,
+    pub os_version: Option<String>,
+    pub host_version: Option<String>,
+    pub terminals: Vec<TerminalSyncEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalSyncEntry {
+    pub id: String,
+    pub last_seq: u64,
+    pub title: Option<String>,
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -765,5 +831,47 @@ mod tests {
         let encoded = postcard::to_allocvec(&req).unwrap();
         let decoded: PingReq = postcard::from_bytes(&encoded).unwrap();
         assert_eq!(decoded.timestamp_ms, 9_999_999);
+    }
+
+    #[test]
+    fn reconnect_req_roundtrip() {
+        let req = ReconnectReq {
+            client_pubkey: [7u8; 32],
+            session_id: "sess-fast".to_string(),
+            reconnect_token: [8u8; 32],
+        };
+        let encoded = postcard::to_allocvec(&req).unwrap();
+        let decoded: ReconnectReq = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded.client_pubkey, [7u8; 32]);
+        assert_eq!(decoded.session_id, "sess-fast");
+        assert_eq!(decoded.reconnect_token, [8u8; 32]);
+    }
+
+    #[test]
+    fn sync_session_result_roundtrip() {
+        let result = SyncSessionResult {
+            session_id: "sess-1".into(),
+            reconnect_token: [9u8; 32],
+            hostname: "host".into(),
+            workdir: "/workspace".into(),
+            username: "user".into(),
+            home_dir: Some("/home/user".into()),
+            os: Some("linux".into()),
+            arch: Some("x86_64".into()),
+            os_version: Some("6.12".into()),
+            host_version: Some("0.1.1".into()),
+            terminals: vec![TerminalSyncEntry {
+                id: "term-1".into(),
+                last_seq: 42,
+                title: Some("shell".into()),
+                cwd: Some("/workspace".into()),
+            }],
+        };
+        let encoded = postcard::to_allocvec(&result).unwrap();
+        let decoded: SyncSessionResult = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded.session_id, "sess-1");
+        assert_eq!(decoded.reconnect_token, [9u8; 32]);
+        assert_eq!(decoded.terminals.len(), 1);
+        assert_eq!(decoded.terminals[0].last_seq, 42);
     }
 }

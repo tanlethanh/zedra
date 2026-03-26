@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use zedra_rpc::osc::OscScanner;
-use zedra_rpc::proto::{BacklogEntry, HostEvent, TermOutput};
+use zedra_rpc::proto::{BacklogEntry, HostEvent, TermOutput, TerminalSyncEntry};
 
 // ---------------------------------------------------------------------------
 // Pairing slot
@@ -69,6 +69,9 @@ pub struct ServerSession {
     pub acl: Mutex<HashSet<[u8; 32]>>,
     /// Currently attached client pubkey. None = session is free.
     pub active_client: Mutex<Option<[u8; 32]>>,
+    /// Ephemeral reconnect tokens keyed by authorized client pubkey.
+    /// Rotated on every successful bootstrap/reconnect.
+    pub reconnect_tokens: Mutex<HashMap<[u8; 32], ReconnectToken>>,
     /// Channel for pushing host-initiated events to the connected client.
     /// Installed by the Subscribe RPC handler; replaced on each new subscription.
     pub event_tx: Mutex<Option<tokio::sync::mpsc::Sender<HostEvent>>>,
@@ -85,6 +88,14 @@ pub struct ServerSession {
     pub fs_watch_quota_rejected: AtomicU64,
     pub fs_watch_rate_limited: AtomicU64,
 }
+
+#[derive(Clone)]
+pub struct ReconnectToken {
+    pub token: [u8; 32],
+    pub expires_at: Instant,
+}
+
+const RECONNECT_TOKEN_TTL_SECS: u64 = 300;
 
 /// Max number of observed paths stored per session.
 pub const MAX_WATCHED_PATHS_PER_SESSION: usize = 128;
@@ -728,6 +739,7 @@ impl ServerSession {
             next_output_seq: Mutex::new(1),
             acl: Mutex::new(HashSet::new()),
             active_client: Mutex::new(None),
+            reconnect_tokens: Mutex::new(HashMap::new()),
             event_tx: Mutex::new(None),
             fs_watched_paths: Mutex::new(HashSet::new()),
             fs_watch_rpc_limiter: Mutex::new(TokenBucket::new(
@@ -741,6 +753,60 @@ impl ServerSession {
             fs_watch_quota_rejected: AtomicU64::new(0),
             fs_watch_rate_limited: AtomicU64::new(0),
         }
+    }
+
+    pub async fn issue_reconnect_token(&self, client_pubkey: [u8; 32]) -> [u8; 32] {
+        let mut token = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut token);
+        self.reconnect_tokens.lock().await.insert(
+            client_pubkey,
+            ReconnectToken {
+                token,
+                expires_at: Instant::now() + Duration::from_secs(RECONNECT_TOKEN_TTL_SECS),
+            },
+        );
+        token
+    }
+
+    pub async fn validate_reconnect_token(
+        &self,
+        client_pubkey: &[u8; 32],
+        reconnect_token: &[u8; 32],
+    ) -> bool {
+        let mut tokens = self.reconnect_tokens.lock().await;
+        let Some(entry) = tokens.get(client_pubkey).cloned() else {
+            return false;
+        };
+        if entry.expires_at < Instant::now() {
+            tokens.remove(client_pubkey);
+            return false;
+        }
+        if &entry.token != reconnect_token {
+            return false;
+        }
+        true
+    }
+
+    pub async fn terminal_sync_entries(&self) -> Vec<TerminalSyncEntry> {
+        let next_seq = *self.next_output_seq.lock().await;
+        let terms = self.terminals.lock().await;
+        let mut entries = Vec::with_capacity(terms.len());
+        for (id, term) in terms.iter() {
+            let (title, cwd) = term
+                .host_meta
+                .lock()
+                .ok()
+                .map(|meta| (meta.title.clone(), meta.cwd.clone()))
+                .unwrap_or((None, None));
+            entries.push(TerminalSyncEntry {
+                id: id.clone(),
+                last_seq: next_seq.saturating_sub(1),
+                title,
+                cwd,
+            });
+        }
+        entries.sort_by(|a, b| a.id.cmp(&b.id));
+        entries
     }
 
     /// Push a host-initiated event to the subscribed client, if any.
@@ -1132,5 +1198,41 @@ mod tests {
         let list = registry.list_sessions().await;
         assert_eq!(list.len(), 1);
         assert!(list[0].is_occupied);
+    }
+
+    #[tokio::test]
+    async fn reconnect_token_rotates_and_validates_per_client() {
+        let registry = SessionRegistry::new();
+        let session = create_session(&registry).await;
+        let pubkey = make_pubkey(11);
+
+        registry.add_client_to_session(&session.id, pubkey).await;
+        assert!(matches!(
+            registry.attach_client(&session.id, pubkey).await,
+            AttachResult::Ok
+        ));
+
+        let first = session.issue_reconnect_token(pubkey).await;
+        assert!(session.validate_reconnect_token(&pubkey, &first).await);
+
+        let second = session.issue_reconnect_token(pubkey).await;
+        assert_ne!(first, second);
+        assert!(!session.validate_reconnect_token(&pubkey, &first).await);
+        assert!(session.validate_reconnect_token(&pubkey, &second).await);
+    }
+
+    #[tokio::test]
+    async fn reconnect_token_is_scoped_to_its_client() {
+        let registry = SessionRegistry::new();
+        let session = create_session(&registry).await;
+        let key_a = make_pubkey(21);
+        let key_b = make_pubkey(22);
+
+        registry.add_client_to_session(&session.id, key_a).await;
+        registry.add_client_to_session(&session.id, key_b).await;
+
+        let token = session.issue_reconnect_token(key_a).await;
+        assert!(session.validate_reconnect_token(&key_a, &token).await);
+        assert!(!session.validate_reconnect_token(&key_b, &token).await);
     }
 }

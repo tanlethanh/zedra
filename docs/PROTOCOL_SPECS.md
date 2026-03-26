@@ -90,15 +90,25 @@ The protocol layer includes:
 1. `Register(RegisterReq)` with HMAC proof from QR ticket handshake secret.
 2. `Authenticate(AuthReq)` to request challenge nonce + host signature.
 3. `AuthProve(AuthProveReq)` with client signature and session attachment.
-4. Normal RPCs begin after success.
+4. `SyncSession(SyncSessionReq)` to fetch canonical session metadata, a fresh reconnect token, and terminal sync state.
+5. Normal RPCs begin after success.
 
 ### 4.2 Reconnect
 
+1. `Reconnect(ReconnectReq)` with the previously bootstrapped `(session_id, reconnect_token)`.
+2. If accepted, host attaches the session directly and returns `SyncSessionResult`.
+3. Client resumes normal RPCs and terminal streams using the returned terminal sync state.
+
+### 4.3 Reconnect fallback
+
+If `Reconnect` is rejected with `InvalidToken` or `SessionNotFound`, the client falls back to:
+
 1. `Authenticate(AuthReq)`
 2. `AuthProve(AuthProveReq)`
-3. Resume normal RPCs and terminal streams.
+3. `SyncSession(SyncSessionReq)`
+4. Resume normal RPCs and terminal streams.
 
-### 4.3 Health
+### 4.4 Health
 
 - `Ping(PingReq)` / `PongResult` used for RTT and liveness.
 
@@ -111,6 +121,7 @@ The protocol layer includes:
 - `Register(RegisterReq) -> RegisterResult`
 - `Authenticate(AuthReq) -> AuthChallengeResult`
 - `AuthProve(AuthProveReq) -> AuthProveResult`
+- `Reconnect(ReconnectReq) -> ReconnectResult`
 
 ## 5.2 Health
 
@@ -118,6 +129,7 @@ The protocol layer includes:
 
 ## 5.3 Session
 
+- `SyncSession(SyncSessionReq) -> SyncSessionResult`
 - `GetSessionInfo(SessionInfoReq) -> SessionInfoResult`
 - `ListSessions(SessionListReq) -> SessionListResult`
 - `SwitchSession(SessionSwitchReq) -> SessionSwitchResult`
@@ -159,12 +171,24 @@ The protocol layer includes:
 - `TermResize(TermResizeReq) -> TermResizeResult`
 - `TermClose(TermCloseReq) -> TermCloseResult`
 - `TermList(TermListReq) -> TermListResult`
+- `SyncSessionResult.terminals -> Vec<TerminalSyncEntry>`
 
 ### TermAttach conventions
 
 - Client passes `last_seq` to request backlog replay.
 - Host may replay missed output before live stream.
 - Output `seq` is monotonic per session backlog stream and used for gap detection.
+- `TerminalSyncEntry.last_seq` is the host's latest backlog sequence observed for that terminal at sync time.
+- Clients should keep local terminal tabs keyed by terminal id and use `last_seq` to seed reconnect `TermAttach` calls.
+
+### SyncSession conventions
+
+- `SyncSession` is the canonical bootstrap payload after a successful PKI attach.
+- Host rotates and returns a fresh `reconnect_token` on every successful `SyncSession` and `Reconnect`.
+- `session_id` in `SyncSessionResult` is authoritative and must replace any stale client-side session id.
+- `SyncSessionResult.terminals` is the authoritative server-side terminal set at bootstrap time.
+- `ReconnectReq.reconnect_token` is opaque, host-issued, session-bound, and client-bound.
+- Reconnect tokens are currently ephemeral host memory only; host restart may invalidate them and force PKI fallback.
 
 ## 5.6 Git
 
@@ -216,8 +240,8 @@ Client rules:
 - Avoid breaking wire compatibility unless absolutely required.
 - Prefer additive evolution:
   - Add new enum variants
-  - Add new optional fields
   - Add new RPC calls instead of repurposing old semantics
+- With postcard-encoded structs, prefer new request/response types over widening existing structs when mixed-version decoding matters.
 
 ### 7.2 Breaking Changes
 
@@ -312,4 +336,16 @@ Any protocol-layer change must include all applicable steps:
 - Added compatibility guard:
   - observer RPCs auto-disable client-side on protocol decode/variant mismatch,
     returning `Unsupported` instead of repeatedly retrying incompatible calls.
+
+### 2026-03-26
+
+- Added fast reconnect bootstrap RPC:
+  - `Reconnect(ReconnectReq) -> ReconnectResult`
+- Added canonical session bootstrap RPC:
+  - `SyncSession(SyncSessionReq) -> SyncSessionResult`
+- Added `TerminalSyncEntry` to return resumable terminal ids + latest backlog sequence + cached title/CWD.
+- Updated connection lifecycle:
+  - first pairing and PKI fallback now end with `SyncSession`
+  - reconnect may skip `Authenticate/AuthProve` entirely when a valid reconnect token is present
+- Added rotating host-issued reconnect tokens bound to `(session_id, client_pubkey)`.
 

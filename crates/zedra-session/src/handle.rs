@@ -9,8 +9,8 @@ use anyhow::Result;
 use zedra_rpc::proto::*;
 
 use crate::connect_state::{
-    AuthOutcome, ConnectError, ConnectPhase, ConnectSnapshot, ConnectState, NetworkHint,
-    ReconnectReason, TransportSnapshot,
+    AuthOutcome, ConnectError, ConnectPhase, ConnectState, NetworkHint, ReconnectReason,
+    TransportSnapshot,
 };
 
 /// Classify a remote IP address for debugging display.
@@ -44,10 +44,18 @@ fn classify_ip(ip: std::net::IpAddr) -> NetworkHint {
 }
 use crate::{push_callback, session_runtime, signer::ClientSigner, terminal::RemoteTerminal};
 
-fn snapshot_has_cached_session_info(snapshot: &ConnectSnapshot) -> bool {
+#[cfg(test)]
+fn snapshot_has_cached_session_info(snapshot: &crate::connect_state::ConnectSnapshot) -> bool {
     snapshot.hostname.as_ref().is_some_and(|s| !s.is_empty())
         && snapshot.workdir.as_ref().is_some_and(|s| !s.is_empty())
         && snapshot.session_id.as_ref().is_some_and(|s| !s.is_empty())
+}
+
+#[derive(Clone, Debug)]
+struct SessionBootstrap {
+    session_id: String,
+    reconnect_token: [u8; 32],
+    terminals: Vec<TerminalSyncEntry>,
 }
 
 /// Workspace-scoped durable session state. Arc-wrapped — clone freely to share
@@ -63,6 +71,7 @@ struct SessionHandleInner {
     signer: Mutex<Option<Arc<dyn ClientSigner>>>,
     endpoint_id: Mutex<Option<iroh::PublicKey>>,
     pending_ticket: Mutex<Option<zedra_rpc::ZedraPairingTicket>>,
+    reconnect_token: Mutex<Option<[u8; 32]>>,
 
     // ── Live connection ──────────────────────────────────────────────────────
     client: Mutex<Option<irpc::Client<ZedraProto>>>,
@@ -111,6 +120,7 @@ impl SessionHandle {
             signer: Mutex::new(None),
             endpoint_id: Mutex::new(None),
             pending_ticket: Mutex::new(None),
+            reconnect_token: Mutex::new(None),
             client: Mutex::new(None),
             connect_state: Mutex::new(ConnectState::idle()),
             conn_generation: AtomicU64::new(0),
@@ -157,6 +167,16 @@ impl SessionHandle {
         if let Ok(mut slot) = self.0.pending_ticket.lock() {
             *slot = Some(ticket);
         }
+    }
+
+    pub fn set_reconnect_token(&self, token: Option<[u8; 32]>) {
+        if let Ok(mut slot) = self.0.reconnect_token.lock() {
+            *slot = token;
+        }
+    }
+
+    pub fn reconnect_token(&self) -> Option<[u8; 32]> {
+        self.0.reconnect_token.lock().ok().and_then(|g| *g)
     }
 
     pub fn set_endpoint_addr(&self, addr: iroh::EndpointAddr) {
@@ -324,6 +344,34 @@ impl SessionHandle {
             .and_then(|terms| terms.iter().find(|t| t.id == id).cloned())
     }
 
+    pub fn apply_sync_terminals(&self, entries: &[TerminalSyncEntry]) {
+        let mut terminals = match self.0.terminals.lock() {
+            Ok(terms) => terms,
+            Err(_) => return,
+        };
+
+        let mut by_id = terminals
+            .iter()
+            .cloned()
+            .map(|terminal| (terminal.id.clone(), terminal))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let mut ordered = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let terminal = by_id
+                .remove(&entry.id)
+                .unwrap_or_else(|| RemoteTerminal::new(entry.id.clone()));
+            terminal.update_seq(entry.last_seq);
+            if let Ok(mut meta) = terminal.meta.lock() {
+                meta.title = entry.title.clone();
+                meta.cwd = entry.cwd.clone();
+            }
+            ordered.push(terminal);
+        }
+
+        *terminals = ordered;
+    }
+
     // -----------------------------------------------------------------------
     // Cached host display fields (survive reconnect cycles)
     // -----------------------------------------------------------------------
@@ -360,11 +408,6 @@ impl SessionHandle {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_default()
-    }
-
-    fn has_cached_session_info(&self) -> bool {
-        let cs = self.connect_state();
-        snapshot_has_cached_session_info(&cs.snapshot)
     }
 
     // -----------------------------------------------------------------------
@@ -668,16 +711,14 @@ impl SessionHandle {
             });
         }
 
-        // ── PKI auth phases (Registering → Authenticating → Proving) ─────
         let ticket = self.0.pending_ticket.lock().ok().and_then(|mut g| g.take());
         let session_id = self.session_id();
         let endpoint_id = self.endpoint_id().expect("endpoint_id stored above");
-
-        match self.signer() {
+        let bootstrap = match self.signer() {
             Some(signer) => {
                 let t_auth = Instant::now();
                 match self
-                    .authenticate(
+                    .bootstrap_session(
                         &client,
                         ticket.as_ref(),
                         signer.as_ref(),
@@ -686,54 +727,38 @@ impl SessionHandle {
                     )
                     .await
                 {
-                    Ok((sid, outcome)) => {
-                        if let Ok(mut slot) = self.0.sid.lock() {
-                            *slot = Some(sid.clone());
-                        }
+                    Ok((bootstrap, outcome)) => {
                         if let Ok(mut cs) = self.0.connect_state.lock() {
-                            cs.snapshot.session_id = Some(sid);
                             cs.snapshot.auth_outcome = Some(outcome);
                             cs.snapshot.auth_ms = Some(t_auth.elapsed().as_millis() as u64);
+                            cs.snapshot.fetch_ms = Some(0);
                         }
+                        bootstrap
                     }
                     Err(e) => {
-                        tracing::warn!("PKI auth failed: {e}");
+                        tracing::warn!("session bootstrap failed: {e}");
                         return Err(e);
                     }
                 }
             }
             None => {
                 tracing::warn!("No signer — skipping PKI auth (RPC calls will fail)");
+                let t_fetch = Instant::now();
+                let result = self.sync_session(&client).await?;
+                if let Ok(mut cs) = self.0.connect_state.lock() {
+                    cs.snapshot.fetch_ms = Some(t_fetch.elapsed().as_millis() as u64);
+                }
+                result
             }
+        };
+
+        self.apply_bootstrap(&bootstrap);
+
+        if let Ok(mut cs) = self.0.connect_state.lock() {
+            cs.phase = ConnectPhase::Connected;
+            cs.reconnect_attempt = None;
         }
-
-        let needs_session_info = !self.has_cached_session_info();
-        if needs_session_info {
-            // ── Phase: FetchingInfo ────────────────────────────────────────
-            {
-                let mut cs = self.0.connect_state.lock().unwrap();
-                cs.phase = ConnectPhase::FetchingInfo;
-            }
-            self.notify_state_change();
-
-            let t_fetch = Instant::now();
-            self.fetch_session_info(&client).await;
-
-            {
-                let mut cs = self.0.connect_state.lock().unwrap();
-                cs.snapshot.fetch_ms = Some(t_fetch.elapsed().as_millis() as u64);
-                cs.phase = ConnectPhase::Connected;
-                cs.reconnect_attempt = None;
-            }
-            self.notify_state_change();
-        } else {
-            if let Ok(mut cs) = self.0.connect_state.lock() {
-                cs.snapshot.fetch_ms = None;
-                cs.phase = ConnectPhase::Connected;
-                cs.reconnect_attempt = None;
-            }
-            self.notify_state_change();
-        }
+        self.notify_state_change();
 
         self.reattach_terminals(&client).await;
 
@@ -770,19 +795,51 @@ impl SessionHandle {
     // PKI auth (Registering → Authenticating → Proving)
     // -----------------------------------------------------------------------
 
-    async fn authenticate(
+    async fn bootstrap_session(
         &self,
         client: &irpc::Client<ZedraProto>,
         ticket: Option<&zedra_rpc::ZedraPairingTicket>,
         signer: &dyn ClientSigner,
         endpoint_id: &iroh::PublicKey,
         session_id: Option<&str>,
-    ) -> Result<(String, AuthOutcome)> {
+    ) -> Result<(SessionBootstrap, AuthOutcome)> {
         use ed25519_dalek::{Verifier, VerifyingKey};
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let client_pubkey = signer.pubkey();
         let mut outcome = AuthOutcome::Authenticated;
+
+        if ticket.is_none() {
+            if let Some(token) = self.reconnect_token() {
+                if let Some(stored_session_id) = session_id.filter(|sid| !sid.is_empty()) {
+                    match client
+                        .rpc(ReconnectReq {
+                            client_pubkey,
+                            session_id: stored_session_id.to_string(),
+                            reconnect_token: token,
+                        })
+                        .await?
+                    {
+                        ReconnectResult::Ok(sync) => {
+                            tracing::info!("Reconnect token accepted, session={}", sync.session_id);
+                            return Ok((Self::bootstrap_from_sync(sync), outcome));
+                        }
+                        ReconnectResult::InvalidToken | ReconnectResult::SessionNotFound => {
+                            tracing::info!("Reconnect token rejected, falling back to PKI auth");
+                            self.set_reconnect_token(None);
+                        }
+                        ReconnectResult::Unauthorized | ReconnectResult::NotInSessionAcl => {
+                            self.set_failed(ConnectError::Unauthorized);
+                            return Err(anyhow::anyhow!("reconnect: Unauthorized"));
+                        }
+                        ReconnectResult::SessionOccupied => {
+                            self.set_failed(ConnectError::SessionOccupied);
+                            return Err(anyhow::anyhow!("reconnect: SessionOccupied"));
+                        }
+                    }
+                }
+            }
+        }
 
         // Step 1: Register (first pairing only).
         if let Some(t) = ticket {
@@ -881,7 +938,8 @@ impl SessionHandle {
         {
             AuthProveResult::Ok => {
                 tracing::info!("PKI: authenticated, session={}", attach_session_id);
-                Ok((attach_session_id, outcome))
+                let bootstrap = self.sync_session(client).await?;
+                Ok((bootstrap, outcome))
             }
             AuthProveResult::Unauthorized => {
                 self.set_failed(ConnectError::Unauthorized);
@@ -906,84 +964,45 @@ impl SessionHandle {
         }
     }
 
-    async fn fetch_session_info(&self, client: &irpc::Client<ZedraProto>) {
-        match client.rpc(SessionInfoReq {}).await {
-            Ok(info) => {
-                tracing::info!(
-                    "Session info: host={}, user={}, workdir={}",
-                    info.hostname,
-                    info.username,
-                    info.workdir,
-                );
-
-                // Update snapshot.
-                if let Ok(mut cs) = self.0.connect_state.lock() {
-                    cs.snapshot.hostname = Some(info.hostname.clone());
-                    cs.snapshot.username = Some(info.username.clone());
-                    cs.snapshot.workdir = Some(info.workdir.clone());
-                    cs.snapshot.os = info.os.clone();
-                    cs.snapshot.arch = info.arch.clone();
-                    cs.snapshot.os_version = info.os_version.clone();
-                    cs.snapshot.host_version = info.host_version.clone();
-                }
-
-                // Update cached fields (survive reconnect cycles for header display).
-                if !info.hostname.is_empty() {
-                    if let Ok(mut h) = self.0.hostname.lock() {
-                        *h = info.hostname.clone();
-                    }
-                }
-                if !info.workdir.is_empty() {
-                    let workdir = info.workdir.clone();
-                    let project = workdir.rsplit('/').next().unwrap_or(&workdir).to_string();
-
-                    // Cache raw workdir and derived project name.
-                    if let Ok(mut w) = self.0.workdir.lock() {
-                        *w = workdir.clone();
-                    }
-                    if let Ok(mut p) = self.0.project_name.lock() {
-                        *p = project;
-                    }
-
-                    // Cache home directory and a `~`-stripped display path.
-                    let home_dir = info.home_dir.clone().unwrap_or_default();
-                    if !home_dir.is_empty() {
-                        if let Ok(mut h) = self.0.homedir.lock() {
-                            *h = home_dir.clone();
-                        }
-                    }
-                    let display_path = if !home_dir.is_empty() {
-                        if let Some(rest) = workdir.strip_prefix(&home_dir) {
-                            format!("~{rest}")
-                        } else {
-                            workdir
-                        }
-                    } else {
-                        workdir
-                    };
-                    if let Ok(mut s) = self.0.strip_path.lock() {
-                        *s = display_path;
-                    }
-                }
-
-                // Store session ID if the server provided one and we don't have one yet.
-                if let Some(sid) = info.session_id {
-                    if let Ok(mut slot) = self.0.sid.lock() {
-                        if slot.is_none() {
-                            *slot = Some(sid.clone());
-                        }
-                    }
-                    if let Ok(mut cs) = self.0.connect_state.lock() {
-                        if cs.snapshot.session_id.is_none() {
-                            cs.snapshot.session_id = Some(sid);
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("session/info failed: {e}");
-            }
+    fn bootstrap_from_sync(sync: SyncSessionResult) -> SessionBootstrap {
+        SessionBootstrap {
+            session_id: sync.session_id,
+            reconnect_token: sync.reconnect_token,
+            terminals: sync.terminals,
         }
+    }
+
+    async fn sync_session(&self, client: &irpc::Client<ZedraProto>) -> Result<SessionBootstrap> {
+        {
+            let mut cs = self.0.connect_state.lock().unwrap();
+            cs.phase = ConnectPhase::FetchingInfo;
+        }
+        self.notify_state_change();
+
+        let sync = client.rpc(SyncSessionReq {}).await.map_err(|e| {
+            self.set_failed(ConnectError::SessionInfoFailed(e.to_string()));
+            anyhow::anyhow!("sync session failed: {e}")
+        })?;
+
+        Ok(Self::bootstrap_from_sync(sync))
+    }
+
+    fn apply_bootstrap(&self, bootstrap: &SessionBootstrap) {
+        if let Ok(mut slot) = self.0.sid.lock() {
+            *slot = Some(bootstrap.session_id.clone());
+        }
+        self.set_reconnect_token(Some(bootstrap.reconnect_token));
+
+        if let Ok(mut cs) = self.0.connect_state.lock() {
+            cs.snapshot.session_id = Some(bootstrap.session_id.clone());
+        }
+
+        if let Ok(mut cs) = self.0.connect_state.lock() {
+            cs.snapshot.hostname = Some(self.hostname());
+            cs.snapshot.workdir = Some(self.workdir());
+        }
+
+        self.apply_sync_terminals(&bootstrap.terminals);
     }
 
     // -----------------------------------------------------------------------
@@ -1654,6 +1673,7 @@ impl SessionHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ConnectSnapshot;
 
     #[test]
     fn cached_session_info_requires_host_workdir_and_session_id() {
