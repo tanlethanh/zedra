@@ -260,7 +260,9 @@ async fn main() -> Result<()> {
                 let registry = registry.clone();
                 let session_id = session_id.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = run_qr_key_listener(registry, session_id, endpoint_id, endpoint).await {
+                    if let Err(e) =
+                        run_qr_key_listener(registry, session_id, endpoint_id, endpoint).await
+                    {
                         tracing::warn!("QR key listener stopped: {}", e);
                     }
                 });
@@ -538,7 +540,7 @@ async fn run_qr_key_listener(
     use tokio::sync::mpsc;
 
     let (tx, mut rx) = mpsc::unbounded_channel::<u8>();
-    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+    let mut reader_task = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
         let stdin = std::io::stdin();
         let _raw = RawModeGuard::new(stdin.as_raw_fd())?;
         let mut handle = stdin.lock();
@@ -553,13 +555,27 @@ async fn run_qr_key_listener(
         Ok(())
     });
 
-    while let Some(key) = rx.recv().await {
-        if matches!(key, b'r' | b'R') {
-            if let Err(e) = generate_pairing_qr(&registry, &session_id, endpoint_id, &endpoint, false).await
-            {
-                tracing::warn!("Failed to regenerate QR code: {}", e);
-            } else {
-                eprintln!("Regenerated pairing QR (press 'r' again to refresh).");
+    loop {
+        tokio::select! {
+            maybe_key = rx.recv() => {
+                let Some(key) = maybe_key else {
+                    break;
+                };
+                if matches!(key, b'r' | b'R') {
+                    if let Err(e) = generate_pairing_qr(&registry, &session_id, endpoint_id, &endpoint, false).await {
+                        tracing::warn!("Failed to regenerate QR code: {}", e);
+                    } else {
+                        eprintln!("Regenerated pairing QR (press 'r' again to refresh).");
+                    }
+                }
+            }
+            reader_result = &mut reader_task => {
+                match reader_result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => return Err(e.into()),
+                    Err(e) => return Err(anyhow::anyhow!("QR key reader task failed: {}", e)),
+                }
+                break;
             }
         }
     }
@@ -604,6 +620,12 @@ impl RawModeGuard {
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
         // SAFETY: `self.original` came from a successful `tcgetattr` on this fd.
-        let _ = unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, &self.original) };
+        let ret = unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, &self.original) };
+        if ret != 0 {
+            tracing::warn!(
+                "Failed to restore terminal mode: {}",
+                std::io::Error::last_os_error()
+            );
+        }
     }
 }
