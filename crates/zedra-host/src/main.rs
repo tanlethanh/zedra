@@ -524,6 +524,7 @@ async fn generate_pairing_qr(
         qr::print_pairing_json(&info);
     } else {
         qr::generate_pairing_qr(&ticket, endpoint)?;
+        eprintln!("Note: this pairing QR is one-time use.");
     }
     Ok(())
 }

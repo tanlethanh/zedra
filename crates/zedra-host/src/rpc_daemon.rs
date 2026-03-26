@@ -525,6 +525,11 @@ async fn handle_register(
                 "Register: slot for {} already consumed",
                 msg.slot_session_id
             );
+            eprintln!(
+                "[{}] pairing:   QR already used (session {}). Press 'r' in the host terminal to generate a new QR.",
+                ts(),
+                &msg.slot_session_id[..8.min(msg.slot_session_id.len())]
+            );
             RegisterResult::HandshakeConsumed
         }
         ConsumeSlotResult::NotFound => {
