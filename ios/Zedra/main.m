@@ -50,6 +50,37 @@ extern void zedra_ios_selection_result(unsigned int callback_id, int button_inde
 extern void zedra_ios_selection_dismiss(unsigned int callback_id);
 extern void zedra_deeplink_received(const char* url);
 
+// Returns the app version as "shortVersion (buildVersion)" in a static C buffer.
+// Called from Rust via FFI for the launch footer version label.
+const char* ios_get_app_version(void) {
+    static char buf[128];
+    NSString *shortVersion = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+    NSString *buildVersion = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"];
+
+    if (![shortVersion isKindOfClass:[NSString class]]) {
+        shortVersion = @"";
+    }
+    if (![buildVersion isKindOfClass:[NSString class]]) {
+        buildVersion = @"";
+    }
+
+    NSString *value = nil;
+    if (shortVersion.length > 0 && buildVersion.length > 0) {
+        value = [NSString stringWithFormat:@"%@ (%@)", shortVersion, buildVersion];
+    } else if (shortVersion.length > 0) {
+        value = shortVersion;
+    } else if (buildVersion.length > 0) {
+        value = buildVersion;
+    } else {
+        return NULL;
+    }
+
+    const char *cstr = [value UTF8String];
+    if (!cstr) return NULL;
+    strlcpy(buf, cstr, sizeof(buf));
+    return buf;
+}
+
 @interface ZedraPresentationDismissDelegate : NSObject <UIAdaptivePresentationControllerDelegate>
 @property (nonatomic, assign) unsigned int callbackId;
 @property (nonatomic, assign) BOOL handled;
