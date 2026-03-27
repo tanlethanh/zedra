@@ -21,8 +21,7 @@ impl zedra_telemetry::TelemetryBackend for HostBackend {
         for (k, v) in params {
             obj.insert(k.to_string(), serde_json::Value::String(v));
         }
-        self.ga4
-            .track_raw(name, serde_json::Value::Object(obj));
+        self.ga4.track_raw(name, serde_json::Value::Object(obj));
     }
 
     fn record_panic(&self, message: &str, location: &str) {

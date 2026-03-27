@@ -12,8 +12,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use std::sync::Arc;
-use zedra_host::ga4::Ga4;
 use zedra_host::client as zedra_client;
+use zedra_host::ga4::Ga4;
 use zedra_host::{
     api, identity, iroh_listener, net_monitor, qr, rpc_daemon, session_registry, workspace_lock,
 };

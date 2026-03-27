@@ -1,9 +1,9 @@
 // zedra-host library — re-exports for integration tests
 
-pub mod ga4;
 pub mod api;
 pub mod client;
 pub mod fs;
+pub mod ga4;
 pub mod git;
 pub mod identity;
 pub mod iroh_listener;

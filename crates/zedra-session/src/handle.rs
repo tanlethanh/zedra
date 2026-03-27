@@ -1389,9 +1389,8 @@ impl SessionHandle {
                     Ok(()) => {
                         tracing::info!("reconnect: success on attempt {}", attempt);
                         let elapsed_ms = reconnect_start.elapsed().as_millis() as u64;
-                        let st = snapshot_telemetry(
-                            &handle.0.connect_state.lock().unwrap().snapshot,
-                        );
+                        let st =
+                            snapshot_telemetry(&handle.0.connect_state.lock().unwrap().snapshot);
                         zedra_telemetry::send(Event::ReconnectSuccess {
                             attempt,
                             elapsed_ms,
@@ -1436,23 +1435,23 @@ impl SessionHandle {
             // Post-loop: emit ReconnectExhausted for both termination paths
             // (all attempts used, or fatal auth error stopping early).
             if !handle.0.user_disconnect.load(Ordering::Acquire) {
-                let (fatal_label, is_connected) =
-                    if let Ok(mut cs) = handle.0.connect_state.lock() {
-                        let fatal_label = if let ConnectPhase::Failed(ref err) = cs.phase {
-                            err.fatal_label()
-                        } else {
-                            None
-                        };
-                        let is_connected = cs.phase.is_connected();
-                        // Non-fatal exhaustion: set HostUnreachable here.
-                        // Fatal path: set_failed() inside connect() already set the phase.
-                        if !is_connected && fatal_label.is_none() {
-                            cs.phase = ConnectPhase::Failed(ConnectError::HostUnreachable);
-                        }
-                        (fatal_label, is_connected)
+                let (fatal_label, is_connected) = if let Ok(mut cs) = handle.0.connect_state.lock()
+                {
+                    let fatal_label = if let ConnectPhase::Failed(ref err) = cs.phase {
+                        err.fatal_label()
                     } else {
-                        (None, false)
+                        None
                     };
+                    let is_connected = cs.phase.is_connected();
+                    // Non-fatal exhaustion: set HostUnreachable here.
+                    // Fatal path: set_failed() inside connect() already set the phase.
+                    if !is_connected && fatal_label.is_none() {
+                        cs.phase = ConnectPhase::Failed(ConnectError::HostUnreachable);
+                    }
+                    (fatal_label, is_connected)
+                } else {
+                    (None, false)
+                };
                 if !is_connected {
                     zedra_telemetry::send(Event::ReconnectExhausted {
                         // On normal exhaustion the loop increments attempt past max before
