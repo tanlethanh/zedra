@@ -1,12 +1,11 @@
-# Zedra - GPUI on Android
+# Zedra
 
-## Project Overview
+**Remote editor on mobile. Code from anywhere.**
 
-Zedra is a port of Zed's GPUI UI framework to Android using wgpu for GPU rendering. This is the first successful port of GPUI to a mobile platform.
+One QR scan connects you to your desktop. Full terminal, file browser, git, and AI agents over an encrypted P2P tunnel. Built with GPUI for native GPU-accelerated rendering at 60 FPS.
 
-**Current Status**: Interactive UI with navigation, editor, and touch input working at 60 FPS on Android via wgpu/Vulkan
-
-**Test Device**: Mali-G68 MC4 (Vulkan 1.1.0, 1080x2400 @ 2.75x DPI)
+**Primary Platform**: iOS (Metal renderer via `gpui_ios`)
+**Secondary Platform**: Android (wgpu/Vulkan via `gpui_android` + `gpui_wgpu`)
 
 ## Protocol Governance (Required)
 
@@ -96,193 +95,157 @@ No backend:         silent no-op (default)
 
 ## Quick Start
 
-### Build and Deploy
+### iOS (Primary)
 
 ```bash
-# First-time setup: Initialize git submodules
+# First-time setup
 git submodule update --init --recursive
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim
 
-# Recommended: Automated development cycle (build + install + launch + monitor)
+# Full build + install + launch on connected device
+./scripts/run-ios.sh device
+
+# Incremental ObjC-only rebuild (~5s vs ~60s full)
+cd ios && xcodegen generate && xcodebuild build -project Zedra.xcodeproj -scheme Zedra ...
+
+# Stream device logs
+./scripts/ios-log.sh [--filter <pattern>] [--select-device]
+```
+
+See `docs/IOS_WORKFLOW.md` for complete build pipeline, FFI patterns, and debugging.
+
+### Android
+
+```bash
+# First-time setup
+git submodule update --init --recursive
+rustup target add aarch64-linux-android
+
+# Build + install + launch
 ./scripts/dev-cycle.sh
 
-# Or manual steps:
-./scripts/build-android.sh                    # Build Rust libraries
-cd android && ./gradlew installDebug && cd .. # Install APK
-adb logcat | grep zedra                       # View logs
+# Or manual:
+./scripts/build-android.sh
+cd android && ./gradlew installDebug && cd ..
+adb logcat | grep zedra
 ```
-
-### Developer Tools
-
-**Pre-flight check** (verify environment before building):
-```bash
-./scripts/preflight-check.sh
-```
-
-**Background log monitoring** (continuous logcat with filtering):
-```bash
-./scripts/logcat-daemon.sh start  # Start background monitor
-./scripts/logcat-daemon.sh tail   # View live logs
-./scripts/logcat-daemon.sh stop   # Stop monitor
-```
-
-**Crash analysis** (automatically diagnose crashes):
-```bash
-./scripts/analyze-crash.sh
-```
-
-See `docs/DEBUGGING.md` for complete debugging guide.
 
 ### Prerequisites
 
-- Android NDK r25c+
-- Rust 1.75+ with aarch64-linux-android target
-- Android SDK with API 31+
-- Physical Android device (emulator not tested)
-- Git submodules initialized:
-  ```bash
-  git submodule update --init --recursive
-  ```
-  - `vendor/zed` - Zed with GPUI Android platform (gpui, gpui_android, gpui_wgpu crates)
+| | iOS | Android |
+|---|---|---|
+| Build tool | Xcode 26+, xcodegen, libimobiledevice | Android NDK r25c+, Android SDK API 31+ |
+| Rust targets | `aarch64-apple-ios`, `aarch64-apple-ios-sim` | `aarch64-linux-android` |
+| Device | Physical (or simulator) | Physical device (emulator not tested) |
+| Submodules | `git submodule update --init --recursive` | same |
 
 ## Architecture
 
 ### High-Level Design
 
-```
-JNI Thread → Command Queue → Main Thread → GPUI → wgpu → Vulkan
-```
+**iOS**: `ObjC UIKit → FFI → Rust → GPUI → Metal`
 
-**Key Components**:
+**Android**: `JNI Thread → Command Queue → Main Thread → GPUI → wgpu → Vulkan`
 
-1. **Command Queue Pattern** (`src/android/command_queue.rs`)
-   - Decouples multi-threaded JNI from single-threaded GPUI
-   - Thread-safe crossbeam channel
-   - Main thread drains queue at 60 FPS via Choreographer
+### Key Components
 
-2. **JNI Bridge** (`src/android/jni.rs`)
-   - Java ↔ Rust interface
-   - Queues commands from any thread
-   - Surface lifecycle callbacks
+**Shared (both platforms)**:
+- **`crates/zedra/src/app.rs`** — `ZedraApp`: root view, workspace management, QR pairing, deeplinks
+- **`crates/zedra/src/workspace_view.rs`** — per-session workspace: `DrawerHost` + header/main-view stack, wired to `SessionHandle`
+- **`crates/zedra/src/workspace_drawer.rs`** — `WorkspaceDrawer`: tabbed sidebar (files, git, terminal, session)
+- **`crates/zedra/src/workspace_state.rs`** — `WorkspaceState`: single source of truth for display data; persisted to `workspaces.json`
+- **`crates/zedra/src/platform_bridge.rs`** — `PlatformBridge` trait + global accessor; never call platform APIs directly from UI code
+- **`crates/zedra/src/mgpui/`** — mobile GPUI primitives: `DrawerHost`, keyboard `input`
 
-3. **Android App** (`src/android/app.rs`)
-   - Main-thread-only GPUI application state
-   - Processes commands from queue
-   - Manages window and platform lifecycle
+**iOS platform** (`vendor/zed/crates/gpui_ios/`):
+- `IosWindow` — Metal-backed window, touch input, safe area insets, UIKit lifecycle
+- `ios/Zedra/ZedraFirebase.m` — Firebase Analytics + Crashlytics (ObjC)
+- `ios/Zedra/SwiftCompatibilityShim.swift` — required for Firebase static pods (must exist)
 
-4. **Touch Handler** (`src/android/touch.rs`)
-   - Tap detection (TAP_SLOP), scroll/drawer gesture disambiguation
-   - Fling momentum scrolling with frame-rate independent friction
-   - Delegates to GestureArena (`src/mgpui/gesture.rs`) for pan vs scroll
-
-4. **GPUI Android Platform** (`vendor/zed/crates/gpui_android/`)
-   - AndroidPlatform - Platform trait implementation
-   - AndroidWindow - Window management, surface lifecycle, atlas sharing
-   - AndroidDispatcher - Task queue integration
-
-5. **wgpu Renderer** (`vendor/zed/crates/gpui_wgpu/`)
-   - WgpuRenderer - GPU rendering via wgpu (Vulkan backend on Android)
-   - WgpuAtlas - Texture atlas for glyph/sprite caching
-   - WgpuContext - Device/adapter initialization
-   - Dual-source blending shaders conditionally compiled (not available on all GPUs)
+**Android platform** (`vendor/zed/crates/gpui_android/`, `gpui_wgpu/`):
+- `AndroidWindow` — surface lifecycle, atlas sharing; must use `WgpuRenderer::new_with_atlas()` (not `new()`)
+- `src/android/command_queue.rs` — bounded channel (512); use `try_send()`, never block JNI thread
+- `src/android/jni.rs` — all `#[no_mangle]` entry points must wrap body in `jni_call("name", || {...})`
+- `src/android/app.rs` — touch handling (tap, scroll, drawer pan, fling) in addition to surface/window lifecycle
 
 ### Critical Design Decisions
 
-1. **Threading Model**
-   - GPUI requires single-threaded execution
-   - JNI callbacks come from any thread
-   - Solution: Command queue isolates threading complexity
+1. **WorkspaceState as Single Source of Truth** — All display reads from `WorkspaceState`, never `SessionHandle` directly. `SessionHandle` fields are empty during connecting; `WorkspaceState` is seeded from persisted data before connection starts. See `docs/CONVENTIONS.md` § "WorkspaceState as Single Source of Truth".
 
-2. **Pixel Handling**
-   ```
-   Android DP → GPUI Logical Pixels → Vulkan Physical Pixels
-   Physical = Logical × Scale Factor (3.0 for high-DPI)
-   ```
-   - GPUI works in logical pixels
-   - wgpu renderer needs physical pixels
-   - Conversion at window/surface boundary in `window.rs:handle_surface_created()`
+2. **render() must be pure** — `render()` is side-effect free. Mutations/async work go in event handlers, `cx.spawn()`, or subscriptions. Use `SharedPendingSlot<T>` as the async-to-UI bridge pattern.
 
-3. **Lazy WgpuContext**
-   - GPU initialization deferred until first window opens
-   - Faster app startup
-   - Context reused across windows
+3. **PlatformBridge** — always access platform APIs via `platform_bridge::bridge()`. Never call platform APIs directly from UI code so both platforms share call sites.
 
-5. **Shared Atlas Pattern**
-   - Android window creates `WgpuAtlas` at construction (before surface exists)
-   - GPUI uses this atlas for scene construction (rasterizing glyphs, etc.)
-   - When surface arrives, renderer is created via `new_with_atlas()` sharing the same atlas
-   - Critical: scene texture IDs must reference the same atlas the renderer reads from
+4. **Pixel Handling (Android)** — logical pixels × scale = physical pixels. Conversion at `window.rs:handle_surface_created()`. Wrong conversion = black screen.
 
-4. **Surface Lifecycle**
-   - Window (logical) persists across surface recreation
-   - Renderer (physical) created/destroyed with surface
-   - Matches Android's view lifecycle
+5. **Atlas Sharing (Android)** — `WgpuRenderer::new_with_atlas()` is mandatory. Using `new()` creates a separate atlas → index-out-of-bounds crash during draw.
 
 ## Project Structure
 
 ```
-Cargo.toml                      # Workspace root (no package)
+Cargo.toml                      # Workspace root
 crates/
-  ├── zedra-terminal/           # Terminal emulation (alacritty + GPUI rendering)
+  ├── zedra-terminal/           # Terminal emulation (alacritty VTE + GPUI rendering)
+  ├── zedra-rpc/                # Protocol types + QR pairing codec
   │   └── src/
-  │       ├── lib.rs            # TerminalState + types
-  │       ├── element.rs        # GPUI Element for terminal grid
-  │       ├── keys.rs           # Keystroke → escape sequence mapping
-  │       └── view.rs           # TerminalView + GPUI Render
+  │       ├── proto.rs          # ZedraProto enum + all request/response types
+  │       └── pairing.rs        # ZedraPairingTicket encode/decode
   ├── zedra-telemetry/           # Pure telemetry: typed Event enum + TelemetryBackend trait
   │   └── src/
   │       └── lib.rs            # Event enum, context structs, global dispatch, backend trait
-  ├── zedra-rpc/                # irpc protocol types + QR pairing codec
+  ├── zedra-session/            # Mobile client: SessionHandle, iroh connection, auto-reconnect
   │   └── src/
-  │       ├── lib.rs            # Re-exports
-  │       ├── proto.rs          # irpc protocol enum (ZedraProto) + request/response types
-  │       └── pairing.rs        # EndpointAddr encode/decode (postcard + base64-url)
-  ├── zedra-session/            # Mobile client: iroh connection, RPC, auto-reconnect
+  │       ├── lib.rs            # SessionHandle, terminal buffers, reconnect state machine
+  │       └── signer.rs         # ClientSigner trait + FileClientSigner (Ed25519)
+  ├── zedra/                    # Mobile cdylib (iOS + Android)
   │   └── src/
-  │       ├── lib.rs            # RemoteSession, terminal buffers, reconnect state
-  │       └── signer.rs         # ClientSigner trait + FileClientSigner (Ed25519 app key)
-  ├── zedra/                    # Android cdylib (final binary crate)
-  │   ├── build.rs
-  │   └── src/
-  │       ├── lib.rs            # Module declarations + JNI exports
-  │       ├── android/          # Android platform integration
-  │       │   ├── mod.rs        # Module declarations + legacy JNI stubs
-  │       │   ├── app.rs        # Main-thread GPUI app, surface/window lifecycle
-  │       │   ├── jni.rs        # JNI bridge (Java ↔ Rust)
-  │       │   ├── command_queue.rs # Thread-safe crossbeam command queue
-  │       │   ├── bridge.rs     # AndroidBridge: PlatformBridge impl (density, keyboard)
-  │       │   └── touch.rs      # TouchHandler: tap, scroll, drawer pan, fling momentum
-  │       ├── mgpui/            # Mobile GPUI primitives
-  │       │   ├── mod.rs        # Re-exports + drawer gesture globals
-  │       │   ├── gesture.rs    # GestureArena: pan vs scroll disambiguation
-  │       │   ├── drawer_host.rs # DrawerHost: slide-from-left overlay
-  │       │   ├── stack_navigator.rs # StackNavigator: push/pop with header bar
-  │       │   └── input.rs      # Keyboard input handling
-  │       ├── editor/           # Code editor components
-  │       │   ├── mod.rs        # Re-exports
-  │       │   ├── code_editor.rs # GPUI view: UniformList + StyledText + cursor
-  │       │   ├── git_sidebar.rs # Git status sidebar
-  │       │   ├── git_diff_view.rs # Git diff viewer
-  │       │   ├── syntax_highlighter.rs # Tree-sitter parsing + highlight queries
-  │       │   ├── syntax_theme.rs # Capture name → HighlightStyle mapping
-  │       │   └── text_buffer.rs # Text buffer with line indexing
-  │       ├── app.rs            # ZedraApp root view: DrawerHost + screens + badges
-  │       ├── app_drawer.rs     # AppDrawer: tabbed sidebar (files, git, terminal, session)
+  │       ├── lib.rs            # Module declarations + platform entry points
+  │       ├── app.rs            # ZedraApp: root view, workspace management, QR pairing
+  │       ├── workspace_view.rs # Per-session workspace: DrawerHost + views, SessionHandle wiring
+  │       ├── workspace_drawer.rs # WorkspaceDrawer: tabbed sidebar
+  │       ├── workspace_state.rs # WorkspaceState: persisted display data, workspaces.json
+  │       ├── connecting_view.rs # Connection progress screen
+  │       ├── home_view.rs      # Home/add-workspace screen
+  │       ├── terminal_panel.rs # Terminal tab panel
+  │       ├── terminal_card.rs  # Terminal card component
+  │       ├── session_panel.rs  # Session info panel
+  │       ├── transport_badge.rs # Connection status badge
   │       ├── file_explorer.rs  # FileExplorer tree view
-  │       ├── home_view.rs      # Home/connection screen
-  │       ├── pending.rs        # PendingSlot<T>: generic async→main-thread channel
-  │       ├── keyboard.rs       # Keyboard show/hide handler factory
-  │       ├── transport_badge.rs # Connection status badge rendering
-  │       ├── terminal_panel.rs # Terminal tab panel for app drawer
-  │       ├── session_panel.rs  # Session info panel for app drawer
+  │       ├── quick_action_panel.rs # Quick action panel
+  │       ├── active_terminal.rs # Active terminal state management
   │       ├── telemetry.rs      # FirebaseBackend: registers Firebase backend with zedra-telemetry
   │       ├── platform_bridge.rs # PlatformBridge trait + global accessor
-  │       └── theme.rs          # Color constants and theme helpers
+  │       ├── pending.rs        # SharedPendingSlot<T>: async→main-thread channel
+  │       ├── keyboard.rs       # Keyboard handler factories
+  │       ├── fonts.rs          # Font loading
+  │       ├── theme.rs          # Color constants, inset helpers
+  │       ├── deeplink.rs       # Deep link / QR URL handling
+  │       ├── button.rs         # Shared button component
+  │       ├── app_preview.rs    # App preview component
+  │       ├── ios.rs            # iOS module declarations
+  │       ├── ios_stub.c        # Weak FFI stubs for iOS
+  │       ├── android/          # Android platform integration
+  │       │   ├── app.rs        # Main-thread GPUI app, surface/window lifecycle, touch handling
+  │       │   ├── jni.rs        # JNI bridge; all entry points use jni_call()
+  │       │   ├── command_queue.rs # Crossbeam command queue (bounded 512)
+  │       │   └── bridge.rs     # AndroidBridge: PlatformBridge impl
+  │       ├── ios/              # iOS platform integration
+  │       │   ├── app.rs        # iOS app lifecycle + GPUI init
+  │       │   ├── bridge.rs     # IosBridge: PlatformBridge impl + iOS FFI exports
+  │       │   ├── analytics.rs  # Firebase Analytics bridge
+  │       │   ├── logger.rs     # NSLog bridge
+  │       │   └── nslog_bridge.m
+  │       ├── mgpui/            # Mobile GPUI primitives (shared)
+  │       │   ├── drawer_host.rs # DrawerHost: slide-from-left overlay
+  │       │   └── input.rs      # Keyboard input handling
+  │       └── editor/           # Code editor components
+  │           ├── code_editor.rs, git_sidebar.rs, git_diff_view.rs
+  │           ├── syntax_highlighter.rs, syntax_theme.rs, text_buffer.rs
   └── zedra-host/               # Desktop host daemon
       └── src/
-          ├── main.rs           # CLI: start (daemon) + client + stop
-          ├── client.rs         # `zedra client` — local RTT test client (PKI auth + ping loop)
-          ├── rpc_daemon.rs     # irpc RPC dispatch, PKI auth phase, TermAttach bidi streaming
-          ├── session_registry.rs # PKI sessions: ACLs, pairing slots, persistence, active client
+          ├── main.rs           # CLI: start / client / stop
+          ├── rpc_daemon.rs     # RPC dispatch, PKI auth, TermAttach bidi streaming
+          ├── session_registry.rs # PKI sessions: ACLs, pairing slots, persistence
           ├── iroh_listener.rs  # iroh Endpoint creation + accept loop
           ├── identity.rs       # Persistent Ed25519 host identity (~/.config/zedra/)
           ├── qr.rs             # QR code generation (terminal + JSON output)
@@ -292,34 +255,23 @@ crates/
           ├── git.rs            # Git RPC handlers (status, diff, log, commit, branches, checkout)
           └── pty.rs            # PTY management (spawn, resize, I/O streaming)
 
+ios/                            # Xcode project (xcodegen from project.yml)
+  ├── project.yml               # OTHER_LDFLAGS must include $(inherited) before -ObjC -all_load
+  ├── Podfile                   # use_frameworks! :linkage => :static
+  └── Zedra/
+      ├── ZedraFirebase.m, ZedraQRScanner.m, main.m
+      └── SwiftCompatibilityShim.swift  # Must exist — Firebase static pods need Swift
+
 android/app/src/main/java/dev/zedra/app/
-  ├── MainActivity.java         # Activity + frame loop
-  ├── GpuiSurfaceView.java     # Surface management + IME + touch/scroll detection
-  └── QRScannerActivity.java   # QR code scanner for pairing
+  ├── MainActivity.java, GpuiSurfaceView.java, QRScannerActivity.java
 
-vendor/zed/crates/gpui_android/src/android/
-  ├── platform.rs               # AndroidPlatform
-  ├── window.rs                 # AndroidWindow (CRITICAL: surface sizing + atlas sharing)
-  ├── text_system.rs            # CosmicTextSystem for Android
-  ├── dispatcher.rs             # Task queue
-  └── keyboard.rs               # Input (stub)
+vendor/zed/crates/
+  ├── gpui_ios/src/ios/         # iOS GPUI platform (Metal renderer)
+  ├── gpui_android/src/android/ # Android GPUI platform (wgpu)
+  └── gpui_wgpu/src/            # wgpu renderer (shaders, atlas, context)
 
-vendor/zed/crates/gpui_wgpu/src/
-  ├── gpui_wgpu.rs              # Crate root, re-exports
-  ├── wgpu_renderer.rs          # WgpuRenderer: pipelines, draw, new_with_atlas()
-  ├── wgpu_atlas.rs             # WgpuAtlas: texture atlas allocation + uploads
-  ├── wgpu_context.rs           # WgpuContext: device/adapter init, feature detection
-  ├── shaders.wgsl              # Base shaders (all primitives except subpixel sprites)
-  └── shaders_subpixel.wgsl     # Subpixel sprite shaders (requires dual-source blending)
-
-packages/relay-worker/              # [DEPRECATED] Experimental Cloudflare Worker relay — do not use
-                                    # Production relay now uses official iroh-relay binary (see deploy/relay/)
-
-docs/
-  ├── ARCHITECTURE.md           # Design decisions
-  ├── DEBUGGING.md              # Debug workflow and tools
-  ├── RELAY.md                  # Relay wire protocol + DO topology docs
-  └── IOS_WORKFLOW.md           # iOS build pipeline, FFI patterns, debugging, pitfalls
+packages/relay-worker/          # [DEPRECATED] do not use
+deploy/relay/                   # Production iroh-relay binary deployment
 ```
 
 ### Dependency Graph
@@ -327,255 +279,108 @@ docs/
 ```
 zedra-telemetry (pure: typed Event enum, TelemetryBackend trait, global dispatch)
     ↑
-zedra-rpc (irpc protocol types, QR pairing codec)
+zedra-rpc (protocol types, QR pairing codec)
     ↑
 zedra-session (iroh connection, RPC, auto-reconnect — emits telemetry events)
     ↑
-zedra-terminal (terminal emulation, sends input via zedra-session)
+zedra-terminal (VTE emulation, sends input via zedra-session)
     ↑
 zedra (app cdylib — registers FirebaseBackend, emits app-level events)
 
-zedra-host (iroh listener, irpc RPC daemon — registers GA4 HostBackend)
+zedra-host (iroh listener, RPC daemon — registers GA4 HostBackend)
     ↑
 zedra-rpc + zedra-telemetry
 ```
 
 ## What Works
 
-- Core rendering: Colored shapes, borders, shadows
-- Text rendering: CosmicTextSystem with Android fonts
-- 60 FPS via Choreographer
-- wgpu rendering via Vulkan backend
-- Proper surface lifecycle management
-- Thread-safe command queue
-- Correct pixel density handling
-- Optimized font loading (82% faster startup)
-- Touch input: tap for clicks, drag for scrolling (touch-to-scroll conversion)
-- Soft keyboard: programmatic show/hide via `requestKeyboard()`/`dismissKeyboard()`
-- Navigation: TabNavigator (bottom tabs), StackNavigator (push/pop with back button)
-- DrawerHost: slide-from-left file explorer drawer
-- Code editor: syntax-highlighted Rust code with tree-sitter, cursor, and virtual scrolling
-- File preview grid: card-based file browser that opens editor views
-- Remote terminal: connection form with RPC session (zedra-session + zedra-terminal)
-- iroh transport: QUIC/TLS 1.3, direct P2P (RelayMode::Disabled — LAN/routable IPs only)
-- irpc typed RPC: postcard binary serialization, bidi streaming for terminal I/O
-- QR pairing: compact postcard+base64-url EndpointAddr encoding (~50 bytes)
-- Connection monitoring: path watcher tracks direct vs relay, RTT, bytes sent/recv (2s polling fallback)
-- Session persistence: server-side SessionRegistry with terminal PTY survival across reconnects
-- Client-side auto-reconnect: exponential backoff (1s–30s), persistent terminal output buffers survive reconnect
-- Terminal backlog replay: missed output replayed per-terminal via TermAttach bidi stream
-- Reconnecting UI badge: transport indicator shows "Reconnecting... (N)" with red dot during reconnect
-- PKI authentication: QR encodes `ZedraPairingTicket` (endpoint_id + handshake_key + session_id); first pairing via HMAC-SHA256; reconnects via Ed25519 challenge-response; `auth_token` fully removed
-- Per-session ACLs: each session tracks authorized client pubkeys; exclusive single-client ownership (one active client per session)
-- Session state persistence: `sessions.json` survives daemon restarts; authorized pubkeys restored on reload
-- Ping/Pong RTT: `Ping { timestamp_ms }` replaces `Heartbeat`; host echoes timestamp for RTT measurement
-- PTY output coalescing: buffered chunks merged before relay send, separate output task decouples slow sends from input
-- `zedra client` CLI: connects to running daemon via pre-authorized key, measures relay vs P2P RTT with statistics
-- `HostUnreachable` state: after 10 failed reconnect attempts; shown in home screen and session panel
+- 60 FPS GPU rendering: Metal (iOS), wgpu/Vulkan (Android)
+- Touch input: tap, scroll, drawer pan, fling momentum
+- Navigation: DrawerHost (slide-from-left), StackNavigator (push/pop)
+- Code editor: tree-sitter syntax highlighting, cursor, virtual scrolling
+- Remote terminal: alacritty VTE, bidi streaming, PTY resize
+- iroh transport: QUIC/TLS 1.3 direct P2P, relay fallback
+- PKI authentication: QR pairing (HMAC-SHA256 registration), Ed25519 challenge-response reconnect
+- Session persistence: `workspaces.json`, PTY survival across reconnects
+- Auto-reconnect: exponential backoff (1s–30s), terminal output buffers, backlog replay
+- Connection monitoring: RTT, path type (direct/relay), byte stats
+- Firebase Analytics + Crashlytics (iOS), GA4 analytics (host daemon)
+- `zedra client` CLI: RTT measurement, relay vs P2P statistics
 
 ## Known Limitations (Technical Debt)
 
-See `docs/TECHNICAL_DEBT.md` for detailed solutions.
 
-1. **Keyboard Integration** (Medium Priority)
-   - Soft keyboard can be shown/hidden programmatically but no GPUI text input fields trigger it yet
-   - `GpuiSurfaceView.requestKeyboard()` / `dismissKeyboard()` are wired but not called from Rust
-   - Solution: Add JNI calls from Rust when GPUI text inputs gain focus
-
-2. **Touch Gesture Refinement** (Medium Priority)
-   - Tap vs scroll uses GestureArena with TAP_SLOP = 4px logical
-   - Fling/momentum scrolling implemented with frame-rate independent friction
-   - No pinch-to-zoom or multi-touch gestures yet
-   - Solution: Add multi-pointer tracking in `TouchHandler`
-
-3. **Terminal Session Persistence** (High Priority)
+1. **Terminal Session Persistence** (High Priority)
    - PTYs survive disconnect but fresh clients can't discover or resume them
-   - No screen state restoration (blank/garbled terminal after long disconnect)
-   - No on-disk credential storage (app restart = new session)
-   - See `docs/TERMINAL_PERSISTENCE.md` for full analysis and implementation plan
-   - Solution: Server-side `vt100` parser for screen capture + terminal discovery flow
+   - No screen state restoration after long disconnect
+   - Solution: server-side `vt100` screen capture + terminal discovery flow
 
-4. **Sample Data Only** (Low Priority)
-   - Editor shows 4 hardcoded Rust sample files, file explorer shows demo tree
-   - No filesystem access on Android yet
-   - Solution: Use Android Storage Access Framework or SSH file browsing
+2. **Touch Gestures** (Medium Priority)
+   - No pinch-to-zoom or multi-touch gestures yet
+   - Solution: multi-pointer tracking in `TouchHandler`
 
-## Critical Code Locations
-
-### Surface Sizing Fix (THE breakthrough that made rendering work)
-
-**File**: `vendor/zed/crates/gpui_android/src/android/window.rs:handle_surface_created()`
-
-```rust
-pub fn handle_surface_created(&mut self, native_window: NativeWindow, context: &WgpuContext) {
-    let size = Size {
-        width: DevicePixels((f32::from(self.bounds.size.width) * self.scale) as i32),
-        height: DevicePixels((f32::from(self.bounds.size.height) * self.scale) as i32),
-    };
-    let config = WgpuSurfaceConfig { size, transparent: false };
-    // Pass the window's atlas so renderer shares it with scene construction
-    let renderer = WgpuRenderer::new_with_atlas(context, &raw_window, config, Some(self.atlas.clone()))?;
-}
-```
-
-**Why Critical**: This is where logical pixels are converted to physical pixels. Getting this wrong causes black screen or incorrectly sized UI. The `new_with_atlas()` call is also critical — using `new()` would create a separate atlas, causing index-out-of-bounds crashes during draw.
-
-### Window Creation with Actual Dimensions
-
-**File**: `crates/zedra/src/android/app.rs:handle_surface_created()`
-
-Window dimensions are now derived from the native surface size and display density (via JNI `get_density()`), not hardcoded. The surface `width`/`height` come from `surfaceChanged` and are divided by the scale factor to get logical pixels.
-
-**Why Critical**: Using DEFAULT_WINDOW_SIZE here caused the original black screen issue. Must use actual screen dimensions.
-
-### Touch-to-Scroll Conversion
-
-**File**: `crates/zedra/src/android/touch.rs:handle_touch()`
-
-GPUI scrollable elements (`uniform_list`, `overflow_y_scroll`) respond to `ScrollWheel` events, not mouse drags. The `TouchHandler` uses a `GestureArena` to disambiguate drawer pan vs content scroll:
-- `ACTION_DOWN` → Cancel fling, record origin for tap detection
-- `ACTION_MOVE` → Feed gesture arena; once winner decided, dispatch DrawerPan or ScrollWheel
-- `ACTION_UP` → If no drag (within TAP_SLOP=4px), dispatch tap; otherwise end gesture
-- Fling: momentum scrolling with frame-rate independent friction (0.95^(dt*60))
-
-### Tree-sitter Highlight Deduplication
-
-**File**: `crates/zedra-editor/src/editor_view.rs:line_highlights()`
-
-Tree-sitter can return overlapping capture ranges. GPUI's `compute_runs()` requires non-overlapping, sorted ranges. The `line_highlights()` method sorts by start position and deduplicates overlapping spans before passing to `StyledText::with_default_highlights()`.
+3. **No Real Filesystem Access on Mobile** (Low Priority)
+   - Editor shows hardcoded sample files; filesystem browsing goes through host RPC only
+   - Solution: Expand host RPC to serve full directory trees
 
 ## Common Issues and Solutions
 
-### Black Screen
-- Check surface dimensions are physical pixels (1080x2400, not 360x800)
-- Verify WgpuRenderer created successfully (check logcat for errors)
-- **Take screenshot** to confirm: `adb shell screencap -p /sdcard/test.png && adb pull /sdcard/test.png /tmp/test.png`
-- Check logs for rendering errors or panics
+### iOS
 
-### Build Errors
-- Ensure NDK path is set: `export ANDROID_NDK_ROOT=...`
-- Check Rust target installed: `rustup target add aarch64-linux-android`
-- Verify vendor/zed submodule initialized
+- **Swift linker error**: Ensure `ios/Zedra/SwiftCompatibilityShim.swift` exists
+- **Firebase crash**: Check `OTHER_LDFLAGS` in `project.yml` includes `$(inherited)` before `-ObjC -all_load`
+- **No logs**: Use `./scripts/ios-log.sh` — requires USB-paired device, never use `sudo log collect`
 
-### Crash on Launch
-- Check Vulkan 1.1+ support on device: `adb shell getprop ro.hardware.vulkan`
-- Verify JNI methods match Java signatures
-- Check logcat for panic messages
+### Android
 
-### Visual Verification (Screenshot Debugging)
-**Essential for UI verification** - logcat shows frames, screenshots prove rendering:
-```bash
-# After deployment
-adb shell screencap -p /sdcard/test.png
-adb pull /sdcard/test.png /tmp/test.png
-# Claude Code can display and analyze the screenshot
-```
-See `docs/DEBUGGING.md` for complete workflow.
-
-## Development Workflow
-
-1. **Make Changes**: Edit Rust or Java code
-2. **Build**: `./scripts/build-android.sh`
-3. **Install**: `cd android && ./gradlew installDebug`
-4. **Test**: Launch app and check `adb logcat | grep zedra`
-5. **Verify**: Look for frame logs and rendering confirmation
+- **Black screen**: Surface dimensions must be physical pixels (e.g. 1080×2400 not 360×800). Screenshot: `adb shell screencap -p /sdcard/test.png && adb pull /sdcard/test.png /tmp/`
+- **Build errors**: Check `ANDROID_NDK_ROOT` is set; verify `rustup target add aarch64-linux-android`
+- **Crash on launch**: Check Vulkan 1.1+ — `adb shell getprop ro.hardware.vulkan`
 
 ## Pre-Commit Checks (Required)
 
-Run these before every commit. CI enforces them on push/PR.
-
-### Rust
+CI enforces these on push/PR.
 
 ```bash
-# Format check (must pass before committing)
+# Rust
 cargo fmt
-
-# Check host crates compile cleanly (no Android NDK needed)
 cargo check -p zedra-rpc -p zedra-session -p zedra-terminal -p zedra-host
-```
 
-### JS/TS
-
-```bash
-# Format + lint all packages (auto-fix)
-bun run format
-
-# Check only (what CI runs)
-bun run check
+# JS/TS
+bun run format   # auto-fix
+bun run check    # CI mode (check only)
 ```
 
 ## Roadmap
 
-- **Phase 1**: Foundation ✅ Complete
-- **Phase 2**: Text Rendering ✅ Complete
-- **Phase 3**: Dynamic Configuration ✅ Complete (DisplayMetrics via JNI)
-- **Phase 4**: Input Integration ✅ Complete (touch→scroll, keyboard, tap detection)
-- **Phase 5**: Navigation + Editor ✅ Complete (tabs, stacks, drawer, syntax editor)
-- **Phase 6**: Transport ✅ Complete (iroh QUIC direct P2P, irpc typed RPC, session persistence, health monitoring)
-- **Phase 6.5**: Session Reconnect ✅ Complete (auto-reconnect with exponential backoff, persistent terminal buffers, backlog replay, reconnecting UI badge)
-- **Phase 6.7**: PKI Authentication ✅ Complete (ZedraPairingTicket QR, HMAC registration, Ed25519 challenge-response, per-session ACLs, session persistence, `zedra client` CLI)
-- **Phase 7**: Terminal Persistence - Next (server-side vt100 screen capture, fresh client terminal discovery, on-disk credential storage)
-- **Phase 8**: Production Hardening (momentum scrolling, real file access, multi-touch, E2E encryption)
-
-## Performance Characteristics
-
-**Current Performance (Phase 2)**:
-- Platform init: ~51ms (82% faster after font optimization)
-- CPU per frame: <5ms (plenty of headroom for 16ms target)
-- GPU per frame: <4ms
-- Memory: ~40-50 MB for single-window app
-- Frame rate: Stable 60 FPS
+- **Phases 1–6.7**: ✅ Complete (rendering, text, input, navigation, transport, PKI auth, reconnect)
+- **Phase 7**: Terminal Persistence — server-side vt100 screen capture, fresh client terminal discovery, on-disk credentials
+- **Phase 8**: ACP Agent Panel — AI agent supervision UI (Claude Code / Codex relay via host daemon)
+- **Phase 9**: Production Hardening — multi-touch, real file access via host RPC, E2E encryption
 
 ## Important Notes for Future Development
 
-1. **Always test on physical device** - Emulator Vulkan support is inconsistent
-2. **Watch for threading issues** - All GPUI code MUST run on main thread
-3. **Pixel conversions** - Be explicit about logical vs physical pixels
-4. **Surface lifecycle** - Window persists, renderer is created/destroyed
-5. **wgpu/Vulkan compatibility** - Not all GPUs support dual-source blending; subpixel shaders are conditionally compiled
-6. **Atlas sharing** - The Android window's atlas MUST be passed to `WgpuRenderer::new_with_atlas()`, never use `new()` on Android
+1. **iOS is the primary platform** — new UI work targets iOS first, Android second
+2. **WorkspaceState rule** — display data always flows through `WorkspaceState`; never read `SessionHandle` in display code
+3. **PlatformBridge** — always use `platform_bridge::bridge()`, never call platform APIs directly from UI
+4. **render() must be pure** — no mutations, no async; use `cx.spawn()` and `SharedPendingSlot`
+5. **Logging** — use `tracing::` everywhere, never `log::` directly; see `docs/CONVENTIONS.md` for levels and format
+6. **Threading** — all GPUI on main thread; Android: command queue; iOS: ObjC main thread → FFI
+7. **Android atlas** — always `WgpuRenderer::new_with_atlas()`, never `new()`
+8. **Physical device testing** — always test on real device
 
 ## Documentation
 
-- Overview and quick start: `docs/README.md`
-- Architecture and design patterns: `docs/ARCHITECTURE.md`
-- Known issues with solutions: `docs/TECHNICAL_DEBT.md`
-- Debug workflow and tools: `docs/DEBUGGING.md`
-- Relay wire protocol + DO topology: `docs/RELAY.md`
-- Protocol/RPC conventions + compatibility: `docs/PROTOCOL_SPECS.md`
+- Code conventions (imports, render purity, logging, WorkspaceState): `docs/CONVENTIONS.md`
+- iOS build pipeline: `docs/IOS_WORKFLOW.md`
+- Protocol/RPC: `docs/PROTOCOL_SPECS.md`
+- Architecture decisions: `docs/ARCHITECTURE.md`
+- Relay deployment: `docs/RELAY.md`
 - Terminal persistence design: `docs/TERMINAL_PERSISTENCE.md`
-- **iOS development workflow**: `docs/IOS_WORKFLOW.md` — build pipeline, commands, FFI patterns, debugging, pitfalls
+- Debug workflow: `docs/DEBUGGING.md`
 
-## Performance Testing
-
-Run the performance testing script after deployment to measure frame times, memory, and descriptor pool health:
-
-```bash
-./scripts/perf-test.sh
-```
-
-This captures ~10 seconds of logcat, then reports:
-- Frame timing statistics (min/max/avg/p95)
-- Memory usage (RSS from `dumpsys meminfo`)
-- Any warnings or errors
-
-## Achievement
-
-First successful port of GPUI to Android with:
-- wgpu rendering via Vulkan backend with conditional dual-source blending
-- CosmicTextSystem with Android font support
-- Clean command queue architecture for threading
-- Proper surface lifecycle management with shared atlas pattern
-- Optimized font loading (82% faster startup)
-- 60 FPS rendering
-- Full touch input (tap + scroll) with IME keyboard support
-- Mobile navigation (tabs, stacks, drawer)
-- Syntax-highlighted code editor with tree-sitter
-- iroh transport: QUIC/TLS 1.3 direct P2P (RelayMode::Disabled)
-- Connection path monitoring with RTT and byte stats
-- irpc typed RPC: postcard binary serialization, bidi streaming for terminal I/O (no JSON, no base64)
-- Auto-reconnect: exponential backoff, persistent output buffers, per-terminal backlog replay
+- ACP agent panel design: `docs/ACP_PLAN_2.md`
 
 ---
 
-**Last Updated**: 2026-02-22
+**Last Updated**: 2026-03-27
