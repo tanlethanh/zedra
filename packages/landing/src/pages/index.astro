@@ -136,7 +136,7 @@ const canonicalUrl = "https://zedra.dev/";
     <meta property="og:url" content={canonicalUrl} />
     <meta property="og:site_name" content="Zedra" />
     <meta property="og:locale" content="en_US" />
-    <meta property="og:image" content="https://www.zedra.dev/OG.png" />
+    <meta property="og:image" content="https://zedra.dev/OG.png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta name="twitter:card" content="summary_large_image" />
@@ -144,11 +144,14 @@ const canonicalUrl = "https://zedra.dev/";
     <meta name="twitter:creator" content="@zedradev" />
     <meta name="twitter:title" content={pageTitle} />
     <meta name="twitter:description" content={pageDescription} />
-    <meta name="twitter:image" content="https://www.zedra.dev/OG.png" />
+    <meta name="twitter:image" content="https://zedra.dev/OG.png" />
     <meta name="twitter:image:alt" content="Zedra — remote coding on mobile" />
     <meta property="og:image:alt" content="Zedra — remote coding on mobile" />
     <link rel="canonical" href={canonicalUrl} />
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" href="/favicon-192.png" sizes="192x192" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <script
@@ -463,6 +466,11 @@ const canonicalUrl = "https://zedra.dev/";
 
       /* --- social links --- */
 
+      .ph-badge {
+        display: inline-block;
+        line-height: 0;
+      }
+
       .social-links {
         display: flex;
         align-items: center;
@@ -662,6 +670,11 @@ const canonicalUrl = "https://zedra.dev/";
           justify-content: center;
         }
 
+        .ph-badge {
+          display: block;
+          text-align: center;
+        }
+
         .social-links {
           margin-top: 16px;
           justify-content: center;
@@ -851,6 +864,20 @@ const canonicalUrl = "https://zedra.dev/";
                 ))
               }
             </div>
+
+            <a
+              class="ph-badge"
+              href="https://www.producthunt.com/products/zedra-mobile-ide-for-ai?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-zedra"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <img
+                alt="Zedra - Code from anywhere | Product Hunt"
+                width="250"
+                height="54"
+                src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1097175&theme=dark&t=1774597535210"
+              />
+            </a>
 
             <div class="social-links" aria-label="Zedra social links">
               {
