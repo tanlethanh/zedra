@@ -33,3 +33,4 @@ __attribute__((weak)) void zedra_record_error(const char *message, const char *f
 __attribute__((weak)) void zedra_record_panic(const char *message, const char *location) {}
 __attribute__((weak)) void zedra_set_user_id(const char *user_id) {}
 __attribute__((weak)) void zedra_set_custom_key(const char *key, const char *value) {}
+__attribute__((weak)) void zedra_set_collection_enabled(int enabled) {}

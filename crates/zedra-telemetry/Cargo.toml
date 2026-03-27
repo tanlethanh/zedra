@@ -1,0 +1,8 @@
+[package]
+name = "zedra-telemetry"
+version.workspace = true
+edition.workspace = true
+description = "Pure telemetry trait + global dispatch for Zedra"
+
+[dependencies]
+log.workspace = true

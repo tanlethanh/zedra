@@ -51,6 +51,7 @@ pub extern "C" fn zedra_ios_check_pending_frame() -> bool {
 pub extern "C" fn zedra_launch_gpui() {
     super::logger::IosLogger::init(log::LevelFilter::Debug);
 
+    crate::telemetry::init();
     install_panic_hook();
 
     platform_bridge::set_bridge(super::bridge::IosBridge);

@@ -51,8 +51,8 @@ pub mod active_terminal;
 // General deeplink handling (zedra:// URL scheme)
 pub mod deeplink;
 
-// Firebase Analytics + Crashlytics (platform-agnostic API)
-pub mod analytics;
+// Firebase telemetry backend registration (platform-agnostic API)
+pub mod telemetry;
 
 // Shared Zedra app (screen navigation + connection)
 pub mod app;
@@ -112,7 +112,7 @@ pub fn install_panic_hook() {
         // In release builds (panic = "abort") this line is never reached —
         // the native abort signal is captured directly by the Crashlytics NDK
         // / iOS crash handler as a fatal crash with a full native stack trace.
-        analytics::record_panic(&payload, &location);
+        telemetry::record_panic(&payload, &location);
     }));
 }
 

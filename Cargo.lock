@@ -9504,6 +9504,7 @@ dependencies = [
  "tree-sitter-yaml",
  "zedra-rpc",
  "zedra-session",
+ "zedra-telemetry",
  "zedra-terminal",
 ]
 
@@ -9536,6 +9537,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zedra-rpc",
+ "zedra-telemetry",
 ]
 
 [[package]]
@@ -9574,6 +9576,14 @@ dependencies = [
  "tokio",
  "tracing",
  "zedra-rpc",
+ "zedra-telemetry",
+]
+
+[[package]]
+name = "zedra-telemetry"
+version = "0.1.1"
+dependencies = [
+ "log",
 ]
 
 [[package]]

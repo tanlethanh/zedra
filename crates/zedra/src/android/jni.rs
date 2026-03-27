@@ -89,6 +89,7 @@ fn init_logging() {
                 ),
         );
 
+        crate::telemetry::init();
         install_panic_hook();
     });
 }

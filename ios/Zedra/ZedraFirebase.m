@@ -70,3 +70,9 @@ void zedra_set_custom_key(const char *key, const char *value) {
     NSString *v = [NSString stringWithUTF8String:value];
     [[FIRCrashlytics crashlytics] setCustomValue:v forKey:k];
 }
+
+void zedra_set_collection_enabled(int enabled) {
+    BOOL on = (enabled != 0);
+    [FIRAnalytics setAnalyticsCollectionEnabled:on];
+    [[FIRCrashlytics crashlytics] setCrashlyticsCollectionEnabled:on];
+}

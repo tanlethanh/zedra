@@ -67,6 +67,7 @@ serde_bytes.workspace = true
 
 # Workspace crates
 zedra-rpc = { path = "../zedra-rpc" }
+zedra-telemetry.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
