@@ -53,9 +53,7 @@ pub async fn self_update(tag: &str) -> Result<String> {
             if !expected.is_empty() {
                 let actual = sha256_hex(&archive_bytes);
                 if actual != expected {
-                    bail!(
-                        "checksum mismatch!\n  expected: {expected}\n  actual:   {actual}"
-                    );
+                    bail!("checksum mismatch!\n  expected: {expected}\n  actual:   {actual}");
                 }
                 true
             } else {
@@ -85,7 +83,8 @@ pub async fn self_update(tag: &str) -> Result<String> {
     }
 
     // Replace current binary via atomic rename
-    let current_exe = std::env::current_exe().context("cannot determine current executable path")?;
+    let current_exe =
+        std::env::current_exe().context("cannot determine current executable path")?;
     let current_exe = current_exe
         .canonicalize()
         .unwrap_or_else(|_| current_exe.clone());
@@ -96,17 +95,19 @@ pub async fn self_update(tag: &str) -> Result<String> {
     if backup.exists() {
         let _ = std::fs::remove_file(&backup);
     }
-    std::fs::rename(&current_exe, &backup)
-        .with_context(|| format!("failed to rename current binary at {}", current_exe.display()))?;
+    std::fs::rename(&current_exe, &backup).with_context(|| {
+        format!(
+            "failed to rename current binary at {}",
+            current_exe.display()
+        )
+    })?;
     match std::fs::copy(&extracted, &current_exe) {
         Ok(_) => {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(
-                    &current_exe,
-                    std::fs::Permissions::from_mode(0o755),
-                );
+                let _ =
+                    std::fs::set_permissions(&current_exe, std::fs::Permissions::from_mode(0o755));
             }
             let _ = std::fs::remove_file(&backup);
         }

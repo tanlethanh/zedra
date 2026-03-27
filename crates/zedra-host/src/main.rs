@@ -310,12 +310,26 @@ async fn main() -> Result<()> {
             // 1a. Async version check (non-blocking, silent on failure).
             tokio::spawn(async {
                 match version_check::check_latest_version().await {
-                    Ok(Some(latest)) => eprintln!(
-                        "[update]   new version available: {} (current: v{}). Run `zedra update`.",
-                        latest,
-                        env!("CARGO_PKG_VERSION")
-                    ),
-                    _ => {}
+                    Ok(Some(ref latest)) => {
+                        eprintln!(
+                            "[update]   new version available: {} (current: v{}). Run `zedra update`.",
+                            latest,
+                            env!("CARGO_PKG_VERSION")
+                        );
+                        zedra_telemetry::send(Event::UpdateChecked {
+                            update_available: true,
+                            latest_version: latest.clone(),
+                            current_version: env!("CARGO_PKG_VERSION"),
+                        });
+                    }
+                    Ok(None) => {
+                        zedra_telemetry::send(Event::UpdateChecked {
+                            update_available: false,
+                            latest_version: String::new(),
+                            current_version: env!("CARGO_PKG_VERSION"),
+                        });
+                    }
+                    Err(_) => {}
                 }
             });
 
@@ -603,8 +617,17 @@ async fn main() -> Result<()> {
                 }
             }
 
+            let update_start = std::time::Instant::now();
             match version_check::self_update(&target_tag).await {
                 Ok(tag) => {
+                    let elapsed_ms = update_start.elapsed().as_millis() as u64;
+                    zedra_telemetry::send(Event::SelfUpdate {
+                        success: true,
+                        target_version: tag.clone(),
+                        from_version: env!("CARGO_PKG_VERSION"),
+                        error: "",
+                        elapsed_ms,
+                    });
                     eprintln!("\nUpdated to {tag}.");
                     if !alive.is_empty() {
                         eprintln!(
@@ -613,6 +636,15 @@ async fn main() -> Result<()> {
                     }
                 }
                 Err(e) => {
+                    let elapsed_ms = update_start.elapsed().as_millis() as u64;
+                    let error_label = classify_update_error(&e);
+                    zedra_telemetry::send(Event::SelfUpdate {
+                        success: false,
+                        target_version: target_tag.clone(),
+                        from_version: env!("CARGO_PKG_VERSION"),
+                        error: error_label,
+                        elapsed_ms,
+                    });
                     eprintln!("Update failed: {e}");
                     std::process::exit(1);
                 }
@@ -658,6 +690,23 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn classify_update_error(e: &anyhow::Error) -> &'static str {
+    let msg = e.to_string();
+    if msg.contains("checksum mismatch") {
+        "checksum_mismatch"
+    } else if msg.contains("download failed") || msg.contains("error sending request") {
+        "download_failed"
+    } else if msg.contains("archive did not contain") || msg.contains("failed to extract") {
+        "extract_failed"
+    } else if msg.contains("failed to install") || msg.contains("failed to rename") {
+        "install_failed"
+    } else if msg.contains("failed to resolve latest") {
+        "version_resolve_failed"
+    } else {
+        "unknown"
+    }
 }
 
 fn format_duration(secs: u64) -> String {
