@@ -1,6 +1,6 @@
 # Zedra
 
-**Remote editor on mobile. Code from anywhere.**
+**Mobile remote editor. Code from anywhere.**
 
 One QR scan connects you to your desktop. Full terminal, file browser, git, and AI agents over an encrypted P2P tunnel. No port forwarding. No cloud.
 
