@@ -289,6 +289,30 @@ pub enum Event {
         bytes_recv: u64,
         interval_secs: u64,
     },
+
+    // ── Self-update (server-side) ──────────────────────────────────────────
+    /// Background version check completed at daemon start.
+    UpdateChecked {
+        /// Whether a newer version is available.
+        update_available: bool,
+        /// The latest version tag (e.g. "v0.3.0"), or empty string if already up-to-date or check failed.
+        latest_version: String,
+        /// Current running version (e.g. "0.2.1").
+        current_version: &'static str,
+    },
+    /// `zedra update` ran to completion (success or failure).
+    SelfUpdate {
+        success: bool,
+        /// Target version tag (e.g. "v0.3.0").
+        target_version: String,
+        /// Current version before update (e.g. "0.2.1").
+        from_version: &'static str,
+        /// Error label on failure (e.g. "download_failed", "checksum_mismatch",
+        /// "extract_failed", "install_failed"); empty on success.
+        error: &'static str,
+        /// Wall time from update start to finish (ms).
+        elapsed_ms: u64,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -325,6 +349,8 @@ impl Event {
             Self::HostTerminalOpen { .. } => "terminal_open",
             Self::DaemonHeartbeat { .. } => "daemon_heartbeat",
             Self::BandwidthSample { .. } => "bandwidth_sample",
+            Self::UpdateChecked { .. } => "update_checked",
+            Self::SelfUpdate { .. } => "self_update",
         }
     }
 
@@ -577,6 +603,28 @@ impl Event {
                 ("bytes_sent", bytes_sent.to_string()),
                 ("bytes_recv", bytes_recv.to_string()),
                 ("interval_secs", interval_secs.to_string()),
+            ],
+            Self::UpdateChecked {
+                update_available,
+                latest_version,
+                current_version,
+            } => vec![
+                ("update_available", bool_str(*update_available)),
+                ("latest_version", latest_version.clone()),
+                ("current_version", current_version.to_string()),
+            ],
+            Self::SelfUpdate {
+                success,
+                target_version,
+                from_version,
+                error,
+                elapsed_ms,
+            } => vec![
+                ("success", bool_str(*success)),
+                ("target_version", target_version.clone()),
+                ("from_version", from_version.to_string()),
+                ("error", error.to_string()),
+                ("elapsed_ms", elapsed_ms.to_string()),
             ],
         }
     }

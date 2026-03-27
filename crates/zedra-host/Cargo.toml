@@ -38,6 +38,11 @@ rand.workspace = true
 ed25519-dalek.workspace = true
 sha2.workspace = true
 
+# Archive extraction (for self-update)
+flate2 = "1"
+tar = "0.4"
+tempfile = "3"
+
 # Filesystem
 directories = "5"
 
