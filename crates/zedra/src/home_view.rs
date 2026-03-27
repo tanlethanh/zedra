@@ -181,7 +181,7 @@ impl Render for HomeView {
                         div()
                             .text_color(rgb(theme::TEXT_SECONDARY))
                             .text_size(px(theme::FONT_DETAIL))
-                            .child("curl -fsSL zedra.dev/install | bash"),
+                            .child("curl -fsSL zedra.dev/install.sh | sh"),
                     )
                     .child(
                         div()
