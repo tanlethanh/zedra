@@ -102,8 +102,21 @@ async function collectMetrics(instance: string): Promise<NodeMetrics> {
     result.iroh = {
       connectedClients: Math.max(0, accepts - disconnects),
       acceptedTotal: accepts,
+      disconnectsTotal: disconnects,
+      uniqueClientKeys: parseMetric(prom, "relayserver_unique_client_keys_total"),
       bytesSent: parseMetric(prom, "relayserver_bytes_sent_total"),
       bytesRecv: parseMetric(prom, "relayserver_bytes_recv_total"),
+      bytesRxRatelimited: parseMetric(prom, "relayserver_bytes_rx_ratelimited_total_total"),
+      sendPacketsSent: parseMetric(prom, "relayserver_send_packets_sent_total"),
+      sendPacketsRecv: parseMetric(prom, "relayserver_send_packets_recv_total"),
+      sendPacketsDropped: parseMetric(prom, "relayserver_send_packets_dropped_total"),
+      otherPacketsSent: parseMetric(prom, "relayserver_other_packets_sent_total"),
+      otherPacketsRecv: parseMetric(prom, "relayserver_other_packets_recv_total"),
+      otherPacketsDropped: parseMetric(prom, "relayserver_other_packets_dropped_total"),
+      gotPing: parseMetric(prom, "relayserver_got_ping_total"),
+      sentPong: parseMetric(prom, "relayserver_sent_pong_total"),
+      unknownFrames: parseMetric(prom, "relayserver_unknown_frames_total"),
+      connsRxRatelimited: parseMetric(prom, "relayserver_conns_rx_ratelimited_total_total"),
     };
 
     const loadavg = readFileSync("/host/proc/loadavg", "utf-8");

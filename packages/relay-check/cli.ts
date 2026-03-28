@@ -40,11 +40,26 @@ function printNode(m: NodeMetrics): void {
     return;
   }
 
+  const { iroh } = m;
+  const dropColor = (n: number, s: string) => n > 0 ? chalk.yellow(s) : chalk.dim(s);
+
   const lines: string[] = [
     label,
-    `  clients    ${chalk.bold(m.iroh.connectedClients)}  ${chalk.dim(`(${m.iroh.acceptedTotal} total)`)}`,
-    `  bandwidth  ↑ ${fmtMB(m.iroh.bytesSent)}  ↓ ${fmtMB(m.iroh.bytesRecv)}`,
+    `  clients    ${chalk.bold(iroh.connectedClients)} connected  ${chalk.dim(`${iroh.acceptedTotal} accepted  ${iroh.disconnectsTotal} disconnected  ${iroh.uniqueClientKeys} unique/day`)}`,
+    `  bandwidth  ↑ ${fmtMB(iroh.bytesSent)}  ↓ ${fmtMB(iroh.bytesRecv)}`,
+    `  packets    ↑ ${iroh.sendPacketsSent}  ↓ ${iroh.sendPacketsRecv}  ${dropColor(iroh.sendPacketsDropped, `${iroh.sendPacketsDropped} dropped`)}`,
+    `  ping/pong  ${iroh.gotPing} / ${iroh.sentPong}`,
   ];
+
+  if (iroh.otherPacketsSent > 0 || iroh.otherPacketsRecv > 0 || iroh.otherPacketsDropped > 0) {
+    lines.push(`  other pkt  ↑ ${iroh.otherPacketsSent}  ↓ ${iroh.otherPacketsRecv}  ${dropColor(iroh.otherPacketsDropped, `${iroh.otherPacketsDropped} dropped`)}`);
+  }
+  if (iroh.connsRxRatelimited > 0 || iroh.bytesRxRatelimited > 0) {
+    lines.push(`  ratelimit  ${chalk.yellow(`${iroh.connsRxRatelimited} conns  ${fmtMB(iroh.bytesRxRatelimited)} bytes`)}`);
+  }
+  if (iroh.unknownFrames > 0) {
+    lines.push(`  unknown    ${chalk.yellow(`${iroh.unknownFrames} frames`)}`);
+  }
 
   if (m.os) {
     const memN = pct(m.os.memUsedBytes, m.os.memTotalBytes);
