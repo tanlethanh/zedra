@@ -123,17 +123,11 @@ pub(crate) fn transport_badge_info(state: &ConnectState) -> (String, u32) {
             format!("{retry_prefix}Registering device"),
             theme::ACCENT_YELLOW,
         ),
-        ConnectPhase::Authenticating | ConnectPhase::Proving => {
-            (format!("{retry_prefix}PKI challenge"), theme::ACCENT_YELLOW)
-        }
-        ConnectPhase::FetchingInfo => (
-            format!("{retry_prefix}Fetching workspace info"),
+        ConnectPhase::Authenticating | ConnectPhase::Proving => (
+            format!("{retry_prefix}Authenticating"),
             theme::ACCENT_YELLOW,
         ),
-        ConnectPhase::ResumingTerminals => (
-            format!("{retry_prefix}Resuming terminals"),
-            theme::ACCENT_YELLOW,
-        ),
+        ConnectPhase::Sync => (format!("{retry_prefix}Syncing"), theme::ACCENT_YELLOW),
         _ => ("Disconnected".into(), theme::ACCENT_RED),
     }
 }

@@ -20,13 +20,13 @@
 //   Registering      (first pairing only — skipped on reconnect)
 //     │
 //     ▼
-//   Authenticating
+//   Authenticating   → Connect RPC; token fast path returns SyncSessionResult immediately (1 RTT)
+//     │               PKI path issues Challenge → Proving (2 RTTs)
+//     ▼
+//   Proving          → session_id, auth_outcome; SyncSessionResult piggybacked on AuthProveResult
 //     │
 //     ▼
-//   Proving          → session_id, auth_outcome
-//     │
-//     ▼
-//   FetchingInfo     → hostname, username, workdir, os, …
+//   Sync     → terminal reattach, file tree sync, git state sync
 //     │
 //     ▼
 //   Connected
@@ -59,16 +59,14 @@ pub enum ConnectPhase {
     EstablishingRpc,
     /// First pairing only: HMAC registration (prove QR possession).
     Registering,
-    /// PKI challenge: request nonce from host + verify host Ed25519 signature.
+    /// Connect RPC — token resume or PKI challenge-response.
     Authenticating,
     /// PKI prove: client signs nonce + AuthProve to attach to session.
     Proving,
-    /// Fetching session info (hostname, workdir, OS, …) via RPC.
-    FetchingInfo,
+    /// Syncing: terminal reattach, file tree, and git state.
+    Sync,
     /// Fully operational.
     Connected,
-    /// Re-attaching existing terminals after session resume / reconnect.
-    ResumingTerminals,
     /// Waiting to retry after connection loss.
     Reconnecting {
         attempt: u32,
@@ -80,19 +78,17 @@ pub enum ConnectPhase {
     Failed(ConnectError),
 }
 
-/// Step index labels for the horizontal progress stepper (5 visual steps).
-pub const STEPPER_STEP_NAMES: [&str; 5] = ["Init", "Connect", "Auth", "Sync", "Done"];
+/// Step index labels for the horizontal progress stepper (3 visual steps).
+pub const STEPPER_STEP_NAMES: [&str; 3] = ["Connect", "Auth", "Sync"];
 
 impl ConnectPhase {
-    /// Maps to a stepper step index (0–4) for the horizontal progress bar.
+    /// Maps to a stepper step index (0–2) for the horizontal progress bar.
     /// Returns `None` for Idle / Reconnecting / Failed (they don't map linearly).
     pub fn step_index(&self) -> Option<usize> {
         match self {
-            Self::BindingEndpoint => Some(0),
-            Self::HolePunching | Self::EstablishingRpc => Some(1),
-            Self::Registering | Self::Authenticating | Self::Proving => Some(2),
-            Self::FetchingInfo | Self::ResumingTerminals => Some(3),
-            Self::Connected => Some(4),
+            Self::BindingEndpoint | Self::HolePunching | Self::EstablishingRpc => Some(0),
+            Self::Registering | Self::Authenticating | Self::Proving => Some(1),
+            Self::Sync | Self::Connected => Some(2),
             _ => None,
         }
     }
@@ -107,9 +103,8 @@ impl ConnectPhase {
             Self::Registering => "registering",
             Self::Authenticating => "authenticating",
             Self::Proving => "proving",
-            Self::FetchingInfo => "fetching_info",
+            Self::Sync => "sync",
             Self::Connected => "connected",
-            Self::ResumingTerminals => "resuming_terminals",
             Self::Reconnecting { .. } => "reconnecting",
             Self::Failed(_) => "failed",
         }
@@ -124,9 +119,8 @@ impl ConnectPhase {
             Self::Registering => "Registering",
             Self::Authenticating => "Authenticating",
             Self::Proving => "Proving identity",
-            Self::FetchingInfo => "Fetching info",
+            Self::Sync => "Syncing",
             Self::Connected => "Connected",
-            Self::ResumingTerminals => "Resuming terminals",
             Self::Reconnecting { .. } => "Reconnecting",
             Self::Failed(_) => "Failed",
         }
@@ -145,8 +139,7 @@ impl ConnectPhase {
                 | Self::Registering
                 | Self::Authenticating
                 | Self::Proving
-                | Self::FetchingInfo
-                | Self::ResumingTerminals
+                | Self::Sync
         )
     }
 
@@ -255,7 +248,7 @@ pub struct ConnectSnapshot {
     pub session_id: Option<String>,
     pub auth_outcome: Option<AuthOutcome>,
 
-    // ── Host (populated after FetchingInfo completes) ──────────────────────
+    // ── Host (populated after Sync completes) ──────────────────────
     pub hostname: Option<String>,
     pub username: Option<String>,
     pub workdir: Option<String>,

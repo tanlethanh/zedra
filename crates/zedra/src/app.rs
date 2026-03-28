@@ -551,70 +551,21 @@ impl ZedraApp {
                 Ok(()) => {
                     tracing::info!("connected via iroh!");
 
-                    // Check for existing server-side terminals (session resume case).
-                    // If found, attach them and restore the UI; otherwise create a new terminal.
-                    match handle_for_connect.terminal_list().await {
-                        Ok(server_ids) if !server_ids.is_empty() => {
-                            tracing::info!(
-                                "Session resumed: attaching {} existing terminal(s)",
-                                server_ids.len()
-                            );
-                            handle_for_connect.set_resuming_terminals();
-                            let t_resume = std::time::Instant::now();
-                            let mut attached = Vec::new();
-                            for id in &server_ids {
-                                match handle_for_connect.terminal_attach_existing(id).await {
-                                    Ok(()) => attached.push(id.clone()),
-                                    Err(e) => {
-                                        tracing::warn!("Failed to attach terminal {}: {}", id, e)
-                                    }
-                                }
+                    let server_ids = handle_for_connect.terminal_ids();
+                    if !server_ids.is_empty() {
+                        tracing::info!(
+                            "Session resumed: attaching {} existing terminal(s)",
+                            server_ids.len()
+                        );
+                        pending_existing_terminals.set(server_ids);
+                    } else {
+                        match handle_for_connect.terminal_create(cols_u16, rows_u16).await {
+                            Ok(term_id) => {
+                                tracing::info!("Remote terminal created: {}", term_id);
+                                pending_term_id.set(term_id);
                             }
-                            let resume_ms = t_resume.elapsed().as_millis() as u64;
-                            if !attached.is_empty() {
-                                zedra_telemetry::send(Event::SessionResumed {
-                                    terminal_count: attached.len(),
-                                    resume_ms,
-                                });
-                                handle_for_connect.mark_connected_after_resume(resume_ms);
-                                pending_existing_terminals.set(attached);
-                            } else {
-                                // All attaches failed — fall back to creating a new terminal
-                                handle_for_connect.mark_connected_after_resume(resume_ms);
-                                match handle_for_connect.terminal_create(cols_u16, rows_u16).await {
-                                    Ok(term_id) => pending_term_id.set(term_id),
-                                    Err(e) => {
-                                        tracing::error!("Failed to create remote terminal: {}", e)
-                                    }
-                                }
-                            }
-                        }
-                        Ok(_) => {
-                            // No existing terminals (new session) — create one
-                            match handle_for_connect.terminal_create(cols_u16, rows_u16).await {
-                                Ok(term_id) => {
-                                    tracing::info!("Remote terminal created: {}", term_id);
-                                    zedra_telemetry::send(Event::TerminalOpened {
-                                        source: "new_session",
-                                        terminal_count: 1,
-                                    });
-                                    pending_term_id.set(term_id);
-                                }
-                                Err(e) => {
-                                    tracing::error!("Failed to create remote terminal: {}", e)
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("terminal_list failed ({}), creating new terminal", e);
-                            match handle_for_connect.terminal_create(cols_u16, rows_u16).await {
-                                Ok(term_id) => {
-                                    tracing::info!("Remote terminal created: {}", term_id);
-                                    pending_term_id.set(term_id);
-                                }
-                                Err(e) => {
-                                    tracing::error!("Failed to create remote terminal: {}", e)
-                                }
+                            Err(e) => {
+                                tracing::error!("Failed to create remote terminal: {}", e)
                             }
                         }
                     }

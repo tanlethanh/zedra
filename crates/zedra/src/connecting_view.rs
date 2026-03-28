@@ -191,14 +191,14 @@ fn render_stepper(cs: &ConnectState) -> Div {
             // Reconnecting / Failed: use snapshot's failed_at_step or last completed step
             cs.snapshot
                 .failed_at_step
-                .unwrap_or_else(|| completed_step_count(cs).saturating_sub(1).min(4))
+                .unwrap_or_else(|| completed_step_count(cs).saturating_sub(1).min(2))
         }
     });
 
     let completed = completed_step_count(cs);
 
     let mut row = div()
-        .w(px(260.0))
+        .w(px(180.0))
         .flex()
         .flex_row()
         .items_center()
@@ -296,27 +296,21 @@ fn render_stepper(cs: &ConnectState) -> Div {
 }
 
 /// Number of steps that have been fully completed.
-/// Step mapping: 0=Init, 1=Connect, 2=Auth, 3=Sync, 4=Done
+/// Step mapping: 0=Connect, 1=Auth, 2=Sync
 fn completed_step_count(cs: &ConnectState) -> usize {
     if cs.phase.is_connected() {
-        return 5;
+        return 3;
     }
     let snap = &cs.snapshot;
     let mut n = 0;
-    if snap.binding_ms.is_some() {
-        n = 1; // Init done
-    }
     if snap.rpc_ms.is_some() {
-        n = 2; // Connect done (P2P + RPC both finished)
+        n = 1; // Connect done
     }
     if snap.auth_ms.is_some() {
-        n = 3; // Auth done
+        n = 2; // Auth done
     }
-    // Sync (FetchingInfo + ResumingTerminals) is done once resume completes.
-    // For new sessions (no resume), Connected is reached immediately after fetch
-    // and the early return above handles full completion.
     if snap.resume_ms.is_some() {
-        n = 4; // Sync done
+        n = 3; // Sync done
     }
     n
 }
@@ -598,7 +592,7 @@ fn build_timing_string(snap: &ConnectSnapshot) -> String {
         parts.push(format!("Bind {ms}ms"));
     }
     if let Some(ms) = snap.hole_punch_ms {
-        parts.push(format!("P2P {ms}ms"));
+        parts.push(format!("HolePunch {ms}ms"));
     }
     if let Some(ms) = snap.rpc_ms {
         parts.push(format!("RPC {ms}ms"));
@@ -611,7 +605,7 @@ fn build_timing_string(snap: &ConnectSnapshot) -> String {
     }
     match (snap.fetch_ms, snap.resume_ms) {
         (Some(fetch), Some(resume)) => parts.push(format!("Sync {}ms", fetch + resume)),
-        (Some(ms), None) => parts.push(format!("Sync {ms}ms")),
+        (Some(ms), None) | (None, Some(ms)) => parts.push(format!("Sync {ms}ms")),
         _ => {}
     }
     parts.join(" \u{00b7} ")
