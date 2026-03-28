@@ -615,14 +615,10 @@ impl SessionHandle {
                             bytes_increased = true;
                         }
 
-                        let prior_sent = handle_for_paths
-                            .0
-                            .bytes_sent_accum
-                            .load(Ordering::Acquire);
-                        let prior_recv = handle_for_paths
-                            .0
-                            .bytes_recv_accum
-                            .load(Ordering::Acquire);
+                        let prior_sent =
+                            handle_for_paths.0.bytes_sent_accum.load(Ordering::Acquire);
+                        let prior_recv =
+                            handle_for_paths.0.bytes_recv_accum.load(Ordering::Acquire);
                         if let Ok(mut cs) = handle_for_paths.0.connect_state.lock() {
                             let prev_direct = cs
                                 .snapshot
