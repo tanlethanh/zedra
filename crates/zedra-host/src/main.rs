@@ -59,6 +59,12 @@ enum Commands {
         /// stderr. Uses the GA4 debug endpoint — events are NOT recorded in GA4.
         #[arg(long)]
         debug_telemetry: bool,
+
+        /// Force relay-only mode: disable P2P hole punching and direct-path
+        /// advertising. All traffic goes through the relay server. Useful when
+        /// the host is behind a firewall that blocks direct UDP.
+        #[arg(long)]
+        relay_only: bool,
     },
     /// Connect to a running daemon and measure end-to-end RTT
     Client {
@@ -156,6 +162,7 @@ async fn main() -> Result<()> {
             relay_url,
             no_telemetry,
             debug_telemetry,
+            relay_only,
         } => {
             let startup_start = std::time::Instant::now();
             let workdir = std::path::PathBuf::from(workdir)
@@ -268,7 +275,7 @@ async fn main() -> Result<()> {
             let init_ms = startup_start.elapsed().as_millis() as u64;
             let endpoint_bind_start = std::time::Instant::now();
             let endpoint =
-                iroh_listener::create_endpoint(&host_identity, &endpoint_relay_urls).await?;
+                iroh_listener::create_endpoint(&host_identity, &endpoint_relay_urls, relay_only).await?;
             let endpoint_bind_ms = endpoint_bind_start.elapsed().as_millis() as u64;
 
             // Pre-authorize the persistent CLI client key so `zedra client` can
@@ -335,7 +342,7 @@ async fn main() -> Result<()> {
             // background and PkarrPublisher will republish once the public IP is
             // discovered, before any user could reasonably scan and connect.
             if let Err(e) =
-                generate_pairing_qr(&registry, &session_id, endpoint_id, &endpoint, json).await
+                generate_pairing_qr(&registry, &session_id, endpoint_id, &endpoint, &endpoint_relay_urls, json).await
             {
                 tracing::warn!("Failed to generate QR code: {}", e);
             }
@@ -347,9 +354,10 @@ async fn main() -> Result<()> {
                 let endpoint = endpoint.clone();
                 let registry = registry.clone();
                 let session_id = session_id.clone();
+                let relay_urls_for_listener = endpoint_relay_urls.clone();
                 tokio::spawn(async move {
                     if let Err(e) =
-                        run_qr_key_listener(registry, session_id, endpoint_id, endpoint).await
+                        run_qr_key_listener(registry, session_id, endpoint_id, endpoint, relay_urls_for_listener).await
                     {
                         tracing::warn!("QR key listener stopped: {}", e);
                     }
@@ -724,6 +732,7 @@ async fn generate_pairing_qr(
     session_id: &str,
     endpoint_id: iroh::PublicKey,
     endpoint: &iroh::Endpoint,
+    relay_urls: &[String],
     json: bool,
 ) -> Result<()> {
     let ticket = ZedraPairingTicket {
@@ -736,10 +745,10 @@ async fn generate_pairing_qr(
         .await;
 
     if json {
-        let info = qr::build_pairing_info(&ticket, endpoint)?;
+        let info = qr::build_pairing_info(&ticket, endpoint, relay_urls)?;
         qr::print_pairing_json(&info);
     } else {
-        qr::generate_pairing_qr(&ticket, endpoint)?;
+        qr::generate_pairing_qr(&ticket, endpoint, relay_urls)?;
         eprintln!("Note: this pairing QR is one-time use.");
     }
     Ok(())
@@ -751,6 +760,7 @@ async fn run_qr_key_listener(
     session_id: String,
     endpoint_id: iroh::PublicKey,
     endpoint: iroh::Endpoint,
+    relay_urls: Vec<String>,
 ) -> Result<()> {
     use std::io::Read;
     use std::os::fd::AsRawFd;
@@ -779,7 +789,7 @@ async fn run_qr_key_listener(
                     break;
                 };
                 if matches!(key, b'r' | b'R') {
-                    if let Err(e) = generate_pairing_qr(&registry, &session_id, endpoint_id, &endpoint, false).await {
+                    if let Err(e) = generate_pairing_qr(&registry, &session_id, endpoint_id, &endpoint, &relay_urls, false).await {
                         tracing::warn!("Failed to regenerate QR code: {}", e);
                     } else {
                         eprintln!("Regenerated pairing QR (press 'r' again to refresh).");
