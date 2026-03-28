@@ -131,7 +131,7 @@ Host zedra-relay-eu1
 
 **Secrets (local):** copy `deploy/relay/.env.example` to `deploy/relay/.env` and set at least `DISCORD_WEBHOOK`. The root `.gitignore` ignores `.env` everywhere.
 
-> **How `.env` works:** `deploy.sh` merges your local `deploy/relay/.env` with injected `INSTANCE=<name>` (from `--instance`), uploads to `/opt/zedra/deploy/relay/.env.local`, then copies to `.env` for Compose. `INSTANCE=` / `INSTANCES=` lines in your local file are ignored. The relay uses `INSTANCE` for hostname (`${INSTANCE}.relay.zedra.dev`). The **Docker** `relay-monitor` sidecar uses **`INSTANCE` only**. **Multi-host SSH checks from your laptop** use **`packages/relay-check`** (`INSTANCES=ap1,us1,eu1 bun monitor.ts` or `bun cli.ts`).
+> **How `.env` works:** `deploy.sh` merges your local `deploy/relay/.env` with injected `INSTANCE=<name>` (from `--instance`), uploads to `/opt/zedra/deploy/relay/.env.local`, then copies to `.env` for Compose. `INSTANCE=` / `INSTANCES=` lines in your local file are ignored. The relay uses `INSTANCE` for hostname (`${INSTANCE}.relay.zedra.dev`). The **Docker** `relay-monitor` sidecar uses **`INSTANCE` only**. **Multi-host SSH checks from your laptop** use **`packages/relay-check`** (`INSTANCES=sg1,us1,eu1 bun monitor.ts` or `bun cli.ts`).
 
 ### Deploy one instance
 
@@ -142,14 +142,30 @@ Host zedra-relay-eu1
 ### Deploy all instances in parallel
 
 ```bash
-./deploy/relay/deploy.sh --instance ap1,us1,eu1
+./deploy/relay/deploy.sh --instance sg1,us1,eu1
 ```
+
+### Redeploy a single service
+
+Use `--service relay` or `--service monitor` to rebuild and restart only one container without touching the other.
+
+```bash
+# Redeploy only the iroh-relay container (e.g. after a relay binary update)
+./deploy/relay/deploy.sh --instance ap1 --service relay
+
+# Redeploy only the relay-monitor container (e.g. after changing alert thresholds or monitor code)
+./deploy/relay/deploy.sh --instance sg1,us1,eu1 --service monitor
+```
+
+When `--service` is set:
+- Only the relevant Docker image is built and streamed to the host
+- `docker compose up -d --no-deps <service>` restarts that container only — the other keeps running
 
 ### How deploy.sh works
 
-1. Builds `zedra-relay:latest` and `zedra-monitor:latest` locally (native arm64 on Apple Silicon — no `--platform` flag needed)
-2. `docker save | gzip | ssh <host> docker load` — streams both images to the server without a registry
-3. Uploads `docker-compose.yml`, merges local `deploy/relay/.env` with injected `INSTANCE` to `.env.local` and `.env` on the host, runs `docker compose up -d`
+1. Builds `zedra-relay:latest` and/or `zedra-monitor:latest` locally (native arm64 on Apple Silicon — no `--platform` flag needed; skips images not relevant to `--service`)
+2. `docker save | gzip | ssh <host> docker load` — streams image(s) to the server without a registry
+3. Uploads `docker-compose.yml`, merges local `deploy/relay/.env` with injected `INSTANCE` to `.env.local` and `.env` on the host, runs `docker compose up -d` (or `--no-deps <service>` when targeting a single service)
 
 ---
 
