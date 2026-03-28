@@ -54,10 +54,10 @@ detect_platform() {
 
     # Check against supported targets
     case "$target" in
-        aarch64-apple-darwin) ;;
+        aarch64-apple-darwin|x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu) ;;
         *)
             echo "Error: pre-built binaries are not available for ${target}."
-            echo "Supported: aarch64-apple-darwin (Apple Silicon Mac)"
+            echo "Supported: aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu"
             echo ""
             echo "To build from source:"
             echo "  cargo install --git https://github.com/tanlethanh/zedra zedra-host"
