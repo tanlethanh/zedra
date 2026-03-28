@@ -41,7 +41,7 @@ function printNode(m: NodeMetrics): void {
   }
 
   const { iroh } = m;
-  const dropColor = (n: number, s: string) => n > 0 ? chalk.yellow(s) : chalk.dim(s);
+  const dropColor = (n: number, s: string) => (n > 0 ? chalk.yellow(s) : chalk.dim(s));
 
   const lines: string[] = [
     label,
@@ -52,10 +52,14 @@ function printNode(m: NodeMetrics): void {
   ];
 
   if (iroh.otherPacketsSent > 0 || iroh.otherPacketsRecv > 0 || iroh.otherPacketsDropped > 0) {
-    lines.push(`  other pkt  ↑ ${iroh.otherPacketsSent}  ↓ ${iroh.otherPacketsRecv}  ${dropColor(iroh.otherPacketsDropped, `${iroh.otherPacketsDropped} dropped`)}`);
+    lines.push(
+      `  other pkt  ↑ ${iroh.otherPacketsSent}  ↓ ${iroh.otherPacketsRecv}  ${dropColor(iroh.otherPacketsDropped, `${iroh.otherPacketsDropped} dropped`)}`
+    );
   }
   if (iroh.connsRxRatelimited > 0 || iroh.bytesRxRatelimited > 0) {
-    lines.push(`  ratelimit  ${chalk.yellow(`${iroh.connsRxRatelimited} conns  ${fmtMB(iroh.bytesRxRatelimited)} bytes`)}`);
+    lines.push(
+      `  ratelimit  ${chalk.yellow(`${iroh.connsRxRatelimited} conns  ${fmtMB(iroh.bytesRxRatelimited)} bytes`)}`
+    );
   }
   if (iroh.unknownFrames > 0) {
     lines.push(`  unknown    ${chalk.yellow(`${iroh.unknownFrames} frames`)}`);
