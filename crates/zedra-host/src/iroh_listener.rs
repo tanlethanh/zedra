@@ -46,10 +46,13 @@ fn relay_map_from_urls(urls: &[&str]) -> Result<iroh::RelayMap> {
 ///
 /// `relay_urls` overrides the default relays; falls back to `ZEDRA_RELAY_URLS`.
 /// iroh probes all relays and picks the lowest-latency one as preferred.
+/// `relay_only` disables all direct UDP transports and pkarr address publishing
+/// so all traffic goes through the relay — useful behind strict firewalls.
 /// Returns the endpoint ready for accepting connections and QR code generation.
 pub async fn create_endpoint(
     identity: &SharedIdentity,
     relay_urls: &[String],
+    relay_only: bool,
 ) -> Result<iroh::Endpoint> {
     let urls: Vec<&str> = if relay_urls.is_empty() {
         zedra_rpc::ZEDRA_RELAY_URLS.to_vec()
@@ -57,15 +60,23 @@ pub async fn create_endpoint(
         relay_urls.iter().map(|s| s.as_str()).collect()
     };
     let relay_mode = iroh::RelayMode::Custom(relay_map_from_urls(&urls)?);
-    let endpoint = iroh::Endpoint::builder()
+    let mut builder = iroh::Endpoint::builder()
         .secret_key(identity.iroh_secret_key().clone())
         .alpns(vec![ZEDRA_ALPN.to_vec()])
-        .relay_mode(relay_mode)
-        .address_lookup(iroh::address_lookup::PkarrPublisher::n0_dns())
-        .bind()
-        .await?;
+        .relay_mode(relay_mode);
+    if relay_only {
+        // Skip pkarr address publishing — no direct addresses to advertise.
+        builder = builder.clear_ip_transports();
+    } else {
+        builder = builder.address_lookup(iroh::address_lookup::PkarrPublisher::n0_dns());
+    }
+    let endpoint = builder.bind().await?;
 
-    tracing::info!("iroh endpoint bound: {}", endpoint.id().fmt_short());
+    tracing::info!(
+        "iroh endpoint bound: {} (relay_only={})",
+        endpoint.id().fmt_short(),
+        relay_only
+    );
     tracing::info!("iroh endpoint addr: {:?}", endpoint.addr());
 
     // Fire telemetry for the first STUN result (details logged by net_monitor).
