@@ -97,11 +97,13 @@ async function collectMetrics(instance: string): Promise<NodeMetrics> {
       sampleCpu(),
     ]);
 
+    const accepts = parseMetric(prom, "relayserver_accepts_total");
+    const disconnects = parseMetric(prom, "relayserver_disconnects_total");
     result.iroh = {
-      connectedClients: parseMetric(prom, "iroh_relay_connected_clients"),
-      acceptedTotal: parseMetric(prom, "iroh_relay_accepted_connections_total"),
-      bytesSent: parseMetric(prom, "iroh_relay_bytes_sent_total"),
-      bytesRecv: parseMetric(prom, "iroh_relay_bytes_recv_total"),
+      connectedClients: Math.max(0, accepts - disconnects),
+      acceptedTotal: accepts,
+      bytesSent: parseMetric(prom, "relayserver_bytes_sent_total"),
+      bytesRecv: parseMetric(prom, "relayserver_bytes_recv_total"),
     };
 
     const loadavg = readFileSync("/host/proc/loadavg", "utf-8");
