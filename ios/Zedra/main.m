@@ -377,7 +377,10 @@ static const char *kAccessoryKeyNames[] = {"escape", "tab", "left", "down", "up"
     CGFloat height = 44.0;
 
     UIView *bar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, height)];
-    bar.backgroundColor = [UIColor clearColor];
+    bar.backgroundColor = [UIColor colorWithRed:0.055 green:0.047 blue:0.047 alpha:0.96];
+    if (@available(iOS 13.0, *)) {
+        bar.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    }
 
     // Hairline top border as a subtle separator above the keyboard.
     UIView *border = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 0.33)];
@@ -393,7 +396,12 @@ static const char *kAccessoryKeyNames[] = {"escape", "tab", "left", "down", "up"
         btn.frame = CGRectMake(btnWidth * i, 0, btnWidth, height);
         [btn setTitle:labels[i] forState:UIControlStateNormal];
         btn.titleLabel.font = [UIFont systemFontOfSize:16.0];
-        [btn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
+        UIColor *buttonColor = [UIColor colorWithRed:0.96 green:0.96 blue:0.96 alpha:1.0];
+        [btn setTitleColor:buttonColor forState:UIControlStateNormal];
+        btn.tintColor = buttonColor;
+        if (@available(iOS 13.0, *)) {
+            btn.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+        }
         btn.tag = i;
         [btn addTarget:self action:@selector(keyboardShortcutTapped:)
       forControlEvents:UIControlEventTouchUpInside];

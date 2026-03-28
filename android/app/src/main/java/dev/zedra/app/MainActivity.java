@@ -2,6 +2,7 @@ package dev.zedra.app;
 
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.app.AppCompatDelegate;
 import androidx.core.splashscreen.SplashScreen;
 
 import android.app.Activity;
@@ -208,6 +209,8 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // Keep Android native UI (including IME helper text) aligned with Zedra's dark theme.
+        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES);
         SplashScreen.installSplashScreen(this);
         super.onCreate(savedInstanceState);
         Log.d(TAG, "onCreate");
