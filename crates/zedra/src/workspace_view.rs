@@ -205,6 +205,11 @@ impl Render for WorkspaceContent {
         let needs_full_overlay = !phase.is_connected() && !phase.is_idle();
 
         if needs_full_overlay {
+            // Reconnecting/failed overlay should always dismiss IME so it doesn't
+            // remain floating above the blocked terminal surface.
+            if !self.overlay_visible {
+                platform_bridge::bridge().hide_keyboard();
+            }
             // Active connect/failed phase — ensure full overlay is showing.
             self.overlay_visible = true;
         } else if self.overlay_visible {
