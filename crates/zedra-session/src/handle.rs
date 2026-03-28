@@ -1200,15 +1200,14 @@ impl SessionHandle {
 
         // Fetch the server's live terminal list and prune any client-side
         // terminals that no longer exist (e.g. host restarted and cleaned up).
-        let server_ids: std::collections::HashSet<String> =
-            match client.rpc(TermListReq {}).await {
-                Ok(result) => result.terminals.into_iter().map(|e| e.id).collect(),
-                Err(e) => {
-                    tracing::warn!("reattach: terminal_list failed: {e}");
-                    // Proceed with what we have — worst case attach fails per terminal.
-                    std::collections::HashSet::new()
-                }
-            };
+        let server_ids: std::collections::HashSet<String> = match client.rpc(TermListReq {}).await {
+            Ok(result) => result.terminals.into_iter().map(|e| e.id).collect(),
+            Err(e) => {
+                tracing::warn!("reattach: terminal_list failed: {e}");
+                // Proceed with what we have — worst case attach fails per terminal.
+                std::collections::HashSet::new()
+            }
+        };
 
         let pruned: Vec<String> = client_terminals
             .iter()
@@ -1216,7 +1215,11 @@ impl SessionHandle {
             .map(|t| t.id.clone())
             .collect();
         if !pruned.is_empty() {
-            tracing::info!("reattach: pruning {} stale terminals: {:?}", pruned.len(), pruned);
+            tracing::info!(
+                "reattach: pruning {} stale terminals: {:?}",
+                pruned.len(),
+                pruned
+            );
             if let Ok(mut terms) = self.0.terminals.lock() {
                 terms.retain(|t| server_ids.contains(&t.id));
             }

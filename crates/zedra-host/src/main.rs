@@ -275,7 +275,8 @@ async fn main() -> Result<()> {
             let init_ms = startup_start.elapsed().as_millis() as u64;
             let endpoint_bind_start = std::time::Instant::now();
             let endpoint =
-                iroh_listener::create_endpoint(&host_identity, &endpoint_relay_urls, relay_only).await?;
+                iroh_listener::create_endpoint(&host_identity, &endpoint_relay_urls, relay_only)
+                    .await?;
             let endpoint_bind_ms = endpoint_bind_start.elapsed().as_millis() as u64;
 
             // Pre-authorize the persistent CLI client key so `zedra client` can
@@ -341,8 +342,15 @@ async fn main() -> Result<()> {
             // resolves addresses at connect time via pkarr. STUN runs in the
             // background and PkarrPublisher will republish once the public IP is
             // discovered, before any user could reasonably scan and connect.
-            if let Err(e) =
-                generate_pairing_qr(&registry, &session_id, endpoint_id, &endpoint, &endpoint_relay_urls, json).await
+            if let Err(e) = generate_pairing_qr(
+                &registry,
+                &session_id,
+                endpoint_id,
+                &endpoint,
+                &endpoint_relay_urls,
+                json,
+            )
+            .await
             {
                 tracing::warn!("Failed to generate QR code: {}", e);
             }
@@ -356,8 +364,14 @@ async fn main() -> Result<()> {
                 let session_id = session_id.clone();
                 let relay_urls_for_listener = endpoint_relay_urls.clone();
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        run_qr_key_listener(registry, session_id, endpoint_id, endpoint, relay_urls_for_listener).await
+                    if let Err(e) = run_qr_key_listener(
+                        registry,
+                        session_id,
+                        endpoint_id,
+                        endpoint,
+                        relay_urls_for_listener,
+                    )
+                    .await
                     {
                         tracing::warn!("QR key listener stopped: {}", e);
                     }
