@@ -1,7 +1,7 @@
 // iroh_listener: accept incoming connections via iroh endpoint.
 //
-// Uses irpc typed protocol over QUIC. Each connection goes through session
-// binding (first message must be ResumeOrCreate) then enters the dispatch loop.
+// Uses irpc typed protocol over QUIC. Each connection goes through PKI auth
+// (Register/Authenticate/AuthProve) then enters the dispatch loop.
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -9,8 +9,8 @@ use std::sync::Arc;
 use crate::rpc_daemon::{self, DaemonState};
 use crate::session_registry::SessionRegistry;
 use zedra_rpc::proto::ZEDRA_ALPN;
+use zedra_telemetry::Event;
 
-use crate::analytics::Analytics;
 use crate::identity::SharedIdentity;
 
 fn ts() -> String {
@@ -27,27 +27,36 @@ fn ts() -> String {
     )
 }
 
-/// Build a relay map from the given URL.
-fn relay_map_from_url(url_str: &str) -> Result<iroh::RelayMap> {
-    let url: iroh::RelayUrl = url_str.parse()?;
-    Ok(iroh::RelayMap::from_iter([iroh::RelayConfig {
-        url,
-        quic: Some(iroh_relay::RelayQuicConfig::default()), // QUIC addr discovery on port 7842
-    }]))
+/// Build a relay map from one or more URLs.
+fn relay_map_from_urls(urls: &[&str]) -> Result<iroh::RelayMap> {
+    let configs = urls
+        .iter()
+        .map(|u| {
+            let url: iroh::RelayUrl = u.parse()?;
+            Ok(iroh::RelayConfig {
+                url,
+                quic: Some(iroh_relay::RelayQuicConfig::default()),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(iroh::RelayMap::from_iter(configs))
 }
 
 /// Create and bind an iroh endpoint with the host's identity.
 ///
-/// `relay_url` overrides the default relay; falls back to `ZEDRA_RELAY_URL`.
+/// `relay_urls` overrides the default relays; falls back to `ZEDRA_RELAY_URLS`.
+/// iroh probes all relays and picks the lowest-latency one as preferred.
 /// Returns the endpoint ready for accepting connections and QR code generation.
 pub async fn create_endpoint(
     identity: &SharedIdentity,
-    relay_url: Option<&str>,
-    analytics: std::sync::Arc<Analytics>,
+    relay_urls: &[String],
 ) -> Result<iroh::Endpoint> {
-    let relay_mode = iroh::RelayMode::Custom(relay_map_from_url(
-        relay_url.unwrap_or(zedra_rpc::ZEDRA_RELAY_URL),
-    )?);
+    let urls: Vec<&str> = if relay_urls.is_empty() {
+        zedra_rpc::ZEDRA_RELAY_URLS.to_vec()
+    } else {
+        relay_urls.iter().map(|s| s.as_str()).collect()
+    };
+    let relay_mode = iroh::RelayMode::Custom(relay_map_from_urls(&urls)?);
     let endpoint = iroh::Endpoint::builder()
         .secret_key(identity.iroh_secret_key().clone())
         .alpns(vec![ZEDRA_ALPN.to_vec()])
@@ -59,7 +68,7 @@ pub async fn create_endpoint(
     tracing::info!("iroh endpoint bound: {}", endpoint.id().fmt_short());
     tracing::info!("iroh endpoint addr: {:?}", endpoint.addr());
 
-    // Fire analytics for the first STUN result (details logged by net_monitor).
+    // Fire telemetry for the first STUN result (details logged by net_monitor).
     {
         use iroh::Watcher;
         let mut watcher = endpoint.net_report();
@@ -75,7 +84,11 @@ pub async fn create_endpoint(
                         r.preferred_relay,
                     );
                     let sym_nat = r.mapping_varies_by_dest().unwrap_or(false);
-                    analytics.net_report(r.global_v4.is_some(), r.global_v6.is_some(), sym_nat);
+                    zedra_telemetry::send(Event::NetReport {
+                        has_ipv4: r.global_v4.is_some(),
+                        has_ipv6: r.global_v6.is_some(),
+                        symmetric_nat: sym_nat,
+                    });
                     break;
                 }
                 if tokio::time::timeout(std::time::Duration::from_secs(10), watcher.updated())

@@ -87,12 +87,12 @@ impl HostIdentity {
     }
 }
 
-/// Path for the host-level analytics ID file (`~/.config/zedra/analytics_id`).
+/// Path for the host-level telemetry ID file (`~/.config/zedra/telemetry_id`).
 ///
 /// Shared across all workspaces on the same machine so connection counts
-/// roll up to a single host identity in analytics.
-pub fn analytics_id_path() -> Result<PathBuf> {
-    Ok(zedra_config_dir()?.join("analytics_id"))
+/// roll up to a single host identity in telemetry.
+pub fn telemetry_id_path() -> Result<PathBuf> {
+    Ok(zedra_config_dir()?.join("telemetry_id"))
 }
 
 /// Returns the per-workspace config directory:

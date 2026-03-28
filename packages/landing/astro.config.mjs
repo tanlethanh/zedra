@@ -7,6 +7,6 @@ import { defineConfig } from "astro/config";
 export default defineConfig({
   site: "https://zedra.dev",
   output: "static",
-  adapter: vercel(),
+  adapter: vercel({ webAnalytics: { enabled: true } }),
   integrations: [sitemap()],
 });

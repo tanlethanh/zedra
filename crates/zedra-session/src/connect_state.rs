@@ -97,6 +97,24 @@ impl ConnectPhase {
         }
     }
 
+    /// Short machine-readable label for telemetry events.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::BindingEndpoint => "binding_endpoint",
+            Self::HolePunching => "hole_punching",
+            Self::EstablishingRpc => "establishing_rpc",
+            Self::Registering => "registering",
+            Self::Authenticating => "authenticating",
+            Self::Proving => "proving",
+            Self::FetchingInfo => "fetching_info",
+            Self::Connected => "connected",
+            Self::ResumingTerminals => "resuming_terminals",
+            Self::Reconnecting { .. } => "reconnecting",
+            Self::Failed(_) => "failed",
+        }
+    }
+
     pub fn display_name(&self) -> &'static str {
         match self {
             Self::Idle => "Idle",
@@ -281,6 +299,13 @@ impl ConnectState {
     pub fn elapsed_secs(&self) -> u64 {
         self.started_at.map(|t| t.elapsed().as_secs()).unwrap_or(0)
     }
+
+    /// Milliseconds elapsed since the current connect attempt started, or 0.
+    pub fn elapsed_ms(&self) -> u64 {
+        self.started_at
+            .map(|t| t.elapsed().as_millis() as u64)
+            .unwrap_or(0)
+    }
 }
 
 impl Default for ConnectState {
@@ -357,6 +382,36 @@ impl ConnectError {
             Self::SessionInfoFailed(e) => format!("Failed to fetch session info: {e}"),
             Self::HostUnreachable => "Host unreachable after repeated attempts.".into(),
             Self::Other(e) => e.clone(),
+        }
+    }
+
+    /// Short machine-readable label for telemetry events.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::EndpointBindFailed(_) => "endpoint_bind_failed",
+            Self::QuicConnectFailed(_) => "quic_connect_failed",
+            Self::HandshakeConsumed => "handshake_consumed",
+            Self::InvalidHandshake => "invalid_handshake",
+            Self::StaleTimestamp => "stale_timestamp",
+            Self::SlotNotFound => "slot_not_found",
+            Self::Unauthorized => "unauthorized",
+            Self::NotInSessionAcl => "not_in_session_acl",
+            Self::SessionOccupied => "session_occupied",
+            Self::SessionNotFound => "session_not_found",
+            Self::InvalidSignature => "invalid_signature",
+            Self::HostSignatureInvalid => "host_signature_invalid",
+            Self::SessionInfoFailed(_) => "session_info_failed",
+            Self::HostUnreachable => "host_unreachable",
+            Self::Other(_) => "other",
+        }
+    }
+
+    /// Returns `Some(label)` if this error is fatal (retrying won't help), else `None`.
+    pub fn fatal_label(&self) -> Option<&'static str> {
+        if self.is_fatal() {
+            Some(self.label())
+        } else {
+            None
         }
     }
 

@@ -36,8 +36,12 @@ serde_json = { workspace = true, features = ["std"] }
 # Random/crypto
 rand.workspace = true
 ed25519-dalek.workspace = true
-base64-url.workspace = true
 sha2.workspace = true
+
+# Archive extraction (for self-update)
+flate2 = "1"
+tar = "0.4"
+tempfile = "3"
 
 # Filesystem
 directories = "5"
@@ -68,6 +72,7 @@ serde_bytes.workspace = true
 
 # Workspace crates
 zedra-rpc = { path = "../zedra-rpc" }
+zedra-telemetry.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

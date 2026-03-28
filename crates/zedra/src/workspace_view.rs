@@ -1,6 +1,7 @@
 // Per-session workspace: DrawerHost + header/main-view stack, wired to a SessionHandle.
 
 use gpui::{prelude::FluentBuilder as _, *};
+use zedra_telemetry::*;
 
 use crate::active_terminal;
 use crate::connecting_view;
@@ -204,6 +205,11 @@ impl Render for WorkspaceContent {
         let needs_full_overlay = !phase.is_connected() && !phase.is_idle();
 
         if needs_full_overlay {
+            // Reconnecting/failed overlay should always dismiss IME so it doesn't
+            // remain floating above the blocked terminal surface.
+            if !self.overlay_visible {
+                platform_bridge::bridge().hide_keyboard();
+            }
             // Active connect/failed phase — ensure full overlay is showing.
             self.overlay_visible = true;
         } else if self.overlay_visible {
@@ -546,10 +552,15 @@ impl WorkspaceView {
 
                             let handle = this.session_handle.clone();
                             let ptid = pending_terminal_id_clone.clone();
+                            let term_count = this.terminal_views.len();
                             zedra_session::session_runtime().spawn(async move {
                                 match handle.terminal_create(cols_u16, rows_u16).await {
                                     Ok(term_id) => {
                                         tracing::info!("terminal created: id={}", term_id);
+                                        zedra_telemetry::send(Event::TerminalOpened {
+                                            source: "user_action",
+                                            terminal_count: term_count,
+                                        });
                                         ptid.set(term_id);
                                         zedra_session::push_callback(Box::new(|| {}));
                                     }
@@ -1194,6 +1205,9 @@ impl Render for WorkspaceView {
         if let Some(tid) = self.pending_terminal_delete.take() {
             let was_active = self.active_terminal_id.as_deref() == Some(tid.as_str());
             self.terminal_views.retain(|(id, _)| id != &tid);
+            zedra_telemetry::send(Event::TerminalClosed {
+                remaining: self.terminal_views.len(),
+            });
 
             let handle = self.session_handle.clone();
             let tid_close = tid.clone();

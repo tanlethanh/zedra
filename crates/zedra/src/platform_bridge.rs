@@ -175,6 +175,10 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn show_keyboard(&self);
     fn hide_keyboard(&self);
     fn launch_qr_scanner(&self);
+    /// Returns the native app build version displayed to users (e.g. Android versionName).
+    fn app_version(&self) -> Option<String> {
+        None
+    }
     /// Returns the app's writable data directory for persisting workspace state.
     /// On iOS: Documents directory. On Android: internal files directory.
     fn data_directory(&self) -> Option<String> {

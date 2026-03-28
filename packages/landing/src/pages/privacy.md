@@ -45,7 +45,7 @@ the plaintext of your session.
 - **IP addresses or location data.** We do not log connection metadata.
 - **Personal information.** Zedra requires no account, email address, or identity.
 
-## Anonymous usage analytics
+## Anonymous usage telemetry
 
 We collect a small amount of anonymous, aggregated telemetry to understand how the product
 is used. This data contains **no personal information and no content from your sessions.**
@@ -58,10 +58,10 @@ outside this site is collected.
 **Desktop daemon (`zedra start`).** The daemon reports anonymous usage events — daemon start,
 session open, session end, and aggregate bandwidth samples — to Google Analytics via the
 Measurement Protocol. Events are tagged with a randomly generated machine UUID stored at
-`~/.config/zedra/analytics_id`. This ID is not linked to your identity. It contains no
+`~/.config/zedra/telemetry_id`. This ID is not linked to your identity. It contains no
 hostname, username, file paths, or terminal content.
 
-If the daemon binary is built without the analytics credentials embedded, all telemetry is
+If the daemon binary is built without the telemetry credentials embedded, all telemetry is
 silently disabled.
 
 ## Third-party services

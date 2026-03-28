@@ -50,6 +50,37 @@ extern void zedra_ios_selection_result(unsigned int callback_id, int button_inde
 extern void zedra_ios_selection_dismiss(unsigned int callback_id);
 extern void zedra_deeplink_received(const char* url);
 
+// Returns the app version as "shortVersion (buildVersion)" in a static C buffer.
+// Called from Rust via FFI for the launch footer version label.
+const char* ios_get_app_version(void) {
+    static char buf[128];
+    NSString *shortVersion = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+    NSString *buildVersion = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"];
+
+    if (![shortVersion isKindOfClass:[NSString class]]) {
+        shortVersion = @"";
+    }
+    if (![buildVersion isKindOfClass:[NSString class]]) {
+        buildVersion = @"";
+    }
+
+    NSString *value = nil;
+    if (shortVersion.length > 0 && buildVersion.length > 0) {
+        value = [NSString stringWithFormat:@"%@ (%@)", shortVersion, buildVersion];
+    } else if (shortVersion.length > 0) {
+        value = shortVersion;
+    } else if (buildVersion.length > 0) {
+        value = buildVersion;
+    } else {
+        return NULL;
+    }
+
+    const char *cstr = [value UTF8String];
+    if (!cstr) return NULL;
+    strlcpy(buf, cstr, sizeof(buf));
+    return buf;
+}
+
 @interface ZedraPresentationDismissDelegate : NSObject <UIAdaptivePresentationControllerDelegate>
 @property (nonatomic, assign) unsigned int callbackId;
 @property (nonatomic, assign) BOOL handled;
@@ -377,7 +408,10 @@ static const char *kAccessoryKeyNames[] = {"escape", "tab", "left", "down", "up"
     CGFloat height = 44.0;
 
     UIView *bar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, height)];
-    bar.backgroundColor = [UIColor clearColor];
+    bar.backgroundColor = [UIColor colorWithRed:0.055 green:0.047 blue:0.047 alpha:0.96];
+    if (@available(iOS 13.0, *)) {
+        bar.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    }
 
     // Hairline top border as a subtle separator above the keyboard.
     UIView *border = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 0.33)];
@@ -393,7 +427,12 @@ static const char *kAccessoryKeyNames[] = {"escape", "tab", "left", "down", "up"
         btn.frame = CGRectMake(btnWidth * i, 0, btnWidth, height);
         [btn setTitle:labels[i] forState:UIControlStateNormal];
         btn.titleLabel.font = [UIFont systemFontOfSize:16.0];
-        [btn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
+        UIColor *buttonColor = [UIColor colorWithRed:0.96 green:0.96 blue:0.96 alpha:1.0];
+        [btn setTitleColor:buttonColor forState:UIControlStateNormal];
+        btn.tintColor = buttonColor;
+        if (@available(iOS 13.0, *)) {
+            btn.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+        }
         btn.tag = i;
         [btn addTarget:self action:@selector(keyboardShortcutTapped:)
       forControlEvents:UIControlEventTouchUpInside];
