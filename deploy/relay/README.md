@@ -112,21 +112,22 @@ Add SSH aliases to `~/.ssh/config` for each instance (adjust `HostName` and `Ide
 ```
 Host zedra-relay-ap1
   HostName <AP1_PUBLIC_IP>
-  User ubuntu
+  User <your-username>              # AWS: ubuntu; GCP: your Google username
   IdentityFile ~/.ssh/<your-key>    # AWS: .pem file; GCP: google_compute_engine
 
 Host zedra-relay-us1
   HostName <US1_PUBLIC_IP>
-  User ubuntu
+  User <your-username>
   IdentityFile ~/.ssh/<your-key>
 
 Host zedra-relay-eu1
   HostName <EU1_PUBLIC_IP>
-  User ubuntu
+  User <your-username>
   IdentityFile ~/.ssh/<your-key>
 ```
 
-> **GCP alternative**: `gcloud compute ssh INSTANCE_NAME --zone=ZONE` manages keys automatically — no `~/.ssh/config` entry needed.
+> **GCP**: User is typically your Google account username (e.g. `thomasle`). `gcloud compute ssh INSTANCE_NAME --zone=ZONE` manages keys automatically — no `~/.ssh/config` entry needed.
+> **AWS**: User is `ubuntu` for Ubuntu AMIs.
 
 **Secrets (local):** copy `deploy/relay/.env.example` to `deploy/relay/.env` and set at least `DISCORD_WEBHOOK`. The root `.gitignore` ignores `.env` everywhere.
 
@@ -277,11 +278,18 @@ Run on each instance after first SSH in.
 
 ### Docker
 
+Works on Ubuntu and Debian. Uses Docker's official apt repo (includes Compose plugin).
+
 ```bash
-sudo apt-get update
-sudo apt-get install -y docker.io
-sudo systemctl enable --now docker
-sudo usermod -aG docker ubuntu
+# Install Docker (auto-detects distro)
+curl -fsSL https://get.docker.com | sudo sh
+
+# Run without sudo
+sudo usermod -aG docker $USER
+newgrp docker
+
+# Verify
+docker compose version
 ```
 
 ### File descriptor limits
@@ -453,7 +461,7 @@ Run through this before and after every first-time deployment or infrastructure 
 - Local `deploy/relay/.env` present with `DISCORD_WEBHOOK` set (deploy pushes merged env to each instance)
 - DNS A records pointing each hostname to its public IP (TTL ≤ 60)
 - Firewall/security group open: TCP 80, TCP 443, UDP 7842
-- OS setup complete: Docker installed, sysctl tuned, fd limits raised, Docker daemon configured, ubuntu in docker group
+- OS setup complete: Docker installed (official apt repo), sysctl tuned, fd limits raised, Docker daemon configured, SSH user in docker group
 - Verify sysctl applied on each instance:
   ```bash
   ssh zedra-relay-ap1 "sysctl net.core.somaxconn vm.swappiness fs.file-max"

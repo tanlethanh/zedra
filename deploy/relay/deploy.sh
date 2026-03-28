@@ -85,9 +85,10 @@ deploy_one() {
 
   echo "==> [$instance] Uploading compose + config..."
   ssh "$ssh_host" bash << EOF
-    mkdir -p $remote_deploy
+    sudo mkdir -p $remote_deploy
+    sudo chown \$(id -un):\$(id -gn) $remote_deploy
     sudo mkdir -p /var/log/zedra-relay
-    sudo chown ubuntu:ubuntu /var/log/zedra-relay
+    sudo chown \$(id -un):\$(id -gn) /var/log/zedra-relay
     sudo tee /etc/logrotate.d/zedra-relay-metrics > /dev/null << 'LOGROTATE'
 /var/log/zedra-relay/metrics.jsonl {
     daily
@@ -96,7 +97,6 @@ deploy_one() {
     delaycompress
     missingok
     notifempty
-    create 0644 ubuntu ubuntu
 }
 LOGROTATE
 EOF
