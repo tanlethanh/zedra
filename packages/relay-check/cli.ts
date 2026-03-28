@@ -2,14 +2,13 @@
 // SSH to relay hosts, query the monitor REST API (port 9091), print metrics.
 //
 // Usage:
-//   INSTANCES=ap1,us1,eu1 bun cli.ts [instance...] [--history [hours]]
+//   bun cli.ts --instance sg1,us1,eu1 [--cached] [--history [hours]]
 
 import chalk from "chalk";
 import minimist from "minimist";
 import type { MetricRecord, NodeMetrics } from "relay-monitor/lib.ts";
 import { fmtMB, pct } from "relay-monitor/lib.ts";
 import { $ } from "zx";
-import { loadConfig } from "./config.ts";
 
 $.verbose = false;
 
@@ -100,32 +99,30 @@ function printHistory(records: MetricRecord[], instance: string): void {
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
-const args = minimist(process.argv.slice(2), { boolean: ["help", "h"] });
+const args = minimist(process.argv.slice(2), { boolean: ["help", "h", "cached"] });
 
 if (args.help || args.h) {
-  console.log(`Usage: bun cli.ts [instance...] [--history [hours]]
+  console.log(`Usage: bun cli.ts --instance <instance[,instance,...]> [--cached] [--history [hours]]
 
 Examples:
-  bun cli.ts                 live metrics, all instances
-  bun cli.ts ap1             live metrics, one instance
-  bun cli.ts --history       last 24h table, all instances
-  bun cli.ts ap1 --history 6 last 6h table, ap1 only`);
+  bun cli.ts --instance sg1,us1,eu1         real-time metrics, all instances
+  bun cli.ts --instance ap1                 real-time metrics, one instance
+  bun cli.ts --instance ap1 --cached        cached snapshot
+  bun cli.ts --instance sg1,us1 --history   last 24h table
+  bun cli.ts --instance ap1 --history 6     last 6h table`);
   process.exit(0);
 }
 
-const cfg = loadConfig();
-const regionArgs: string[] = args._;
+const instanceArg: string = args.instance ?? "";
+if (!instanceArg) {
+  console.error("Error: --instance is required (e.g. --instance sg1,us1,eu1)");
+  process.exit(1);
+}
 
-const instances =
-  regionArgs.length === 0
-    ? Object.keys(cfg.instances)
-    : regionArgs.filter((a) => {
-        if (!(a in cfg.instances)) {
-          console.error(`Unknown instance: ${a}`);
-          process.exit(1);
-        }
-        return true;
-      });
+const instances = instanceArg
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 const isHistory = "history" in args;
 const historyHours = typeof args.history === "number" ? args.history : 24;
@@ -133,7 +130,7 @@ const historyHours = typeof args.history === "number" ? args.history : 24;
 if (isHistory) {
   const results = await Promise.all(
     instances.map(async (name) => {
-      const host = cfg.instances[name].sshHost;
+      const host = `zedra-relay-${name}`;
       try {
         return {
           name,
@@ -148,11 +145,12 @@ if (isHistory) {
   );
   for (const { name, records } of results) printHistory(records, name);
 } else {
+  const metricsPath = args.cached ? "/metrics" : "/metrics/live";
   const results = await Promise.all(
     instances.map(async (name) => {
-      const host = cfg.instances[name].sshHost;
+      const host = `zedra-relay-${name}`;
       try {
-        return JSON.parse(await sshCurl(host, "/metrics")) as NodeMetrics;
+        return JSON.parse(await sshCurl(host, metricsPath)) as NodeMetrics;
       } catch {
         return {
           instance: name,
