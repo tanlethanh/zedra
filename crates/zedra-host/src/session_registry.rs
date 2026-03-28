@@ -73,6 +73,18 @@ pub struct ServerSession {
     pub fs_watched_paths: Mutex<HashSet<String>>,
     /// Token bucket for FsWatch/FsUnwatch RPC rate limiting.
     pub fs_watch_rpc_limiter: Mutex<TokenBucket>,
+    // ── RPC usage counters (lifetime totals, never reset) ──────────────────
+    /// Total FsRead calls served.
+    pub rpc_fs_reads: AtomicU64,
+    /// Total FsWrite calls served.
+    pub rpc_fs_writes: AtomicU64,
+    /// Total read-only git RPC calls (status, diff, log, branches, stage, unstage).
+    pub rpc_git_ops: AtomicU64,
+    /// Total GitCommit calls that succeeded.
+    pub rpc_git_commits: AtomicU64,
+    /// Total AiPrompt calls served.
+    pub rpc_ai_prompts: AtomicU64,
+
     /// Observer generation; incremented on each Subscribe to stop stale observers.
     pub observer_gen: AtomicU64,
     /// Observer/event metrics for abuse and backpressure visibility.
@@ -778,6 +790,11 @@ impl ServerSession {
                 FS_WATCH_RPC_RATE_PER_SEC,
                 FS_WATCH_RPC_BURST,
             )),
+            rpc_fs_reads: AtomicU64::new(0),
+            rpc_fs_writes: AtomicU64::new(0),
+            rpc_git_ops: AtomicU64::new(0),
+            rpc_git_commits: AtomicU64::new(0),
+            rpc_ai_prompts: AtomicU64::new(0),
             observer_gen: AtomicU64::new(0),
             observer_events_sent: AtomicU64::new(0),
             observer_events_dropped_no_subscriber: AtomicU64::new(0),
@@ -856,11 +873,7 @@ impl ServerSession {
     pub async fn backlog_after(&self, terminal_id: &str, after_seq: u64) -> Vec<BacklogEntry> {
         let terms = self.terminals.lock().await;
         match terms.get(terminal_id) {
-            Some(term) => term
-                .backlog
-                .lock()
-                .unwrap()
-                .after(after_seq),
+            Some(term) => term.backlog.lock().unwrap().after(after_seq),
             None => vec![],
         }
     }

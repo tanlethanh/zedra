@@ -11,13 +11,16 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use std::io::IsTerminal;
 use std::sync::Arc;
-use zedra_host::analytics::Analytics;
 use zedra_host::client as zedra_client;
+use zedra_host::ga4::Ga4;
 use zedra_host::{
-    api, identity, iroh_listener, net_monitor, qr, rpc_daemon, session_registry, workspace_lock,
+    api, identity, iroh_listener, net_monitor, qr, rpc_daemon, session_registry, version_check,
+    workspace_lock,
 };
 use zedra_rpc::ZedraPairingTicket;
+use zedra_telemetry::Event;
 
 #[derive(Parser)]
 #[command(name = "zedra", about = "Desktop companion daemon for Zedra")]
@@ -42,9 +45,26 @@ enum Commands {
         #[arg(long)]
         json: bool,
 
-        /// Override relay URL (e.g. https://sg1.relay.zedra.dev)
+        /// Override relay URL(s). Can be specified multiple times for multi-relay.
+        /// (e.g. --relay-url https://sg1.relay.zedra.dev --relay-url https://us1.relay.zedra.dev)
         #[arg(long)]
-        relay_url: Option<String>,
+        relay_url: Vec<String>,
+
+        /// Disable anonymous telemetry (usage events sent to Google Analytics).
+        /// Can also be set via ZEDRA_TELEMETRY=0 environment variable.
+        #[arg(long)]
+        no_telemetry: bool,
+
+        /// Debug telemetry: log every event payload and GA4 validation response to
+        /// stderr. Uses the GA4 debug endpoint — events are NOT recorded in GA4.
+        #[arg(long)]
+        debug_telemetry: bool,
+
+        /// Force relay-only mode: disable P2P hole punching and direct-path
+        /// advertising. All traffic goes through the relay server. Useful when
+        /// the host is behind a firewall that blocks direct UDP.
+        #[arg(long)]
+        relay_only: bool,
     },
     /// Connect to a running daemon and measure end-to-end RTT
     Client {
@@ -91,6 +111,17 @@ enum Commands {
         #[arg(long)]
         launch_cmd: Option<String>,
     },
+
+    /// Update zedra to the latest version
+    Update {
+        /// Install a specific version (e.g. v0.2.0)
+        #[arg(long)]
+        version: Option<String>,
+
+        /// Skip confirmation prompt
+        #[arg(long, short)]
+        yes: bool,
+    },
 }
 
 #[tokio::main]
@@ -129,7 +160,11 @@ async fn main() -> Result<()> {
             workdir,
             json,
             relay_url,
+            no_telemetry,
+            debug_telemetry,
+            relay_only,
         } => {
+            let startup_start = std::time::Instant::now();
             let workdir = std::path::PathBuf::from(workdir)
                 .canonicalize()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -160,69 +195,89 @@ async fn main() -> Result<()> {
                 .unwrap_or("default")
                 .to_string();
             let session = registry.create_named(&session_name, workdir.clone()).await;
+            let session_id = session.id.clone();
             tracing::info!(
                 "Created session '{}' (id={}) for {}",
                 session_name,
-                session.id,
+                session_id,
                 workdir.display()
             );
+            let endpoint_id = host_identity.endpoint_id();
 
-            // Create a one-use pairing slot and encode as QR ticket
-            let handshake_secret: [u8; 16] = rand::random();
-            registry
-                .add_pairing_slot(&session.id, handshake_secret)
-                .await;
-
-            let ticket = ZedraPairingTicket {
-                endpoint_id: host_identity.endpoint_id(),
-                handshake_secret,
-                session_id: session.id.clone(),
-            };
-
-            // Initialize analytics. The analytics_id is machine-level (not per-workspace)
-            // so connection counts roll up to a single host in the dashboard.
-            let analytics = Arc::new(Analytics::new(
-                &identity::analytics_id_path()
-                    .unwrap_or_else(|_| workdir.join(".zedra-analytics-id")),
-            ));
-            if analytics.is_enabled() {
-                eprintln!("[init]     analytics enabled");
-            }
-
-            let mut state = rpc_daemon::DaemonState::new(workdir.clone(), host_identity.clone());
-            state.analytics = analytics.clone();
-            let state = Arc::new(state);
-
-            // 1. Bind iroh endpoint.
-            //    For relay.zedra.dev (CF Worker) append ?host=<base64url(pubkey)> so the
-            //    Worker routes both host and client into the same RelayRoom DO. iroh's
-            //    relay client preserves query params when constructing the WebSocket URL.
-            //    EC2 iroh-relay and other relays ignore unknown query parameters, but we
-            //    only add the param when actually talking to the CF Worker.
-            let base_relay_url = relay_url.as_deref().unwrap_or(zedra_rpc::ZEDRA_RELAY_URL);
-            let endpoint_relay_url = if is_cf_worker_relay(base_relay_url) {
-                let host_b64 = base64_url::encode(host_identity.endpoint_id().as_bytes());
-                format!("{}?host={}", base_relay_url, host_b64)
+            // Initialize telemetry. Disabled by --no-telemetry flag or ZEDRA_TELEMETRY=0.
+            let telemetry_disabled = no_telemetry
+                || std::env::var("ZEDRA_TELEMETRY")
+                    .map(|v| v == "0" || v.eq_ignore_ascii_case("false"))
+                    .unwrap_or(false);
+            let ga4 = Arc::new(if telemetry_disabled {
+                Ga4::disabled()
             } else {
-                base_relay_url.to_string()
+                let g = Ga4::new(
+                    &identity::telemetry_id_path()
+                        .unwrap_or_else(|_| workdir.join(".zedra-telemetry-id")),
+                    debug_telemetry,
+                );
+                if debug_telemetry {
+                    eprintln!(
+                        "[telemetry] telemetry debug mode (GA4 validation endpoint, not recorded)"
+                    );
+                }
+                g
+            });
+            let is_first_run = ga4.is_first_run;
+
+            // Register host GA4 backend as the global telemetry provider.
+            zedra_host::telemetry::init(ga4.clone());
+
+            // Install panic hook that sends host_panic event via zedra_telemetry
+            // before the process aborts. record_panic bypasses the enabled flag.
+            let prev_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                let message = info
+                    .payload()
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| info.payload().downcast_ref::<String>().map(|s| s.as_str()))
+                    .unwrap_or("unknown");
+                let location = info
+                    .location()
+                    .map(|l| format!("{}:{}", l.file(), l.line()))
+                    .unwrap_or_default();
+                zedra_telemetry::record_panic(message, &location);
+                prev_hook(info);
+            }));
+
+            let state = Arc::new(rpc_daemon::DaemonState::new(
+                workdir.clone(),
+                host_identity.clone(),
+            ));
+
+            // 1. Bind iroh endpoint with configured relay URLs.
+            let endpoint_relay_urls: Vec<String> = if relay_url.is_empty() {
+                zedra_rpc::ZEDRA_RELAY_URLS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect()
+            } else {
+                relay_url.clone()
             };
 
-            // Determine relay_type label for analytics before the endpoint is created.
-            let relay_type = if is_cf_worker_relay(base_relay_url) {
-                "cf_worker"
-            } else if relay_url.is_some() {
+            let relay_type = if !relay_url.is_empty() {
                 "custom"
             } else {
                 "default"
             };
-            analytics.daemon_start(relay_type);
+            zedra_telemetry::send(Event::DaemonStart {
+                relay_type,
+                is_first_run,
+            });
 
-            let endpoint = iroh_listener::create_endpoint(
-                &host_identity,
-                Some(&endpoint_relay_url),
-                analytics.clone(),
-            )
-            .await?;
+            let init_ms = startup_start.elapsed().as_millis() as u64;
+            let endpoint_bind_start = std::time::Instant::now();
+            let endpoint =
+                iroh_listener::create_endpoint(&host_identity, &endpoint_relay_urls, relay_only)
+                    .await?;
+            let endpoint_bind_ms = endpoint_bind_start.elapsed().as_millis() as u64;
 
             // Pre-authorize the persistent CLI client key so `zedra client` can
             // connect without QR pairing. The key is generated once per workspace.
@@ -231,21 +286,18 @@ async fn main() -> Result<()> {
                     Ok(cli_key) => {
                         let cli_pubkey: [u8; 32] = cli_key.verifying_key().to_bytes();
                         registry
-                            .add_client_to_session(&session.id, cli_pubkey)
+                            .add_client_to_session(&session_id, cli_pubkey)
                             .await;
-                        tracing::info!("Pre-authorized CLI client key for session {}", session.id);
+                        tracing::info!("Pre-authorized CLI client key for session {}", session_id);
                     }
                     Err(e) => tracing::warn!("Failed to load/generate CLI client key: {}", e),
                 }
 
                 // Write host-info.json for `zedra client` auto-discovery.
-                // Use endpoint_relay_url so `zedra client --relay-only` connects
-                // to the same RelayRoom DO as the host (when using CF Worker relay).
-                let relay_url_str = endpoint_relay_url.clone();
                 let host_info = zedra_client::HostInfo {
                     endpoint_id: host_identity.endpoint_id().to_string(),
-                    session_id: session.id.clone(),
-                    relay_url: relay_url_str,
+                    session_id: session_id.clone(),
+                    relay_urls: endpoint_relay_urls.clone(),
                 };
                 if let Err(e) = zedra_client::write_host_info(&config_dir, &host_info) {
                     tracing::warn!("Failed to write host-info.json: {}", e);
@@ -254,28 +306,82 @@ async fn main() -> Result<()> {
                 }
             }
 
+            // 1a. Async version check (non-blocking, silent on failure).
+            tokio::spawn(async {
+                match version_check::check_latest_version().await {
+                    Ok(Some(ref latest)) => {
+                        eprintln!(
+                            "[update]   new version available: {} (current: v{}). Run `zedra update`.",
+                            latest,
+                            env!("CARGO_PKG_VERSION")
+                        );
+                        zedra_telemetry::send(Event::UpdateChecked {
+                            update_available: true,
+                            latest_version: latest.clone(),
+                            current_version: env!("CARGO_PKG_VERSION"),
+                        });
+                    }
+                    Ok(None) => {
+                        zedra_telemetry::send(Event::UpdateChecked {
+                            update_available: false,
+                            latest_version: String::new(),
+                            current_version: env!("CARGO_PKG_VERSION"),
+                        });
+                    }
+                    Err(_) => {}
+                }
+            });
+
             // 1b. Start background network diagnostics monitor.
             //     Watches for IP changes, relay changes, NAT changes, and logs
             //     DNS re-registration when the endpoint address updates.
             net_monitor::spawn_net_monitor(&endpoint);
 
-            // 2. Generate QR code
+            // 2. Generate startup QR code
             // Note: The QR encodes only endpoint_id (pubkey) — no IPs. The client
             // resolves addresses at connect time via pkarr. STUN runs in the
             // background and PkarrPublisher will republish once the public IP is
             // discovered, before any user could reasonably scan and connect.
-            match qr::build_pairing_info(&ticket, &endpoint) {
-                Ok(info) => {
-                    if json {
-                        qr::print_pairing_json(&info);
-                    } else {
-                        qr::generate_pairing_qr(&ticket, &endpoint).ok();
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to generate QR code: {}", e);
-                }
+            if let Err(e) = generate_pairing_qr(
+                &registry,
+                &session_id,
+                endpoint_id,
+                &endpoint,
+                &endpoint_relay_urls,
+                json,
+            )
+            .await
+            {
+                tracing::warn!("Failed to generate QR code: {}", e);
             }
+
+            // Allow live QR regeneration while daemon is running.
+            #[cfg(unix)]
+            if !json && std::io::stdin().is_terminal() {
+                eprintln!("Press 'r' to regenerate pairing QR.");
+                let endpoint = endpoint.clone();
+                let registry = registry.clone();
+                let session_id = session_id.clone();
+                let relay_urls_for_listener = endpoint_relay_urls.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = run_qr_key_listener(
+                        registry,
+                        session_id,
+                        endpoint_id,
+                        endpoint,
+                        relay_urls_for_listener,
+                    )
+                    .await
+                    {
+                        tracing::warn!("QR key listener stopped: {}", e);
+                    }
+                });
+            }
+            zedra_telemetry::send(Event::StartupComplete {
+                init_ms,
+                endpoint_bind_ms,
+                total_ms: startup_start.elapsed().as_millis() as u64,
+            });
 
             // 3. Start local REST API server (127.0.0.1, OS-assigned port).
             //    Write the bound address and bearer token to the config dir so
@@ -301,7 +407,30 @@ async fn main() -> Result<()> {
                 }
             }
 
-            // 4. Run iroh accept loop (blocks main)
+            // 4. Spawn periodic heartbeat for uptime tracking (every 10 minutes).
+            {
+                let registry = registry.clone();
+                let started_at = state.started_at;
+                tokio::spawn(async move {
+                    let mut interval =
+                        tokio::time::interval(std::time::Duration::from_secs(10 * 60));
+                    interval.tick().await; // skip the immediate first tick
+                    loop {
+                        interval.tick().await;
+                        let uptime_secs = started_at.elapsed().as_secs();
+                        let sessions = registry.list_sessions().await;
+                        let session_count = sessions.len();
+                        let terminal_count: usize = sessions.iter().map(|s| s.terminal_count).sum();
+                        zedra_telemetry::send(Event::DaemonHeartbeat {
+                            uptime_secs,
+                            session_count,
+                            terminal_count,
+                        });
+                    }
+                });
+            }
+
+            // 5. Run iroh accept loop (blocks main)
             iroh_listener::run_accept_loop(&endpoint, registry, state).await?;
         }
 
@@ -461,6 +590,89 @@ async fn main() -> Result<()> {
             }
         }
 
+        Commands::Update { version, yes } => {
+            let current = env!("CARGO_PKG_VERSION");
+            eprintln!("zedra v{current}");
+
+            // Check what's available
+            let target_tag = if let Some(ref v) = version {
+                v.clone()
+            } else {
+                eprintln!("Checking for updates...");
+                match version_check::check_latest_version().await {
+                    Ok(Some(tag)) => tag,
+                    Ok(None) => {
+                        eprintln!("Already up to date.");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to check for updates: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            };
+
+            eprintln!("Update available: {target_tag}");
+
+            // Warn about running daemons
+            let instances = workspace_lock::scan_all_instances();
+            let alive: Vec<_> = instances.iter().filter(|(_, _, alive)| *alive).collect();
+            if !alive.is_empty() {
+                eprintln!(
+                    "\nWarning: {} running daemon(s) found. Restart them after update:",
+                    alive.len()
+                );
+                for (_, lock, _) in &alive {
+                    eprintln!("  pid {}  {}", lock.pid, lock.workdir);
+                }
+                eprintln!();
+            }
+
+            // Confirm unless --yes
+            if !yes {
+                eprint!("Proceed with update? [y/N] ");
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    eprintln!("Cancelled.");
+                    return Ok(());
+                }
+            }
+
+            let update_start = std::time::Instant::now();
+            match version_check::self_update(&target_tag).await {
+                Ok(tag) => {
+                    let elapsed_ms = update_start.elapsed().as_millis() as u64;
+                    zedra_telemetry::send(Event::SelfUpdate {
+                        success: true,
+                        target_version: tag.clone(),
+                        from_version: env!("CARGO_PKG_VERSION"),
+                        error: "",
+                        elapsed_ms,
+                    });
+                    eprintln!("\nUpdated to {tag}.");
+                    if !alive.is_empty() {
+                        eprintln!(
+                            "Restart running daemons: `zedra stop -w <dir> && zedra start -w <dir>`"
+                        );
+                    }
+                }
+                Err(e) => {
+                    let elapsed_ms = update_start.elapsed().as_millis() as u64;
+                    let error_label = classify_update_error(&e);
+                    zedra_telemetry::send(Event::SelfUpdate {
+                        success: false,
+                        target_version: target_tag.clone(),
+                        from_version: env!("CARGO_PKG_VERSION"),
+                        error: error_label,
+                        elapsed_ms,
+                    });
+                    eprintln!("Update failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
         Commands::Stop { workdir, grace } => {
             let workdir = std::path::PathBuf::from(&workdir)
                 .canonicalize()
@@ -502,6 +714,23 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+fn classify_update_error(e: &anyhow::Error) -> &'static str {
+    let msg = e.to_string();
+    if msg.contains("checksum mismatch") {
+        "checksum_mismatch"
+    } else if msg.contains("download failed") || msg.contains("error sending request") {
+        "download_failed"
+    } else if msg.contains("archive did not contain") || msg.contains("failed to extract") {
+        "extract_failed"
+    } else if msg.contains("failed to install") || msg.contains("failed to rename") {
+        "install_failed"
+    } else if msg.contains("failed to resolve latest") {
+        "version_resolve_failed"
+    } else {
+        "unknown"
+    }
+}
+
 fn format_duration(secs: u64) -> String {
     if secs < 60 {
         format!("{}s", secs)
@@ -512,15 +741,132 @@ fn format_duration(secs: u64) -> String {
     }
 }
 
-/// Returns true if the relay URL points to the Cloudflare Worker relay (relay.zedra.dev).
-/// Only the CF Worker uses the ?host= room-routing mechanism.
-fn is_cf_worker_relay(url: &str) -> bool {
-    // Strip scheme, then check the host portion is exactly "relay.zedra.dev".
-    let rest = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .unwrap_or(url);
-    rest == "relay.zedra.dev"
-        || rest.starts_with("relay.zedra.dev/")
-        || rest.starts_with("relay.zedra.dev?")
+async fn generate_pairing_qr(
+    registry: &Arc<session_registry::SessionRegistry>,
+    session_id: &str,
+    endpoint_id: iroh::PublicKey,
+    endpoint: &iroh::Endpoint,
+    relay_urls: &[String],
+    json: bool,
+) -> Result<()> {
+    let ticket = ZedraPairingTicket {
+        endpoint_id,
+        handshake_secret: rand::random(),
+        session_id: session_id.to_string(),
+    };
+    registry
+        .add_pairing_slot(session_id, ticket.handshake_secret)
+        .await;
+
+    if json {
+        let info = qr::build_pairing_info(&ticket, endpoint, relay_urls)?;
+        qr::print_pairing_json(&info);
+    } else {
+        qr::generate_pairing_qr(&ticket, endpoint, relay_urls)?;
+        eprintln!("Note: this pairing QR is one-time use.");
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn run_qr_key_listener(
+    registry: Arc<session_registry::SessionRegistry>,
+    session_id: String,
+    endpoint_id: iroh::PublicKey,
+    endpoint: iroh::Endpoint,
+    relay_urls: Vec<String>,
+) -> Result<()> {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    use tokio::sync::mpsc;
+
+    let (tx, mut rx) = mpsc::unbounded_channel::<u8>();
+    let mut reader_task = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        let stdin = std::io::stdin();
+        let _raw = RawModeGuard::new(stdin.as_raw_fd())?;
+        let mut handle = stdin.lock();
+        let mut byte = [0_u8; 1];
+
+        loop {
+            handle.read_exact(&mut byte)?;
+            if tx.send(byte[0]).is_err() {
+                break;
+            }
+        }
+        Ok(())
+    });
+
+    loop {
+        tokio::select! {
+            maybe_key = rx.recv() => {
+                let Some(key) = maybe_key else {
+                    break;
+                };
+                if matches!(key, b'r' | b'R') {
+                    if let Err(e) = generate_pairing_qr(&registry, &session_id, endpoint_id, &endpoint, &relay_urls, false).await {
+                        tracing::warn!("Failed to regenerate QR code: {}", e);
+                    } else {
+                        eprintln!("Regenerated pairing QR (press 'r' again to refresh).");
+                    }
+                }
+            }
+            reader_result = &mut reader_task => {
+                match reader_result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => return Err(e.into()),
+                    Err(e) => return Err(anyhow::anyhow!("QR key reader task failed: {}", e)),
+                }
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+struct RawModeGuard {
+    fd: std::os::fd::RawFd,
+    original: libc::termios,
+}
+
+#[cfg(unix)]
+impl RawModeGuard {
+    fn new(fd: std::os::fd::RawFd) -> std::io::Result<Self> {
+        let mut original = std::mem::MaybeUninit::<libc::termios>::uninit();
+        // SAFETY: libc validates the fd and initializes the termios struct on success.
+        let ret = unsafe { libc::tcgetattr(fd, original.as_mut_ptr()) };
+        if ret != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        // SAFETY: `original` was initialized by `tcgetattr` above.
+        let original = unsafe { original.assume_init() };
+        let mut raw = original;
+        raw.c_lflag &= !(libc::ICANON | libc::ECHO);
+        raw.c_cc[libc::VMIN] = 1;
+        raw.c_cc[libc::VTIME] = 0;
+
+        // SAFETY: `raw` points to a valid termios struct for this fd.
+        let ret = unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) };
+        if ret != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        Ok(Self { fd, original })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        // SAFETY: `self.original` came from a successful `tcgetattr` on this fd.
+        let ret = unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, &self.original) };
+        if ret != 0 {
+            tracing::warn!(
+                "Failed to restore terminal mode: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
 }

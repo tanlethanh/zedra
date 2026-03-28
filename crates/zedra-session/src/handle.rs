@@ -7,13 +7,78 @@ use std::time::Instant;
 
 use anyhow::Result;
 use zedra_rpc::proto::*;
+use zedra_telemetry::*;
 
 use crate::connect_state::{
-    AuthOutcome, ConnectError, ConnectPhase, ConnectState, NetworkHint, ReconnectReason,
-    TransportSnapshot,
+    AuthOutcome, ConnectError, ConnectPhase, ConnectSnapshot, ConnectState, NetworkHint,
+    ReconnectReason, TransportSnapshot,
 };
 
 /// Classify a remote IP address for debugging display.
+/// Return the relay hostname for telemetry, redacting custom/private relays.
+/// Built-in zedra.dev relays are kept verbatim; anything else becomes "custom"
+/// to avoid leaking private IPs or internal hostnames.
+fn sanitize_relay(relay_url: Option<&str>) -> String {
+    match relay_url {
+        None => "none".into(),
+        Some(url) if url == "none" => "none".into(),
+        Some(url) => {
+            // Extract hostname from a full URL or bare hostname string.
+            // Strip scheme ("https://"), port (":443"), and path ("/relay").
+            let after_scheme = url.find("://").map(|i| &url[i + 3..]).unwrap_or(url);
+            let host = after_scheme
+                .split('/')
+                .next()
+                .unwrap_or(after_scheme)
+                .split(':')
+                .next()
+                .unwrap_or(after_scheme);
+            if host.ends_with(".zedra.dev") || host == "zedra.dev" {
+                host.to_string()
+            } else {
+                "custom".into()
+            }
+        }
+    }
+}
+
+/// Shared transport/phase fields extracted from a `ConnectSnapshot` for telemetry.
+/// Used by both `ConnectSuccess` and `ReconnectSuccess` events.
+struct SnapshotTelemetry {
+    binding_ms: u64,
+    hole_punch_ms: u64,
+    auth_ms: u64,
+    fetch_ms: u64,
+    path: &'static str,
+    network: &'static str,
+    rtt_ms: u64,
+    relay: String,
+    alpn: String,
+    has_ipv4: bool,
+    has_ipv6: bool,
+}
+
+fn snapshot_telemetry(s: &ConnectSnapshot) -> SnapshotTelemetry {
+    let transport = s.transport.as_ref();
+    let is_direct = transport.map(|t| t.is_direct).unwrap_or(false);
+    SnapshotTelemetry {
+        binding_ms: s.binding_ms.unwrap_or(0),
+        hole_punch_ms: s.hole_punch_ms.unwrap_or(0),
+        auth_ms: s.auth_ms.unwrap_or(0),
+        fetch_ms: s.fetch_ms.unwrap_or(0),
+        path: if is_direct { "direct" } else { "relay" },
+        network: transport
+            .and_then(|t| t.network_hint.as_ref())
+            .map(|h| h.label())
+            .unwrap_or("unknown"),
+        rtt_ms: transport.map(|t| t.rtt_ms).unwrap_or(0),
+        relay: sanitize_relay(s.relay_url.as_deref()),
+        alpn: s.alpn.clone().unwrap_or_else(|| "unknown".into()),
+        has_ipv4: s.has_ipv4,
+        has_ipv6: s.has_ipv6,
+    }
+}
+
 fn classify_ip(ip: std::net::IpAddr) -> NetworkHint {
     match ip {
         std::net::IpAddr::V4(v4) => {
@@ -76,6 +141,12 @@ struct SessionHandleInner {
     project_name: Mutex<String>,
     strip_path: Mutex<String>,
 
+    // ── Cumulative byte counters (survive reconnect) ─────────────────────────
+    /// Sum of bytes_sent from all prior connections. Reset on user disconnect.
+    bytes_sent_accum: AtomicU64,
+    /// Sum of bytes_recv from all prior connections. Reset on user disconnect.
+    bytes_recv_accum: AtomicU64,
+
     // ── Reconnect control signals ───────────────────────────────────────────
     /// Set to true by user-initiated disconnect; suppresses automatic reconnect.
     user_disconnect: AtomicBool,
@@ -113,6 +184,8 @@ impl SessionHandle {
             hostname: Mutex::new(String::new()),
             project_name: Mutex::new(String::new()),
             strip_path: Mutex::new(String::new()),
+            bytes_sent_accum: AtomicU64::new(0),
+            bytes_recv_accum: AtomicU64::new(0),
             user_disconnect: AtomicBool::new(false),
             skip_next_backoff: AtomicBool::new(false),
             reconnect_running: AtomicBool::new(false),
@@ -211,6 +284,8 @@ impl SessionHandle {
             *cs = ConnectState::idle();
         }
         self.0.reconnect_running.store(false, Ordering::Release);
+        self.0.bytes_sent_accum.store(0, Ordering::Release);
+        self.0.bytes_recv_accum.store(0, Ordering::Release);
         tracing::info!("SessionHandle: session cleared (user disconnect)");
     }
 
@@ -395,7 +470,7 @@ impl SessionHandle {
             s.resume_ms = None;
             s.local_node_id = None;
             s.remote_node_id = Some(addr.id.fmt_short().to_string());
-            s.relay_url = Some(zedra_rpc::ZEDRA_RELAY_URL.to_string());
+            s.relay_url = Some(zedra_rpc::ZEDRA_RELAY_URLS[0].to_string());
             s.alpn = Some(String::from_utf8_lossy(ZEDRA_ALPN).to_string());
             s.relay_connected = false;
             s.direct_addrs.clear();
@@ -411,12 +486,14 @@ impl SessionHandle {
         }
         self.notify_state_change();
 
-        let relay_url: iroh::RelayUrl =
-            zedra_rpc::ZEDRA_RELAY_URL.parse().expect("valid relay url");
-        let relay_map = iroh::RelayMap::from_iter([iroh::RelayConfig {
-            url: relay_url,
-            quic: Some(iroh_relay::RelayQuicConfig::default()),
-        }]);
+        let relay_configs: Vec<iroh::RelayConfig> = zedra_rpc::ZEDRA_RELAY_URLS
+            .iter()
+            .map(|u| iroh::RelayConfig {
+                url: u.parse().expect("valid relay url"),
+                quic: Some(iroh_relay::RelayQuicConfig::default()),
+            })
+            .collect();
+        let relay_map = iroh::RelayMap::from_iter(relay_configs);
 
         // Tighten QUIC timeouts for fast disconnect detection.
         // PING frames are tiny UDP packets — cheap even on mobile.
@@ -562,9 +639,18 @@ impl SessionHandle {
                 // value even after a path goes silent, which would give false "alive" reads.
                 let mut last_alive_at: Option<std::time::Instant> = None;
                 let mut prev_bytes_recv: u64 = 0;
+                let mut last_sent: u64 = 0;
                 loop {
                     // Stop if the connection has been superseded.
                     if handle_for_paths.0.conn_generation.load(Ordering::Acquire) != my_gen {
+                        handle_for_paths
+                            .0
+                            .bytes_sent_accum
+                            .fetch_add(last_sent, Ordering::Release);
+                        handle_for_paths
+                            .0
+                            .bytes_recv_accum
+                            .fetch_add(prev_bytes_recv, Ordering::Release);
                         break;
                     }
 
@@ -586,6 +672,7 @@ impl SessionHandle {
                         };
                         let rtt = stats.rtt.as_millis() as u64;
                         let bytes_recv = stats.udp_rx.bytes;
+                        last_sent = stats.udp_tx.bytes;
 
                         // Update alive timestamp only when new bytes arrive.
                         // PONG responses from iroh's 2-s heartbeat probes keep this fresh.
@@ -595,6 +682,11 @@ impl SessionHandle {
                             bytes_increased = true;
                         }
 
+                        let prior_sent =
+                            handle_for_paths.0.bytes_sent_accum.load(Ordering::Acquire);
+                        let prior_recv =
+                            handle_for_paths.0.bytes_recv_accum.load(Ordering::Acquire);
+                        let mut path_upgrade_event = None;
                         if let Ok(mut cs) = handle_for_paths.0.connect_state.lock() {
                             let prev_direct = cs
                                 .snapshot
@@ -610,9 +702,19 @@ impl SessionHandle {
                                     .map(|t| t.path_upgraded)
                                     .unwrap_or(false);
 
-                            if !prev_direct && is_direct {
+                            path_upgrade_event = if !prev_direct && is_direct {
                                 tracing::info!("iroh path upgraded: relay → direct P2P");
-                            }
+                                Some(Event::PathUpgraded {
+                                    network: network_hint
+                                        .as_ref()
+                                        .map(|h| h.label())
+                                        .unwrap_or("unknown"),
+                                    rtt_ms: rtt,
+                                    from_relay: sanitize_relay(cs.snapshot.relay_url.as_deref()),
+                                })
+                            } else {
+                                None
+                            };
 
                             cs.snapshot.transport = Some(TransportSnapshot {
                                 is_direct,
@@ -620,12 +722,15 @@ impl SessionHandle {
                                 relay_url,
                                 num_paths: path_list.len(),
                                 rtt_ms: rtt,
-                                bytes_sent: stats.udp_tx.bytes,
-                                bytes_recv,
+                                bytes_sent: prior_sent + stats.udp_tx.bytes,
+                                bytes_recv: prior_recv + bytes_recv,
                                 path_upgraded,
                                 network_hint,
                                 last_alive_at,
                             });
+                        }
+                        if let Some(event) = path_upgrade_event {
+                            zedra_telemetry::send(event);
                         }
                     }
 
@@ -740,6 +845,38 @@ impl SessionHandle {
         });
 
         tracing::info!("SessionHandle: connected (gen={my_gen})");
+
+        // Telemetry: connect success with phase timings + transport context.
+        // Extract all fields while holding the lock, then send outside it.
+        let (total_ms, relay_latency_ms, symmetric_nat, is_first_pairing, st) = {
+            let cs = self.0.connect_state.lock().unwrap();
+            let s = &cs.snapshot;
+            (
+                cs.elapsed_ms(),
+                s.relay_latency_ms.unwrap_or(0),
+                s.mapping_varies.unwrap_or(false),
+                s.is_first_pairing,
+                snapshot_telemetry(s),
+            )
+        };
+        zedra_telemetry::send(Event::ConnectSuccess {
+            total_ms,
+            binding_ms: st.binding_ms,
+            hole_punch_ms: st.hole_punch_ms,
+            auth_ms: st.auth_ms,
+            fetch_ms: st.fetch_ms,
+            path: st.path,
+            network: st.network,
+            rtt_ms: st.rtt_ms,
+            relay: st.relay,
+            relay_latency_ms,
+            alpn: st.alpn,
+            has_ipv4: st.has_ipv4,
+            has_ipv6: st.has_ipv6,
+            symmetric_nat,
+            is_first_pairing,
+        });
+
         Ok(())
     }
 
@@ -1051,6 +1188,44 @@ impl SessionHandle {
     }
 
     async fn reattach_terminals(&self, client: &irpc::Client<ZedraProto>) {
+        let client_terminals = self
+            .0
+            .terminals
+            .lock()
+            .map(|v| v.clone())
+            .unwrap_or_default();
+        if client_terminals.is_empty() {
+            return;
+        }
+
+        // Fetch the server's live terminal list and prune any client-side
+        // terminals that no longer exist (e.g. host restarted and cleaned up).
+        let server_ids: std::collections::HashSet<String> = match client.rpc(TermListReq {}).await {
+            Ok(result) => result.terminals.into_iter().map(|e| e.id).collect(),
+            Err(e) => {
+                tracing::warn!("reattach: terminal_list failed: {e}");
+                // Proceed with what we have — worst case attach fails per terminal.
+                std::collections::HashSet::new()
+            }
+        };
+
+        let pruned: Vec<String> = client_terminals
+            .iter()
+            .filter(|t| !server_ids.contains(&t.id))
+            .map(|t| t.id.clone())
+            .collect();
+        if !pruned.is_empty() {
+            tracing::info!(
+                "reattach: pruning {} stale terminals: {:?}",
+                pruned.len(),
+                pruned
+            );
+            if let Ok(mut terms) = self.0.terminals.lock() {
+                terms.retain(|t| server_ids.contains(&t.id));
+            }
+            self.notify_state_change();
+        }
+
         let terminals = self
             .0
             .terminals
@@ -1207,6 +1382,14 @@ impl SessionHandle {
             let max_attempts = 10u32;
             let mut attempt = 1u32;
             let mut reason = initial_reason;
+            let reconnect_start = std::time::Instant::now();
+            let reason_label = match &reason {
+                ReconnectReason::ConnectionLost => "connection_lost",
+                ReconnectReason::AppForegrounded => "app_foregrounded",
+            };
+            zedra_telemetry::send(Event::ReconnectStarted {
+                reason: reason_label,
+            });
 
             'reconnect: loop {
                 if handle.0.user_disconnect.load(Ordering::Acquire) {
@@ -1280,21 +1463,32 @@ impl SessionHandle {
                 match handle.connect(addr).await {
                     Ok(()) => {
                         tracing::info!("reconnect: success on attempt {}", attempt);
-                        match handle.terminal_list().await {
-                            Ok(ids) => tracing::info!(
-                                "reconnect: server has {} terminals: {:?}",
-                                ids.len(),
-                                ids,
-                            ),
-                            Err(e) => tracing::warn!("reconnect: terminal_list failed: {e}"),
-                        }
+                        let elapsed_ms = reconnect_start.elapsed().as_millis() as u64;
+                        let st =
+                            snapshot_telemetry(&handle.0.connect_state.lock().unwrap().snapshot);
+                        zedra_telemetry::send(Event::ReconnectSuccess {
+                            attempt,
+                            elapsed_ms,
+                            reason: reason_label,
+                            binding_ms: st.binding_ms,
+                            hole_punch_ms: st.hole_punch_ms,
+                            auth_ms: st.auth_ms,
+                            fetch_ms: st.fetch_ms,
+                            path: st.path,
+                            network: st.network,
+                            rtt_ms: st.rtt_ms,
+                            relay: st.relay,
+                            alpn: st.alpn,
+                            has_ipv4: st.has_ipv4,
+                            has_ipv6: st.has_ipv6,
+                        });
                         // Phase is now Connected (set inside connect()).
                         break;
                     }
                     Err(e) => {
                         tracing::warn!("reconnect: attempt {} failed: {e}", attempt);
                         // Fatal auth errors — stop retrying.
-                        if let ConnectPhase::Failed(ref err) = handle.connect_state().phase {
+                        if let ConnectPhase::Failed(ref err) = handle.connect_phase() {
                             if err.is_fatal() {
                                 break;
                             }
@@ -1305,16 +1499,40 @@ impl SessionHandle {
                 }
             }
 
-            // Post-loop: if we exhausted attempts without connecting or hitting a
-            // fatal error, mark host as unreachable.
+            // Post-loop: emit ReconnectExhausted for both termination paths
+            // (all attempts used, or fatal auth error stopping early).
             if !handle.0.user_disconnect.load(Ordering::Acquire) {
-                let phase = handle.connect_state().phase;
-                let is_fatal = matches!(&phase, ConnectPhase::Failed(err) if err.is_fatal());
-                if !phase.is_connected() && !is_fatal {
-                    if let Ok(mut cs) = handle.0.connect_state.lock() {
+                let (fatal_label, is_connected) = if let Ok(mut cs) = handle.0.connect_state.lock()
+                {
+                    let fatal_label = if let ConnectPhase::Failed(ref err) = cs.phase {
+                        err.fatal_label()
+                    } else {
+                        None
+                    };
+                    let is_connected = cs.phase.is_connected();
+                    // Non-fatal exhaustion: set HostUnreachable here.
+                    // Fatal path: set_failed() inside connect() already set the phase.
+                    if !is_connected && fatal_label.is_none() {
                         cs.phase = ConnectPhase::Failed(ConnectError::HostUnreachable);
                     }
-                    handle.notify_state_change();
+                    (fatal_label, is_connected)
+                } else {
+                    (None, false)
+                };
+                if !is_connected {
+                    zedra_telemetry::send(Event::ReconnectExhausted {
+                        // On normal exhaustion the loop increments attempt past max before
+                        // breaking, so clamp back to max_attempts.
+                        attempts: attempt.min(max_attempts),
+                        elapsed_ms: reconnect_start.elapsed().as_millis() as u64,
+                        reason: reason_label,
+                        fatal_error: fatal_label,
+                    });
+                    if fatal_label.is_none() {
+                        // Non-fatal exhaustion: notify now.
+                        // Fatal path already notified inside connect() via set_failed().
+                        handle.notify_state_change();
+                    }
                 }
             }
 
@@ -1327,10 +1545,42 @@ impl SessionHandle {
     // -----------------------------------------------------------------------
 
     fn set_failed(&self, error: ConnectError) {
+        let phase_label;
+        let relay;
+        let alpn;
+        let has_ipv4;
+        let has_ipv6;
+        let relay_connected;
+        let elapsed_ms;
         if let Ok(mut cs) = self.0.connect_state.lock() {
+            phase_label = cs.phase.label();
+            elapsed_ms = cs.elapsed_ms();
+            relay = sanitize_relay(cs.snapshot.relay_url.as_deref());
+            alpn = cs.snapshot.alpn.clone().unwrap_or_else(|| "unknown".into());
+            has_ipv4 = cs.snapshot.has_ipv4;
+            has_ipv6 = cs.snapshot.has_ipv6;
+            relay_connected = cs.snapshot.relay_connected;
             cs.snapshot.failed_at_step = cs.phase.step_index();
-            cs.phase = ConnectPhase::Failed(error);
+            cs.phase = ConnectPhase::Failed(error.clone());
+        } else {
+            phase_label = "unknown";
+            elapsed_ms = 0;
+            relay = "none".into();
+            alpn = "unknown".into();
+            has_ipv4 = false;
+            has_ipv6 = false;
+            relay_connected = false;
         }
+        zedra_telemetry::send(Event::ConnectFailed {
+            phase: phase_label,
+            error: error.label(),
+            elapsed_ms,
+            relay,
+            alpn,
+            has_ipv4,
+            has_ipv6,
+            relay_connected,
+        });
         self.notify_state_change();
     }
 

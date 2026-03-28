@@ -25,8 +25,8 @@ pub struct HostInfo {
     pub endpoint_id: String,
     /// Session ID for AuthProve.
     pub session_id: String,
-    /// Relay URL in use (e.g. "https://sg1.relay.zedra.dev").
-    pub relay_url: String,
+    /// Relay URLs in use (e.g. ["https://ap1.relay.zedra.dev"]).
+    pub relay_urls: Vec<String>,
 }
 
 /// Path of `host-info.json` for the given workspace config dir.
@@ -110,11 +110,14 @@ pub async fn run(workdir: &Path, count: u32, relay_only: bool) -> Result<()> {
 
     // Read connection info written by the running host.
     let info = read_host_info(&config_dir)?;
+    let relay_urls: Vec<&str> = info.relay_urls.iter().map(|s| s.as_str()).collect();
     eprintln!(
         "Connecting to host endpoint: {}...",
         &info.endpoint_id[..16]
     );
-    eprintln!("  Relay: {}", info.relay_url);
+    for u in &relay_urls {
+        eprintln!("  Relay: {}", u);
+    }
     eprintln!("  Session: {}", info.session_id);
     if relay_only {
         eprintln!("  Mode: relay-only (P2P disabled)");
@@ -131,19 +134,21 @@ pub async fn run(workdir: &Path, count: u32, relay_only: bool) -> Result<()> {
         .context("invalid endpoint_id in host-info.json")?;
 
     // Create an ephemeral iroh endpoint.
-    // In relay-only mode: use a custom relay map pointing at the host's relay,
+    // In relay-only mode: use a custom relay map pointing at the host's relays,
     // with QUIC discovery disabled so iroh cannot establish direct paths.
     // In normal mode: RelayMode::Default uses n0's relay + pkarr for P2P.
     let mut builder = iroh::Endpoint::builder();
     if relay_only {
-        let relay_url: iroh::RelayUrl = info
-            .relay_url
-            .parse()
-            .context("invalid relay_url in host-info.json")?;
-        let relay_map = iroh::RelayMap::from_iter([iroh::RelayConfig {
-            url: relay_url,
-            quic: None,
-        }]);
+        anyhow::ensure!(!relay_urls.is_empty(), "no relay URLs in host-info.json");
+        let configs = relay_urls
+            .iter()
+            .map(|u| {
+                let url: iroh::RelayUrl =
+                    u.parse().context("invalid relay_url in host-info.json")?;
+                Ok(iroh::RelayConfig { url, quic: None })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let relay_map = iroh::RelayMap::from_iter(configs);
         // clear_ip_transports() disables all direct UDP transports so the
         // endpoint can only communicate via relay — no P2P path migration.
         builder = builder
@@ -157,15 +162,16 @@ pub async fn run(workdir: &Path, count: u32, relay_only: bool) -> Result<()> {
         .await
         .context("failed to bind iroh endpoint")?;
 
-    // Build host address. In relay-only mode we provide only the relay URL so
-    // iroh connects via relay immediately and never attempts direct P2P paths.
+    // Build host address. In relay-only mode we provide all relay URLs so
+    // iroh can reach the host through whichever relay it's connected to.
     // In normal mode we provide just the pubkey and let pkarr resolve addresses.
     let host_addr = if relay_only {
-        let relay_url: iroh::RelayUrl = info
-            .relay_url
-            .parse()
-            .context("invalid relay_url in host-info.json")?;
-        iroh::EndpointAddr::new(host_pubkey).with_relay_url(relay_url)
+        let mut addr = iroh::EndpointAddr::new(host_pubkey);
+        for u in &relay_urls {
+            let url: iroh::RelayUrl = u.parse().context("invalid relay_url in host-info.json")?;
+            addr = addr.with_relay_url(url);
+        }
+        addr
     } else {
         iroh::EndpointAddr::from(host_pubkey)
     };

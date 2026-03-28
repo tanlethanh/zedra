@@ -16,33 +16,38 @@ pub struct StartupInfo {
     pub status: String,
     pub host: String,
     pub endpoint_id: String,
-    pub relay_url: Option<String>,
+    pub relay_urls: Vec<String>,
     pub direct_addrs: Vec<String>,
     pub pairing_url: String,
     pub qr_code: String,
 }
 
 /// Build the pairing info (QR string, metadata) without printing anything.
+///
+/// `configured_relay_urls` are the relay URLs the endpoint was configured with.
+/// These are used for display; the live `endpoint.addr()` relay list is empty
+/// at startup because the relay connection is established asynchronously.
 pub fn build_pairing_info(
     ticket: &ZedraPairingTicket,
     endpoint: &iroh::Endpoint,
+    configured_relay_urls: &[String],
 ) -> Result<StartupInfo> {
     let hostname = gethostname();
     let endpoint_id = ticket.endpoint_id.to_string();
 
-    // Routing info from live endpoint (for display/debug; not embedded in ticket)
+    // Direct addresses from live endpoint (populated after STUN completes).
     let addr = endpoint.addr();
-    let relay_url = addr.relay_urls().next().map(|u| u.to_string());
+    let relay_urls: Vec<String> = configured_relay_urls.to_vec();
     let direct_addrs: Vec<String> = addr.ip_addrs().map(|a| a.to_string()).collect();
 
     let pairing_url = ticket.to_pairing_url()?;
 
     tracing::info!(
-        "QR pairing code: {} bytes, endpoint={}, session={}, relay={}, direct_addrs={}",
+        "QR pairing code: {} bytes, endpoint={}, session={}, relays={}, direct_addrs={}",
         pairing_url.len(),
         &endpoint_id[..16.min(endpoint_id.len())],
         ticket.session_id,
-        relay_url.as_deref().unwrap_or("none"),
+        relay_urls.len(),
         direct_addrs.len(),
     );
 
@@ -53,7 +58,7 @@ pub fn build_pairing_info(
         status: "ready".to_string(),
         host: hostname,
         endpoint_id,
-        relay_url,
+        relay_urls,
         direct_addrs,
         pairing_url,
         qr_code,
@@ -61,8 +66,12 @@ pub fn build_pairing_info(
 }
 
 /// Generate and display a pairing QR code.
-pub fn generate_pairing_qr(ticket: &ZedraPairingTicket, endpoint: &iroh::Endpoint) -> Result<()> {
-    let info = build_pairing_info(ticket, endpoint)?;
+pub fn generate_pairing_qr(
+    ticket: &ZedraPairingTicket,
+    endpoint: &iroh::Endpoint,
+    configured_relay_urls: &[String],
+) -> Result<()> {
+    let info = build_pairing_info(ticket, endpoint, configured_relay_urls)?;
     print_pairing_info(&info);
     Ok(())
 }
@@ -79,9 +88,8 @@ fn print_pairing_info(info: &StartupInfo) {
         "  Endpoint: {}",
         &info.endpoint_id[..16.min(info.endpoint_id.len())]
     );
-    if let Some(ref relay) = info.relay_url {
-        println!("  Relay: {}", relay);
-    }
+    let regions: Vec<&str> = info.relay_urls.iter().map(|u| relay_region(u)).collect();
+    println!("  Relays: {}", regions.join(", "));
     println!("  Direct addrs: {}", info.direct_addrs.len());
     println!();
     println!("{}", info.qr_code);
@@ -103,6 +111,16 @@ fn render_qr_compact(code: &QrCode) -> String {
         .light_color(unicode::Dense1x2::Light)
         .quiet_zone(true)
         .build()
+}
+
+/// Extract region label from a relay URL (e.g. "https://ap1.relay.zedra.dev" → "ap1").
+/// Falls back to the full URL if the pattern doesn't match.
+fn relay_region(url: &str) -> &str {
+    let host = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    host.split('.').next().unwrap_or(host)
 }
 
 fn gethostname() -> String {

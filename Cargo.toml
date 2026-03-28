@@ -27,6 +27,7 @@ tracing = { version = "0.1", features = ["log"] }
 
 # Utilities
 base64-url = "3"
+zedra-telemetry = { path = "crates/zedra-telemetry" }
 hex = "0.4"
 itertools = "0.14"
 rust-embed = "8"

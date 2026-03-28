@@ -12,6 +12,11 @@ pub use pairing::{
     generate_session_id, verify_registration_hmac,
 };
 
-/// Self-hosted relay URL (Singapore, ap-southeast-1).
-/// Used by both host and client to avoid n0's default relay latency.
-pub const ZEDRA_RELAY_URL: &str = "https://sg1.relay.zedra.dev";
+/// All known Zedra relay URLs, ordered by priority.
+/// iroh probes all relays and picks the lowest-latency one as preferred.
+/// If the preferred relay goes down, iroh fails over to the next best.
+pub const ZEDRA_RELAY_URLS: &[&str] = &[
+    "https://sg1.relay.zedra.dev", // Singapore (ap-southeast-1)
+    "https://us1.relay.zedra.dev", // N. Virginia (us-east-1)
+    "https://eu1.relay.zedra.dev", // Frankfurt (eu-central-1)
+];

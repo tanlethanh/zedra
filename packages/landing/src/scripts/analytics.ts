@@ -33,6 +33,12 @@ async function setupAnalytics() {
     logEvent(analytics, eventName, params);
   };
 
+  const params = new URLSearchParams(window.location.search);
+  const ref = params.get("ref");
+  if (ref) {
+    track("referral", { ref_source: ref });
+  }
+
   for (const input of document.querySelectorAll<HTMLInputElement>("[data-analytics-install-tab]")) {
     input.addEventListener("change", () => {
       if (!input.checked) {

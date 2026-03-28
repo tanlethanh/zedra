@@ -40,6 +40,15 @@ impl PlatformBridge for AndroidBridge {
         jni::launch_qr_scanner()
     }
 
+    fn app_version(&self) -> Option<String> {
+        let version = jni::get_app_version();
+        if version.trim().is_empty() {
+            None
+        } else {
+            Some(version)
+        }
+    }
+
     fn data_directory(&self) -> Option<String> {
         jni::get_files_dir()
     }

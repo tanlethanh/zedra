@@ -11,6 +11,8 @@ crate-type = ["cdylib", "staticlib"]
 android-platform = []
 ios-platform = []
 preview = []
+# Log every telemetry event to stderr/logcat. Never enable in production builds.
+debug-telemetry = []
 
 [dependencies]
 gpui = { path = "../../vendor/zed/crates/gpui", default-features = false }
@@ -44,6 +46,7 @@ tree-sitter-php = "0.24"
 zedra-session = { path = "../zedra-session" }
 zedra-terminal = { path = "../zedra-terminal" }
 zedra-rpc = { path = "../zedra-rpc" }
+zedra-telemetry.workspace = true
 iroh.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true

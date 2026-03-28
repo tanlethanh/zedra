@@ -2,6 +2,7 @@ package dev.zedra.app;
 
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.app.AppCompatDelegate;
 import androidx.core.splashscreen.SplashScreen;
 
 import android.app.Activity;
@@ -68,6 +69,33 @@ public class MainActivity extends AppCompatActivity {
                 Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
                 sActivity.startActivity(intent);
             });
+        }
+    }
+
+    /**
+     * Get the native app build version shown to users.
+     * Returns "versionName (versionCode)" when available.
+     */
+    public static String getAppVersion() {
+        if (sActivity == null) {
+            return "";
+        }
+        try {
+            String packageName = sActivity.getPackageName();
+            android.content.pm.PackageInfo info =
+                sActivity.getPackageManager().getPackageInfo(packageName, 0);
+            String versionName = info.versionName == null ? "" : info.versionName.trim();
+            long versionCode = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+                ? info.getLongVersionCode()
+                : info.versionCode;
+
+            if (versionName.isEmpty()) {
+                return String.valueOf(versionCode);
+            }
+            return versionName + " (" + versionCode + ")";
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to read app version", e);
+            return "";
         }
     }
 
@@ -208,6 +236,8 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // Keep Android native UI (including IME helper text) aligned with Zedra's dark theme.
+        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES);
         SplashScreen.installSplashScreen(this);
         super.onCreate(savedInstanceState);
         Log.d(TAG, "onCreate");
