@@ -1,0 +1,168 @@
+#!/usr/bin/env bun
+// SSH to relay hosts, query the monitor REST API (port 9091), print metrics.
+//
+// Usage:
+//   INSTANCES=ap1,us1,eu1 bun cli.ts [instance...] [--history [hours]]
+
+import chalk from "chalk";
+import minimist from "minimist";
+import type { MetricRecord, NodeMetrics } from "relay-monitor/lib.ts";
+import { fmtMB, pct } from "relay-monitor/lib.ts";
+import { $ } from "zx";
+import { loadConfig } from "./config.ts";
+
+$.verbose = false;
+
+const SSH_OPTS = [
+  "-o",
+  "ConnectTimeout=5",
+  "-o",
+  "BatchMode=yes",
+  "-o",
+  "StrictHostKeyChecking=accept-new",
+];
+
+async function sshCurl(sshHost: string, path: string): Promise<string> {
+  const result = await $`ssh ${SSH_OPTS} ${sshHost} curl -sf http://localhost:9091${path}`;
+  return result.stdout.trim();
+}
+
+function colorPct(n: number, s: string): string {
+  if (n > 85) return chalk.red(s);
+  if (n > 70) return chalk.yellow(s);
+  return chalk.green(s);
+}
+
+function printNode(m: NodeMetrics): void {
+  const label = chalk.bold.cyan(`[${m.instance.toUpperCase()}]`);
+
+  if (m.error) {
+    console.log(`${label}  ${chalk.red("unreachable")}  ${chalk.dim(m.error)}\n`);
+    return;
+  }
+
+  const lines: string[] = [
+    label,
+    `  clients    ${chalk.bold(m.iroh.connectedClients)}  ${chalk.dim(`(${m.iroh.acceptedTotal} total)`)}`,
+    `  bandwidth  ↑ ${fmtMB(m.iroh.bytesSent)}  ↓ ${fmtMB(m.iroh.bytesRecv)}`,
+  ];
+
+  if (m.os) {
+    const memN = pct(m.os.memUsedBytes, m.os.memTotalBytes);
+    const diskN = pct(m.os.diskUsedBytes, m.os.diskTotalBytes);
+    const loadColor = m.os.load1 > 2 ? chalk.red : m.os.load1 > 1 ? chalk.yellow : chalk.green;
+    lines.push(
+      `  cpu        ${colorPct(m.os.cpuPct, `${m.os.cpuPct.toFixed(0)}%`)}`,
+      `  load       ${loadColor(`${m.os.load1.toFixed(2)} ${m.os.load5.toFixed(2)} ${m.os.load15.toFixed(2)}`)}`,
+      `  memory     ${colorPct(memN, `${memN.toFixed(0)}%`)}  ${chalk.dim(`(${fmtMB(m.os.memUsedBytes)} / ${fmtMB(m.os.memTotalBytes)})`)}`,
+      `  disk       ${colorPct(diskN, `${diskN.toFixed(0)}%`)}`
+    );
+  }
+
+  lines.push(`  ${chalk.dim(m.fetchedAt)}`);
+  console.log(`${lines.join("\n")}\n`);
+}
+
+function printHistory(records: MetricRecord[], instance: string): void {
+  const label = chalk.bold.cyan(`[${instance.toUpperCase()}]`);
+  if (records.length === 0) {
+    console.log(`${label}  ${chalk.dim("no history")}\n`);
+    return;
+  }
+  console.log(`${label}  ${chalk.dim(`${records.length} entries`)}`);
+  console.log(
+    `  ${"timestamp".padEnd(26)}` +
+      `${"clients".padStart(9)}` +
+      `${"↑ sent".padStart(12)}` +
+      `${"↓ recv".padStart(12)}` +
+      `${"cpu".padStart(6)}` +
+      `${"ram".padStart(6)}` +
+      `${"disk".padStart(6)}`
+  );
+  console.log(`  ${"-".repeat(72)}`);
+  for (const r of records) {
+    const ts = new Date(r.ts).toISOString().replace("T", " ").slice(0, 19);
+    const clients = String(r.iroh.connectedClients).padStart(9);
+    const sent = fmtMB(r.iroh.bytesSent).padStart(12);
+    const recv = fmtMB(r.iroh.bytesRecv).padStart(12);
+    const cpu = r.os ? `${r.os.cpuPct.toFixed(0)}%`.padStart(6) : "   n/a";
+    const ram = r.os
+      ? `${pct(r.os.memUsedBytes, r.os.memTotalBytes).toFixed(0)}%`.padStart(6)
+      : "   n/a";
+    const disk = r.os
+      ? `${pct(r.os.diskUsedBytes, r.os.diskTotalBytes).toFixed(0)}%`.padStart(6)
+      : "   n/a";
+    const err = r.error ? `  ${chalk.red("ERR")}` : "";
+    console.log(`  ${chalk.dim(ts)} ${clients} ${sent} ${recv} ${cpu} ${ram} ${disk}${err}`);
+  }
+  console.log();
+}
+
+// ── Main ─────────────────────────────────────────────────────────────────────
+
+const args = minimist(process.argv.slice(2), { boolean: ["help", "h"] });
+
+if (args.help || args.h) {
+  console.log(`Usage: bun cli.ts [instance...] [--history [hours]]
+
+Examples:
+  bun cli.ts                 live metrics, all instances
+  bun cli.ts ap1             live metrics, one instance
+  bun cli.ts --history       last 24h table, all instances
+  bun cli.ts ap1 --history 6 last 6h table, ap1 only`);
+  process.exit(0);
+}
+
+const cfg = loadConfig();
+const regionArgs: string[] = args._;
+
+const instances =
+  regionArgs.length === 0
+    ? Object.keys(cfg.instances)
+    : regionArgs.filter((a) => {
+        if (!(a in cfg.instances)) {
+          console.error(`Unknown instance: ${a}`);
+          process.exit(1);
+        }
+        return true;
+      });
+
+const isHistory = "history" in args;
+const historyHours = typeof args.history === "number" ? args.history : 24;
+
+if (isHistory) {
+  const results = await Promise.all(
+    instances.map(async (name) => {
+      const host = cfg.instances[name].sshHost;
+      try {
+        return {
+          name,
+          records: JSON.parse(
+            await sshCurl(host, `/history?hours=${historyHours}`)
+          ) as MetricRecord[],
+        };
+      } catch (e) {
+        return { name, records: [] as MetricRecord[] };
+      }
+    })
+  );
+  for (const { name, records } of results) printHistory(records, name);
+} else {
+  const results = await Promise.all(
+    instances.map(async (name) => {
+      const host = cfg.instances[name].sshHost;
+      try {
+        return JSON.parse(await sshCurl(host, "/metrics")) as NodeMetrics;
+      } catch {
+        return {
+          instance: name,
+          iroh: { connectedClients: 0, acceptedTotal: 0, bytesSent: 0, bytesRecv: 0 },
+          os: null,
+          fetchedAt: new Date().toISOString(),
+          error: "monitor unreachable",
+        } satisfies NodeMetrics;
+      }
+    })
+  );
+  for (const m of results) printNode(m);
+}

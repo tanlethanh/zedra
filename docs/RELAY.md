@@ -71,7 +71,7 @@ prod_tls = true
 cert_dir = "/data/certs"
 ```
 
-`__HOSTNAME__` is replaced by `entrypoint.sh` with `${REGION}.relay.zedra.dev`.
+`__HOSTNAME__` is replaced by `entrypoint.sh` with `${INSTANCE}.relay.zedra.dev` (Compose sets `RELAY_HOSTNAME` from `INSTANCE` in `.env`).
 
 ## Metrics
 

@@ -271,6 +271,8 @@ vendor/zed/crates/
   └── gpui_wgpu/src/            # wgpu renderer (shaders, atlas, context)
 
 packages/relay-worker/          # [DEPRECATED] do not use
+packages/relay-monitor/         # Docker sidecar (Discord + SSH to local relay) — deploy/relay
+packages/relay-check/           # Local CLI: SSH to relay hosts, print metrics/history
 deploy/relay/                   # Production iroh-relay binary deployment
 ```
 

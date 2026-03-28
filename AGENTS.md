@@ -8,7 +8,8 @@
 |---|---|---|
 | **zedra-host** (Rust binary) | Desktop companion daemon — iroh P2P, RPC, PTY, git/fs ops | `cargo run -p zedra-host -- start` |
 | **Landing page** (Astro) | Marketing site at `packages/landing/` | `bun run --cwd packages/landing astro dev` |
-| **Relay monitor** (Bun/TS) | Monitoring tool at `packages/relay-monitor/` | Docker-only (`deploy/relay/`) |
+| **Relay monitor** (Bun/TS) | Docker sidecar at `packages/relay-monitor/` | `deploy/relay/` |
+| **Relay check** (Bun/TS) | Local SSH health CLI at `packages/relay-check/` | run on your machine |
 
 The Android app (`crates/zedra/`) and iOS build require NDK/Xcode and a physical device — not buildable in Cloud Agent VMs.
 

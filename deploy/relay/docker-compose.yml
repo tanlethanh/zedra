@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     init: true                  # tini as PID 1: proper SIGTERM propagation + zombie reaping
     environment:
-      - RELAY_HOSTNAME=${REGION}.relay.zedra.dev
+      - RELAY_HOSTNAME=${INSTANCE}.relay.zedra.dev
     ports:
       - "80:80"
       - "443:443"
@@ -44,10 +44,15 @@ services:
     depends_on:
       relay:
         condition: service_healthy
+    ports:
+      - "127.0.0.1:9091:9091"    # REST API — relay-check queries via SSH tunnel
     volumes:
-      - ${SSH_DIR:-/home/ubuntu/.ssh}:/root/.ssh:ro
+      - /proc:/host/proc:ro
+      - /:/host/root:ro
+      - metrics:/data/metrics
     environment:
       - DISCORD_WEBHOOK
+      - INSTANCE
       - MAX_CPU_PCT
       - MAX_LOAD1
       - MAX_MEM_PCT
@@ -71,3 +76,5 @@ services:
 volumes:
   certs:
     name: zedra-relay-certs   # named so it persists across compose up/down
+  metrics:
+    name: zedra-relay-metrics

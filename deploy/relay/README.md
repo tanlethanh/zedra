@@ -98,7 +98,9 @@ deploy/relay/
   relay.toml          # iroh-relay config template (__HOSTNAME__ substituted at runtime)
   entrypoint.sh       # injects RELAY_HOSTNAME into relay.toml at container start
   deploy.sh           # build + stream images + bring up compose
-  .env.example        # env var reference for .env.local on each instance
+  .env.example        # template → copy to .env (secrets, gitignored)
+
+packages/relay-check/ # local-only: SSH health daemon + CLI (`INSTANCES=...`) — not in the deploy bundle
 ```
 
 ## Deploy
@@ -126,13 +128,9 @@ Host zedra-relay-eu1
 
 > **GCP alternative**: `gcloud compute ssh INSTANCE_NAME --zone=ZONE` manages keys automatically — no `~/.ssh/config` entry needed.
 
-Create `/opt/zedra/deploy/relay/.env.local` on each instance (see `.env.example`):
+**Secrets (local):** copy `deploy/relay/.env.example` to `deploy/relay/.env` and set at least `DISCORD_WEBHOOK`. The root `.gitignore` ignores `.env` everywhere.
 
-```bash
-DISCORD_WEBHOOK=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN
-```
-
-> **How `.env` works:** `deploy.sh` generates `.env` by prepending `REGION=<instance>` (from the `--instance` flag) to `.env.local`. The relay uses `REGION` for its hostname (`${REGION}.relay.zedra.dev`). The monitor receives `INSTANCES=${REGION}` via Compose to watch the local relay. The CLI (`bun cli.ts`) is run locally with `INSTANCES=ap1,us1,eu1` to fetch from all nodes.
+> **How `.env` works:** `deploy.sh` merges your local `deploy/relay/.env` with injected `INSTANCE=<name>` (from `--instance`), uploads to `/opt/zedra/deploy/relay/.env.local`, then copies to `.env` for Compose. `INSTANCE=` / `INSTANCES=` lines in your local file are ignored. The relay uses `INSTANCE` for hostname (`${INSTANCE}.relay.zedra.dev`). The **Docker** `relay-monitor` sidecar uses **`INSTANCE` only**. **Multi-host SSH checks from your laptop** use **`packages/relay-check`** (`INSTANCES=ap1,us1,eu1 bun monitor.ts` or `bun cli.ts`).
 
 ### Deploy one instance
 
@@ -150,7 +148,7 @@ DISCORD_WEBHOOK=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN
 
 1. Builds `zedra-relay:latest` and `zedra-monitor:latest` locally (native arm64 on Apple Silicon — no `--platform` flag needed)
 2. `docker save | gzip | ssh <host> docker load` — streams both images to the server without a registry
-3. Uploads `docker-compose.yml`, writes `.env` from `.env.local`, runs `docker compose up -d`
+3. Uploads `docker-compose.yml`, merges local `deploy/relay/.env` with injected `INSTANCE` to `.env.local` and `.env` on the host, runs `docker compose up -d`
 
 ---
 
@@ -452,7 +450,7 @@ Run through this before and after every first-time deployment or infrastructure 
 - **Billing alert configured** (GCP Budget or AWS Budget) with threshold at 80% + 100% of monthly target
 - **Free tier check**: if using free tier, confirm instance count and region comply (1 node max on AWS free tier; GCP e2-micro in us-central1/us-east1/us-west1 only)
 - SSH aliases configured in `~/.ssh/config` for all target instances
-- `.env.local` present on each instance with `DISCORD_WEBHOOK` set
+- Local `deploy/relay/.env` present with `DISCORD_WEBHOOK` set (deploy pushes merged env to each instance)
 - DNS A records pointing each hostname to its public IP (TTL ≤ 60)
 - Firewall/security group open: TCP 80, TCP 443, UDP 7842
 - OS setup complete: Docker installed, sysctl tuned, fd limits raised, Docker daemon configured, ubuntu in docker group
@@ -506,7 +504,7 @@ Run through this before and after every first-time deployment or infrastructure 
 
 ### Ongoing health
 
-- Monitor Discord alerts are firing (test by temporarily lowering a threshold in `.env.local`)
+- Monitor Discord alerts are firing (test by temporarily lowering a threshold in local `deploy/relay/.env`, then redeploy)
 - Logrotate configured for `/var/log/zedra-relay/metrics.jsonl` (done by `deploy.sh`)
 - Cert auto-renewal working — Let's Encrypt renews ~30 days before expiry; confirm after first month:
   ```bash

@@ -26,7 +26,7 @@ ios/Zedra.xcworkspace/
 
 docs/archive
 
-.env
+.env*
 !.env.example
 
 # Credential and key files

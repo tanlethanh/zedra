@@ -2,23 +2,14 @@
   "name": "relay-monitor",
   "version": "1.0.0",
   "private": true,
+  "description": "Docker sidecar for relay health + Discord — built by deploy/relay",
   "scripts": {
     "monitor": "bun monitor.ts",
-    "cli": "bun cli.ts",
     "typecheck": "tsc --noEmit",
-    "build": "bun run build:monitor && bun run build:cli",
-    "build:monitor": "bun build --compile --target=bun-linux-arm64 monitor.ts --outfile dist/monitor",
-    "build:cli": "bun build --compile --target=bun-linux-arm64 cli.ts --outfile dist/cli",
-    "build:local": "bun build --compile monitor.ts --outfile dist/monitor-local && bun build --compile cli.ts --outfile dist/cli-local"
+    "build": "bun run build:monitor",
+    "build:monitor": "bun build --compile --target=bun-linux-arm64 monitor.ts --outfile dist/monitor"
   },
   "devDependencies": {
-    "@types/fs-extra": "^11.0.4",
-    "@types/minimist": "^1.2.5",
     "bun-types": "latest"
-  },
-  "dependencies": {
-    "chalk": "^5.6.2",
-    "minimist": "^1.2.8",
-    "zx": "^8.8.5"
   }
 }
