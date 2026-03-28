@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use zedra_rpc::osc::OscScanner;
-use zedra_rpc::proto::{BacklogEntry, HostEvent, TermOutput};
+use zedra_rpc::proto::{BacklogEntry, HostEvent, TermOutput, TerminalSyncEntry};
 
 // ---------------------------------------------------------------------------
 // Pairing slot
@@ -66,6 +66,11 @@ pub struct ServerSession {
     pub acl: Mutex<HashSet<[u8; 32]>>,
     /// Currently attached client pubkey. None = session is free.
     pub active_client: Mutex<Option<[u8; 32]>>,
+    /// Ephemeral in-memory session token for the currently attached client.
+    /// At most one token exists per session at a time (bound to the active
+    /// client pubkey). Rotated on every successful connect. Consumed atomically
+    /// on validation to prevent replay within the TTL window.
+    pub session_token: Mutex<Option<([u8; 32], SessionToken)>>,
     /// Channel for pushing host-initiated events to the connected client.
     /// Installed by the Subscribe RPC handler; replaced on each new subscription.
     pub event_tx: Mutex<Option<tokio::sync::mpsc::Sender<HostEvent>>>,
@@ -93,6 +98,11 @@ pub struct ServerSession {
     pub observer_events_dropped_full: AtomicU64,
     pub fs_watch_quota_rejected: AtomicU64,
     pub fs_watch_rate_limited: AtomicU64,
+}
+
+#[derive(Clone)]
+pub struct SessionToken {
+    pub token: [u8; 32],
 }
 
 /// Max number of observed paths stored per session.
@@ -443,7 +453,6 @@ impl SessionRegistry {
                     .mode(0o600)
                     .open(&tmp_path)
                     .and_then(|mut f| f.write_all(json.as_bytes()))
-                    .map_err(|e| e)
             }
             #[cfg(not(unix))]
             {
@@ -784,6 +793,7 @@ impl ServerSession {
             next_term_id: Mutex::new(1),
             acl: Mutex::new(HashSet::new()),
             active_client: Mutex::new(None),
+            session_token: Mutex::new(None),
             event_tx: Mutex::new(None),
             fs_watched_paths: Mutex::new(HashSet::new()),
             fs_watch_rpc_limiter: Mutex::new(TokenBucket::new(
@@ -802,6 +812,61 @@ impl ServerSession {
             fs_watch_quota_rejected: AtomicU64::new(0),
             fs_watch_rate_limited: AtomicU64::new(0),
         }
+    }
+
+    /// Issue a new session token for the given client, replacing any existing one.
+    /// Only one token exists per session at a time.
+    pub async fn issue_session_token(&self, client_pubkey: [u8; 32]) -> [u8; 32] {
+        let mut token = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut token);
+        *self.session_token.lock().await = Some((client_pubkey, SessionToken { token }));
+        token
+    }
+
+    /// Atomically consume the session token on validation.
+    /// Returns `true` only if the token belongs to `client_pubkey` and matches.
+    /// The slot is cleared on consumption to prevent replay.
+    pub async fn validate_session_token(
+        &self,
+        client_pubkey: &[u8; 32],
+        session_token: &[u8; 32],
+    ) -> bool {
+        let mut slot = self.session_token.lock().await;
+        let Some((stored_pubkey, entry)) = slot.take() else {
+            return false;
+        };
+        if &stored_pubkey != client_pubkey {
+            // Token belongs to a different client — put it back and reject.
+            *slot = Some((stored_pubkey, entry));
+            return false;
+        }
+        &entry.token == session_token
+    }
+
+    pub async fn terminal_sync_entries(&self) -> Vec<TerminalSyncEntry> {
+        let terms = self.terminals.lock().await;
+        let mut entries = Vec::with_capacity(terms.len());
+        for (id, term) in terms.iter() {
+            let (title, cwd) = term
+                .host_meta
+                .lock()
+                .ok()
+                .map(|meta| (meta.title.clone(), meta.cwd.clone()))
+                .unwrap_or((None, None));
+            let last_seq = term
+                .backlog
+                .lock()
+                .map(|b| b.next_seq.saturating_sub(1))
+                .unwrap_or(0);
+            entries.push(TerminalSyncEntry {
+                id: id.clone(),
+                last_seq,
+                title,
+                cwd,
+            });
+        }
+        entries.sort_by(|a, b| a.id.cmp(&b.id));
+        entries
     }
 
     /// Push a host-initiated event to the subscribed client, if any.
@@ -1160,5 +1225,47 @@ mod tests {
         let list = registry.list_sessions().await;
         assert_eq!(list.len(), 1);
         assert!(list[0].is_occupied);
+    }
+
+    #[tokio::test]
+    async fn session_token_rotates_and_is_consumed() {
+        let registry = SessionRegistry::new();
+        let session = create_session(&registry).await;
+        let pubkey = make_pubkey(11);
+
+        registry.add_client_to_session(&session.id, pubkey).await;
+        assert!(matches!(
+            registry.attach_client(&session.id, pubkey).await,
+            AttachResult::Ok
+        ));
+
+        let first = session.issue_session_token(pubkey).await;
+        // Validate consumes the token (single-slot: also clears the stored value)
+        assert!(session.validate_session_token(&pubkey, &first).await);
+        // Second validation of same token fails (consumed/cleared)
+        assert!(!session.validate_session_token(&pubkey, &first).await);
+
+        // Issue a new token and verify it's different
+        let second = session.issue_session_token(pubkey).await;
+        assert_ne!(first, second);
+        assert!(session.validate_session_token(&pubkey, &second).await);
+    }
+
+    #[tokio::test]
+    async fn session_token_is_scoped_to_active_client() {
+        let registry = SessionRegistry::new();
+        let session = create_session(&registry).await;
+        let key_a = make_pubkey(21);
+        let key_b = make_pubkey(22);
+
+        registry.add_client_to_session(&session.id, key_a).await;
+        registry.add_client_to_session(&session.id, key_b).await;
+
+        // Issue a token for key_a; key_b should not be able to use it.
+        let token = session.issue_session_token(key_a).await;
+        // key_b's check leaves the token in place (wrong pubkey → puts it back)
+        assert!(!session.validate_session_token(&key_b, &token).await);
+        // key_a can still use it
+        assert!(session.validate_session_token(&key_a, &token).await);
     }
 }

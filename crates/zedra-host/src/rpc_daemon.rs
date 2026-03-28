@@ -1,8 +1,9 @@
 // RPC daemon: exposes filesystem, git, terminal, LSP, and AI operations over irpc.
 //
-// Connection lifecycle (Phase 1 PKI):
-//   First pairing:  Register → Authenticate → AuthProve → (RPC calls)
-//   Reconnect:      Authenticate → AuthProve → (RPC calls)
+// Connection lifecycle:
+//   First pairing:  Register → Connect → Challenge → AuthProve → Ok(SyncSessionResult) → (RPC calls)
+//   Token resume:   Connect(session_token) → Ok(SyncSessionResult) → (RPC calls)
+//   PKI reconnect:  Connect(None) → Challenge → AuthProve → Ok(SyncSessionResult) → (RPC calls)
 //   Health:         Ping (every 2s, foreground only, 5 misses = client reconnects)
 
 use crate::fs::{Filesystem, LocalFs};
@@ -24,6 +25,47 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use zedra_rpc::osc::{encode_meta_preamble, OscEvent};
 use zedra_rpc::proto::*;
 use zedra_telemetry::Event;
+
+struct HostEnvInfo {
+    hostname: String,
+    username: String,
+    workdir: String,
+    home_dir: Option<String>,
+}
+
+fn collect_host_env(workdir: &std::path::Path) -> HostEnvInfo {
+    HostEnvInfo {
+        hostname: hostname::get()
+            .ok()
+            .and_then(|h| h.into_string().ok())
+            .unwrap_or_else(|| "unknown".to_string()),
+        username: std::env::var("USER").unwrap_or_else(|_| "unknown".to_string()),
+        workdir: workdir.to_string_lossy().into_owned(),
+        home_dir: std::env::var("HOME").ok(),
+    }
+}
+
+async fn build_sync_result(
+    session: &Arc<ServerSession>,
+    state: &DaemonState,
+    session_token: [u8; 32],
+) -> SyncSessionResult {
+    let info = collect_host_env(&state.workdir);
+
+    SyncSessionResult {
+        session_id: session.id.clone(),
+        session_token,
+        hostname: info.hostname,
+        workdir: info.workdir,
+        username: info.username,
+        home_dir: info.home_dir,
+        os: Some(std::env::consts::OS.to_string()),
+        arch: Some(std::env::consts::ARCH.to_string()),
+        os_version: os_version_string(),
+        host_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        terminals: session.terminal_sync_entries().await,
+    }
+}
 
 fn ts() -> String {
     let s = SystemTime::now()
@@ -179,6 +221,7 @@ async fn run_observer(session: Arc<ServerSession>, workdir: PathBuf, my_gen: u64
             let set = session.fs_watched_paths.lock().await;
             set.iter().cloned().collect()
         };
+        let watched_len = watched.len();
 
         let mut retained: HashMap<String, u64> = HashMap::new();
         for path in watched {
@@ -208,11 +251,10 @@ async fn run_observer(session: Arc<ServerSession>, workdir: PathBuf, my_gen: u64
 
         tick_count += 1;
         if tick_count % 30 == 0 {
-            let watched_count = session.fs_watched_paths.lock().await.len();
             tracing::info!(
                 "observer metrics: session={} watched={} sent={} dropped_full={} dropped_no_subscriber={} rate_limited={} quota_rejected={}",
                 session.id,
-                watched_count,
+                watched_len,
                 session.observer_events_sent.load(Ordering::Relaxed),
                 session.observer_events_dropped_full.load(Ordering::Relaxed),
                 session
@@ -280,8 +322,7 @@ pub async fn handle_connection(
     let (session, client_pubkey, is_new_client, auth_timing) = match auth_phase(
         &conn,
         &registry,
-        &state.identity,
-        &state.workdir,
+        &state,
         &mut failure_reason,
         &mut failure_is_new_client,
     )
@@ -442,27 +483,30 @@ struct AuthTiming {
 ///
 /// Flow:
 ///   1. Optional Register (first-time only, proves QR possession via HMAC)
-///   2. Authenticate (get nonce + host signature from us)
+///   2. Connect — universal initiator for all non-Register paths:
+///      - session_token present and valid → Ok(SyncSessionResult) fast path
+///      - otherwise → Challenge (nonce + host_sig embedded, saves Authenticate RTT)
 ///   3. AuthProve (client signs nonce, specifies session to attach)
+///      → Ok(SyncSessionResult) (bootstrap data piggybacked, no SyncSession needed)
 async fn auth_phase(
     conn: &iroh::endpoint::Connection,
     registry: &Arc<SessionRegistry>,
-    identity: &SharedIdentity,
-    workdir: &std::path::Path,
+    state: &Arc<DaemonState>,
     failure_reason: &mut &'static str,
     failure_is_new_client: &mut bool,
 ) -> Result<(Arc<ServerSession>, [u8; 32], bool, AuthTiming)> {
-    // Step 1: Optional Register
     let first = irpc_iroh::read_request::<ZedraProto>(conn).await?;
 
-    let (client_pubkey, register_ms): ([u8; 32], u64) = match first {
+    match first {
         Some(ZedraMessage::Register(msg)) => {
+            // First pairing: verify HMAC, consume slot, add to ACL.
+            // After success, expect Connect (which will always issue a Challenge
+            // since no session_token exists yet for a brand-new client).
             *failure_is_new_client = true;
             let t = std::time::Instant::now();
-            let pubkey = msg.client_pubkey;
             let result = handle_register(&msg, registry).await;
             let ok = matches!(result, RegisterResult::Ok);
-            let elapsed = t.elapsed().as_millis() as u64;
+            let register_ms = t.elapsed().as_millis() as u64;
             *failure_reason = match &result {
                 RegisterResult::StaleTimestamp => "stale_timestamp",
                 RegisterResult::InvalidHandshake => "bad_hmac",
@@ -474,79 +518,131 @@ async fn auth_phase(
             if !ok {
                 anyhow::bail!("register rejected");
             }
-            (pubkey, elapsed)
-        }
-        Some(ZedraMessage::Authenticate(msg)) => {
-            // Reconnect path: skip register, issue challenge directly
-            let pubkey = msg.client_pubkey;
-            if !registry.is_globally_authorized(&pubkey).await {
-                *failure_reason = "not_authorized";
-                drop(msg.tx);
-                anyhow::bail!("client not authorized");
+            let connect_msg = irpc_iroh::read_request::<ZedraProto>(conn).await?;
+            match connect_msg {
+                Some(ZedraMessage::Connect(msg)) => {
+                    // is_new_client = true: came through the Register path
+                    let t_connect = std::time::Instant::now();
+                    let (session, pubkey, is_new, prove_ms) =
+                        handle_connect(msg, conn, registry, state, true, failure_reason).await?;
+                    Ok((
+                        session,
+                        pubkey,
+                        is_new,
+                        AuthTiming {
+                            register_ms,
+                            challenge_ms: t_connect.elapsed().as_millis() as u64,
+                            prove_ms,
+                        },
+                    ))
+                }
+                _ => {
+                    *failure_reason = "unexpected_message";
+                    anyhow::bail!("expected Connect after Register")
+                }
             }
-            let t = std::time::Instant::now();
-            let nonce = issue_challenge(msg.tx, identity).await?;
-            let challenge_ms = t.elapsed().as_millis() as u64;
-            let (session, pubkey, is_new, prove_ms) = finish_auth(
-                conn,
-                registry,
-                pubkey,
-                nonce,
-                workdir,
-                false,
-                failure_reason,
-            )
-            .await?;
-            return Ok((
-                session,
-                pubkey,
-                is_new,
-                AuthTiming {
-                    register_ms: 0,
-                    challenge_ms,
-                    prove_ms,
-                },
-            ));
         }
-        _ => {
-            *failure_reason = "unexpected_message";
-            anyhow::bail!("expected Register or Authenticate as first message")
-        }
-    };
-
-    // After Register: expect Authenticate
-    let auth_msg = irpc_iroh::read_request::<ZedraProto>(conn).await?;
-    match auth_msg {
-        Some(ZedraMessage::Authenticate(msg)) => {
+        Some(ZedraMessage::Connect(msg)) => {
+            // PKI reconnect or token resume — is_new_client = false
             let t = std::time::Instant::now();
-            let nonce = issue_challenge(msg.tx, identity).await?;
-            let challenge_ms = t.elapsed().as_millis() as u64;
-            let (session, pubkey, is_new, prove_ms) = finish_auth(
-                conn,
-                registry,
-                client_pubkey,
-                nonce,
-                workdir,
-                true,
-                failure_reason,
-            )
-            .await?;
+            let (session, pubkey, is_new, prove_ms) =
+                handle_connect(msg, conn, registry, state, false, failure_reason).await?;
             Ok((
                 session,
                 pubkey,
                 is_new,
                 AuthTiming {
-                    register_ms,
-                    challenge_ms,
+                    register_ms: 0,
+                    challenge_ms: t.elapsed().as_millis() as u64,
                     prove_ms,
                 },
             ))
         }
         _ => {
             *failure_reason = "unexpected_message";
-            anyhow::bail!("expected Authenticate after Register")
+            anyhow::bail!("expected Register or Connect as first message")
         }
     }
+}
+
+/// Process a `Connect` message. If the client presents a valid session_token,
+/// attach immediately and return Ok with SyncSessionResult. Otherwise, issue a
+/// Challenge (nonce + host_signature) and wait for AuthProve.
+/// Returns (session, pubkey, is_new_client, prove_ms).
+async fn handle_connect(
+    msg: irpc::WithChannels<ConnectReq, ZedraProto>,
+    conn: &iroh::endpoint::Connection,
+    registry: &Arc<SessionRegistry>,
+    state: &Arc<DaemonState>,
+    is_new_client: bool,
+    failure_reason: &mut &'static str,
+) -> Result<(Arc<ServerSession>, [u8; 32], bool, u64)> {
+    let pubkey = msg.client_pubkey;
+    let session_id = msg.session_id.clone();
+
+    // Fast path: try session token if client provided one.
+    if let Some(token) = msg.session_token {
+        let session = registry.get(&session_id).await;
+        if let Some(ref session) = session {
+            if session.validate_session_token(&pubkey, &token).await {
+                match registry.attach_client(&session_id, pubkey).await {
+                    AttachResult::Ok => {
+                        let new_token = session.issue_session_token(pubkey).await;
+                        let sync = build_sync_result(session, state, new_token).await;
+                        let _ = msg.tx.send(ConnectResult::Ok(sync)).await;
+                        // Token fast-path: no challenge/prove round trip, prove_ms=0
+                        return Ok((session.clone(), pubkey, false, 0));
+                    }
+                    AttachResult::NotInSessionAcl => {
+                        *failure_reason = "not_in_session_acl";
+                        let _ = msg.tx.send(ConnectResult::NotInSessionAcl).await;
+                        anyhow::bail!("client not in session ACL");
+                    }
+                    AttachResult::SessionOccupied => {
+                        *failure_reason = "session_occupied";
+                        let _ = msg.tx.send(ConnectResult::SessionOccupied).await;
+                        anyhow::bail!("session {} is occupied", session_id);
+                    }
+                    AttachResult::SessionNotFound => {
+                        // Fall through to PKI challenge below
+                    }
+                }
+            }
+        }
+        // Token invalid/expired or session not found — fall through to challenge
+    }
+
+    // Check global authorization before issuing a challenge.
+    if !is_new_client && !registry.is_globally_authorized(&pubkey).await {
+        // Drop tx to signal error; don't send a challenge to unknown clients.
+        *failure_reason = "not_authorized";
+        drop(msg.tx);
+        anyhow::bail!("client not globally authorized");
+    }
+
+    // Issue challenge (nonce + host signature) embedded in ConnectResult::Challenge,
+    // saving the separate Authenticate round trip.
+    let mut nonce = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+    let host_signature = state.identity.sign_challenge(&nonce);
+    let _ = msg
+        .tx
+        .send(ConnectResult::Challenge {
+            nonce,
+            host_signature,
+        })
+        .await;
+
+    finish_auth(
+        conn,
+        registry,
+        pubkey,
+        nonce,
+        state,
+        is_new_client,
+        failure_reason,
+    )
+    .await
 }
 
 /// Handle a Register request: verify HMAC, consume slot, add to ACL.
@@ -627,32 +723,16 @@ async fn handle_register(
     }
 }
 
-/// Generate a fresh nonce, sign it with the host key, send to client.
-/// Returns the nonce for later verification in AuthProve.
-async fn issue_challenge(
-    tx: irpc::channel::oneshot::Sender<AuthChallengeResult>,
-    identity: &SharedIdentity,
-) -> Result<[u8; 32]> {
-    let mut nonce = [0u8; 32];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
-    let host_signature = identity.sign_challenge(&nonce);
-    let _ = tx
-        .send(AuthChallengeResult {
-            nonce,
-            host_signature,
-        })
-        .await;
-    Ok(nonce)
-}
-
 /// Read AuthProve, verify client signature, attach to session.
 /// Returns (session, pubkey, is_new_client, prove_ms).
+/// On success, sends `AuthProveResult::Ok(SyncSessionResult)` so the client
+/// has everything it needs without a separate SyncSession round trip.
 async fn finish_auth(
     conn: &iroh::endpoint::Connection,
     registry: &Arc<SessionRegistry>,
     client_pubkey: [u8; 32],
     nonce: [u8; 32],
-    workdir: &std::path::Path,
+    state: &Arc<DaemonState>,
     is_new_client: bool,
     failure_reason: &mut &'static str,
 ) -> Result<(Arc<ServerSession>, [u8; 32], bool, u64)> {
@@ -710,6 +790,7 @@ async fn finish_auth(
                         s
                     } else {
                         // No existing session — create a fresh default one.
+                        let workdir = &state.workdir;
                         let name = workdir
                             .file_name()
                             .and_then(|n| n.to_str())
@@ -736,7 +817,9 @@ async fn finish_auth(
                 let _ = tx.send(AuthProveResult::SessionNotFound).await;
                 anyhow::bail!("session {} vanished after attach", resolved_session_id);
             };
-            let _ = tx.send(AuthProveResult::Ok).await;
+            let session_token = session.issue_session_token(client_pubkey).await;
+            let sync = build_sync_result(&session, state, session_token).await;
+            let _ = tx.send(AuthProveResult::Ok(sync)).await;
             Ok((
                 session,
                 client_pubkey,
@@ -898,8 +981,11 @@ async fn dispatch(
     client_pubkey: [u8; 32],
 ) -> Result<()> {
     match msg {
-        // -- Auth (should not appear in dispatch loop) --
-        ZedraMessage::Register(_) | ZedraMessage::Authenticate(_) | ZedraMessage::AuthProve(_) => {
+        // -- Auth / bootstrap (should not appear in dispatch loop) --
+        ZedraMessage::Register(_)
+        | ZedraMessage::Authenticate(_)
+        | ZedraMessage::AuthProve(_)
+        | ZedraMessage::Connect(_) => {
             tracing::warn!("auth message received in dispatch loop (ignored)");
         }
 
@@ -912,26 +998,28 @@ async fn dispatch(
 
         // -- Session --
         ZedraMessage::GetSessionInfo(msg) => {
-            let hostname = hostname::get()
-                .ok()
-                .and_then(|h| h.into_string().ok())
-                .unwrap_or_else(|| "unknown".to_string());
-            let username = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
-            let workdir = state.workdir.to_string_lossy().into_owned();
-            let home_dir = std::env::var("HOME").ok();
+            let info = collect_host_env(&state.workdir);
             let _ = msg
                 .tx
                 .send(SessionInfoResult {
-                    hostname,
-                    workdir,
-                    username,
-                    home_dir,
+                    hostname: info.hostname,
+                    workdir: info.workdir,
+                    username: info.username,
+                    home_dir: info.home_dir,
                     session_id: Some(session.id.clone()),
                     os: Some(std::env::consts::OS.to_string()),
                     arch: Some(std::env::consts::ARCH.to_string()),
                     os_version: os_version_string(),
                     host_version: Some(env!("CARGO_PKG_VERSION").to_string()),
                 })
+                .await;
+        }
+
+        ZedraMessage::SyncSession(msg) => {
+            let session_token = session.issue_session_token(client_pubkey).await;
+            let _ = msg
+                .tx
+                .send(build_sync_result(&session, &state, session_token).await)
                 .await;
         }
 

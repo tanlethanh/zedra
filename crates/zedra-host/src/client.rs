@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use zedra_rpc::proto::{
-    AuthChallengeResult, AuthProveReq, AuthProveResult, AuthReq, PingReq, ZedraProto, ZEDRA_ALPN,
+    AuthProveReq, AuthProveResult, ConnectReq, ConnectResult, PingReq, ZedraProto, ZEDRA_ALPN,
 };
 
 // ---------------------------------------------------------------------------
@@ -194,34 +194,48 @@ pub async fn run(workdir: &Path, count: u32, relay_only: bool) -> Result<()> {
     let remote = irpc_iroh::IrohRemoteConnection::new(conn.clone());
     let client = irpc::Client::<ZedraProto>::boxed(remote);
 
-    // --- Auth: Authenticate → AuthProve (no Register needed; pre-authorized) ---
-    let challenge: AuthChallengeResult = client
-        .rpc(AuthReq { client_pubkey })
+    // --- Auth: Connect → Challenge → AuthProve (no Register needed; pre-authorized) ---
+    let nonce = match client
+        .rpc(ConnectReq {
+            client_pubkey,
+            session_id: info.session_id.clone(),
+            session_token: None,
+        })
         .await
-        .context("Authenticate RPC failed")?;
-
-    // Verify host signature over the nonce.
+        .context("Connect RPC failed")?
     {
-        use ed25519_dalek::Verifier;
-        let host_vk = ed25519_dalek::VerifyingKey::from_bytes(host_pubkey.as_bytes())
-            .context("invalid host public key")?;
-        let sig = ed25519_dalek::Signature::from_bytes(&challenge.host_signature);
-        host_vk
-            .verify(&challenge.nonce, &sig)
-            .context("host signature verification failed — wrong host?")?;
-    }
+        ConnectResult::Ok(_) => {
+            eprintln!("Authenticated via session token.");
+            return Ok(());
+        }
+        ConnectResult::Challenge {
+            nonce,
+            host_signature,
+        } => {
+            // Verify host signature over the nonce.
+            use ed25519_dalek::Verifier;
+            let host_vk = ed25519_dalek::VerifyingKey::from_bytes(host_pubkey.as_bytes())
+                .context("invalid host public key")?;
+            let sig = ed25519_dalek::Signature::from_bytes(&host_signature);
+            host_vk
+                .verify(&nonce, &sig)
+                .context("host signature verification failed — wrong host?")?;
+            nonce
+        }
+        other => anyhow::bail!("Connect rejected: {:?}", other),
+    };
 
-    let client_signature: [u8; 64] = cli_key.sign(&challenge.nonce).to_bytes();
+    let client_signature: [u8; 64] = cli_key.sign(&nonce).to_bytes();
     match client
         .rpc(AuthProveReq {
-            nonce: challenge.nonce,
+            nonce,
             client_signature,
             session_id: info.session_id.clone(),
         })
         .await
         .context("AuthProve RPC failed")?
     {
-        AuthProveResult::Ok => {}
+        AuthProveResult::Ok(_) => {}
         other => anyhow::bail!("AuthProve rejected: {:?}", other),
     }
 

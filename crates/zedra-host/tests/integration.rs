@@ -96,13 +96,18 @@ async fn setup_host(
 /// Connect a client to the host and perform PKI authentication.
 ///
 /// Generates an ephemeral client keypair, adds a pairing slot to the
-/// registry, and runs Register → Authenticate → AuthProve.
+/// registry, and runs Register → Connect → Challenge → AuthProve.
 async fn connect_client(
     relay_url: iroh::RelayUrl,
     host_endpoint: &iroh::Endpoint,
     registry: &Arc<SessionRegistry>,
     host_identity: &Arc<HostIdentity>,
-) -> anyhow::Result<(irpc::Client<ZedraProto>, String)> {
+) -> anyhow::Result<(
+    irpc::Client<ZedraProto>,
+    String,
+    [u8; 32],
+    SyncSessionResult,
+)> {
     use ed25519_dalek::{SigningKey, Verifier, VerifyingKey};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -116,11 +121,6 @@ async fn connect_client(
         .await;
     let handshake_key: [u8; 16] = rand::random();
     registry.add_pairing_slot(&session.id, handshake_key).await;
-    // Pre-authorize client so Authenticate can proceed even if Register fails
-    // (in tests we always register, so this is belt-and-suspenders)
-    registry
-        .add_client_to_session(&session.id, client_pubkey)
-        .await;
 
     // Connect
     let client_endpoint = make_endpoint(relay_url).await?;
@@ -153,31 +153,46 @@ async fn connect_client(
         reg_result
     );
 
-    // Step 2: Authenticate — get challenge
-    let challenge: AuthChallengeResult = client.rpc(AuthReq { client_pubkey }).await?;
+    // Step 2: Connect — no session_token yet (first pairing), server issues a Challenge
+    let connect_result: ConnectResult = client
+        .rpc(ConnectReq {
+            client_pubkey,
+            session_id: session.id.clone(),
+            session_token: None,
+        })
+        .await?;
 
-    // Verify host signature
-    let host_pk_bytes = *host_identity.endpoint_id().as_bytes();
-    let host_vk = VerifyingKey::from_bytes(&host_pk_bytes)?;
-    let host_sig = ed25519_dalek::Signature::from_bytes(&challenge.host_signature);
-    host_vk.verify(&challenge.nonce, &host_sig)?;
+    let nonce = match connect_result {
+        ConnectResult::Challenge {
+            nonce,
+            host_signature,
+        } => {
+            // Verify host signature
+            let host_pk_bytes = *host_identity.endpoint_id().as_bytes();
+            let host_vk = VerifyingKey::from_bytes(&host_pk_bytes)?;
+            let host_sig = ed25519_dalek::Signature::from_bytes(&host_signature);
+            host_vk.verify(&nonce, &host_sig)?;
+            nonce
+        }
+        other => anyhow::bail!("expected Challenge, got {:?}", other),
+    };
 
     // Step 3: AuthProve — sign the nonce
-    let client_signature = client_signing_key.sign(&challenge.nonce).to_bytes();
+    let client_signature = client_signing_key.sign(&nonce).to_bytes();
     let prove_result: AuthProveResult = client
         .rpc(AuthProveReq {
-            nonce: challenge.nonce,
+            nonce,
             client_signature,
             session_id: session.id.clone(),
         })
         .await?;
-    assert!(
-        matches!(prove_result, AuthProveResult::Ok),
-        "auth prove failed: {:?}",
-        prove_result
-    );
 
-    Ok((client, session.id.clone()))
+    let sync = match prove_result {
+        AuthProveResult::Ok(sync) => sync,
+        other => anyhow::bail!("auth prove failed: {:?}", other),
+    };
+
+    Ok((client, session.id.clone(), client_pubkey, sync))
 }
 
 // ---------------------------------------------------------------------------
@@ -284,10 +299,13 @@ async fn test_full_rpc_over_iroh() {
     let (_relay, relay_url) = spawn_test_relay().await.unwrap();
     let (host_ep, registry, identity, _dir) = setup_host(relay_url.clone()).await.unwrap();
 
-    let (client, session_id) = connect_client(relay_url, &host_ep, &registry, &identity)
-        .await
-        .unwrap();
+    let (client, session_id, _client_pubkey, sync) =
+        connect_client(relay_url, &host_ep, &registry, &identity)
+            .await
+            .unwrap();
     assert!(!session_id.is_empty());
+    assert_eq!(sync.session_id, session_id);
+    assert_ne!(sync.session_token, [0u8; 32]);
 
     let info: SessionInfoResult = client.rpc(SessionInfoReq {}).await.unwrap();
     assert!(!info.hostname.is_empty());
@@ -301,9 +319,10 @@ async fn test_rpc_terminal_over_relay() {
     let (_relay, relay_url) = spawn_test_relay().await.unwrap();
     let (host_ep, registry, identity, _dir) = setup_host(relay_url.clone()).await.unwrap();
 
-    let (client, _session_id) = connect_client(relay_url, &host_ep, &registry, &identity)
-        .await
-        .unwrap();
+    let (client, _session_id, _client_pubkey, _sync) =
+        connect_client(relay_url, &host_ep, &registry, &identity)
+            .await
+            .unwrap();
 
     // Create terminal
     let result: TermCreateResult = client
@@ -416,17 +435,19 @@ async fn test_auth_rejects_unauthorized_client() {
     let remote = irpc_iroh::IrohRemoteConnection::new(conn);
     let client = irpc::Client::<ZedraProto>::boxed(remote);
 
-    // Try to authenticate without registering
+    // Try to connect without registering (unknown client, no session token)
     let unknown_pubkey = [99u8; 32];
-    let challenge = client
-        .rpc(AuthReq {
+    let result = client
+        .rpc(ConnectReq {
             client_pubkey: unknown_pubkey,
+            session_id: "nonexistent".to_string(),
+            session_token: None,
         })
         .await;
 
     // The connection should be dropped by the host since pubkey is not authorized
-    // (either error or the tx was dropped)
-    let _ = challenge; // may succeed or fail depending on timing
+    // (either error or the tx was dropped, or ConnectResult::SessionNotFound)
+    let _ = result; // may succeed or fail depending on timing
 }
 
 /// Verify registration HMAC rejection.
