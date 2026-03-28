@@ -1188,6 +1188,41 @@ impl SessionHandle {
     }
 
     async fn reattach_terminals(&self, client: &irpc::Client<ZedraProto>) {
+        let client_terminals = self
+            .0
+            .terminals
+            .lock()
+            .map(|v| v.clone())
+            .unwrap_or_default();
+        if client_terminals.is_empty() {
+            return;
+        }
+
+        // Fetch the server's live terminal list and prune any client-side
+        // terminals that no longer exist (e.g. host restarted and cleaned up).
+        let server_ids: std::collections::HashSet<String> =
+            match client.rpc(TermListReq {}).await {
+                Ok(result) => result.terminals.into_iter().map(|e| e.id).collect(),
+                Err(e) => {
+                    tracing::warn!("reattach: terminal_list failed: {e}");
+                    // Proceed with what we have — worst case attach fails per terminal.
+                    std::collections::HashSet::new()
+                }
+            };
+
+        let pruned: Vec<String> = client_terminals
+            .iter()
+            .filter(|t| !server_ids.contains(&t.id))
+            .map(|t| t.id.clone())
+            .collect();
+        if !pruned.is_empty() {
+            tracing::info!("reattach: pruning {} stale terminals: {:?}", pruned.len(), pruned);
+            if let Ok(mut terms) = self.0.terminals.lock() {
+                terms.retain(|t| server_ids.contains(&t.id));
+            }
+            self.notify_state_change();
+        }
+
         let terminals = self
             .0
             .terminals
@@ -1197,6 +1232,7 @@ impl SessionHandle {
         if terminals.is_empty() {
             return;
         }
+
         tracing::info!("reattaching {} terminals", terminals.len());
         if let Ok(mut cs) = self.0.connect_state.lock() {
             cs.phase = ConnectPhase::ResumingTerminals;
@@ -1431,14 +1467,6 @@ impl SessionHandle {
                             has_ipv4: st.has_ipv4,
                             has_ipv6: st.has_ipv6,
                         });
-                        match handle.terminal_list().await {
-                            Ok(ids) => tracing::info!(
-                                "reconnect: server has {} terminals: {:?}",
-                                ids.len(),
-                                ids,
-                            ),
-                            Err(e) => tracing::warn!("reconnect: terminal_list failed: {e}"),
-                        }
                         // Phase is now Connected (set inside connect()).
                         break;
                     }
