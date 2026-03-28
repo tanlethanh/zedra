@@ -62,9 +62,6 @@ pub struct ServerSession {
     pub last_activity: Mutex<Instant>,
     pub terminals: Mutex<HashMap<String, TermSession>>,
     pub next_term_id: Mutex<u64>,
-    /// Per-terminal output backlog for replay on TermAttach reconnect.
-    pub output_backlog: Mutex<VecDeque<BacklogEntry>>,
-    pub next_output_seq: Mutex<u64>,
     /// Client pubkeys authorized to attach to this session (per-session ACL).
     pub acl: Mutex<HashSet<[u8; 32]>>,
     /// Currently attached client pubkey. None = session is free.
@@ -167,15 +164,64 @@ impl Default for HostTermMeta {
     }
 }
 
+/// Per-terminal output backlog for replay on TermAttach reconnect.
+///
+/// Lives inside `TermSession` (one per terminal) so PTY readers never contend
+/// across terminals. Uses `std::sync::Mutex` so the `spawn_blocking` PTY
+/// reader can push entries without `rt.block_on`.
+pub struct TermBacklog {
+    pub entries: VecDeque<BacklogEntry>,
+    pub next_seq: u64,
+}
+
+impl TermBacklog {
+    pub fn new() -> Self {
+        Self {
+            entries: VecDeque::new(),
+            next_seq: 1,
+        }
+    }
+
+    /// Allocate a sequence number, push the entry, evict oldest if over cap.
+    /// Returns the allocated sequence number.
+    pub fn push(&mut self, terminal_id: String, data: Vec<u8>) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.entries.push_back(BacklogEntry {
+            seq,
+            terminal_id,
+            data,
+        });
+        while self.entries.len() > 1000 {
+            self.entries.pop_front();
+        }
+        seq
+    }
+
+    /// Return all entries with seq > `after_seq`.
+    pub fn after(&self, after_seq: u64) -> Vec<BacklogEntry> {
+        self.entries
+            .iter()
+            .filter(|e| e.seq > after_seq)
+            .cloned()
+            .collect()
+    }
+}
+
 /// A live terminal session owned by a ServerSession.
 pub struct TermSession {
-    pub writer: Box<dyn Write + Send>,
+    /// PTY writer in a mutex so the `TermAttach` input loop can hold a direct
+    /// clone of the Arc and write without re-acquiring `session.terminals` on
+    /// every keystroke.
+    pub writer: Arc<std::sync::Mutex<Box<dyn Write + Send>>>,
     pub master: Box<dyn portable_pty::MasterPty + Send>,
     /// Swappable output sender. Updated on each TermAttach.
     pub output_sender: Arc<std::sync::Mutex<OutputSenderSlot>>,
     /// Host-side OSC metadata cache (title, CWD). Updated by the PTY reader
     /// task as output bytes flow through. Used to seed the client on attach.
     pub host_meta: Arc<std::sync::Mutex<HostTermMeta>>,
+    /// Per-terminal output backlog (seq + replay entries).
+    pub backlog: Arc<std::sync::Mutex<TermBacklog>>,
 }
 
 /// Summary of a session for listing purposes.
@@ -736,8 +782,6 @@ impl ServerSession {
             last_activity: Mutex::new(Instant::now()),
             terminals: Mutex::new(HashMap::new()),
             next_term_id: Mutex::new(1),
-            output_backlog: Mutex::new(VecDeque::new()),
-            next_output_seq: Mutex::new(1),
             acl: Mutex::new(HashSet::new()),
             active_client: Mutex::new(None),
             event_tx: Mutex::new(None),
@@ -824,32 +868,14 @@ impl ServerSession {
         format!("term-{}", current)
     }
 
-    /// Add a backlog entry for terminal output replay on reconnect.
-    /// Backlog is capped at 1000 entries; oldest are evicted.
-    pub async fn push_backlog_entry(&self, entry: BacklogEntry) {
-        let mut backlog = self.output_backlog.lock().await;
-        backlog.push_back(entry);
-        while backlog.len() > 1000 {
-            backlog.pop_front();
-        }
-    }
-
-    /// Allocate the next backlog sequence number.
-    pub async fn next_backlog_seq(&self) -> u64 {
-        let mut seq = self.next_output_seq.lock().await;
-        let current = *seq;
-        *seq += 1;
-        current
-    }
-
-    /// Get backlog entries for a specific terminal after a given sequence number.
+    /// Get backlog entries for a terminal after a given sequence number.
+    /// Reads from the terminal's own per-terminal backlog.
     pub async fn backlog_after(&self, terminal_id: &str, after_seq: u64) -> Vec<BacklogEntry> {
-        let backlog = self.output_backlog.lock().await;
-        backlog
-            .iter()
-            .filter(|e| e.terminal_id == terminal_id && e.seq > after_seq)
-            .cloned()
-            .collect()
+        let terms = self.terminals.lock().await;
+        match terms.get(terminal_id) {
+            Some(term) => term.backlog.lock().unwrap().after(after_seq),
+            None => vec![],
+        }
     }
 
     /// Clear all terminal output senders (e.g. when connection drops).
@@ -1052,52 +1078,37 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn output_backlog() {
-        let registry = SessionRegistry::new();
-        let session = create_session(&registry).await;
+    #[test]
+    fn term_backlog_push_and_after() {
+        let mut b = TermBacklog::new();
 
         for i in 1..=3 {
-            let seq = session.next_backlog_seq().await;
-            session
-                .push_backlog_entry(BacklogEntry {
-                    seq,
-                    terminal_id: "term-1".to_string(),
-                    data: format!("msg{}", i).into_bytes(),
-                })
-                .await;
+            b.push("term-1".to_string(), format!("msg{}", i).into_bytes());
         }
 
-        let after_0 = session.backlog_after("term-1", 0).await;
+        let after_0 = b.after(0);
         assert_eq!(after_0.len(), 3);
 
-        let after_1 = session.backlog_after("term-1", 1).await;
+        let after_1 = b.after(1);
         assert_eq!(after_1.len(), 2);
         assert_eq!(after_1[0].data, b"msg2");
 
-        let other = session.backlog_after("term-2", 0).await;
-        assert!(other.is_empty());
+        // Different terminal_id shares no entries.
+        let other = b.after(0);
+        assert!(other.iter().all(|e| e.terminal_id == "term-1"));
     }
 
-    #[tokio::test]
-    async fn output_backlog_cap() {
-        let registry = SessionRegistry::new();
-        let session = create_session(&registry).await;
+    #[test]
+    fn term_backlog_cap() {
+        let mut b = TermBacklog::new();
 
         for i in 0..1050 {
-            let seq = session.next_backlog_seq().await;
-            session
-                .push_backlog_entry(BacklogEntry {
-                    seq,
-                    terminal_id: "term-1".to_string(),
-                    data: format!("msg{}", i).into_bytes(),
-                })
-                .await;
+            b.push("term-1".to_string(), format!("msg{}", i).into_bytes());
         }
 
-        let backlog = session.output_backlog.lock().await;
-        assert_eq!(backlog.len(), 1000);
-        assert_eq!(backlog.front().unwrap().seq, 51);
+        assert_eq!(b.entries.len(), 1000);
+        // seq starts at 1, so after 1050 pushes the oldest retained is seq 51
+        assert_eq!(b.entries.front().unwrap().seq, 51);
     }
 
     #[tokio::test]

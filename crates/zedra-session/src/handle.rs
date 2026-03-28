@@ -1235,16 +1235,28 @@ impl SessionHandle {
         if terminals.is_empty() {
             return;
         }
-
-        tracing::info!("reattaching {} terminals", terminals.len());
+        tracing::info!("reattaching {} terminals (parallel)", terminals.len());
         if let Ok(mut cs) = self.0.connect_state.lock() {
             cs.phase = ConnectPhase::ResumingTerminals;
         }
         self.notify_state_change();
         let t = Instant::now();
-        for terminal in &terminals {
-            if let Err(e) = self.attach_terminal(client, terminal).await {
-                tracing::warn!("failed to reattach terminal {}: {e}", terminal.id);
+        // Attach all terminals concurrently so reconnect resume time is O(1)
+        // rather than O(N × relay_RTT) (Fix 4).
+        let mut set = tokio::task::JoinSet::new();
+        for terminal in terminals {
+            let handle = self.clone();
+            let c = client.clone();
+            set.spawn(async move {
+                let id = terminal.id.clone();
+                (id, handle.attach_terminal(&c, &terminal).await)
+            });
+        }
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok((id, Err(e))) => tracing::warn!("failed to reattach terminal {id}: {e}"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("terminal reattach task panicked: {e}"),
             }
         }
         if let Ok(mut cs) = self.0.connect_state.lock() {

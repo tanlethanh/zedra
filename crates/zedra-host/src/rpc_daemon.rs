@@ -11,7 +11,7 @@ use crate::identity::SharedIdentity;
 use crate::pty::{ShellSession, SpawnOptions};
 use crate::session_registry::{
     AttachResult, ConsumeSlotResult, HostTermMeta, OutputSenderSlot, ServerSession,
-    SessionRegistry, TermSession, MAX_WATCHED_PATHS_PER_SESSION,
+    SessionRegistry, TermBacklog, TermSession, MAX_WATCHED_PATHS_PER_SESSION,
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -804,23 +804,30 @@ pub async fn create_terminal(
         sender: None,
     }));
     let host_meta = Arc::new(std::sync::Mutex::new(HostTermMeta::default()));
+    let backlog = Arc::new(std::sync::Mutex::new(TermBacklog::new()));
+    // Wrap the writer so TermAttach can hold a direct Arc clone and write
+    // without locking session.terminals on every keystroke (Fix 3).
+    let writer = Arc::new(std::sync::Mutex::new(pty_writer));
 
     session.terminals.lock().await.insert(
         id.clone(),
         TermSession {
-            writer: pty_writer,
+            writer: writer.clone(),
             master,
             output_sender: output_sender.clone(),
             host_meta: host_meta.clone(),
+            backlog: backlog.clone(),
         },
     );
 
     let term_id = id.clone();
-    let sess_for_reader = session.clone();
     tokio::task::spawn_blocking(move || {
         let mut reader = pty_reader;
         let mut buf = [0u8; 8192];
-        let rt = tokio::runtime::Handle::current();
+        // Chunks that couldn't be sent (channel full) are held here and
+        // coalesced with the next PTY read. This keeps the spawn_blocking
+        // thread alive under QUIC back-pressure without blocking (Fix 2).
+        let mut pending: Option<TermOutput> = None;
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
@@ -843,23 +850,31 @@ pub async fn create_terminal(
                         }
                     }
 
-                    let seq = rt.block_on(async {
-                        let s = sess_for_reader.next_backlog_seq().await;
-                        sess_for_reader
-                            .push_backlog_entry(BacklogEntry {
-                                seq: s,
-                                terminal_id: term_id.clone(),
-                                data: data.clone(),
-                            })
-                            .await;
-                        s
-                    });
+                    // Push to per-terminal backlog (Fix 1: sync, no rt.block_on).
+                    let seq = backlog.lock().unwrap().push(term_id.clone(), data.clone());
 
                     let sender: Option<tokio::sync::mpsc::Sender<TermOutput>> =
                         output_sender.lock().unwrap().sender.clone();
                     if let Some(tx) = sender {
-                        if rt.block_on(tx.send(TermOutput { data, seq })).is_err() {
-                            output_sender.lock().unwrap().sender = None;
+                        // Coalesce new data with any previously unsent chunk,
+                        // then attempt a non-blocking send (Fix 2).
+                        let out = match pending.take() {
+                            Some(mut p) => {
+                                p.data.extend_from_slice(&data);
+                                p.seq = seq;
+                                p
+                            }
+                            None => TermOutput { data, seq },
+                        };
+                        match tx.try_send(out) {
+                            Ok(()) => {}
+                            Err(tokio::sync::mpsc::error::TrySendError::Full(ret)) => {
+                                // Channel full (QUIC congested): hold for next iteration.
+                                pending = Some(ret);
+                            }
+                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                output_sender.lock().unwrap().sender = None;
+                            }
                         }
                     }
                 }
@@ -1258,6 +1273,22 @@ async fn dispatch(
                 }
             }
 
+            // Extract the writer Arc at setup so the input loop can write
+            // directly without re-acquiring session.terminals on every keystroke
+            // (Fix 3). The Arc stays valid even if the terminal is removed from
+            // the map; writes will simply fail harmlessly against the closed PTY.
+            let pty_writer = {
+                let terms = session.terminals.lock().await;
+                terms.get(&term_id).map(|t| t.writer.clone())
+            };
+            let Some(pty_writer) = pty_writer else {
+                tracing::warn!(
+                    "TermAttach: terminal {} vanished before writer extract",
+                    term_id
+                );
+                return Ok(());
+            };
+
             // Set up bridge.
             // Capture the generation we install so cleanup can guard against
             // clobbering a sender installed by a concurrent newer TermAttach.
@@ -1273,9 +1304,6 @@ async fn dispatch(
                     0
                 }
             };
-
-            let session_for_input = session.clone();
-            let term_id_for_input = term_id.clone();
 
             // Separate output task so slow relay sends don't block input processing.
             // With high-latency connections (e.g. relay RTT ~300ms), irpc_tx.send().await
@@ -1301,12 +1329,11 @@ async fn dispatch(
             loop {
                 match irpc_rx.recv().await {
                     Ok(Some(term_input)) => {
-                        let mut terms = session_for_input.terminals.lock().await;
-                        if let Some(term) = terms.get_mut(&term_id_for_input) {
-                            let _ = term.writer.write_all(&term_input.data);
-                            let _ = term.writer.flush();
-                        } else {
-                            break;
+                        // Write directly via the pre-captured writer Arc —
+                        // no session.terminals lock needed per keystroke (Fix 3).
+                        if let Ok(mut w) = pty_writer.lock() {
+                            let _ = w.write_all(&term_input.data);
+                            let _ = w.flush();
                         }
                     }
                     Ok(None) | Err(_) => break,
