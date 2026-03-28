@@ -5,7 +5,7 @@ http_bind_addr = "[::]:80"
 enable_relay = true
 enable_quic_addr_discovery = true
 enable_metrics = true
-metrics_bind_addr = "127.0.0.1:9090"
+metrics_bind_addr = "[::]:9090"
 
 [tls]
 cert_mode = "LetsEncrypt"
