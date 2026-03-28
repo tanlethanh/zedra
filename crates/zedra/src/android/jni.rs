@@ -886,6 +886,84 @@ pub fn open_url(url: &str) {
     jni_call("open_url", move || open_url_inner(url_owned));
 }
 
+/// Get the app build version from Android package metadata.
+pub fn get_app_version() -> String {
+    let out = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let out_clone = out.clone();
+    jni_call("get_app_version", move || get_app_version_inner(out_clone));
+    out.lock().map(|s| s.clone()).unwrap_or_default()
+}
+
+fn get_app_version_inner(output: std::sync::Arc<std::sync::Mutex<String>>) {
+    let jvm = match JVM.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(jvm) => jvm.clone(),
+            None => {
+                tracing::error!("JVM not available for get_app_version");
+                return;
+            }
+        },
+        Err(e) => {
+            tracing::error!("Failed to lock JVM mutex: {:?}", e);
+            return;
+        }
+    };
+
+    let mut env = match jvm.get_env() {
+        Ok(env) => env,
+        Err(_) => match jvm.attach_current_thread_as_daemon() {
+            Ok(env) => env,
+            Err(e) => {
+                tracing::error!("Failed to attach thread for get_app_version: {:?}", e);
+                return;
+            }
+        },
+    };
+
+    let class = match env.find_class("dev/zedra/app/MainActivity") {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Failed to find MainActivity class: {:?}", e);
+            if env.exception_check().unwrap_or(false) {
+                env.exception_describe().ok();
+                env.exception_clear().ok();
+            }
+            return;
+        }
+    };
+
+    let value = match env.call_static_method(&class, "getAppVersion", "()Ljava/lang/String;", &[]) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("Failed to call getAppVersion: {:?}", e);
+            if env.exception_check().unwrap_or(false) {
+                env.exception_describe().ok();
+                env.exception_clear().ok();
+            }
+            return;
+        }
+    };
+
+    let Ok(obj) = value.l() else {
+        return;
+    };
+    if obj.is_null() {
+        return;
+    }
+    let jstr = jni::objects::JString::from(obj);
+    match env.get_string(&jstr) {
+        Ok(v) => {
+            let s: String = v.into();
+            if let Ok(mut guard) = output.lock() {
+                *guard = s;
+            }
+        }
+        Err(e) => {
+            tracing::error!("Failed to read app version string: {:?}", e);
+        }
+    }
+}
+
 fn open_url_inner(url: String) {
     let jvm = match JVM.lock() {
         Ok(guard) => match guard.as_ref() {

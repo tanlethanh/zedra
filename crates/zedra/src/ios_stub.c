@@ -6,6 +6,7 @@
 __attribute__((weak)) void ios_present_qr_scanner(void) {}
 __attribute__((weak)) void ios_open_url(const char *url) {}
 __attribute__((weak)) const char* ios_get_documents_directory(void) { return 0; }
+__attribute__((weak)) const char* ios_get_app_version(void) { return 0; }
 __attribute__((weak)) void ios_present_alert(
     unsigned int callback_id,
     const char *title,

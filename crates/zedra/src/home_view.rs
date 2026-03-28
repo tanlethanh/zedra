@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use gpui::*;
 
 use crate::fonts;
@@ -253,10 +255,23 @@ impl Render for HomeView {
                         div()
                             .text_color(rgb(theme::TEXT_MUTED))
                             .text_size(px(theme::FONT_DETAIL))
-                            .child(concat!("zedra v", env!("CARGO_PKG_VERSION"))),
+                            .child(app_version_text()),
                     ),
             )
     }
+}
+
+fn app_version_text() -> String {
+    static APP_VERSION_TEXT: OnceLock<String> = OnceLock::new();
+    APP_VERSION_TEXT
+        .get_or_init(|| {
+            let version = platform_bridge::bridge()
+                .app_version()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+            format!("zedra v{version}")
+        })
+        .clone()
 }
 
 fn workspace_card(

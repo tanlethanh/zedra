@@ -73,6 +73,33 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
+     * Get the native app build version shown to users.
+     * Returns "versionName (versionCode)" when available.
+     */
+    public static String getAppVersion() {
+        if (sActivity == null) {
+            return "";
+        }
+        try {
+            String packageName = sActivity.getPackageName();
+            android.content.pm.PackageInfo info =
+                sActivity.getPackageManager().getPackageInfo(packageName, 0);
+            String versionName = info.versionName == null ? "" : info.versionName.trim();
+            long versionCode = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+                ? info.getLongVersionCode()
+                : info.versionCode;
+
+            if (versionName.isEmpty()) {
+                return String.valueOf(versionCode);
+            }
+            return versionName + " (" + versionCode + ")";
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to read app version", e);
+            return "";
+        }
+    }
+
+    /**
      * Show a native alert dialog (called from Rust via JNI)
      */
     public static void showAlert(

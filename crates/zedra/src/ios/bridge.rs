@@ -73,6 +73,8 @@ unsafe extern "C" {
     fn ios_present_qr_scanner();
     /// Returns the app's Documents directory path (from NSSearchPathForDirectoriesInDomains).
     fn ios_get_documents_directory() -> *const std::ffi::c_char;
+    /// Returns the app's user-facing version string from Info.plist metadata.
+    fn ios_get_app_version() -> *const std::ffi::c_char;
     /// Present a native UIAlertController with dynamic buttons.
     /// `labels` and `styles` are parallel arrays of length `button_count`.
     /// Style values: 0 = default, 1 = cancel, 2 = destructive.
@@ -145,6 +147,18 @@ impl PlatformBridge for IosBridge {
 
     fn launch_qr_scanner(&self) {
         unsafe { ios_present_qr_scanner() };
+    }
+
+    fn app_version(&self) -> Option<String> {
+        unsafe {
+            let ptr = ios_get_app_version();
+            if ptr.is_null() {
+                return None;
+            }
+            let cstr = std::ffi::CStr::from_ptr(ptr);
+            let s = cstr.to_str().ok()?.trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        }
     }
 
     fn data_directory(&self) -> Option<String> {
