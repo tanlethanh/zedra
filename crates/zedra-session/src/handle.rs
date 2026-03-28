@@ -702,6 +702,12 @@ impl SessionHandle {
                 let mut last_alive_at: Option<std::time::Instant> = None;
                 let mut prev_bytes_recv: u64 = 0;
                 let mut last_sent: u64 = 0;
+                // Track which path is currently selected so we can reset the per-path
+                // byte counter when the selected path changes (e.g. relay → P2P upgrade).
+                // Each iroh PathInfo has its own udp_rx.bytes counter starting at 0; if we
+                // kept prev_bytes_recv from the relay path the P2P path would never satisfy
+                // `bytes_recv > prev_bytes_recv` and last_alive_at would never update.
+                let mut prev_path_addr: Option<String> = None;
                 loop {
                     // Stop if the connection has been superseded.
                     if handle_for_paths.0.conn_generation.load(Ordering::Acquire) != my_gen {
@@ -736,12 +742,38 @@ impl SessionHandle {
                         let bytes_recv = stats.udp_rx.bytes;
                         last_sent = stats.udp_tx.bytes;
 
-                        // Update alive timestamp only when new bytes arrive.
-                        // PONG responses from iroh's 2-s heartbeat probes keep this fresh.
-                        if bytes_recv > prev_bytes_recv {
+                        // Reset the baseline when the selected path changes (e.g. relay → P2P).
+                        // Each path has its own byte counter starting at 0; retaining the old
+                        // baseline would prevent `bytes_recv > prev_bytes_recv` from ever being
+                        // true on the new path, making last_alive_at permanently stale.
+                        if prev_path_addr.as_deref() != Some(remote_addr.as_str()) {
+                            prev_bytes_recv = 0;
+                            prev_path_addr = Some(remote_addr.clone());
+                        }
+
+                        // Liveness strategy differs by path type:
+                        //
+                        // Relay: udp_rx.bytes increments on every heartbeat/data packet
+                        //   → use bytes_recv growth as the alive signal.
+                        //
+                        // P2P direct: iroh does not reliably accumulate per-path
+                        //   udp_rx.bytes from path-level keep-alives on direct paths,
+                        //   so bytes growth is not a dependable signal. Instead use
+                        //   rtt > 0, which iroh keeps fresh while the path is selected.
+                        //   Dead P2P paths are pruned by iroh after
+                        //   default_path_max_idle_timeout (3.5 s), at which point the
+                        //   path disappears from the list and stale naturally kicks in.
+                        let is_alive = if is_direct {
+                            rtt > 0
+                        } else {
+                            bytes_recv > prev_bytes_recv
+                        };
+                        if is_alive {
                             last_alive_at = Some(std::time::Instant::now());
-                            prev_bytes_recv = bytes_recv;
                             bytes_increased = true;
+                        }
+                        if bytes_recv > prev_bytes_recv {
+                            prev_bytes_recv = bytes_recv;
                         }
 
                         let prior_sent =
