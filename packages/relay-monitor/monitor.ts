@@ -286,11 +286,15 @@ let latestMetrics: NodeMetrics | null = null;
 
 Bun.serve({
   port: 9091,
-  fetch(req) {
+  async fetch(req) {
     const url = new URL(req.url);
     if (url.pathname === "/metrics") {
       if (!latestMetrics) return Response.json({ error: "no data yet" }, { status: 503 });
       return Response.json(latestMetrics);
+    }
+    if (url.pathname === "/metrics/live") {
+      const m = await collectMetrics(cfg.instance);
+      return Response.json(m);
     }
     if (url.pathname === "/history") {
       const hours = Number(url.searchParams.get("hours") ?? 24);
