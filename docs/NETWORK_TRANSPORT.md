@@ -316,7 +316,101 @@ not sanitize `..` or absolute paths).
 
 ---
 
-## 9. Future Improvements
+## 9. Terminal I/O Multiplexing and Head-of-Line Blocking
+
+Each `TermAttach` RPC opens a **separate QUIC bidi stream** via `conn.open_bi()`
+(irpc-iroh 0.12). The multiplexing properties differ significantly depending on
+whether the path is direct P2P or relayed.
+
+### Direct path — true stream multiplexing
+
+Over the direct QUIC/UDP path:
+
+- Each terminal stream has **independent flow control** — backpressure on
+  terminal A's stream does not affect terminal B's window.
+- **No head-of-line (HoL) blocking** — QUIC packet loss on stream A triggers
+  per-stream retransmission without stalling stream B.
+- The only shared resource is **connection-level congestion control** (bandwidth
+  shaping), which is fair between streams and does not serialize writes.
+- On the host, each inbound bidi stream is dispatched with `tokio::spawn` in
+  `rpc_daemon.rs`, so I/O handlers run fully concurrently.
+
+**Result:** true independent multiplexing. A full-screen `top` in terminal 1
+does not delay keystrokes in terminal 2.
+
+### Relay path — TCP head-of-line blocking
+
+The iroh relay (`iroh-relay 0.96`) uses **WebSocket over TCP** — not QUIC. The
+full relay stack per client connection is:
+
+```
+QUIC bidi stream A ──┐
+QUIC bidi stream B ──┤   iroh net layer
+QUIC bidi stream C ──┘   encapsulates QUIC UDP datagrams as ClientToRelayDatagram frames
+                              │
+                              ▼
+                     Single WebSocket (tokio_websockets) over TCP/TLS
+                     RelayedStream { inner: WsBytesFramed<RateLimited<TcpStream>> }
+                              │
+                              ▼
+                     Relay server Actor: send_queue (mpsc, depth=512) → single TCP stream
+                              │
+                              ▼
+                     Single WebSocket over TCP/TLS to the mobile client
+```
+
+All QUIC streams share **one TCP connection** to the relay. TCP is an ordered
+byte stream — a burst of terminal A output that fills the TCP send buffer stalls
+all pending writes until the relay ACKs the data. Terminal B's keypress response
+is delayed until A's burst drains.
+
+The relay's `PER_CLIENT_SEND_QUEUE_DEPTH = 512` absorbs short bursts, and the
+server actor applies a `write_timeout` per frame, but these do not eliminate the
+fundamental TCP ordering constraint.
+
+**`RelayQuicConfig` does not change this.** Setting
+`quic: Some(iroh_relay::RelayQuicConfig::default())` in the host's endpoint
+builder enables **QUIC Address Discovery** (ALPN `/iroh-qad/0`) on the relay
+server — it is not a QUIC relay transport. The relay path remains WebSocket/TCP.
+
+### Comparison
+
+| | Direct P2P (QUIC/UDP) | Relay (WebSocket/TCP) |
+|---|---|---|
+| Transport | QUIC bidi streams over UDP | WebSocket frames over TCP |
+| HoL blocking | None (stream-level independence) | Yes — TCP serializes all bytes |
+| Per-terminal isolation | Full (flow control + loss recovery per stream) | None — all share one TCP connection |
+| Congestion | Connection-level, fair | TCP congestion window, shared |
+| Burst impact | Terminal A burst → only A slows | Terminal A burst → all terminals stall |
+
+### Host-side serialization (fixed in this codebase)
+
+Separately from the transport layer, the host had internal serialization points
+that caused cross-terminal blocking regardless of path:
+
+1. **Shared session backlog mutex** — a single `Mutex<VecDeque<BacklogEntry>>`
+   across all terminals; PTY readers blocked each other writing output.
+   Fixed by moving `TermBacklog` into `TermSession` (per-terminal `std::sync::Mutex`).
+
+2. **PTY reader blocking on channel send** — `rt.block_on(tx.send(...))` under
+   QUIC congestion could stall the OS read thread.
+   Fixed with `try_send` + coalesce buffer — PTY threads never stall.
+
+3. **Keystroke lock contention** — each keystroke acquired `session.terminals.lock()`
+   to find the PTY writer.
+   Fixed by extracting `Arc<Mutex<writer>>` at `TermAttach` setup time.
+
+4. **Sequential terminal reattach on reconnect** — O(N × relay_RTT) reconnect time.
+   Fixed with `tokio::task::JoinSet` for parallel concurrent attach.
+
+These fixes eliminate all host-side bottlenecks. On the direct path this fully
+restores independent per-terminal I/O. On the relay path, TCP HoL blocking
+remains an inherent transport constraint; a QUIC-based relay transport would be
+required to address it at the network layer.
+
+---
+
+## 10. Future Improvements
 
 ### Embed routing hints in the ticket for LAN connects
 
