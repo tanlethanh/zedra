@@ -99,31 +99,18 @@
 /**
  * Seconds after last received bytes before a path is considered stale.
  * Shared between session_panel and connecting_view stale display logic.
- * Set slightly above the 2s heartbeat interval (1 missed heartbeat + 1s tolerance).
+ * Set slightly above the 2s heartbeat interval (1 missed heartbeat + 1s
+ * tolerance).
  */
 #define STALE_THRESHOLD_SECS 3
-
-extern void zedra_log_event(const char *name,
-                            const char *const *keys,
-                            const char *const *values,
-                            int count);
-
-extern void zedra_record_error(const char *message, const char *file, int line);
-
-extern void zedra_record_panic(const char *message, const char *location);
-
-extern void zedra_set_user_id(const char *user_id);
-
-extern void zedra_set_custom_key(const char *key, const char *value);
-
-extern void zedra_set_collection_enabled(int enabled);
 
 /**
  * Called each frame from main.m before gpui_ios_request_frame.
  *
  * Drains main-thread callbacks and checks whether terminal data is pending.
  * Returns `true` when a forced render is needed (mirrors Android's
- * `check_and_clear_terminal_data` + `drain_callbacks` in `handle_frame_request`).
+ * `check_and_clear_terminal_data` + `drain_callbacks` in
+ * `handle_frame_request`).
  */
 bool zedra_ios_check_pending_frame(void);
 
@@ -137,7 +124,8 @@ void zedra_launch_gpui(void);
 void zedra_ios_set_screen_scale(float scale);
 
 /**
- * Called from Obj-C when the software keyboard is about to appear or change height.
+ * Called from Obj-C when the software keyboard is about to appear or change
+ * height.
  *
  * `height_px` is `endFrame.size.height × UIScreen.scale` (physical pixels).
  * Call with 0 when the keyboard is dismissed.
@@ -150,7 +138,8 @@ void zedra_ios_set_keyboard_height(uint32_t height_px);
  *
  * `left` and `right` are stored for future use (landscape support).
  */
-void zedra_ios_set_safe_area_insets(float top, float bottom, float _left, float _right);
+void zedra_ios_set_safe_area_insets(float top, float bottom, float _left,
+                                    float _right);
 
 extern void *gpui_ios_get_window(void);
 
@@ -166,9 +155,15 @@ extern void gpui_ios_hide_keyboard(void *window_ptr);
 extern void ios_present_qr_scanner(void);
 
 /**
- * Returns the app's Documents directory path (from NSSearchPathForDirectoriesInDomains).
+ * Returns the app's Documents directory path (from
+ * NSSearchPathForDirectoriesInDomains).
  */
 extern const char *ios_get_documents_directory(void);
+
+/**
+ * Returns the app's user-facing version string from Info.plist metadata.
+ */
+extern const char *ios_get_app_version(void);
 
 /**
  * Present a native UIAlertController with dynamic buttons.
@@ -176,20 +171,15 @@ extern const char *ios_get_documents_directory(void);
  * Style values: 0 = default, 1 = cancel, 2 = destructive.
  * Result delivered via `zedra_ios_alert_result(callback_id, button_index)`.
  */
-extern void ios_present_alert(uint32_t callback_id,
-                              const char *title,
-                              const char *message,
-                              int32_t button_count,
-                              const char *const *labels,
-                              const int32_t *styles);
+extern void ios_present_alert(uint32_t callback_id, const char *title,
+                              const char *message, int32_t button_count,
+                              const char *const *labels, const int32_t *styles);
 
 /**
  * Present a dismissible native action sheet with dynamic items.
  */
-extern void ios_present_selection(uint32_t callback_id,
-                                  const char *title,
-                                  const char *message,
-                                  int32_t button_count,
+extern void ios_present_selection(uint32_t callback_id, const char *title,
+                                  const char *message, int32_t button_count,
                                   const char *const *labels,
                                   const int32_t *styles);
 
@@ -199,11 +189,12 @@ extern void ios_present_selection(uint32_t callback_id,
 extern void ios_open_url(const char *url);
 
 /**
- * Called from the UIAlertController handler in main.m after the user taps a button.
+ * Called from the UIAlertController handler in main.m after the user taps a
+ * button.
  *
  * `callback_id` matches the value passed to `ios_present_alert`.
- * `button_index` is the 0-based index of the tapped button (matches the `buttons` array
- * passed to `platform_bridge::show_alert`).
+ * `button_index` is the 0-based index of the tapped button (matches the
+ * `buttons` array passed to `platform_bridge::show_alert`).
  */
 void zedra_ios_alert_result(uint32_t callback_id, int32_t button_index);
 
@@ -232,10 +223,12 @@ void zedra_ios_selection_dismiss(uint32_t callback_id);
 void zedra_ios_app_did_enter_background(void);
 
 /**
- * Called from the native keyboard accessory bar when a shortcut key button is tapped.
+ * Called from the native keyboard accessory bar when a shortcut key button is
+ * tapped.
  *
  * `key` is one of: "escape", "tab", "left", "down", "up", "right", "enter".
- * Maps the name to the corresponding terminal escape sequence and sends it via the active session.
+ * Maps the name to the corresponding terminal escape sequence and sends it via
+ * the active session.
  */
 void zedra_ios_send_key_input(const char *key);
 
@@ -253,4 +246,17 @@ void zedra_qr_scanner_result(const char *qr_string);
 
 extern void zedra_nslog(const char *msg);
 
-#endif  /* ZEDRA_IOS_H */
+extern void zedra_log_event(const char *name, const char *const *keys,
+                            const char *const *values, int count);
+
+extern void zedra_record_error(const char *message, const char *file, int line);
+
+extern void zedra_record_panic(const char *message, const char *location);
+
+extern void zedra_set_user_id(const char *user_id);
+
+extern void zedra_set_custom_key(const char *key, const char *value);
+
+extern void zedra_set_collection_enabled(int enabled);
+
+#endif /* ZEDRA_IOS_H */

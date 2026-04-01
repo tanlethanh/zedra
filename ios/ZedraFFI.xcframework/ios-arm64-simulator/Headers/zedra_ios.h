@@ -103,21 +103,6 @@
  */
 #define STALE_THRESHOLD_SECS 3
 
-extern void zedra_log_event(const char *name,
-                            const char *const *keys,
-                            const char *const *values,
-                            int count);
-
-extern void zedra_record_error(const char *message, const char *file, int line);
-
-extern void zedra_record_panic(const char *message, const char *location);
-
-extern void zedra_set_user_id(const char *user_id);
-
-extern void zedra_set_custom_key(const char *key, const char *value);
-
-extern void zedra_set_collection_enabled(int enabled);
-
 /**
  * Called each frame from main.m before gpui_ios_request_frame.
  *
@@ -169,6 +154,11 @@ extern void ios_present_qr_scanner(void);
  * Returns the app's Documents directory path (from NSSearchPathForDirectoriesInDomains).
  */
 extern const char *ios_get_documents_directory(void);
+
+/**
+ * Returns the app's user-facing version string from Info.plist metadata.
+ */
+extern const char *ios_get_app_version(void);
 
 /**
  * Present a native UIAlertController with dynamic buttons.
@@ -252,5 +242,20 @@ void zedra_deeplink_received(const char *url);
 void zedra_qr_scanner_result(const char *qr_string);
 
 extern void zedra_nslog(const char *msg);
+
+extern void zedra_log_event(const char *name,
+                            const char *const *keys,
+                            const char *const *values,
+                            int count);
+
+extern void zedra_record_error(const char *message, const char *file, int line);
+
+extern void zedra_record_panic(const char *message, const char *location);
+
+extern void zedra_set_user_id(const char *user_id);
+
+extern void zedra_set_custom_key(const char *key, const char *value);
+
+extern void zedra_set_collection_enabled(int enabled);
 
 #endif  /* ZEDRA_IOS_H */
