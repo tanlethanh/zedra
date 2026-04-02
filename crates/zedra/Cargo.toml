@@ -20,6 +20,7 @@ http_client = { path = "../../vendor/zed/crates/http_client" }
 anyhow.workspace = true
 tracing.workspace = true
 log.workspace = true
+futures.workspace = true
 crossbeam-channel = "0.5"
 once_cell = "1.19"
 
