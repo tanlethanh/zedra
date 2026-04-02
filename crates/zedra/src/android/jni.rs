@@ -594,7 +594,6 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeAlertResult(
         return;
     }
     platform_bridge::dispatch_alert_result(callback_id as u32, button_index as usize);
-    zedra_session::push_callback(Box::new(|| {}));
 }
 
 /// Native alert dismiss callback from MainActivity.
@@ -608,7 +607,6 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeAlertDismiss(
         return;
     }
     platform_bridge::dispatch_alert_dismiss(callback_id as u32);
-    zedra_session::push_callback(Box::new(|| {}));
 }
 
 /// Native selection result callback from MainActivity.
@@ -623,7 +621,6 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeSelectionResult(
         return;
     }
     platform_bridge::dispatch_selection_result(callback_id as u32, button_index as usize);
-    zedra_session::push_callback(Box::new(|| {}));
 }
 
 /// Native selection dismiss callback from MainActivity.
@@ -637,7 +634,6 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeSelectionDismiss(
         return;
     }
     platform_bridge::dispatch_selection_dismiss(callback_id as u32);
-    zedra_session::push_callback(Box::new(|| {}));
 }
 
 /// Fling event callback

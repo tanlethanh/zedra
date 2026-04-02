@@ -22,29 +22,11 @@ thread_local! {
 
 /// Called each frame from main.m before gpui_ios_request_frame.
 ///
-/// Drains main-thread callbacks and checks whether terminal data is pending.
-/// Returns `true` when a forced render is needed (mirrors Android's
-/// `check_and_clear_terminal_data` + `drain_callbacks` in `handle_frame_request`).
+/// Returns `false` — GPUI polling tasks handle view notifications internally
+/// via `cx.notify()`, so forced frames are no longer needed.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_check_pending_frame() -> bool {
-    let callbacks = zedra_session::drain_callbacks();
-    let had_callbacks = !callbacks.is_empty();
-    for cb in callbacks {
-        cb();
-    }
-    // When PTY data arrived, call window.refresh() so all views re-render.
-    // gpui_ios_request_frame_forced() bypasses the window-level dirty gate but does NOT
-    // bypass GPUI's per-view render cache — without refresh(), TerminalView::render()
-    // is skipped because dirty_views is empty and window.refreshing is false.
-    if had_callbacks {
-        let app_cell = IOS_APP_CELL.with(|c| c.borrow().clone());
-        let window = IOS_WINDOW.with(|w| w.borrow().clone());
-        if let (Some(app_cell), Some(window)) = (app_cell, window) {
-            let mut app_borrow = app_cell.borrow_mut();
-            let _ = window.update(&mut **app_borrow, |_, window, _| window.refresh());
-        }
-    }
-    had_callbacks
+    false
 }
 
 #[unsafe(no_mangle)]

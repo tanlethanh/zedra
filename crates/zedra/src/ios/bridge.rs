@@ -43,7 +43,6 @@ pub extern "C" fn zedra_ios_set_keyboard_height(height_px: u32) {
     zedra_terminal::set_keyboard_height(height_px);
     // Signal a forced render so the terminal resizes immediately on the next
     // CADisplayLink tick rather than waiting for the next user interaction.
-    zedra_session::push_callback(Box::new(|| {}));
     tracing::debug!("iOS keyboard height: {}px", height_px);
 }
 
@@ -253,7 +252,6 @@ impl PlatformBridge for IosBridge {
 pub extern "C" fn zedra_ios_alert_result(callback_id: u32, button_index: i32) {
     if button_index >= 0 {
         platform_bridge::dispatch_alert_result(callback_id, button_index as usize);
-        zedra_session::push_callback(Box::new(|| {}));
     }
 }
 
@@ -261,7 +259,6 @@ pub extern "C" fn zedra_ios_alert_result(callback_id: u32, button_index: i32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_alert_dismiss(callback_id: u32) {
     platform_bridge::dispatch_alert_dismiss(callback_id);
-    zedra_session::push_callback(Box::new(|| {}));
 }
 
 /// Called from the action sheet handler in main.m after the user taps an item.
@@ -269,7 +266,6 @@ pub extern "C" fn zedra_ios_alert_dismiss(callback_id: u32) {
 pub extern "C" fn zedra_ios_selection_result(callback_id: u32, button_index: i32) {
     if button_index >= 0 {
         platform_bridge::dispatch_selection_result(callback_id, button_index as usize);
-        zedra_session::push_callback(Box::new(|| {}));
     }
 }
 
@@ -277,7 +273,6 @@ pub extern "C" fn zedra_ios_selection_result(callback_id: u32, button_index: i32
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_selection_dismiss(callback_id: u32) {
     platform_bridge::dispatch_selection_dismiss(callback_id);
-    zedra_session::push_callback(Box::new(|| {}));
 }
 
 /// Called from the native app delegate when the app enters the background.
@@ -307,7 +302,6 @@ pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
     };
     if key_name == "dismiss_keyboard" {
         platform_bridge::bridge().hide_keyboard();
-        zedra_session::push_callback(Box::new(|| {}));
         return;
     }
 
@@ -322,7 +316,6 @@ pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
         _ => return,
     };
     active_terminal::send_to_active(bytes.to_vec());
-    zedra_session::push_callback(Box::new(|| {}));
 }
 
 /// Called from main.m when the app is opened via a zedra:// URL.

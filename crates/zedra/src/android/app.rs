@@ -391,30 +391,11 @@ impl AndroidApp {
             .as_ref()
             .map_or(false, |p| p.has_active_fling());
 
-        // Drain and execute any main-thread callbacks from the session runtime.
-        // Non-empty drain means something signaled a forced render (terminal data, etc.).
-        let callbacks = zedra_session::drain_callbacks();
-        let callbacks_pending = !callbacks.is_empty();
-        for cb in callbacks {
-            cb();
-        }
-
-        // When PTY data arrived, call window.refresh() so all views re-render.
-        // request_frame_forced() bypasses the window-level dirty gate but does NOT
-        // bypass GPUI's per-view render cache — without refresh(), TerminalView::render()
-        // is skipped because dirty_views is empty and window.refreshing is false.
-        if callbacks_pending {
-            if let (Some(app_cell), Some(window)) = (&self.app_cell, self.window) {
-                let mut borrow = app_cell.borrow_mut();
-                let _ = window.update(&mut **borrow, |_, window, _| window.refresh());
-            }
-        }
-
         // Request frames on all windows via the AndroidPlatform
-        // This triggers GPUI's rendering pipeline
+        // GPUI polling tasks handle view notifications internally via cx.notify(),
+        // so we only need forced frames for fling momentum scrolling.
         if let Some(ref platform) = self.platform {
-            if callbacks_pending || fling_active {
-                // Force render when terminal data is pending or fling is active
+            if fling_active {
                 platform.request_frame_forced();
             } else {
                 platform.request_frame_for_all_windows();
