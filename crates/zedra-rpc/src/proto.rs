@@ -212,7 +212,7 @@ pub struct RegisterReq {
     /// Proves the sender physically scanned the QR (has the handshake_key).
     pub hmac: [u8; 32],
     /// The session ID from the QR ticket (used to look up the pairing slot).
-    pub slot_session_id: String,
+    pub session_id: String,
 }
 
 /// Result of a RegisterClient attempt.
@@ -328,11 +328,8 @@ pub enum ConnectResult {
 // Ping / Pong
 // ---------------------------------------------------------------------------
 
-/// Sent by the client every 2 seconds (foreground only).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PingReq {
-    /// Client's Unix timestamp in milliseconds.
-    /// Echoed back in PongResult so the client can compute RTT = now - timestamp_ms.
     pub timestamp_ms: u64,
 }
 
@@ -817,13 +814,13 @@ mod tests {
             client_pubkey: [1u8; 32],
             timestamp: 1_700_000_000,
             hmac: [2u8; 32],
-            slot_session_id: "sess-123".to_string(),
+            session_id: "sess-123".to_string(),
         };
         let encoded = postcard::to_allocvec(&req).unwrap();
         let decoded: RegisterReq = postcard::from_bytes(&encoded).unwrap();
         assert_eq!(decoded.client_pubkey, [1u8; 32]);
         assert_eq!(decoded.timestamp, 1_700_000_000);
-        assert_eq!(decoded.slot_session_id, "sess-123");
+        assert_eq!(decoded.session_id, "sess-123");
     }
 
     #[test]
