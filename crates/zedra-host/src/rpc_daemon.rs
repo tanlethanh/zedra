@@ -666,7 +666,7 @@ async fn handle_register(
     }
 
     // Atomically consume the pairing slot
-    match registry.consume_pairing_slot(&msg.slot_session_id).await {
+    match registry.consume_pairing_slot(&msg.session_id).await {
         ConsumeSlotResult::Active(slot) => {
             // Verify HMAC (slot is already consumed regardless of outcome)
             if !zedra_rpc::verify_registration_hmac(
@@ -702,22 +702,16 @@ async fn handle_register(
             RegisterResult::Ok
         }
         ConsumeSlotResult::Consumed => {
-            tracing::warn!(
-                "Register: slot for {} already consumed",
-                msg.slot_session_id
-            );
+            tracing::warn!("Register: slot for {} already consumed", msg.session_id);
             eprintln!(
                 "[{}] pairing:   QR already used (session {}). Press 'r' in the host terminal to generate a new QR.",
                 ts(),
-                &msg.slot_session_id[..8.min(msg.slot_session_id.len())]
+                &msg.session_id[..8.min(msg.session_id.len())]
             );
             RegisterResult::HandshakeConsumed
         }
         ConsumeSlotResult::NotFound => {
-            tracing::warn!(
-                "Register: no slot found for session {}",
-                msg.slot_session_id
-            );
+            tracing::warn!("Register: no slot found for session {}", msg.session_id);
             RegisterResult::SlotNotFound
         }
     }

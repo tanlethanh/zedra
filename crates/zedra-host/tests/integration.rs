@@ -144,7 +144,7 @@ async fn connect_client(
             client_pubkey,
             timestamp,
             hmac,
-            slot_session_id: session.id.clone(),
+            session_id: session.id.clone(),
         })
         .await?;
     assert!(
@@ -486,7 +486,7 @@ async fn test_register_bad_hmac_rejected() {
             client_pubkey,
             timestamp,
             hmac: bad_hmac,
-            slot_session_id: session.id.clone(),
+            session_id: session.id.clone(),
         })
         .await
         .unwrap();
