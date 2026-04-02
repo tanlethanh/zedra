@@ -60,7 +60,6 @@ let pending = self.pending_result.clone();
 runtime.spawn(async move {
     let data = fetch().await;
     pending.set(data);
-    zedra_session::push_callback(Box::new(|| {})); // wake render
 });
 
 // In render()
@@ -68,6 +67,95 @@ if let Some(data) = self.pending_result.take() {
     self.child_view.update(cx, |v, cx| v.apply(data, cx));
 }
 ```
+
+## Channel-Based Notifications (Zero-Latency)
+
+For high-frequency events (terminal output, session state changes), use
+`futures::channel::mpsc::unbounded` to notify UI immediately without polling.
+
+**Pattern:** Producer sets a flag + sends `()` to channel; consumer GPUI task
+awaits on channel and calls `cx.notify()`.
+
+**Producer side** (in `zedra-session`):
+```rust
+pub struct RemoteTerminal {
+    notify_tx: Mutex<Option<UnboundedSender<()>>>,
+    // ...
+}
+
+impl RemoteTerminal {
+    pub fn subscribe_output(&self) -> UnboundedReceiver<()> {
+        let (tx, rx) = unbounded();
+        if let Ok(mut g) = self.notify_tx.lock() { *g = Some(tx); }
+        rx
+    }
+
+    pub(crate) fn signal_needs_render(&self) {
+        self.needs_render.store(true, Ordering::Release);
+        if let Some(tx) = self.notify_tx.lock().ok().and_then(|g| g.clone()) {
+            let _ = tx.unbounded_send(());
+        }
+    }
+}
+```
+
+**Consumer side** (in GPUI view):
+```rust
+pub struct TerminalView {
+    _listener: Task<()>,
+    // ...
+}
+
+impl TerminalView {
+    pub fn start_output_listener(
+        &mut self,
+        mut rx: UnboundedReceiver<()>,
+        cx: &mut Context<Self>,
+    ) {
+        self._listener = cx.spawn(async move |weak, cx| {
+            while rx.next().await.is_some() {
+                if weak.update(cx, |_, cx| cx.notify()).is_err() { break; }
+            }
+        });
+    }
+}
+```
+
+**When to use:**
+- Terminal output streaming (< 10ms latency requirement)
+- Session state changes (connection phase transitions)
+- Any tokio-thread → GPUI-thread notification path
+
+**When NOT to use:**
+- One-shot async results → use `SharedPendingSlot` with polling instead
+- Infrequent updates (file listing, git status) → 32-50ms polling is fine
+
+**Session state** (`SessionState` in `zedra-session`): same idea as the terminal —
+`subscribe()` installs an unbounded sender; `notify_change()` runs after each
+`ConnectEvent` is applied. The app does not poll session phase in a timer.
+
+**Workspaces aggregation** (`crates/zedra/src/workspaces.rs`): `Workspaces::new`
+creates one shared `(sync_notify_tx, sync_notify_rx)` pair. A single GPUI task
+awaits `sync_notify_rx` and calls `sync_if_needed(cx)` on the entity. Each
+active workspace spawns a small task that awaits `session.state().subscribe()`,
+sets that workspace’s `needs_sync` flag, and `unbounded_send(())` on
+`sync_notify_tx`. That way many sessions funnel into one UI wake without a global
+static or platform `push_callback`.
+
+**Wiring terminal UI** (`workspace_view::wire_terminal_view`): after
+`set_output_buffer` / `set_send_bytes`, call `start_output_listener(t.subscribe_output(), cx)`.
+Only one subscriber per terminal — `subscribe_output` replaces the previous sender.
+
+**Why keep `needs_render`:** the atomic is still cleared in `TerminalView::render`
+so we do not run VTE processing on every frame; the channel only schedules a
+frame when the pump has signaled new bytes.
+
+**Cross-runtime:** session code runs on the tokio `session_runtime`; GPUI uses
+its own executor. Unbounded channels are safe to send from tokio tasks into
+`cx.spawn` listeners; do not call `cx.notify()` from a raw tokio task.
+
+For the full thread diagram and how this fits next to JNI / `PendingSlot`, see
+`docs/THREADING.md` (Pattern 2 and Pattern 6).
 
 ## Platform Bridge
 
