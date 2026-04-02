@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::index::{Column as GridColumn, Line as GridLine, Point as GridPoint};
 use alacritty_terminal::term::TermMode;
+use futures::StreamExt;
 use gpui::*;
 
 use crate::element::TerminalElement;
@@ -76,6 +77,8 @@ pub struct TerminalView {
     /// Top-left origin of the painted terminal grid within the window.
     /// Used to turn touch scroll positions into terminal cell coordinates.
     grid_origin: Option<Point<Pixels>>,
+    /// Background task that polls `needs_render` and calls `cx.notify()`.
+    _poll_task: Option<Task<()>>,
 }
 
 impl TerminalView {
@@ -102,6 +105,7 @@ impl TerminalView {
             last_keyboard_rows: rows,
             mouse_down_pos: None,
             grid_origin: None,
+            _poll_task: None,
         }
     }
 
@@ -124,15 +128,27 @@ impl TerminalView {
         }
     }
 
-    /// Get a clone of the output buffer for SSH to write to
     pub fn output_buffer(&self) -> OutputBuffer {
         self.output_buffer.clone()
     }
 
-    /// Wire in the session's output buffer and render-signal flag.
     pub fn set_output_buffer(&mut self, buffer: OutputBuffer, needs_render: Arc<AtomicBool>) {
         self.output_buffer = buffer;
         self.needs_render = Some(needs_render);
+    }
+
+    pub fn start_output_listener(
+        &mut self,
+        mut notify_rx: futures::channel::mpsc::UnboundedReceiver<()>,
+        cx: &mut Context<Self>,
+    ) {
+        self._poll_task = Some(cx.spawn(async move |weak, _cx| {
+            while notify_rx.next().await.is_some() {
+                if weak.update(_cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        }));
     }
 
     /// Set the callback invoked when the effective grid size changes.
