@@ -217,9 +217,13 @@ impl WorkspaceState {
         Self(Arc::new(i))
     }
 
-    pub fn from_handle(handle: &zedra_session::SessionHandle) -> Option<Self> {
+    pub fn from_session(
+        handle: &zedra_session::SessionHandle,
+        session_state: &zedra_session::SessionState,
+    ) -> Option<Self> {
         let addr = handle.endpoint_addr()?;
         let encoded = zedra_rpc::pairing::encode_endpoint_addr(&addr).ok()?;
+        let snap = session_state.get().snapshot;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -227,11 +231,11 @@ impl WorkspaceState {
         Some(Self(Arc::new(WorkspaceStateInner {
             endpoint_addr: encoded,
             session_id: handle.session_id().unwrap_or_default(),
-            strip_path: handle.strip_path(),
-            project_name: handle.project_name(),
-            workdir: handle.workdir(),
-            homedir: handle.homedir(),
-            hostname: handle.hostname(),
+            strip_path: snap.strip_path,
+            project_name: snap.project_name,
+            workdir: snap.workdir,
+            homedir: snap.homedir,
+            hostname: snap.hostname,
             created_at: now,
             updated_at: now,
             workspace_index: None,

@@ -5,19 +5,19 @@ use gpui::*;
 
 use crate::theme;
 use crate::transport_badge::{
-    STALE_THRESHOLD_SECS, format_bytes, render_transport_badge, transport_badge_info,
+    STALE_THRESHOLD_SECS, format_bytes, render_transport_badge, transport_badge_info_phase,
 };
 use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
-use zedra_session::ConnectState;
+use zedra_session::{ConnectPhase, SessionState};
 
 /// Render the session tab content for the workspace drawer.
 pub fn render_session_tab(
-    handle: Option<&zedra_session::SessionHandle>,
+    session_state: Option<&SessionState>,
     cx: &mut Context<WorkspaceDrawer>,
 ) -> Div {
-    let cs: Option<ConnectState> = handle.map(|h| h.connect_state());
+    let inner = session_state.map(|s| s.get());
 
-    let is_empty = cs.as_ref().map(|s| s.phase.is_idle()).unwrap_or(true);
+    let is_empty = inner.as_ref().map(|s| s.phase.is_idle()).unwrap_or(true);
     if is_empty {
         return div()
             .size_full()
@@ -29,19 +29,18 @@ pub fn render_session_tab(
             .child("No active session");
     }
 
-    let cs = cs.unwrap();
-    let snap = &cs.snapshot;
+    let inner = inner.unwrap();
+    let phase = &inner.phase;
+    let snap = &inner.snapshot;
 
-    let mut content = div().px(px(theme::DRAWER_PADDING)).flex().flex_col();
+    let mut info = div().px(px(theme::DRAWER_PADDING)).flex().flex_col();
 
     // --- Host section ---
-    if let Some(hostname) = &snap.hostname {
-        content = content.child(info_row("Hostname", hostname.clone()));
+    if !snap.hostname.is_empty() {
+        info = info.child(info_row("Hostname", snap.hostname.clone()));
     }
-    if let Some(username) = &snap.username {
-        if !username.is_empty() {
-            content = content.child(info_row("User", username.clone()));
-        }
+    if !snap.username.is_empty() {
+        info = info.child(info_row("User", snap.username.clone()));
     }
     if let Some(os) = &snap.os {
         if !os.is_empty() {
@@ -49,27 +48,27 @@ pub fn render_session_tab(
                 Some(arch) if !arch.is_empty() => format!("{os} / {arch}"),
                 _ => os.clone(),
             };
-            content = content.child(info_row("Platform", os_label));
+            info = info.child(info_row("Platform", os_label));
         }
     }
     if let Some(v) = &snap.os_version {
         if !v.is_empty() {
-            content = content.child(info_row("OS Version", v.clone()));
+            info = info.child(info_row("OS Version", v.clone()));
         }
     }
     if let Some(v) = &snap.host_version {
         if !v.is_empty() {
-            content = content.child(info_row("Host Version", v.clone()));
+            info = info.child(info_row("Host Version", v.clone()));
         }
     }
-    if let Some(wd) = &snap.workdir {
-        content = content.child(info_row("Directory", wd.clone()));
+    if !snap.workdir.is_empty() {
+        info = info.child(info_row("Directory", snap.workdir.clone()));
     }
 
-    // --- Connection badge (reflects actual phase: connected/reconnecting/stale) ---
+    // --- Connection badge ---
     {
-        let (badge_label, badge_color) = transport_badge_info(&cs);
-        content = content.child(
+        let (badge_label, badge_color) = transport_badge_info_phase(phase, snap.transport.as_ref());
+        info = info.child(
             div()
                 .py(px(4.0))
                 .child(
@@ -78,20 +77,18 @@ pub fn render_session_tab(
                         .text_size(px(theme::FONT_DETAIL))
                         .child("Connection"),
                 )
-                .child(render_transport_badge(badge_label, badge_color).mt(px(2.0))),
+                .child(render_transport_badge(badge_label, badge_color, false)),
         );
     }
 
-    // --- Transport details (last-known values; RTT marked stale when path is silent) ---
+    // --- Transport details ---
     if let Some(t) = &snap.transport {
-        content = content.child(info_row("Remote Address", t.remote_addr.clone()));
+        info = info.child(info_row("Remote Address", t.remote_addr.clone()));
 
         if let Some(relay) = &t.relay_url {
-            content = content.child(info_row("Relay", relay.clone()));
+            info = info.child(info_row("Relay", relay.clone()));
         }
 
-        // Heartbeat interval is 2s — bytes_recv grows every ~2 s on a live path.
-        // Elapsed computed at render time — ticks even after path watcher exits.
         let stale_secs = t.last_alive_at.map(|at| at.elapsed().as_secs());
         let is_stale = stale_secs.map_or(false, |s| s >= STALE_THRESHOLD_SECS);
         let rtt_label = match stale_secs {
@@ -104,7 +101,7 @@ pub fn render_session_tab(
         } else {
             theme::TEXT_SECONDARY
         };
-        content = content.child(
+        info = info.child(
             div()
                 .py(px(4.0))
                 .child(
@@ -122,10 +119,10 @@ pub fn render_session_tab(
                 ),
         );
 
-        content = content.child(info_row("Paths", format!("{}", t.num_paths)));
+        info = info.child(info_row("Paths", format!("{}", t.num_paths)));
 
         if t.bytes_sent > 0 || t.bytes_recv > 0 {
-            content = content.child(info_row(
+            info = info.child(info_row(
                 "Data",
                 format!(
                     "{} sent / {} recv",
@@ -138,26 +135,26 @@ pub fn render_session_tab(
 
     // --- Endpoints section ---
     if let Some(id) = &snap.local_node_id {
-        content = content.child(info_row("Local Node", id.clone()));
+        info = info.child(info_row("Local Node", id.clone()));
     }
     if let Some(id) = &snap.remote_node_id {
-        content = content.child(info_row("Remote Node", id.clone()));
+        info = info.child(info_row("Remote Node", id.clone()));
     }
     if let Some(alpn) = &snap.alpn {
-        content = content.child(info_row("Protocol", alpn.clone()));
+        info = info.child(info_row("Protocol", alpn.clone()));
     }
 
     // --- Session section ---
     if let Some(sid) = &snap.session_id {
-        content = content.child(info_row("Session ID", sid.clone()));
+        info = info.child(info_row("Session ID", sid.clone()));
     }
 
     // --- Phase timing section ---
-    content = content.child(render_timing(snap));
+    info = info.child(render_timing(snap));
 
     // --- Error banner (failed phase only) ---
-    if let zedra_session::ConnectPhase::Failed(e) = &cs.phase {
-        content = content.child(
+    if let ConnectPhase::Failed(e) = phase {
+        info = info.child(
             div()
                 .mt(px(8.0))
                 .flex()
@@ -178,10 +175,15 @@ pub fn render_session_tab(
         );
     }
 
+    // --- Reconnecting status row (only when not connected) ---
+    if !phase.is_connected() {
+        info = info.child(render_reconnecting_row(phase, snap, cx));
+    }
+
     // --- Disconnect button ---
     let disconnect_button = div()
         .id("session-disconnect-btn")
-        .mt(px(16.0))
+        .mt(px(8.0))
         .px(px(12.0))
         .py(px(8.0))
         .rounded(px(6.0))
@@ -196,7 +198,7 @@ pub fn render_session_tab(
         }))
         .child(div().flex().justify_center().child("Disconnect"));
 
-    content.child(disconnect_button).child(div().h(px(16.0)))
+    info.child(disconnect_button).child(div().h(px(16.0)))
 }
 
 /// Render phase timing summary row.
@@ -206,7 +208,7 @@ fn render_timing(snap: &zedra_session::ConnectSnapshot) -> Div {
         timing_parts.push(format!("Bind {ms}ms"));
     }
     if let Some(ms) = snap.hole_punch_ms {
-        timing_parts.push(format!("P2P {ms}ms"));
+        timing_parts.push(format!("HolePunch {ms}ms"));
     }
     if let Some(ms) = snap.rpc_ms {
         timing_parts.push(format!("RPC {ms}ms"));
@@ -240,6 +242,37 @@ fn render_timing(snap: &zedra_session::ConnectSnapshot) -> Div {
                 .text_color(rgb(theme::TEXT_SECONDARY))
                 .text_size(px(theme::FONT_DETAIL))
                 .child(timing_parts.join(" \u{00b7} ")),
+        )
+}
+
+/// "Connecting" label row shown when not connected.
+fn render_reconnecting_row(
+    phase: &ConnectPhase,
+    snap: &zedra_session::ConnectSnapshot,
+    cx: &mut Context<WorkspaceDrawer>,
+) -> Div {
+    let (label, color) = transport_badge_info_phase(phase, snap.transport.as_ref());
+    div()
+        .py(px(4.0))
+        .cursor_pointer()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|_this, _event, _window, cx| {
+                cx.emit(WorkspaceDrawerEvent::ShowConnectingOverlay);
+            }),
+        )
+        .child(
+            div()
+                .text_color(rgb(theme::TEXT_MUTED))
+                .text_size(px(theme::FONT_DETAIL))
+                .child("Connecting"),
+        )
+        .child(
+            div()
+                .mt(px(1.0))
+                .text_color(rgb(color))
+                .text_size(px(theme::FONT_BODY))
+                .child(label),
         )
 }
 

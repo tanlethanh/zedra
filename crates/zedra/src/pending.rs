@@ -1,7 +1,8 @@
-/// Generic async-to-main-thread one-shot channel.
+/// Generic async-to-main-thread communication primitives.
 ///
-/// Each `PendingSlot<T>` is a `Mutex<Option<T>>` that can be written from any
-/// thread (e.g. a tokio task) and consumed on the main/render thread.
+/// `PendingSlot<T>`: one-shot channel for passing values between async tasks
+/// and the main thread. Used with GPUI polling tasks that check `has_pending()`
+/// and call `cx.notify()` when values are available.
 use std::sync::Mutex;
 
 pub struct PendingSlot<T>(Mutex<Option<T>>);
@@ -19,6 +20,11 @@ impl<T> PendingSlot<T> {
     /// Take the value if present, leaving `None`.
     pub fn take(&self) -> Option<T> {
         self.0.lock().unwrap().take()
+    }
+
+    /// Check if a value is pending without taking it.
+    pub fn has_pending(&self) -> bool {
+        self.0.lock().map(|g| g.is_some()).unwrap_or(false)
     }
 }
 
@@ -67,5 +73,15 @@ mod tests {
         let slot = shared_pending_slot::<String>();
         slot.set("hello".to_string());
         assert_eq!(slot.take(), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn has_pending_works() {
+        let slot = PendingSlot::new();
+        assert!(!slot.has_pending());
+        slot.set(42);
+        assert!(slot.has_pending());
+        slot.take();
+        assert!(!slot.has_pending());
     }
 }

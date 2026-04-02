@@ -88,30 +88,60 @@ pub struct FileExplorer {
     /// Whether `flat_entries` needs to be rebuilt.
     flat_dirty: bool,
     session_handle: Option<zedra_session::SessionHandle>,
+    workdir: String,
     watched_paths: HashSet<String>,
     selected_file_path: Option<String>,
     /// Last observer-triggered refresh instant by directory path.
     last_refresh_at: HashMap<String, Instant>,
+    /// Background task polling pending slots.
+    _poll_task: Task<()>,
 }
 
 const OBSERVER_REFRESH_THROTTLE: Duration = Duration::from_millis(1200);
 
 impl FileExplorer {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let pending_entries: SharedPendingSlot<(Vec<FileEntry>, u32)> = shared_pending_slot();
+        let pending_children: Arc<Mutex<Vec<(String, Option<(Vec<FileEntry>, u32)>)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let pending_more: SharedPendingSlot<(Vec<usize>, Vec<FileEntry>)> = shared_pending_slot();
+
+        // Start polling task
+        let poll_entries = pending_entries.clone();
+        let poll_children = pending_children.clone();
+        let poll_more = pending_more.clone();
+        let poll_task = cx.spawn(async move |weak, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(32))
+                    .await;
+                let has_pending = poll_entries.has_pending()
+                    || poll_more.has_pending()
+                    || poll_children.lock().map(|g| !g.is_empty()).unwrap_or(false);
+                if has_pending {
+                    if weak.update(cx, |_, cx| cx.notify()).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
         let mut explorer = Self {
             entries: Vec::new(),
             focus_handle: cx.focus_handle(),
             remote_loaded: false,
             root_total: 0,
-            pending_entries: shared_pending_slot(),
-            pending_children: Arc::new(Mutex::new(Vec::new())),
-            pending_more: shared_pending_slot(),
+            pending_entries,
+            pending_children,
+            pending_more,
             flat_entries: Vec::new(),
             flat_dirty: false,
             session_handle: None,
+            workdir: String::new(),
             watched_paths: HashSet::new(),
             selected_file_path: None,
             last_refresh_at: HashMap::new(),
+            _poll_task: poll_task,
         };
 
         // If there's an active session, load root entries from remote
@@ -124,9 +154,11 @@ impl FileExplorer {
     pub fn set_session_handle(
         &mut self,
         handle: zedra_session::SessionHandle,
+        workdir: String,
         cx: &mut Context<Self>,
     ) {
         self.session_handle = Some(handle);
+        self.workdir = workdir;
         self.watched_paths.clear();
         self.selected_file_path = None;
         self.last_refresh_at.clear();
@@ -170,7 +202,7 @@ impl FileExplorer {
     /// existing tree and only apply if root structure actually changed.
     fn request_root_listing(&mut self, show_loading: bool) {
         let handle = match self.session_handle.as_ref() {
-            Some(h) if h.is_connected() => h.clone(),
+            Some(h) if h.has_client() => h.clone(),
             _ => return,
         };
         self.fs_watch_path(".".to_string());
@@ -205,7 +237,6 @@ impl FileExplorer {
                         .collect();
 
                     pending.set((file_entries, total));
-                    zedra_session::push_callback(Box::new(|| {}));
                 }
                 Err(e) => {
                     tracing::error!("fs/list failed: {}", e);
@@ -221,7 +252,6 @@ impl FileExplorer {
                         }],
                         0,
                     ));
-                    zedra_session::push_callback(Box::new(|| {}));
                 }
             }
         });
@@ -252,7 +282,7 @@ impl FileExplorer {
     /// Load children for a directory at the given index path from remote
     fn load_remote_children(&mut self, index_path: &[usize], cx: &mut Context<Self>) {
         let handle = match self.session_handle.as_ref() {
-            Some(h) if h.is_connected() => h.clone(),
+            Some(h) if h.has_client() => h.clone(),
             _ => return,
         };
 
@@ -296,13 +326,11 @@ impl FileExplorer {
                         .lock()
                         .unwrap()
                         .push((dir_path_for_pending, Some((file_entries, total))));
-                    zedra_session::push_callback(Box::new(|| {}));
                 }
                 Err(e) => {
                     tracing::error!("fs/list for {:?} failed: {}", dir_path, e);
                     // Ensure error paths still clear spinner state for this dir.
                     pending.lock().unwrap().push((dir_path, None));
-                    zedra_session::push_callback(Box::new(|| {}));
                 }
             }
         });
@@ -364,7 +392,7 @@ impl FileExplorer {
     /// `load_more_path` is `[]` for root, or the index path of a dir entry.
     fn load_more_entries(&mut self, load_more_path: Vec<usize>, cx: &mut Context<Self>) {
         let handle = match self.session_handle.as_ref() {
-            Some(h) if h.is_connected() => h.clone(),
+            Some(h) if h.has_client() => h.clone(),
             _ => return,
         };
 
@@ -395,7 +423,6 @@ impl FileExplorer {
                         })
                         .collect();
                     pending.set((load_more_path, file_entries));
-                    zedra_session::push_callback(Box::new(|| {}));
                 }
                 Err(e) => {
                     tracing::error!("fs/list load_more for {:?} failed: {}", dir_path, e);
@@ -545,7 +572,7 @@ impl FileExplorer {
             return;
         }
         let handle = match self.session_handle.as_ref() {
-            Some(h) if h.is_connected() => h.clone(),
+            Some(h) if h.has_client() => h.clone(),
             _ => return,
         };
         zedra_session::session_runtime().spawn(async move {
@@ -563,7 +590,7 @@ impl FileExplorer {
             return;
         }
         let handle = match self.session_handle.as_ref() {
-            Some(h) if h.is_connected() => h.clone(),
+            Some(h) if h.has_client() => h.clone(),
             _ => return,
         };
         zedra_session::session_runtime().spawn(async move {
@@ -588,15 +615,10 @@ impl FileExplorer {
                 rel.to_string()
             };
         }
-        let workdir = self
-            .session_handle
-            .as_ref()
-            .map(|h| h.workdir())
-            .unwrap_or_default();
-        if workdir.is_empty() {
+        if self.workdir.is_empty() {
             return ".".to_string();
         }
-        let wd = Path::new(&workdir);
+        let wd = Path::new(&self.workdir);
         match p.strip_prefix(wd) {
             Ok(rest) => {
                 let rel = rest.to_string_lossy().trim_start_matches('/').to_string();
@@ -614,15 +636,10 @@ impl FileExplorer {
         if p.is_absolute() {
             return path.to_string();
         }
-        let workdir = self
-            .session_handle
-            .as_ref()
-            .map(|h| h.workdir())
-            .unwrap_or_default();
-        if workdir.is_empty() {
+        if self.workdir.is_empty() {
             return path.to_string();
         }
-        PathBuf::from(workdir)
+        PathBuf::from(&self.workdir)
             .join(path)
             .to_string_lossy()
             .to_string()
@@ -742,7 +759,7 @@ impl Render for FileExplorer {
             && self
                 .session_handle
                 .as_ref()
-                .map_or(false, |h| h.is_connected())
+                .map_or(false, |h| h.has_client())
         {
             self.try_load_remote_root(cx);
         }

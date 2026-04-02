@@ -1,5 +1,7 @@
 // Per-session workspace: DrawerHost + header/main-view stack, wired to a SessionHandle.
 
+use std::time::Duration;
+
 use gpui::{prelude::FluentBuilder as _, *};
 use zedra_telemetry::*;
 
@@ -14,9 +16,8 @@ use crate::mgpui::DrawerHost;
 use crate::pending::{SharedPendingSlot, shared_pending_slot};
 use crate::platform_bridge::{self, AlertButton, status_bar_inset};
 use crate::theme;
-use crate::transport_badge::transport_badge_info;
 use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
-use zedra_session::SessionHandle;
+use zedra_session::{SessionHandle, SessionState};
 use zedra_terminal::view::{DisconnectRequested, TerminalView};
 
 /// Sentinel terminal ID used before the server assigns a real ID.
@@ -131,6 +132,7 @@ pub struct WorkspaceContent {
     active_terminal_id: Option<String>,
     focus_handle: FocusHandle,
     session_handle: SessionHandle,
+    session_state: SessionState,
     workspace_state: crate::workspace_state::WorkspaceState,
     /// Whether the connecting overlay is currently shown.
     overlay_visible: bool,
@@ -153,16 +155,18 @@ impl WorkspaceContent {
         main_view: AnyView,
         title: impl Into<SharedString>,
         session_handle: SessionHandle,
+        session_state: SessionState,
         cx: &mut Context<Self>,
     ) -> Self {
         let connecting_view =
-            cx.new(|_cx| connecting_view::ConnectingView::new(session_handle.clone()));
+            cx.new(|_cx| connecting_view::ConnectingView::new(session_state.clone()));
         Self {
             main_view,
             header_title: title.into(),
             active_terminal_id: None,
             focus_handle: cx.focus_handle(),
             session_handle,
+            session_state,
             workspace_state: crate::workspace_state::WorkspaceState::default(),
             overlay_visible: true,
             connecting_view,
@@ -200,6 +204,13 @@ impl WorkspaceContent {
         self.workspace_state = state;
         cx.notify();
     }
+
+    /// Show the connecting overlay (e.g. user taps session-tab progress during reconnect).
+    /// Only auto-dismisses when the phase reaches Connected or Idle.
+    pub fn show_overlay(&mut self, cx: &mut Context<Self>) {
+        self.overlay_visible = true;
+        cx.notify();
+    }
 }
 
 impl EventEmitter<WorkspaceContentEvent> for WorkspaceContent {}
@@ -212,10 +223,14 @@ impl Focusable for WorkspaceContent {
 
 impl Render for WorkspaceContent {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Keep reconnects inside the workspace once we already have session context.
-        // The full overlay is only useful for first connect / hard-failure states.
-        let phase = self.session_handle.connect_phase();
+        // Show the full connecting overlay for all fresh connects (first pairing or saved
+        // workspace).  Only suppress it during an auto-reconnect (connection dropped while
+        // the user is already inside the workspace) where we have cached context to show.
+        let inner = self.session_state.get();
+        let phase = &inner.phase;
+        let is_auto_reconnect = inner.reconnect_attempt.is_some();
         let show_inline_status = self.has_cached_workspace_context()
+            && is_auto_reconnect
             && (phase.is_connecting() || phase.is_reconnecting() || phase.is_failed());
         let needs_full_overlay = !phase.is_connected() && !phase.is_idle() && !show_inline_status;
 
@@ -226,7 +241,9 @@ impl Render for WorkspaceContent {
                 platform_bridge::bridge().hide_keyboard();
             }
             self.overlay_visible = true;
-        } else if self.overlay_visible {
+        } else if self.overlay_visible && (phase.is_connected() || phase.is_idle()) {
+            // Only auto-dismiss when the session reaches a terminal state.
+            // This allows show_overlay() to keep the overlay up during reconnect.
             self.overlay_visible = false;
         }
 
@@ -268,8 +285,15 @@ impl Render for WorkspaceContent {
                 Some(name.into())
             }
         };
-        let header_status = if show_inline_status {
-            Some(transport_badge_info(&self.session_handle.connect_state()))
+        // Small dot in the header corner: green=connected, yellow=connecting/reconnecting,
+        // red=failed, hidden when idle.  No text or pill — detailed status lives in the
+        // session drawer tab.
+        let header_dot_color: Option<u32> = if phase.is_connected() {
+            Some(theme::ACCENT_GREEN)
+        } else if phase.is_connecting() || phase.is_reconnecting() {
+            Some(theme::ACCENT_YELLOW)
+        } else if phase.is_failed() {
+            Some(theme::ACCENT_RED)
         } else {
             None
         };
@@ -327,14 +351,31 @@ impl Render for WorkspaceContent {
                                     .w_full()
                                     .min_w_0()
                                     .children(project_name.map(|name| {
+                                        // Dot is an inline flex sibling — row centers in
+                                        // the header via justify_center on the outer div.
+                                        // max_w_full lets the text truncate if too long.
                                         div()
-                                            .w_full()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_center()
-                                            .text_color(rgb(theme::TEXT_MUTED))
-                                            .text_size(px(theme::FONT_DETAIL))
-                                            .child(name)
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(5.0))
+                                            .max_w_full()
+                                            .children(header_dot_color.map(|color| {
+                                                div()
+                                                    .w(px(6.0))
+                                                    .h(px(6.0))
+                                                    .rounded(px(3.0))
+                                                    .flex_shrink_0()
+                                                    .bg(rgb(color))
+                                            }))
+                                            .child(
+                                                div()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .text_color(rgb(theme::TEXT_MUTED))
+                                                    .text_size(px(theme::FONT_DETAIL))
+                                                    .child(name),
+                                            )
                                     }))
                                     .child(
                                         div()
@@ -349,35 +390,6 @@ impl Render for WorkspaceContent {
                                     ),
                             ),
                     )
-                    .children(header_status.map(|(label, dot_color)| {
-                        div()
-                            .mr(px(4.0))
-                            .px(px(8.0))
-                            .py(px(4.0))
-                            .max_w(px(150.0))
-                            .min_w_0()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(5.0))
-                            .rounded(px(999.0))
-                            .bg(theme::badge_bg())
-                            .child(
-                                div()
-                                    .w(px(theme::ICON_STATUS))
-                                    .h(px(theme::ICON_STATUS))
-                                    .rounded(px(3.0))
-                                    .bg(rgb(dot_color)),
-                            )
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(px(theme::FONT_DETAIL))
-                                    .text_color(rgb(dot_color))
-                                    .child(label),
-                            )
-                    }))
                     .child(
                         div()
                             .id("quick-action-btn")
@@ -435,6 +447,7 @@ pub struct WorkspaceView {
     workspace_content: Entity<WorkspaceContent>,
     workspace_drawer: Entity<WorkspaceDrawer>,
     session_handle: SessionHandle,
+    session_state: SessionState,
     workspace_state: crate::workspace_state::WorkspaceState,
     /// `(terminal_id, view)` pairs in creation order; pending slots use `PENDING_TERMINAL_ID`.
     terminal_views: Vec<(String, Entity<TerminalView>)>,
@@ -454,12 +467,19 @@ pub struct WorkspaceView {
     /// Terminal IDs whose initial resize RPC has completed; used to set connected=true.
     pending_terminal_ready: SharedPendingSlot<String>,
     _subscriptions: Vec<Subscription>,
+    /// Polling task that checks pending slots and notifies view.
+    _poll_task: Task<()>,
 }
 
 impl EventEmitter<WorkspaceEvent> for WorkspaceView {}
 
 impl WorkspaceView {
-    pub fn new(session_handle: SessionHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        session_handle: SessionHandle,
+        session_state: SessionState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut subscriptions = Vec::new();
 
         let pending_file: SharedPendingSlot<(String, String, bool)> = shared_pending_slot();
@@ -498,12 +518,20 @@ impl WorkspaceView {
         let initial_terminals = vec![(PENDING_TERMINAL_ID.to_string(), terminal_view.clone())];
 
         let workspace_content = cx.new(|cx| {
-            WorkspaceContent::new(terminal_view.into(), "Terminal", session_handle.clone(), cx)
+            WorkspaceContent::new(
+                terminal_view.into(),
+                "Terminal",
+                session_handle.clone(),
+                session_state.clone(),
+                cx,
+            )
         });
 
         let workspace_drawer = cx.new(|cx| WorkspaceDrawer::new(cx));
         workspace_drawer.update(cx, |drawer, cx| {
-            drawer.set_session_handle(session_handle.clone(), cx);
+            let workdir = session_state.get().snapshot.workdir;
+            drawer.set_session_handle(session_handle.clone(), workdir, cx);
+            drawer.set_session_state(session_state.clone());
         });
 
         let drawer_host = cx.new(|cx| DrawerHost::new(workspace_content.clone().into(), cx));
@@ -564,6 +592,12 @@ impl WorkspaceView {
                         WorkspaceDrawerEvent::CloseRequested => {
                             drawer_host_clone.update(cx, |host, cx| host.close(cx));
                         }
+                        WorkspaceDrawerEvent::ShowConnectingOverlay => {
+                            drawer_host_clone.update(cx, |host, cx| host.close(cx));
+                            workspace_content_clone.update(cx, |content, cx| {
+                                content.show_overlay(cx);
+                            });
+                        }
                         WorkspaceDrawerEvent::DisconnectRequested => {
                             tracing::info!("DisconnectRequested from session panel");
                             drawer_host_clone.update(cx, |host, cx| host.close(cx));
@@ -609,7 +643,6 @@ impl WorkspaceView {
                                             terminal_count: term_count,
                                         });
                                         ptid.set(term_id);
-                                        zedra_session::push_callback(Box::new(|| {}));
                                     }
                                     Err(e) => {
                                         tracing::error!("Failed to create terminal: {}", e);
@@ -621,6 +654,11 @@ impl WorkspaceView {
                         WorkspaceDrawerEvent::TerminalSelected(tid) => {
                             drawer_host_clone.update(cx, |host, cx| host.close(cx));
                             let tid = tid.clone();
+                            // Record intent even if the view doesn't exist yet — the
+                            // pending_existing_terminals block will honor this when it creates
+                            // views (race window: reattach_terminals fires notify_state_change
+                            // before app.rs has set pending_existing_terminals).
+                            this.active_terminal_id = Some(tid.clone());
                             this.switch_to_terminal(&tid, cx);
                         }
                         WorkspaceDrawerEvent::FileSelected(path) => {
@@ -643,7 +681,6 @@ impl WorkspaceView {
                                                 result.content,
                                                 result.too_large,
                                             ));
-                                            zedra_session::push_callback(Box::new(|| {}));
                                         }
                                         Err(e) => {
                                             tracing::error!("fs/read failed for {}: {}", path, e);
@@ -726,7 +763,6 @@ impl WorkspaceView {
                                     };
                                     if let Some(action) = action {
                                         pending.set(action);
-                                        zedra_session::push_callback(Box::new(|| {}));
                                     }
                                 },
                             );
@@ -756,7 +792,6 @@ impl WorkspaceView {
                                 move |button_index| {
                                     if button_index == 0 {
                                         pending.set((message.clone(), paths.clone()));
-                                        zedra_session::push_callback(Box::new(|| {}));
                                     }
                                 },
                             );
@@ -767,11 +802,36 @@ impl WorkspaceView {
             subscriptions.push(sub);
         }
 
+        // Start polling task to check pending slots and notify view
+        let poll_pending_terminal_id = pending_terminal_id.clone();
+        let poll_pending_existing = pending_existing_terminals.clone();
+        let poll_pending_file = pending_file.clone();
+        let poll_pending_git_diff = pending_git_diff.clone();
+        let poll_pending_terminal_ready = pending_terminal_ready.clone();
+        let poll_task = cx.spawn(async move |weak, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(32))
+                    .await;
+                let has_pending = poll_pending_terminal_id.has_pending()
+                    || poll_pending_existing.has_pending()
+                    || poll_pending_file.has_pending()
+                    || poll_pending_git_diff.has_pending()
+                    || poll_pending_terminal_ready.has_pending();
+                if has_pending {
+                    if weak.update(cx, |_, cx| cx.notify()).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
         Self {
             drawer_host,
             workspace_content,
             workspace_drawer,
             session_handle,
+            session_state,
             terminal_views: initial_terminals,
             active_terminal_id: None,
             pending_terminal_id,
@@ -786,6 +846,7 @@ impl WorkspaceView {
             pending_terminal_ready,
             workspace_state: crate::workspace_state::WorkspaceState::default(),
             _subscriptions: subscriptions,
+            _poll_task: poll_task,
         }
     }
 
@@ -821,8 +882,9 @@ impl WorkspaceView {
     pub fn on_activate(&mut self, cx: &mut Context<Self>) {
         self.workspace_content.update(cx, |_, cx| cx.notify());
         let handle = self.session_handle.clone();
+        let workdir = self.session_state.get().snapshot.workdir;
         self.workspace_drawer.update(cx, |drawer, cx| {
-            drawer.set_session_handle(handle, cx);
+            drawer.set_session_handle(handle, workdir, cx);
             drawer.on_activate(cx);
         });
         cx.notify();
@@ -851,12 +913,13 @@ impl WorkspaceView {
         let terminal = handle.terminal(tid);
         let handle_clone = handle.clone();
         let tid_clone = tid.to_string();
-        view.update(cx, |v, _cx| {
+        view.update(cx, |v, cx| {
             v.set_keyboard_request(keyboard::make_keyboard_handler());
             v.set_is_keyboard_visible_fn(keyboard::make_is_keyboard_visible());
             if let Some(ref t) = terminal {
                 v.set_output_buffer(t.output.clone(), t.needs_render.clone());
                 v.set_send_bytes(t.make_input_fn());
+                v.start_output_listener(t.subscribe_output(), cx);
             }
             let h = handle_clone.clone();
             let t = tid_clone.clone();
@@ -888,7 +951,7 @@ impl WorkspaceView {
             content.set_main_view(loading.into(), filename.clone(), cx);
         });
 
-        if !self.session_handle.is_connected() {
+        if !self.session_state.phase().is_connected() {
             tracing::warn!("git diff requested while disconnected, ignoring");
             return;
         }
@@ -956,7 +1019,6 @@ impl WorkspaceView {
             };
 
             pending_git_diff.set((filename, maybe_diff));
-            zedra_session::push_callback(Box::new(|| {}));
         });
     }
 
@@ -993,7 +1055,6 @@ impl WorkspaceView {
             move |button_index| {
                 if button_index == 0 {
                     pending.set(tid.clone());
-                    zedra_session::push_callback(Box::new(|| {}));
                 }
             },
         );
@@ -1042,7 +1103,17 @@ impl Render for WorkspaceView {
                     }
                 }
 
-                self.terminal_views.clear();
+                // Build a lookup of existing views so we can reuse them across reconnects.
+                // Reusing views preserves VTE state (scroll history, cursor, colours), so the
+                // terminal content is visible immediately after reconnect instead of blank.
+                // Without this, old views drain the shared output buffer while still in the
+                // element tree during reconnect, leaving new views with an empty buffer.
+                let existing_views: std::collections::HashMap<String, Entity<TerminalView>> =
+                    std::mem::take(&mut self.terminal_views)
+                        .into_iter()
+                        .filter(|(id, _)| id != PENDING_TERMINAL_ID)
+                        .collect();
+
                 // Prefetch file explorer + git content in parallel during resume.
                 self.workspace_drawer
                     .update(cx, |d, cx| d.prefetch_for_resume(cx));
@@ -1051,9 +1122,15 @@ impl Render for WorkspaceView {
                 let cols_u16 = columns as u16;
                 let rows_u16 = rows as u16;
                 for id in &ordered_ids {
-                    let terminal_view =
-                        cx.new(|cx| TerminalView::new(columns, rows, cell_width, line_height, cx));
-                    // Wire but keep disconnected until resize RPC confirms dimensions.
+                    // Reuse an existing view to preserve VTE state; create a fresh one for new
+                    // terminals that weren't present in the previous connection.
+                    let terminal_view = if let Some(view) = existing_views.get(id) {
+                        view.clone()
+                    } else {
+                        cx.new(|cx| TerminalView::new(columns, rows, cell_width, line_height, cx))
+                    };
+                    // Re-wire to the new connection's output buffer (same RemoteTerminal Arc on
+                    // reconnect) and keep disconnected until resize RPC confirms dimensions.
                     Self::wire_terminal_view(
                         &terminal_view,
                         &self.session_handle,
@@ -1074,7 +1151,6 @@ impl Render for WorkspaceView {
                             tracing::warn!("Initial resize on session resume failed: {}", e);
                         }
                         ready_slot.set(tid_resize);
-                        zedra_session::push_callback(Box::new(|| {}));
                     });
                     self.terminal_views.push((id.clone(), terminal_view));
                 }
@@ -1082,9 +1158,16 @@ impl Render for WorkspaceView {
                 // Sync client order to the drawer so it renders in the preserved order.
                 self.sync_terminal_order_to_drawer(cx);
 
-                if let Some((first_id, _)) = self.terminal_views.first() {
-                    let first_id = first_id.clone();
-                    self.switch_to_terminal(&first_id, cx);
+                // Switch to the terminal the user tapped (if they tapped a card before
+                // views were created), otherwise fall back to the first terminal.
+                let target_id = self
+                    .active_terminal_id
+                    .as_ref()
+                    .filter(|id| ordered_ids.contains(id))
+                    .cloned()
+                    .or_else(|| self.terminal_views.first().map(|(id, _)| id.clone()));
+                if let Some(tid) = target_id {
+                    self.switch_to_terminal(&tid, cx);
                 }
             }
         }
@@ -1143,7 +1226,6 @@ impl Render for WorkspaceView {
                             .await
                             .map_err(|error| error.to_string());
                         pending_result.set((GitIndexOperation::Stage, result));
-                        zedra_session::push_callback(Box::new(|| {}));
                     });
                 }
                 GitItemMenuAction::Unstage(path) => {
@@ -1155,7 +1237,6 @@ impl Render for WorkspaceView {
                             .await
                             .map_err(|error| error.to_string());
                         pending_result.set((GitIndexOperation::Unstage, result));
-                        zedra_session::push_callback(Box::new(|| {}));
                     });
                 }
             }
@@ -1201,7 +1282,6 @@ impl Render for WorkspaceView {
                     .await
                     .map_err(|error| error.to_string());
                 pending_result.set(result);
-                zedra_session::push_callback(Box::new(|| {}));
             });
         }
 
