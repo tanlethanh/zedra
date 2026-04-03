@@ -10,7 +10,9 @@ One QR scan connects you to your desktop. Full terminal, file browser, git, and 
 
 ## Quick Start
 
-**curl**
+Note: Consider using Tailscale to always have direct connection between your computers. P2P connections are unreliable on home networks and may require relay service, which isn't optimized for low latency demand.
+
+**Manual**
 ```bash
 # Install Zedra CLI
 curl -fsSL zedra.dev/install.sh | sh
