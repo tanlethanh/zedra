@@ -1,10 +1,11 @@
+use std::time::Duration;
 use std::sync::OnceLock;
 
 use gpui::*;
 use zedra_telemetry::*;
 
 use crate::fonts;
-use crate::pending::PendingSlot;
+use crate::pending::{PendingSlot, spawn_periodic_task};
 use crate::platform_bridge::{self, AlertButton};
 use crate::theme;
 use crate::workspaces::Workspaces;
@@ -28,13 +29,21 @@ static PENDING_DELETE: PendingSlot<String> = PendingSlot::new();
 pub struct HomeView {
     workspaces: Entity<Workspaces>,
     focus_handle: FocusHandle,
+    _pending_delete_task: Task<()>,
 }
 
 impl HomeView {
     pub fn new(workspaces: Entity<Workspaces>, cx: &mut Context<Self>) -> Self {
+        let pending_delete_task =
+            spawn_periodic_task(cx, Duration::from_millis(50), |this, cx| {
+                if let Some(endpoint_addr) = PENDING_DELETE.take() {
+                    this.process_pending_delete(endpoint_addr, cx);
+                }
+            });
         Self {
             workspaces,
             focus_handle: cx.focus_handle(),
+            _pending_delete_task: pending_delete_task,
         }
     }
 
@@ -87,21 +96,18 @@ impl HomeView {
         );
     }
 
-    fn process_pending_delete(&self, cx: &mut Context<Self>) {
-        if let Some(endpoint_addr) = PENDING_DELETE.take() {
-            self.workspaces.update(cx, |ws, cx| {
-                // Find and disconnect if active
-                let ws_index = ws
-                    .states()
-                    .iter()
-                    .find(|s| s.endpoint_addr() == endpoint_addr)
-                    .and_then(|s| s.workspace_index());
-                if let Some(idx) = ws_index {
-                    ws.disconnect(idx, cx);
-                }
-                ws.remove_saved(&endpoint_addr, cx);
-            });
-        }
+    fn process_pending_delete(&self, endpoint_addr: String, cx: &mut Context<Self>) {
+        self.workspaces.update(cx, |ws, cx| {
+            let ws_index = ws
+                .states()
+                .iter()
+                .find(|s| s.endpoint_addr() == endpoint_addr)
+                .and_then(|s| s.workspace_index());
+            if let Some(idx) = ws_index {
+                ws.disconnect(idx, cx);
+            }
+            ws.remove_saved(&endpoint_addr, cx);
+        });
     }
 }
 
@@ -113,8 +119,6 @@ impl Focusable for HomeView {
 
 impl Render for HomeView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.process_pending_delete(cx);
-
         let states = self.workspaces.read(cx).states().to_vec();
 
         let mut content = div()

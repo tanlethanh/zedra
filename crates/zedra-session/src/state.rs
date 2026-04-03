@@ -355,10 +355,18 @@ impl SessionState {
         let state = self.clone();
         crate::session_runtime().spawn(async move {
             while let Some(event) = rx.recv().await {
-                state.apply_event(event);
-                state.notify_change();
+                state.handle_event(event);
             }
         });
+    }
+
+    pub fn handle_event(&self, event: ConnectEvent) {
+        self.apply_event(event);
+        self.notify_change();
+    }
+
+    pub fn notify(&self) {
+        self.notify_change();
     }
 
     fn notify_change(&self) {

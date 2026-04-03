@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::pending::{SharedPendingSlot, shared_pending_slot};
+use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_notify_poll};
 use crate::theme;
 
 #[derive(Clone, Debug)]
@@ -106,24 +106,13 @@ impl FileExplorer {
             Arc::new(Mutex::new(Vec::new()));
         let pending_more: SharedPendingSlot<(Vec<usize>, Vec<FileEntry>)> = shared_pending_slot();
 
-        // Start polling task
         let poll_entries = pending_entries.clone();
         let poll_children = pending_children.clone();
         let poll_more = pending_more.clone();
-        let poll_task = cx.spawn(async move |weak, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(32))
-                    .await;
-                let has_pending = poll_entries.has_pending()
-                    || poll_more.has_pending()
-                    || poll_children.lock().map(|g| !g.is_empty()).unwrap_or(false);
-                if has_pending {
-                    if weak.update(cx, |_, cx| cx.notify()).is_err() {
-                        break;
-                    }
-                }
-            }
+        let poll_task = spawn_notify_poll(cx, Duration::from_millis(32), move || {
+            poll_entries.has_pending()
+                || poll_more.has_pending()
+                || poll_children.lock().map(|g| !g.is_empty()).unwrap_or(false)
         });
 
         let mut explorer = Self {

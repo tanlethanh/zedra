@@ -13,7 +13,7 @@ use crate::editor::git_sidebar::GitFileSection;
 use crate::fonts;
 use crate::keyboard;
 use crate::mgpui::DrawerHost;
-use crate::pending::{SharedPendingSlot, shared_pending_slot};
+use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_notify_poll};
 use crate::platform_bridge::{self, AlertButton, status_bar_inset};
 use crate::theme;
 use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
@@ -802,28 +802,17 @@ impl WorkspaceView {
             subscriptions.push(sub);
         }
 
-        // Start polling task to check pending slots and notify view
         let poll_pending_terminal_id = pending_terminal_id.clone();
         let poll_pending_existing = pending_existing_terminals.clone();
         let poll_pending_file = pending_file.clone();
         let poll_pending_git_diff = pending_git_diff.clone();
         let poll_pending_terminal_ready = pending_terminal_ready.clone();
-        let poll_task = cx.spawn(async move |weak, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(32))
-                    .await;
-                let has_pending = poll_pending_terminal_id.has_pending()
-                    || poll_pending_existing.has_pending()
-                    || poll_pending_file.has_pending()
-                    || poll_pending_git_diff.has_pending()
-                    || poll_pending_terminal_ready.has_pending();
-                if has_pending {
-                    if weak.update(cx, |_, cx| cx.notify()).is_err() {
-                        break;
-                    }
-                }
-            }
+        let poll_task = spawn_notify_poll(cx, Duration::from_millis(32), move || {
+            poll_pending_terminal_id.has_pending()
+                || poll_pending_existing.has_pending()
+                || poll_pending_file.has_pending()
+                || poll_pending_git_diff.has_pending()
+                || poll_pending_terminal_ready.has_pending()
         });
 
         Self {

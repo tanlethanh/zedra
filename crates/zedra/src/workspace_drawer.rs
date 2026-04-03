@@ -5,7 +5,7 @@ use crate::editor::git_sidebar::{
     GitFileStatus, GitRepoState, GitSidebar,
 };
 use crate::file_explorer::{FileExplorer, FileSelected};
-use crate::pending::{SharedPendingSlot, shared_pending_slot};
+use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_notify_poll};
 use crate::platform_bridge;
 use crate::theme;
 use crate::{session_panel, terminal_panel};
@@ -117,20 +117,12 @@ impl WorkspaceDrawer {
 
         let pending_git_status: SharedPendingSlot<GitRepoState> = shared_pending_slot();
 
-        // Start polling task
         let poll_git = pending_git_status.clone();
-        let poll_task = cx.spawn(async move |weak, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(50))
-                    .await;
-                if poll_git.has_pending() {
-                    if weak.update(cx, |_, cx| cx.notify()).is_err() {
-                        break;
-                    }
-                }
-            }
-        });
+        let poll_task = spawn_notify_poll(
+            cx,
+            std::time::Duration::from_millis(50),
+            move || poll_git.has_pending(),
+        );
 
         Self {
             file_explorer,

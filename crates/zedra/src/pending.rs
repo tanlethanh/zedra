@@ -4,6 +4,9 @@
 /// and the main thread. Used with GPUI polling tasks that check `has_pending()`
 /// and call `cx.notify()` when values are available.
 use std::sync::Mutex;
+use std::time::Duration;
+
+use gpui::{Context, Task};
 
 pub struct PendingSlot<T>(Mutex<Option<T>>);
 
@@ -33,6 +36,41 @@ pub type SharedPendingSlot<T> = std::sync::Arc<PendingSlot<T>>;
 
 pub fn shared_pending_slot<T>() -> SharedPendingSlot<T> {
     std::sync::Arc::new(PendingSlot::new())
+}
+
+pub fn spawn_periodic_task<T, F>(
+    cx: &mut Context<T>,
+    interval: Duration,
+    mut on_tick: F,
+) -> Task<()>
+where
+    T: 'static,
+    F: FnMut(&mut T, &mut Context<T>) + Send + 'static,
+{
+    cx.spawn(async move |weak, cx| {
+        loop {
+            cx.background_executor().timer(interval).await;
+            if weak.update(cx, |this, cx| on_tick(this, cx)).is_err() {
+                break;
+            }
+        }
+    })
+}
+
+pub fn spawn_notify_poll<T, F>(
+    cx: &mut Context<T>,
+    interval: Duration,
+    mut has_pending: F,
+) -> Task<()>
+where
+    T: 'static,
+    F: FnMut() -> bool + Send + 'static,
+{
+    spawn_periodic_task(cx, interval, move |_this, cx| {
+        if has_pending() {
+            cx.notify();
+        }
+    })
 }
 
 #[cfg(test)]
