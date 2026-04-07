@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use iroh::EndpointAddr;
 use tokio::sync::{Notify, mpsc};
 use tokio_util::sync::CancellationToken;
+use tracing::info;
 use zedra_rpc::ZedraPairingTicket;
 use zedra_rpc::proto::{HostEvent, SubscribeReq, SyncSessionResult, ZedraProto};
 
@@ -104,6 +105,7 @@ impl Session {
 
                 let result = match reconnect_reason.take() {
                     Some(reason) => {
+                        info!("reconnect to {addr:?}, session: {session_id:?} reason {reason:?}",);
                         connector
                             .reconnect_loop(
                                 addr.clone(),
@@ -117,6 +119,7 @@ impl Session {
                             .await
                     }
                     None => {
+                        info!("start connect to {addr:?}, session: {session_id:?}");
                         connector
                             .connect(
                                 addr.clone(),
@@ -212,12 +215,7 @@ impl Session {
             .await
             .map_err(|e| ConnectError::Other(e.to_string()))?;
 
-        Self::spawn_host_event_subscription(
-            handle.clone(),
-            state.clone(),
-            client,
-            abort_signal,
-        );
+        Self::spawn_host_event_subscription(handle.clone(), state.clone(), client, abort_signal);
 
         on_connected(handle);
         state.notify();
@@ -231,22 +229,22 @@ impl Session {
         abort_signal: CancellationToken,
     ) {
         session_runtime().spawn(async move {
-            let stream_fut = client.server_streaming::<SubscribeReq, HostEvent>(SubscribeReq {}, 32);
-            let mut rx = match tokio::time::timeout(std::time::Duration::from_secs(10), stream_fut)
-                .await
-            {
-                Ok(Ok(rx)) => rx,
-                Ok(Err(e)) => {
-                    tracing::warn!("Subscribe failed: {e}");
-                    return;
-                }
-                Err(_) => {
-                    tracing::warn!("Subscribe timed out");
-                    return;
-                }
-            };
+            let stream_fut =
+                client.server_streaming::<SubscribeReq, HostEvent>(SubscribeReq {}, 32);
+            let mut rx =
+                match tokio::time::timeout(std::time::Duration::from_secs(10), stream_fut).await {
+                    Ok(Ok(rx)) => rx,
+                    Ok(Err(e)) => {
+                        tracing::warn!("host event subscription failed: {e}");
+                        return;
+                    }
+                    Err(_) => {
+                        tracing::warn!("host event subscription timed out");
+                        return;
+                    }
+                };
 
-            tracing::info!("Subscribed to host events");
+            tracing::info!("subscribed to host events");
             loop {
                 tokio::select! {
                     _ = abort_signal.cancelled() => break,
@@ -256,11 +254,11 @@ impl Session {
                                 Self::handle_host_event(&handle, &state, &client, event).await;
                             }
                             Ok(None) => {
-                                tracing::debug!("Subscribe stream ended");
+                                tracing::debug!("subsribe stream ended");
                                 break;
                             }
                             Err(e) => {
-                                tracing::debug!("Subscribe recv error: {e}");
+                                tracing::debug!("subscribe recv error: {e}");
                                 break;
                             }
                         }
@@ -287,7 +285,10 @@ impl Session {
                     .terminal(&id)
                     .unwrap_or_else(|| create_host_terminal(handle, id));
                 if let Err(e) = handle.attach_terminal(client, &terminal).await {
-                    tracing::warn!("Failed to attach host-created terminal {}: {e}", terminal.id);
+                    tracing::warn!(
+                        "Failed to attach host-created terminal {}: {e}",
+                        terminal.id
+                    );
                 }
                 state.notify();
             }

@@ -2,6 +2,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
+use tracing::info;
 
 use crate::ConnectEvent;
 
@@ -14,7 +15,10 @@ pub enum ReconnectReason {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub enum ConnectPhase {
     #[default]
-    Idle,
+    Init,
+    Idle {
+        idle_since: std::time::Instant,
+    },
     BindingEndpoint,
     HolePunching,
     Registering,
@@ -22,6 +26,7 @@ pub enum ConnectPhase {
     Proving,
     Sync,
     Connected,
+    Disconnected,
     Reconnecting {
         attempt: u32,
         reason: ReconnectReason,
@@ -44,7 +49,8 @@ impl ConnectPhase {
 
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Idle => "idle",
+            Self::Init => "init",
+            Self::Idle { .. } => "idle",
             Self::BindingEndpoint => "binding_endpoint",
             Self::HolePunching => "hole_punching",
             Self::Registering => "registering",
@@ -52,6 +58,7 @@ impl ConnectPhase {
             Self::Proving => "proving",
             Self::Sync => "sync",
             Self::Connected => "connected",
+            Self::Disconnected => "disconnected",
             Self::Reconnecting { .. } => "reconnecting",
             Self::Failed(_) => "failed",
         }
@@ -59,7 +66,8 @@ impl ConnectPhase {
 
     pub fn display_name(&self) -> &'static str {
         match self {
-            Self::Idle => "Idle",
+            Self::Init => "Init",
+            Self::Idle { .. } => "Idle",
             Self::BindingEndpoint => "Creating endpoint",
             Self::HolePunching => "Hole punching",
             Self::Registering => "Registering",
@@ -67,13 +75,18 @@ impl ConnectPhase {
             Self::Proving => "Proving identity",
             Self::Sync => "Syncing",
             Self::Connected => "Connected",
+            Self::Disconnected => "Disconnected",
             Self::Reconnecting { .. } => "Reconnecting",
             Self::Failed(_) => "Failed",
         }
     }
 
+    pub fn is_init(&self) -> bool {
+        matches!(self, Self::Init)
+    }
+
     pub fn is_idle(&self) -> bool {
-        matches!(self, Self::Idle)
+        matches!(self, Self::Idle { .. })
     }
 
     pub fn is_connecting(&self) -> bool {
@@ -293,6 +306,7 @@ pub struct SessionStateInner {
     pub snapshot: ConnectSnapshot,
     pub started_at: Option<std::time::Instant>,
     pub reconnect_attempt: Option<u32>,
+    pub phase_before_idle: Option<ConnectPhase>,
 }
 
 impl SessionStateInner {
@@ -551,7 +565,30 @@ impl SessionState {
                 snap.failed_at_step = inner.phase.step_index();
                 inner.phase = ConnectPhase::Failed(error);
             }
-            ConnectEvent::ConnectionClosed => {}
+            ConnectEvent::ConnectionClosed => {
+                inner.phase = ConnectPhase::Disconnected;
+            }
+            ConnectEvent::ConnectionIdle => {
+                let is_idle = matches!(inner.phase, ConnectPhase::Idle { .. });
+                let is_connected = matches!(inner.phase, ConnectPhase::Connected);
+                if !is_idle && is_connected {
+                    inner.phase_before_idle = Some(inner.phase.clone());
+                    inner.phase = ConnectPhase::Idle {
+                        idle_since: std::time::Instant::now(),
+                    };
+                }
+            }
+            ConnectEvent::ConnectionActive => {
+                let is_idle = matches!(inner.phase, ConnectPhase::Idle { .. });
+                if is_idle {
+                    let prev_phase = inner
+                        .phase_before_idle
+                        .clone()
+                        .unwrap_or(ConnectPhase::Connected);
+                    inner.phase = prev_phase;
+                    inner.phase_before_idle = None;
+                }
+            }
         }
     }
 }

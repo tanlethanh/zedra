@@ -10,6 +10,7 @@ use iroh::{
 use iroh_relay::RelayQuicConfig;
 use tokio::{sync::mpsc, task::JoinHandle, time::Instant};
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 use zedra_rpc::{
     ZEDRA_RELAY_URLS, ZedraPairingTicket, compute_registration_hmac,
     proto::{
@@ -25,6 +26,8 @@ pub struct ConnectConfig {
     alpn: Vec<u8>,
     alpns: Vec<Vec<u8>>,
     relay_urls: Vec<String>,
+    /// Interval at which to check for idle connections.
+    idle_check_interval: Duration,
     keep_alive_interval: Duration,
     max_idle_timeout: Duration,
     path_keep_alive_interval: Duration,
@@ -41,10 +44,12 @@ impl Default for ConnectConfig {
             alpn: ZEDRA_ALPN.to_vec(),
             alpns: vec![ZEDRA_ALPN.to_vec()],
             relay_urls: ZEDRA_RELAY_URLS.iter().map(|u| u.to_string()).collect(),
-            keep_alive_interval: Duration::from_secs(2),
-            max_idle_timeout: Duration::from_secs(30),
-            path_keep_alive_interval: Duration::from_secs(2),
-            path_max_idle_timeout: Duration::from_secs(30),
+            // Must be larger than the keep-alive interval
+            idle_check_interval: Duration::from_secs(2),
+            keep_alive_interval: Duration::from_secs(1),
+            max_idle_timeout: Duration::from_secs(20),
+            path_keep_alive_interval: Duration::from_secs(1),
+            path_max_idle_timeout: Duration::from_secs(20),
         }
     }
 }
@@ -176,10 +181,13 @@ pub enum ConnectEvent {
         bytes_recv_total: u64,
     },
     PathUpgraded {
-        prev_path: PathInfo,
+        prev_path: Option<PathInfo>,
         new_path: PathInfo,
     },
     NoActivePath,
+
+    ConnectionIdle,
+    ConnectionActive,
 
     ReconnectStarted {
         reason: ReconnectReason,
@@ -288,10 +296,9 @@ impl Connector {
 
         let local_node_id = endpoint.id().fmt_short().to_string();
         let binding_ms = t.elapsed().as_millis() as u64;
-        tracing::info!(
+        info!(
             "iroh client endpoint bound: {} in {}ms",
-            local_node_id,
-            binding_ms
+            local_node_id, binding_ms
         );
 
         self.emit(ConnectEvent::EndpointBound {
@@ -321,11 +328,9 @@ impl Connector {
         let hole_punch_ms = t.elapsed().as_millis() as u64;
         let remote_node_id = conn.remote_id().fmt_short().to_string();
         let alpn = String::from_utf8_lossy(conn.alpn()).to_string();
-        tracing::info!(
+        info!(
             "iroh: connected to {}, alpn: {} in {}ms",
-            remote_node_id,
-            alpn,
-            hole_punch_ms
+            remote_node_id, alpn, hole_punch_ms
         );
 
         self.emit(ConnectEvent::HolePunchComplete {
@@ -453,7 +458,7 @@ impl Connector {
             .map_err(|e| ConnectError::RequestError(e.to_string()))?
         {
             ConnectResult::Ok(sync) => {
-                tracing::info!(
+                info!(
                     "connect: session token accepted, session={}",
                     sync.session_id
                 );
@@ -499,7 +504,7 @@ impl Connector {
             .map_err(|e| ConnectError::RequestError(e.to_string()))?
         {
             AuthProveResult::Ok(sync) => {
-                tracing::info!("authenticated, session={}", session_id);
+                info!("authenticated, session={}", session_id);
                 Ok(sync)
             }
             AuthProveResult::Unauthorized | AuthProveResult::NotInSessionAcl => {
@@ -525,21 +530,40 @@ impl Connector {
 
             loop {
                 tokio::select! {
-                    _ = abort_signal.cancelled() => break,
+                    _ = abort_signal.cancelled() => {
+                        info!("abort signal cancelled in local endpoint watcher");
+                        break;
+                    },
                     res = addr_watcher.updated() => {
-                        if res.is_err() { break; }
+                        if let Err(e) = res {
+                            warn!("addr_watcher error: {:?}", e);
+                            break;
+                        }
+                        info!("endpoint addr changed: {:?}", addr_watcher.get());
+
                         let endpoint_addr = addr_watcher.get();
                         let _ = tx.send(ConnectEvent::EndpointAddrChanged { endpoint_addr }).await;
                     }
                     res = report_watcher.updated() => {
-                        if res.is_err() { break; }
+                        if let Err(e) = res {
+                            warn!("report_watcher error: {:?}", e);
+                            break;
+                        }
+
                         if let Some(net_report) = report_watcher.get() {
+                            let preferred_relay = match net_report.preferred_relay.clone() {
+                                Some(relay) => relay.to_string(),
+                                None => "".to_string(),
+                            };
+                            info!("net report changed: {})", preferred_relay);
                             let _ = tx.send(ConnectEvent::NetReport { net_report }).await;
+                        } else {
+                            info!("net report changed without a value");
                         }
                     }
                 }
             }
-            tracing::debug!("local endpoint watcher stopped");
+            debug!("local endpoint watcher stopped");
         })
     }
 
@@ -548,49 +572,114 @@ impl Connector {
         use iroh::Watcher;
         let tx = self.tx.clone();
         let abort_signal = self.abort_signal.clone();
+        let idle_check_interval = self.config.idle_check_interval;
 
         tokio::spawn(async move {
             let mut paths = conn.paths();
+            let mut prev_path: Option<PathInfo> = None;
             let mut prev_is_direct = false;
+            // Selected-path baseline sampled at the previous idle tick.
+            let mut idle_path: Option<PathInfo> = None;
+            let mut last_path_recv_bytes = 0u64;
+            let mut last_path_sent_bytes = 0u64;
 
             loop {
                 let path_list = paths.get();
                 if let Some(path) = path_list.iter().find(|p| p.is_selected()) {
                     let is_direct = path.is_ip();
-                    let stats = path.stats();
+                    let path_stats = path.stats();
+                    let conn_stats = conn.stats();
+
+                    if let Some(prev) = prev_path.clone()
+                        && prev != *path
+                    {
+                        info!(
+                            "path selected: {:?} is_direct: {} rtt {:?}",
+                            path.remote_addr(),
+                            is_direct,
+                            path_stats.rtt
+                        );
+                    }
 
                     // Detect relay → direct upgrade
                     if !prev_is_direct && is_direct {
-                        if let Some(prev) = path_list.iter().find(|p| !p.is_ip()) {
-                            let _ = tx
-                                .send(ConnectEvent::PathUpgraded {
-                                    prev_path: prev.clone(),
-                                    new_path: path.clone(),
-                                })
-                                .await;
-                        }
+                        info!(
+                            "direct path upgrade detected: {:?} -> {:?}",
+                            prev_path.as_ref().map(|p| p.remote_addr()),
+                            path.remote_addr()
+                        );
+                        let _ = tx
+                            .send(ConnectEvent::PathUpgraded {
+                                prev_path: prev_path,
+                                new_path: path.clone(),
+                            })
+                            .await;
                     }
                     prev_is_direct = is_direct;
+                    prev_path = Some(path.clone());
 
                     let _ = tx
                         .send(ConnectEvent::PathReport {
                             path: path.clone(),
-                            // TODO: need to aggregate across all paths
-                            bytes_sent_total: stats.udp_tx.bytes,
-                            bytes_recv_total: stats.udp_rx.bytes,
+                            // Use connection stats instead of path stats to accumulate all paths
+                            bytes_sent_total: conn_stats.udp_tx.bytes,
+                            bytes_recv_total: conn_stats.udp_rx.bytes,
                         })
                         .await;
                 } else {
+                    info!("no active path");
                     let _ = tx.send(ConnectEvent::NoActivePath).await;
                 }
 
                 tokio::select! {
-                    _ = abort_signal.cancelled() => break,
-                    _ = paths.updated() => {}
-                    _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                    _ = abort_signal.cancelled() => {
+                        info!("abort signal cancelled in remote paths watcher");
+                        break;
+                    },
+                    res = paths.updated() => {
+                        match res {
+                            Err(err) => {
+                                error!("paths updated error: {:?}", err);
+                                break;
+                            }
+                            Ok(paths) => {
+                                info!("paths updated: {}", paths.len());
+                            }
+                        };
+                    }
+                    _ = tokio::time::sleep(idle_check_interval) => {
+                        if let Some(path) = paths.get().iter().find(|p| p.is_selected()) {
+                            let stats = path.stats();
+                            let cur_rx = stats.udp_rx.bytes;
+                            let cur_tx = stats.udp_tx.bytes;
+                            let is_path_changed = idle_path.as_ref() != Some(path);
+
+                            if is_path_changed {
+                                // Re-baseline on path switch to avoid false idle from unrelated paths.
+                                idle_path = Some(path.clone());
+                                last_path_recv_bytes = cur_rx;
+                                last_path_sent_bytes = cur_tx;
+                                debug!("idle check: active - path changed");
+                                let _ = tx.send(ConnectEvent::ConnectionActive).await;
+                            } else if cur_rx == last_path_recv_bytes && cur_tx == last_path_sent_bytes {
+                                debug!("idle check: idle - selected path bytes unchanged");
+                                let _ = tx.send(ConnectEvent::ConnectionIdle).await;
+                            } else {
+                                debug!("idle check: active - selected path bytes changed ");
+                                let _ = tx.send(ConnectEvent::ConnectionActive).await;
+                                last_path_recv_bytes = cur_rx;
+                                last_path_sent_bytes = cur_tx;
+                            }
+                        } else {
+                            // No selected path is a transport-stale condition.
+                            idle_path = None;
+                            debug!("idle check: idle - no selected path");
+                            let _ = tx.send(ConnectEvent::ConnectionIdle).await;
+                        }
+                    }
                 }
             }
-            tracing::debug!("remote paths watcher stopped");
+            debug!("remote paths watcher stopped");
         })
     }
 
@@ -601,9 +690,12 @@ impl Connector {
 
         tokio::spawn(async move {
             tokio::select! {
-                _ = abort_signal.cancelled() => {}
-                _ = conn.closed() => {
-                    tracing::info!("iroh connection closed");
+                _ = abort_signal.cancelled() => {
+                    info!("abort signal cancelled in connection closed watcher");
+                    return;
+                }
+                err = conn.closed() => {
+                    warn!("iroh connection closed: {:?}", err);
                     let _ = tx.send(ConnectEvent::ConnectionClosed).await;
                 }
             }
@@ -630,6 +722,7 @@ impl Connector {
 
         for attempt in 1..=max_attempts {
             let delay_secs = std::cmp::min(1u64 << (attempt - 1), 30);
+            warn!("Proceed reconnect ({}), delay {}s", attempt, delay_secs);
 
             self.emit(ConnectEvent::ReconnectAttempt {
                 attempt,
@@ -668,10 +761,15 @@ impl Connector {
                     return Err(e);
                 }
                 Err(e) => {
-                    tracing::warn!("reconnect attempt {} failed: {}", attempt, e);
+                    warn!("reconnect attempt {} failed: {}", attempt, e);
                 }
             }
         }
+
+        warn!(
+            "reconnect exhausted, giving up attempts {}, reason {:?}",
+            max_attempts, reason
+        );
 
         let err = ConnectError::HostUnreachable;
         self.emit(ConnectEvent::ReconnectExhausted {

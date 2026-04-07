@@ -8,6 +8,7 @@ use crate::file_explorer::{FileExplorer, FileSelected};
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_notify_poll};
 use crate::platform_bridge;
 use crate::theme;
+use crate::transport_badge::phase_indicator_color;
 use crate::{session_panel, terminal_panel};
 use zedra_session::{ConnectPhase, SessionState};
 
@@ -118,11 +119,9 @@ impl WorkspaceDrawer {
         let pending_git_status: SharedPendingSlot<GitRepoState> = shared_pending_slot();
 
         let poll_git = pending_git_status.clone();
-        let poll_task = spawn_notify_poll(
-            cx,
-            std::time::Duration::from_millis(50),
-            move || poll_git.has_pending(),
-        );
+        let poll_task = spawn_notify_poll(cx, std::time::Duration::from_millis(50), move || {
+            poll_git.has_pending()
+        });
 
         Self {
             file_explorer,
@@ -467,10 +466,9 @@ impl Render for WorkspaceDrawer {
         let project_name = self.project_name();
         let tab_subtitle = self.tab_subtitle(cx);
         let phase = self.session_state.as_ref().map(|s| s.phase());
-        let status_color = match phase.as_ref() {
-            Some(ConnectPhase::Connected) => theme::ACCENT_GREEN,
-            Some(p) if p.is_connecting() || p.is_reconnecting() => theme::ACCENT_YELLOW,
-            _ => theme::ACCENT_RED,
+        let status_color = match phase {
+            Some(phase) => phase_indicator_color(&phase),
+            _ => theme::TEXT_MUTED,
         };
         let viewport_h = window.viewport_size().height;
 

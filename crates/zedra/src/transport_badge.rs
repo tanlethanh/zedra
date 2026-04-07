@@ -14,6 +14,7 @@ pub(crate) fn transport_badge_info_phase(
     transport: Option<&TransportSnapshot>,
 ) -> (String, u32) {
     match phase {
+        ConnectPhase::Init => ("Initializing".into(), theme::ACCENT_YELLOW),
         ConnectPhase::Connected => {
             let (conn_type, relay): (String, Option<&str>) = match transport {
                 Some(t) if t.is_direct => {
@@ -41,6 +42,7 @@ pub(crate) fn transport_badge_info_phase(
             };
             (label, color)
         }
+        ConnectPhase::Disconnected => ("Disconnected".into(), theme::ACCENT_RED),
         ConnectPhase::Reconnecting {
             attempt,
             next_retry_secs,
@@ -60,30 +62,31 @@ pub(crate) fn transport_badge_info_phase(
         ConnectPhase::Authenticating => ("Authenticating".into(), theme::ACCENT_YELLOW),
         ConnectPhase::Proving => ("Proving".into(), theme::ACCENT_YELLOW),
         ConnectPhase::Sync => ("Syncing".into(), theme::ACCENT_YELLOW),
-        ConnectPhase::Idle => ("Disconnected".into(), theme::ACCENT_RED),
+        ConnectPhase::Idle { idle_since } => (
+            format!("Idle {}s", idle_since.elapsed().as_secs()),
+            theme::ACCENT_YELLOW,
+        ),
+    }
+}
+
+pub(crate) fn phase_indicator_color(phase: &ConnectPhase) -> u32 {
+    if phase.is_connected() {
+        theme::ACCENT_GREEN
+    } else if phase.is_idle() || phase.is_connecting() || phase.is_reconnecting() {
+        theme::ACCENT_YELLOW
+    } else if phase.is_failed() {
+        theme::ACCENT_RED
+    } else {
+        theme::TEXT_MUTED
     }
 }
 
 /// Render an inline transport badge element (dot + label).
-pub(crate) fn render_transport_badge(label: String, color: u32, show_dot: bool) -> Div {
-    let mut element = div().flex().flex_row().items_center().gap(px(3.0)).child(
-        div()
-            .text_size(px(theme::FONT_DETAIL))
-            .text_color(rgb(color))
-            .child(label),
-    );
-
-    if show_dot {
-        element = element.child(
-            div()
-                .w(px(theme::ICON_STATUS))
-                .h(px(theme::ICON_STATUS))
-                .rounded(px(3.0))
-                .bg(rgb(color)),
-        );
-    }
-
-    element
+pub(crate) fn render_transport_badge(label: String, color: u32) -> Div {
+    div()
+        .text_size(px(theme::FONT_DETAIL))
+        .text_color(rgb(color))
+        .child(label)
 }
 
 /// Human-friendly byte count formatting.

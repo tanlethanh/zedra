@@ -3,13 +3,8 @@
 /// Layout:
 ///   1. Horizontal 5-step progress stepper
 ///   2. Vertical current-phase detail (transport, auth, host, timing, error/reconnect banners)
-use std::time::Duration;
-
-use gpui::{Animation, AnimationExt as _, Transformation, prelude::FluentBuilder as _, *};
-
-use zedra_session::{
-    ConnectPhase, ConnectSnapshot, STEPPER_STEP_NAMES, SessionState, TransportSnapshot,
-};
+use gpui::{prelude::FluentBuilder as _, *};
+use zedra_session::{ConnectPhase, ConnectSnapshot, SessionState, TransportSnapshot};
 
 use crate::platform_bridge::{self, AlertButton};
 use crate::theme;
@@ -45,7 +40,6 @@ impl Render for ConnectingView {
             .justify_start()
             .pt(px(32.0))
             .child(render_phase_title(&inner.phase, &inner.snapshot))
-            .child(render_stepper(&inner.phase, &inner.snapshot))
             .child(render_details_toggle(expanded, cx))
             .when(expanded, |d| {
                 d.child(render_detail(&inner.phase, &inner.snapshot))
@@ -97,6 +91,13 @@ fn render_details_toggle(expanded: bool, cx: &mut Context<ConnectingView>) -> St
 fn render_phase_title(phase: &ConnectPhase, snap: &ConnectSnapshot) -> Div {
     let (label, color) = transport_badge_info_phase(phase, snap.transport.as_ref());
 
+    let title = match phase {
+        ConnectPhase::BindingEndpoint | ConnectPhase::HolePunching => "Connect",
+        ConnectPhase::Authenticating | ConnectPhase::Proving => "Authorize",
+        ConnectPhase::Sync => "Sync",
+        p => p.display_name(),
+    };
+
     div()
         .mb(px(theme::SPACING_LG))
         .flex()
@@ -113,134 +114,10 @@ fn render_phase_title(phase: &ConnectPhase, snap: &ConnectSnapshot) -> Div {
                     .text_color(rgb(theme::TEXT_PRIMARY))
                     .text_size(px(theme::FONT_HEADING))
                     .font_weight(FontWeight::MEDIUM)
-                    .child(phase.display_name()),
+                    .child(title),
             ),
         )
-        .child(render_transport_badge(label, color, false))
-}
-
-// ─── Horizontal stepper ──────────────────────────────────────────────────────
-
-pub(crate) fn render_stepper(phase: &ConnectPhase, snap: &ConnectSnapshot) -> Div {
-    let active_step = phase.step_index().unwrap_or_else(|| {
-        if phase.is_idle() {
-            0
-        } else {
-            snap.failed_at_step
-                .unwrap_or_else(|| completed_step_count(phase, snap).saturating_sub(1).min(2))
-        }
-    });
-
-    let completed = completed_step_count(phase, snap);
-
-    let mut row = div()
-        .w(px(180.0))
-        .flex()
-        .flex_row()
-        .items_center()
-        .mb(px(theme::SPACING_LG));
-
-    for (i, name) in STEPPER_STEP_NAMES.iter().enumerate() {
-        let is_done = i < completed && !phase.is_failed();
-        let is_active = i == active_step;
-        let is_failed = phase.is_failed() && i == active_step;
-
-        // Dot
-        let dot_color = if is_failed {
-            rgb(theme::ACCENT_RED)
-        } else if is_done {
-            rgb(theme::ACCENT_GREEN)
-        } else if is_active {
-            rgb(theme::ACCENT_YELLOW)
-        } else {
-            rgb(theme::TEXT_MUTED)
-        };
-
-        let dot_border_color = dot_color;
-        let dot_size = 10.0_f32;
-
-        let dot = div()
-            .w(px(dot_size))
-            .h(px(dot_size))
-            .rounded(px(dot_size / 2.0))
-            .border_1()
-            .border_color(dot_border_color)
-            .when(is_done || is_active || is_failed, |d: Div| d.bg(dot_color));
-
-        // Soft scale pulse on the active (in-progress) dot.
-        let dot_element: AnyElement = if is_active && !is_failed {
-            svg()
-                .path("icons/dot.svg")
-                .size(px(dot_size))
-                .text_color(dot_color)
-                .with_animation(
-                    SharedString::from(format!("stepper-pulse-{i}")),
-                    Animation::new(Duration::from_millis(1200)).repeat(),
-                    move |s, delta| {
-                        let t = (delta * std::f32::consts::PI).sin();
-                        let scale = 1.0 + 0.35 * t;
-                        s.with_transformation(Transformation::scale(size(scale, scale)))
-                    },
-                )
-                .into_any_element()
-        } else {
-            dot.into_any_element()
-        };
-
-        let step_col = div()
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(4.0))
-            .child(dot_element)
-            .child(
-                div()
-                    .text_size(px(9.0))
-                    .text_color(if is_done {
-                        rgb(theme::ACCENT_GREEN)
-                    } else if is_active && !is_failed {
-                        rgb(theme::ACCENT_YELLOW)
-                    } else if is_failed {
-                        rgb(theme::ACCENT_RED)
-                    } else {
-                        rgb(theme::TEXT_MUTED)
-                    })
-                    .child(*name),
-            );
-
-        row = row.child(step_col);
-
-        // Connector line between steps
-        if i < STEPPER_STEP_NAMES.len() - 1 {
-            let line_color = if i + 1 <= completed && !phase.is_failed() {
-                rgb(theme::ACCENT_GREEN)
-            } else {
-                rgb(theme::BORDER_SUBTLE)
-            };
-            row = row.child(div().flex_1().h(px(1.0)).mb(px(14.0)).bg(line_color));
-        }
-    }
-
-    row
-}
-
-/// Number of steps that have been fully completed.
-/// Step mapping: 0=Connect, 1=Auth, 2=Sync
-pub(crate) fn completed_step_count(phase: &ConnectPhase, snap: &ConnectSnapshot) -> usize {
-    if phase.is_connected() {
-        return 3;
-    }
-    let mut n = 0;
-    if snap.rpc_ms.is_some() {
-        n = 1;
-    }
-    if snap.auth_ms.is_some() {
-        n = 2;
-    }
-    if snap.resume_ms.is_some() {
-        n = 3;
-    }
-    n
+        .child(render_transport_badge(label, color))
 }
 
 // ─── Phase status helpers ────────────────────────────────────────────────────

@@ -16,6 +16,7 @@ use crate::mgpui::DrawerHost;
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_notify_poll};
 use crate::platform_bridge::{self, AlertButton, status_bar_inset};
 use crate::theme;
+use crate::transport_badge::phase_indicator_color;
 use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
 use zedra_session::{SessionHandle, SessionState};
 use zedra_terminal::view::{DisconnectRequested, TerminalView};
@@ -285,18 +286,8 @@ impl Render for WorkspaceContent {
                 Some(name.into())
             }
         };
-        // Small dot in the header corner: green=connected, yellow=connecting/reconnecting,
-        // red=failed, hidden when idle.  No text or pill — detailed status lives in the
-        // session drawer tab.
-        let header_dot_color: Option<u32> = if phase.is_connected() {
-            Some(theme::ACCENT_GREEN)
-        } else if phase.is_connecting() || phase.is_reconnecting() {
-            Some(theme::ACCENT_YELLOW)
-        } else if phase.is_failed() {
-            Some(theme::ACCENT_RED)
-        } else {
-            None
-        };
+        // Small dot in the header corner: green=connected, yellow=connecting/reconnecting, red=failed
+        let net_dot_color = phase_indicator_color(phase);
 
         div()
             .size_full()
@@ -360,14 +351,14 @@ impl Render for WorkspaceContent {
                                             .items_center()
                                             .gap(px(5.0))
                                             .max_w_full()
-                                            .children(header_dot_color.map(|color| {
+                                            .child(
                                                 div()
                                                     .w(px(6.0))
                                                     .h(px(6.0))
                                                     .rounded(px(3.0))
                                                     .flex_shrink_0()
-                                                    .bg(rgb(color))
-                                            }))
+                                                    .bg(rgb(net_dot_color)),
+                                            )
                                             .child(
                                                 div()
                                                     .min_w_0()
