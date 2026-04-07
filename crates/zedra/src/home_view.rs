@@ -1,5 +1,5 @@
-use std::time::Duration;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use gpui::*;
 use zedra_telemetry::*;
@@ -34,12 +34,11 @@ pub struct HomeView {
 
 impl HomeView {
     pub fn new(workspaces: Entity<Workspaces>, cx: &mut Context<Self>) -> Self {
-        let pending_delete_task =
-            spawn_periodic_task(cx, Duration::from_millis(50), |this, cx| {
-                if let Some(endpoint_addr) = PENDING_DELETE.take() {
-                    this.process_pending_delete(endpoint_addr, cx);
-                }
-            });
+        let pending_delete_task = spawn_periodic_task(cx, Duration::from_millis(50), |this, cx| {
+            if let Some(endpoint_addr) = PENDING_DELETE.take() {
+                this.process_pending_delete(endpoint_addr, cx);
+            }
+        });
         Self {
             workspaces,
             focus_handle: cx.focus_handle(),
