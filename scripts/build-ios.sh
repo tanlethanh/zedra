@@ -43,14 +43,14 @@ done
 export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-16.0}"
 echo "==> Deployment target: iOS $IPHONEOS_DEPLOYMENT_TARGET"
 
-# The crate has crate-type = ["cdylib", "staticlib"]. The cdylib is for Android
-# (JNI .so) and will fail to link on iOS (OpenGL framework not available).
-# The staticlib (.a) is produced before the cdylib linking step, so we allow
-# the cargo build to "fail" and just check the .a exists.
+# Build the static library explicitly and fail hard on cargo errors.
+# Remove any stale output first so the XCFramework step cannot accidentally
+# package an older libzedra.a from a previous successful build.
 
 if [ "$BUILD_DEVICE" = true ]; then
     echo "==> Building for iOS device (aarch64-apple-ios)..."
-    cargo build --target aarch64-apple-ios $PROFILE $FEATURES -p zedra || true
+    rm -f "target/aarch64-apple-ios/${PROFILE_DIR}/lib${LIB_NAME}.a"
+    cargo build --target aarch64-apple-ios $PROFILE $FEATURES -p zedra
     if [ ! -f "target/aarch64-apple-ios/${PROFILE_DIR}/lib${LIB_NAME}.a" ]; then
         echo "ERROR: staticlib not produced for device"
         exit 1
@@ -59,7 +59,8 @@ fi
 
 if [ "$BUILD_SIM" = true ]; then
     echo "==> Building for iOS simulator (aarch64-apple-ios-sim)..."
-    cargo build --target aarch64-apple-ios-sim $PROFILE $FEATURES -p zedra || true
+    rm -f "target/aarch64-apple-ios-sim/${PROFILE_DIR}/lib${LIB_NAME}.a"
+    cargo build --target aarch64-apple-ios-sim $PROFILE $FEATURES -p zedra
     if [ ! -f "target/aarch64-apple-ios-sim/${PROFILE_DIR}/lib${LIB_NAME}.a" ]; then
         echo "ERROR: staticlib not produced for simulator"
         exit 1

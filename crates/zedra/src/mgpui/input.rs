@@ -4,6 +4,7 @@
 /// - Shows/hides the Android soft keyboard on focus/blur
 /// - Displays a blinking cursor when focused
 /// - Handles keyboard input to update text content
+use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use gpui::prelude::FluentBuilder;
@@ -104,6 +105,73 @@ impl IntoElement for MultilineInputText {
 
     fn into_element(self) -> Self::Element {
         self
+    }
+}
+
+struct ImeInputHandlerElement {
+    input: Entity<Input>,
+}
+
+impl IntoElement for ImeInputHandlerElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for ImeInputHandlerElement {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let mut style = Style::default();
+        style.size.width = relative(1.).into();
+        style.size.height = relative(1.).into();
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Self::PrepaintState {
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let focus_handle = self.input.read(cx).focus_handle.clone();
+        window.handle_input(
+            &focus_handle,
+            ElementInputHandler::new(bounds, self.input.clone()),
+            cx,
+        );
     }
 }
 
@@ -225,9 +293,49 @@ impl Input {
     pub fn set_value(&mut self, value: impl Into<String>) {
         self.value = value.into();
         self.refresh_display_value();
-        if self.multiline {
-            self.cursor_byte = self.value.len();
+        self.cursor_byte = self.value.len();
+    }
+
+    fn cursor_byte(&self) -> usize {
+        clamp_byte_index(&self.value, self.cursor_byte)
+    }
+
+    fn utf16_to_byte_offset(&self, utf16_offset: usize) -> usize {
+        let mut utf16_count = 0;
+        for (byte_idx, ch) in self.value.char_indices() {
+            if utf16_count >= utf16_offset {
+                return byte_idx;
+            }
+            utf16_count += ch.len_utf16();
+            if utf16_count > utf16_offset {
+                return byte_idx;
+            }
         }
+        self.value.len()
+    }
+
+    fn byte_to_utf16_offset(&self, byte_offset: usize) -> usize {
+        self.value[..clamp_byte_index(&self.value, byte_offset)]
+            .encode_utf16()
+            .count()
+    }
+
+    fn replace_range_with_text(
+        &mut self,
+        replacement_range: Range<usize>,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let start = clamp_byte_index(&self.value, replacement_range.start);
+        let end = clamp_byte_index(&self.value, replacement_range.end.max(start));
+        self.value.replace_range(start..end, text);
+        self.cursor_byte = start + text.len();
+        self.refresh_display_value();
+        self.last_keystroke = Some(Instant::now());
+        cx.emit(InputChanged {
+            value: self.value.clone(),
+        });
+        cx.notify();
     }
 
     fn handle_click(&mut self, _event: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -376,6 +484,101 @@ impl Input {
 impl EventEmitter<InputChanged> for Input {}
 impl EventEmitter<InputSubmit> for Input {}
 
+impl EntityInputHandler for Input {
+    fn text_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        adjusted_range: &mut Option<Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let start = self.utf16_to_byte_offset(range_utf16.start);
+        let end = self.utf16_to_byte_offset(range_utf16.end);
+        *adjusted_range = Some(
+            self.byte_to_utf16_offset(start)..self.byte_to_utf16_offset(end),
+        );
+        Some(self.value[start..end].to_string())
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        let cursor = self.byte_to_utf16_offset(self.cursor_byte());
+        Some(UTF16Selection {
+            range: cursor..cursor,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        None
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+
+    fn replace_text_in_range(
+        &mut self,
+        range_utf16: Option<Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.multiline && text.chars().any(|ch| ch == '\n' || ch == '\r') {
+            cx.emit(InputSubmit {
+                value: self.value.clone(),
+            });
+            return;
+        }
+
+        let range = range_utf16
+            .map(|range| {
+                self.utf16_to_byte_offset(range.start)..self.utf16_to_byte_offset(range.end)
+            })
+            .unwrap_or_else(|| {
+                let cursor = self.cursor_byte();
+                cursor..cursor
+            });
+        self.replace_range_with_text(range, text, cx);
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range_utf16: Option<Range<usize>>,
+        new_text: &str,
+        _new_selected_range: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.replace_text_in_range(range_utf16, new_text, window, cx);
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _range_utf16: Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        Some(element_bounds)
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        Some(self.byte_to_utf16_offset(self.cursor_byte()))
+    }
+}
+
 impl Focusable for Input {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -426,6 +629,7 @@ impl Render for Input {
 
         let shell = div()
             .id(("input", cx.entity_id()))
+            .relative()
             .track_focus(&self.focus_handle)
             .on_mouse_down(MouseButton::Left, |_, _, cx| {
                 cx.stop_propagation();
@@ -444,6 +648,14 @@ impl Render for Input {
             .text_color(text_color)
             .text_size(px(text_size))
             .cursor_text();
+
+        let ime_overlay = div()
+            .absolute()
+            .top_0()
+            .right_0()
+            .bottom_0()
+            .left_0()
+            .child(ImeInputHandlerElement { input: cx.entity() });
 
         if self.multiline {
             let scroll_child: AnyElement = if is_focused {
@@ -473,6 +685,7 @@ impl Render for Input {
                 .flex_col()
                 .items_stretch()
                 .child(body.child(scroll_child))
+                .child(ime_overlay)
         } else {
             shell
                 .flex()
@@ -480,6 +693,7 @@ impl Render for Input {
                 .items_center()
                 .child(display_text)
                 .when(is_focused, |this| this.child(self.render_cursor(cx)))
+                .child(ime_overlay)
         }
     }
 }

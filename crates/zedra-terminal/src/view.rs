@@ -239,6 +239,11 @@ impl TerminalView {
         self.send_bytes_to_remote(bytes);
     }
 
+    /// Forward a synthesized platform keystroke through the normal terminal mapping path.
+    pub(crate) fn handle_platform_keystroke(&mut self, keystroke: Keystroke) {
+        self.handle_keystroke(&keystroke);
+    }
+
     /// Forward bytes to the remote PTY via the `send_bytes` callback.
     fn send_bytes_to_remote(&self, bytes: Vec<u8>) {
         if let Some(ref send) = self.send_bytes {
@@ -525,6 +530,7 @@ impl Render for TerminalView {
                 size,
                 self.scroll_offset_px,
                 cx.weak_entity(),
+                self.focus_handle.clone(),
                 self.focus_handle.is_focused(window),
             ))
     }

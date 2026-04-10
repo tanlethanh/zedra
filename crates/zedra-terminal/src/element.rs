@@ -2,6 +2,7 @@
 // Adapted from vendor/zed/crates/terminal_view/src/terminal_element.rs
 
 use std::mem;
+use std::ops::Range;
 
 use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::vte::ansi::{Color as AlacColor, CursorShape, NamedColor};
@@ -280,8 +281,112 @@ pub struct TerminalElement {
     scroll_offset_px: f32,
     /// Weak handle back to the view — used to trigger PTY resize from actual bounds.
     entity: WeakEntity<TerminalView>,
+    /// Focus handle for keyboard navigation and cursor positioning.
+    focus_handle: FocusHandle,
     /// Whether the terminal view is currently focused (controls cursor blink).
     focused: bool,
+}
+
+struct TerminalInputHandler {
+    entity: WeakEntity<TerminalView>,
+    bounds: Bounds<Pixels>,
+}
+
+impl TerminalInputHandler {
+    fn new(entity: WeakEntity<TerminalView>, bounds: Bounds<Pixels>) -> Self {
+        Self { entity, bounds }
+    }
+}
+
+impl InputHandler for TerminalInputHandler {
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<UTF16Selection> {
+        // Expose a one-character virtual document with the cursor at the end.
+        // This gives UIKit stable text state so backspace/delete repeat can engage.
+        Some(UTF16Selection {
+            range: 1..1,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(&mut self, _window: &mut Window, _cx: &mut App) -> Option<Range<usize>> {
+        None
+    }
+
+    fn text_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        adjusted_range: &mut Option<Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<String> {
+        let doc = " ";
+        let start = range_utf16.start.min(doc.len());
+        let end = range_utf16.end.min(doc.len());
+        *adjusted_range = Some(start..end);
+        Some(doc[start..end].to_string())
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut App,
+    ) {
+        let entity = self.entity.clone();
+        let text = text.to_string();
+        let _ = entity.update(cx, move |view, _cx| {
+            if replacement_range.is_some() && text.is_empty() {
+                view.handle_platform_keystroke(Keystroke {
+                    modifiers: Modifiers::default(),
+                    key: "backspace".to_string(),
+                    key_char: None,
+                });
+            } else if !text.is_empty() {
+                view.handle_ime_text(&text);
+            }
+        });
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+        new_text: &str,
+        _new_selected_range: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.replace_text_in_range(replacement_range, new_text, window, cx);
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut App) {}
+
+    fn bounds_for_range(
+        &mut self,
+        _range_utf16: Range<usize>,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<Bounds<Pixels>> {
+        Some(self.bounds)
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<usize> {
+        Some(1)
+    }
+
+    fn accepts_text_input(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
+        true
+    }
 }
 
 impl TerminalElement {
@@ -290,6 +395,7 @@ impl TerminalElement {
         size: TerminalSize,
         scroll_offset_px: f32,
         entity: WeakEntity<TerminalView>,
+        focus_handle: FocusHandle,
         focused: bool,
     ) -> Self {
         Self {
@@ -297,6 +403,7 @@ impl TerminalElement {
             size,
             scroll_offset_px,
             entity,
+            focus_handle,
             focused,
         }
     }
@@ -491,6 +598,12 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        window.handle_input(
+            &self.focus_handle,
+            TerminalInputHandler::new(self.entity.clone(), bounds),
+            cx,
+        );
+
         let cell_width = layout.cell_width;
         let line_height = layout.line_height;
 
