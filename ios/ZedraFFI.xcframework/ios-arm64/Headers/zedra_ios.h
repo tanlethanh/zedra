@@ -98,17 +98,14 @@
 
 /**
  * Seconds after last received bytes before a path is considered stale.
- * Shared between session_panel and connecting_view stale display logic.
- * Set slightly above the 2s heartbeat interval (1 missed heartbeat + 1s tolerance).
  */
 #define STALE_THRESHOLD_SECS 3
 
 /**
  * Called each frame from main.m before gpui_ios_request_frame.
  *
- * Drains main-thread callbacks and checks whether terminal data is pending.
- * Returns `true` when a forced render is needed (mirrors Android's
- * `check_and_clear_terminal_data` + `drain_callbacks` in `handle_frame_request`).
+ * Returns `false` — GPUI polling tasks handle view notifications internally
+ * via `cx.notify()`, so forced frames are no longer needed.
  */
 bool zedra_ios_check_pending_frame(void);
 

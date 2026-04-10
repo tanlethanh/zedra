@@ -2,7 +2,6 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
-use tracing::info;
 
 use crate::ConnectEvent;
 

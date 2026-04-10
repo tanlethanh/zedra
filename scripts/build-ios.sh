@@ -80,7 +80,11 @@ if [ "$BUILD_SIM" = true ]; then
 fi
 
 NEW="$TMP/${FRAMEWORK_NAME}.xcframework"
-xcodebuild -create-xcframework "${XCF_ARGS[@]}" -output "$NEW"
+XCODEBUILD_STDERR="$TMP/xcodebuild.stderr"
+if ! xcodebuild -create-xcframework "${XCF_ARGS[@]}" -output "$NEW" 2>"$XCODEBUILD_STDERR"; then
+    cat "$XCODEBUILD_STDERR" >&2
+    exit 1
+fi
 
 # Full replace when missing or both slices built; else swap only built slice(s) into existing bundle.
 if [ ! -d "$OUT" ] || { [ "$BUILD_DEVICE" = true ] && [ "$BUILD_SIM" = true ]; }; then
