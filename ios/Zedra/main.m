@@ -34,6 +34,7 @@ extern void gpui_ios_handle_view_resize(void* window_ptr, float width_pts, float
 
 // Zedra FFI (from zedra-ios crate)
 extern void zedra_ios_send_key_input(const char* key);
+extern void zedra_ios_set_accessory_shift_active(bool active);
 extern void zedra_ios_app_did_enter_background(void);
 extern void zedra_launch_gpui(void);
 
@@ -257,8 +258,16 @@ const char* ios_get_documents_directory(void) {
     return buf;
 }
 
-/// Key names indexed by button tag (matches order in setupKeyboardAccessoryView).
-static const char *kAccessoryKeyNames[] = {"escape", "tab", "left", "down", "up", "right", "enter"};
+typedef NS_ENUM(NSInteger, ZedraAccessoryKeyTag) {
+    ZedraAccessoryKeyTagEscape = 0,
+    ZedraAccessoryKeyTagTab,
+    ZedraAccessoryKeyTagLeft,
+    ZedraAccessoryKeyTagDown,
+    ZedraAccessoryKeyTagUp,
+    ZedraAccessoryKeyTagRight,
+    ZedraAccessoryKeyTagShift,
+    ZedraAccessoryKeyTagEnter,
+};
 
 @interface ZedraAppDelegate : UIResponder <UIApplicationDelegate>
 @property (nonatomic, assign) void *gpuiApp;
@@ -266,6 +275,8 @@ static const char *kAccessoryKeyNames[] = {"escape", "tab", "left", "down", "up"
 @property (nonatomic, strong) CADisplayLink *displayLink;
 /// Bar shown above the software keyboard with terminal shortcut keys.
 @property (nonatomic, strong) UIView *keyboardAccessoryBar;
+@property (nonatomic, strong) UIButton *keyboardAccessoryShiftButton;
+@property (nonatomic, assign) BOOL keyboardAccessoryShiftActive;
 @end
 
 @implementation ZedraAppDelegate
@@ -418,7 +429,7 @@ static const char *kAccessoryKeyNames[] = {"escape", "tab", "left", "down", "up"
     border.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.12];
     [bar addSubview:border];
 
-    NSArray<NSString *> *labels = @[@"Esc", @"Tab", @"←", @"↓", @"↑", @"→", @"⏎"];
+    NSArray<NSString *> *labels = @[@"Esc", @"Tab", @"←", @"↓", @"↑", @"→", @"⇧", @"⏎"];
     NSInteger count = (NSInteger)labels.count;
     CGFloat btnWidth = width / count;
 
@@ -436,19 +447,66 @@ static const char *kAccessoryKeyNames[] = {"escape", "tab", "left", "down", "up"
         btn.tag = i;
         [btn addTarget:self action:@selector(keyboardShortcutTapped:)
       forControlEvents:UIControlEventTouchUpInside];
+        if (i == ZedraAccessoryKeyTagShift) {
+            self.keyboardAccessoryShiftButton = btn;
+        }
         [bar addSubview:btn];
     }
 
     self.keyboardAccessoryBar = bar;
+    self.keyboardAccessoryShiftActive = NO;
+    zedra_ios_set_accessory_shift_active(false);
     gpui_ios_set_keyboard_accessory_view((__bridge void *)bar);
 }
 
 /// Handles taps on keyboard shortcut buttons; sends the corresponding escape sequence.
 - (void)keyboardShortcutTapped:(UIButton *)sender {
     NSInteger idx = sender.tag;
-    if (idx >= 0 && idx < 7) {
-        zedra_ios_send_key_input(kAccessoryKeyNames[idx]);
+    if (idx == ZedraAccessoryKeyTagShift) {
+        self.keyboardAccessoryShiftActive = !self.keyboardAccessoryShiftActive;
+        zedra_ios_set_accessory_shift_active(self.keyboardAccessoryShiftActive);
+        [self updateKeyboardAccessoryShiftButton];
+        return;
     }
+
+    if (idx == ZedraAccessoryKeyTagEnter && self.keyboardAccessoryShiftActive) {
+        zedra_ios_send_key_input("shift_enter");
+    } else if (idx == ZedraAccessoryKeyTagEscape) {
+        zedra_ios_send_key_input("escape");
+    } else if (idx == ZedraAccessoryKeyTagTab) {
+        zedra_ios_send_key_input("tab");
+    } else if (idx == ZedraAccessoryKeyTagLeft) {
+        zedra_ios_send_key_input("left");
+    } else if (idx == ZedraAccessoryKeyTagDown) {
+        zedra_ios_send_key_input("down");
+    } else if (idx == ZedraAccessoryKeyTagUp) {
+        zedra_ios_send_key_input("up");
+    } else if (idx == ZedraAccessoryKeyTagRight) {
+        zedra_ios_send_key_input("right");
+    } else if (idx == ZedraAccessoryKeyTagEnter) {
+        zedra_ios_send_key_input("enter");
+    } else {
+        return;
+    }
+
+    if (self.keyboardAccessoryShiftActive) {
+        self.keyboardAccessoryShiftActive = NO;
+        zedra_ios_set_accessory_shift_active(false);
+        [self updateKeyboardAccessoryShiftButton];
+    }
+}
+
+- (void)updateKeyboardAccessoryShiftButton {
+    UIButton *button = self.keyboardAccessoryShiftButton;
+    if (!button) { return; }
+
+    UIColor *normalColor = [UIColor colorWithRed:0.96 green:0.96 blue:0.96 alpha:1.0];
+    UIColor *activeBackground = [UIColor colorWithRed:0.23 green:0.46 blue:0.87 alpha:1.0];
+    UIColor *inactiveBackground = [UIColor clearColor];
+
+    [button setTitleColor:normalColor forState:UIControlStateNormal];
+    button.tintColor = normalColor;
+    button.backgroundColor = self.keyboardAccessoryShiftActive ? activeBackground : inactiveBackground;
 }
 
 - (void)renderFrame {

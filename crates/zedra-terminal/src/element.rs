@@ -3,6 +3,8 @@
 
 use std::mem;
 use std::ops::Range;
+#[cfg(target_os = "ios")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::vte::ansi::{Color as AlacColor, CursorShape, NamedColor};
@@ -12,6 +14,25 @@ use itertools::Itertools;
 use crate::{
     CursorState, IndexedCell, MONO_FONT_FAMILY, TerminalContent, TerminalSize, view::TerminalView,
 };
+
+#[cfg(target_os = "ios")]
+static ACCESSORY_SHIFT_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "ios")]
+fn consume_accessory_shift_for_return() -> bool {
+    ACCESSORY_SHIFT_ACTIVE.swap(false, Ordering::AcqRel)
+}
+
+#[cfg(not(target_os = "ios"))]
+fn consume_accessory_shift_for_return() -> bool {
+    false
+}
+
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_set_accessory_shift_active(active: bool) {
+    ACCESSORY_SHIFT_ACTIVE.store(active, Ordering::Release);
+}
 
 /// Per-terminal color palette. Construct with `TerminalTheme::one_dark()` for the default
 /// One Dark palette, or supply custom values for alternative themes.
@@ -348,7 +369,31 @@ impl InputHandler for TerminalInputHandler {
                     key_char: None,
                 });
             } else if !text.is_empty() {
-                view.handle_ime_text(&text);
+                let mut plain_text = String::new();
+
+                for ch in text.chars() {
+                    if ch == '\n' || ch == '\r' {
+                        if !plain_text.is_empty() {
+                            view.handle_ime_text(&plain_text);
+                            plain_text.clear();
+                        }
+                        if consume_accessory_shift_for_return() {
+                            view.handle_ime_text("\n");
+                        } else {
+                            view.handle_platform_keystroke(Keystroke {
+                                modifiers: Modifiers::default(),
+                                key: "enter".to_string(),
+                                key_char: None,
+                            });
+                        }
+                    } else {
+                        plain_text.push(ch);
+                    }
+                }
+
+                if !plain_text.is_empty() {
+                    view.handle_ime_text(&plain_text);
+                }
             }
         });
     }

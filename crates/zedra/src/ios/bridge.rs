@@ -287,7 +287,7 @@ pub extern "C" fn zedra_ios_app_did_enter_background() {
 
 /// Called from the native keyboard accessory bar when a shortcut key button is tapped.
 ///
-/// `key` is one of: "escape", "tab", "left", "down", "up", "right", "enter".
+/// `key` is one of: "escape", "tab", "left", "down", "up", "right", "enter", "shift_enter".
 /// Maps the name to the corresponding terminal escape sequence and sends it via the active session.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
@@ -313,6 +313,7 @@ pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
         "up" => b"\x1b[A",
         "right" => b"\x1b[C",
         "enter" => b"\r",
+        "shift_enter" => b"\n",
         _ => return,
     };
     active_terminal::send_to_active(bytes.to_vec());
