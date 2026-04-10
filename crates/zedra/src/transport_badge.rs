@@ -1,33 +1,22 @@
 /// Transport badge: connection type indicator (P2P / Relay / Reconnecting).
 use gpui::*;
-use zedra_session::{ConnectPhase, ConnectState};
+use zedra_session::{ConnectPhase, TransportSnapshot};
 
 use crate::theme;
 
 /// Seconds after last received bytes before a path is considered stale.
-/// Shared between session_panel and connecting_view stale display logic.
-/// Set slightly above the 2s heartbeat interval (1 missed heartbeat + 1s tolerance).
 pub const STALE_THRESHOLD_SECS: u64 = 3;
 
-/// Compute badge label and dot color from connect state.
-/// Returns `(label, dot_color)` for rendering in the workspace header and
-/// as the phase subtitle in the connecting view.
-///
-/// For connecting phases the label includes live discovery data (relay latency,
-/// NAT type, elapsed time) so the user can follow progress.
-pub(crate) fn transport_badge_info(state: &ConnectState) -> (String, u32) {
-    let snap = &state.snapshot;
-    let elapsed = state.elapsed_secs();
-
-    // Prefix connecting-phase labels with "Retry N · " during auto-reconnect.
-    let retry_prefix: String = match state.reconnect_attempt {
-        Some(n) => format!("Retry {n} \u{00b7} "),
-        None => String::new(),
-    };
-
-    match &state.phase {
+/// Compute badge label and dot color from phase and transport.
+/// Returns `(label, dot_color)`.
+pub(crate) fn transport_badge_info_phase(
+    phase: &ConnectPhase,
+    transport: Option<&TransportSnapshot>,
+) -> (String, u32) {
+    match phase {
+        ConnectPhase::Init => ("Initializing".into(), theme::ACCENT_YELLOW),
         ConnectPhase::Connected => {
-            let (conn_type, relay): (String, Option<&str>) = match &snap.transport {
+            let (conn_type, relay): (String, Option<&str>) = match transport {
                 Some(t) if t.is_direct => {
                     let hint = t
                         .network_hint
@@ -39,20 +28,21 @@ pub(crate) fn transport_badge_info(state: &ConnectState) -> (String, u32) {
                 Some(t) => ("Relay".into(), Some(t.remote_addr.as_str())),
                 None => ("\u{2026}".into(), None),
             };
-            let rtt = snap.transport.as_ref().map(|t| t.rtt_ms).unwrap_or(0);
+            let rtt = transport.map(|t| t.rtt_ms).unwrap_or(0);
             let label = match (relay, rtt) {
                 (Some(r), ms) if ms > 0 => format!("{conn_type} \u{00b7} {r} \u{00b7} {ms}ms"),
                 (Some(r), _) => format!("{conn_type} \u{00b7} {r}"),
                 (None, ms) if ms > 0 => format!("{conn_type} \u{00b7} {ms}ms"),
                 _ => conn_type.to_string(),
             };
-            let color = match &snap.transport {
+            let color = match transport {
                 Some(t) if t.is_direct => theme::ACCENT_GREEN,
                 Some(_) => theme::ACCENT_YELLOW,
                 None => theme::ACCENT_GREEN,
             };
             (label, color)
         }
+        ConnectPhase::Disconnected => ("Disconnected".into(), theme::ACCENT_RED),
         ConnectPhase::Reconnecting {
             attempt,
             next_retry_secs,
@@ -66,98 +56,37 @@ pub(crate) fn transport_badge_info(state: &ConnectState) -> (String, u32) {
             (label, theme::ACCENT_RED)
         }
         ConnectPhase::Failed(err) => (err.user_message(), theme::ACCENT_RED),
-        ConnectPhase::BindingEndpoint => {
-            let inner = if elapsed > 0 {
-                format!("Binding endpoint \u{00b7} {elapsed}s")
-            } else {
-                "Binding endpoint".into()
-            };
-            (format!("{retry_prefix}{inner}"), theme::ACCENT_YELLOW)
-        }
-        ConnectPhase::HolePunching => {
-            let mut parts: Vec<String> = Vec::new();
-            // Relay status
-            if snap.relay_connected {
-                match snap.relay_latency_ms {
-                    Some(ms) => parts.push(format!("relay {ms}ms")),
-                    None => parts.push("relay ok".into()),
-                }
-            } else {
-                parts.push("relay\u{2026}".into());
-            }
-            // NAT / IP hints
-            if let Some(varies) = snap.mapping_varies {
-                parts.push(if varies {
-                    "symmetric NAT".into()
-                } else {
-                    "cone NAT".into()
-                });
-            } else {
-                match (snap.has_ipv4, snap.has_ipv6) {
-                    (true, true) => parts.push("v4+v6".into()),
-                    (true, false) => parts.push("v4".into()),
-                    (false, true) => parts.push("v6".into()),
-                    _ => {}
-                }
-            }
-            // Elapsed
-            if elapsed > 0 {
-                parts.push(format!("{elapsed}s"));
-            }
-            let inner = if parts.is_empty() {
-                "Connecting\u{2026}".into()
-            } else {
-                parts.join(" \u{00b7} ")
-            };
-            (format!("{retry_prefix}{inner}"), theme::ACCENT_YELLOW)
-        }
-        ConnectPhase::EstablishingRpc => {
-            let inner = if elapsed > 0 {
-                format!("RPC setup \u{00b7} {elapsed}s")
-            } else {
-                "RPC setup".into()
-            };
-            (format!("{retry_prefix}{inner}"), theme::ACCENT_YELLOW)
-        }
-        ConnectPhase::Registering => (
-            format!("{retry_prefix}Registering device"),
+        ConnectPhase::BindingEndpoint => ("Binding endpoint".into(), theme::ACCENT_YELLOW),
+        ConnectPhase::HolePunching => ("Hole punching".into(), theme::ACCENT_YELLOW),
+        ConnectPhase::Registering => ("Registering".into(), theme::ACCENT_YELLOW),
+        ConnectPhase::Authenticating => ("Authenticating".into(), theme::ACCENT_YELLOW),
+        ConnectPhase::Proving => ("Proving".into(), theme::ACCENT_YELLOW),
+        ConnectPhase::Sync => ("Syncing".into(), theme::ACCENT_YELLOW),
+        ConnectPhase::Idle { idle_since } => (
+            format!("Idle {}s", idle_since.elapsed().as_secs()),
             theme::ACCENT_YELLOW,
         ),
-        ConnectPhase::Authenticating | ConnectPhase::Proving => {
-            (format!("{retry_prefix}PKI challenge"), theme::ACCENT_YELLOW)
-        }
-        ConnectPhase::FetchingInfo => (
-            format!("{retry_prefix}Fetching workspace info"),
-            theme::ACCENT_YELLOW,
-        ),
-        ConnectPhase::ResumingTerminals => (
-            format!("{retry_prefix}Resuming terminals"),
-            theme::ACCENT_YELLOW,
-        ),
-        _ => ("Disconnected".into(), theme::ACCENT_RED),
+    }
+}
+
+pub(crate) fn phase_indicator_color(phase: &ConnectPhase) -> u32 {
+    if phase.is_connected() {
+        theme::ACCENT_GREEN
+    } else if phase.is_idle() || phase.is_connecting() || phase.is_reconnecting() {
+        theme::ACCENT_YELLOW
+    } else if phase.is_failed() {
+        theme::ACCENT_RED
+    } else {
+        theme::TEXT_MUTED
     }
 }
 
 /// Render an inline transport badge element (dot + label).
-pub(crate) fn render_transport_badge(label: String, dot_color: u32) -> Div {
+pub(crate) fn render_transport_badge(label: String, color: u32) -> Div {
     div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(px(3.0))
-        .child(
-            div()
-                .w(px(theme::ICON_STATUS))
-                .h(px(theme::ICON_STATUS))
-                .rounded(px(3.0))
-                .bg(rgb(dot_color)),
-        )
-        .child(
-            div()
-                .text_size(px(theme::FONT_DETAIL))
-                .text_color(rgb(dot_color))
-                .child(label),
-        )
+        .text_size(px(theme::FONT_DETAIL))
+        .text_color(rgb(color))
+        .child(label)
 }
 
 /// Human-friendly byte count formatting.

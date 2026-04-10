@@ -9491,6 +9491,7 @@ dependencies = [
  "cbindgen 0.29.2",
  "cc",
  "crossbeam-channel",
+ "futures",
  "gpui",
  "gpui_android",
  "gpui_ios",
@@ -9589,6 +9590,7 @@ version = "0.1.1"
 dependencies = [
  "anyhow",
  "ed25519-dalek 2.2.0",
+ "futures",
  "hmac",
  "iroh",
  "iroh-relay",
@@ -9597,6 +9599,7 @@ dependencies = [
  "rand 0.8.5",
  "sha2 0.10.9",
  "tokio",
+ "tokio-util",
  "tracing",
  "zedra-rpc",
  "zedra-telemetry",
@@ -9614,6 +9617,7 @@ name = "zedra-terminal"
 version = "0.1.1"
 dependencies = [
  "alacritty_terminal",
+ "futures",
  "gpui",
  "itertools 0.14.0",
  "tracing",

@@ -1,8 +1,12 @@
-/// Generic async-to-main-thread one-shot channel.
+/// Generic async-to-main-thread communication primitives.
 ///
-/// Each `PendingSlot<T>` is a `Mutex<Option<T>>` that can be written from any
-/// thread (e.g. a tokio task) and consumed on the main/render thread.
+/// `PendingSlot<T>`: one-shot channel for passing values between async tasks
+/// and the main thread. Used with GPUI polling tasks that check `has_pending()`
+/// and call `cx.notify()` when values are available.
 use std::sync::Mutex;
+use std::time::Duration;
+
+use gpui::{Context, Task};
 
 pub struct PendingSlot<T>(Mutex<Option<T>>);
 
@@ -20,6 +24,11 @@ impl<T> PendingSlot<T> {
     pub fn take(&self) -> Option<T> {
         self.0.lock().unwrap().take()
     }
+
+    /// Check if a value is pending without taking it.
+    pub fn has_pending(&self) -> bool {
+        self.0.lock().map(|g| g.is_some()).unwrap_or(false)
+    }
 }
 
 /// Arc-wrapped variant for per-instance (non-static) pending state.
@@ -27,6 +36,41 @@ pub type SharedPendingSlot<T> = std::sync::Arc<PendingSlot<T>>;
 
 pub fn shared_pending_slot<T>() -> SharedPendingSlot<T> {
     std::sync::Arc::new(PendingSlot::new())
+}
+
+pub fn spawn_periodic_task<T, F>(
+    cx: &mut Context<T>,
+    interval: Duration,
+    mut on_tick: F,
+) -> Task<()>
+where
+    T: 'static,
+    F: FnMut(&mut T, &mut Context<T>) + Send + 'static,
+{
+    cx.spawn(async move |weak, cx| {
+        loop {
+            cx.background_executor().timer(interval).await;
+            if weak.update(cx, |this, cx| on_tick(this, cx)).is_err() {
+                break;
+            }
+        }
+    })
+}
+
+pub fn spawn_notify_poll<T, F>(
+    cx: &mut Context<T>,
+    interval: Duration,
+    mut has_pending: F,
+) -> Task<()>
+where
+    T: 'static,
+    F: FnMut() -> bool + Send + 'static,
+{
+    spawn_periodic_task(cx, interval, move |_this, cx| {
+        if has_pending() {
+            cx.notify();
+        }
+    })
 }
 
 #[cfg(test)]
@@ -67,5 +111,15 @@ mod tests {
         let slot = shared_pending_slot::<String>();
         slot.set("hello".to_string());
         assert_eq!(slot.take(), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn has_pending_works() {
+        let slot = PendingSlot::new();
+        assert!(!slot.has_pending());
+        slot.set(42);
+        assert!(slot.has_pending());
+        slot.take();
+        assert!(!slot.has_pending());
     }
 }

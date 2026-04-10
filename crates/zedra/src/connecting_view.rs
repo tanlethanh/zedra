@@ -3,32 +3,24 @@
 /// Layout:
 ///   1. Horizontal 5-step progress stepper
 ///   2. Vertical current-phase detail (transport, auth, host, timing, error/reconnect banners)
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
-
-use gpui::{Animation, AnimationExt as _, Transformation, prelude::FluentBuilder as _, *};
-
-// Incremented each time the retry button is pressed.
-// Each new value produces a unique animation element ID, causing GPUI to start
-// a fresh oneshot rotation for exactly that press.
-static RETRY_GENERATION: AtomicU64 = AtomicU64::new(0);
-use zedra_session::{ConnectSnapshot, ConnectState, STEPPER_STEP_NAMES, TransportSnapshot};
+use gpui::{prelude::FluentBuilder as _, *};
+use zedra_session::{ConnectPhase, ConnectSnapshot, SessionState, TransportSnapshot};
 
 use crate::platform_bridge::{self, AlertButton};
 use crate::theme;
-use crate::transport_badge::{format_bytes, render_transport_badge, transport_badge_info};
+use crate::transport_badge::{format_bytes, render_transport_badge, transport_badge_info_phase};
 
 // ─── Public view ─────────────────────────────────────────────────────────────
 
 pub struct ConnectingView {
-    session_handle: zedra_session::SessionHandle,
+    session_state: SessionState,
     details_expanded: bool,
 }
 
 impl ConnectingView {
-    pub fn new(handle: zedra_session::SessionHandle) -> Self {
+    pub fn new(session_state: SessionState) -> Self {
         Self {
-            session_handle: handle,
+            session_state,
             details_expanded: false,
         }
     }
@@ -36,7 +28,7 @@ impl ConnectingView {
 
 impl Render for ConnectingView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let cs = self.session_handle.connect_state();
+        let inner = self.session_state.get();
         let expanded = self.details_expanded;
         div()
             .id("connecting-view")
@@ -47,10 +39,11 @@ impl Render for ConnectingView {
             .items_center()
             .justify_start()
             .pt(px(32.0))
-            .child(render_phase_title(&cs, &self.session_handle))
-            .child(render_stepper(&cs))
+            .child(render_phase_title(&inner.phase, &inner.snapshot))
             .child(render_details_toggle(expanded, cx))
-            .when(expanded, |d| d.child(render_detail(&cs)))
+            .when(expanded, |d| {
+                d.child(render_detail(&inner.phase, &inner.snapshot))
+            })
     }
 }
 
@@ -93,63 +86,17 @@ fn render_details_toggle(expanded: bool, cx: &mut Context<ConnectingView>) -> St
         )
 }
 
-// ─── Retry button (reusable) ─────────────────────────────────────────────────
-
-/// A 18×18 refresh icon button that spins once for 1 s when pressed.
-/// Returns `None` when the current phase is not retryable.
-/// The icon is dimmed normally; brightens to `TEXT_SECONDARY` after 30 s stuck.
-pub fn render_retry_button(handle: &zedra_session::SessionHandle) -> Option<Div> {
-    let cs = handle.connect_state();
-    if !cs.phase.is_connecting() && !cs.phase.is_reconnecting() && !cs.phase.is_failed() {
-        return None;
-    }
-    let stuck = cs.elapsed_secs() >= 30;
-    let retry_color = if stuck {
-        rgb(theme::TEXT_SECONDARY)
-    } else {
-        rgb(theme::TEXT_MUTED)
-    };
-    let handle_retry = handle.clone();
-    let generation = RETRY_GENERATION.load(Ordering::Acquire);
-
-    // A new generation ID causes GPUI to start a fresh oneshot animation.
-    let retry_icon: AnyElement = if generation > 0 {
-        svg()
-            .path("icons/refresh-ccw.svg")
-            .size_full()
-            .text_color(retry_color)
-            .with_animation(
-                SharedString::from(format!("retry-spin-{generation}")),
-                Animation::new(Duration::from_secs(1)),
-                |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
-            )
-            .into_any_element()
-    } else {
-        svg()
-            .path("icons/refresh-ccw.svg")
-            .size_full()
-            .text_color(retry_color)
-            .into_any_element()
-    };
-
-    Some(
-        div()
-            .cursor_pointer()
-            .w(px(14.0))
-            .h(px(14.0))
-            .hit_slop(px(10.0))
-            .on_mouse_down(MouseButton::Left, move |_, _, _| {
-                RETRY_GENERATION.fetch_add(1, Ordering::Release);
-                handle_retry.retry_connect();
-            })
-            .child(retry_icon),
-    )
-}
-
 // ─── Phase title ─────────────────────────────────────────────────────────────
 
-fn render_phase_title(cs: &ConnectState, handle: &zedra_session::SessionHandle) -> Div {
-    let (label, dot_color) = transport_badge_info(cs);
+fn render_phase_title(phase: &ConnectPhase, snap: &ConnectSnapshot) -> Div {
+    let (label, color) = transport_badge_info_phase(phase, snap.transport.as_ref());
+
+    let title = match phase {
+        ConnectPhase::BindingEndpoint | ConnectPhase::HolePunching => "Connect",
+        ConnectPhase::Authenticating | ConnectPhase::Proving => "Authorize",
+        ConnectPhase::Sync => "Sync",
+        p => p.display_name(),
+    };
 
     div()
         .mb(px(theme::SPACING_LG))
@@ -158,172 +105,23 @@ fn render_phase_title(cs: &ConnectState, handle: &zedra_session::SessionHandle) 
         .items_center()
         .gap(px(8.0))
         .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(8.0))
-                .child(
-                    // Fixed width so the retry icon always appears at the same position
-                    // regardless of phase name length (longest: "Resuming terminals").
-                    div()
-                        .w(px(160.0))
-                        .min_w_0()
-                        .truncate()
-                        .text_align(TextAlign::Center)
-                        .text_color(rgb(theme::TEXT_PRIMARY))
-                        .text_size(px(theme::FONT_HEADING))
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(cs.phase.display_name()),
-                )
-                .children(render_retry_button(handle)),
+            div().flex().flex_row().items_center().gap(px(8.0)).child(
+                div()
+                    .w(px(160.0))
+                    .min_w_0()
+                    .truncate()
+                    .text_align(TextAlign::Center)
+                    .text_color(rgb(theme::TEXT_PRIMARY))
+                    .text_size(px(theme::FONT_HEADING))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(title),
+            ),
         )
-        .child(render_transport_badge(label, dot_color))
-}
-
-// ─── Horizontal stepper ──────────────────────────────────────────────────────
-
-fn render_stepper(cs: &ConnectState) -> Div {
-    let active_step = cs.phase.step_index().unwrap_or_else(|| {
-        if cs.phase.is_idle() {
-            0
-        } else {
-            // Reconnecting / Failed: use snapshot's failed_at_step or last completed step
-            cs.snapshot
-                .failed_at_step
-                .unwrap_or_else(|| completed_step_count(cs).saturating_sub(1).min(4))
-        }
-    });
-
-    let completed = completed_step_count(cs);
-
-    let mut row = div()
-        .w(px(260.0))
-        .flex()
-        .flex_row()
-        .items_center()
-        .mb(px(theme::SPACING_LG));
-
-    for (i, name) in STEPPER_STEP_NAMES.iter().enumerate() {
-        let is_done = i < completed && !cs.phase.is_failed();
-        let is_active = i == active_step;
-        let is_failed = cs.phase.is_failed() && i == active_step;
-
-        // Dot
-        let dot_color = if is_failed {
-            rgb(theme::ACCENT_RED)
-        } else if is_done {
-            rgb(theme::ACCENT_GREEN)
-        } else if is_active {
-            rgb(theme::ACCENT_YELLOW)
-        } else {
-            rgb(theme::TEXT_MUTED)
-        };
-
-        let dot_border_color = dot_color;
-        let dot_size = 10.0_f32;
-
-        let dot = div()
-            .w(px(dot_size))
-            .h(px(dot_size))
-            .rounded(px(dot_size / 2.0))
-            .border_1()
-            .border_color(dot_border_color)
-            .when(is_done || is_active || is_failed, |d: Div| d.bg(dot_color));
-
-        // Soft scale pulse on the active (in-progress) dot.
-        // Uses an SVG circle so Transformation::scale() applies visually without affecting layout.
-        let dot_element: AnyElement = if is_active && !is_failed {
-            svg()
-                .path("icons/dot.svg")
-                .size(px(dot_size))
-                .text_color(dot_color)
-                .with_animation(
-                    SharedString::from(format!("stepper-pulse-{i}")),
-                    Animation::new(Duration::from_millis(1200)).repeat(),
-                    move |s, delta| {
-                        let t = (delta * std::f32::consts::PI).sin();
-                        let scale = 1.0 + 0.35 * t;
-                        s.with_transformation(Transformation::scale(size(scale, scale)))
-                    },
-                )
-                .into_any_element()
-        } else {
-            dot.into_any_element()
-        };
-
-        let step_col = div()
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(4.0))
-            .child(dot_element)
-            .child(
-                div()
-                    .text_size(px(9.0))
-                    .text_color(if is_done {
-                        rgb(theme::ACCENT_GREEN)
-                    } else if is_active && !is_failed {
-                        rgb(theme::ACCENT_YELLOW)
-                    } else if is_failed {
-                        rgb(theme::ACCENT_RED)
-                    } else {
-                        rgb(theme::TEXT_MUTED)
-                    })
-                    .child(*name),
-            );
-
-        row = row.child(step_col);
-
-        // Connector line between steps
-        if i < STEPPER_STEP_NAMES.len() - 1 {
-            let line_color = if i + 1 <= completed && !cs.phase.is_failed() {
-                rgb(theme::ACCENT_GREEN)
-            } else {
-                rgb(theme::BORDER_SUBTLE)
-            };
-            row = row.child(
-                div()
-                    .flex_1()
-                    .h(px(1.0))
-                    .mb(px(14.0)) // align with dots (above label)
-                    .bg(line_color),
-            );
-        }
-    }
-
-    row
-}
-
-/// Number of steps that have been fully completed.
-/// Step mapping: 0=Init, 1=Connect, 2=Auth, 3=Sync, 4=Done
-fn completed_step_count(cs: &ConnectState) -> usize {
-    if cs.phase.is_connected() {
-        return 5;
-    }
-    let snap = &cs.snapshot;
-    let mut n = 0;
-    if snap.binding_ms.is_some() {
-        n = 1; // Init done
-    }
-    if snap.rpc_ms.is_some() {
-        n = 2; // Connect done (P2P + RPC both finished)
-    }
-    if snap.auth_ms.is_some() {
-        n = 3; // Auth done
-    }
-    // Sync (FetchingInfo + ResumingTerminals) is done once resume completes.
-    // For new sessions (no resume), Connected is reached immediately after fetch
-    // and the early return above handles full completion.
-    if snap.resume_ms.is_some() {
-        n = 4; // Sync done
-    }
-    n
+        .child(render_transport_badge(label, color))
 }
 
 // ─── Phase status helpers ────────────────────────────────────────────────────
 
-/// Returns true if the snapshot has any discovery data worth showing.
 fn has_discovery_data(snap: &ConnectSnapshot) -> bool {
     snap.relay_connected
         || !snap.direct_addrs.is_empty()
@@ -332,11 +130,9 @@ fn has_discovery_data(snap: &ConnectSnapshot) -> bool {
         || snap.relay_latency_ms.is_some()
 }
 
-/// Render the Discovery section rows (network probing results).
 fn render_discovery_rows(snap: &ConnectSnapshot) -> Div {
     let mut d = div().flex().flex_col().gap(px(2.0));
 
-    // Relay status
     let relay_status = if snap.relay_connected {
         match snap.relay_latency_ms {
             Some(ms) => format!("Connected ({ms}ms)"),
@@ -347,7 +143,6 @@ fn render_discovery_rows(snap: &ConnectSnapshot) -> Div {
     };
     d = d.child(kv_row("Relay", &relay_status));
 
-    // Direct addresses discovered
     if !snap.direct_addrs.is_empty() {
         let count = snap.direct_addrs.len();
         let direct_addrs = snap.direct_addrs.clone();
@@ -395,7 +190,6 @@ fn render_discovery_rows(snap: &ConnectSnapshot) -> Div {
         );
     }
 
-    // IPv4 / IPv6 reachability
     let ip_status = match (snap.has_ipv4, snap.has_ipv6) {
         (true, true) => "IPv4 + IPv6",
         (true, false) => "IPv4 only",
@@ -404,7 +198,6 @@ fn render_discovery_rows(snap: &ConnectSnapshot) -> Div {
     };
     d = d.child(kv_row("UDP", ip_status));
 
-    // NAT type
     if let Some(varies) = snap.mapping_varies {
         let nat = if varies {
             "Symmetric (hard NAT)"
@@ -414,7 +207,6 @@ fn render_discovery_rows(snap: &ConnectSnapshot) -> Div {
         d = d.child(kv_row("NAT", nat));
     }
 
-    // Captive portal
     if snap.captive_portal == Some(true) {
         d = d.child(kv_row("Portal", "Captive portal detected"));
     }
@@ -424,40 +216,33 @@ fn render_discovery_rows(snap: &ConnectSnapshot) -> Div {
 
 // ─── Vertical detail panel ───────────────────────────────────────────────────
 
-fn render_detail(cs: &ConnectState) -> Div {
-    let snap = &cs.snapshot;
+fn render_detail(phase: &ConnectPhase, snap: &ConnectSnapshot) -> Div {
     let mut col = div()
         .w(px(theme::CONNECT_DETAIL_WIDTH))
         .flex()
         .flex_col()
         .gap(px(theme::SPACING_SM));
 
-    // Endpoint section
     if snap.local_node_id.is_some() || snap.remote_node_id.is_some() || snap.relay_url.is_some() {
         col = col.child(render_section("Endpoint", render_endpoint_rows(snap)));
     }
 
-    // Discovery section (live during HolePunching)
     if has_discovery_data(snap) {
         col = col.child(render_section("Discovery", render_discovery_rows(snap)));
     }
 
-    // Transport section
     if let Some(t) = &snap.transport {
         col = col.child(render_section("Transport", render_transport_rows(t)));
     }
 
-    // Auth section
     if snap.session_id.is_some() || snap.auth_outcome.is_some() {
         col = col.child(render_section("Auth", render_auth_rows(snap)));
     }
 
-    // Host section
-    if snap.hostname.is_some() {
+    if !snap.hostname.is_empty() {
         col = col.child(render_section("Host", render_host_rows(snap)));
     }
 
-    // Timing row
     let timing = build_timing_string(snap);
     if !timing.is_empty() {
         col = col.child(
@@ -465,6 +250,24 @@ fn render_detail(cs: &ConnectState) -> Div {
                 .text_color(rgb(theme::TEXT_MUTED))
                 .text_size(px(theme::FONT_DETAIL))
                 .child(timing),
+        );
+    }
+
+    // Show phase-specific info
+    if let ConnectPhase::Reconnecting {
+        attempt,
+        next_retry_secs,
+        ..
+    } = phase
+    {
+        col = col.child(
+            div()
+                .text_color(rgb(theme::TEXT_MUTED))
+                .text_size(px(theme::FONT_DETAIL))
+                .child(format!(
+                    "Attempt {} · retry in {}s",
+                    attempt, next_retry_secs
+                )),
         );
     }
 
@@ -566,16 +369,14 @@ fn render_auth_rows(snap: &ConnectSnapshot) -> Div {
 
 fn render_host_rows(snap: &ConnectSnapshot) -> Div {
     let mut d = div().flex().flex_col().gap(px(2.0));
-    if let Some(v) = &snap.hostname {
-        d = d.child(kv_row("Host", v));
+    if !snap.hostname.is_empty() {
+        d = d.child(kv_row("Host", &snap.hostname));
     }
-    if let Some(v) = &snap.username {
-        if !v.is_empty() {
-            d = d.child(kv_row("User", v));
-        }
+    if !snap.username.is_empty() {
+        d = d.child(kv_row("User", &snap.username));
     }
-    if let Some(v) = &snap.workdir {
-        d = d.child(kv_row("Workdir", v));
+    if !snap.workdir.is_empty() {
+        d = d.child(kv_row("Workdir", &snap.workdir));
     }
     if let Some(os) = &snap.os {
         let label = match &snap.arch {
@@ -598,7 +399,7 @@ fn build_timing_string(snap: &ConnectSnapshot) -> String {
         parts.push(format!("Bind {ms}ms"));
     }
     if let Some(ms) = snap.hole_punch_ms {
-        parts.push(format!("P2P {ms}ms"));
+        parts.push(format!("HolePunch {ms}ms"));
     }
     if let Some(ms) = snap.rpc_ms {
         parts.push(format!("RPC {ms}ms"));
@@ -611,7 +412,7 @@ fn build_timing_string(snap: &ConnectSnapshot) -> String {
     }
     match (snap.fetch_ms, snap.resume_ms) {
         (Some(fetch), Some(resume)) => parts.push(format!("Sync {}ms", fetch + resume)),
-        (Some(ms), None) => parts.push(format!("Sync {ms}ms")),
+        (Some(ms), None) | (None, Some(ms)) => parts.push(format!("Sync {ms}ms")),
         _ => {}
     }
     parts.join(" \u{00b7} ")

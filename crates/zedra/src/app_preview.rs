@@ -40,6 +40,7 @@ impl PreviewApp {
                 editor.into(),
                 "preview.rs",
                 zedra_session::SessionHandle::new(),
+                zedra_session::SessionState::new(),
                 cx,
             )
         });
@@ -90,7 +91,8 @@ impl PreviewApp {
                     WorkspaceDrawerEvent::GoHome => {
                         // Go Home screen
                     }
-                    WorkspaceDrawerEvent::CloseRequested => {
+                    WorkspaceDrawerEvent::CloseRequested
+                    | WorkspaceDrawerEvent::ShowConnectingOverlay => {
                         drawer_host_for_sub.update(cx, |host, cx| host.close(cx));
                     }
                     WorkspaceDrawerEvent::DisconnectRequested => {

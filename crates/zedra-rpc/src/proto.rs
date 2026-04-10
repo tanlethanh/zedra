@@ -3,8 +3,9 @@
 // Typed, binary-serialized (postcard) messages over iroh QUIC streams.
 //
 // Connection lifecycle:
-//   First pairing:   Register → Authenticate → AuthProve → (RPC calls)
-//   Reconnect:       Authenticate → AuthProve → (RPC calls)
+//   First pairing:   Register → Connect → Challenge → AuthProve → Ok(SyncSessionResult) → (RPC calls)
+//   Token resume:    Connect(session_token) → Ok(SyncSessionResult) → (RPC calls)
+//   PKI reconnect:   Connect(None) → Challenge → AuthProve → Ok(SyncSessionResult) → (RPC calls)
 //   Health:          Ping → Pong (every 2s, foreground only)
 
 use irpc::channel::{mpsc, oneshot};
@@ -38,6 +39,13 @@ pub enum ZedraProto {
     /// Also specifies which session to attach to.
     #[rpc(tx = oneshot::Sender<AuthProveResult>)]
     AuthProve(AuthProveReq),
+
+    /// Universal connection initiator for all non-first-pairing paths.
+    /// Client always sends this first. Server returns Ok(sync) if session_token
+    /// is valid, or Challenge to trigger PKI auth without a separate Authenticate
+    /// round trip.
+    #[rpc(tx = oneshot::Sender<ConnectResult>)]
+    Connect(ConnectReq),
 
     // -- Health / RTT --
     /// Ping the host. Host echoes timestamp_ms back for RTT measurement.
@@ -133,13 +141,19 @@ pub enum ZedraProto {
 
     #[rpc(tx = oneshot::Sender<FsUnwatchResult>)]
     FsUnwatch(FsUnwatchReq),
+
+    /// Bootstrap session state after a successful PKI auth attach.
+    /// Returns the canonical session id, a fresh reconnect token, and resumable
+    /// terminal state so the client can avoid a follow-up info/list round trip.
+    #[rpc(tx = oneshot::Sender<SyncSessionResult>)]
+    SyncSession(SyncSessionReq),
 }
 
 // ---------------------------------------------------------------------------
 // ALPN protocol identifier
 // ---------------------------------------------------------------------------
 
-pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/1";
+pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/2";
 
 /// Default page size for `FsList` requests (host uses this when `limit == 0`).
 pub const FS_LIST_DEFAULT_LIMIT: u32 = 50;
@@ -198,7 +212,7 @@ pub struct RegisterReq {
     /// Proves the sender physically scanned the QR (has the handshake_key).
     pub hmac: [u8; 32],
     /// The session ID from the QR ticket (used to look up the pairing slot).
-    pub slot_session_id: String,
+    pub session_id: String,
 }
 
 /// Result of a RegisterClient attempt.
@@ -253,8 +267,10 @@ pub struct AuthProveReq {
 /// Result of an AuthProve attempt.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum AuthProveResult {
-    /// Authentication succeeded and session attached. RPC calls may proceed.
-    Ok,
+    /// Authentication succeeded and session attached.
+    /// Payload contains the bootstrapped session state — no separate SyncSession
+    /// call is needed after a successful AuthProve.
+    Ok(SyncSessionResult),
     /// Client pubkey not in host's authorized list. Must re-pair via QR.
     Unauthorized,
     /// Client pubkey not in this session's ACL. Must pair via QR for this session.
@@ -268,15 +284,52 @@ pub enum AuthProveResult {
     InvalidSignature,
 }
 
+/// Universal connect request — sent by the client as the first message on every
+/// non-first-pairing connection. The server inspects `session_token` and either
+/// returns `ConnectResult::Ok` (token valid, session resumed immediately) or
+/// `ConnectResult::Challenge` (PKI auth required, nonce embedded to save an RTT).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ConnectReq {
+    /// Client's Ed25519 application public key (32 bytes).
+    pub client_pubkey: [u8; 32],
+    /// Session the client wants to attach to.
+    pub session_id: String,
+    /// In-memory session token from the last successful connect (if any).
+    /// `None` → server always issues a challenge (PKI path).
+    /// `Some(token)` → server attempts fast resume; falls back to challenge if invalid.
+    pub session_token: Option<[u8; 32]>,
+}
+
+/// Result of a Connect attempt.
+#[derive(Debug, Serialize, Deserialize)]
+pub enum ConnectResult {
+    /// Session token valid; session attached immediately.
+    /// Payload contains the latest session state — no further auth needed.
+    Ok(SyncSessionResult),
+    /// Token absent/invalid. Client must complete PKI auth.
+    /// The nonce and host_signature are embedded here to save an Authenticate RTT.
+    /// Client verifies host_signature, then sends AuthProve with this nonce.
+    Challenge {
+        nonce: [u8; 32],
+        #[serde(with = "bytes64")]
+        host_signature: [u8; 64],
+    },
+    /// Client pubkey is no longer globally authorized.
+    Unauthorized,
+    /// Session exists but this client is not in the session ACL.
+    NotInSessionAcl,
+    /// Another client currently owns the session.
+    SessionOccupied,
+    /// Session not found (host restart / session removal).
+    SessionNotFound,
+}
+
 // ---------------------------------------------------------------------------
 // Ping / Pong
 // ---------------------------------------------------------------------------
 
-/// Sent by the client every 2 seconds (foreground only).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PingReq {
-    /// Client's Unix timestamp in milliseconds.
-    /// Echoed back in PongResult so the client can compute RTT = now - timestamp_ms.
     pub timestamp_ms: u64,
 }
 
@@ -321,6 +374,32 @@ pub struct SessionInfoResult {
     pub os_version: Option<String>,
     pub host_version: Option<String>,
     pub home_dir: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SyncSessionReq {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncSessionResult {
+    pub session_id: String,
+    pub session_token: [u8; 32],
+    pub hostname: String,
+    pub workdir: String,
+    pub username: String,
+    pub home_dir: Option<String>,
+    pub os: Option<String>,
+    pub arch: Option<String>,
+    pub os_version: Option<String>,
+    pub host_version: Option<String>,
+    pub terminals: Vec<TerminalSyncEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalSyncEntry {
+    pub id: String,
+    pub last_seq: u64,
+    pub title: Option<String>,
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -735,13 +814,13 @@ mod tests {
             client_pubkey: [1u8; 32],
             timestamp: 1_700_000_000,
             hmac: [2u8; 32],
-            slot_session_id: "sess-123".to_string(),
+            session_id: "sess-123".to_string(),
         };
         let encoded = postcard::to_allocvec(&req).unwrap();
         let decoded: RegisterReq = postcard::from_bytes(&encoded).unwrap();
         assert_eq!(decoded.client_pubkey, [1u8; 32]);
         assert_eq!(decoded.timestamp, 1_700_000_000);
-        assert_eq!(decoded.slot_session_id, "sess-123");
+        assert_eq!(decoded.session_id, "sess-123");
     }
 
     #[test]
@@ -765,5 +844,79 @@ mod tests {
         let encoded = postcard::to_allocvec(&req).unwrap();
         let decoded: PingReq = postcard::from_bytes(&encoded).unwrap();
         assert_eq!(decoded.timestamp_ms, 9_999_999);
+    }
+
+    #[test]
+    fn connect_req_roundtrip() {
+        let req = ConnectReq {
+            client_pubkey: [7u8; 32],
+            session_id: "sess-fast".to_string(),
+            session_token: Some([8u8; 32]),
+        };
+        let encoded = postcard::to_allocvec(&req).unwrap();
+        let decoded: ConnectReq = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded.client_pubkey, [7u8; 32]);
+        assert_eq!(decoded.session_id, "sess-fast");
+        assert_eq!(decoded.session_token, Some([8u8; 32]));
+    }
+
+    #[test]
+    fn connect_req_no_token_roundtrip() {
+        let req = ConnectReq {
+            client_pubkey: [7u8; 32],
+            session_id: "sess-fresh".to_string(),
+            session_token: None,
+        };
+        let encoded = postcard::to_allocvec(&req).unwrap();
+        let decoded: ConnectReq = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded.session_token, None);
+    }
+
+    #[test]
+    fn connect_result_challenge_roundtrip() {
+        let result = ConnectResult::Challenge {
+            nonce: [3u8; 32],
+            host_signature: [4u8; 64],
+        };
+        let encoded = postcard::to_allocvec(&result).unwrap();
+        let decoded: ConnectResult = postcard::from_bytes(&encoded).unwrap();
+        match decoded {
+            ConnectResult::Challenge {
+                nonce,
+                host_signature,
+            } => {
+                assert_eq!(nonce, [3u8; 32]);
+                assert_eq!(host_signature, [4u8; 64]);
+            }
+            _ => panic!("unexpected variant"),
+        }
+    }
+
+    #[test]
+    fn sync_session_result_roundtrip() {
+        let result = SyncSessionResult {
+            session_id: "sess-1".into(),
+            session_token: [9u8; 32],
+            hostname: "host".into(),
+            workdir: "/workspace".into(),
+            username: "user".into(),
+            home_dir: Some("/home/user".into()),
+            os: Some("linux".into()),
+            arch: Some("x86_64".into()),
+            os_version: Some("6.12".into()),
+            host_version: Some("0.1.1".into()),
+            terminals: vec![TerminalSyncEntry {
+                id: "term-1".into(),
+                last_seq: 42,
+                title: Some("shell".into()),
+                cwd: Some("/workspace".into()),
+            }],
+        };
+        let encoded = postcard::to_allocvec(&result).unwrap();
+        let decoded: SyncSessionResult = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded.session_id, "sess-1");
+        assert_eq!(decoded.session_token, [9u8; 32]);
+        assert_eq!(decoded.terminals.len(), 1);
+        assert_eq!(decoded.terminals[0].last_seq, 42);
     }
 }

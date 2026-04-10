@@ -373,7 +373,8 @@ bun run check    # CI mode (check only)
 
 ## Documentation
 
-- Code conventions (imports, render purity, logging, WorkspaceState): `docs/CONVENTIONS.md`
+- Code conventions (imports, render purity, logging, WorkspaceState, channel notifications): `docs/CONVENTIONS.md`
+- Threading / async boundaries (JNI, Tokio session runtime, channel wake): `docs/THREADING.md`
 - iOS build pipeline: `docs/IOS_WORKFLOW.md`
 - Protocol/RPC: `docs/PROTOCOL_SPECS.md`
 - Architecture decisions: `docs/ARCHITECTURE.md`
@@ -385,4 +386,4 @@ bun run check    # CI mode (check only)
 
 ---
 
-**Last Updated**: 2026-03-27
+**Last Updated**: 2026-04-02

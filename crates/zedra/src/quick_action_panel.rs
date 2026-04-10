@@ -1,48 +1,73 @@
-// QuickActionPanel — absolute right-side overlay for workspace switching.
-// Shown when the ⚡ button is tapped in WorkspaceContent header.
+// QuickActionPanel — right-side overlay for workspace switching.
 
 use gpui::*;
 
 use crate::platform_bridge;
 use crate::terminal_card::{TerminalCardProps, render_terminal_card};
 use crate::theme;
-use crate::workspace_state::SharedWorkspaceStates;
+use crate::workspaces::Workspaces;
 
 #[derive(Clone, Debug)]
 pub enum QuickActionEvent {
-    GoHome,
-    ScanQr,
-    SwitchToWorkspace(usize),
-    SwitchToTerminal(usize, String),
-    TerminalDeleteRequested(usize, String),
     Close,
+    GoHome,
+    NavigateToWorkspace,
 }
 
 impl EventEmitter<QuickActionEvent> for QuickActionPanel {}
 
 pub struct QuickActionPanel {
-    states: SharedWorkspaceStates,
-    /// Session handles indexed by workspace_index, so terminal metadata can be
-    /// read from live `RemoteTerminal`s rather than the static state snapshot.
-    handles: Vec<zedra_session::SessionHandle>,
+    workspaces: Entity<Workspaces>,
     focus_handle: FocusHandle,
 }
 
 impl QuickActionPanel {
-    pub fn new(cx: &mut Context<Self>, states: SharedWorkspaceStates) -> Self {
+    pub fn new(workspaces: Entity<Workspaces>, cx: &mut Context<Self>) -> Self {
         Self {
-            states,
-            handles: Vec::new(),
+            workspaces,
             focus_handle: cx.focus_handle(),
         }
     }
 
-    pub fn set_states(&mut self, states: SharedWorkspaceStates) {
-        self.states = states;
+    fn handle_scan_qr(&self, cx: &mut Context<Self>) {
+        cx.emit(QuickActionEvent::Close);
+        platform_bridge::bridge().launch_qr_scanner();
     }
 
-    pub fn set_handles(&mut self, handles: Vec<zedra_session::SessionHandle>) {
-        self.handles = handles;
+    fn handle_switch_workspace(&self, index: usize, cx: &mut Context<Self>) {
+        self.workspaces.update(cx, |ws, cx| ws.switch_to(index, cx));
+        cx.emit(QuickActionEvent::Close);
+        cx.emit(QuickActionEvent::NavigateToWorkspace);
+    }
+
+    fn handle_switch_terminal(&self, ws_index: usize, tid: String, cx: &mut Context<Self>) {
+        let view = self
+            .workspaces
+            .read(cx)
+            .get(ws_index)
+            .map(|e| e.view.clone());
+        self.workspaces
+            .update(cx, |ws, cx| ws.switch_to(ws_index, cx));
+        if let Some(view) = view {
+            view.update(cx, |ws, cx| {
+                ws.switch_to_terminal(&tid, cx);
+            });
+        }
+        cx.emit(QuickActionEvent::Close);
+        cx.emit(QuickActionEvent::NavigateToWorkspace);
+    }
+
+    fn handle_terminal_delete(&self, ws_index: usize, tid: String, cx: &mut Context<Self>) {
+        let view = self
+            .workspaces
+            .read(cx)
+            .get(ws_index)
+            .map(|e| e.view.clone());
+        if let Some(view) = view {
+            view.update(cx, |ws, cx| {
+                ws.request_terminal_delete(tid, cx);
+            });
+        }
     }
 }
 
@@ -58,15 +83,16 @@ impl Render for QuickActionPanel {
         let bottom_inset = platform_bridge::home_indicator_inset().max(10.0);
         let viewport_h = window.viewport_size().height;
 
-        let workspaces: Vec<_> = self
-            .states
+        let states = self.workspaces.read(cx).states().to_vec();
+        let handles = self.workspaces.read(cx).handles();
+
+        let workspaces: Vec<_> = states
             .iter()
             .filter(|s| s.workspace_index().is_some())
             .cloned()
             .collect();
 
-        // Right panel
-        let mut panel = div()
+        let panel = div()
             .w_full()
             .h(viewport_h)
             .bg(rgb(theme::BG_PRIMARY))
@@ -74,9 +100,7 @@ impl Render for QuickActionPanel {
             .border_color(rgb(theme::BORDER_SUBTLE))
             .flex()
             .flex_col()
-            // Status bar spacer
             .child(div().h(px(top_inset)))
-            // Panel header
             .child(
                 div()
                     .h(px(theme::HEADER_HEIGHT))
@@ -98,6 +122,7 @@ impl Render for QuickActionPanel {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
+                                    cx.emit(QuickActionEvent::Close);
                                     cx.emit(QuickActionEvent::GoHome);
                                 }),
                             )
@@ -108,7 +133,6 @@ impl Render for QuickActionPanel {
                                     .text_color(rgb(theme::TEXT_SECONDARY)),
                             ),
                     )
-                    // Title
                     .child(
                         div().flex_1().flex().flex_col().child(
                             div()
@@ -151,7 +175,6 @@ impl Render for QuickActionPanel {
             .flex_col()
             .overflow_y_scroll();
 
-        // Workspace sections
         for ws in &workspaces {
             let index = ws.workspace_index().unwrap_or(0);
             let is_connected = ws
@@ -170,7 +193,6 @@ impl Render for QuickActionPanel {
                 (true, true) => String::new(),
             };
 
-            // Section header row
             content = content.child(
                 div()
                     .id(SharedString::from(format!("ws-section-{}", index)))
@@ -183,8 +205,8 @@ impl Render for QuickActionPanel {
                     .hover(|s| s.bg(theme::hover_bg()))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |_this, _event, _window, cx| {
-                            cx.emit(QuickActionEvent::SwitchToWorkspace(index));
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.handle_switch_workspace(index, cx);
                         }),
                     )
                     .child(
@@ -228,7 +250,6 @@ impl Render for QuickActionPanel {
             );
 
             if ws.terminal_ids().is_empty() {
-                // No terminals placeholder
                 content = content.child(
                     div()
                         .px(px(16.0))
@@ -243,19 +264,15 @@ impl Render for QuickActionPanel {
                     let tid_click = tid.clone();
                     let tid_del = tid.clone();
                     let is_active = ws.active_terminal_id().is_some_and(|id| id == tid);
-                    let meta = self
-                        .handles
+                    let meta = handles
                         .get(index)
                         .and_then(|h| h.terminal(tid))
                         .map(|t| t.meta())
                         .unwrap_or_default();
 
                     let on_close =
-                        Box::new(cx.listener(move |_this, _event: &ClickEvent, _window, cx| {
-                            cx.emit(QuickActionEvent::TerminalDeleteRequested(
-                                index,
-                                tid_del.clone(),
-                            ));
+                        Box::new(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
+                            this.handle_terminal_delete(index, tid_del.clone(), cx);
                         }));
 
                     let card = render_terminal_card(TerminalCardProps {
@@ -269,8 +286,8 @@ impl Render for QuickActionPanel {
                         on_close: Some(on_close),
                     })
                     .on_click(cx.listener(
-                        move |_this, _event, _window, cx| {
-                            cx.emit(QuickActionEvent::SwitchToTerminal(index, tid_click.clone()));
+                        move |this, _event, _window, cx| {
+                            this.handle_switch_terminal(index, tid_click.clone(), cx);
                         },
                     ));
 
@@ -278,7 +295,6 @@ impl Render for QuickActionPanel {
                 }
             }
 
-            // Divider between workspace sections
             content = content.child(
                 div()
                     .h(px(1.0))
@@ -299,17 +315,15 @@ impl Render for QuickActionPanel {
             );
         }
 
-        // Scan QR Code button
         content = content.child(
             crate::button::outline_button("quick-action-scan-qr", "Scan QR Code")
                 .mx(px(16.0))
                 .mt(px(12.0))
-                .on_click(cx.listener(|_this, _event, _window, cx| {
-                    cx.emit(QuickActionEvent::ScanQr);
+                .on_click(cx.listener(|this, _event, _window, cx| {
+                    this.handle_scan_qr(cx);
                 })),
         );
 
-        // Spacer + bottom inset
         content = content
             .child(div().flex_1())
             .child(div().h(px(bottom_inset)));

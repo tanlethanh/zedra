@@ -5,11 +5,12 @@ use crate::editor::git_sidebar::{
     GitFileStatus, GitRepoState, GitSidebar,
 };
 use crate::file_explorer::{FileExplorer, FileSelected};
-use crate::pending::{SharedPendingSlot, shared_pending_slot};
+use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_notify_poll};
 use crate::platform_bridge;
 use crate::theme;
+use crate::transport_badge::phase_indicator_color;
 use crate::{session_panel, terminal_panel};
-use zedra_session::ConnectPhase;
+use zedra_session::{ConnectPhase, SessionState};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DrawerSection {
@@ -30,6 +31,7 @@ pub enum WorkspaceDrawerEvent {
         paths: Vec<String>,
     },
     CloseRequested,
+    ShowConnectingOverlay,
     DisconnectRequested,
     NewTerminalRequested,
     TerminalSelected(String),
@@ -55,12 +57,15 @@ pub struct WorkspaceDrawer {
     /// Client-side terminal display order (persists across reconnects, updated on drag-reorder).
     terminal_order: Vec<String>,
     session_handle: Option<zedra_session::SessionHandle>,
+    session_state: Option<SessionState>,
     workspace_state: crate::workspace_state::WorkspaceState,
     /// Kept alive to poll session state every 2 s and re-render the session tab.
     /// Dropped (and cancelled) when replaced by a new session.
     _session_refresh_task: Option<Task<()>>,
     /// Held to keep GPUI event subscriptions alive; dropped when the view is dropped.
     _subscriptions: Vec<Subscription>,
+    /// Background task polling pending slots.
+    _poll_task: Task<()>,
 }
 
 impl WorkspaceDrawer {
@@ -111,20 +116,34 @@ impl WorkspaceDrawer {
         );
         subscriptions.push(sub);
 
+        let pending_git_status: SharedPendingSlot<GitRepoState> = shared_pending_slot();
+
+        let poll_git = pending_git_status.clone();
+        let poll_task = spawn_notify_poll(cx, std::time::Duration::from_millis(50), move || {
+            poll_git.has_pending()
+        });
+
         Self {
             file_explorer,
             git_sidebar,
             active_section: DrawerSection::Files,
             focus_handle: cx.focus_handle(),
-            pending_git_status: shared_pending_slot(),
+            pending_git_status,
             git_loaded: false,
             active_terminal_id: None,
             terminal_order: Vec::new(),
             session_handle: None,
+            session_state: None,
             workspace_state: crate::workspace_state::WorkspaceState::default(),
             _session_refresh_task: None,
             _subscriptions: subscriptions,
+            _poll_task: poll_task,
         }
+    }
+
+    /// Set the session state for this drawer.
+    pub fn set_session_state(&mut self, state: SessionState) {
+        self.session_state = Some(state);
     }
 
     pub fn set_section(&mut self, section: DrawerSection, cx: &mut Context<Self>) {
@@ -150,11 +169,12 @@ impl WorkspaceDrawer {
     pub fn set_session_handle(
         &mut self,
         handle: zedra_session::SessionHandle,
+        workdir: String,
         cx: &mut Context<Self>,
     ) {
         self.session_handle = Some(handle.clone());
         self.file_explorer
-            .update(cx, |fe, cx| fe.set_session_handle(handle, cx));
+            .update(cx, |fe, cx| fe.set_session_handle(handle, workdir, cx));
         // Spawn a polling task that triggers a re-render every 2 s so that
         // live transport stats (RTT, bytes, etc.) stay up to date in the session tab.
         // Dropping the old task cancels it before the new one starts.
@@ -217,8 +237,12 @@ impl WorkspaceDrawer {
         if self.git_loaded {
             return;
         }
+        let is_connected = self
+            .session_state
+            .as_ref()
+            .map_or(false, |s| s.phase().is_connected());
         let handle = match self.session_handle.as_ref() {
-            Some(h) if h.is_connected() => h.clone(),
+            Some(h) if is_connected => h.clone(),
             _ => return,
         };
         self.git_loaded = true;
@@ -269,7 +293,6 @@ impl WorkspaceDrawer {
                     };
 
                     pending.set(repo_state);
-                    zedra_session::push_callback(Box::new(|| {}));
                 }
                 Err(e) => {
                     tracing::error!("git_status RPC failed: {}", e);
@@ -320,8 +343,8 @@ impl WorkspaceDrawer {
             }
             DrawerSection::Terminal => "terminals".into(),
             DrawerSection::Session => {
-                let cs = self.session_handle.as_ref().map(|h| h.connect_state());
-                let phase = cs.as_ref().map(|s| &s.phase);
+                let inner = self.session_state.as_ref().map(|s| s.get());
+                let phase = inner.as_ref().map(|s| &s.phase);
                 let status = match phase {
                     Some(ConnectPhase::Connected) => "Connected",
                     Some(p) if p.is_connecting() => "Connecting",
@@ -329,7 +352,7 @@ impl WorkspaceDrawer {
                     Some(ConnectPhase::Failed(_)) => "Error",
                     _ => "Disconnected",
                 };
-                let mode = cs
+                let mode = inner
                     .as_ref()
                     .and_then(|s| s.snapshot.transport.as_ref())
                     .map(|t| {
@@ -411,7 +434,7 @@ impl WorkspaceDrawer {
     }
 
     fn render_session_tab(&self, cx: &mut Context<Self>) -> Div {
-        session_panel::render_session_tab(self.session_handle.as_ref(), cx)
+        session_panel::render_session_tab(self.session_state.as_ref(), cx)
     }
 }
 
@@ -442,10 +465,10 @@ impl Render for WorkspaceDrawer {
 
         let project_name = self.project_name();
         let tab_subtitle = self.tab_subtitle(cx);
-        let status_color = match self.session_handle.as_ref().map(|h| h.connect_phase()) {
-            Some(ConnectPhase::Connected) => theme::ACCENT_GREEN,
-            Some(ref p) if p.is_connecting() || p.is_reconnecting() => theme::ACCENT_YELLOW,
-            _ => theme::ACCENT_RED,
+        let phase = self.session_state.as_ref().map(|s| s.phase());
+        let status_color = match phase {
+            Some(phase) => phase_indicator_color(&phase),
+            _ => theme::TEXT_MUTED,
         };
         let viewport_h = window.viewport_size().height;
 

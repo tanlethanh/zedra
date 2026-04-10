@@ -69,6 +69,9 @@ pub mod platform_bridge;
 // Workspace state and persistence (single model, serializable fields saved to store)
 pub mod workspace_state;
 
+// Workspace collection manager (connection lifecycle, state sync)
+pub mod workspaces;
+
 // Embedded assets (SVG icons) — shared across platforms
 use rust_embed::RustEmbed;
 

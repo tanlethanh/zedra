@@ -1,11 +1,14 @@
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use gpui::*;
+use zedra_telemetry::*;
 
 use crate::fonts;
-use crate::platform_bridge;
+use crate::pending::{PendingSlot, spawn_periodic_task};
+use crate::platform_bridge::{self, AlertButton};
 use crate::theme;
-use crate::workspace_state::SharedWorkspaceStates;
+use crate::workspaces::Workspaces;
 
 const WEBSITE_URL: &str = "https://www.zedra.dev";
 const GITHUB_URL: &str = "https://github.com/tanlethanh/zedra";
@@ -14,31 +17,96 @@ const XCOM_URL: &str = "https://x.com/zedradev";
 
 #[derive(Clone, Debug)]
 pub enum HomeEvent {
-    ScanQrTapped,
-    /// Tap on a workspace card. Carries item index into HomeView::states.
-    WorkspaceTapped(usize),
-    /// Long-press / delete. Carries the item index into HomeView::states.
-    WorkspaceRemoved(usize),
+    /// Navigate to a workspace (app should switch screen).
+    NavigateToWorkspace,
 }
 
 impl EventEmitter<HomeEvent> for HomeView {}
 
+/// Pending workspace delete confirmed via native alert.
+static PENDING_DELETE: PendingSlot<String> = PendingSlot::new();
+
 pub struct HomeView {
-    /// Shared list; read in render (no lock).
-    pub states: SharedWorkspaceStates,
+    workspaces: Entity<Workspaces>,
     focus_handle: FocusHandle,
+    _pending_delete_task: Task<()>,
 }
 
 impl HomeView {
-    pub fn new(cx: &mut Context<Self>, states: SharedWorkspaceStates) -> Self {
+    pub fn new(workspaces: Entity<Workspaces>, cx: &mut Context<Self>) -> Self {
+        let pending_delete_task = spawn_periodic_task(cx, Duration::from_millis(50), |this, cx| {
+            if let Some(endpoint_addr) = PENDING_DELETE.take() {
+                this.process_pending_delete(endpoint_addr, cx);
+            }
+        });
         Self {
-            states,
+            workspaces,
             focus_handle: cx.focus_handle(),
+            _pending_delete_task: pending_delete_task,
         }
     }
 
-    pub fn set_states(&mut self, states: SharedWorkspaceStates) {
-        self.states = states;
+    fn handle_scan_qr(&self) {
+        tracing::info!("Home: Scan QR tapped");
+        zedra_telemetry::send(Event::QrScanInitiated);
+        platform_bridge::bridge().launch_qr_scanner();
+    }
+
+    fn handle_workspace_tap(&self, item_idx: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let states = self.workspaces.read(cx).states();
+        let Some(state) = states.get(item_idx) else {
+            return;
+        };
+
+        if let Some(ws_idx) = state.workspace_index() {
+            zedra_telemetry::send(Event::WorkspaceSelected { source: "active" });
+            self.workspaces
+                .update(cx, |ws, cx| ws.switch_to(ws_idx, cx));
+        } else {
+            zedra_telemetry::send(Event::WorkspaceSelected { source: "saved" });
+            self.workspaces.update(cx, |ws, cx| {
+                ws.connect_saved(item_idx, window, cx);
+            });
+        }
+        cx.emit(HomeEvent::NavigateToWorkspace);
+    }
+
+    fn handle_workspace_remove(&self, item_idx: usize, cx: &mut Context<Self>) {
+        let states = self.workspaces.read(cx).states();
+        let Some(item) = states.get(item_idx) else {
+            return;
+        };
+
+        let endpoint_addr = item.endpoint_addr().to_string();
+        let display = item.display_name().to_string();
+
+        platform_bridge::show_alert(
+            "",
+            &format!("Remove {} workspace?", display),
+            vec![
+                AlertButton::destructive("Delete"),
+                AlertButton::cancel("Cancel"),
+            ],
+            move |button_index| {
+                if button_index == 0 {
+                    PENDING_DELETE.set(endpoint_addr.clone());
+                }
+            },
+        );
+    }
+
+    fn process_pending_delete(&self, endpoint_addr: String, cx: &mut Context<Self>) {
+        self.workspaces.update(cx, |ws, cx| {
+            let ws_index = ws
+                .states()
+                .iter()
+                .find(|s| s.endpoint_addr() == endpoint_addr)
+                .and_then(|s| s.workspace_index());
+            if let Some(idx) = ws_index {
+                ws.disconnect(idx, cx);
+            }
+            ws.remove_saved(&endpoint_addr, cx);
+        });
     }
 }
 
@@ -50,6 +118,8 @@ impl Focusable for HomeView {
 
 impl Render for HomeView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let states = self.workspaces.read(cx).states().to_vec();
+
         let mut content = div()
             .flex()
             .flex_col()
@@ -60,7 +130,6 @@ impl Render for HomeView {
                     .flex()
                     .flex_col()
                     .items_center()
-                    // Logo
                     .child(
                         svg()
                             .path("icons/logo.svg")
@@ -68,7 +137,6 @@ impl Render for HomeView {
                             .text_color(rgb(theme::TEXT_PRIMARY))
                             .mb(px(theme::SPACING_LG)),
                     )
-                    // "Zedra" title
                     .child(
                         div()
                             .text_color(rgb(theme::TEXT_PRIMARY))
@@ -77,7 +145,6 @@ impl Render for HomeView {
                             .font_weight(FontWeight::EXTRA_BOLD)
                             .child("Zedra"),
                     )
-                    // Subtitle
                     .child(
                         div()
                             .flex()
@@ -100,7 +167,7 @@ impl Render for HomeView {
                     ),
             );
 
-        if !self.states.is_empty() {
+        if !states.is_empty() {
             let mut cards = div()
                 .id("home-cards")
                 .mt_4()
@@ -112,7 +179,7 @@ impl Render for HomeView {
                 .flex_col()
                 .gap(px(8.0));
 
-            for (item_idx, state) in self.states.iter().enumerate() {
+            for (item_idx, state) in states.iter().enumerate() {
                 let (status_label, status_color) = match state.connect_phase() {
                     Some(zedra_session::ConnectPhase::Connected) => {
                         ("Connected", theme::ACCENT_GREEN)
@@ -158,8 +225,8 @@ impl Render for HomeView {
             content = content.child(cards);
         }
 
-        // Install guide — shown only when there are no items at all
-        if self.states.is_empty() {
+        // Install guide
+        if states.is_empty() {
             content = content.child(
                 div()
                     .w(px(theme::HOME_GUIDE_WIDTH))
@@ -201,12 +268,11 @@ impl Render for HomeView {
             );
         }
 
-        // "Scan QR Code" button (always shown)
         content = content.child(
             crate::button::outline_button("home-scan-qr", "Scan QR Code")
                 .w(px(theme::HOME_CARD_WIDTH))
-                .on_click(cx.listener(|_this, _event, _window, cx| {
-                    cx.emit(HomeEvent::ScanQrTapped);
+                .on_click(cx.listener(|this, _event, _window, _cx| {
+                    this.handle_scan_qr();
                 })),
         );
 
@@ -291,11 +357,11 @@ fn workspace_card(
         .border_color(rgb(theme::BORDER_SUBTLE))
         .p(px(12.0))
         .cursor_pointer()
-        .on_click(cx.listener(move |_this, _event, _window, cx| {
-            cx.emit(HomeEvent::WorkspaceTapped(item_idx));
+        .on_click(cx.listener(move |this, _event, window, cx| {
+            this.handle_workspace_tap(item_idx, window, cx);
         }))
-        .on_long_press(cx.listener(move |_this, _event, _window, cx| {
-            cx.emit(HomeEvent::WorkspaceRemoved(item_idx));
+        .on_long_press(cx.listener(move |this, _event, _window, cx| {
+            this.handle_workspace_remove(item_idx, cx);
         }))
         .child(
             div()
