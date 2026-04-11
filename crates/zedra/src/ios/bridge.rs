@@ -74,6 +74,8 @@ unsafe extern "C" {
     fn ios_get_documents_directory() -> *const std::ffi::c_char;
     /// Returns the app's user-facing version string from Info.plist metadata.
     fn ios_get_app_version() -> *const std::ffi::c_char;
+    /// Returns the app's build number string from Info.plist metadata.
+    fn ios_get_app_build_number() -> *const std::ffi::c_char;
     /// Present a native UIAlertController with dynamic buttons.
     /// `labels` and `styles` are parallel arrays of length `button_count`.
     /// Style values: 0 = default, 1 = cancel, 2 = destructive.
@@ -151,6 +153,18 @@ impl PlatformBridge for IosBridge {
     fn app_version(&self) -> Option<String> {
         unsafe {
             let ptr = ios_get_app_version();
+            if ptr.is_null() {
+                return None;
+            }
+            let cstr = std::ffi::CStr::from_ptr(ptr);
+            let s = cstr.to_str().ok()?.trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        }
+    }
+
+    fn app_build_number(&self) -> Option<String> {
+        unsafe {
+            let ptr = ios_get_app_build_number();
             if ptr.is_null() {
                 return None;
             }
@@ -317,6 +331,27 @@ pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
         _ => return,
     };
     active_terminal::send_to_active(bytes.to_vec());
+}
+
+/// Called from the native terminal composer to send finalized text to the active terminal.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_send_terminal_text(text: *const std::ffi::c_char) {
+    if text.is_null() {
+        return;
+    }
+
+    let text = unsafe {
+        match std::ffi::CStr::from_ptr(text).to_str() {
+            Ok(s) => s,
+            Err(_) => return,
+        }
+    };
+
+    if text.is_empty() {
+        return;
+    }
+
+    active_terminal::send_to_active(text.as_bytes().to_vec());
 }
 
 /// Called from main.m when the app is opened via a zedra:// URL.

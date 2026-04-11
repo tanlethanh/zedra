@@ -49,6 +49,15 @@ impl PlatformBridge for AndroidBridge {
         }
     }
 
+    fn app_build_number(&self) -> Option<String> {
+        let build_number = jni::get_app_build_number();
+        if build_number.trim().is_empty() {
+            None
+        } else {
+            Some(build_number)
+        }
+    }
+
     fn data_directory(&self) -> Option<String> {
         jni::get_files_dir()
     }

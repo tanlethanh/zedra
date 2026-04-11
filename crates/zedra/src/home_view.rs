@@ -330,13 +330,7 @@ impl Render for HomeView {
 fn app_version_text() -> String {
     static APP_VERSION_TEXT: OnceLock<String> = OnceLock::new();
     APP_VERSION_TEXT
-        .get_or_init(|| {
-            let version = platform_bridge::bridge()
-                .app_version()
-                .filter(|v| !v.trim().is_empty())
-                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
-            format!("zedra v{version}")
-        })
+        .get_or_init(|| format!("v{}", platform_bridge::app_version_with_build_number()))
         .clone()
 }
 

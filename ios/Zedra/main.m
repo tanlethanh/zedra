@@ -59,24 +59,22 @@ const char* ios_get_app_version(void) {
     NSString *buildVersion = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"];
 
     if (![shortVersion isKindOfClass:[NSString class]]) {
-        shortVersion = @"";
-    }
-    if (![buildVersion isKindOfClass:[NSString class]]) {
-        buildVersion = @"";
-    }
-
-    NSString *value = nil;
-    if (shortVersion.length > 0 && buildVersion.length > 0) {
-        value = [NSString stringWithFormat:@"%@ (%@)", shortVersion, buildVersion];
-    } else if (shortVersion.length > 0) {
-        value = shortVersion;
-    } else if (buildVersion.length > 0) {
-        value = buildVersion;
-    } else {
         return NULL;
     }
+    const char *cstr = [shortVersion UTF8String];
+    if (!cstr) return NULL;
+    strlcpy(buf, cstr, sizeof(buf));
+    return buf;
+}
 
-    const char *cstr = [value UTF8String];
+// Returns the build number (CFBundleVersion) in a static C buffer.
+const char* ios_get_app_build_number(void) {
+    static char buf[128];
+    NSString *buildVersion = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"];
+    if (![buildVersion isKindOfClass:[NSString class]]) {
+        return NULL;
+    }
+    const char *cstr = [buildVersion UTF8String];
     if (!cstr) return NULL;
     strlcpy(buf, cstr, sizeof(buf));
     return buf;

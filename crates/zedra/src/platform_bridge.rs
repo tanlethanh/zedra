@@ -175,8 +175,12 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn show_keyboard(&self);
     fn hide_keyboard(&self);
     fn launch_qr_scanner(&self);
-    /// Returns the native app build version displayed to users (e.g. Android versionName).
+    /// Returns the native user-facing app version (e.g. Android versionName / iOS CFBundleShortVersionString).
     fn app_version(&self) -> Option<String> {
+        None
+    }
+    /// Returns the native app build number (e.g. Android versionCode / iOS CFBundleVersion).
+    fn app_build_number(&self) -> Option<String> {
         None
     }
     /// Returns the app's writable data directory for persisting workspace state.
@@ -205,6 +209,28 @@ pub fn set_bridge(bridge: impl PlatformBridge) {
 
 pub fn bridge() -> &'static dyn PlatformBridge {
     BRIDGE.get().map(|b| &**b).unwrap_or(&StubBridge)
+}
+
+/// Returns a normalized app version label as `version(buildNumber)` when both values exist.
+pub fn app_version_with_build_number() -> String {
+    let bridge = bridge();
+    let version = bridge
+        .app_version()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let build_number = bridge
+        .app_build_number()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+
+    match (version, build_number) {
+        (Some(version), Some(build_number)) if version != build_number => {
+            format!("{version}({build_number})")
+        }
+        (Some(version), _) => version,
+        (None, Some(build_number)) => build_number,
+        (None, None) => env!("CARGO_PKG_VERSION").to_string(),
+    }
 }
 
 /// Status bar top inset in logical pixels.

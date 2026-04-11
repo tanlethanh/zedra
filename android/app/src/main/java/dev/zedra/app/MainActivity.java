@@ -73,8 +73,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * Get the native app build version shown to users.
-     * Returns "versionName (versionCode)" when available.
+     * Get the user-facing app version (Android versionName).
      */
     public static String getAppVersion() {
         if (sActivity == null) {
@@ -85,16 +84,30 @@ public class MainActivity extends AppCompatActivity {
             android.content.pm.PackageInfo info =
                 sActivity.getPackageManager().getPackageInfo(packageName, 0);
             String versionName = info.versionName == null ? "" : info.versionName.trim();
+            return versionName;
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to read app version", e);
+            return "";
+        }
+    }
+
+    /**
+     * Get the app build number (Android versionCode / longVersionCode).
+     */
+    public static String getAppBuildNumber() {
+        if (sActivity == null) {
+            return "";
+        }
+        try {
+            String packageName = sActivity.getPackageName();
+            android.content.pm.PackageInfo info =
+                sActivity.getPackageManager().getPackageInfo(packageName, 0);
             long versionCode = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
                 ? info.getLongVersionCode()
                 : info.versionCode;
-
-            if (versionName.isEmpty()) {
-                return String.valueOf(versionCode);
-            }
-            return versionName + " (" + versionCode + ")";
+            return String.valueOf(versionCode);
         } catch (Exception e) {
-            Log.e(TAG, "Failed to read app version", e);
+            Log.e(TAG, "Failed to read app build number", e);
             return "";
         }
     }
