@@ -143,7 +143,7 @@ adb logcat | grep zedra
 
 ### High-Level Design
 
-**iOS**: `ObjC UIKit → FFI → Rust → GPUI → Metal`
+**iOS**: `Swift UIKit runtime → C FFI ↔ Rust → GPUI → Metal`
 
 **Android**: `JNI Thread → Command Queue → Main Thread → GPUI → wgpu → Vulkan`
 
@@ -157,10 +157,14 @@ adb logcat | grep zedra
 - **`crates/zedra/src/platform_bridge.rs`** — `PlatformBridge` trait + global accessor; never call platform APIs directly from UI code
 - **`crates/zedra/src/mgpui/`** — mobile GPUI primitives: `DrawerHost`, keyboard `input`
 
-**iOS platform** (`vendor/zed/crates/gpui_ios/`):
-- `IosWindow` — Metal-backed window, touch input, safe area insets, UIKit lifecycle
-- `ios/Zedra/ZedraFirebase.m` — Firebase Analytics + Crashlytics (ObjC)
-- `ios/Zedra/SwiftCompatibilityShim.swift` — required for Firebase static pods (must exist)
+**iOS platform**:
+- `vendor/zed/crates/gpui_ios/` — `IosWindow`, Metal renderer, text input, UIKit lifecycle bridge
+- `ios/Zedra/ZedraAppDelegate.swift` — UIApplication delegate; owns app lifecycle handoff
+- `ios/Zedra/GPUIRuntimeController.swift` — GPUI startup, CADisplayLink, keyboard accessory, safe area + keyboard notifications
+- `ios/Zedra/NativeBridge.swift` — Swift C-export bridge for Firebase, alerts, selections, URL open, app metadata
+- `ios/Zedra/KeyboardSupporter.swift` — native keyboard accessory view
+- `ios/Zedra/QRScanner.swift` — AVFoundation QR scanner presented from Swift
+- `ios/Zedra/main.m` — minimal bootstrap into the Swift app delegate
 
 **Android platform** (`vendor/zed/crates/gpui_android/`, `gpui_wgpu/`):
 - `AndroidWindow` — surface lifecycle, atlas sharing; must use `WgpuRenderer::new_with_atlas()` (not `new()`)
@@ -259,8 +263,12 @@ ios/                            # Xcode project (xcodegen from project.yml)
   ├── project.yml               # OTHER_LDFLAGS must include $(inherited) before -ObjC -all_load
   ├── Podfile                   # use_frameworks! :linkage => :static
   └── Zedra/
-      ├── ZedraFirebase.m, ZedraQRScanner.m, main.m
-      └── SwiftCompatibilityShim.swift  # Must exist — Firebase static pods need Swift
+      ├── main.m                        # tiny UIApplication bootstrap
+      ├── ZedraAppDelegate.swift        # UIApplicationDelegate
+      ├── GPUIRuntimeController.swift   # GPUI lifecycle + frame loop + keyboard notifications
+      ├── NativeBridge.swift            # Swift C shims exported to Rust
+      ├── KeyboardSupporter.swift       # inputAccessoryView buttons
+      └── QRScanner.swift               # AVFoundation QR scanner
 
 android/app/src/main/java/dev/zedra/app/
   ├── MainActivity.java, GpuiSurfaceView.java, QRScannerActivity.java
@@ -329,7 +337,7 @@ zedra-rpc + zedra-telemetry
 
 ### iOS
 
-- **Swift linker error**: Ensure `ios/Zedra/SwiftCompatibilityShim.swift` exists
+- **iOS native link error**: verify Swift only calls exported Rust symbols that exist in `include/zedra_ios.h` / `ios/ZedraFFI.xcframework/.../zedra_ios.h`
 - **Firebase crash**: Check `OTHER_LDFLAGS` in `project.yml` includes `$(inherited)` before `-ObjC -all_load`
 - **No logs**: Use `./scripts/ios-log.sh` — requires USB-paired device, never use `sudo log collect`
 

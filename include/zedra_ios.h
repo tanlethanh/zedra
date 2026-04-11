@@ -143,7 +143,7 @@ extern void gpui_ios_show_keyboard(void *window_ptr);
 extern void gpui_ios_hide_keyboard(void *window_ptr);
 
 /**
- * Present the AVFoundation QR scanner (defined in ZedraQRScanner.m).
+ * Present the AVFoundation QR scanner (defined in QRScanner.swift).
  */
 extern void ios_present_qr_scanner(void);
 
@@ -156,6 +156,11 @@ extern const char *ios_get_documents_directory(void);
  * Returns the app's user-facing version string from Info.plist metadata.
  */
 extern const char *ios_get_app_version(void);
+
+/**
+ * Returns the app's build number string from Info.plist metadata.
+ */
+extern const char *ios_get_app_build_number(void);
 
 /**
  * Present a native UIAlertController with dynamic buttons.
@@ -186,7 +191,7 @@ extern void ios_present_selection(uint32_t callback_id,
 extern void ios_open_url(const char *url);
 
 /**
- * Called from the UIAlertController handler in main.m after the user taps a button.
+ * Called from the native alert handler after the user taps a button.
  *
  * `callback_id` matches the value passed to `ios_present_alert`.
  * `button_index` is the 0-based index of the tapped button (matches the `buttons` array
@@ -200,7 +205,7 @@ void zedra_ios_alert_result(uint32_t callback_id, int32_t button_index);
 void zedra_ios_alert_dismiss(uint32_t callback_id);
 
 /**
- * Called from the action sheet handler in main.m after the user taps an item.
+ * Called from the native action sheet handler after the user taps an item.
  */
 void zedra_ios_selection_result(uint32_t callback_id, int32_t button_index);
 
@@ -214,25 +219,30 @@ void zedra_ios_selection_dismiss(uint32_t callback_id);
  *
  * Drops any unacknowledged alert callbacks so closures captured in them
  * (e.g. `PendingSlot` clones) are released and do not accumulate.
- * Wire this to `applicationDidEnterBackground` in `main.m`.
+ * Wire this to the iOS app delegate's `applicationDidEnterBackground`.
  */
 void zedra_ios_app_did_enter_background(void);
 
 /**
  * Called from the native keyboard accessory bar when a shortcut key button is tapped.
  *
- * `key` is one of: "escape", "tab", "left", "down", "up", "right", "enter".
+ * `key` is one of: "escape", "tab", "left", "down", "up", "right", "enter", "shift_enter".
  * Maps the name to the corresponding terminal escape sequence and sends it via the active session.
  */
 void zedra_ios_send_key_input(const char *key);
 
 /**
- * Called from main.m when the app is opened via a zedra:// URL.
+ * Called from the native terminal composer to send finalized text to the active terminal.
+ */
+void zedra_ios_send_terminal_text(const char *text);
+
+/**
+ * Called from the native app delegate when the app is opened via a `zedra://` URL.
  */
 void zedra_deeplink_received(const char *url);
 
 /**
- * Called from ZedraQRScanner.m after a successful QR scan.
+ * Called from the native QR scanner after a successful QR scan.
  *
  * Routes through the unified deeplink path (same as system URL intents).
  */

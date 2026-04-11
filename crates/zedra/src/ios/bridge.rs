@@ -68,7 +68,7 @@ unsafe extern "C" {
     fn gpui_ios_is_keyboard_visible(window_ptr: *mut std::ffi::c_void) -> bool;
     fn gpui_ios_show_keyboard(window_ptr: *mut std::ffi::c_void);
     fn gpui_ios_hide_keyboard(window_ptr: *mut std::ffi::c_void);
-    /// Present the AVFoundation QR scanner (defined in ZedraQRScanner.m).
+    /// Present the AVFoundation QR scanner (defined in QRScanner.swift).
     fn ios_present_qr_scanner();
     /// Returns the app's Documents directory path (from NSSearchPathForDirectoriesInDomains).
     fn ios_get_documents_directory() -> *const std::ffi::c_char;
@@ -257,7 +257,7 @@ impl PlatformBridge for IosBridge {
     }
 }
 
-/// Called from the UIAlertController handler in main.m after the user taps a button.
+/// Called from the native alert handler after the user taps a button.
 ///
 /// `callback_id` matches the value passed to `ios_present_alert`.
 /// `button_index` is the 0-based index of the tapped button (matches the `buttons` array
@@ -275,7 +275,7 @@ pub extern "C" fn zedra_ios_alert_dismiss(callback_id: u32) {
     platform_bridge::dispatch_alert_dismiss(callback_id);
 }
 
-/// Called from the action sheet handler in main.m after the user taps an item.
+/// Called from the native action sheet handler after the user taps an item.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_selection_result(callback_id: u32, button_index: i32) {
     if button_index >= 0 {
@@ -293,7 +293,7 @@ pub extern "C" fn zedra_ios_selection_dismiss(callback_id: u32) {
 ///
 /// Drops any unacknowledged alert callbacks so closures captured in them
 /// (e.g. `PendingSlot` clones) are released and do not accumulate.
-/// Wire this to `applicationDidEnterBackground` in `main.m`.
+/// Wire this to the iOS app delegate's `applicationDidEnterBackground`.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_app_did_enter_background() {
     platform_bridge::clear_pending_alerts();
@@ -354,7 +354,7 @@ pub extern "C" fn zedra_ios_send_terminal_text(text: *const std::ffi::c_char) {
     active_terminal::send_to_active(text.as_bytes().to_vec());
 }
 
-/// Called from main.m when the app is opened via a zedra:// URL.
+/// Called from the native app delegate when the app is opened via a `zedra://` URL.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_deeplink_received(url: *const std::ffi::c_char) {
     if url.is_null() {
@@ -370,7 +370,7 @@ pub extern "C" fn zedra_deeplink_received(url: *const std::ffi::c_char) {
     }
 }
 
-/// Called from ZedraQRScanner.m after a successful QR scan.
+/// Called from the native QR scanner after a successful QR scan.
 ///
 /// Routes through the unified deeplink path (same as system URL intents).
 #[unsafe(no_mangle)]
