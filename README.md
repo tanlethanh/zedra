@@ -1,8 +1,6 @@
 # Zedra
 
-**Mobile remote editor. Code from anywhere.**
-
-One QR scan connects you to your desktop. Full terminal, file browser, git, and AI agents over an encrypted P2P tunnel. No port forwarding. No cloud.
+An experimental remote editor on mobile with GPU rendering powered by Zed's GPUI, P2P tunnel over QUIC/UDP by Iroh. Zedra focusses on providing mobile-first experience for developers to read code, view changes, run any AI agents on their terminals over a secure, P2P tunnel.
 
 ![Zedra](https://raw.githubusercontent.com/tanlethanh/zedra/main/packages/landing/public/OG.png)
 
@@ -11,7 +9,7 @@ One QR scan connects you to your desktop. Full terminal, file browser, git, and 
 - iOS — [TestFlight](https://testflight.apple.com/join/1EWe2kRH)
 - Android — coming soon
 
-## Quick Start
+## Desktop daemon
 
 Note: Consider using Tailscale to always have direct connection between your computers. P2P connections are unreliable on home networks and may require relay service, which isn't optimized for low latency demand.
 
