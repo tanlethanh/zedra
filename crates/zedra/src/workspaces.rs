@@ -389,6 +389,7 @@ impl Workspaces {
     /// Call this in render() — it only syncs workspaces whose sessions signaled changes.
     pub fn sync_if_needed(&mut self, cx: &mut Context<Self>) {
         let mut any_changed = false;
+        let mut persisted_changed = false;
 
         for (ws_idx, entry) in self.entries.iter().enumerate() {
             if !entry.needs_sync.swap(false, Ordering::AcqRel) {
@@ -405,7 +406,8 @@ impl Workspaces {
                 let (terminal_ids, active_terminal_id) = entry.view.read(cx).terminal_state();
                 let session_id = entry.session.handle().session_id().unwrap_or_default();
 
-                *state = WorkspaceState::update_inner(state.clone(), |s| {
+                let previous_state = state.clone();
+                let next_state = WorkspaceState::update_inner(state.clone(), |s| {
                     s.connect_phase = Some(sess.phase);
                     s.terminal_count = terminal_ids.len();
                     s.terminal_ids = terminal_ids;
@@ -431,16 +433,25 @@ impl Workspaces {
                         s.session_id = session_id;
                     }
                 });
+                *state = next_state;
 
                 // Push to view
                 let s = state.clone();
                 entry.view.update(cx, |v, cx| v.set_workspace_state(s, cx));
-                any_changed = true;
+                if previous_state != *state {
+                    any_changed = true;
+                }
+                if !previous_state.persisted_fields_eq(state) {
+                    persisted_changed = true;
+                }
             }
         }
 
         if any_changed {
             self.emit_states_changed(cx);
+        }
+        if persisted_changed {
+            self.persist_active_workspaces();
         }
     }
 
@@ -457,11 +468,6 @@ impl Workspaces {
                 WorkspaceState::upsert(ws);
             }
         }
-    }
-
-    /// Persist workspace states. Call periodically.
-    pub fn persist(&self) {
-        self.persist_active_workspaces();
     }
 
     fn emit_states_changed(&mut self, cx: &mut Context<Self>) {

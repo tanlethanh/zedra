@@ -22,7 +22,7 @@ struct StoreFile {
 }
 
 /// Inner data; not used directly. All access via [WorkspaceState] methods.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct WorkspaceStateInner {
     pub endpoint_addr: String,
     pub session_id: String,
@@ -47,7 +47,7 @@ pub struct WorkspaceStateInner {
 }
 
 /// Shareable workspace state. Clone copies the Arc only. Read via methods (non-blocking).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WorkspaceState(Arc<WorkspaceStateInner>);
 
 impl Default for WorkspaceState {
@@ -175,6 +175,7 @@ impl WorkspaceState {
             .position(|w| w.endpoint_addr() == entry_addr)
         {
             let mut i = workspaces[idx].inner().clone();
+            let before = i.clone();
             // Always update session_id (set before connect attempt).
             // Only overwrite display fields when non-empty — the handle is empty
             // during the connecting phase, so we preserve saved info until the
@@ -195,6 +196,9 @@ impl WorkspaceState {
             if !entry.inner().homedir.is_empty() {
                 i.homedir = entry.inner().homedir.clone();
             }
+            if i == before {
+                return;
+            }
             i.updated_at = now;
             workspaces[idx] = Self(Arc::new(i));
         } else {
@@ -206,6 +210,17 @@ impl WorkspaceState {
             workspaces.push(Self(Arc::new(e)));
         }
         Self::save_all(&workspaces);
+    }
+
+    pub fn persisted_fields_eq(&self, other: &Self) -> bool {
+        self.endpoint_addr() == other.endpoint_addr()
+            && self.session_id() == other.session_id()
+            && self.strip_path() == other.strip_path()
+            && self.project_name() == other.project_name()
+            && self.workdir() == other.workdir()
+            && self.homedir() == other.homedir()
+            && self.hostname() == other.hostname()
+            && self.inner().created_at == other.inner().created_at
     }
 
     pub(crate) fn update_inner<F>(s: Self, f: F) -> Self

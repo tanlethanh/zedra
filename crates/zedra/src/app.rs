@@ -77,31 +77,13 @@ impl ZedraApp {
             _subscriptions: subscriptions,
         };
 
-        // Start background tasks (persist timer, state sync)
+        // Start background tasks (deeplink + state sync)
         app.start_background_tasks(cx);
 
         app
     }
 
     fn start_background_tasks(&self, cx: &mut Context<Self>) {
-        // Periodic persist (every 5 seconds)
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(Duration::from_secs(5)).await;
-                let should_continue = this
-                    .update(cx, |this, cx| {
-                        if !this.workspaces.read(cx).is_empty() {
-                            this.workspaces.read(cx).persist();
-                        }
-                    })
-                    .is_ok();
-                if !should_continue {
-                    break;
-                }
-            }
-        })
-        .detach();
-
         // Periodic state sync + deeplink check (every 100ms for responsiveness)
         cx.spawn(async move |this, cx| {
             loop {
