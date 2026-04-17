@@ -4,6 +4,12 @@ pub mod keys;
 pub mod terminal;
 pub mod view;
 
+pub use element::*;
+pub use input::*;
+pub use keys::*;
+pub use terminal::*;
+pub use view::*;
+
 use std::sync::atomic::{AtomicU32, Ordering};
 
 // Global keyboard height in physical pixels, set by the JNI layer.
