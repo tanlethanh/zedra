@@ -47,6 +47,6 @@ ios/Zedra/GoogleService-Info.plist
 node_modules
 
 screenshots
-docs
 
 .env*
+.private
