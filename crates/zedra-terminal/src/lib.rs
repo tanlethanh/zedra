@@ -10,6 +10,7 @@ pub use keys::*;
 pub use terminal::*;
 pub use view::*;
 
+use gpui::*;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 // Global keyboard height in physical pixels, set by the JNI layer.
@@ -43,3 +44,6 @@ pub fn get_display_density() -> f32 {
 /// The font family name for the embedded terminal font.
 /// The font bytes and loader live in the `zedra` crate (`fonts` module).
 pub const MONO_FONT_FAMILY: &str = "JetBrainsMonoNL Nerd Font Mono";
+
+/// The font size for the embedded terminal font.
+pub const TERMINAL_FONT_SIZE: Pixels = px(12.0);

@@ -1,22 +1,56 @@
 // Terminal view - GPUI Render implementation for the terminal
-// Manages terminal state, handles keyboard input, and renders the terminal grid
+// Manages terminal state, viewport-driven sizing, and rendering of the terminal grid
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc;
 
-use gpui::*;
+use gpui::{prelude::FluentBuilder as _, *};
+use tokio::sync::mpsc;
+use tracing::*;
 
 use crate::element::TerminalElement;
 use crate::terminal::Terminal;
 
+const FALLBACK_CELL_WIDTH: f32 = 9.0;
+const TERMINAL_LINE_HEIGHT: f32 = 16.0;
+
 /// Thread-safe buffer for receiving PTY output.
 pub type OutputBuffer = Arc<Mutex<VecDeque<Vec<u8>>>>;
 
+#[derive(Clone, Copy, Debug)]
+pub struct TerminalGridSize {
+    pub columns: usize,
+    pub rows: usize,
+    pub cell_width: Pixels,
+    pub line_height: Pixels,
+}
+
+impl TerminalGridSize {
+    fn remote_size(self) -> (u16, u16) {
+        (self.columns as u16, self.rows as u16)
+    }
+}
+
+trait IntoRemoteSize {
+    fn into_remote_size(self) -> (u16, u16);
+}
+
+impl IntoRemoteSize for crate::terminal::TerminalSize {
+    fn into_remote_size(self) -> (u16, u16) {
+        (self.columns as u16, self.rows as u16)
+    }
+}
+
+pub enum TerminalEvent {
+    RequestResize { cols: u16, rows: u16 },
+}
+
 pub struct TerminalView {
+    terminal_id: String,
     terminal: Entity<Terminal>,
     focus_handle: FocusHandle,
     scroll_offset_px: f32,
+    last_remote_size: Option<(u16, u16)>,
     /// Top-left origin of the painted terminal grid within the window.
     /// Used to turn touch scroll positions into terminal cell coordinates.
     grid_origin: Option<Point<Pixels>>,
@@ -24,17 +58,93 @@ pub struct TerminalView {
 
 impl TerminalView {
     pub fn new(
-        columns: usize,
-        rows: usize,
-        cell_width: Pixels,
-        line_height: Pixels,
+        terminal_id: String,
+        window: &mut Window,
+        viewport: Size<Pixels>,
         cx: &mut Context<Self>,
     ) -> Self {
+        let initial_grid_size = TerminalView::compute_grid_size(window, viewport);
+
         Self {
-            terminal: cx.new(|_cx| Terminal::new(columns, rows, cell_width, line_height)),
+            terminal: cx.new(|_cx| {
+                Terminal::new(
+                    initial_grid_size.columns,
+                    initial_grid_size.rows,
+                    initial_grid_size.cell_width,
+                    initial_grid_size.line_height,
+                )
+            }),
+            terminal_id,
             focus_handle: cx.focus_handle(),
             scroll_offset_px: 0.0,
+            last_remote_size: None,
             grid_origin: None,
+        }
+    }
+
+    pub fn set_terminal_id(&mut self, terminal_id: String) {
+        self.terminal_id = terminal_id;
+    }
+
+    pub fn compute_grid_size(window: &mut Window, viewport: Size<Pixels>) -> TerminalGridSize {
+        let line_height = px(TERMINAL_LINE_HEIGHT);
+        let cell_width = Self::measure_cell_width(window, line_height);
+        Self::compute_grid_size_with_metrics(
+            Self::visible_viewport(viewport),
+            cell_width,
+            line_height,
+        )
+    }
+
+    fn measure_cell_width(window: &mut Window, line_height: Pixels) -> Pixels {
+        let font = Font {
+            family: crate::MONO_FONT_FAMILY.into(),
+            features: FontFeatures::default(),
+            fallbacks: None,
+            weight: FontWeight::NORMAL,
+            style: FontStyle::Normal,
+        };
+        let font_size = line_height * 0.75;
+        let text_system = window.text_system();
+        let font_id = text_system.resolve_font(&font);
+        text_system
+            .advance(font_id, font_size, 'm')
+            .map(|size| size.width)
+            .unwrap_or(px(FALLBACK_CELL_WIDTH))
+    }
+
+    fn compute_grid_size_with_metrics(
+        viewport: Size<Pixels>,
+        cell_width: Pixels,
+        line_height: Pixels,
+    ) -> TerminalGridSize {
+        let width = viewport.width.max(px(0.0));
+        let height = viewport.height.max(px(0.0));
+        let columns = (width / cell_width).floor() as usize;
+        let rows = (height / line_height).floor() as usize;
+
+        TerminalGridSize {
+            columns,
+            rows,
+            cell_width,
+            line_height,
+        }
+    }
+
+    /// The visible viewport is the viewport minus the keyboard inset.
+    fn visible_viewport(viewport: Size<Pixels>) -> Size<Pixels> {
+        Size {
+            width: viewport.width.max(px(0.0)),
+            height: (viewport.height - Self::keyboard_inset()).max(px(0.0)),
+        }
+    }
+
+    fn keyboard_inset() -> Pixels {
+        let density = crate::get_display_density();
+        if density > 0.0 {
+            px(crate::get_keyboard_height() as f32 / density)
+        } else {
+            px(0.0)
         }
     }
 
@@ -53,6 +163,68 @@ impl TerminalView {
         });
     }
 
+    pub fn remote_size(&self, cx: &App) -> (u16, u16) {
+        self.terminal.read(cx).size().into_remote_size()
+    }
+
+    /// This is called by TerminalElement when the actual bounds of the terminal
+    /// do not match the expected bounds.
+    pub(crate) fn reconcile_bounds_fallback(
+        &mut self,
+        actual_bounds: Size<Pixels>,
+        cell_width: Pixels,
+        line_height: Pixels,
+        cx: &mut Context<Self>,
+    ) {
+        let mut next = Self::compute_grid_size_with_metrics(actual_bounds, cell_width, line_height);
+        if crate::get_keyboard_height() > 0 {
+            let current_rows = self.terminal.read(cx).size().rows;
+            next.rows = next.rows.max(1).min(current_rows);
+        }
+        self.apply_grid_size(next, cx);
+    }
+
+    fn apply_grid_size(&mut self, next: TerminalGridSize, cx: &mut Context<Self>) {
+        let size = self.terminal.read(cx).size();
+        let changed = size.columns != next.columns
+            || size.rows != next.rows
+            || size.cell_width != next.cell_width
+            || size.line_height != next.line_height;
+
+        if changed {
+            let terminal_id = self.terminal_id.clone();
+            self.terminal.update(cx, |terminal, _cx| {
+                info!(
+                    terminal_id,
+                    columns = next.columns,
+                    rows = next.rows,
+                    "terminal grid resized"
+                );
+                terminal.resize(next.columns, next.rows, next.cell_width, next.line_height);
+            });
+            cx.notify();
+        }
+
+        if !changed && self.last_remote_size == Some(next.remote_size()) {
+            return;
+        }
+
+        self.resize_remote_pty(next, cx);
+    }
+
+    fn resize_remote_pty(&mut self, next: TerminalGridSize, cx: &mut Context<Self>) {
+        let remote_size = next.remote_size();
+        if self.last_remote_size == Some(remote_size) {
+            return;
+        }
+
+        self.last_remote_size = Some(remote_size);
+        cx.emit(TerminalEvent::RequestResize {
+            cols: remote_size.0,
+            rows: remote_size.1,
+        });
+    }
+
     /// Scroll the terminal by line count (positive = up).
     pub fn scroll(&mut self, cx: &mut Context<Self>, lines: i32) {
         self.terminal.update(cx, |terminal, _| {
@@ -64,6 +236,8 @@ impl TerminalView {
         self.grid_origin = Some(origin);
     }
 }
+
+impl EventEmitter<TerminalEvent> for TerminalView {}
 
 impl Focusable for TerminalView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
@@ -77,11 +251,13 @@ impl Render for TerminalView {
         let content = terminal.content();
         let size = terminal.size();
         let focus_handle = self.focus_handle.clone();
+        let keyboard_inset = Self::keyboard_inset();
 
         div()
             .size_full()
             .overflow_hidden()
             .bg(rgb(0x0e0c0c))
+            .when(keyboard_inset > px(0.0), |div| div.pb(keyboard_inset))
             .track_focus(&focus_handle)
             .key_context("Terminal")
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {

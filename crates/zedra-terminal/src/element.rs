@@ -555,29 +555,17 @@ impl Element for TerminalElement {
             });
         });
 
-        // Resize PTY to match actual element bounds if they changed.
+        // Reconcile the bounds with the actual size of the terminal.
+        // This may happen when the terminal is resized by layout changes, rotation
+        // or keyboard appearance/disappearance that push/pull an inset in TerminalView.
         let actual_rows = (bounds.size.height / line_height).floor() as usize;
         let actual_cols = (bounds.size.width / cell_width).floor() as usize;
         if actual_rows != self.size.rows || actual_cols != self.size.columns {
-            let terminal = self.terminal.clone();
+            let view = self.view.clone();
+            let actual_bounds = bounds.size;
             window.defer(cx, move |_window, cx| {
-                let _ = terminal.update(cx, |term, cx| {
-                    let size = term.size();
-                    // When the soft keyboard is open it shrinks the terminal rows intentionally.
-                    // The element bounds don't account for the keyboard, so actual_rows reflects
-                    // the full height. Clamp to the current (keyboard-adjusted) row count to
-                    // avoid fighting the keyboard resize in render().
-                    let new_rows = if crate::get_keyboard_height() > 0 {
-                        actual_rows.max(1).min(size.rows)
-                    } else {
-                        actual_rows.max(1)
-                    };
-                    let new_cols = actual_cols.max(1);
-                    if size.rows == new_rows && size.columns == new_cols {
-                        return;
-                    }
-                    term.resize(new_cols, new_rows, cell_width, line_height);
-                    cx.notify();
+                let _ = view.update(cx, |view, cx| {
+                    view.reconcile_bounds_fallback(actual_bounds, cell_width, line_height, cx);
                 });
             });
         }
