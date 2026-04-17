@@ -42,6 +42,16 @@ warn!(id = %terminal_id, err = %e, "terminal: attach failed");
 
 Always `platform_bridge::bridge()`. Never call platform APIs directly from UI code.
 
+## Async Runtime Selection
+
+Choose the executor based on which thread/context owns the work:
+
+- `cx.spawn(...)` or `cx.spawn_in(window, ...)` for UI-thread async work in GPUI.
+- `zedra_session::session_runtime().spawn(...)` for session/network tasks that must run on Tokio even when called from GPUI or other non-Tokio threads.
+- `tokio::spawn(...)` only when the current function is already guaranteed to run inside the session Tokio runtime and the task is not part of a reusable API that may also be called from GPUI.
+
+**Rule of thumb**: library/session-layer code should not assume the caller has entered a Tokio runtime. If it needs to spawn Tokio tasks internally, prefer `session_runtime()` over bare `tokio::spawn()`.
+
 ## WorkspaceState as Single Source of Truth
 
 All display reads from `WorkspaceState`, never `SessionHandle`.
