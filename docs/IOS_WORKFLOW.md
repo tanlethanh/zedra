@@ -1,640 +1,142 @@
 # iOS Workflow
 
-This document covers everything you need to work on the iOS port of Zedra —
-build commands, project configuration, architecture, debugging, and the FFI
-boundary between Rust and the native Swift/UIKit runtime.
-
----
-
-## Table of Contents
-
-1. [Prerequisites](#prerequisites)
-2. [Quick Start](#quick-start)
-3. [Common Commands](#common-commands)
-4. [Project Structure](#project-structure)
-5. [Build Pipeline](#build-pipeline)
-6. [Key Configuration](#key-configuration)
-7. [Architecture](#architecture)
-8. [Adding Swift ↔ Rust FFI](#adding-swift--rust-ffi)
-9. [Debugging](#debugging)
-10. [Known Pitfalls](#known-pitfalls)
-11. [Device Reference](#device-reference)
-
----
-
 ## Prerequisites
 
-| Tool             | Version | Install                         |
-| ---------------- | ------- | ------------------------------- |
-| Xcode            | 26+     | Mac App Store                   |
-| xcodegen         | any     | `brew install xcodegen`         |
-| Rust             | 1.75+   | `rustup`                        |
-| libimobiledevice | any     | `brew install libimobiledevice` |
+| Tool | Install |
+|------|---------|
+| Xcode 26+ | Mac App Store |
+| xcodegen | `brew install xcodegen` |
+| Rust targets | `rustup target add aarch64-apple-ios aarch64-apple-ios-sim` |
+| libimobiledevice | `brew install libimobiledevice` |
+| Submodules | `git submodule update --init --recursive` |
 
-**Rust targets** — must be installed once:
+## Commands
 
-```bash
-rustup target add aarch64-apple-ios          # physical device
-rustup target add aarch64-apple-ios-sim      # simulator
-```
-
-**Submodules** — must be initialized once:
+### Build + Run
 
 ```bash
-git submodule update --init --recursive
+./scripts/run-ios.sh device              # full: Rust → xcframework → Xcode → install → launch
+./scripts/run-ios.sh sim                 # simulator
+./scripts/run-ios.sh device --release    # release build
+./scripts/run-ios.sh device --no-build   # relaunch without rebuilding
+./scripts/run-ios.sh device --select-device  # pick device
+./scripts/run-ios.sh sim --no-build --launch-url 'zedra://...'  # deep link
 ```
 
-`vendor/zed` (branch `feat/gpui-ios`) contains the `gpui_ios` platform crate.
+### Native-Only Rebuild (~5s vs ~60s)
 
----
-
-## Quick Start
+Skip Rust rebuild when only changing Swift/ObjC:
 
 ```bash
-# Full build + install + launch on connected device
-./scripts/run-ios.sh device
-
-# Stream logs from device
-/opt/homebrew/bin/idevicesyslog | grep -E 'Zedra\[|zedra\[|\[I |\[W |\[E |\[D |panic|PANIC' --line-buffered
+cd ios && xcodegen generate && xcodebuild build \
+  -project Zedra.xcodeproj -scheme Zedra \
+  -destination "id=<DEVICE_ID>" -allowProvisioningUpdates -quiet
 ```
 
----
-
-## Common Commands
-
-### Build
-
-| Command                       | What it does                                                 |
-| ----------------------------- | ------------------------------------------------------------ |
-| `./scripts/run-ios.sh device` | Full pipeline: Rust → xcframework → Xcode → install → launch |
-| `./scripts/run-ios.sh sim`    | Same but targets the iOS Simulator                           |
-| `./scripts/build-ios.sh`      | Build Rust libraries + xcframework only (no Xcode)           |
-
-### Native-only incremental build (skip Rust rebuild, ~5s vs ~60s)
+### Logs
 
 ```bash
-cd ios
-xcodegen generate
-xcodebuild build \
-  -project Zedra.xcodeproj \
-  -scheme Zedra \
-  -destination "id=00008132-0019312A3C83001C" \
-  -allowProvisioningUpdates \
-  -quiet
-
-APP=$(find ~/Library/Developer/Xcode/DerivedData/Zedra-*/Build/Products/Debug-iphoneos \
-      -name "Zedra.app" -type d | head -1)
-xcrun devicectl device install app --device 9F0ACED3-EE4F-593D-B15E-93954D93FD94 "$APP"
-xcrun devicectl device process launch --device 9F0ACED3-EE4F-593D-B15E-93954D93FD94 dev.zedra.app
+./scripts/log-ios.sh                     # stream all logs via USB
+./scripts/log-ios.sh --filter zedra      # filtered
+./scripts/log-ios.sh --select-device     # choose device
 ```
 
-### Logs and Diagnostics
+## Build Pipeline
 
-```bash
-# Stream all Zedra logs from device (most useful)
-/opt/homebrew/bin/idevicesyslog | grep -E 'Zedra|zedra|panic|fault' --line-buffered
-
-# Capture stderr from process launch (early boot / pre-log crashes)
-xcrun devicectl device process launch --console \
-  --device 9F0ACED3-EE4F-593D-B15E-93954D93FD94 dev.zedra.app
-
-# Screenshot for visual verification
-idevicescreenshot /tmp/zedra-screen.png
-
-# Fetch crash reports from device
-xcrun devicectl device copy from \
-  --device 9F0ACED3-EE4F-593D-B15E-93954D93FD94 \
-  "/var/mobile/Library/Logs/CrashReporter/" /tmp/ios-crashes/
+```
+crates/zedra/ (Rust)
+  → cargo build --target aarch64-apple-ios (staticlib)
+  → xcodebuild -create-xcframework
+  → ios/ZedraFFI.xcframework/
+  → cd ios && xcodegen generate → Zedra.xcodeproj
+  → xcodebuild build → Zedra.app
+  → xcrun devicectl install + launch
 ```
 
-### Xcode Project
-
-```bash
-# Regenerate Zedra.xcodeproj from ios/project.yml (required after editing project.yml)
-cd ios && xcodegen generate
-```
-
----
+**Note**: `Cargo.toml` declares `crate-type = ["cdylib", "staticlib"]`. The cdylib is for Android. On iOS the cdylib link step fails (expected) — `build-ios.sh` uses `|| true` and checks for the `.a` only. Weak stubs in `ios_stub.c` satisfy the linker.
 
 ## Project Structure
 
 ```
 scripts/
-  build-ios.sh          # Rust build → ZedraFFI.xcframework
-  run-ios.sh            # Full pipeline: build + install + launch
+  build-ios.sh        # Rust → ZedraFFI.xcframework
+  run-ios.sh          # Full pipeline: build + install + launch
+  log-ios.sh          # Stream device logs
 
 ios/
-  project.yml           # XcodeGen spec — source of truth for the Xcode project
-  Zedra.xcodeproj/      # Generated by xcodegen — do not edit manually
-  ZedraFFI.xcframework/ # Built xcframework; *.a files are gitignored (rebuilt by
-                        # scripts/build-ios.sh). Info.plist and headers are committed.
-                        # Contains libzedra.a for device (ios-arm64) and
-                        # simulator (ios-arm64-simulator).
+  project.yml         # XcodeGen spec (source of truth)
+  Zedra.xcodeproj/    # Generated — do not edit
+  ZedraFFI.xcframework/  # .a files gitignored, rebuilt by build-ios.sh
   Zedra/
-    main.m              # Tiny UIApplication bootstrap; resolves Swift app delegate
-    ZedraAppDelegate.swift
-    GPUIRuntimeController.swift
-    NativeBridge.swift
-    KeyboardSupporter.swift
-    QRScanner.swift
+    main.m                     # UIApplication bootstrap
+    ZedraAppDelegate.swift     # App delegate
+    GPUIRuntimeController.swift  # GPUI lifecycle, frame loop, keyboard
+    NativeBridge.swift         # Swift→C bridge (alerts, URLs, Firebase)
+    KeyboardSupporter.swift    # Keyboard accessory view
+    QRScanner.swift            # AVFoundation QR scanner
 
 include/
-  zedra_ios.h           # Auto-generated by cbindgen from Rust #[no_mangle] exports
-  gpui_ios.h            # GPUI iOS FFI header (from vendor/zed)
-
-crates/zedra/
-  src/
-    lib.rs              # #[cfg(target_os = "ios")] pub mod ios;
-    ios.rs              # Module root: re-exports bridge + gpui_app
-    ios/
-      bridge.rs         # IosBridge (PlatformBridge impl) + iOS FFI exports consumed by Swift
-      app.rs            # zedra_launch_gpui() — creates GPUI app, registers callback
-      telemetry.rs      # Rust telemetry bridge -> NativeBridge.swift
-    ios_stub.c          # Weak stubs for native entry points so the cdylib can still link
-  build.rs              # Compiles ios_stub.c via cc crate; runs cbindgen for iOS targets
-  Cargo.toml            # crate-type = ["cdylib", "staticlib"]
-
-vendor/zed/crates/gpui_ios/src/
-  ios/
-    ffi.rs              # All gpui_ios_* C exports (lifecycle, input, frame)
-    platform.rs         # IosPlatform: Platform trait impl
-    window.rs           # IosWindow: Metal CALayer + touch dispatch
-    text_system.rs      # IosTextSystem: CoreText font rendering
-    dispatcher.rs       # IosDispatcher: GCD-backed task queue
-  metal_renderer.rs     # MetalRenderer: command buffers, render passes, scene drawing
-  shaders.metal         # Metal shaders for GPUI primitives
+  zedra_ios.h         # Auto-generated by cbindgen (do not edit)
+  gpui_ios.h          # GPUI iOS FFI header (from vendor/zed)
 ```
-
----
-
-## Build Pipeline
-
-```
-crates/zedra/src/ (Rust)
-        │
-        ▼  cargo build --target aarch64-apple-ios --release --features ios-platform
-        │
-  target/aarch64-apple-ios/release/libzedra.a        (device)
-  target/aarch64-apple-ios-sim/release/libzedra.a    (simulator)
-        │
-        ▼  xcodebuild -create-xcframework
-        │
-  ios/ZedraFFI.xcframework/
-    ios-arm64/libzedra.a                              (device slice, gitignored)
-    ios-arm64-simulator/libzedra.a                    (simulator slice, gitignored)
-        │
-        ▼  cd ios && xcodegen generate → Zedra.xcodeproj
-        │
-        ▼  xcodebuild build -destination id=<device>
-        │
-  DerivedData/.../Zedra.app
-        │
-        ▼  xcrun devicectl device install app / process launch
-        │
-  Running on device
-```
-
-**Why the cdylib exists but is ignored on iOS:**
-`Cargo.toml` declares `crate-type = ["cdylib", "staticlib"]`. The cdylib is for
-Android (JNI `.so`). On iOS it fails to link (native symbols like
-`ios_present_qr_scanner` are undefined at Rust link time). `build-ios.sh` runs
-cargo with `|| true` and only checks that the `.a` was produced. A weak C stub
-in `src/ios_stub.c` (compiled by `build.rs`) satisfies the cdylib linker so
-cargo writes the updated `.a` even when the cdylib link fails.
-
----
-
-## Key Configuration
-
-### Deployment Target
-
-**Must be consistent in three places:**
-
-| File                   | Setting                               | Current Value |
-| ---------------------- | ------------------------------------- | ------------- |
-| `scripts/build-ios.sh` | `export IPHONEOS_DEPLOYMENT_TARGET=`  | `26.0`        |
-| `ios/project.yml`      | `deploymentTarget.iOS:`               | `"26.0"`      |
-| _(Xcode project)_      | Derived from project.yml via xcodegen | `26.0`        |
-
-If these diverge, xcodebuild warns about object files built for a newer iOS
-than the app being linked.
-
-### Code Signing
-
-Configured in `ios/project.yml` under `settings.base`:
-
-```yaml
-CODE_SIGN_STYLE: Automatic
-DEVELOPMENT_TEAM: 4R7EAZY462
-```
-
-Automatic signing requires being logged into Xcode with the matching Apple ID.
-Pass `-allowProvisioningUpdates` to `xcodebuild` so it can refresh profiles.
-
-### Bundle Identifier
-
-`dev.zedra.app` — set in `ios/project.yml`:
-
-```yaml
-PRODUCT_BUNDLE_IDENTIFIER: dev.zedra.app
-```
-
-### Linker Flags
-
-```yaml
-OTHER_LDFLAGS: ["-ObjC", "-all_load"]
-```
-
-- `-ObjC`: Force-load all ObjC classes/categories from static libs.
-- `-all_load`: Ensure all symbols (including Rust `#[no_mangle]` exports like
-  `zedra_qr_scanner_result`) are loaded from `ZedraFFI.xcframework`.
-
-### Frameworks
-
-Declared in `ios/project.yml` under `dependencies`:
-
-```yaml
-- framework: ZedraFFI.xcframework    # Rust static library (lives in ios/)
-- sdk: Metal.framework
-- sdk: MetalKit.framework
-- sdk: QuartzCore.framework
-- sdk: CoreFoundation.framework
-- sdk: CoreGraphics.framework
-- sdk: CoreText.framework
-- sdk: UIKit.framework
-- sdk: Security.framework
-- sdk: Network.framework
-- sdk: AVFoundation.framework
-```
-
-After adding a new framework, run `xcodegen generate` to regenerate the project.
-
----
 
 ## Architecture
 
 ### Startup Sequence
 
 ```
-main.m → UIApplicationMain(NSClassFromString("ZedraAppDelegate"))
-  │
-  └─ ZedraAppDelegate.application(_:didFinishLaunchingWithOptions:)
-       │
-       └─ GPUIRuntimeController.launch()
-            │
-            ├─ 1. zedra_firebase_initialize()     → Swift NativeBridge configures Firebase
-            │
-            ├─ 2. gpui_ios_initialize()           → initializes IOS_APP_STATE + IOS_WINDOW_LIST
-       │      (vendor/zed/crates/gpui_ios/src/ios/ffi.rs)
-       │
-            ├─ 3. zedra_launch_gpui()             → creates GPUI App + IosPlatform
-       │      (crates/zedra/src/ios/app.rs)
-       │       ├─ set_bridge(IosBridge)   → registers iOS PlatformBridge
-       │       ├─ App::new_app(IosPlatform, ...)
-       │       └─ platform.run(callback)  → stores callback in IOS_APP_STATE
-       │
-            ├─ 4. gpui_ios_did_finish_launching()
-       │      → fires stored callback → cx.open_window(ZedraApp)
-       │      → IosWindow created → Metal CALayer set up → register_window()
-       │
-            ├─ 5. gpui_ios_get_window()          → returns IosWindow ptr
-       │
-            ├─ 6. KeyboardSupporter builds native inputAccessoryView
-            │      → gpui_ios_set_keyboard_accessory_view(view)
-            │
-            └─ 7. CADisplayLink @ 60 FPS → gpui_ios_request_frame(window_ptr)
-                   → fires GPUI's request_frame callback → renders scene via Metal
+main.m → UIApplicationMain → ZedraAppDelegate
+  → GPUIRuntimeController.launch()
+    → gpui_ios_initialize()        # GPUI state
+    → zedra_launch_gpui()          # GPUI App + IosPlatform + IosBridge
+    → gpui_ios_did_finish_launching()  # open window, create Metal layer
+    → CADisplayLink @ 60 FPS       # drives gpui_ios_request_frame()
 ```
 
-### Threading Model
+### FFI Boundaries
 
-All GPUI code runs on the **main thread**. `IosPlatform` uses `IosDispatcher`
-(backed by GCD `dispatch_async(dispatch_get_main_queue(), ...)`) to schedule
-tasks. There is no command-queue indirection like Android — UIKit's run loop
-drives everything.
+**Swift → Rust** (two headers):
+- `gpui_ios.h`: lifecycle (`gpui_ios_initialize`, `gpui_ios_request_frame`, keyboard show/hide)
+- `zedra_ios.h`: app-specific (`zedra_launch_gpui`, `zedra_deeplink_received`, `zedra_qr_scanner_result`)
 
-### Rendering
+**Rust → Swift** (C symbols via `@_cdecl` in NativeBridge.swift):
+- `ios_present_alert`, `ios_present_selection`, `ios_open_url`
+- `ios_present_qr_scanner`, `zedra_log_event`
 
-`MetalRenderer` (`vendor/zed/crates/gpui_ios/src/metal_renderer.rs`) renders
-GPUI scenes directly to a `CAMetalLayer` using Metal command buffers. GPUI
-builds a `Scene` (shapes, text sprites, images) and `MetalRenderer` converts
-it to GPU draw calls each frame.
+### Adding FFI
 
-**Device selection**: On iOS, `MetalDevice::system_default()` is used directly.
-The macOS pattern of enumerating `Device::all()` and filtering by
-`is_removable()`/`is_low_power()` is gated behind `#[cfg(not(target_os = "ios"))]`
-because iOS GPU driver classes (e.g. `AGXG16GDevice` on M4) do not implement
-those selectors — calling them raises `NSInvalidArgumentException`.
+**Rust → Swift**:
+1. Implement in Swift with `@_cdecl` (usually `NativeBridge.swift`)
+2. Declare `unsafe extern "C" { fn my_func(...); }` in `ios/bridge.rs`
+3. Add weak stub in `ios_stub.c`
 
-### Bridge Directions
+**Swift → Rust**:
+1. Add `#[unsafe(no_mangle)] pub extern "C" fn` in `ios/bridge.rs`
+2. Run `./scripts/build-ios.sh` (cbindgen regenerates `zedra_ios.h`)
+3. Call from Swift: `import ZedraFFI; my_rust_callback(...)`
 
-There are three distinct boundaries on iOS:
+## Key Configuration
 
-1. `Swift/UIKit -> gpui_ios` for GPUI lifecycle, keyboard visibility, frame requests, and window access.
-2. `Swift/UIKit -> zedra_ios` for app-specific Rust exports such as launch, deeplink delivery, terminal input forwarding, and QR scan callbacks.
-3. `Rust -> Swift/UIKit` for native capabilities that Rust requests through C symbols implemented in `NativeBridge.swift` and `QRScanner.swift`.
+### Deployment Target
 
-### Swift -> Rust / GPUI
+Must match in `scripts/build-ios.sh` (`IPHONEOS_DEPLOYMENT_TARGET`), `ios/project.yml` (`deploymentTarget.iOS`), and Xcode. Current: `26.0`.
 
-`GPUIRuntimeController.swift` is the runtime owner. It calls into Rust/GPUI via two headers:
+### Linker Flags
 
-**`include/gpui_ios.h`** (from vendor/zed) — GPUI lifecycle functions:
-
-```c
-gpui_ios_initialize()           // set up state
-gpui_ios_did_finish_launching() // fire GPUI launch callback
-gpui_ios_get_window()           // get IosWindow ptr for CADisplayLink
-gpui_ios_request_frame()        // drive one render frame
-gpui_ios_show/hide_keyboard()   // soft keyboard control
-gpui_ios_will_enter_foreground() / did_become_active() / etc.
+```yaml
+OTHER_LDFLAGS: ["$(inherited)", "-ObjC", "-all_load"]
 ```
 
-**`include/zedra_ios.h`** (auto-generated by cbindgen from `crates/zedra/src/`)
-— Zedra-specific exports:
+`$(inherited)` is required before `-ObjC -all_load` (Firebase static pods need it).
 
-```c
-zedra_launch_gpui()             // create GPUI app + register window callback
-zedra_deeplink_received()       // forward zedra:// links into Rust
-zedra_ios_send_key_input()      // keyboard accessory forwarding into the active terminal
-zedra_qr_scanner_result()       // called by QRScanner.swift after scan
-```
+### Code Signing
 
-The generated header is regenerated on every `build-ios.sh` run via `cbindgen`
-in `build.rs`. Do not edit it manually.
-
-### Rust -> Swift / NativeBridge
-
-Rust requests native platform behavior through C symbols implemented in Swift:
-
-```text
-Rust                              Swift native layer
-----                              ------------------
-ios_present_alert            ->   NativeBridge.swift presents UIAlertController
-ios_present_selection        ->   NativeBridge.swift presents action sheet
-ios_open_url                 ->   NativeBridge.swift calls UIApplication.open
-ios_get_app_version          ->   NativeBridge.swift reads Info.plist
-ios_get_documents_directory  ->   NativeBridge.swift returns Documents path
-ios_present_qr_scanner       ->   QRScanner.swift presents AVFoundation scanner
-zedra_log_event              ->   NativeBridge.swift forwards to Firebase SDK
-```
-
-### PlatformBridge
-
-`IosBridge` (`crates/zedra/src/ios/bridge.rs`) implements the `PlatformBridge`
-trait. It is the Rust-side abstraction layer over the native bridge:
-
-```
-Rust code              IosBridge                 Native layer
-──────────            ──────────                ────────────
-bridge().launch_qr_scanner() → ios_present_qr_scanner() → QRScannerViewController
-bridge().show_keyboard()      → gpui_ios_show_keyboard() → IosWindow / UITextInput
-bridge().density()            → SCREEN_SCALE atomic      ← GPUIRuntimeController.pushScreenScale()
-bridge().system_inset_top()   → SAFE_AREA_TOP atomic     ← GPUIRuntimeController.pushSafeAreaInsets()
-```
-
-Safe area insets and screen scale are pushed dynamically from Swift via FFI:
-- On launch: `pushScreenScale` + deferred `pushSafeAreaInsets` (after UIWindow layout)
-- On `applicationDidBecomeActive`: re-push insets
-- On orientation change (`UIDevice.orientationDidChangeNotification`): re-push
-
-Values are stored as `AtomicU32` globals in `bridge.rs` (scale uses `f32::to_bits()`).
-`system_inset_top()` / `system_inset_bottom()` return physical pixels; callers divide
-by `density()` to convert to logical pixels.
-
-The bridge is registered at startup in `zedra_launch_gpui()`:
-
-```rust
-crate::platform_bridge::set_bridge(super::bridge::IosBridge);
-```
-
----
-
-## Adding Swift ↔ Rust FFI
-
-### Rust → Swift (calling native code from Rust)
-
-1. Implement the function in Swift with `@_cdecl`, usually in `ios/Zedra/NativeBridge.swift` or a focused native file.
-2. Declare it in `crates/zedra/src/ios/bridge.rs`:
-   ```rust
-   unsafe extern "C" {
-       fn my_ios_function(arg: std::ffi::c_int);
-   }
-   ```
-3. Add a weak stub in `crates/zedra/src/ios_stub.c` so the cdylib can link:
-   ```c
-   __attribute__((weak)) void my_ios_function(int arg) {}
-   ```
-4. Call it from Rust: `unsafe { my_ios_function(42) }`
-
-### Swift → Rust (calling Rust from native code)
-
-1. Add a `#[unsafe(no_mangle)] pub extern "C" fn my_rust_callback(...)` in
-   `crates/zedra/src/ios/bridge.rs` (or `app.rs`).
-2. Regenerate `include/zedra_ios.h` via `./scripts/build-ios.sh`.
-3. Import `ZedraFFI` in Swift and call the generated C symbol directly.
-   ```swift
-   import ZedraFFI
-   "hello".withCString { my_rust_callback($0) }
-   ```
-4. The function appears automatically in `include/zedra_ios.h` after the next
-   `build-ios.sh` run (cbindgen picks up `#[no_mangle]` exports).
-5. With `-all_load` in `OTHER_LDFLAGS`, the symbol is guaranteed to be loaded
-   from `ZedraFFI.xcframework` at Xcode link time.
-
----
-
-## Debugging
-
-### Early Boot Crashes
-
-The DIAG macro in `main.m` writes directly to `stderr` using `write(STDERR_FILENO)`,
-which is captured by `--console`. Use it for anything before `zedra_launch_gpui()`:
-
-```objc
-DIAG("my checkpoint");  // appears in --console output
-```
-
-To see it:
-
-```bash
-xcrun devicectl device process launch --console \
-  --device 9F0ACED3-EE4F-593D-B15E-93954D93FD94 dev.zedra.app
-```
-
-Output lines look like: `ZEDRA_DIAG: my checkpoint`
-
-**Note**: `NSLog` and `os_log` (Rust's `log::info!()`) do NOT appear in `--console`
-output. Use `idevicesyslog` to see those.
-
-### Runtime Logs (Rust log:: + NSLog)
-
-Rust log messages go through `IosLogger` (`crates/zedra/src/ios/logger.rs`), which
-formats them as `[I/W/E/D/T module] message` and calls `zedra_nslog()` — a tiny
-ObjC wrapper around `NSLog()` compiled by `build.rs`. NSLog routes to both the
-legacy ASL relay (for `idevicesyslog` via USB) and the unified log system (for
-`log collect` via wireless).
-
-#### USB (idevicesyslog)
-
-```bash
-# All Zedra-related logs (Rust + UIKit errors):
-/opt/homebrew/bin/idevicesyslog | grep -E 'Zedra\[|zedra\[|\[I |\[W |\[E |\[D |panic|PANIC|crash|CRASH|NSException|Terminating' --line-buffered
-
-# Rust logs only (strip UIKit noise):
-/opt/homebrew/bin/idevicesyslog | grep -E '\[I |\[W |\[E |\[D |\[T ' --line-buffered
-```
-
-`idevicesyslog` requires a **USB connection** (libimobiledevice protocol).
-
-#### Wireless / CoreDevice (`log collect`)
-
-When the device is paired wirelessly (CoreDevice), use `log collect` instead.
-This requires `sudo` but works over Wi-Fi.
-
-```bash
-# 1. Reproduce the issue, then collect the last 2 minutes of logs
-sudo /usr/bin/log collect \
-  --device-udid EE4FBE5D-5184-57A4-999C-A91373FCDC74 \
-  --last 2m \
-  --output /tmp/zedra.logarchive
-
-# 2. View with process filter and debug level
-/usr/bin/log show /tmp/zedra.logarchive \
-  --predicate 'process == "Zedra"' \
-  --level debug \
-  --style compact
-
-# 3. Narrow to a specific tag (e.g., only touch/drawer logs)
-/usr/bin/log show /tmp/zedra.logarchive \
-  --predicate 'process == "Zedra" AND eventMessage CONTAINS "[touch]"' \
-  --level debug \
-  --style compact
-```
-
-**Key facts:**
-- `log stream` has NO `--device` flag — it cannot stream from iOS devices.
-- `log collect --device-udid` works wirelessly via CoreDevice transport.
-- Device UDID (use `xcrun devicectl list devices` to confirm): `EE4FBE5D-5184-57A4-999C-A91373FCDC74`
-- The `.logarchive` is a binary bundle; view with `log show` or Console.app.
-
-**Why not `os_log`?** The `oslog` crate routes to the unified logging system,
-which `idevicesyslog` does not capture. NSLog is the correct path for our logger.
-
-### Crash Reports
-
-After a SIGABRT or unhandled exception, iOS writes a crash report:
-
-```bash
-# Pull crash reports from device
-xcrun devicectl device copy from \
-  --device 9F0ACED3-EE4F-593D-B15E-93954D93FD94 \
-  "/var/mobile/Library/Logs/CrashReporter/" /tmp/ios-crashes/
-
-# View most recent crash
-ls -lt /tmp/ios-crashes/ | head -5
-```
-
-Rust panics in release builds use `panic = "abort"` → SIGABRT. The `zedra_launch_gpui()`
-function installs a panic hook that logs to `log::error!()` before the abort.
-
-### Screenshot (Visual Verification)
-
-```bash
-idevicescreenshot /tmp/zedra-screen.png
-# or via devicectl:
-xcrun devicectl device copy from \
-  --device 9F0ACED3-EE4F-593D-B15E-93954D93FD94 \
-  /tmp/zedra-screen.png /tmp/zedra-screen.png
-```
-
----
+Automatic in `ios/project.yml`. Pass `-allowProvisioningUpdates` to xcodebuild.
 
 ## Known Pitfalls
 
-### `isRemovable` / `isLowPower` on iOS
-
-`metal::Device::all()` iterates GPU devices and calls `isRemovable()` and
-`isLowPower()`. These are macOS-only Metal selectors. On iOS the GPU driver
-class (e.g. `AGXG16GDevice` on M4 iPad) does not implement them →
-`NSInvalidArgumentException` → SIGABRT.
-
-**Fix**: `metal_renderer.rs` uses `#[cfg(target_os = "ios")]` to call
-`system_default()` directly, bypassing device enumeration.
-
-### Stale ZedraFFI.xcframework
-
-The xcframework lives at `ios/ZedraFFI.xcframework`. The `*.a` binary slices are
-**gitignored** — you must run `./scripts/build-ios.sh` to produce them before the
-first Xcode build, and again after any Rust changes. The `Info.plist` and header
-copies inside the framework are committed so the repo is structurally complete.
-
-If you change Rust code and only run `xcodebuild`, Xcode uses the old `.a` on disk
-(or fails if none exists). Always run `./scripts/build-ios.sh` after Rust changes.
-
-### cdylib Link Failure Is Expected
-
-`cargo build` for iOS always "fails" on the cdylib link step because
-`ios_present_qr_scanner` and similar ObjC symbols are not available at Rust
-link time. `build-ios.sh` uses `|| true` and checks for the `.a` directly.
-The weak stub in `ios_stub.c` ensures cargo writes the updated staticlib even
-when the cdylib link fails.
-
-If you add a new `extern "C"` ObjC function call to Rust code, **always add a
-corresponding weak stub** in `src/ios_stub.c` or the staticlib will be stale.
-
-### `xcodegen generate` Is Required After `project.yml` Changes
-
-`Zedra.xcodeproj` is generated from `ios/project.yml`. Editing `project.yml`
-(add framework, add source file, change settings) has no effect until you run:
-
-```bash
-cd ios && xcodegen generate
-```
-
-Files in `ios/Zedra/` are auto-included — no need to list them individually in
-`project.yml`. Frameworks must be listed under `dependencies`.
-
-### Two Device ID Formats
-
-The iPad has two different IDs depending on the tool:
-
-| Format           | Used by                       | Value                                  |
-| ---------------- | ----------------------------- | -------------------------------------- |
-| xctrace format   | `xcodebuild -destination id=` | `00008132-0019312A3C83001C`            |
-| devicectl format | `xcrun devicectl device ...`  | `9F0ACED3-EE4F-593D-B15E-93954D93FD94` |
-
-`run-ios.sh` auto-discovers the xctrace format ID via `xcrun xctrace list devices`.
-
-### Deployment Target Must Match in Three Places
-
-See [Key Configuration](#key-configuration). Mismatches cause linker warnings
-(object built for newer iOS than being linked) but usually do not break the
-build. The important value is `26.0` everywhere.
-
-### `with_input_handler` Spam in Logs
-
-`GPUI: with_input_handler - window_ptr is null` appears repeatedly at startup.
-This is harmless — UIKit queries `UITextInput` on the GPUI view before the
-`IosWindow` pointer is registered. The logs stop once the window is up.
-
----
-
-## Device Reference
-
-**Connected device**: Tan iPad (iPad Pro M4)
-
-| Property               | Value                                  |
-| ---------------------- | -------------------------------------- |
-| OS                     | iOS 26.x                               |
-| xctrace destination ID | `00008132-0019312A3C83001C`            |
-| devicectl ID           | `9F0ACED3-EE4F-593D-B15E-93954D93FD94` |
-| Bundle ID              | `dev.zedra.app`                        |
-| GPU                    | AGXG16GDevice (M4)                     |
-| Scale factor           | 2.0 (11-inch iPad Pro)                 |
-
-**Check connected devices:**
-
-```bash
-xcrun xctrace list devices 2>&1 | grep -v Simulator
-xcrun devicectl list devices
-```
+- **Stale xcframework**: always run `build-ios.sh` after Rust changes. Xcode-only rebuild uses old `.a`.
+- **New extern "C" call**: must add weak stub in `ios_stub.c` or staticlib will be stale.
+- **xcodegen required**: after editing `project.yml`, run `cd ios && xcodegen generate`.
+- **Metal device**: iOS uses `system_default()` directly. macOS `isRemovable()`/`isLowPower()` selectors crash on iOS.
+- **`with_input_handler` log spam**: harmless — UIKit queries text input before IosWindow is registered.
