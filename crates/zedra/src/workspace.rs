@@ -356,34 +356,34 @@ impl Workspace {
         &mut self,
         action: &GitStage,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
         info!("handle GitStage from workspace");
         let handle = self.session.handle().clone();
         let path = action.path.clone();
-        // TODO: use cx.spawn
-        zedra_session::session_runtime().spawn(async move {
+        cx.spawn(async move |_workspace, _cx| {
             if let Err(e) = handle.git_stage(&[path]).await {
                 tracing::error!("git stage failed: {}", e);
             }
-        });
+        })
+        .detach();
     }
 
     fn handle_git_unstage(
         &mut self,
         action: &GitUnstage,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
         info!("handle GitUnstage from workspace");
         let handle = self.session.handle().clone();
         let path = action.path.clone();
-        // TODO: use cx.spawn
-        zedra_session::session_runtime().spawn(async move {
+        cx.spawn(async move |_workspace, _cx| {
             if let Err(e) = handle.git_unstage(&[path]).await {
                 tracing::error!("git unstage failed: {}", e);
             }
-        });
+        })
+        .detach();
     }
 
     fn handle_git_item_long_press(
