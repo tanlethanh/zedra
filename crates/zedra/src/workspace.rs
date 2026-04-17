@@ -21,12 +21,9 @@ use crate::workspace_connecting::WorkspaceConnecting;
 use crate::workspace_drawer::WorkspaceDrawer;
 use crate::workspace_editor::WorkspaceEditor;
 use crate::workspace_gitdiff::WorkspaceGitdiff;
-use crate::workspace_state::WorkspaceState;
-use crate::workspace_terminal::WorkspaceTerminal;
-
-pub trait WorkspaceMainView {
-    fn title(&self) -> &str;
-}
+use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
+use crate::workspace_terminal::{TERMINAL_PENDING_ID, WorkspaceTerminal};
+use zedra_terminal::view::TerminalView;
 
 /// Events emitted by the workspace.
 /// The receiver is mostly app/workspaces
@@ -56,12 +53,18 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    pub fn new(workspace_state: Entity<WorkspaceState>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        workspace_state: Entity<WorkspaceState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let session = Session::new();
         let session_state = cx.new(|_cx| session.state().clone());
 
         let editor = cx.new(|_cx| WorkspaceEditor::new(session.handle().clone()));
         let gitdiff = cx.new(|_cx| WorkspaceGitdiff::new(session.handle().clone()));
+
+        let initial_viewport = WorkspaceContent::fallback_mainview_viewport(window);
         let terminals = workspace_state
             .read(cx)
             .terminal_ids
@@ -73,6 +76,8 @@ impl Workspace {
                         terminal_id.to_string(),
                         workspace_state.clone(),
                         session.handle().clone(),
+                        window,
+                        initial_viewport,
                         cx,
                     )
                 })
@@ -486,12 +491,31 @@ impl Workspace {
         info!("handle CreateNewTerminal from workspace");
         self.drawer_host.update(cx, |host, cx| host.close(cx));
 
-        let handle = self.session.handle().clone();
+        let session_handle = self.session.handle().clone();
         let workspace_state = self.workspace_state.clone();
-        let (cols, rows, _, _) = crate::workspace_terminal::compute_terminal_dimensions(window);
+        let initial_viewport = self.mainview_viewport(window, cx);
+        let initial_grid_size = TerminalView::compute_grid_size(window, initial_viewport);
+        let cols = initial_grid_size.columns;
+        let rows = initial_grid_size.rows;
+
+        // Pre-create a workspace terminal entity with a placeholder terminal ID.
+        // This is required due to the terminal view requires `window` to be available from main thread.
+        let workspace_terminal = cx.new(|cx| {
+            WorkspaceTerminal::new(
+                TERMINAL_PENDING_ID.to_string(),
+                workspace_state.clone(),
+                session_handle.clone(),
+                window,
+                initial_viewport,
+                cx,
+            )
+        });
 
         cx.spawn(async move |workspace, cx| {
-            let terminal_id = match handle.terminal_create(cols as u16, rows as u16).await {
+            let terminal_id = match session_handle
+                .terminal_create(cols as u16, rows as u16)
+                .await
+            {
                 Ok(id) => id,
                 Err(e) => {
                     tracing::error!("terminal_create failed: {}", e);
@@ -500,23 +524,23 @@ impl Workspace {
             };
 
             let _ = workspace.update(cx, |ws, cx| {
-                let terminal_entity = cx.new(|cx| {
-                    WorkspaceTerminal::new(
-                        terminal_id.clone(),
-                        workspace_state.clone(),
-                        handle.clone(),
-                        cx,
-                    )
+                workspace_terminal.update(cx, |terminal, cx| {
+                    terminal.set_terminal_id(terminal_id.clone(), cx);
                 });
-                ws.terminals.push(terminal_entity.clone());
+
+                ws.terminals.push(workspace_terminal.clone());
 
                 ws.workspace_state.update(cx, |state, cx| {
-                    state.active_terminal_id = Some(terminal_id);
+                    // The WorkspaceTerminal will need this subscription to attach the input/output channel.
+                    cx.emit(WorkspaceStateEvent::TerminalCreated {
+                        id: terminal_id.clone(),
+                    });
+                    state.active_terminal_id = Some(terminal_id.clone());
                     cx.notify();
                 });
 
                 ws.content.update(cx, |c, cx| {
-                    c.set_main_view(terminal_entity.into(), cx);
+                    c.set_main_view(workspace_terminal.into(), cx);
                 });
             });
         })
@@ -526,7 +550,7 @@ impl Workspace {
     fn handle_open_terminal(
         &mut self,
         action: &OpenTerminal,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         info!("handle OpenTerminal from workspace");
@@ -543,9 +567,19 @@ impl Workspace {
             None => {
                 // Terminal not yet tracked locally — create a view for it
                 info!("terminal not yet tracked locally, creating view for {}", id);
-                let handle = self.session.handle().clone();
-                let ws = self.workspace_state.clone();
-                let entity = cx.new(|cx| WorkspaceTerminal::new(id.clone(), ws, handle, cx));
+                let session_handle = self.session.handle().clone();
+                let workspace_state = self.workspace_state.clone();
+                let initial_viewport = self.mainview_viewport(window, cx);
+                let entity = cx.new(|cx| {
+                    WorkspaceTerminal::new(
+                        id.clone(),
+                        workspace_state,
+                        session_handle,
+                        window,
+                        initial_viewport,
+                        cx,
+                    )
+                });
                 self.terminals.push(entity.clone());
                 entity
             }
@@ -589,6 +623,13 @@ impl Workspace {
             }
         })
         .detach();
+    }
+
+    fn mainview_viewport(&self, window: &mut Window, cx: &App) -> Size<Pixels> {
+        self.content
+            .read(cx)
+            .mainview_viewport()
+            .unwrap_or_else(|| WorkspaceContent::fallback_mainview_viewport(window))
     }
 }
 
@@ -644,6 +685,7 @@ pub struct WorkspaceContent {
     focus_handle: FocusHandle,
     show_connecting: bool,
     connecting_view: Entity<WorkspaceConnecting>,
+    mainview_bounds: Option<Bounds<Pixels>>,
 }
 
 impl WorkspaceContent {
@@ -664,6 +706,7 @@ impl WorkspaceContent {
             workspace_state,
             show_connecting: false,
             connecting_view: connecting,
+            mainview_bounds: None,
         }
     }
 
@@ -681,6 +724,27 @@ impl WorkspaceContent {
         self.show_connecting = false;
         cx.notify();
     }
+
+    pub fn mainview_viewport(&self) -> Option<Size<Pixels>> {
+        self.mainview_bounds.as_ref().map(|bounds| bounds.size)
+    }
+
+    pub fn fallback_mainview_viewport(window: &mut Window) -> Size<Pixels> {
+        let viewport = window.viewport_size();
+
+        Size {
+            width: viewport.width,
+            height: (viewport.height - px(status_bar_inset() + theme::HEADER_HEIGHT)).max(px(0.0)),
+        }
+    }
+
+    fn update_mainview_bounds(&mut self, bounds: Bounds<Pixels>) {
+        if self.mainview_bounds == Some(bounds) {
+            return;
+        }
+
+        self.mainview_bounds = Some(bounds);
+    }
 }
 
 impl Focusable for WorkspaceContent {
@@ -692,6 +756,7 @@ impl Focusable for WorkspaceContent {
 impl Render for WorkspaceContent {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let top_inset = status_bar_inset();
+        let this = cx.weak_entity();
         let workspace_state = self.workspace_state.read(cx);
         let title = workspace_state.project_name.to_string();
         let subtitle = {
@@ -708,6 +773,18 @@ impl Render for WorkspaceContent {
                 theme::TEXT_SECONDARY
             }
         };
+        let mainview_measure = canvas(
+            |bounds, _, _| bounds,
+            move |_bounds, measured_bounds, _window, cx| {
+                cx.defer(move |cx| {
+                    let _ = this.update(cx, |this, _cx| {
+                        this.update_mainview_bounds(measured_bounds);
+                    });
+                });
+            },
+        )
+        .absolute()
+        .inset_0();
 
         div()
             .size_full()
@@ -829,10 +906,17 @@ impl Render for WorkspaceContent {
                             ),
                     ),
             )
-            .child(div().flex_1().when_else(
-                self.show_connecting,
-                |d: Div| d.child(self.connecting_view.clone()),
-                |d: Div| d.child(self.main_view.clone()),
-            ))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(mainview_measure)
+                    .when_else(
+                        self.show_connecting,
+                        |d: Div| d.child(self.connecting_view.clone()),
+                        |d: Div| d.child(self.main_view.clone()),
+                    ),
+            )
     }
 }

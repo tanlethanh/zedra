@@ -1,19 +1,18 @@
 use gpui::*;
 use tracing::*;
 use zedra_session::SessionHandle;
-use zedra_terminal::view::TerminalView;
+use zedra_terminal::view::{TerminalEvent, TerminalView};
 
-use crate::{
-    fonts, theme,
-    workspace_state::{WorkspaceState, WorkspaceStateEvent},
-};
+use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
+
+pub const TERMINAL_PENDING_ID: &str = "___PENDING___";
 
 pub struct WorkspaceTerminal {
     terminal_id: String,
-    workspace_state: Entity<WorkspaceState>,
     #[allow(dead_code)]
+    workspace_state: Entity<WorkspaceState>,
     session_handle: SessionHandle,
-    content: Option<Entity<TerminalView>>,
+    terminal_view: Entity<TerminalView>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -26,124 +25,143 @@ impl WorkspaceTerminal {
         terminal_id: String,
         workspace_state: Entity<WorkspaceState>,
         session_handle: SessionHandle,
+        window: &mut Window,
+        initial_viewport: Size<Pixels>,
         cx: &mut Context<Self>,
     ) -> Self {
-        // Attach the input/ouput channel whenever receiving SyncComplete event.
-        // This mostly happens when the session reconnects.
-        let attach_sub = cx.subscribe(&workspace_state, |this, _ws, event, cx| {
-            if matches!(event, WorkspaceStateEvent::SyncComplete) {
+        let attach_sub = cx.subscribe(&workspace_state, |this, _ws, event, cx| match event {
+            // Attach the input/ouput channel whenever receiving SyncComplete event.
+            // This mostly happens when the session reconnects.
+            WorkspaceStateEvent::SyncComplete => {
                 info!("received SyncComplete event, attempt to attach input/output channel");
-                this.attach_channel(cx);
+                Self::attach_channel_to_terminal_view(
+                    this.session_handle.clone(),
+                    this.terminal_id.clone(),
+                    this.terminal_view.clone(),
+                    cx,
+                );
+            }
+            // Attach the input/ouput channel whenever receiving TerminalCreated event.
+            // This happens when the user creates a new terminal and this Entity is created in advance.
+            WorkspaceStateEvent::TerminalCreated { id } => {
+                if this.terminal_id == *id {
+                    info!("received TerminalCreated event, attempt to attach input/output channel");
+                    Self::attach_channel_to_terminal_view(
+                        this.session_handle.clone(),
+                        this.terminal_id.clone(),
+                        this.terminal_view.clone(),
+                        cx,
+                    );
+                }
+            }
+            _ => {}
+        });
+
+        let terminal_view =
+            cx.new(|cx| TerminalView::new(terminal_id.clone(), window, initial_viewport, cx));
+
+        let resize_sub = cx.subscribe(&terminal_view, |this, _terminal, event, cx| match event {
+            TerminalEvent::RequestResize { cols, rows } => {
+                Self::resize_remote_terminal(
+                    this.session_handle.clone(),
+                    this.terminal_id.clone(),
+                    *cols,
+                    *rows,
+                    cx,
+                );
             }
         });
+
+        // Try to attach the channel to the view on creation.
+        if terminal_id != TERMINAL_PENDING_ID {
+            Self::attach_channel_to_terminal_view(
+                session_handle.clone(),
+                terminal_id.clone(),
+                terminal_view.clone(),
+                cx,
+            );
+        }
 
         Self {
             terminal_id,
             workspace_state,
             session_handle,
-            content: None,
-            _subscriptions: vec![attach_sub],
+            terminal_view,
+            _subscriptions: vec![attach_sub, resize_sub],
         }
     }
 
-    pub fn attach_channel(&mut self, cx: &mut Context<Self>) {
-        if let Some(terminal) = self
-            .workspace_state
-            .read(cx)
-            .remote_terminals
-            .iter()
-            .find(|t| t.id() == self.terminal_id)
-        {
-            if let Some(terminal_view) = &self.content {
-                match terminal.take_chanel() {
-                    Ok((input_tx, output_rx)) => {
-                        terminal_view.update(cx, |terminal_view, cx| {
-                            terminal_view.attach_channel(input_tx, output_rx, cx);
-                            info!("attached channel to terminal");
-                        });
-                    }
-                    Err(e) => {
-                        warn!("failed to attach input/output channel: {}", e);
-                    }
-                }
-            } else {
-                error!("no terminal view found to attach input/output channel");
-            }
-        } else {
-            warn!(
-                "no terminal found with id: {} to attach input/output channel",
-                self.terminal_id
-            );
-        }
+    pub fn set_terminal_id(&mut self, terminal_id: String, cx: &mut Context<Self>) {
+        self.terminal_id = terminal_id.clone();
+        self.terminal_view.update(cx, |terminal_view, _cx| {
+            terminal_view.set_terminal_id(terminal_id);
+        });
+
+        let (cols, rows) = self.terminal_view.read(cx).remote_size(cx);
+        Self::resize_remote_terminal(
+            self.session_handle.clone(),
+            self.terminal_id.clone(),
+            cols,
+            rows,
+            cx,
+        );
     }
 
-    /// Returns the terminal view, creating it if it doesn't exist.
-    fn terminal_view(
-        &mut self,
-        window: &mut Window,
+    fn attach_channel_to_terminal_view(
+        session_handle: SessionHandle,
+        terminal_id: String,
+        terminal_view: Entity<TerminalView>,
         cx: &mut Context<Self>,
-    ) -> Entity<TerminalView> {
-        if let Some(content) = &self.content {
-            content.clone()
-        } else {
-            let (columns, rows, cell_width, line_height) = compute_terminal_dimensions(window);
-            let tview = cx.new(|cx| TerminalView::new(columns, rows, cell_width, line_height, cx));
-            self.content = Some(tview.clone());
-
-            info!("attach channel to terminal on creation");
-            self.attach_channel(cx);
-
-            tview
+    ) {
+        let Some(remote_terminal) = session_handle.terminal(&terminal_id) else {
+            warn!("no remote terminal found with id: {}", terminal_id);
+            return;
+        };
+        match remote_terminal.take_chanel() {
+            Ok((input_tx, output_rx)) => {
+                terminal_view.update(cx, |terminal_view, cx| {
+                    terminal_view.attach_channel(input_tx, output_rx, cx);
+                    info!("attached channel to terminal");
+                });
+            }
+            Err(e) => {
+                warn!("failed to attach input/output channel: {}", e);
+            }
         }
+    }
+
+    fn resize_remote_terminal(
+        session_handle: SessionHandle,
+        terminal_id: String,
+        cols: u16,
+        rows: u16,
+        cx: &mut Context<Self>,
+    ) {
+        if terminal_id == TERMINAL_PENDING_ID {
+            return;
+        }
+
+        cx.spawn(async move |_this, _cx| {
+            if let Err(error) = session_handle
+                .terminal_resize(&terminal_id, cols, rows)
+                .await
+            {
+                warn!(
+                    terminal_id,
+                    cols, rows, "failed to resize remote terminal: {}", error
+                );
+            }
+        })
+        .detach();
     }
 }
 
 impl Render for WorkspaceTerminal {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let content = self.terminal_view(window, cx);
-        div().flex_1().h_full().w_full().child(content)
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex_1()
+            .h_full()
+            .w_full()
+            .child(self.terminal_view.clone())
     }
-}
-
-/// Compute terminal grid dimensions from the current viewport.
-/// Returns `(columns, rows, cell_width, line_height)`.
-///
-/// Calls `load_fonts()` to ensure the monospace font is registered with the
-/// GPUI text system before measuring glyph advance width. This is a no-op
-/// after the first call — `load_fonts` is idempotent.
-pub fn compute_terminal_dimensions(window: &mut Window) -> (usize, usize, Pixels, Pixels) {
-    let viewport = window.viewport_size();
-    let line_height = px(16.0);
-
-    fonts::load_fonts(window);
-
-    let font = gpui::Font {
-        family: fonts::MONO_FONT_FAMILY.into(),
-        features: gpui::FontFeatures::default(),
-        fallbacks: None,
-        weight: gpui::FontWeight::NORMAL,
-        style: gpui::FontStyle::Normal,
-    };
-    let font_size = line_height * 0.75;
-    let text_system = window.text_system();
-    let font_id = text_system.resolve_font(&font);
-    let cell_width = text_system
-        .advance(font_id, font_size, 'm')
-        .map(|size| size.width)
-        .unwrap_or(px(9.0));
-
-    // Subtract chrome (status bar, header, home indicator) so the PTY row count
-    // matches what's actually visible, preventing TUI overflow.
-    let top_reserved = crate::platform_bridge::status_bar_inset() + theme::HEADER_HEIGHT;
-    let bottom_reserved = crate::platform_bridge::home_indicator_inset();
-    let terminal_height = viewport.height - px(top_reserved + bottom_reserved);
-
-    let columns = ((viewport.width / cell_width).floor() as usize)
-        .saturating_sub(1)
-        .clamp(20, 200);
-    let rows = ((terminal_height / line_height).floor() as usize)
-        .saturating_sub(1)
-        .clamp(5, 200);
-
-    (columns, rows, cell_width, line_height)
 }

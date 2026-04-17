@@ -175,7 +175,7 @@ impl Workspaces {
         ticket: Option<ZedraPairingTicket>,
         session_id: Option<String>,
         saved: Option<Entity<WorkspaceState>>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(signer) = self.signer.clone() else {
@@ -195,7 +195,7 @@ impl Workspaces {
         });
 
         // Create workspace entity
-        let workspace = cx.new(|cx| Workspace::new(workspace_state.clone(), cx));
+        let workspace = cx.new(|cx| Workspace::new(workspace_state.clone(), window, cx));
         self._subscriptions
             .push(self.subscribe_workspace_event(&workspace, cx));
 

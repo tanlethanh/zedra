@@ -27,6 +27,7 @@ struct StoreFile {
 pub enum WorkspaceStateEvent {
     StateChanged,
     SyncComplete,
+    TerminalCreated { id: String },
 }
 
 /// Shareable workspace state. Clone copies the Arc only. Read via methods (non-blocking).
