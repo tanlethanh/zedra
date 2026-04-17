@@ -31,7 +31,12 @@ pub extern "C" fn zedra_ios_check_pending_frame() -> bool {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_launch_gpui() {
-    super::logger::IosLogger::init(log::LevelFilter::Debug);
+    let log_level = if cfg!(feature = "debug-logs") {
+        log::LevelFilter::Debug
+    } else {
+        log::LevelFilter::Info
+    };
+    super::logger::IosLogger::init(log_level);
 
     crate::telemetry::init();
     install_panic_hook();

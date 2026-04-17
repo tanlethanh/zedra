@@ -80,11 +80,19 @@ fn init_logging() {
     INIT.call_once(|| {
         android_logger::init_once(
             android_logger::Config::default()
-                .with_max_level(log::LevelFilter::Info)
+                .with_max_level(if cfg!(feature = "debug-logs") {
+                    log::LevelFilter::Debug
+                } else {
+                    log::LevelFilter::Info
+                })
                 .with_tag("zedra")
                 .with_filter(
                     android_logger::FilterBuilder::new()
-                        .parse("info,tracing::span=off,tracing::span::active=off")
+                        .parse(if cfg!(feature = "debug-logs") {
+                            "debug,tracing::span=off,tracing::span::active=off"
+                        } else {
+                            "info,tracing::span=off,tracing::span::active=off"
+                        })
                         .build(),
                 ),
         );
