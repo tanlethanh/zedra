@@ -27,7 +27,18 @@ impl IosLogger {
 
 impl Log for IosLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        !matches!(metadata.target(), "tracing::span" | "tracing::span::active")
+        let target = metadata.target();
+        if matches!(target, "tracing::span" | "tracing::span::active") {
+            return false;
+        }
+        // Without debug-logs feature, suppress noisy iroh/quinn below warn
+        if !cfg!(feature = "debug-logs")
+            && metadata.level() > Level::Warn
+            && (target.starts_with("iroh") || target.starts_with("quinn"))
+        {
+            return false;
+        }
+        true
     }
 
     fn log(&self, record: &Record) {
