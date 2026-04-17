@@ -1,7 +1,4 @@
 use std::fmt;
-use std::sync::{Arc, Mutex};
-
-use tokio::sync::mpsc;
 
 use crate::ConnectEvent;
 
@@ -259,7 +256,7 @@ pub struct ConnectSnapshot {
     pub rpc_ms: Option<u64>,
     pub register_ms: Option<u64>,
     pub auth_ms: Option<u64>,
-    pub fetch_ms: Option<u64>,
+    pub sync_ms: Option<u64>,
     pub resume_ms: Option<u64>,
     pub local_node_id: Option<String>,
     pub remote_node_id: Option<String>,
@@ -289,18 +286,9 @@ pub struct ConnectSnapshot {
     pub failed_at_step: Option<usize>,
 }
 
-// ─── SessionState ────────────────────────────────────────────────────────────
-
-pub type StateNotifyReceiver = futures::channel::mpsc::UnboundedReceiver<()>;
-
-#[derive(Clone)]
-pub struct SessionState {
-    inner: Arc<Mutex<SessionStateInner>>,
-    notify_tx: Arc<Mutex<Option<futures::channel::mpsc::UnboundedSender<()>>>>,
-}
-
+/// Single-threaded session state owned by UI thread.
 #[derive(Clone, Debug, Default)]
-pub struct SessionStateInner {
+pub struct SessionState {
     pub phase: ConnectPhase,
     pub snapshot: ConnectSnapshot,
     pub started_at: Option<std::time::Instant>,
@@ -308,7 +296,7 @@ pub struct SessionStateInner {
     pub phase_before_idle: Option<ConnectPhase>,
 }
 
-impl SessionStateInner {
+impl SessionState {
     pub fn elapsed_secs(&self) -> u64 {
         self.started_at.map(|t| t.elapsed().as_secs()).unwrap_or(0)
     }
@@ -320,85 +308,32 @@ impl SessionStateInner {
     }
 }
 
-impl Default for SessionState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
+/// Should migrate two single-threaded object and own by ui thread of gpui
+/// Event listener wired up in gpui task
 impl SessionState {
     pub fn new() -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(SessionStateInner::default())),
-            notify_tx: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    pub fn with_channel() -> (Self, mpsc::Sender<ConnectEvent>) {
-        let (tx, rx) = mpsc::channel(64);
-        let state = Self::new();
-        state.start_listener(rx);
-        (state, tx)
-    }
-
-    pub fn subscribe(&self) -> StateNotifyReceiver {
-        let (tx, rx) = futures::channel::mpsc::unbounded();
-        if let Ok(mut g) = self.notify_tx.lock() {
-            *g = Some(tx);
-        }
-        rx
+        Self::default()
     }
 
     pub fn phase(&self) -> ConnectPhase {
-        self.inner
-            .lock()
-            .map(|g| g.phase.clone())
-            .unwrap_or_default()
-    }
-
-    pub fn get(&self) -> SessionStateInner {
-        self.inner.lock().map(|g| g.clone()).unwrap_or_default()
+        self.phase.clone()
     }
 
     pub fn is_connected(&self) -> bool {
         self.phase().is_connected()
     }
 
-    pub fn start_listener(&self, mut rx: mpsc::Receiver<ConnectEvent>) {
-        let state = self.clone();
-        crate::session_runtime().spawn(async move {
-            while let Some(event) = rx.recv().await {
-                state.handle_event(event);
-            }
-        });
+    pub fn snapshot(&self) -> ConnectSnapshot {
+        self.snapshot.clone()
     }
 
-    pub fn handle_event(&self, event: ConnectEvent) {
-        self.apply_event(event);
-        self.notify_change();
-    }
-
-    pub fn notify(&self) {
-        self.notify_change();
-    }
-
-    fn notify_change(&self) {
-        if let Some(tx) = self.notify_tx.lock().ok().and_then(|g| g.clone()) {
-            let _ = tx.unbounded_send(());
-        }
-    }
-
-    fn apply_event(&self, event: ConnectEvent) {
-        let Ok(mut guard) = self.inner.lock() else {
-            return;
-        };
-        let inner = &mut *guard;
-        let snap = &mut inner.snapshot;
+    pub fn apply_event(&mut self, event: ConnectEvent) {
+        let snap = &mut self.snapshot;
 
         match event {
             ConnectEvent::BindingEndpoint => {
-                inner.phase = ConnectPhase::BindingEndpoint;
-                inner.started_at = Some(std::time::Instant::now());
+                self.phase = ConnectPhase::BindingEndpoint;
+                self.started_at = Some(std::time::Instant::now());
                 reset_timing(snap);
             }
             ConnectEvent::EndpointBound {
@@ -409,7 +344,7 @@ impl SessionState {
                 snap.binding_ms = Some(binding_ms);
             }
             ConnectEvent::HolePunchStarted => {
-                inner.phase = ConnectPhase::HolePunching;
+                self.phase = ConnectPhase::HolePunching;
             }
             ConnectEvent::HolePunchComplete {
                 remote_node_id,
@@ -436,7 +371,7 @@ impl SessionState {
                 snap.captive_portal = net_report.captive_portal;
             }
             ConnectEvent::Registering { session_id } => {
-                inner.phase = ConnectPhase::Registering;
+                self.phase = ConnectPhase::Registering;
                 snap.session_id = Some(session_id);
                 snap.is_first_pairing = true;
             }
@@ -444,10 +379,10 @@ impl SessionState {
                 snap.register_ms = Some(register_ms);
             }
             ConnectEvent::Authenticating => {
-                inner.phase = ConnectPhase::Authenticating;
+                self.phase = ConnectPhase::Authenticating;
             }
             ConnectEvent::Proving => {
-                inner.phase = ConnectPhase::Proving;
+                self.phase = ConnectPhase::Proving;
             }
             ConnectEvent::AuthComplete {
                 auth_ms,
@@ -459,9 +394,9 @@ impl SessionState {
                 snap.is_first_pairing = is_first_pairing;
             }
             ConnectEvent::Syncing => {
-                inner.phase = ConnectPhase::Sync;
+                self.phase = ConnectPhase::Sync;
             }
-            ConnectEvent::SyncComplete { sync, fetch_ms } => {
+            ConnectEvent::SyncComplete { sync, sync_ms } => {
                 snap.session_id = Some(sync.session_id);
                 snap.hostname = sync.hostname;
                 snap.username = sync.username;
@@ -483,14 +418,14 @@ impl SessionState {
                 snap.arch = sync.arch;
                 snap.os_version = sync.os_version;
                 snap.host_version = sync.host_version;
-                snap.fetch_ms = Some(fetch_ms);
+                snap.sync_ms = Some(sync_ms);
             }
             ConnectEvent::TerminalsReattached { resume_ms, .. } => {
                 snap.resume_ms = Some(resume_ms);
             }
             ConnectEvent::Connected { .. } => {
-                inner.phase = ConnectPhase::Connected;
-                inner.reconnect_attempt = None;
+                self.phase = ConnectPhase::Connected;
+                self.reconnect_attempt = None;
             }
             ConnectEvent::PathReport {
                 path,
@@ -535,7 +470,7 @@ impl SessionState {
                 }
             }
             ConnectEvent::ReconnectStarted { reason } => {
-                inner.phase = ConnectPhase::Reconnecting {
+                self.phase = ConnectPhase::Reconnecting {
                     attempt: 1,
                     reason,
                     next_retry_secs: 0,
@@ -546,46 +481,46 @@ impl SessionState {
                 reason,
                 next_retry_secs,
             } => {
-                inner.phase = ConnectPhase::Reconnecting {
+                self.phase = ConnectPhase::Reconnecting {
                     attempt,
                     reason,
                     next_retry_secs,
                 };
-                inner.reconnect_attempt = Some(attempt);
+                self.reconnect_attempt = Some(attempt);
             }
             ConnectEvent::ReconnectSuccess { .. } => {
-                inner.phase = ConnectPhase::Connected;
-                inner.reconnect_attempt = None;
+                self.phase = ConnectPhase::Connected;
+                self.reconnect_attempt = None;
             }
             ConnectEvent::ReconnectExhausted { .. } => {
-                inner.phase = ConnectPhase::Failed(ConnectError::HostUnreachable);
+                self.phase = ConnectPhase::Failed(ConnectError::HostUnreachable);
             }
             ConnectEvent::Failed { error } => {
-                snap.failed_at_step = inner.phase.step_index();
-                inner.phase = ConnectPhase::Failed(error);
+                snap.failed_at_step = self.phase.step_index();
+                self.phase = ConnectPhase::Failed(error);
             }
             ConnectEvent::ConnectionClosed => {
-                inner.phase = ConnectPhase::Disconnected;
+                self.phase = ConnectPhase::Disconnected;
             }
             ConnectEvent::ConnectionIdle => {
-                let is_idle = matches!(inner.phase, ConnectPhase::Idle { .. });
-                let is_connected = matches!(inner.phase, ConnectPhase::Connected);
+                let is_idle = matches!(self.phase, ConnectPhase::Idle { .. });
+                let is_connected = matches!(self.phase, ConnectPhase::Connected);
                 if !is_idle && is_connected {
-                    inner.phase_before_idle = Some(inner.phase.clone());
-                    inner.phase = ConnectPhase::Idle {
+                    self.phase_before_idle = Some(self.phase.clone());
+                    self.phase = ConnectPhase::Idle {
                         idle_since: std::time::Instant::now(),
                     };
                 }
             }
             ConnectEvent::ConnectionActive => {
-                let is_idle = matches!(inner.phase, ConnectPhase::Idle { .. });
+                let is_idle = matches!(self.phase, ConnectPhase::Idle { .. });
                 if is_idle {
-                    let prev_phase = inner
+                    let prev_phase = self
                         .phase_before_idle
                         .clone()
                         .unwrap_or(ConnectPhase::Connected);
-                    inner.phase = prev_phase;
-                    inner.phase_before_idle = None;
+                    self.phase = prev_phase;
+                    self.phase_before_idle = None;
                 }
             }
         }
@@ -598,7 +533,7 @@ fn reset_timing(snap: &mut ConnectSnapshot) {
     snap.rpc_ms = None;
     snap.register_ms = None;
     snap.auth_ms = None;
-    snap.fetch_ms = None;
+    snap.sync_ms = None;
     snap.resume_ms = None;
 }
 

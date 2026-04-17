@@ -404,9 +404,9 @@ impl SessionHandle {
 
         let terminal = RemoteTerminal::new(result.id.clone());
         if terminal.attach_remote(&client).await.is_ok() {
-        self.add_terminal(terminal);
-        tracing::info!("Terminal created: {}", result.id);
-        Ok(result.id)
+            self.add_terminal(terminal);
+            tracing::info!("Terminal created: {}", result.id);
+            Ok(result.id)
         } else {
             Err(anyhow::anyhow!("Failed to attach terminal"))
         }
