@@ -9700,6 +9700,7 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
  "tree-sitter",
  "tree-sitter-bash",
