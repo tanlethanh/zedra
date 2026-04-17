@@ -6,6 +6,8 @@ use tracing::*;
 use zedra_rpc::osc::{OscEvent, OscScanner, TerminalMeta};
 use zedra_rpc::proto::{TermAttachReq, TermInput, TermOutput, ZedraProto};
 
+use crate::session_runtime;
+
 /// Keep track of created terminals.
 #[derive(Clone)]
 pub struct RemoteTerminal(Arc<RemoteTerminalInner>);
@@ -142,7 +144,7 @@ impl RemoteTerminal {
         let (input_tx, mut input_rx) = mpsc::channel::<Vec<u8>>(256);
         let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>(256);
 
-        let input_task = tokio::spawn(async move {
+        let input_task = session_runtime().spawn(async move {
             while let Some(data) = input_rx.recv().await {
                 if let Err(e) = irpc_input_tx.send(TermInput { data }).await {
                     info!("failed to send input: {:?}", e);
@@ -159,7 +161,7 @@ impl RemoteTerminal {
         }
 
         let terminal_inner = self.0.clone();
-        let output_task = tokio::spawn(async move {
+        let output_task = session_runtime().spawn(async move {
             loop {
                 match irpc_output_rx.recv().await {
                     Ok(Some(output)) => {
