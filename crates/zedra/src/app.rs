@@ -7,6 +7,7 @@ use crate::deeplink::{self, DeeplinkAction};
 use crate::fonts;
 use crate::home_view::{HomeEvent, HomeView};
 use crate::mgpui::{DrawerHost, DrawerSide};
+use crate::platform_bridge;
 use crate::quick_action_panel::{QuickActionEvent, QuickActionPanel};
 use crate::theme;
 use crate::workspaces::{Workspaces, WorkspacesEvent};
@@ -63,8 +64,7 @@ impl ZedraApp {
         let saved_count = workspaces.read(cx).states().len();
         zedra_telemetry::send(Event::AppOpen {
             saved_workspaces: saved_count,
-            // TODO: use native app version
-            app_version: env!("CARGO_PKG_VERSION"),
+            app_version: platform_bridge::app_version_with_build_number(),
             platform: std::env::consts::OS,
             arch: std::env::consts::ARCH,
         });
@@ -237,10 +237,10 @@ impl Render for ZedraApp {
 
 /// Open a GPUI window with the correct app view.
 pub fn open_zedra_window(app: &mut App, window_options: WindowOptions) -> Result<AnyWindowHandle> {
-        app.open_window(window_options, |window, cx| {
-            let view = cx.new(|cx| ZedraApp::new(window, cx));
-            window.refresh();
-            view
-        })
-        .map(|h| h.into())
+    app.open_window(window_options, |window, cx| {
+        let view = cx.new(|cx| ZedraApp::new(window, cx));
+        window.refresh();
+        view
+    })
+    .map(|h| h.into())
 }
