@@ -39,6 +39,7 @@ pub mod workspace_state;
 pub mod workspace_terminal;
 pub mod workspaces;
 
+pub mod active_terminal;
 pub mod deeplink;
 pub mod platform_bridge;
 pub mod telemetry;

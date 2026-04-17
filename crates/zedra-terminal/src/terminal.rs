@@ -157,6 +157,10 @@ impl Terminal {
         self.output_task = Some(output_task);
     }
 
+    pub fn input_sender(&self) -> Option<mpsc::Sender<Vec<u8>>> {
+        self.input_tx.clone()
+    }
+
     pub async fn send_bytes(&mut self, bytes: Vec<u8>) {
         if let Some(tx) = &self.input_tx {
             if let Err(e) = tx.send(bytes).await {

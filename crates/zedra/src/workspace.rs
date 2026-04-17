@@ -7,6 +7,7 @@ use zedra_rpc::ZedraPairingTicket;
 use zedra_rpc::proto::HostEvent;
 use zedra_session::{ConnectEvent, Session, SessionHandle, SessionState, signer::ClientSigner};
 
+use crate::active_terminal;
 use crate::editor::git_sidebar::GitFileSection;
 use crate::mgpui::DrawerHost;
 use crate::platform_bridge::{self, AlertButton, status_bar_inset};
@@ -542,18 +543,14 @@ impl Workspace {
 
                 ws.terminals.push(workspace_terminal.clone());
 
-                ws.workspace_state.update(cx, |state, cx| {
+                ws.workspace_state.update(cx, |_state, cx| {
                     // The WorkspaceTerminal will need this subscription to attach the input/output channel.
                     cx.emit(WorkspaceStateEvent::TerminalCreated {
                         id: terminal_id.clone(),
                     });
-                    state.active_terminal_id = Some(terminal_id.clone());
-                    cx.notify();
                 });
 
-                ws.content.update(cx, |c, cx| {
-                    c.set_main_view(workspace_terminal.into(), cx);
-                });
+                ws.activate_terminal(terminal_id, workspace_terminal.into(), cx);
             });
         })
         .detach();
@@ -597,14 +594,7 @@ impl Workspace {
             }
         };
 
-        self.workspace_state.update(cx, |state, cx| {
-            state.active_terminal_id = Some(id.clone());
-            cx.notify();
-        });
-
-        self.content.update(cx, |c, cx| {
-            c.set_main_view(terminal_entity.into(), cx);
-        });
+        self.activate_terminal(id.clone(), terminal_entity, cx);
     }
 
     fn handle_close_terminal(
@@ -623,6 +613,7 @@ impl Workspace {
         self.workspace_state.update(cx, |state, cx| {
             if state.active_terminal_id.as_deref() == Some(id.as_str()) {
                 state.active_terminal_id = None;
+                active_terminal::clear_active_input();
             }
             cx.notify();
         });
@@ -635,6 +626,22 @@ impl Workspace {
             }
         })
         .detach();
+    }
+
+    fn activate_terminal(
+        &mut self,
+        id: String,
+        terminal_entity: Entity<WorkspaceTerminal>,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspace_state.update(cx, |state, cx| {
+            state.active_terminal_id = Some(id.clone());
+            cx.emit(WorkspaceStateEvent::TerminalOpened { id });
+            cx.notify();
+        });
+        self.content.update(cx, |c, cx| {
+            c.set_main_view(terminal_entity.into(), cx);
+        });
     }
 
     fn mainview_viewport(&self, window: &mut Window, cx: &App) -> Size<Pixels> {

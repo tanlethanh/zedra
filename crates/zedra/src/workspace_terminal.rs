@@ -3,6 +3,7 @@ use tracing::*;
 use zedra_session::SessionHandle;
 use zedra_terminal::view::{TerminalEvent, TerminalView};
 
+use crate::active_terminal;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
 
 pub const TERMINAL_PENDING_ID: &str = "___PENDING___";
@@ -54,6 +55,12 @@ impl WorkspaceTerminal {
                     );
                 }
             }
+            WorkspaceStateEvent::TerminalOpened { id } => {
+                if this.terminal_id == *id {
+                    info!("received TerminalOpened event, registering as active input");
+                    this.register_as_active_input(cx);
+                }
+            }
             _ => {}
         });
 
@@ -89,6 +96,21 @@ impl WorkspaceTerminal {
             terminal_view,
             _subscriptions: vec![attach_sub, resize_sub],
         }
+    }
+
+    /// Wire keyboard-accessory input to this terminal's PTY channel.
+    /// Call whenever this terminal becomes workspace's mainview.
+    pub fn register_as_active_input(&self, cx: &App) {
+        let Some(sender) = self.terminal_view.read(cx).input_sender(cx) else {
+            warn!(terminal_id = %self.terminal_id, "no input sender, skipping active input registration");
+            return;
+        };
+        let terminal_id = self.terminal_id.clone();
+        active_terminal::set_active_input(Box::new(move |bytes| {
+            if let Err(e) = sender.try_send(bytes) {
+                warn!(terminal_id, "failed to send input: {}", e);
+            }
+        }));
     }
 
     pub fn set_terminal_id(&mut self, terminal_id: String, cx: &mut Context<Self>) {

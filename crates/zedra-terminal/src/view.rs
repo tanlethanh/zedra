@@ -152,6 +152,10 @@ impl TerminalView {
         self.terminal.read(cx).is_channel_attached()
     }
 
+    pub fn input_sender(&self, cx: &App) -> Option<tokio::sync::mpsc::Sender<Vec<u8>>> {
+        self.terminal.read(cx).input_sender()
+    }
+
     pub fn attach_channel(
         &mut self,
         input_tx: mpsc::Sender<Vec<u8>>,
