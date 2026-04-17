@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::VerifyingKey;
+use futures::future::join_all;
 use iroh::{
     Endpoint, EndpointAddr, NetReport, PublicKey, RelayConfig, RelayMap, RelayMode,
     address_lookup::PkarrResolver,
@@ -19,6 +21,7 @@ use zedra_rpc::{
     },
 };
 
+use crate::RemoteTerminal;
 use crate::signer::ClientSigner;
 use crate::state::{AuthOutcome, ConnectError, ReconnectReason};
 
@@ -33,6 +36,12 @@ pub struct ConnectConfig {
     path_keep_alive_interval: Duration,
     path_max_idle_timeout: Duration,
 }
+
+pub type ConnectedResult = (
+    irpc::Client<ZedraProto>,
+    SyncSessionResult,
+    Vec<RemoteTerminal>,
+);
 
 impl Default for ConnectConfig {
     fn default() -> Self {
@@ -155,7 +164,7 @@ pub enum ConnectEvent {
     Syncing,
     SyncComplete {
         sync: SyncSessionResult,
-        fetch_ms: u64,
+        sync_ms: u64,
     },
     TerminalsReattached {
         count: usize,
@@ -220,7 +229,8 @@ impl Connector {
         signer: Arc<dyn ClientSigner>,
         session_id: Option<String>,
         session_token: Option<[u8; 32]>,
-    ) -> Result<(irpc::Client<ZedraProto>, SyncSessionResult), ConnectError> {
+        existing_terminals: Option<Vec<RemoteTerminal>>,
+    ) -> Result<ConnectedResult, ConnectError> {
         self.reset();
         let endpoint_id = remote_addr.id;
 
@@ -256,11 +266,15 @@ impl Connector {
             is_first_pairing,
         });
 
-        // Phase: Sync complete
-        // TODO: sync should handle workspace data fetching and terminal resuming
+        let t_sync = Instant::now();
+        let terminals = self
+            .process_sync(&client, &sync, existing_terminals)
+            .await?;
+        let sync_ms = t_sync.elapsed().as_millis() as u64;
+
         self.emit(ConnectEvent::SyncComplete {
             sync: sync.clone(),
-            fetch_ms: 0,
+            sync_ms,
         });
 
         // Connected
@@ -270,7 +284,7 @@ impl Connector {
             .unwrap_or(0);
         self.emit(ConnectEvent::Connected { total_ms });
 
-        Ok((client, sync))
+        Ok((client, sync, terminals))
     }
 
     pub async fn proceed_binding_endpoint(&mut self) -> Result<Endpoint, ConnectError> {
@@ -515,6 +529,45 @@ impl Connector {
             AuthProveResult::InvalidSignature => Err(ConnectError::InvalidSignature),
         }
     }
+
+    /// Proceeds sync data, create new remote terminals from sync result.
+    /// And attach them to the remote with bidi streams.
+    /// Return the list of attached terminals.
+    pub async fn process_sync(
+        &mut self,
+        client: &irpc::Client<ZedraProto>,
+        sync: &SyncSessionResult,
+        existing_terminals: Option<Vec<RemoteTerminal>>,
+    ) -> Result<Vec<RemoteTerminal>, ConnectError> {
+        let mut by_id = existing_terminals
+            .as_ref()
+            .map(|ts| {
+                ts.iter()
+                    .map(|t| (t.id().clone(), t))
+                    .collect::<HashMap<_, _>>()
+            })
+            .unwrap_or_default();
+
+        let mut terminals = vec![];
+
+        for t_sync in &sync.terminals {
+            // If the terminal is already in the list, use the existing terminal.
+            let terminal = by_id
+                .remove(t_sync.id.as_str())
+                .map(|t| t.clone())
+                .unwrap_or_else(|| RemoteTerminal::new(t_sync.id.clone()));
+            terminals.push(terminal);
+        }
+
+        join_all(terminals.iter().map(async |t| {
+            if let Err(e) = t.attach_remote(client).await {
+                warn!("failed to attach terminal {}: {}", t.id(), e);
+            }
+        }))
+        .await;
+
+        Ok(terminals)
+    }
 }
 
 impl Connector {
@@ -714,7 +767,8 @@ impl Connector {
         session_token: Option<[u8; 32]>,
         reason: ReconnectReason,
         max_attempts: u32,
-    ) -> Result<(irpc::Client<ZedraProto>, SyncSessionResult), ConnectError> {
+        terminals: Option<Vec<RemoteTerminal>>,
+    ) -> Result<ConnectedResult, ConnectError> {
         let reconnect_start = Instant::now();
         self.emit(ConnectEvent::ReconnectStarted {
             reason: reason.clone(),
@@ -741,6 +795,7 @@ impl Connector {
                     signer.clone(),
                     session_id.clone(),
                     session_token,
+                    terminals.clone(),
                 )
                 .await
             {

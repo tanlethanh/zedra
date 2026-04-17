@@ -7,6 +7,7 @@ use tracing::info;
 use zedra_rpc::ZedraPairingTicket;
 use zedra_rpc::proto::{HostEvent, SubscribeReq, SyncSessionResult, ZedraProto};
 
+use crate::RemoteTerminal;
 use crate::{
     ConnectError, ConnectEvent, Connector, SessionHandle, SessionState, session_runtime,
     signer::ClientSigner,
@@ -103,9 +104,11 @@ impl Session {
                     break;
                 }
 
+                let existing_terminals = handle.terminals().clone();
                 let result = match reconnect_reason.take() {
                     Some(reason) => {
-                        info!("reconnect to {addr:?}, session: {session_id:?} reason {reason:?}",);
+                        let max_attempts = 10;
+                        info!("reconnect to {addr:?}, session: {session_id:?} reason {reason:?} max_attempts {max_attempts}",);
                         connector
                             .reconnect_loop(
                                 addr.clone(),
@@ -114,7 +117,8 @@ impl Session {
                                 session_id.clone(),
                                 session_token,
                                 reason,
-                                10,
+                                max_attempts,
+                                Some(existing_terminals)
                             )
                             .await
                     }
@@ -127,18 +131,20 @@ impl Session {
                                 signer.clone(),
                                 session_id.clone(),
                                 session_token,
+                                Some(existing_terminals)
                             )
                             .await
                     }
                 };
 
                 match result {
-                    Ok((client, sync)) => {
+                    Ok((client, sync, terminals)) => {
                         if Self::finish_connection(
                             &handle,
                             &state,
                             client,
                             sync,
+                            terminals,
                             on_connected.clone(),
                             abort_signal.clone(),
                         )
@@ -197,11 +203,13 @@ impl Session {
         self.abort_signal.lock().unwrap().cancel();
     }
 
+    /// Finish the connection by setting the session handle and terminals.
     async fn finish_connection(
         handle: &SessionHandle,
         state: &SessionState,
         client: irpc::Client<ZedraProto>,
         sync: SyncSessionResult,
+        terminals: Vec<RemoteTerminal>,
         on_connected: Arc<dyn Fn(&SessionHandle) + Send + Sync>,
         abort_signal: CancellationToken,
     ) -> Result<(), ConnectError> {
@@ -209,16 +217,11 @@ impl Session {
         handle.set_rpc_client(client.clone());
         handle.set_session_id(Some(sync.session_id.clone()));
         handle.set_session_token(Some(sync.session_token));
-        handle.sync_terminals(&sync.terminals);
-        handle
-            .reattach_terminals()
-            .await
-            .map_err(|e| ConnectError::Other(e.to_string()))?;
+        handle.set_terminals(terminals);
 
         Self::spawn_host_event_subscription(handle.clone(), state.clone(), client, abort_signal);
 
         on_connected(handle);
-        state.notify();
         Ok(())
     }
 
@@ -281,13 +284,15 @@ impl Session {
                     id,
                     launch_cmd,
                 );
-                let terminal = handle
-                    .terminal(&id)
-                    .unwrap_or_else(|| create_host_terminal(handle, id));
-                if let Err(e) = handle.attach_terminal(client, &terminal).await {
+                let terminal = handle.terminal(&id).unwrap_or_else(|| {
+                    let terminal = RemoteTerminal::new(id);
+                    handle.add_terminal(terminal.clone());
+                    terminal
+                });
+                if let Err(e) = terminal.attach_remote(client).await {
                     tracing::warn!(
                         "Failed to attach host-created terminal {}: {e}",
-                        terminal.id
+                        terminal.id()
                     );
                 }
                 state.notify();
@@ -302,15 +307,6 @@ impl Session {
             }
         }
     }
-}
-
-fn create_host_terminal(
-    handle: &SessionHandle,
-    id: String,
-) -> Arc<crate::terminal::RemoteTerminal> {
-    let terminal = crate::terminal::RemoteTerminal::new(id);
-    handle.add_terminal(terminal.clone());
-    terminal
 }
 
 impl Default for Session {
