@@ -24,6 +24,10 @@ for arg in "$@"; do
             FEATURES="$FEATURES,debug-telemetry"
             echo "Debug telemetry enabled (events logged to console)"
             ;;
+        --debug)
+            FEATURES="$FEATURES,debug-logs"
+            echo "Debug logs enabled (verbose iroh/quinn output)"
+            ;;
         --release)
             PROFILE="--release"
             PROFILE_DIR="release"

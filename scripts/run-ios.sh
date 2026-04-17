@@ -9,7 +9,7 @@ SCHEME="Zedra"
 BUNDLE_ID="dev.zedra.app"
 
 usage() {
-    echo "Usage: $0 [sim|device] [--no-build] [--release] [--preview] [--device-id <UDID>] [--select-device] [--launch-url <URL>]"
+    echo "Usage: $0 [sim|device] [--no-build] [--release] [--preview] [--debug] [--device-id <UDID>] [--select-device] [--launch-url <URL>]"
     echo ""
     echo "  sim      Build and run on iOS Simulator (default)"
     echo "  device   Build and install on connected device"
@@ -77,6 +77,9 @@ while [ $i -lt ${#args[@]} ]; do
     case "${args[$i]}" in
         --preview)
             BUILD_FLAGS="$BUILD_FLAGS --preview"
+            ;;
+        --debug)
+            BUILD_FLAGS="$BUILD_FLAGS --debug"
             ;;
         --release)
             BUILD_FLAGS="$BUILD_FLAGS --release"
