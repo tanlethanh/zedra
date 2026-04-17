@@ -1,11 +1,14 @@
 use gpui::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tracing::*;
 
-use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_notify_poll};
+use zedra_rpc::proto::HostEvent;
+use zedra_session::{Session, SessionHandle, SessionState};
+
 use crate::theme;
+use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
 
 #[derive(Clone, Debug)]
 pub struct FileSelected {
@@ -19,9 +22,7 @@ pub struct FileEntry {
     is_dir: bool,
     expanded: bool,
     children: Vec<FileEntry>,
-    /// Whether children are currently being loaded from remote
     loading: bool,
-    /// Total children on the server (may exceed `children.len()` when paginated)
     children_total: u32,
 }
 
@@ -73,128 +74,103 @@ pub struct FileExplorer {
     remote_loaded: bool,
     /// Total root entries on the server (may exceed `entries.len()` when paginated)
     root_total: u32,
-    /// Pending root entries from async fs/list (carries entries + total)
-    pending_entries: SharedPendingSlot<(Vec<FileEntry>, u32)>,
-    /// Pending children refresh queue from async fs/list.
-    /// We use a queue (not a single slot) because nested observers can trigger
-    /// parent/child reloads concurrently; dropping one completion leaves a dir
-    /// stuck in `loading=true` and renders trailing "Loading..." rows forever.
-    /// `None` payload means load failed and only loading state should be cleared.
-    pending_children: Arc<Mutex<Vec<(String, Option<(Vec<FileEntry>, u32)>)>>>,
-    /// Pending appended entries from "load more" (index_path + entries; [] = root)
-    pending_more: SharedPendingSlot<(Vec<usize>, Vec<FileEntry>)>,
     /// Cached flattened entry list; rebuilt only when entries change.
     flat_entries: Vec<FlatEntry>,
     /// Whether `flat_entries` needs to be rebuilt.
     flat_dirty: bool,
-    session_handle: Option<zedra_session::SessionHandle>,
     workdir: String,
     watched_paths: HashSet<String>,
     selected_file_path: Option<String>,
-    /// Last observer-triggered refresh instant by directory path.
     last_refresh_at: HashMap<String, Instant>,
-    /// Background task polling pending slots.
-    _poll_task: Task<()>,
+    request_epoch: u64,
+    /// Keep track all tasks spawned by the file explorer. All dropped when the file explorer is dropped.
+    tasks: Vec<Task<()>>,
+    #[allow(dead_code)]
+    workspace_state: Entity<WorkspaceState>,
+    #[allow(dead_code)]
+    session_state: Entity<SessionState>,
+    session_handle: SessionHandle,
+    _subscriptions: Vec<Subscription>,
 }
 
 const OBSERVER_REFRESH_THROTTLE: Duration = Duration::from_millis(1200);
 
 impl FileExplorer {
-    pub fn new(cx: &mut Context<Self>) -> Self {
-        let pending_entries: SharedPendingSlot<(Vec<FileEntry>, u32)> = shared_pending_slot();
-        let pending_children: Arc<Mutex<Vec<(String, Option<(Vec<FileEntry>, u32)>)>>> =
-            Arc::new(Mutex::new(Vec::new()));
-        let pending_more: SharedPendingSlot<(Vec<usize>, Vec<FileEntry>)> = shared_pending_slot();
-
-        let poll_entries = pending_entries.clone();
-        let poll_children = pending_children.clone();
-        let poll_more = pending_more.clone();
-        let poll_task = spawn_notify_poll(cx, Duration::from_millis(32), move || {
-            poll_entries.has_pending()
-                || poll_more.has_pending()
-                || poll_children.lock().map(|g| !g.is_empty()).unwrap_or(false)
+    pub fn new(
+        workspace_state: Entity<WorkspaceState>,
+        session_state: Entity<SessionState>,
+        session: Session,
+        session_handle: SessionHandle,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let workdir = workspace_state.read(cx).workdir.to_string();
+        let mut host_event_rx = session.subscribe_host_events();
+        let host_event_task = cx.spawn(async move |this, cx| {
+            loop {
+                match host_event_rx.recv().await {
+                    Ok(HostEvent::FsChanged { path }) => {
+                        let should_break = this
+                            .update(cx, |this, cx| {
+                                this.invalidate_dir(&path, cx);
+                            })
+                            .is_err();
+                        if should_break {
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!("file explorer host event listener lagged by {}", skipped);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
         });
 
-        let mut explorer = Self {
+        let mut subscriptions = Vec::new();
+        subscriptions.push(cx.subscribe(
+            &workspace_state,
+            |this, _workspace, event: &WorkspaceStateEvent, cx| {
+                if matches!(event, WorkspaceStateEvent::SyncComplete) {
+                    this.handle_sync_complete(cx);
+                }
+            },
+        ));
+
+        Self {
             entries: Vec::new(),
             focus_handle: cx.focus_handle(),
             remote_loaded: false,
             root_total: 0,
-            pending_entries,
-            pending_children,
-            pending_more,
+            workdir,
             flat_entries: Vec::new(),
             flat_dirty: false,
-            session_handle: None,
-            workdir: String::new(),
             watched_paths: HashSet::new(),
             selected_file_path: None,
             last_refresh_at: HashMap::new(),
-            _poll_task: poll_task,
-        };
-
-        // If there's an active session, load root entries from remote
-        explorer.try_load_remote_root(cx);
-
-        explorer
+            request_epoch: 0,
+            tasks: vec![host_event_task],
+            workspace_state,
+            session_state,
+            session_handle,
+            _subscriptions: subscriptions,
+        }
     }
 
-    /// Set the session handle so the explorer can make RPC calls.
-    pub fn set_session_handle(
-        &mut self,
-        handle: zedra_session::SessionHandle,
-        workdir: String,
-        cx: &mut Context<Self>,
-    ) {
-        self.session_handle = Some(handle);
-        self.workdir = workdir;
-        self.watched_paths.clear();
-        self.selected_file_path = None;
-        self.last_refresh_at.clear();
-        self.try_load_remote_root(cx);
-    }
-
-    /// Reset to empty state (e.g. after disconnect)
-    pub fn reset_to_demo(&mut self, cx: &mut Context<Self>) {
-        self.entries = Vec::new();
-        self.root_total = 0;
-        self.remote_loaded = false;
-        self.watched_paths.clear();
-        self.selected_file_path = None;
-        self.last_refresh_at.clear();
-        self.flat_dirty = true;
-        cx.notify();
-    }
-
-    /// Reload the root directory from the currently active session.
-    /// Used when switching workspaces so the explorer reflects the new session.
-    pub fn reload(&mut self, cx: &mut Context<Self>) {
-        self.remote_loaded = false;
-        self.root_total = 0;
-        self.watched_paths.clear();
-        self.last_refresh_at.clear();
-        // Clear any in-flight pending results from the old session.
-        // Keeping stale child updates can re-apply loading/data into a new tree.
-        let _ = self.pending_entries.take();
-        self.pending_children.lock().unwrap().clear();
-        let _ = self.pending_more.take();
-        self.try_load_remote_root(cx);
-        cx.notify();
-    }
-
-    /// Attempt to load the root directory listing from the active remote session.
-    fn try_load_remote_root(&mut self, _cx: &mut Context<Self>) {
-        self.request_root_listing(true);
+    fn handle_sync_complete(&mut self, cx: &mut Context<Self>) {
+        self.workdir = self.workspace_state.read(cx).workdir.to_string();
+        self.request_epoch = self.request_epoch.wrapping_add(1);
+        self.rebind_watches(cx);
+        let show_loading = !self.remote_loaded && self.entries.is_empty();
+        self.request_root_listing(show_loading, cx);
     }
 
     /// Request root listing. When `show_loading` is false we preserve the
     /// existing tree and only apply if root structure actually changed.
-    fn request_root_listing(&mut self, show_loading: bool) {
-        let handle = match self.session_handle.as_ref() {
-            Some(h) if h.has_client() => h.clone(),
-            _ => return,
-        };
-        self.fs_watch_path(".".to_string());
+    fn request_root_listing(&mut self, show_loading: bool, cx: &mut Context<Self>) {
+        info!("request root listing in {:?}", self.workdir);
+        let epoch = self.request_epoch;
+        self.fs_watch_path(".".to_string(), cx);
 
         if show_loading {
             self.entries = vec![FileEntry {
@@ -209,181 +185,151 @@ impl FileExplorer {
         }
         self.remote_loaded = true;
         self.note_refreshed(".");
+        self.flat_dirty = true;
+        cx.notify();
 
-        let pending = self.pending_entries.clone();
-        zedra_session::session_runtime().spawn(async move {
-            match handle.fs_list(".").await {
-                Ok((entries, total, _has_more)) => {
-                    let file_entries: Vec<FileEntry> = entries
-                        .into_iter()
-                        .map(|e| {
-                            if e.is_dir {
-                                FileEntry::dir(&e.name, &e.path, Vec::new())
-                            } else {
-                                FileEntry::file(&e.name, &e.path)
-                            }
-                        })
-                        .collect();
-
-                    pending.set((file_entries, total));
-                }
+        let handle = self.session_handle.clone();
+        cx.spawn(async move |this, cx| {
+            let result = match handle.fs_list(".").await {
+                Ok((entries, total, _has_more)) => Ok((Self::to_file_entries(entries), total)),
                 Err(e) => {
-                    tracing::error!("fs/list failed: {}", e);
-                    pending.set((
-                        vec![FileEntry {
-                            name: format!("Error: {}", e),
-                            path: String::new(),
-                            is_dir: false,
-                            expanded: false,
-                            children: Vec::new(),
-                            loading: false,
-                            children_total: 0,
-                        }],
-                        0,
-                    ));
+                    error!("fs/list failed: {}", e);
+                    Err(vec![FileEntry {
+                        name: format!("Error: {}", e),
+                        path: String::new(),
+                        is_dir: false,
+                        expanded: false,
+                        children: Vec::new(),
+                        loading: false,
+                        children_total: 0,
+                    }])
                 }
-            }
-        });
+            };
+
+            let _ = this.update(cx, |this, cx| {
+                if this.request_epoch != epoch {
+                    return;
+                }
+                match result {
+                    Ok((entries, total)) => {
+                        let old_root_sig = Self::root_signature(&this.entries);
+                        let new_root_sig = Self::root_signature(&entries);
+                        if old_root_sig == new_root_sig {
+                            return;
+                        }
+                        let cache = this.entry_cache();
+                        this.entries = entries;
+                        this.root_total = total;
+                        this.flat_dirty = true;
+                        let mut watched = Vec::new();
+                        for entry in &mut this.entries {
+                            Self::restore_entry_state(entry, &cache, &mut watched);
+                        }
+                        for path in watched {
+                            this.fs_watch_path(path, cx);
+                        }
+                    }
+                    Err(entries) => {
+                        this.entries = entries;
+                        this.root_total = 0;
+                        this.flat_dirty = true;
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
-    /// Check for pending entries from async fs/list and apply them
-    fn apply_pending_entries(&mut self) {
-        if let Some((entries, total)) = self.pending_entries.take() {
-            let old_root_sig = Self::root_signature(&self.entries);
-            let new_root_sig = Self::root_signature(&entries);
-            if old_root_sig == new_root_sig {
-                return;
-            }
-            let cache = self.entry_cache();
-            self.entries = entries;
-            self.root_total = total;
-            self.flat_dirty = true;
-            let mut watched = Vec::new();
-            for entry in &mut self.entries {
-                Self::restore_entry_state(entry, &cache, &mut watched);
-            }
-            for path in watched {
-                self.fs_watch_path(path);
-            }
-        }
+    fn to_file_entries(entries: Vec<zedra_rpc::proto::FsEntry>) -> Vec<FileEntry> {
+        entries
+            .into_iter()
+            .map(|e| {
+                if e.is_dir {
+                    FileEntry::dir(&e.name, &e.path, Vec::new())
+                } else {
+                    FileEntry::file(&e.name, &e.path)
+                }
+            })
+            .collect()
     }
 
     /// Load children for a directory at the given index path from remote
     fn load_remote_children(&mut self, index_path: &[usize], cx: &mut Context<Self>) {
-        let handle = match self.session_handle.as_ref() {
-            Some(h) if h.has_client() => h.clone(),
-            _ => return,
-        };
+        let epoch = self.request_epoch;
 
-        // Get the full path of the directory to list
         let dir_path = match self.entry_at_path(index_path) {
             Some(entry) => entry.path.clone(),
             None => return,
         };
-        self.fs_watch_path(dir_path.clone());
+        self.fs_watch_path(dir_path.clone(), cx);
 
-        // Mark as loading
         if let Some(entry) = self.entry_at_path_mut(index_path) {
             entry.loading = true;
             entry.expanded = true;
         }
         self.note_refreshed(&dir_path);
+        self.flat_dirty = true;
         cx.notify();
 
-        // Capture a stable directory path for completion routing. Index paths are
-        // positional and can become stale after unrelated tree updates.
-        let pending = self.pending_children.clone();
-        let dir_path_for_pending = dir_path.clone();
-
-        zedra_session::session_runtime().spawn(async move {
-            match handle.fs_list(&dir_path).await {
-                Ok((entries, total, _has_more)) => {
-                    let file_entries: Vec<FileEntry> = entries
-                        .into_iter()
-                        .map(|e| {
-                            if e.is_dir {
-                                FileEntry::dir(&e.name, &e.path, Vec::new())
-                            } else {
-                                FileEntry::file(&e.name, &e.path)
-                            }
-                        })
-                        .collect();
-
-                    // Queue every completion to avoid overwrite races when both
-                    // parent and nested directories refresh in the same window.
-                    pending
-                        .lock()
-                        .unwrap()
-                        .push((dir_path_for_pending, Some((file_entries, total))));
-                }
+        let handle = self.session_handle.clone();
+        cx.spawn(async move |this, cx| {
+            let result = match handle.fs_list(&dir_path).await {
+                Ok((entries, total, _has_more)) => Some((Self::to_file_entries(entries), total)),
                 Err(e) => {
-                    tracing::error!("fs/list for {:?} failed: {}", dir_path, e);
-                    // Ensure error paths still clear spinner state for this dir.
-                    pending.lock().unwrap().push((dir_path, None));
+                    error!("fs/list for {:?} failed: {}", dir_path, e);
+                    None
                 }
-            }
-        });
-    }
-
-    /// Check for pending children from async fs/list and apply them
-    fn apply_pending_children(&mut self) {
-        // Drain all queued updates for this frame so no directory completion is lost.
-        let updates = {
-            let mut queue = self.pending_children.lock().unwrap();
-            if queue.is_empty() {
-                return;
-            }
-            std::mem::take(&mut *queue)
-        };
-
-        for (dir_path, children_result) in updates {
-            // Resolve by stable path at apply time to avoid stale index-path bugs.
-            let Some(path) = self.find_index_path_by_path(&dir_path) else {
-                continue;
             };
 
-            match children_result {
-                Some((children, total)) => {
-                    let cache = self.entry_cache();
-                    if let Some(entry) = self.entry_at_path_mut(&path) {
-                        entry.children = children;
-                        entry.children_total = total;
-                        entry.loading = false;
-                        self.flat_dirty = true;
+            let _ = this.update(cx, |this, cx| {
+                if this.request_epoch != epoch {
+                    return;
+                }
+                let Some(path) = this.find_index_path_by_path(&dir_path) else {
+                    return;
+                };
+
+                match result {
+                    Some((children, total)) => {
+                        let cache = this.entry_cache();
+                        if let Some(entry) = this.entry_at_path_mut(&path) {
+                            entry.children = children;
+                            entry.children_total = total;
+                            entry.loading = false;
+                            this.flat_dirty = true;
+                        }
+                        if let Some(entry) = this.entry_at_path(&path) {
+                            let mut restored = entry.clone();
+                            let mut watched = Vec::new();
+                            for child in &mut restored.children {
+                                Self::restore_entry_state(child, &cache, &mut watched);
+                            }
+                            if let Some(entry_mut) = this.entry_at_path_mut(&path) {
+                                entry_mut.children = restored.children;
+                            }
+                            for p in watched {
+                                this.fs_watch_path(p, cx);
+                            }
+                        }
                     }
-                    if let Some(entry) = self.entry_at_path(&path) {
-                        let mut restored = entry.clone();
-                        let mut watched = Vec::new();
-                        for child in &mut restored.children {
-                            Self::restore_entry_state(child, &cache, &mut watched);
-                        }
-                        if let Some(entry_mut) = self.entry_at_path_mut(&path) {
-                            entry_mut.children = restored.children;
-                        }
-                        for p in watched {
-                            self.fs_watch_path(p);
+                    None => {
+                        if let Some(entry) = this.entry_at_path_mut(&path) {
+                            entry.loading = false;
+                            this.flat_dirty = true;
                         }
                     }
                 }
-                None => {
-                    // Failed refresh: clear loading so the parent does not stay
-                    // in "...Loading..." state after nested file churn.
-                    if let Some(entry) = self.entry_at_path_mut(&path) {
-                        entry.loading = false;
-                        self.flat_dirty = true;
-                    }
-                }
-            }
-        }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Load the next page of entries for a directory or the root.
     /// `load_more_path` is `[]` for root, or the index path of a dir entry.
     fn load_more_entries(&mut self, load_more_path: Vec<usize>, cx: &mut Context<Self>) {
-        let handle = match self.session_handle.as_ref() {
-            Some(h) if h.has_client() => h.clone(),
-            _ => return,
-        };
+        let epoch = self.request_epoch;
 
         let (dir_path, offset) = if load_more_path.is_empty() {
             (".".to_string(), self.entries.len() as u32)
@@ -394,44 +340,34 @@ impl FileExplorer {
             }
         };
 
-        let pending = self.pending_more.clone();
-        zedra_session::session_runtime().spawn(async move {
-            match handle
+        let handle = self.session_handle.clone();
+        cx.spawn(async move |this, cx| {
+            let result = handle
                 .fs_list_page(&dir_path, offset, zedra_rpc::proto::FS_LIST_DEFAULT_LIMIT)
-                .await
-            {
-                Ok((entries, _total, _has_more)) => {
-                    let file_entries: Vec<FileEntry> = entries
-                        .into_iter()
-                        .map(|e| {
-                            if e.is_dir {
-                                FileEntry::dir(&e.name, &e.path, Vec::new())
-                            } else {
-                                FileEntry::file(&e.name, &e.path)
-                            }
-                        })
-                        .collect();
-                    pending.set((load_more_path, file_entries));
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.request_epoch != epoch {
+                    return;
                 }
-                Err(e) => {
-                    tracing::error!("fs/list load_more for {:?} failed: {}", dir_path, e);
+                match result {
+                    Ok((entries, _total, _has_more)) => {
+                        let more = Self::to_file_entries(entries);
+                        if load_more_path.is_empty() {
+                            this.entries.extend(more);
+                        } else if let Some(entry) = this.entry_at_path_mut(&load_more_path) {
+                            entry.children.extend(more);
+                            entry.loading = false;
+                        }
+                        this.flat_dirty = true;
+                        cx.notify();
+                    }
+                    Err(e) => {
+                        error!("fs/list load_more for {:?} failed: {}", dir_path, e);
+                    }
                 }
-            }
-        });
-        cx.notify();
-    }
-
-    /// Check for pending "load more" entries and append them
-    fn apply_pending_more(&mut self) {
-        if let Some((path, more)) = self.pending_more.take() {
-            if path.is_empty() {
-                self.entries.extend(more);
-            } else if let Some(entry) = self.entry_at_path_mut(&path) {
-                entry.children.extend(more);
-                entry.loading = false;
-            }
-            self.flat_dirty = true;
-        }
+            });
+        })
+        .detach();
     }
 
     fn flatten(&self) -> Vec<FlatEntry> {
@@ -487,13 +423,13 @@ impl FileExplorer {
             }
         }
         if let Some(path) = expanded_path {
-            self.fs_watch_path(path);
+            self.fs_watch_path(path, cx);
         }
         if let Some(tree) = collapsed_subtree {
             let mut paths = Vec::new();
             Self::collect_dir_paths(&tree, &mut paths);
             for path in paths {
-                self.fs_unwatch_path(path);
+                self.fs_unwatch_path(path, cx);
             }
         }
     }
@@ -555,40 +491,37 @@ impl FileExplorer {
             .is_some_and(|t| t.elapsed() < OBSERVER_REFRESH_THROTTLE)
     }
 
-    fn fs_watch_path(&mut self, path: String) {
+    fn fs_watch_path(&mut self, path: String, cx: &mut Context<Self>) {
         let watch_path = self.to_watch_path(&path);
         if !self.watched_paths.insert(watch_path.clone()) {
             return;
         }
-        let handle = match self.session_handle.as_ref() {
-            Some(h) if h.has_client() => h.clone(),
-            _ => return,
-        };
-        zedra_session::session_runtime().spawn(async move {
-            match handle.fs_watch(&watch_path).await {
+        let handle = self.session_handle.clone();
+        let task = cx.spawn(
+            async move |_this, _cx| match handle.fs_watch(&watch_path).await {
                 Ok(zedra_rpc::proto::FsWatchResult::Ok) => {}
-                Ok(other) => tracing::debug!("fs_watch({watch_path}) rejected: {other:?}"),
-                Err(e) => tracing::debug!("fs_watch({watch_path}) failed: {e}"),
-            }
-        });
+                Ok(other) => debug!("fs_watch({watch_path}) rejected: {other:?}"),
+                Err(e) => debug!("fs_watch({watch_path}) failed: {e}"),
+            },
+        );
+        self.tasks.push(task);
     }
 
-    fn fs_unwatch_path(&mut self, path: String) {
+    fn fs_unwatch_path(&mut self, path: String, cx: &mut Context<Self>) {
         let watch_path = self.to_watch_path(&path);
         if !self.watched_paths.remove(&watch_path) {
             return;
         }
-        let handle = match self.session_handle.as_ref() {
-            Some(h) if h.has_client() => h.clone(),
-            _ => return,
-        };
-        zedra_session::session_runtime().spawn(async move {
+
+        let handle = self.session_handle.clone();
+        cx.spawn(async move |_this, _cx| {
             match handle.fs_unwatch(&watch_path).await {
                 Ok(zedra_rpc::proto::FsUnwatchResult::Ok) => {}
-                Ok(other) => tracing::debug!("fs_unwatch({watch_path}) rejected: {other:?}"),
-                Err(e) => tracing::debug!("fs_unwatch({watch_path}) failed: {e}"),
-            }
-        });
+                Ok(other) => debug!("fs_unwatch({watch_path}) rejected: {other:?}"),
+                Err(e) => debug!("fs_unwatch({watch_path}) failed: {e}"),
+            };
+        })
+        .detach();
     }
 
     fn to_watch_path(&self, path: &str) -> String {
@@ -661,7 +594,7 @@ impl FileExplorer {
             return;
         }
         if path == "." {
-            self.request_root_listing(false);
+            self.request_root_listing(false, cx);
             return;
         }
         let lookup_path = self.event_path_to_entry_path(path);
@@ -731,6 +664,43 @@ impl FileExplorer {
         out.sort();
         out
     }
+
+    fn rebind_watches(&mut self, cx: &mut Context<Self>) {
+        let mut desired = HashSet::new();
+        desired.insert(".".to_string());
+        Self::collect_expanded_watch_paths(&self.entries, &mut desired);
+        if let Some(file_path) = self.selected_file_path.clone() {
+            let parent = Path::new(&file_path)
+                .parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .filter(|p| !p.is_empty())
+                .unwrap_or_else(|| ".".to_string());
+            desired.insert(parent);
+        }
+
+        self.watched_paths.clear();
+        for path in desired {
+            self.fs_watch_path(path, cx);
+        }
+    }
+
+    fn collect_expanded_watch_paths(entries: &[FileEntry], out: &mut HashSet<String>) {
+        for entry in entries {
+            if entry.is_dir && entry.expanded && !entry.path.is_empty() {
+                out.insert(entry.path.clone());
+                Self::collect_expanded_watch_paths(&entry.children, out);
+            }
+        }
+    }
+
+    fn watch_parent_dir_for_file(&mut self, file_path: &str, cx: &mut Context<Self>) {
+        let parent = Path::new(file_path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| ".".to_string());
+        self.fs_watch_path(parent, cx);
+    }
 }
 
 impl EventEmitter<FileSelected> for FileExplorer {}
@@ -743,36 +713,12 @@ impl Focusable for FileExplorer {
 
 impl Render for FileExplorer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // If a session appeared after construction, load remote root
-        if !self.remote_loaded
-            && self
-                .session_handle
-                .as_ref()
-                .map_or(false, |h| h.has_client())
-        {
-            self.try_load_remote_root(cx);
-        }
-
-        let changed_paths = self
-            .session_handle
-            .as_ref()
-            .map(|h| h.take_fs_changed())
-            .unwrap_or_default();
-        for path in changed_paths {
-            self.invalidate_dir(&path, cx);
-        }
-
-        // Apply any pending async results
-        self.apply_pending_entries();
-        self.apply_pending_children();
-        self.apply_pending_more();
-
         if self.flat_dirty {
             self.flat_entries = self.flatten();
             self.flat_dirty = false;
         }
 
-        let mut list = div().id("file-list").flex().flex_col();
+        let mut list = div().id("file-list").flex_1().flex().flex_col();
 
         // We need to iterate by index to avoid borrow issues with cx.listener closures.
         // Clone the flat entries that the listener closures will capture.
@@ -872,6 +818,7 @@ impl Render for FileExplorer {
                     } else {
                         let path = this.full_path_for(&index_path_for_path);
                         this.selected_file_path = Some(path.clone());
+                        this.watch_parent_dir_for_file(&path, cx);
                         cx.emit(FileSelected { path });
                     }
                 }))
@@ -893,17 +840,12 @@ impl Render for FileExplorer {
 
         div()
             .track_focus(&self.focus_handle)
+            .id("file-list-container")
+            .flex_1()
             .flex()
             .flex_col()
-            .size_full()
-            // File list (transparent bg, inherits from drawer)
-            .child(
-                div()
-                    .id("file-list-container")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .child(list),
-            )
+            .overflow_y_scroll()
+            .child(list)
     }
 }
 

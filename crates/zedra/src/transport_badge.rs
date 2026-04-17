@@ -9,7 +9,7 @@ pub const STALE_THRESHOLD_SECS: u64 = 3;
 
 /// Compute badge label and dot color from phase and transport.
 /// Returns `(label, dot_color)`.
-pub(crate) fn transport_badge_info_phase(
+pub(crate) fn transport_badge(
     phase: &ConnectPhase,
     transport: Option<&TransportSnapshot>,
 ) -> (String, u32) {
@@ -30,14 +30,13 @@ pub(crate) fn transport_badge_info_phase(
             };
             let rtt = transport.map(|t| t.rtt_ms).unwrap_or(0);
             let label = match (relay, rtt) {
-                (Some(r), ms) if ms > 0 => format!("{conn_type} \u{00b7} {r} \u{00b7} {ms}ms"),
-                (Some(r), _) => format!("{conn_type} \u{00b7} {r}"),
+                (Some(r), ms) if ms > 0 => format!("{conn_type} \u{00b7} {ms}ms"),
                 (None, ms) if ms > 0 => format!("{conn_type} \u{00b7} {ms}ms"),
                 _ => conn_type.to_string(),
             };
             let color = match transport {
                 Some(t) if t.is_direct => theme::ACCENT_GREEN,
-                Some(_) => theme::ACCENT_YELLOW,
+                Some(_) => theme::ACCENT_GREEN,
                 None => theme::ACCENT_GREEN,
             };
             (label, color)
@@ -58,10 +57,10 @@ pub(crate) fn transport_badge_info_phase(
         ConnectPhase::Failed(err) => (err.user_message(), theme::ACCENT_RED),
         ConnectPhase::BindingEndpoint => ("Binding endpoint".into(), theme::ACCENT_YELLOW),
         ConnectPhase::HolePunching => ("Hole punching".into(), theme::ACCENT_YELLOW),
-        ConnectPhase::Registering => ("Registering".into(), theme::ACCENT_YELLOW),
+        ConnectPhase::Registering => ("Registering device".into(), theme::ACCENT_YELLOW),
         ConnectPhase::Authenticating => ("Authenticating".into(), theme::ACCENT_YELLOW),
-        ConnectPhase::Proving => ("Proving".into(), theme::ACCENT_YELLOW),
-        ConnectPhase::Sync => ("Syncing".into(), theme::ACCENT_YELLOW),
+        ConnectPhase::Proving => ("Auth challenge".into(), theme::ACCENT_YELLOW),
+        ConnectPhase::Sync => ("Syncing state".into(), theme::ACCENT_YELLOW),
         ConnectPhase::Idle { idle_since } => (
             format!("Idle {}s", idle_since.elapsed().as_secs()),
             theme::ACCENT_YELLOW,

@@ -40,34 +40,16 @@ impl QuickActionPanel {
         cx.emit(QuickActionEvent::NavigateToWorkspace);
     }
 
-    fn handle_switch_terminal(&self, ws_index: usize, tid: String, cx: &mut Context<Self>) {
-        let view = self
-            .workspaces
-            .read(cx)
-            .get(ws_index)
-            .map(|e| e.view.clone());
+    fn handle_switch_terminal(&self, ws_index: usize, _tid: String, cx: &mut Context<Self>) {
         self.workspaces
             .update(cx, |ws, cx| ws.switch_to(ws_index, cx));
-        if let Some(view) = view {
-            view.update(cx, |ws, cx| {
-                ws.switch_to_terminal(&tid, cx);
-            });
-        }
+        // TODO: switch to specific terminal within workspace
         cx.emit(QuickActionEvent::Close);
         cx.emit(QuickActionEvent::NavigateToWorkspace);
     }
 
-    fn handle_terminal_delete(&self, ws_index: usize, tid: String, cx: &mut Context<Self>) {
-        let view = self
-            .workspaces
-            .read(cx)
-            .get(ws_index)
-            .map(|e| e.view.clone());
-        if let Some(view) = view {
-            view.update(cx, |ws, cx| {
-                ws.request_terminal_delete(tid, cx);
-            });
-        }
+    fn handle_terminal_delete(&self, _ws_index: usize, _tid: String, _cx: &mut Context<Self>) {
+        // TODO: request terminal delete from workspace
     }
 }
 
@@ -83,14 +65,8 @@ impl Render for QuickActionPanel {
         let bottom_inset = platform_bridge::home_indicator_inset().max(10.0);
         let viewport_h = window.viewport_size().height;
 
-        let states = self.workspaces.read(cx).states().to_vec();
-        let handles = self.workspaces.read(cx).handles();
-
-        let workspaces: Vec<_> = states
-            .iter()
-            .filter(|s| s.workspace_index().is_some())
-            .cloned()
-            .collect();
+        let workspaces = self.workspaces.read(cx);
+        let ws_count = workspaces.len();
 
         let panel = div()
             .w_full()
@@ -175,10 +151,13 @@ impl Render for QuickActionPanel {
             .flex_col()
             .overflow_y_scroll();
 
-        for ws in &workspaces {
-            let index = ws.workspace_index().unwrap_or(0);
-            let is_connected = ws
-                .connect_phase()
+        for index in 0..ws_count {
+            let workspace_entity = workspaces.get(index).unwrap().clone();
+            let state = workspace_entity.read(cx).workspace_state(cx);
+
+            let is_connected = state
+                .connect_phase
+                .as_ref()
                 .map(|p| p.is_connected())
                 .unwrap_or(false);
             let status_color = if is_connected {
@@ -186,10 +165,10 @@ impl Render for QuickActionPanel {
             } else {
                 theme::ACCENT_RED
             };
-            let subtitle = match (ws.hostname().is_empty(), ws.strip_path().is_empty()) {
-                (false, false) => format!("{}:{}", ws.hostname(), ws.strip_path()),
-                (false, true) => ws.hostname().to_string(),
-                (true, false) => ws.strip_path().to_string(),
+            let subtitle = match (state.hostname.is_empty(), state.strip_path.is_empty()) {
+                (false, false) => format!("{}:{}", state.hostname, state.strip_path),
+                (false, true) => state.hostname.to_string(),
+                (true, false) => state.strip_path.to_string(),
                 (true, true) => String::new(),
             };
 
@@ -230,7 +209,7 @@ impl Render for QuickActionPanel {
                                     .font_weight(FontWeight::MEDIUM)
                                     .min_w_0()
                                     .truncate()
-                                    .child(ws.project_name().to_string()),
+                                    .child(state.project_name.to_string()),
                             )
                             .child(
                                 div()
@@ -249,25 +228,18 @@ impl Render for QuickActionPanel {
                     ),
             );
 
-            if ws.terminal_ids().is_empty() {
-                content = content.child(
-                    div()
-                        .px(px(16.0))
-                        .pb(px(8.0))
-                        .text_color(rgb(theme::TEXT_MUTED))
-                        .text_size(px(theme::FONT_DETAIL))
-                        .child("No terminals"),
-                );
-            } else {
+            if !state.terminal_ids.is_empty() {
                 content = content.gap_1();
-                for (i, tid) in ws.terminal_ids().iter().enumerate() {
+                for (i, tid) in state.terminal_ids.iter().enumerate() {
                     let tid_click = tid.clone();
                     let tid_del = tid.clone();
-                    let is_active = ws.active_terminal_id().is_some_and(|id| id == tid);
-                    let meta = handles
-                        .get(index)
-                        .and_then(|h| h.terminal(tid))
-                        .map(|t| t.meta())
+                    let is_active = state
+                        .active_terminal_id
+                        .clone()
+                        .is_some_and(|id| id == *tid);
+                    let meta = state
+                        .remote_terminal(tid)
+                        .map(|t| t.meta().clone())
                         .unwrap_or_default();
 
                     let on_close =
@@ -304,7 +276,7 @@ impl Render for QuickActionPanel {
             );
         }
 
-        if workspaces.is_empty() {
+        if ws_count == 0 {
             content = content.child(
                 div()
                     .px(px(16.0))

@@ -103,16 +103,11 @@ impl ZedraApp {
         .detach();
     }
 
-    /// Called periodically to check deeplinks and sync state.
+    /// Called periodically to check deeplinks.
     fn tick(&mut self, cx: &mut Context<Self>) {
-        // Check for pending deeplinks
         if let Some(action) = deeplink::take_pending() {
             self.handle_deeplink_deferred(action, cx);
         }
-
-        // TODO: should use direct channel to update state changed immediately
-        // Sync session state to workspace state
-        self.workspaces.update(cx, |ws, cx| ws.sync_if_needed(cx));
     }
 
     fn handle_deeplink_deferred(&mut self, action: DeeplinkAction, cx: &mut Context<Self>) {
@@ -194,8 +189,6 @@ impl ZedraApp {
             // Process any pending ticket (from deeplinks)
             self.workspaces
                 .update(cx, |ws, cx| ws.process_pending_ticket(window, cx));
-            // Immediate sync on activation
-            self.workspaces.update(cx, |ws, cx| ws.sync_if_needed(cx));
         }
     }
 

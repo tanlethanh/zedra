@@ -21,6 +21,7 @@ pub const ACCENT_GREEN: u32 = 0x98c379;
 pub const ACCENT_BLUE: u32 = 0x61afef;
 pub const ACCENT_YELLOW: u32 = 0xe5c07b;
 pub const ACCENT_RED: u32 = 0xe06c75;
+pub const ACCENT_DIM: u32 = 0x505050;
 
 // Spacing
 pub const DRAWER_PADDING: f32 = 12.0; // Horizontal padding for drawer tab content
@@ -40,7 +41,7 @@ pub const DRAWER_ICON_ZONE: f32 = 38.0;
 pub const TERMINAL_LINE_HEIGHT: f32 = 16.0;
 
 // Drawer gesture thresholds
-pub const DRAWER_EDGE_ZONE: f32 = 44.0;
+pub const DRAWER_EDGE_ZONE: f32 = 68.0;
 pub const DRAWER_VELOCITY_THRESHOLD: f32 = 6.0;
 
 // Animation

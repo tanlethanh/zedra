@@ -11,34 +11,24 @@
 /// Used in the workspace drawer terminal tab and the quick-action panel.
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use zedra_rpc::osc::ShellState;
 
 use crate::{fonts, theme};
 
 /// Props that describe how a single terminal card should be rendered.
 pub struct TerminalCardProps {
-    /// Unique server-assigned terminal ID (used as the GPUI element ID base).
     pub id: String,
-    /// 1-based display index: shown as "Terminal N" when no OSC title is available.
     pub index: usize,
-    /// Whether this is the currently active / focused terminal.
     pub is_active: bool,
-    /// OSC 2 title set by the shell — updates dynamically via PS1 (path) and
-    /// preexec hook (running command name when shell integration is active).
     pub title: Option<String>,
-    /// OSC 7 working directory (full path; last component shown as subtitle).
     pub cwd: Option<String>,
-    /// Shell execution state from OSC 133 marks.
-    pub shell_state: zedra_session::ShellState,
-    /// Exit code of the last completed command (OSC 133;D).
+    pub shell_state: ShellState,
     pub last_exit_code: Option<i32>,
-    /// When set, replaces the status dot with a close (×) button that calls
-    /// this handler on tap. Propagation is stopped so the card click does not fire.
     pub on_close: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
 }
 
 /// Colour of the status dot based on shell state and last exit code.
-fn dot_color(shell_state: &zedra_session::ShellState, last_exit_code: Option<i32>) -> u32 {
-    use zedra_session::ShellState;
+fn dot_color(shell_state: &ShellState, last_exit_code: Option<i32>) -> u32 {
     match shell_state {
         ShellState::Unknown => theme::TEXT_MUTED,
         ShellState::Running => theme::ACCENT_YELLOW,

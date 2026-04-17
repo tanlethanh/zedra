@@ -1,24 +1,17 @@
-/// Connection loading screen — shown while a workspace is connecting/reconnecting/failed.
-///
-/// Layout:
-///   1. Horizontal 5-step progress stepper
-///   2. Vertical current-phase detail (transport, auth, host, timing, error/reconnect banners)
 use gpui::{prelude::FluentBuilder as _, *};
 use zedra_session::{ConnectPhase, ConnectSnapshot, SessionState, TransportSnapshot};
 
 use crate::platform_bridge::{self, AlertButton};
 use crate::theme;
-use crate::transport_badge::{format_bytes, render_transport_badge, transport_badge_info_phase};
+use crate::transport_badge::{format_bytes, render_transport_badge, transport_badge};
 
-// ─── Public view ─────────────────────────────────────────────────────────────
-
-pub struct ConnectingView {
-    session_state: SessionState,
+pub struct WorkspaceConnecting {
+    session_state: Entity<SessionState>,
     details_expanded: bool,
 }
 
-impl ConnectingView {
-    pub fn new(session_state: SessionState) -> Self {
+impl WorkspaceConnecting {
+    pub fn new(session_state: Entity<SessionState>) -> Self {
         Self {
             session_state,
             details_expanded: false,
@@ -26,9 +19,9 @@ impl ConnectingView {
     }
 }
 
-impl Render for ConnectingView {
+impl Render for WorkspaceConnecting {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let inner = self.session_state.get();
+        let state = self.session_state.read(cx).clone();
         let expanded = self.details_expanded;
         div()
             .id("connecting-view")
@@ -39,17 +32,15 @@ impl Render for ConnectingView {
             .items_center()
             .justify_start()
             .pt(px(32.0))
-            .child(render_phase_title(&inner.phase, &inner.snapshot))
+            .child(render_phase_title(&state.phase, &state.snapshot))
             .child(render_details_toggle(expanded, cx))
             .when(expanded, |d| {
-                d.child(render_detail(&inner.phase, &inner.snapshot))
+                d.child(render_detail(&state.phase, &state.snapshot))
             })
     }
 }
 
-// ─── Details toggle ─────────────────────────────────────────────────────────
-
-fn render_details_toggle(expanded: bool, cx: &mut Context<ConnectingView>) -> Stateful<Div> {
+fn render_details_toggle(expanded: bool, cx: &mut Context<WorkspaceConnecting>) -> Stateful<Div> {
     let label = if expanded {
         "Hide Details"
     } else {
@@ -86,10 +77,8 @@ fn render_details_toggle(expanded: bool, cx: &mut Context<ConnectingView>) -> St
         )
 }
 
-// ─── Phase title ─────────────────────────────────────────────────────────────
-
 fn render_phase_title(phase: &ConnectPhase, snap: &ConnectSnapshot) -> Div {
-    let (label, color) = transport_badge_info_phase(phase, snap.transport.as_ref());
+    let (label, color) = transport_badge(phase, snap.transport.as_ref());
 
     let title = match phase {
         ConnectPhase::BindingEndpoint | ConnectPhase::HolePunching => "Connect",
@@ -240,7 +229,7 @@ fn render_detail(phase: &ConnectPhase, snap: &ConnectSnapshot) -> Div {
     }
 
     if !snap.hostname.is_empty() {
-        col = col.child(render_section("Host", render_host_rows(snap)));
+        col = col.child(render_section("Daemon", render_host_rows(snap)));
     }
 
     let timing = build_timing_string(snap);
@@ -301,7 +290,7 @@ fn render_endpoint_rows(snap: &ConnectSnapshot) -> Div {
         d = d.child(kv_row("Relay", relay));
     }
     if let Some(alpn) = &snap.alpn {
-        d = d.child(kv_row("ALPN", alpn));
+        d = d.child(kv_row("Protocol", alpn));
     }
     d
 }
@@ -314,18 +303,6 @@ fn render_transport_rows(t: &TransportSnapshot) -> Div {
         }
     } else {
         "Relayed".into()
-    };
-
-    let alive = match t.last_alive_at {
-        Some(at) => {
-            let secs = at.elapsed().as_secs();
-            if secs == 0 {
-                "now".into()
-            } else {
-                format!("{secs}s ago")
-            }
-        }
-        None => "\u{2014}".into(),
     };
 
     let mut d = div()
@@ -348,7 +325,6 @@ fn render_transport_rows(t: &TransportSnapshot) -> Div {
         format_bytes(t.bytes_recv)
     );
     d = d.child(kv_row("Net", &net));
-    d = d.child(kv_row("Alive", &alive));
     d
 }
 
@@ -369,14 +345,9 @@ fn render_auth_rows(snap: &ConnectSnapshot) -> Div {
 
 fn render_host_rows(snap: &ConnectSnapshot) -> Div {
     let mut d = div().flex().flex_col().gap(px(2.0));
-    if !snap.hostname.is_empty() {
-        d = d.child(kv_row("Host", &snap.hostname));
-    }
-    if !snap.username.is_empty() {
-        d = d.child(kv_row("User", &snap.username));
-    }
-    if !snap.workdir.is_empty() {
-        d = d.child(kv_row("Workdir", &snap.workdir));
+    if !snap.hostname.is_empty() && !snap.username.is_empty() {
+        let host_label = format!("{}@{}", snap.username, snap.hostname);
+        d = d.child(kv_row("Host", &host_label));
     }
     if let Some(os) = &snap.os {
         let label = match &snap.arch {
@@ -384,6 +355,9 @@ fn render_host_rows(snap: &ConnectSnapshot) -> Div {
             _ => os.clone(),
         };
         d = d.child(kv_row("OS", &label));
+    }
+    if !snap.workdir.is_empty() {
+        d = d.child(kv_row("Workdir", &snap.workdir));
     }
     if let Some(v) = &snap.host_version {
         if !v.is_empty() {
@@ -410,7 +384,7 @@ fn build_timing_string(snap: &ConnectSnapshot) -> String {
     if let Some(ms) = snap.auth_ms {
         parts.push(format!("Auth {ms}ms"));
     }
-    match (snap.fetch_ms, snap.resume_ms) {
+    match (snap.sync_ms, snap.resume_ms) {
         (Some(fetch), Some(resume)) => parts.push(format!("Sync {}ms", fetch + resume)),
         (Some(ms), None) | (None, Some(ms)) => parts.push(format!("Sync {ms}ms")),
         _ => {}

@@ -48,14 +48,8 @@ pub struct EditorView {
 }
 
 impl EditorView {
-    pub fn new(content: String, cx: &mut App) -> Self {
-        let mut highlighter = Highlighter::rust();
-        highlighter.parse(&content);
-        Self::build(content, highlighter, cx)
-    }
-
     /// Create with automatic language detection from filename.
-    pub fn with_filename(content: String, filename: &str, cx: &mut App) -> Self {
+    pub fn new(content: String, filename: &str, cx: &mut App) -> Self {
         let mut highlighter = Highlighter::from_filename(filename);
         highlighter.parse(&content);
         Self::build(content, highlighter, cx)
