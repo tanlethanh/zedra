@@ -41,7 +41,7 @@ pub const DRAWER_ICON_ZONE: f32 = 38.0;
 pub const TERMINAL_LINE_HEIGHT: f32 = 16.0;
 
 // Drawer gesture thresholds
-pub const DRAWER_EDGE_ZONE: f32 = 68.0;
+pub const DRAWER_EDGE_ZONE: f32 = 56.0;
 pub const DRAWER_VELOCITY_THRESHOLD: f32 = 6.0;
 
 // Animation

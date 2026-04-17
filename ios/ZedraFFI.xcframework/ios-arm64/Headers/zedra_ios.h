@@ -34,6 +34,8 @@
 
 #define ACCENT_RED 14707829
 
+#define ACCENT_DIM 5263440
+
 #define DRAWER_PADDING 12.0
 
 #define SPACING_SM 8.0
@@ -60,7 +62,7 @@
 
 #define TERMINAL_LINE_HEIGHT 16.0
 
-#define DRAWER_EDGE_ZONE 44.0
+#define DRAWER_EDGE_ZONE 56.0
 
 #define DRAWER_VELOCITY_THRESHOLD 6.0
 
@@ -265,4 +267,4 @@ extern void zedra_set_custom_key(const char *key, const char *value);
 
 extern void zedra_set_collection_enabled(int enabled);
 
-#endif  /* ZEDRA_IOS_H */
+#endif /* ZEDRA_IOS_H */
