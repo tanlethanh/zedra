@@ -145,12 +145,10 @@ impl Terminal {
         if let Some(prev_task) = self.output_task.take() {
             info!("drop output task when reattach a new one");
             drop(prev_task);
-            return;
         }
         let output_task = cx.spawn(async move |this, cx| {
             while let Some(bytes) = output_rx.recv().await {
                 let _ = this.update(cx, |this, cx| {
-                    info!("received output bytes: {:?}", bytes);
                     this.advance_bytes(&bytes);
                     cx.notify();
                 });
