@@ -494,9 +494,7 @@ impl EntityInputHandler for Input {
     ) -> Option<String> {
         let start = self.utf16_to_byte_offset(range_utf16.start);
         let end = self.utf16_to_byte_offset(range_utf16.end);
-        *adjusted_range = Some(
-            self.byte_to_utf16_offset(start)..self.byte_to_utf16_offset(end),
-        );
+        *adjusted_range = Some(self.byte_to_utf16_offset(start)..self.byte_to_utf16_offset(end));
         Some(self.value[start..end].to_string())
     }
 
