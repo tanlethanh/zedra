@@ -133,7 +133,12 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
         // `tracing` can forward span enter/exit to the `log` crate as TRACE on targets
         // `tracing::span` / `tracing::span::active` (very noisy with iroh QUIC poll loops).
-        for directive in ["tracing::span=off", "tracing::span::active=off"] {
+        for directive in [
+            "tracing::span=off",
+            "tracing::span::active=off",
+            "iroh=warn",
+            "iroh_quinn=warn",
+        ] {
             if let Ok(d) = directive.parse::<tracing_subscriber::filter::Directive>() {
                 filter = filter.add_directive(d);
             }
