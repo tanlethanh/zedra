@@ -40,7 +40,7 @@ pub enum Event {
     /// App launched (cold start).
     AppOpen {
         saved_workspaces: usize,
-        app_version: &'static str,
+        app_version: String,
         platform: &'static str,
         arch: &'static str,
     },
