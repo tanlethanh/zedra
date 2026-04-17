@@ -29,8 +29,8 @@ fn main() {
     }
 
     if target.contains("apple-ios") {
-        // Weak stub for ios_present_qr_scanner — lets the cdylib link succeed.
-        // The real ObjC implementation in ZedraQRScanner.m overrides this at Xcode link time.
+        // Weak stub for Rust->iOS — lets the cdylib link succeed.
+        // The real native implementation overrides this at Xcode link time.
         println!("cargo:rerun-if-changed=src/ios_stub.c");
         cc::Build::new()
             .file("src/ios_stub.c")
