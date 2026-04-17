@@ -21,7 +21,7 @@ pub struct AndroidApp {
     platform: Option<Rc<AndroidPlatform>>,
     /// The GPUI AppCell (root context)
     app_cell: Option<Rc<AppCell>>,
-    /// Window handle (ZedraApp or PreviewApp depending on `preview` feature)
+    /// Window handle for the root GPUI app window.
     window: Option<AnyWindowHandle>,
     /// Whether a surface is currently available
     surface_available: bool,

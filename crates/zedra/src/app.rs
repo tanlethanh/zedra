@@ -243,19 +243,10 @@ impl Render for ZedraApp {
 
 /// Open a GPUI window with the correct app view.
 pub fn open_zedra_window(app: &mut App, window_options: WindowOptions) -> Result<AnyWindowHandle> {
-    if cfg!(feature = "preview") {
-        app.open_window(window_options, |window, cx| {
-            let view = cx.new(|cx| crate::app_preview::PreviewApp::new(window, cx));
-            window.refresh();
-            view
-        })
-        .map(|h| h.into())
-    } else {
         app.open_window(window_options, |window, cx| {
             let view = cx.new(|cx| ZedraApp::new(window, cx));
             window.refresh();
             view
         })
         .map(|h| h.into())
-    }
 }
