@@ -1,11 +1,11 @@
 use std::sync::{Arc, Mutex};
+use tracing::*;
 
 use iroh::EndpointAddr;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::{Notify, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::info;
 use zedra_rpc::ZedraPairingTicket;
-use zedra_rpc::proto::{HostEvent, ZedraProto};
+use zedra_rpc::proto::{HostEvent, SubscribeReq, ZedraProto};
 
 use crate::RemoteTerminal;
 use crate::{
@@ -19,6 +19,8 @@ pub struct Session {
     event_tx: mpsc::Sender<ConnectEvent>,
     /// The event receiver. The caller is responsible for processing events.
     event_rx: Arc<Mutex<Option<mpsc::Receiver<ConnectEvent>>>>,
+    /// The event broadcast sender for host events from subscription.
+    host_event_tx: broadcast::Sender<HostEvent>,
     /// Signal to abort the session from external sources.
     abort_signal: Arc<Mutex<CancellationToken>>,
     /// Notify when the session connection is closed.
@@ -32,6 +34,7 @@ impl Session {
         let (event_tx, event_rx) = mpsc::channel(64);
         let abort_signal = Arc::new(Mutex::new(CancellationToken::new()));
         let closed_notify = Arc::new(Notify::new());
+        let (host_event_tx, _) = broadcast::channel(64);
 
         Self {
             handle,
@@ -40,6 +43,7 @@ impl Session {
             event_rx: Arc::new(Mutex::new(Some(event_rx))),
             abort_signal,
             closed_notify,
+            host_event_tx,
         }
     }
 
@@ -64,6 +68,10 @@ impl Session {
         self.closed_notify.clone()
     }
 
+    pub fn subscribe_host_events(&self) -> broadcast::Receiver<HostEvent> {
+        self.host_event_tx.subscribe()
+    }
+
     /// Start connection. Returns immediately; progress via `state()`.
     ///
     /// `on_connected` is called on the session runtime after successful connection,
@@ -83,6 +91,7 @@ impl Session {
         let abort_signal = self.reset_abort_signal();
         let closed_notify = self.closed_notify.clone();
         let on_connected = Arc::new(on_connected);
+        let host_event_tx = self.host_event_tx.clone();
 
         // Store credentials on handle
         handle.set_signer(signer.clone());
@@ -148,6 +157,54 @@ impl Session {
                         handle.set_terminals(terminals);
                         on_connected(&handle);
 
+                        {
+                            let subscribe_handle = handle.clone();
+                            let subscribe_client = client.clone();
+                            let subscribe_abort = abort_signal.clone();
+                            let subscribe_closed = closed_notify.clone();
+                            let subscribe_events = host_event_tx.clone();
+
+                            // Subscribe to host events and and broadcast them via host_event_tx.
+                            session_runtime().spawn(async move {
+                                let mut host_events = match subscribe_client
+                                    .server_streaming(SubscribeReq {}, 32)
+                                    .await
+                                {
+                                    Ok(rx) => rx,
+                                    Err(e) => {
+                                        warn!("subscribe failed: {}", e);
+                                        return;
+                                    }
+                                };
+
+                                loop {
+                                    tokio::select! {
+                                        _ = subscribe_abort.cancelled() => break,
+                                        _ = subscribe_closed.notified() => break,
+                                        event = host_events.recv() => {
+                                            let event = match event {
+                                                Ok(Some(event)) => event,
+                                                Ok(None) => {
+                                                    warn!("host event recv channel closed");
+                                                    break;
+                                                },
+                                                Err(e) => {
+                                                    warn!("host event recv failed: {}", e);
+                                                    break;
+                                                }
+                                            };
+                                            Self::handle_host_event(
+                                                &subscribe_handle,
+                                                &subscribe_client,
+                                                &subscribe_events,
+                                                event,
+                                            ).await;
+                                        }
+                                    }
+                                }
+                            });
+                        }
+
                         ticket = None;
                         session_id = handle.session_id();
                         session_token = handle.session_token();
@@ -170,7 +227,7 @@ impl Session {
                         reconnect_reason = Some(crate::ReconnectReason::ConnectionLost);
                     }
                     Err(e) => {
-                        tracing::error!("connect failed: {}", e);
+                        error!("connect failed: {}", e);
                         break;
                     }
                 }
@@ -198,21 +255,22 @@ impl Session {
     pub async fn handle_host_event(
         handle: &SessionHandle,
         client: &irpc::Client<ZedraProto>,
+        host_event_tx: &broadcast::Sender<HostEvent>,
         event: HostEvent,
     ) {
-        match event {
+        match &event {
             HostEvent::TerminalCreated { id, launch_cmd } => {
                 info!(
                     "HostEvent: terminal created id={} launch_cmd={:?}",
                     id, launch_cmd,
                 );
-                let terminal = handle.terminal(&id).unwrap_or_else(|| {
-                    let terminal = RemoteTerminal::new(id);
+                let terminal = handle.terminal(id).unwrap_or_else(|| {
+                    let terminal = RemoteTerminal::new(id.clone());
                     handle.add_terminal(terminal.clone());
                     terminal
                 });
                 if let Err(e) = terminal.attach_remote(client).await {
-                    tracing::warn!(
+                    warn!(
                         "Failed to attach host-created terminal {}: {e}",
                         terminal.id()
                     );
@@ -220,18 +278,35 @@ impl Session {
             }
             HostEvent::GitChanged => {
                 info!("HostEvent: git changed");
-                handle.set_git_needs_refresh();
             }
             HostEvent::FsChanged { path } => {
                 info!("HostEvent: fs changed path={path}");
-                handle.add_fs_changed(path);
             }
         }
+
+        let _ = host_event_tx.send(event);
     }
 }
 
 impl Default for Session {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn subscribe_host_events_fans_out_to_multiple_receivers() {
+        let session = Session::new();
+        let mut rx1 = session.subscribe_host_events();
+        let mut rx2 = session.subscribe_host_events();
+
+        let _ = session.host_event_tx.send(HostEvent::GitChanged);
+
+        assert!(matches!(rx1.recv().await, Ok(HostEvent::GitChanged)));
+        assert!(matches!(rx2.recv().await, Ok(HostEvent::GitChanged)));
     }
 }

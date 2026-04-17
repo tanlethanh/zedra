@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -22,8 +21,6 @@ struct SessionHandleInner {
     rpc_client: Mutex<Option<irpc::Client<ZedraProto>>>,
     terminals: Mutex<Vec<RemoteTerminal>>,
     user_disconnect: AtomicBool,
-    git_needs_refresh: AtomicBool,
-    fs_changed_paths: Mutex<HashSet<String>>,
     observer_rpc_supported: AtomicBool,
 }
 
@@ -45,8 +42,6 @@ impl SessionHandle {
             rpc_client: Mutex::new(None),
             terminals: Mutex::new(Vec::new()),
             user_disconnect: AtomicBool::new(false),
-            git_needs_refresh: AtomicBool::new(false),
-            fs_changed_paths: Mutex::new(HashSet::new()),
             observer_rpc_supported: AtomicBool::new(true),
         }))
     }
@@ -181,28 +176,6 @@ impl SessionHandle {
     pub fn remove_terminal(&self, id: &str) {
         if let Ok(mut t) = self.0.terminals.lock() {
             t.retain(|t| t.id() != id);
-        }
-    }
-
-    pub fn take_git_refresh(&self) -> bool {
-        self.0.git_needs_refresh.swap(false, Ordering::AcqRel)
-    }
-
-    pub fn set_git_needs_refresh(&self) {
-        self.0.git_needs_refresh.store(true, Ordering::Release);
-    }
-
-    pub fn take_fs_changed(&self) -> Vec<String> {
-        self.0
-            .fs_changed_paths
-            .lock()
-            .map(|mut c| c.drain().collect())
-            .unwrap_or_default()
-    }
-
-    pub fn add_fs_changed(&self, path: String) {
-        if let Ok(mut c) = self.0.fs_changed_paths.lock() {
-            c.insert(path);
         }
     }
 
