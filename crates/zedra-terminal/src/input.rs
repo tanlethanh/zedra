@@ -30,6 +30,12 @@ impl TerminalInputHandler {
         Self::offset_from_utf16(text, range_utf16.start)
             ..Self::offset_from_utf16(text, range_utf16.end)
     }
+
+    fn synthetic_document_len(marked_text: Option<&str>) -> usize {
+        marked_text
+            .map(|text| text.encode_utf16().count())
+            .unwrap_or(" ".encode_utf16().count())
+    }
 }
 
 impl InputHandler for TerminalInputHandler {
@@ -42,11 +48,13 @@ impl InputHandler for TerminalInputHandler {
         let pos = self
             .entity
             .read_with(cx, |term, _| {
-                term.marked_text()
-                    .map(|text| text.encode_utf16().count())
-                    .unwrap_or(0)
+                // UIKit's deleteBackward path expects the caret to sit within the
+                // document it sees via text_for_range/endOfDocument. When the terminal
+                // has no active marked text, we still expose a one-code-unit placeholder
+                // document so backspace can target that synthetic position.
+                Self::synthetic_document_len(term.marked_text())
             })
-            .unwrap_or(0);
+            .unwrap_or(Self::synthetic_document_len(None));
         debug!("selected_text_range → {pos}..{pos}");
         Some(UTF16Selection {
             range: pos..pos,
@@ -239,4 +247,20 @@ impl InputHandler for TerminalInputHandler {
     //         cx.notify();
     //     });
     // }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TerminalInputHandler;
+
+    #[test]
+    fn synthetic_document_len_uses_placeholder_when_empty() {
+        assert_eq!(TerminalInputHandler::synthetic_document_len(None), 1);
+    }
+
+    #[test]
+    fn synthetic_document_len_tracks_utf16_units_for_marked_text() {
+        assert_eq!(TerminalInputHandler::synthetic_document_len(Some("abc")), 3);
+        assert_eq!(TerminalInputHandler::synthetic_document_len(Some("🙂")), 2);
+    }
 }
