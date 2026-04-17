@@ -2,37 +2,16 @@
 // Adapted from vendor/zed/crates/terminal_view/src/terminal_element.rs
 
 use std::mem;
-use std::ops::Range;
-#[cfg(target_os = "ios")]
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::vte::ansi::{Color as AlacColor, CursorShape, NamedColor};
 use gpui::*;
 use itertools::Itertools;
 
-use crate::{
-    CursorState, IndexedCell, MONO_FONT_FAMILY, TerminalContent, TerminalSize, view::TerminalView,
-};
-
-#[cfg(target_os = "ios")]
-static ACCESSORY_SHIFT_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-#[cfg(target_os = "ios")]
-fn consume_accessory_shift_for_return() -> bool {
-    ACCESSORY_SHIFT_ACTIVE.swap(false, Ordering::AcqRel)
-}
-
-#[cfg(not(target_os = "ios"))]
-fn consume_accessory_shift_for_return() -> bool {
-    false
-}
-
-#[cfg(target_os = "ios")]
-#[unsafe(no_mangle)]
-pub extern "C" fn zedra_ios_set_accessory_shift_active(active: bool) {
-    ACCESSORY_SHIFT_ACTIVE.store(active, Ordering::Release);
-}
+use crate::MONO_FONT_FAMILY;
+use crate::input::TerminalInputHandler;
+use crate::terminal::*;
+use crate::view::TerminalView;
 
 /// Per-terminal color palette. Construct with `TerminalTheme::one_dark()` for the default
 /// One Dark palette, or supply custom values for alternative themes.
@@ -157,17 +136,12 @@ impl TerminalTheme {
 }
 
 /// A batched text run that combines multiple adjacent cells with the same style
-/// Following Zed's BatchedTextRun implementation
 #[derive(Debug)]
 struct BatchedTextRun {
-    /// Starting grid position (line, column)
     start_line: i32,
     start_col: i32,
-    /// The accumulated text
     text: String,
-    /// Number of cells this run covers (may differ from text.len() for wide chars)
     cell_count: usize,
-    /// Text color
     color: Hsla,
 }
 
@@ -228,7 +202,6 @@ impl BatchedTextRun {
     }
 }
 
-/// A background rectangle
 #[derive(Debug, Clone)]
 struct LayoutRect {
     line: i32,
@@ -285,7 +258,6 @@ fn is_blank(cell: &IndexedCell) -> bool {
     true
 }
 
-/// Data needed to paint the terminal element
 pub struct TerminalElementLayout {
     content: TerminalContent,
     font: Font,
@@ -294,144 +266,14 @@ pub struct TerminalElementLayout {
     line_height: Pixels,
 }
 
-/// GPUI element that renders a terminal grid
 pub struct TerminalElement {
     content: TerminalContent,
     size: TerminalSize,
-    /// Sub-line pixel offset for smooth scrolling (applied to grid origin.y)
     scroll_offset_px: f32,
-    /// Weak handle back to the view — used to trigger PTY resize from actual bounds.
-    entity: WeakEntity<TerminalView>,
-    /// Focus handle for keyboard navigation and cursor positioning.
+    view: WeakEntity<TerminalView>,
+    terminal: WeakEntity<Terminal>,
     focus_handle: FocusHandle,
-    /// Whether the terminal view is currently focused (controls cursor blink).
     focused: bool,
-}
-
-struct TerminalInputHandler {
-    entity: WeakEntity<TerminalView>,
-    bounds: Bounds<Pixels>,
-}
-
-impl TerminalInputHandler {
-    fn new(entity: WeakEntity<TerminalView>, bounds: Bounds<Pixels>) -> Self {
-        Self { entity, bounds }
-    }
-}
-
-impl InputHandler for TerminalInputHandler {
-    fn selected_text_range(
-        &mut self,
-        _ignore_disabled_input: bool,
-        _window: &mut Window,
-        _cx: &mut App,
-    ) -> Option<UTF16Selection> {
-        // Expose a one-character virtual document with the cursor at the end.
-        // This gives UIKit stable text state so backspace/delete repeat can engage.
-        Some(UTF16Selection {
-            range: 1..1,
-            reversed: false,
-        })
-    }
-
-    fn marked_text_range(&mut self, _window: &mut Window, _cx: &mut App) -> Option<Range<usize>> {
-        None
-    }
-
-    fn text_for_range(
-        &mut self,
-        range_utf16: Range<usize>,
-        adjusted_range: &mut Option<Range<usize>>,
-        _window: &mut Window,
-        _cx: &mut App,
-    ) -> Option<String> {
-        let doc = " ";
-        let start = range_utf16.start.min(doc.len());
-        let end = range_utf16.end.min(doc.len());
-        *adjusted_range = Some(start..end);
-        Some(doc[start..end].to_string())
-    }
-
-    fn replace_text_in_range(
-        &mut self,
-        replacement_range: Option<Range<usize>>,
-        text: &str,
-        _window: &mut Window,
-        cx: &mut App,
-    ) {
-        let entity = self.entity.clone();
-        let text = text.to_string();
-        let _ = entity.update(cx, move |view, _cx| {
-            if replacement_range.is_some() && text.is_empty() {
-                view.handle_platform_keystroke(Keystroke {
-                    modifiers: Modifiers::default(),
-                    key: "backspace".to_string(),
-                    key_char: None,
-                });
-            } else if !text.is_empty() {
-                let mut plain_text = String::new();
-
-                for ch in text.chars() {
-                    if ch == '\n' || ch == '\r' {
-                        if !plain_text.is_empty() {
-                            view.handle_ime_text(&plain_text);
-                            plain_text.clear();
-                        }
-                        if consume_accessory_shift_for_return() {
-                            view.handle_ime_text("\n");
-                        } else {
-                            view.handle_platform_keystroke(Keystroke {
-                                modifiers: Modifiers::default(),
-                                key: "enter".to_string(),
-                                key_char: None,
-                            });
-                        }
-                    } else {
-                        plain_text.push(ch);
-                    }
-                }
-
-                if !plain_text.is_empty() {
-                    view.handle_ime_text(&plain_text);
-                }
-            }
-        });
-    }
-
-    fn replace_and_mark_text_in_range(
-        &mut self,
-        replacement_range: Option<Range<usize>>,
-        new_text: &str,
-        _new_selected_range: Option<Range<usize>>,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        self.replace_text_in_range(replacement_range, new_text, window, cx);
-    }
-
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut App) {}
-
-    fn bounds_for_range(
-        &mut self,
-        _range_utf16: Range<usize>,
-        _window: &mut Window,
-        _cx: &mut App,
-    ) -> Option<Bounds<Pixels>> {
-        Some(self.bounds)
-    }
-
-    fn character_index_for_point(
-        &mut self,
-        _point: Point<Pixels>,
-        _window: &mut Window,
-        _cx: &mut App,
-    ) -> Option<usize> {
-        Some(1)
-    }
-
-    fn accepts_text_input(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
-        true
-    }
 }
 
 impl TerminalElement {
@@ -439,7 +281,8 @@ impl TerminalElement {
         content: TerminalContent,
         size: TerminalSize,
         scroll_offset_px: f32,
-        entity: WeakEntity<TerminalView>,
+        view: WeakEntity<TerminalView>,
+        terminal: WeakEntity<Terminal>,
         focus_handle: FocusHandle,
         focused: bool,
     ) -> Self {
@@ -447,7 +290,8 @@ impl TerminalElement {
             content,
             size,
             scroll_offset_px,
-            entity,
+            view,
+            terminal,
             focus_handle,
             focused,
         }
@@ -645,7 +489,7 @@ impl Element for TerminalElement {
     ) {
         window.handle_input(
             &self.focus_handle,
-            TerminalInputHandler::new(self.entity.clone(), bounds),
+            TerminalInputHandler::new(self.terminal.clone(), bounds),
             cx,
         );
 
@@ -704,9 +548,9 @@ impl Element for TerminalElement {
             &theme,
         );
 
-        let entity = self.entity.clone();
+        let view = self.view.clone();
         window.defer(cx, move |_window, cx| {
-            let _ = entity.update(cx, |view, _cx| {
+            let _ = view.update(cx, |view, _cx| {
                 view.set_grid_origin(grid_origin);
             });
         });
@@ -715,10 +559,10 @@ impl Element for TerminalElement {
         let actual_rows = (bounds.size.height / line_height).floor() as usize;
         let actual_cols = (bounds.size.width / cell_width).floor() as usize;
         if actual_rows != self.size.rows || actual_cols != self.size.columns {
-            let entity = self.entity.clone();
+            let terminal = self.terminal.clone();
             window.defer(cx, move |_window, cx| {
-                let _ = entity.update(cx, |view, cx| {
-                    let size = view.terminal_size();
+                let _ = terminal.update(cx, |term, cx| {
+                    let size = term.size();
                     // When the soft keyboard is open it shrinks the terminal rows intentionally.
                     // The element bounds don't account for the keyboard, so actual_rows reflects
                     // the full height. Clamp to the current (keyboard-adjusted) row count to
@@ -732,7 +576,7 @@ impl Element for TerminalElement {
                     if size.rows == new_rows && size.columns == new_cols {
                         return;
                     }
-                    view.resize(new_cols, new_rows, cell_width, line_height);
+                    term.resize(new_cols, new_rows, cell_width, line_height);
                     cx.notify();
                 });
             });
