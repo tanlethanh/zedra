@@ -201,7 +201,7 @@ impl Workspaces {
 
         // Start connection
         workspace.update(cx, |ws, cx| {
-            ws.connect(addr, ticket.clone(), signer, session_id.clone(), cx);
+            ws.connect(addr, ticket.clone(), signer, session_id.clone(), window, cx);
         });
 
         self.entries.push(workspace);

@@ -47,6 +47,8 @@ pub struct Workspace {
     editor: Entity<WorkspaceEditor>,
     gitdiff: Entity<WorkspaceGitdiff>,
     terminals: Vec<Entity<WorkspaceTerminal>>,
+    /// Becomes true once a ReconnectStarted event is seen; gates initial auto-open/create.
+    seen_reconnect: bool,
     /// Listens for workspace state changes and updates the session state accordingly.
     _state_listener: Option<Task<()>>,
     _host_event_listener: Option<Task<()>>,
@@ -140,6 +142,7 @@ impl Workspace {
             editor,
             gitdiff,
             terminals,
+            seen_reconnect: false,
             _state_listener: None,
             _host_event_listener: Some(host_event_listener),
         }
@@ -152,41 +155,50 @@ impl Workspace {
         ticket: Option<ZedraPairingTicket>,
         signer: Arc<dyn ClientSigner>,
         session_id: Option<String>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // Spawn GPUI task: reads ConnectEvents → applies to SessionState entity → cx.notify()
         if let Some(mut event_rx) = self.session.take_event_receiver() {
             let closed_notify = self.session.closed_notify();
-            self._state_listener = Some(cx.spawn(async move |workspace, cx| {
+            self._state_listener = Some(cx.spawn_in(window, async move |workspace, cx| {
                 while let Some(event) = event_rx.recv().await {
                     let is_closed = matches!(event, ConnectEvent::ConnectionClosed);
                     if is_closed {
                         closed_notify.notify_waiters();
                     }
 
-                    let should_break = workspace
-                        .update(cx, |ws, cx| {
-                            ws.session_state.update(cx, |state, cx| {
-                                state.apply_event(event.clone());
-                                cx.notify();
+                    let is_first_sync = match workspace.update(cx, |ws, cx| {
+                        if matches!(event, ConnectEvent::ReconnectStarted { .. }) {
+                            ws.seen_reconnect = true;
+                        }
+                        let is_first_sync = matches!(event, ConnectEvent::SyncComplete { .. })
+                            && !ws.seen_reconnect;
 
-                                // Sync workspace state from session state after applying event
-                                ws.workspace_state.update(cx, |this, cx| {
-                                    this.sync_from_session(ws.session_handle(), state, cx);
-
-                                    if matches!(event, ConnectEvent::SyncComplete { .. }) {
-                                        // Forward sync complete event to workspace state
-                                        this.emit_sync_complete(cx);
-
-                                        // Hide connecting view
-                                        ws.content.update(cx, |c, cx| c.hide_connecting_view(cx));
-                                    }
-                                });
+                        ws.session_state.update(cx, |state, cx| {
+                            state.apply_event(event.clone());
+                            cx.notify();
+                            ws.workspace_state.update(cx, |this, cx| {
+                                this.sync_from_session(ws.session_handle(), state, cx);
+                                if matches!(event, ConnectEvent::SyncComplete { .. }) {
+                                    this.emit_sync_complete(cx);
+                                    ws.content.update(cx, |c, cx| c.hide_connecting_view(cx));
+                                }
                             });
-                        })
-                        .is_err();
-                    if should_break {
-                        break;
+                        });
+                        is_first_sync
+                    }) {
+                        Ok(is_first_sync) => is_first_sync,
+                        Err(_) => break,
+                    };
+
+                    if is_first_sync {
+                        let workspace = workspace.clone();
+                        cx.on_next_frame(move |window, cx| {
+                            let _ = workspace.update(cx, |ws, cx| {
+                                ws.open_or_create_initial_terminal(window, cx);
+                            });
+                        });
                     }
                 }
             }));
@@ -630,6 +642,17 @@ impl Workspace {
             .read(cx)
             .mainview_viewport()
             .unwrap_or_else(|| WorkspaceContent::fallback_mainview_viewport(window))
+    }
+
+    fn open_or_create_initial_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let terminal_ids = self.workspace_state.read(cx).terminal_ids.clone();
+        if let Some(first_id) = terminal_ids.into_iter().next() {
+            info!("auto-opening first terminal on connect: {}", first_id);
+            self.handle_open_terminal(&OpenTerminal { id: first_id }, window, cx);
+        } else {
+            info!("no terminals on connect, creating new terminal");
+            self.handle_create_new_terminal(&CreateNewTerminal, window, cx);
+        }
     }
 }
 
