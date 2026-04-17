@@ -53,14 +53,9 @@ impl Default for DrawerState {
     }
 }
 
-// ---------------------------------------------------------------------------
-// DrawerHost
-// ---------------------------------------------------------------------------
-
 pub struct DrawerHost {
     content: AnyView,
-    /// Persistent drawer view (set once, slides in/out)
-    drawer_view: Option<AnyView>,
+    drawer: AnyView,
     side: DrawerSide,
     width: Pixels,
     backdrop_opacity: f32,
@@ -80,10 +75,10 @@ pub struct DrawerHost {
 }
 
 impl DrawerHost {
-    pub fn new(content: AnyView, cx: &mut Context<Self>) -> Self {
+    pub fn new(content: AnyView, drawer: AnyView, cx: &mut Context<Self>) -> Self {
         Self {
             content,
-            drawer_view: None,
+            drawer,
             side: DrawerSide::Left,
             width: px(theme::DRAWER_WIDTH),
             backdrop_opacity: 0.4,
@@ -102,8 +97,8 @@ impl DrawerHost {
     }
 
     /// Pre-register the drawer view. It persists across open/close cycles.
-    pub fn set_drawer(&mut self, view: AnyView) {
-        self.drawer_view = Some(view);
+    pub fn set_drawer(&mut self, drawer: AnyView) {
+        self.drawer = drawer;
     }
 
     /// Animate the drawer open (slide-in).
@@ -190,8 +185,7 @@ impl Render for DrawerHost {
         }
 
         let content = self.content.clone();
-        let drawer_view = self.drawer_view.clone();
-        let has_drawer = drawer_view.is_some();
+        let drawer = self.drawer.clone();
         let drawer_width = f32::from(self.width);
         let max_opacity = self.backdrop_opacity;
 
@@ -207,7 +201,7 @@ impl Render for DrawerHost {
         // Drawer overlay (backdrop + panel) shows when drawer is visible, being
         // dragged, or animating. Including is_dragging prevents the occluding
         // overlay from disappearing mid-gesture when the offset hits 0.
-        let show_overlay = has_drawer && (is_open || is_dragging || snap_target.is_some());
+        let show_overlay = is_open || is_dragging || snap_target.is_some();
 
         div()
             .track_focus(&self.focus_handle)
@@ -300,11 +294,6 @@ impl Render for DrawerHost {
             // Drawer overlay: backdrop + panel (when offset > 0 or animating).
             // .occlude() on the container blocks events from reaching main content.
             .when(show_overlay, |el| {
-                let drawer_view = match drawer_view {
-                    Some(v) => v,
-                    None => return el,
-                };
-
                 // Backdrop — covers full area, tappable to close.
                 // When the drawer is closed/closing (offset=0), we return early so
                 // events fall through to the content behind the overlay.
@@ -370,7 +359,7 @@ impl Render for DrawerHost {
                     .flex_col()
                     .overflow_hidden()
                     .occlude()
-                    .child(drawer_view);
+                    .child(drawer);
 
                 let side = self.side;
                 let panel: AnyElement = if animating {
