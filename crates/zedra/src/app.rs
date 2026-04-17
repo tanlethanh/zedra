@@ -21,7 +21,7 @@ pub struct ZedraApp {
     screen: AppScreen,
     home_view: Entity<HomeView>,
     workspaces: Entity<Workspaces>,
-    qa_drawer: Entity<DrawerHost>,
+    quick_action_drawer: Entity<DrawerHost>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -53,11 +53,11 @@ impl ZedraApp {
         subscriptions.push(sub);
 
         // --- Quick action drawer ---
-        let qa_drawer = cx.new(|cx| DrawerHost::new(home_view.clone().into(), cx));
-        qa_drawer.update(cx, |h, _| {
-            h.set_side(DrawerSide::Right);
-            h.set_width(px(theme::QA_DRAWER_WIDTH));
-            h.set_drawer(quick_action.clone().into());
+        let quick_action_drawer = cx.new(|cx| {
+            let mut dh = DrawerHost::new(home_view.clone().into(), quick_action.clone().into(), cx);
+            dh.set_side(DrawerSide::Right);
+            dh.set_width(px(theme::QA_DRAWER_WIDTH));
+            dh
         });
 
         let saved_count = workspaces.read(cx).states().len();
@@ -73,7 +73,7 @@ impl ZedraApp {
             screen: AppScreen::Home,
             home_view,
             workspaces,
-            qa_drawer,
+            quick_action_drawer,
             _subscriptions: subscriptions,
         };
 
@@ -143,7 +143,7 @@ impl ZedraApp {
     ) {
         match event {
             QuickActionEvent::Close => {
-                self.qa_drawer.update(cx, |h, cx| h.close(cx));
+                self.quick_action_drawer.update(cx, |h, cx| h.close(cx));
             }
             QuickActionEvent::GoHome => {
                 self.set_screen(AppScreen::Home, cx);
@@ -180,7 +180,7 @@ impl ZedraApp {
                 self.set_screen(AppScreen::Home, cx);
             }
             WorkspacesEvent::OpenQuickAction => {
-                self.qa_drawer.update(cx, |h, cx| h.open(cx));
+                self.quick_action_drawer.update(cx, |h, cx| h.open(cx));
             }
         }
     }
@@ -224,7 +224,8 @@ impl ZedraApp {
                 .map(|v| v.into())
                 .unwrap_or_else(|| self.home_view.clone().into()),
         };
-        self.qa_drawer.update(cx, |h, _| h.set_content(screen_view));
+        self.quick_action_drawer
+            .update(cx, |h, _| h.set_content(screen_view));
     }
 }
 
@@ -237,7 +238,7 @@ impl Render for ZedraApp {
         div()
             .size_full()
             .font_family(fonts::MONO_FONT_FAMILY)
-            .child(self.qa_drawer.clone())
+            .child(self.quick_action_drawer.clone())
     }
 }
 
