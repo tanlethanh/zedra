@@ -144,7 +144,8 @@ impl RemoteTerminal {
 
         let input_task = tokio::spawn(async move {
             while let Some(data) = input_rx.recv().await {
-                if irpc_input_tx.send(TermInput { data }).await.is_err() {
+                if let Err(e) = irpc_input_tx.send(TermInput { data }).await {
+                    info!("failed to send input: {:?}", e);
                     break;
                 }
             }
@@ -167,7 +168,10 @@ impl RemoteTerminal {
                             warn!("failed to forward terminal output: {:?}", e);
                         }
                     }
-                    Ok(None) => break,
+                    Ok(None) => {
+                        info!("remote terminal closed or sender dropped, stopping output task");
+                        break;
+                    }
                     Err(e) => {
                         warn!("failed to receive terminal output: {:?}", e);
                         break;
@@ -194,20 +198,23 @@ impl RemoteTerminal {
         if let Some((input_tx, output_rx)) = self.0.take_channels() {
             Ok((input_tx, output_rx))
         } else {
-            Err("no channels available".to_string())
+            Err("no input/output channels available".to_string())
         }
     }
 }
 
-impl Drop for RemoteTerminal {
+// Automatically abort the input/output tasks when the RemoteTerminalInner is dropped.
+// This is necessary to avoid leaking tasks when the RemoteTerminal is dropped without
+// taking ownership of the input/output channels. Mainly happens when user disconnects or closes the terminal.
+impl Drop for RemoteTerminalInner {
     fn drop(&mut self) {
-        if let Ok(mut output_task_slot) = self.0.output_task.lock() {
+        if let Ok(mut output_task_slot) = self.output_task.lock() {
             if let Some(task) = output_task_slot.take() {
                 task.abort();
                 info!("aborted previous terminal output task from drop");
             }
         }
-        if let Ok(mut input_task_slot) = self.0.input_task.lock() {
+        if let Ok(mut input_task_slot) = self.input_task.lock() {
             if let Some(task) = input_task_slot.take() {
                 task.abort();
                 info!("aborted previous terminal input task from drop");
