@@ -44,10 +44,6 @@
 
 #define SPACING_LG 16.0
 
-#define DRAWER_WIDTH 295.0
-
-#define QA_DRAWER_WIDTH 295.0
-
 #define HEADER_HEIGHT 48.0
 
 #define HOME_CARD_WIDTH 300.0
@@ -64,9 +60,13 @@
 
 #define DRAWER_EDGE_ZONE 56.0
 
-#define DRAWER_VELOCITY_THRESHOLD 6.0
+#define DRAWER_VELOCITY_THRESHOLD 12.0
 
-#define ANIMATION_DURATION_MS 250
+#define DRAWER_BACKDROP_OPACITY 0.4
+
+#define DRAWER_DEFAULT_WIDTH 295.0
+
+#define DRAWER_ANIMATION_DURATION_MS 300
 
 #define FONT_TITLE 28.0
 
@@ -193,6 +193,12 @@ extern void ios_present_selection(uint32_t callback_id,
 extern void ios_open_url(const char *url);
 
 /**
+ * Trigger a UIKit haptic feedback generator.
+ * kind encoding matches HapticFeedback::to_i32().
+ */
+extern void ios_trigger_haptic(int32_t kind);
+
+/**
  * Called from the native alert handler after the user taps a button.
  *
  * `callback_id` matches the value passed to `ios_present_alert`.
@@ -267,4 +273,4 @@ extern void zedra_set_custom_key(const char *key, const char *value);
 
 extern void zedra_set_collection_enabled(int enabled);
 
-#endif /* ZEDRA_IOS_H */
+#endif  /* ZEDRA_IOS_H */
