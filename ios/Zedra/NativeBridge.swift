@@ -54,13 +54,28 @@ private final class PresentationDismissDelegate: NSObject, UIAdaptivePresentatio
 }
 
 enum NativePresentationBridge {
-    static func topViewController() -> UIViewController? {
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        let keyWindow = scenes
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow)
+    /// Returns the active key window, preferring foreground-active scenes.
+    /// Falls back progressively to any visible window, then a last-resort empty window.
+    static func activeWindow() -> UIWindow {
+        let scenes = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .filter { $0.activationState == .foregroundActive }
 
-        var controller = keyWindow?.rootViewController
+        for scene in scenes {
+            if let keyWindow = scene.windows.first(where: \.isKeyWindow) { return keyWindow }
+        }
+        for scene in scenes {
+            if let visibleWindow = scene.windows.first(where: { !$0.isHidden }) { return visibleWindow }
+        }
+        return UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first ?? UIWindow(frame: UIScreen.main.bounds)
+    }
+
+    static func topViewController() -> UIViewController? {
+        let keyWindow = activeWindow()
+        var controller = keyWindow.rootViewController
         while let presented = controller?.presentedViewController {
             controller = presented
         }
@@ -126,9 +141,6 @@ func ios_present_alert(
         guard let presenter = NativePresentationBridge.topViewController() else { return }
 
         let alert = UIAlertController(title: titleString, message: messageString, preferredStyle: .alert)
-        let delegate = PresentationDismissDelegate(callbackID: callbackID, isSelection: false)
-        alert.presentationController?.delegate = delegate
-        objc_setAssociatedObject(alert, "zedra_alert_delegate", delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
 
         for index in 0..<buttonLabels.count {
             let style: UIAlertAction.Style
@@ -138,7 +150,6 @@ func ios_present_alert(
             default: style = .default
             }
             alert.addAction(UIAlertAction(title: buttonLabels[index], style: style) { _ in
-                delegate.handled = true
                 zedra_ios_alert_result(callbackID, Int32(index))
             })
         }
