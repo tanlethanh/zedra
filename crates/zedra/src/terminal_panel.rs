@@ -18,23 +18,6 @@ impl Render for TerminalPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.workspace_state.read(cx);
 
-        let is_connected = state
-            .connect_phase
-            .as_ref()
-            .map(|p| p.is_connected())
-            .unwrap_or(false);
-
-        if !is_connected {
-            return div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(rgb(theme::TEXT_MUTED))
-                .text_size(px(theme::FONT_BODY))
-                .child("No active session");
-        }
-
         let active_id = state.active_terminal_id.clone();
         let terminal_ids = state.terminal_ids.clone();
 
