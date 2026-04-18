@@ -32,7 +32,7 @@ pub struct GitUnstage {
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
-pub struct GitItemLongPress {
+pub struct GitShowItemActions {
     pub path: String,
     /// 0 = Staged, 1 = Unstaged, 2 = Untracked
     pub section: u8,

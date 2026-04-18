@@ -97,7 +97,7 @@ impl Render for WorkspaceGitdiff {
             GitdiffState::Loaded { filename: _, diff } => {
                 let path = diff.new_path.clone();
                 let diff_view = cx.new(|cx| GitDiffView::new(diff, path, cx));
-                div().child(diff_view)
+                div().size_full().child(diff_view)
             }
         }
     }

@@ -8,12 +8,8 @@ use zedra_rpc::proto::HostEvent;
 use zedra_session::{Session, SessionHandle, SessionState};
 
 use crate::theme;
+use crate::workspace_action;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
-
-#[derive(Clone, Debug)]
-pub struct FileSelected {
-    pub path: String,
-}
 
 #[derive(Clone)]
 pub struct FileEntry {
@@ -703,8 +699,6 @@ impl FileExplorer {
     }
 }
 
-impl EventEmitter<FileSelected> for FileExplorer {}
-
 impl Focusable for FileExplorer {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -812,14 +806,15 @@ impl Render for FileExplorer {
                 .pl(px(12.0 + indent))
                 .pr(px(8.0))
                 .cursor_pointer()
-                .on_click(cx.listener(move |this, _event, _window, cx| {
+                .on_click(cx.listener(move |this, _event, window, cx| {
                     if is_dir {
                         this.toggle_dir(&index_path, cx);
                     } else {
                         let path = this.full_path_for(&index_path_for_path);
                         this.selected_file_path = Some(path.clone());
                         this.watch_parent_dir_for_file(&path, cx);
-                        cx.emit(FileSelected { path });
+                        window
+                            .dispatch_action(workspace_action::OpenFile { path }.boxed_clone(), cx);
                     }
                 }))
                 .child(div().flex_shrink_0().child(icon_element))

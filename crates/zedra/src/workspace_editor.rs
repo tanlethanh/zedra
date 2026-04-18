@@ -34,6 +34,7 @@ impl WorkspaceEditor {
     pub fn open_file(&mut self, path: String, cx: &mut Context<Self>) {
         let filename = path.rsplit('/').next().unwrap_or(&path).to_string();
         self.filename = filename;
+        self.state = FileState::Loading;
         cx.notify();
 
         // Drop any previous task before starting a new one.
@@ -80,7 +81,7 @@ impl Render for WorkspaceEditor {
             FileState::Error { error } => render_placeholder(format!("Error: {}", error)),
             FileState::Loaded { content } => {
                 let editor_view = cx.new(|cx| EditorView::new(content, &self.filename, cx));
-                div().child(editor_view)
+                div().size_full().child(editor_view)
             }
         }
     }

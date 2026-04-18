@@ -15,7 +15,7 @@ use crate::transport_badge::phase_indicator_color;
 use crate::ui::{DrawerHost, DrawerSide};
 use crate::workspace_action::{self, GoHome, OpenQuickAction, RequestDisconnect};
 use crate::workspace_action::{
-    CloseDrawer, CloseTerminal, CreateNewTerminal, GitCommit, GitItemLongPress, GitStage,
+    CloseDrawer, CloseTerminal, CreateNewTerminal, GitCommit, GitShowItemActions, GitStage,
     GitUnstage, OpenFile, OpenGitDiff, OpenTerminal, ShowConnecting, ToggleDrawer,
 };
 use crate::workspace_connecting::WorkspaceConnecting;
@@ -329,13 +329,13 @@ impl Workspace {
         info!("handle OpenFile from workspace");
         self.drawer_host.update(cx, |host, cx| host.close(cx));
 
+        self.editor.update(cx, |e, cx| {
+            e.open_file(action.path.clone(), cx);
+        });
+
         let editor = self.editor.clone();
         self.content.update(cx, move |c, cx| {
             c.set_main_view(editor.into(), cx);
-        });
-
-        self.editor.update(cx, |e, cx| {
-            e.open_file(action.path.clone(), cx);
         });
     }
 
@@ -348,14 +348,14 @@ impl Workspace {
         info!("handle OpenGitDiff from workspace");
         self.drawer_host.update(cx, |host, cx| host.close(cx));
 
-        let gitdiff = self.gitdiff.clone();
-        self.content.update(cx, move |c, cx| {
-            c.set_main_view(gitdiff.into(), cx);
-        });
-
         let section = section_from_u8(action.section);
         self.gitdiff.update(cx, |g, cx| {
             g.open_diff(action.path.clone(), section, cx);
+        });
+
+        let gitdiff = self.gitdiff.clone();
+        self.content.update(cx, move |c, cx| {
+            c.set_main_view(gitdiff.into(), cx);
         });
     }
 
@@ -395,7 +395,7 @@ impl Workspace {
 
     fn handle_git_item_long_press(
         &mut self,
-        action: &GitItemLongPress,
+        action: &GitShowItemActions,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
@@ -413,10 +413,7 @@ impl Workspace {
         platform_bridge::show_selection(
             "",
             &display_path,
-            vec![
-                AlertButton::default(main_action_label),
-                AlertButton::default("Open Diff"),
-            ],
+            vec![AlertButton::default(main_action_label)],
             move |selection| {
                 match selection {
                     Some(0) => {
@@ -440,10 +437,6 @@ impl Workspace {
                                 });
                             }
                         }
-                    }
-                    Some(1) => {
-                        // TODO: wire open diff through a pending slot
-                        tracing::info!("Open diff for {} requested from long press", path);
                     }
                     _ => {}
                 }

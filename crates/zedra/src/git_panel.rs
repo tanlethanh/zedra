@@ -8,6 +8,7 @@ use crate::editor::git_sidebar::{
     GitCommitRequested, GitFileEntry, GitFileLongPressed, GitFileSection, GitFileSelected,
     GitFileStatus, GitRepoState, GitSidebar,
 };
+use crate::workspace_action;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
 
 pub struct GitPanel {
@@ -20,9 +21,6 @@ pub struct GitPanel {
     tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
-
-impl EventEmitter<GitFileSelected> for GitPanel {}
-impl EventEmitter<GitFileLongPressed> for GitPanel {}
 
 impl GitPanel {
     pub fn new(
@@ -56,18 +54,23 @@ impl GitPanel {
             }
         });
 
-        // Forward events from GitSidebar
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.subscribe(
             &content,
             |_this, _sidebar, event: &GitFileSelected, cx| {
-                cx.emit(event.clone());
+                cx.dispatch_action(&workspace_action::OpenGitDiff {
+                    path: event.path.clone(),
+                    section: section_to_u8(event.section),
+                });
             },
         ));
         subscriptions.push(cx.subscribe(
             &content,
             |_this, _sidebar, event: &GitFileLongPressed, cx| {
-                cx.emit(event.clone());
+                cx.dispatch_action(&workspace_action::GitShowItemActions {
+                    path: event.path.clone(),
+                    section: section_to_u8(event.section),
+                });
             },
         ));
         subscriptions.push(cx.subscribe(
@@ -197,5 +200,13 @@ fn status_to_repo_state(branch: &str, entries: &[GitStatusEntry]) -> GitRepoStat
         staged_files: staged,
         unstaged_files: unstaged,
         untracked_files: untracked,
+    }
+}
+
+fn section_to_u8(section: GitFileSection) -> u8 {
+    match section {
+        GitFileSection::Staged => 0,
+        GitFileSection::Unstaged => 1,
+        GitFileSection::Untracked => 2,
     }
 }
