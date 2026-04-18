@@ -69,3 +69,6 @@ gpui_ios = { path = "../../vendor/zed/crates/gpui_ios", features = ["font-kit"] 
 [build-dependencies]
 cbindgen = "0.29"
 cc = "1"
+
+[dev-dependencies]
+gpui = { path = "../../vendor/zed/crates/gpui", default-features = false, features = ["test-support"] }
