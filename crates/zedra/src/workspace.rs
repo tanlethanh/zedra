@@ -65,7 +65,7 @@ impl Workspace {
         let session_state = cx.new(|_cx| session.state().clone());
 
         let editor = cx.new(|cx| WorkspaceEditor::new(session.handle().clone(), cx));
-        let gitdiff = cx.new(|_cx| WorkspaceGitdiff::new(session.handle().clone()));
+        let gitdiff = cx.new(|cx| WorkspaceGitdiff::new(session.handle().clone(), cx));
 
         let initial_viewport = WorkspaceContent::fallback_mainview_viewport(window);
         let terminals = workspace_state

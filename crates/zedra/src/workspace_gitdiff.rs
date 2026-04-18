@@ -12,21 +12,23 @@ const MAX_DIFF_BYTES: usize = 200 * 1024;
 #[derive(Clone, Debug)]
 pub enum GitdiffState {
     Loading,
-    Loaded { filename: String, diff: FileDiff },
-    TooLarge { filename: String },
+    Loaded,
+    TooLarge,
     Error { error: String },
 }
 
 pub struct WorkspaceGitdiff {
     state: GitdiffState,
+    diff_view: Entity<GitDiffView>,
     session_handle: SessionHandle,
     diff_task: Option<Task<()>>,
 }
 
 impl WorkspaceGitdiff {
-    pub fn new(session_handle: SessionHandle) -> Self {
+    pub fn new(session_handle: SessionHandle, cx: &mut App) -> Self {
         Self {
             state: GitdiffState::Loading,
+            diff_view: cx.new(|cx| GitDiffView::new(cx)),
             session_handle,
             diff_task: None,
         }
@@ -36,6 +38,7 @@ impl WorkspaceGitdiff {
     /// The diff is loaded asynchronously and rendered when ready.
     pub fn open_diff(&mut self, path: String, section: GitFileSection, cx: &mut Context<Self>) {
         let filename = path.rsplit('/').next().unwrap_or(&path).to_string();
+        let filename_clone = filename.clone();
         self.state = GitdiffState::Loading;
         cx.notify();
 
@@ -45,14 +48,14 @@ impl WorkspaceGitdiff {
 
         let handle = self.session_handle.clone();
         let read_task = cx.spawn(async move |this, cx| {
-            let state = match section {
+            let (state, diff) = match section {
                 GitFileSection::Staged | GitFileSection::Unstaged | GitFileSection::Untracked => {
                     // Untracked file diffs are provided by git in the unstaged set.
                     let staged = matches!(section, GitFileSection::Staged);
                     match handle.git_diff(Some(&path), staged).await {
                         Ok(diff_text) => {
                             if diff_text.len() > MAX_DIFF_BYTES {
-                                GitdiffState::TooLarge { filename }
+                                (GitdiffState::TooLarge, None)
                             } else {
                                 let diffs = parse_unified_diff(&diff_text);
                                 let diff = diffs
@@ -63,14 +66,17 @@ impl WorkspaceGitdiff {
                                         new_path: path.clone(),
                                         hunks: Vec::new(),
                                     });
-                                GitdiffState::Loaded { filename, diff }
+                                (GitdiffState::Loaded, Some(diff))
                             }
                         }
                         Err(e) => {
                             error!("git_diff RPC failed for {}: {}", path, e);
-                            GitdiffState::Error {
-                                error: e.to_string(),
-                            }
+                            (
+                                GitdiffState::Error {
+                                    error: e.to_string(),
+                                },
+                                None,
+                            )
                         }
                     }
                 }
@@ -78,6 +84,11 @@ impl WorkspaceGitdiff {
 
             if let Err(e) = this.update(cx, |this, cx| {
                 this.state = state;
+                if let Some(diff) = diff {
+                    this.diff_view.update(cx, |diff_view, cx| {
+                        diff_view.set_diff(filename_clone, diff, cx)
+                    });
+                }
                 cx.notify();
             }) {
                 error!("failed to update gitdiff state: {}", e);
@@ -89,16 +100,12 @@ impl WorkspaceGitdiff {
 }
 
 impl Render for WorkspaceGitdiff {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         match self.state.clone() {
             GitdiffState::Loading => render_placeholder("Loading ..."),
-            GitdiffState::TooLarge { .. } => render_placeholder("Diff too large (>200 KB)"),
+            GitdiffState::TooLarge => render_placeholder("Diff too large (>200 KB)"),
             GitdiffState::Error { error } => render_placeholder(&format!("Error: {}", error)),
-            GitdiffState::Loaded { filename: _, diff } => {
-                let path = diff.new_path.clone();
-                let diff_view = cx.new(|cx| GitDiffView::new(diff, path, cx));
-                div().size_full().child(diff_view)
-            }
+            GitdiffState::Loaded => div().size_full().child(self.diff_view.clone()),
         }
     }
 }

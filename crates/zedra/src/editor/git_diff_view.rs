@@ -7,6 +7,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use gpui::*;
+use tracing::info;
 
 use super::syntax_highlighter::Highlighter;
 use super::syntax_theme::SyntaxTheme;
@@ -196,7 +197,19 @@ pub struct GitDiffView {
 }
 
 impl GitDiffView {
-    pub fn new(diff: FileDiff, file_path: String, cx: &mut App) -> Self {
+    pub fn new(cx: &mut App) -> Self {
+        Self::build(
+            FileDiff {
+                old_path: String::new(),
+                new_path: String::new(),
+                hunks: Vec::new(),
+            },
+            String::new(),
+            cx,
+        )
+    }
+
+    pub fn build(diff: FileDiff, file_path: String, cx: &mut App) -> Self {
         let highlighter = Highlighter::from_filename(&file_path);
         Self {
             diff,
@@ -210,6 +223,15 @@ impl GitDiffView {
             max_line_chars: 0,
             h_scroll_active: false,
         }
+    }
+
+    /// Set the diff content for the view.
+    /// The language is detected from the filename.
+    pub fn set_diff(&mut self, filename: String, diff: FileDiff, cx: &mut Context<Self>) {
+        self.diff = diff;
+        self.highlighter = Highlighter::from_filename(&filename);
+        self.rebuild_line_cache();
+        cx.notify();
     }
 
     fn rebuild_line_cache(&mut self) {
@@ -320,6 +342,7 @@ impl Focusable for GitDiffView {
 impl Render for GitDiffView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.lines_dirty {
+            info!("rebuilding gitdiff line cache by lines_dirty flag");
             self.rebuild_line_cache();
         }
 
