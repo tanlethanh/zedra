@@ -4,12 +4,12 @@ use gpui::*;
 use zedra_telemetry::*;
 
 use crate::deeplink::{self, DeeplinkAction};
-use crate::fonts;
 use crate::home_view::{HomeEvent, HomeView};
 use crate::platform_bridge;
 use crate::quick_action_panel::{QuickActionEvent, QuickActionPanel};
 use crate::ui::{DrawerHost, DrawerSide};
 use crate::workspaces::{Workspaces, WorkspacesEvent};
+use crate::{fonts, workspace_action};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum AppScreen {
@@ -147,6 +147,43 @@ impl ZedraApp {
             QuickActionEvent::NavigateToWorkspace => {
                 self.set_screen(AppScreen::Workspace, cx);
             }
+            QuickActionEvent::OpenTerminal { tid, ws_index } => {
+                self.forward_action_to_workspace(
+                    &workspace_action::OpenTerminal { id: tid.clone() },
+                    *ws_index,
+                    cx,
+                );
+            }
+            QuickActionEvent::CloseTerminal { tid, ws_index } => {
+                self.forward_action_to_workspace(
+                    &workspace_action::CloseTerminal { id: tid.clone() },
+                    *ws_index,
+                    cx,
+                );
+            }
+        }
+    }
+
+    fn forward_action_to_workspace(
+        &self,
+        action: &dyn Action,
+        ws_index: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(workspace) = self
+            .workspaces
+            .read(cx)
+            .workspace_by_index(ws_index)
+            .cloned()
+        {
+            workspace.update(cx, |_ws, cx| {
+                cx.dispatch_action(action);
+            });
+        } else {
+            tracing::warn!(
+                "workspace not found for index {} to forward action",
+                ws_index
+            );
         }
     }
 

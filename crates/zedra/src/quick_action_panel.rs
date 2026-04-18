@@ -2,7 +2,7 @@
 
 use gpui::*;
 
-use crate::platform_bridge;
+use crate::platform_bridge::{self, HapticFeedback};
 use crate::terminal_card::{TerminalCardProps, render_terminal_card};
 use crate::theme;
 use crate::workspaces::Workspaces;
@@ -12,6 +12,8 @@ pub enum QuickActionEvent {
     Close,
     GoHome,
     NavigateToWorkspace,
+    OpenTerminal { tid: String, ws_index: usize },
+    CloseTerminal { tid: String, ws_index: usize },
 }
 
 impl EventEmitter<QuickActionEvent> for QuickActionPanel {}
@@ -40,16 +42,15 @@ impl QuickActionPanel {
         cx.emit(QuickActionEvent::NavigateToWorkspace);
     }
 
-    fn handle_switch_terminal(&self, ws_index: usize, _tid: String, cx: &mut Context<Self>) {
+    fn handle_switch_terminal(&self, ws_index: usize, tid: String, cx: &mut Context<Self>) {
         self.workspaces
             .update(cx, |ws, cx| ws.switch_to(ws_index, cx));
-        // TODO: switch to specific terminal within workspace
         cx.emit(QuickActionEvent::Close);
-        cx.emit(QuickActionEvent::NavigateToWorkspace);
+        cx.emit(QuickActionEvent::OpenTerminal { tid, ws_index });
     }
 
-    fn handle_terminal_delete(&self, _ws_index: usize, _tid: String, _cx: &mut Context<Self>) {
-        // TODO: request terminal delete from workspace
+    fn handle_terminal_delete(&self, ws_index: usize, tid: String, cx: &mut Context<Self>) {
+        cx.emit(QuickActionEvent::CloseTerminal { tid, ws_index });
     }
 }
 
@@ -98,6 +99,7 @@ impl Render for QuickActionPanel {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
+                                    platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
                                     cx.emit(QuickActionEvent::Close);
                                     cx.emit(QuickActionEvent::GoHome);
                                 }),
@@ -132,6 +134,7 @@ impl Render for QuickActionPanel {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, _window, cx| {
+                                    platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
                                     cx.emit(QuickActionEvent::Close);
                                 }),
                             )

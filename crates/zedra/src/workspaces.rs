@@ -64,6 +64,10 @@ impl Workspaces {
         self.active().map(|e| AnyView::from(e.clone()))
     }
 
+    pub fn workspace_by_index(&self, index: usize) -> Option<&Entity<Workspace>> {
+        self.entries.get(index)
+    }
+
     pub fn get(&self, index: usize) -> Option<&Entity<Workspace>> {
         self.entries.get(index)
     }
