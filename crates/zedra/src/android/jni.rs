@@ -12,7 +12,7 @@ use crate::android::{
     command_queue::{AndroidCommand, get_command_sender},
 };
 use crate::install_panic_hook;
-use crate::platform_bridge::{self, AlertButton, AlertButtonStyle};
+use crate::platform_bridge::{self, AlertButton, AlertButtonStyle, HapticFeedback};
 
 // Global storage for JavaVM to enable Rust→Java callbacks
 static JVM: Mutex<Option<Arc<JavaVM>>> = Mutex::new(None);
@@ -1376,6 +1376,59 @@ fn show_selection_inner(
         ],
     ) {
         tracing::error!("Failed to call showSelection: {:?}", error);
+        if env.exception_check().unwrap_or(false) {
+            env.exception_describe().ok();
+            env.exception_clear().ok();
+        }
+    }
+}
+
+/// Trigger a haptic feedback pattern on the Android surface view.
+pub fn trigger_haptic(feedback: HapticFeedback) {
+    let kind = feedback.to_i32();
+    jni_call("trigger_haptic", move || trigger_haptic_inner(kind));
+}
+
+fn trigger_haptic_inner(kind: i32) {
+    let jvm = match JVM.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(jvm) => jvm.clone(),
+            None => {
+                tracing::error!("JVM not available for haptic call");
+                return;
+            }
+        },
+        Err(e) => {
+            tracing::error!("Failed to lock JVM mutex: {:?}", e);
+            return;
+        }
+    };
+
+    let mut env = match jvm.get_env() {
+        Ok(env) => env,
+        Err(_) => match jvm.attach_current_thread_as_daemon() {
+            Ok(env) => env,
+            Err(e) => {
+                tracing::error!("Failed to attach thread for haptic: {:?}", e);
+                return;
+            }
+        },
+    };
+
+    let class = match env.find_class("dev/zedra/app/MainActivity") {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Failed to find MainActivity class: {:?}", e);
+            if env.exception_check().unwrap_or(false) {
+                env.exception_describe().ok();
+                env.exception_clear().ok();
+            }
+            return;
+        }
+    };
+
+    if let Err(e) = env.call_static_method(&class, "triggerHaptic", "(I)V", &[(kind).into()]) {
+        tracing::error!("jni: triggerHaptic failed: {:?}", e);
         if env.exception_check().unwrap_or(false) {
             env.exception_describe().ok();
             env.exception_clear().ok();

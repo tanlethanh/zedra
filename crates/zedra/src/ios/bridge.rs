@@ -7,7 +7,7 @@
 /// in atomics, mirroring the Android JNI push model.
 use crate::active_terminal;
 use crate::deeplink;
-use crate::platform_bridge::{self, AlertButton, AlertButtonStyle, PlatformBridge};
+use crate::platform_bridge::{self, AlertButton, AlertButtonStyle, HapticFeedback, PlatformBridge};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Screen scale factor (e.g. 3.0 for @3x), stored as f32 bits.
@@ -99,6 +99,9 @@ unsafe extern "C" {
     );
     /// Open a URL in the system browser via UIApplication.
     fn ios_open_url(url: *const std::ffi::c_char);
+    /// Trigger a UIKit haptic feedback generator.
+    /// kind encoding matches HapticFeedback::to_i32().
+    fn ios_trigger_haptic(kind: i32);
 }
 
 impl PlatformBridge for IosBridge {
@@ -191,6 +194,10 @@ impl PlatformBridge for IosBridge {
         if let Ok(c_url) = CString::new(url) {
             unsafe { ios_open_url(c_url.as_ptr()) };
         }
+    }
+
+    fn trigger_haptic(&self, feedback: HapticFeedback) {
+        unsafe { ios_trigger_haptic(feedback.to_i32()) };
     }
 
     fn present_alert(&self, id: u32, title: &str, message: &str, buttons: &[AlertButton]) {

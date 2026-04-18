@@ -6,7 +6,7 @@ use zedra_telemetry::*;
 
 use crate::fonts;
 use crate::pending::{PendingSlot, spawn_periodic_task};
-use crate::platform_bridge::{self, AlertButton};
+use crate::platform_bridge::{self, AlertButton, HapticFeedback};
 use crate::theme;
 use crate::workspaces::Workspaces;
 
@@ -353,6 +353,7 @@ fn workspace_card(
         .p(px(12.0))
         .cursor_pointer()
         .on_click(cx.listener(move |this, _event, window, cx| {
+            platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
             this.handle_workspace_tap(index, window, cx);
         }))
         .on_long_press(cx.listener(move |this, _event, _window, cx| {

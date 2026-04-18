@@ -2,7 +2,7 @@
 ///
 /// Delegates every call to the corresponding function in `super::jni`.
 use crate::android::jni;
-use crate::platform_bridge::{AlertButton, PlatformBridge};
+use crate::platform_bridge::{AlertButton, HapticFeedback, PlatformBridge};
 
 pub struct AndroidBridge;
 
@@ -72,5 +72,9 @@ impl PlatformBridge for AndroidBridge {
 
     fn present_selection(&self, id: u32, title: &str, message: &str, buttons: &[AlertButton]) {
         jni::show_selection(id, title, message, buttons);
+    }
+
+    fn trigger_haptic(&self, feedback: HapticFeedback) {
+        jni::trigger_haptic(feedback);
     }
 }

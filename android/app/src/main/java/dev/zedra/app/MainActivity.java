@@ -12,6 +12,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.Choreographer;
+import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.Window;
 import android.widget.FrameLayout;
@@ -200,6 +201,50 @@ public class MainActivity extends AppCompatActivity {
             AlertDialog dialog = builder.create();
             dialog.setCanceledOnTouchOutside(true);
             dialog.show();
+        });
+    }
+
+    /**
+     * Trigger a haptic feedback pattern (called from Rust via JNI).
+     *
+     * kind values match HapticFeedback::to_i32() in platform_bridge.rs:
+     *   0=ImpactLight, 1=ImpactMedium, 2=ImpactHeavy, 3=ImpactSoft, 4=ImpactRigid,
+     *   5=SelectionChanged, 6=NotificationSuccess, 7=NotificationWarning, 8=NotificationError
+     */
+    public static void triggerHaptic(int kind) {
+        if (sSurfaceView == null) return;
+        sSurfaceView.post(() -> {
+            int constant;
+            switch (kind) {
+                case 0: // ImpactLight
+                case 3: // ImpactSoft
+                case 5: // SelectionChanged
+                    constant = HapticFeedbackConstants.KEYBOARD_TAP;
+                    break;
+                case 1: // ImpactMedium
+                    constant = HapticFeedbackConstants.VIRTUAL_KEY;
+                    break;
+                case 2: // ImpactHeavy
+                case 4: // ImpactRigid
+                    constant = HapticFeedbackConstants.LONG_PRESS;
+                    break;
+                case 6: // NotificationSuccess
+                    constant = Build.VERSION.SDK_INT >= 30
+                        ? HapticFeedbackConstants.CONFIRM
+                        : HapticFeedbackConstants.VIRTUAL_KEY;
+                    break;
+                case 7: // NotificationWarning
+                    constant = HapticFeedbackConstants.CONTEXT_CLICK;
+                    break;
+                case 8: // NotificationError
+                    constant = Build.VERSION.SDK_INT >= 30
+                        ? HapticFeedbackConstants.REJECT
+                        : HapticFeedbackConstants.LONG_PRESS;
+                    break;
+                default:
+                    return;
+            }
+            sSurfaceView.performHapticFeedback(constant);
         });
     }
 

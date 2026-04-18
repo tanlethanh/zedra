@@ -22,6 +22,7 @@ __attribute__((weak)) void ios_present_selection(
     int button_count,
     const char **labels,
     const int *styles) {}
+__attribute__((weak)) void ios_trigger_haptic(int kind) {}
 
 // Firebase Analytics + Crashlytics stubs.
 // Real implementations live in ios/Zedra/ZedraFirebase.m and override at Xcode link time.

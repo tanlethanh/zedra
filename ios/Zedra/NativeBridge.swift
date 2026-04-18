@@ -187,6 +187,34 @@ func ios_present_selection(
     }
 }
 
+@_cdecl("ios_trigger_haptic")
+func ios_trigger_haptic(_ kind: Int32) {
+    DispatchQueue.main.async {
+        switch kind {
+        case 0: // ImpactLight
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        case 1: // ImpactMedium
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        case 2: // ImpactHeavy
+            UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+        case 3: // ImpactSoft
+            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+        case 4: // ImpactRigid
+            UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+        case 5: // SelectionChanged
+            UISelectionFeedbackGenerator().selectionChanged()
+        case 6: // NotificationSuccess
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        case 7: // NotificationWarning
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        case 8: // NotificationError
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+        default:
+            break
+        }
+    }
+}
+
 @_cdecl("ios_open_url")
 func ios_open_url(_ url: UnsafePointer<CChar>?) {
     guard let urlString = NativePresentationBridge.string(url), let nsURL = URL(string: urlString) else {

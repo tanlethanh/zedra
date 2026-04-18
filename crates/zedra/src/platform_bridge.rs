@@ -163,6 +163,48 @@ pub fn clear_pending_alerts() {
 }
 
 // ---------------------------------------------------------------------------
+// Haptic feedback API
+// ---------------------------------------------------------------------------
+
+/// Haptic feedback patterns, mapped to native equivalents on each platform.
+///
+/// iOS: UIImpactFeedbackGenerator, UISelectionFeedbackGenerator, UINotificationFeedbackGenerator.
+/// Android: View.performHapticFeedback with HapticFeedbackConstants (no VIBRATE permission needed).
+#[derive(Clone, Copy, Debug)]
+pub enum HapticFeedback {
+    ImpactLight,
+    ImpactMedium,
+    ImpactHeavy,
+    ImpactSoft,
+    ImpactRigid,
+    SelectionChanged,
+    NotificationSuccess,
+    NotificationWarning,
+    NotificationError,
+}
+
+impl HapticFeedback {
+    /// Stable integer encoding shared between Rust, C FFI, and JNI.
+    pub fn to_i32(self) -> i32 {
+        match self {
+            HapticFeedback::ImpactLight => 0,
+            HapticFeedback::ImpactMedium => 1,
+            HapticFeedback::ImpactHeavy => 2,
+            HapticFeedback::ImpactSoft => 3,
+            HapticFeedback::ImpactRigid => 4,
+            HapticFeedback::SelectionChanged => 5,
+            HapticFeedback::NotificationSuccess => 6,
+            HapticFeedback::NotificationWarning => 7,
+            HapticFeedback::NotificationError => 8,
+        }
+    }
+}
+
+pub fn trigger_haptic(feedback: HapticFeedback) {
+    bridge().trigger_haptic(feedback);
+}
+
+// ---------------------------------------------------------------------------
 // PlatformBridge trait
 // ---------------------------------------------------------------------------
 
@@ -199,6 +241,8 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn present_selection(&self, _id: u32, _title: &str, _message: &str, _buttons: &[AlertButton]) {}
     /// Open a URL in the system browser.
     fn open_url(&self, _url: &str) {}
+    /// Trigger a haptic feedback pattern. No-op on platforms without haptic hardware.
+    fn trigger_haptic(&self, _feedback: HapticFeedback) {}
 }
 
 static BRIDGE: OnceLock<Box<dyn PlatformBridge>> = OnceLock::new();

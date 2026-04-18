@@ -9,7 +9,7 @@ use zedra_session::{ConnectEvent, Session, SessionHandle, SessionState, signer::
 
 use crate::active_terminal;
 use crate::editor::git_sidebar::GitFileSection;
-use crate::platform_bridge::{self, AlertButton, status_bar_inset};
+use crate::platform_bridge::{self, AlertButton, HapticFeedback, status_bar_inset};
 use crate::theme;
 use crate::transport_badge::phase_indicator_color;
 use crate::ui::{DrawerHost, DrawerSide};
@@ -843,6 +843,7 @@ impl Render for WorkspaceContent {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, window, cx| {
+                                    platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
                                     window.dispatch_action(
                                         workspace_action::ToggleDrawer.boxed_clone(),
                                         cx,
@@ -921,6 +922,7 @@ impl Render for WorkspaceContent {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, window, cx| {
+                                    platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
                                     window.dispatch_action(
                                         workspace_action::OpenQuickAction.boxed_clone(),
                                         cx,

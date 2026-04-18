@@ -7,6 +7,7 @@ use zedra_session::SessionState;
 use crate::file_explorer::FileExplorer;
 use crate::git_panel::GitPanel;
 use crate::platform_bridge;
+use crate::platform_bridge::HapticFeedback;
 use crate::session_panel::SessionPanel;
 use crate::terminal_panel::TerminalPanel;
 use crate::theme;
@@ -142,6 +143,7 @@ impl WorkspaceDrawer {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event, _window, cx| {
+                    platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
                     this.set_current_tab(tab, cx);
                 }),
             )
@@ -206,6 +208,7 @@ impl Render for WorkspaceDrawer {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|_this, _event, window, cx| {
+                                    platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
                                     window.dispatch_action(
                                         workspace_action::GoHome.boxed_clone(),
                                         cx,
