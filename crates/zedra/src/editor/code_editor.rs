@@ -3,6 +3,7 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use tracing::*;
 
 use super::syntax_highlighter::{Highlighter, Language};
 use super::syntax_theme::SyntaxTheme;
@@ -49,7 +50,15 @@ pub struct EditorView {
 
 impl EditorView {
     /// Create with automatic language detection from filename.
-    pub fn new(content: String, filename: &str, cx: &mut App) -> Self {
+    pub fn new(cx: &mut App) -> Self {
+        Self::build(
+            "".to_string(),
+            Highlighter::from_language(Language::PlainText),
+            cx,
+        )
+    }
+
+    pub fn new_with_content(filename: &str, content: String, cx: &mut App) -> Self {
         let mut highlighter = Highlighter::from_filename(filename);
         highlighter.parse(&content);
         Self::build(content, highlighter, cx)
@@ -72,7 +81,9 @@ impl EditorView {
     }
 
     /// Replace the entire buffer content (e.g. when loading a remote file).
-    pub fn set_content(&mut self, content: String) {
+    /// The language is detected from the filename.
+    pub fn set_content(&mut self, filename: &str, content: String) {
+        self.highlighter = Highlighter::from_filename(filename);
         self.buffer.set_text(content);
         self.highlighter.parse(self.buffer.text());
         self.cursor_offset = 0;
@@ -216,6 +227,7 @@ impl Render for EditorView {
         // Rebuild line cache only when buffer content changed.
         // During scroll, this is skipped entirely.
         if self.lines_dirty {
+            info!("rebuilding line cache by line_dirty flag");
             self.rebuild_line_cache();
         }
 

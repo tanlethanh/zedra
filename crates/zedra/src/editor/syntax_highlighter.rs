@@ -194,9 +194,9 @@ impl Highlighter {
         }
     }
 
-    /// Create a highlighter configured for Rust syntax.
-    pub fn rust() -> Self {
-        Self::new(Language::Rust)
+    /// Create a highlighter for the specified language.
+    pub fn from_language(language: Language) -> Self {
+        Self::new(language)
     }
 
     /// Create a highlighter based on filename extension.
