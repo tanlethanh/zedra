@@ -2,12 +2,14 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use gpui::*;
+use zedra_session::ConnectPhase;
 use zedra_telemetry::*;
 
 use crate::fonts;
 use crate::pending::{PendingSlot, spawn_periodic_task};
 use crate::platform_bridge::{self, AlertButton, HapticFeedback};
 use crate::theme;
+use crate::transport_badge::phase_indicator_color;
 use crate::workspaces::Workspaces;
 
 const WEBSITE_URL: &str = "https://www.zedra.dev";
@@ -185,16 +187,16 @@ impl Render for HomeView {
             for (item_idx, state) in states.iter().enumerate() {
                 let state = state.read(cx);
 
-                let (status_label, status_color) = match state.connect_phase.clone() {
-                    Some(zedra_session::ConnectPhase::Connected) => {
-                        ("Connected", theme::ACCENT_GREEN)
-                    }
-                    Some(p) if p.is_connecting() => ("Connecting\u{2026}", theme::ACCENT_YELLOW),
-                    Some(zedra_session::ConnectPhase::Reconnecting { .. }) => {
-                        ("Reconnecting\u{2026}", theme::ACCENT_YELLOW)
-                    }
-                    Some(zedra_session::ConnectPhase::Failed(_)) => ("Error", theme::ACCENT_RED),
-                    _ => ("Reconnect", theme::ACCENT_DIM),
+                let status_color = match state.connect_phase.clone() {
+                    Some(p) => phase_indicator_color(&p),
+                    None => theme::ACCENT_DIM,
+                };
+                let status_label = match state.connect_phase.clone() {
+                    Some(ConnectPhase::Connected) => "Connected",
+                    Some(p) if p.is_connecting() => "Connecting\u{2026}",
+                    Some(ConnectPhase::Reconnecting { .. }) => "Reconnecting\u{2026}",
+                    Some(ConnectPhase::Failed(_)) => "Error",
+                    _ => "Reconnect",
                 };
 
                 let project_name = if state.project_name.is_empty() {

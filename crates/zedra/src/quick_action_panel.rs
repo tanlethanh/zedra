@@ -5,6 +5,7 @@ use gpui::*;
 use crate::platform_bridge::{self, HapticFeedback};
 use crate::terminal_card::{TerminalCardProps, render_terminal_card};
 use crate::theme;
+use crate::transport_badge::phase_indicator_color;
 use crate::workspaces::Workspaces;
 
 #[derive(Clone, Debug)]
@@ -158,15 +159,9 @@ impl Render for QuickActionPanel {
             let workspace_entity = workspaces.get(index).unwrap().clone();
             let state = workspace_entity.read(cx).workspace_state(cx);
 
-            let is_connected = state
-                .connect_phase
-                .as_ref()
-                .map(|p| p.is_connected())
-                .unwrap_or(false);
-            let status_color = if is_connected {
-                theme::ACCENT_GREEN
-            } else {
-                theme::ACCENT_RED
+            let status_color = match state.connect_phase.clone() {
+                Some(p) => phase_indicator_color(&p),
+                None => theme::ACCENT_DIM,
             };
             let subtitle = match (state.hostname.is_empty(), state.strip_path.is_empty()) {
                 (false, false) => format!("{}:{}", state.hostname, state.strip_path),

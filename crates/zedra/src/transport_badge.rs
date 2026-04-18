@@ -76,7 +76,7 @@ pub(crate) fn phase_indicator_color(phase: &ConnectPhase) -> u32 {
     } else if phase.is_failed() {
         theme::ACCENT_RED
     } else {
-        theme::TEXT_MUTED
+        theme::ACCENT_DIM
     }
 }
 

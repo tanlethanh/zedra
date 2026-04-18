@@ -795,12 +795,9 @@ impl Render for WorkspaceContent {
                 workspace_state.strip_path.to_string()
             }
         };
-        let net_dot_color = {
-            if let Some(phase) = workspace_state.connect_phase.clone() {
-                phase_indicator_color(&phase)
-            } else {
-                theme::TEXT_SECONDARY
-            }
+        let net_dot_color = match workspace_state.connect_phase.clone() {
+            Some(phase) => phase_indicator_color(&phase),
+            None => theme::ACCENT_DIM,
         };
         let mainview_measure = canvas(
             |bounds, _, _| bounds,
