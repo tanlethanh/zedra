@@ -18,6 +18,7 @@ pub struct GitPanel {
     session_state: Entity<SessionState>,
     session_handle: SessionHandle,
     content: Entity<GitSidebar>,
+    branch: String,
     tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -93,19 +94,27 @@ impl GitPanel {
             session_state,
             session_handle,
             content,
+            branch: String::new(),
             tasks: vec![host_event_task],
             _subscriptions: subscriptions,
         }
     }
 
+    pub fn branch(&self) -> &str {
+        &self.branch
+    }
+
     fn fetch_git_status(&mut self, cx: &mut Context<Self>) {
         let handle = self.session_handle.clone();
         let content = self.content.clone();
-        let task = cx.spawn(async move |_this, cx| match handle.git_status().await {
+        let task = cx.spawn(async move |this, cx| match handle.git_status().await {
             Ok(result) => {
                 let repo_state = status_to_repo_state(&result.branch, &result.entries);
                 let _ = content.update(cx, |sidebar, cx| {
                     sidebar.set_repo_state(repo_state, cx);
+                    let _ = this.update(cx, |this, _cx| {
+                        this.branch = result.branch.clone();
+                    });
                 });
             }
             Err(e) => {

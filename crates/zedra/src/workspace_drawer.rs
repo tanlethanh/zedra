@@ -100,7 +100,7 @@ impl WorkspaceDrawer {
 
         let subtitle = match tab {
             DrawerTab::FileExplorer => workspace_state.strip_path.to_string(),
-            DrawerTab::GitDiff => "git".to_string(),
+            DrawerTab::GitDiff => self.git_panel.read(cx).branch().to_string(),
             DrawerTab::Terminals => "terminals".to_string(),
             DrawerTab::Session => {
                 let phase = session_state.phase();
