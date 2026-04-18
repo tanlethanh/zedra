@@ -30,8 +30,6 @@ pub const SPACING_MD: f32 = 12.0;
 pub const SPACING_LG: f32 = 16.0;
 
 // Layout dimensions
-pub const DRAWER_WIDTH: f32 = 295.0;
-pub const QA_DRAWER_WIDTH: f32 = 295.0;
 pub const HEADER_HEIGHT: f32 = 48.0;
 pub const HOME_CARD_WIDTH: f32 = 300.0;
 pub const HOME_GUIDE_WIDTH: f32 = 300.0;
@@ -42,10 +40,10 @@ pub const TERMINAL_LINE_HEIGHT: f32 = 16.0;
 
 // Drawer gesture thresholds
 pub const DRAWER_EDGE_ZONE: f32 = 56.0;
-pub const DRAWER_VELOCITY_THRESHOLD: f32 = 6.0;
-
-// Animation
-pub const ANIMATION_DURATION_MS: u64 = 250;
+pub const DRAWER_VELOCITY_THRESHOLD: f32 = 12.0;
+pub const DRAWER_BACKDROP_OPACITY: f32 = 0.4;
+pub const DRAWER_DEFAULT_WIDTH: f32 = 295.0;
+pub const DRAWER_ANIMATION_DURATION_MS: u64 = 300;
 
 // Font sizes (pixels) — change these to scale all UI text
 pub const FONT_TITLE: f32 = 28.0; // App main title ("Zedra")

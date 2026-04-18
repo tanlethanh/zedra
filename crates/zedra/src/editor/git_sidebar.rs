@@ -7,9 +7,9 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use crate::mgpui::input::Input;
-use crate::mgpui::{InputChanged, InputSubmit};
 use crate::theme;
+use crate::ui::input::Input;
+use crate::ui::{InputChanged, InputSubmit};
 
 // ── Git state types ─────────────────────────────────────────────────────────
 

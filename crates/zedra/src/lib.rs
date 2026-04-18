@@ -11,10 +11,9 @@ pub mod pending;
 pub mod button;
 pub mod editor;
 pub mod fonts;
-pub mod keyboard;
-pub mod mgpui;
 pub mod placeholder;
 pub mod theme;
+pub mod ui;
 
 // Sceens
 pub mod home_view;

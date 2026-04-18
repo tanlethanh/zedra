@@ -9,10 +9,10 @@ use zedra_session::{ConnectEvent, Session, SessionHandle, SessionState, signer::
 
 use crate::active_terminal;
 use crate::editor::git_sidebar::GitFileSection;
-use crate::mgpui::DrawerHost;
 use crate::platform_bridge::{self, AlertButton, status_bar_inset};
 use crate::theme;
 use crate::transport_badge::phase_indicator_color;
+use crate::ui::{DrawerHost, DrawerSide};
 use crate::workspace_action::{self, GoHome, OpenQuickAction, RequestDisconnect};
 use crate::workspace_action::{
     CloseDrawer, CloseTerminal, CreateNewTerminal, GitCommit, GitItemLongPress, GitStage,
@@ -103,8 +103,14 @@ impl Workspace {
                 session.handle().clone(),
             )
         });
-        let drawer_host =
-            cx.new(|cx| DrawerHost::new(content.clone().into(), drawer.clone().into(), cx));
+        let drawer_host = cx.new(|cx| {
+            DrawerHost::new(
+                content.clone().into(),
+                drawer.clone().into(),
+                DrawerSide::Left,
+                cx,
+            )
+        });
 
         let mut host_event_rx = session.subscribe_host_events();
         let host_event_listener = cx.spawn(async move |workspace, cx| {

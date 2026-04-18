@@ -6,10 +6,9 @@ use zedra_telemetry::*;
 use crate::deeplink::{self, DeeplinkAction};
 use crate::fonts;
 use crate::home_view::{HomeEvent, HomeView};
-use crate::mgpui::{DrawerHost, DrawerSide};
 use crate::platform_bridge;
 use crate::quick_action_panel::{QuickActionEvent, QuickActionPanel};
-use crate::theme;
+use crate::ui::{DrawerHost, DrawerSide};
 use crate::workspaces::{Workspaces, WorkspacesEvent};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -55,10 +54,12 @@ impl ZedraApp {
 
         // --- Quick action drawer ---
         let quick_action_drawer = cx.new(|cx| {
-            let mut dh = DrawerHost::new(home_view.clone().into(), quick_action.clone().into(), cx);
-            dh.set_side(DrawerSide::Right);
-            dh.set_width(px(theme::QA_DRAWER_WIDTH));
-            dh
+            DrawerHost::new(
+                home_view.clone().into(),
+                quick_action.clone().into(),
+                DrawerSide::Right,
+                cx,
+            )
         });
 
         let saved_count = workspaces.read(cx).states().len();

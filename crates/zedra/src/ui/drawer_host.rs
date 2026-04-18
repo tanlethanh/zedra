@@ -10,10 +10,6 @@ use crate::{platform_bridge, theme};
 /// Used to suppress input (e.g. keyboard) behind the overlay.
 static DRAWER_OVERLAY_VISIBLE: AtomicBool = AtomicBool::new(false);
 
-pub fn is_drawer_overlay_visible() -> bool {
-    DRAWER_OVERLAY_VISIBLE.load(Ordering::Relaxed)
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DrawerSide {
     Left,
@@ -75,12 +71,17 @@ pub struct DrawerHost {
 }
 
 impl DrawerHost {
-    pub fn new(content: AnyView, drawer: AnyView, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        content: AnyView,
+        drawer: AnyView,
+        side: DrawerSide,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self {
             content,
             drawer,
-            side: DrawerSide::Left,
-            width: px(theme::DRAWER_WIDTH),
+            side,
+            width: px(theme::DRAWER_DEFAULT_WIDTH),
             backdrop_opacity: 0.4,
             focus_handle: cx.focus_handle(),
             drawer_state: DrawerState::default(),
@@ -174,7 +175,8 @@ impl Render for DrawerHost {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Clear completed snap animations (animation duration is 250ms, give 280ms margin)
         if let Some(started) = self.snap_started_at {
-            if started.elapsed() >= Duration::from_millis(theme::ANIMATION_DURATION_MS + 30) {
+            if started.elapsed() >= Duration::from_millis(theme::DRAWER_ANIMATION_DURATION_MS + 30)
+            {
                 self.snap_target = None;
                 self.snap_started_at = None;
                 // Drawer is now fully closed — update global overlay flag
@@ -331,8 +333,10 @@ impl Render for DrawerHost {
                     backdrop
                         .with_animation(
                             ElementId::NamedInteger("drawer-backdrop-snap".into(), animation_id),
-                            Animation::new(Duration::from_millis(theme::ANIMATION_DURATION_MS))
-                                .with_easing(ease_out_quint()),
+                            Animation::new(Duration::from_millis(
+                                theme::DRAWER_ANIMATION_DURATION_MS,
+                            ))
+                            .with_easing(ease_out_quint()),
                             move |elem, delta| {
                                 let o = from + (target - from) * delta;
                                 let opacity =
@@ -368,8 +372,10 @@ impl Render for DrawerHost {
                     panel
                         .with_animation(
                             ElementId::NamedInteger("drawer-panel-snap".into(), animation_id),
-                            Animation::new(Duration::from_millis(theme::ANIMATION_DURATION_MS))
-                                .with_easing(ease_out_quint()),
+                            Animation::new(Duration::from_millis(
+                                theme::DRAWER_ANIMATION_DURATION_MS,
+                            ))
+                            .with_easing(ease_out_quint()),
                             move |elem, delta| {
                                 let o = from + (target - from) * delta;
                                 match side {
