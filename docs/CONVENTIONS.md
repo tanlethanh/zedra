@@ -52,6 +52,10 @@ Choose the executor based on which thread/context owns the work:
 
 **Rule of thumb**: library/session-layer code should not assume the caller has entered a Tokio runtime. If it needs to spawn Tokio tasks internally, prefer `session_runtime()` over bare `tokio::spawn()`.
 
+## GPUI Rendering
+
+For redraw, invalidation, `deferred(...)`, and `AnyView::cached(...)` behavior, see `docs/GPUI_RENDERING_MODEL.md`.
+
 ## WorkspaceState as Single Source of Truth
 
 All display reads from `WorkspaceState`, never `SessionHandle`.
