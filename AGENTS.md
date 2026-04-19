@@ -26,6 +26,7 @@ One QR scan connects you to your desktop. Full terminal, file browser, git, and 
 2. **render() must be pure** — no side effects. Mutations go in event handlers, `cx.spawn()`, or subscriptions.
 3. **PlatformBridge** — always `platform_bridge::bridge()`, never call platform APIs directly from UI code.
 4. **Logging** — `tracing` everywhere with `use tracing::*;` and `error|warn|info!`, never `log::` directly.
+5. **New UI must read `docs/DESIGN.md` first** — before creating or redesigning any UI, review `docs/DESIGN.md` and follow its tone, spacing, typography, and component guidance.
 
 ### GPUI Conventions
 
@@ -95,6 +96,7 @@ Views (WorkspaceContent, WorkspaceDrawer, panels)  — pure rendering
 
 - Prefer native UIKit for keyboard accessories, alerts, sheets — not GPUI.
 - `UIGlassEffect` is public UIKit on iOS 26+ (`UIVisualEffect` subclass). Use compile-time `if #available(iOS 26.0, *)`, not runtime class probing.
+- In Swift native integration code, keep access control consistent across helper types and APIs. If a return type or stored property uses a `fileprivate` type, the function/property must also be `fileprivate` unless you intentionally widen the type visibility.
 
 ## Quick Start
 
