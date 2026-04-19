@@ -25,6 +25,7 @@ futures.workspace = true
 tokio.workspace = true
 crossbeam-channel = "0.5"
 once_cell = "1.19"
+pulldown-cmark = "0.13"
 
 # Syntax highlighting
 tree-sitter = "0.26"
