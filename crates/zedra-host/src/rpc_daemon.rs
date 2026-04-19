@@ -250,7 +250,10 @@ async fn run_observer(session: Arc<ServerSession>, workdir: PathBuf, my_gen: u64
             .await
             {
                 Ok(v) => v,
-                Err(_) => None,
+                Err(e) => {
+                    tracing::error!("fs_dir_fingerprint error for path {}: {}", path, e);
+                    None
+                }
             };
             let Some(next_hash) = fingerprint else {
                 continue;
@@ -972,7 +975,10 @@ pub async fn create_terminal(
                         }
                     }
                 }
-                Err(_) => break,
+                Err(e) => {
+                    tracing::error!("read PTY buffer error: {}", e);
+                    break;
+                }
             }
         }
     });
@@ -1067,11 +1073,24 @@ async fn dispatch(
                         .send(SessionSwitchResult {
                             session_id: target.id.clone(),
                             workdir,
+                            error: None,
                         })
                         .await;
                 }
                 _ => {
-                    drop(msg.tx);
+                    let session_name = msg.session_name.clone();
+                    tracing::warn!(
+                        "SwitchSession: session {:?} not found or unauthorized",
+                        session_name
+                    );
+                    let _ = msg
+                        .tx
+                        .send(SessionSwitchResult {
+                            session_id: String::new(),
+                            workdir: None,
+                            error: Some(format!("session '{}' not found", session_name)),
+                        })
+                        .await;
                 }
             }
         }
@@ -1082,7 +1101,15 @@ async fn dispatch(
                 Ok(p) => p,
                 Err(e) => {
                     tracing::warn!("FsList: rejected path {:?}: {}", msg.path, e);
-                    drop(msg.tx);
+                    let _ = msg
+                        .tx
+                        .send(FsListResult {
+                            entries: vec![],
+                            total: 0,
+                            has_more: false,
+                            error: Some(e.to_string()),
+                        })
+                        .await;
                     return Ok(());
                 }
             };
@@ -1113,10 +1140,22 @@ async fn dispatch(
                             entries: page,
                             total,
                             has_more,
+                            error: None,
                         })
                         .await;
                 }
-                Err(_) => drop(msg.tx),
+                Err(e) => {
+                    tracing::error!("FsList: list failed for {:?}: {}", path, e);
+                    let _ = msg
+                        .tx
+                        .send(FsListResult {
+                            entries: vec![],
+                            total: 0,
+                            has_more: false,
+                            error: Some(e.to_string()),
+                        })
+                        .await;
+                }
             }
         }
 
@@ -1126,7 +1165,14 @@ async fn dispatch(
                 Ok(p) => p,
                 Err(e) => {
                     tracing::warn!("FsRead: rejected path {:?}: {}", msg.path, e);
-                    drop(msg.tx);
+                    let _ = msg
+                        .tx
+                        .send(FsReadResult {
+                            content: String::new(),
+                            too_large: false,
+                            error: Some(e.to_string()),
+                        })
+                        .await;
                     return Ok(());
                 }
             };
@@ -1137,6 +1183,7 @@ async fn dispatch(
                     .send(FsReadResult {
                         content: String::new(),
                         too_large: true,
+                        error: None,
                     })
                     .await;
                 return Ok(());
@@ -1148,10 +1195,21 @@ async fn dispatch(
                         .send(FsReadResult {
                             content,
                             too_large: false,
+                            error: None,
                         })
                         .await;
                 }
-                Err(_) => drop(msg.tx),
+                Err(e) => {
+                    tracing::error!("FsRead: read failed for {:?}: {}", path, e);
+                    let _ = msg
+                        .tx
+                        .send(FsReadResult {
+                            content: String::new(),
+                            too_large: false,
+                            error: Some(e.to_string()),
+                        })
+                        .await;
+                }
             }
         }
 
@@ -1174,7 +1232,16 @@ async fn dispatch(
                 Ok(p) => p,
                 Err(e) => {
                     tracing::warn!("FsStat: rejected path {:?}: {}", msg.path, e);
-                    drop(msg.tx);
+                    let _ = msg
+                        .tx
+                        .send(FsStatResult {
+                            path: String::new(),
+                            is_dir: false,
+                            size: 0,
+                            modified: None,
+                            error: Some(e.to_string()),
+                        })
+                        .await;
                     return Ok(());
                 }
             };
@@ -1187,10 +1254,23 @@ async fn dispatch(
                             is_dir: stat.is_dir,
                             size: stat.size,
                             modified: stat.modified,
+                            error: None,
                         })
                         .await;
                 }
-                Err(_) => drop(msg.tx),
+                Err(e) => {
+                    tracing::error!("FsStat: stat failed for {:?}: {}", path, e);
+                    let _ = msg
+                        .tx
+                        .send(FsStatResult {
+                            path: String::new(),
+                            is_dir: false,
+                            size: 0,
+                            modified: None,
+                            error: Some(e.to_string()),
+                        })
+                        .await;
+                }
             }
         }
 
@@ -1269,11 +1349,17 @@ async fn dispatch(
             {
                 Ok(id) => {
                     zedra_telemetry::send(Event::HostTerminalOpen { has_launch_cmd });
-                    let _ = msg.tx.send(TermCreateResult { id }).await;
+                    let _ = msg.tx.send(TermCreateResult { id, error: None }).await;
                 }
                 Err(e) => {
                     tracing::warn!("TermCreate failed: {}", e);
-                    drop(msg.tx);
+                    let _ = msg
+                        .tx
+                        .send(TermCreateResult {
+                            id: String::new(),
+                            error: Some(e.to_string()),
+                        })
+                        .await;
                 }
             }
         }
@@ -1435,7 +1521,11 @@ async fn dispatch(
                             let _ = w.flush();
                         }
                     }
-                    Ok(None) | Err(_) => break,
+                    Ok(None) => break,
+                    Err(e) => {
+                        tracing::error!("TermAttach: input receiver error: {}", e);
+                        break;
+                    }
                 }
             }
 
@@ -1506,9 +1596,30 @@ async fn dispatch(
                                 .map(|status| format!("{:?}", status).to_lowercase()),
                         })
                         .collect();
-                    let _ = msg.tx.send(GitStatusResult { branch, entries }).await;
+                    let _ = msg
+                        .tx
+                        .send(GitStatusResult {
+                            branch,
+                            entries,
+                            error: None,
+                        })
+                        .await;
                 }
-                Err(_) => drop(msg.tx),
+                Err(e) => {
+                    tracing::warn!(
+                        "GitStatus: failed to open repo at {:?}: {}",
+                        state.workdir,
+                        e
+                    );
+                    let _ = msg
+                        .tx
+                        .send(GitStatusResult {
+                            branch: String::new(),
+                            entries: vec![],
+                            error: Some(e.to_string()),
+                        })
+                        .await;
+                }
             }
         }
 
@@ -1519,9 +1630,18 @@ async fn dispatch(
                     let diff = repo
                         .diff(msg.path.as_deref(), msg.staged)
                         .unwrap_or_default();
-                    let _ = msg.tx.send(GitDiffResult { diff }).await;
+                    let _ = msg.tx.send(GitDiffResult { diff, error: None }).await;
                 }
-                Err(_) => drop(msg.tx),
+                Err(e) => {
+                    tracing::warn!("GitDiff: failed to open repo at {:?}: {}", state.workdir, e);
+                    let _ = msg
+                        .tx
+                        .send(GitDiffResult {
+                            diff: String::new(),
+                            error: Some(e.to_string()),
+                        })
+                        .await;
+                }
             }
         }
 
@@ -1540,9 +1660,24 @@ async fn dispatch(
                             timestamp: e.timestamp,
                         })
                         .collect();
-                    let _ = msg.tx.send(GitLogResult { entries }).await;
+                    let _ = msg
+                        .tx
+                        .send(GitLogResult {
+                            entries,
+                            error: None,
+                        })
+                        .await;
                 }
-                Err(_) => drop(msg.tx),
+                Err(e) => {
+                    tracing::warn!("GitLog: failed to open repo at {:?}: {}", state.workdir, e);
+                    let _ = msg
+                        .tx
+                        .send(GitLogResult {
+                            entries: vec![],
+                            error: Some(e.to_string()),
+                        })
+                        .await;
+                }
             }
         }
 
@@ -1556,50 +1691,66 @@ async fn dispatch(
                             files_staged,
                             success: true,
                         });
-                        let _ = msg.tx.send(GitCommitResult { hash }).await;
+                        let _ = msg.tx.send(GitCommitResult { hash, error: None }).await;
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        tracing::warn!("GitCommit: commit failed: {}", e);
                         zedra_telemetry::send(Event::GitCommitMade {
                             files_staged,
                             success: false,
                         });
-                        drop(msg.tx);
+                        let _ = msg
+                            .tx
+                            .send(GitCommitResult {
+                                hash: String::new(),
+                                error: Some(e.to_string()),
+                            })
+                            .await;
                     }
                 },
-                Err(_) => {
+                Err(e) => {
+                    tracing::warn!(
+                        "GitCommit: failed to open repo at {:?}: {}",
+                        state.workdir,
+                        e
+                    );
                     zedra_telemetry::send(Event::GitCommitMade {
                         files_staged,
                         success: false,
                     });
-                    drop(msg.tx);
+                    let _ = msg
+                        .tx
+                        .send(GitCommitResult {
+                            hash: String::new(),
+                            error: Some(e.to_string()),
+                        })
+                        .await;
                 }
             }
         }
 
         ZedraMessage::GitStage(msg) => {
             session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
-            match GitRepo::open(&state.workdir) {
-                Ok(repo) => match repo.stage(&msg.paths) {
-                    Ok(()) => {
-                        let _ = msg.tx.send(GitStageResult {}).await;
-                    }
-                    Err(_) => drop(msg.tx),
-                },
-                Err(_) => drop(msg.tx),
-            }
+            let result = GitRepo::open(&state.workdir)
+                .and_then(|repo| repo.stage(&msg.paths))
+                .err()
+                .map(|e| {
+                    tracing::warn!("GitStage failed: {}", e);
+                    e.to_string()
+                });
+            let _ = msg.tx.send(GitStageResult { error: result }).await;
         }
 
         ZedraMessage::GitUnstage(msg) => {
             session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
-            match GitRepo::open(&state.workdir) {
-                Ok(repo) => match repo.unstage(&msg.paths) {
-                    Ok(()) => {
-                        let _ = msg.tx.send(GitUnstageResult {}).await;
-                    }
-                    Err(_) => drop(msg.tx),
-                },
-                Err(_) => drop(msg.tx),
-            }
+            let result = GitRepo::open(&state.workdir)
+                .and_then(|repo| repo.unstage(&msg.paths))
+                .err()
+                .map(|e| {
+                    tracing::warn!("GitUnstage failed: {}", e);
+                    e.to_string()
+                });
+            let _ = msg.tx.send(GitUnstageResult { error: result }).await;
         }
 
         ZedraMessage::GitBranches(msg) => {
@@ -1615,9 +1766,28 @@ async fn dispatch(
                             is_head: b.is_head,
                         })
                         .collect();
-                    let _ = msg.tx.send(GitBranchesResult { branches }).await;
+                    let _ = msg
+                        .tx
+                        .send(GitBranchesResult {
+                            branches,
+                            error: None,
+                        })
+                        .await;
                 }
-                Err(_) => drop(msg.tx),
+                Err(e) => {
+                    tracing::warn!(
+                        "GitBranches: failed to open repo at {:?}: {}",
+                        state.workdir,
+                        e
+                    );
+                    let _ = msg
+                        .tx
+                        .send(GitBranchesResult {
+                            branches: vec![],
+                            error: Some(e.to_string()),
+                        })
+                        .await;
+                }
             }
         }
 
@@ -1651,10 +1821,11 @@ async fn dispatch(
                     let err = String::from_utf8_lossy(&out.stderr).into_owned();
                     (format!("Error: {}", err), true, false)
                 }
-                Err(_) => (
+                Err(e) => (
                     format!(
-                        "[Claude Code not found on host. Install with: npm i -g @anthropic-ai/claude-code]\n\nPrompt was: {}",
-                        msg.prompt
+                        "Claude Code not found on host. Install with: npm i -g @anthropic-ai/claude-code\n\nPrompt was: {}\n\nError: {}",
+                        msg.prompt,
+                        e
                     ),
                     true,
                     false,
@@ -1676,7 +1847,13 @@ async fn dispatch(
                 Ok(p) => p,
                 Err(e) => {
                     tracing::warn!("LspDiagnostics: rejected path {:?}: {}", msg.path, e);
-                    drop(msg.tx);
+                    let _ = msg
+                        .tx
+                        .send(LspDiagnosticsResult {
+                            diagnostics: vec![],
+                            error: Some(e.to_string()),
+                        })
+                        .await;
                     return Ok(());
                 }
             };
@@ -1687,7 +1864,13 @@ async fn dispatch(
                     severity: d.severity,
                 })
                 .collect();
-            let _ = msg.tx.send(LspDiagnosticsResult { diagnostics }).await;
+            let _ = msg
+                .tx
+                .send(LspDiagnosticsResult {
+                    diagnostics,
+                    error: None,
+                })
+                .await;
         }
 
         ZedraMessage::LspHover(msg) => {
@@ -1747,7 +1930,10 @@ fn run_lsp_check(path: &std::path::Path) -> Vec<DiagnosticEntry> {
                     .collect()
             }
         }
-        Err(_) => vec![],
+        Err(e) => {
+            tracing::error!("LspDiagnostics: command {} failed: {}", cmd, e);
+            vec![]
+        }
     }
 }
 

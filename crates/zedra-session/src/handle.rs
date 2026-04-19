@@ -197,6 +197,9 @@ impl SessionHandle {
                 limit,
             })
             .await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
         Ok((result.entries, result.total, result.has_more))
     }
 
@@ -221,12 +224,16 @@ impl SessionHandle {
     }
 
     pub async fn fs_stat(&self, path: &str) -> Result<FsStatResult> {
-        Ok(self
+        let result = self
             .client()?
             .rpc(FsStatReq {
                 path: path.to_string(),
             })
-            .await?)
+            .await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
+        Ok(result)
     }
 
     pub async fn fs_watch(&self, path: &str) -> Result<FsWatchResult> {

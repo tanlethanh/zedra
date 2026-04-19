@@ -47,13 +47,14 @@ impl WorkspaceEditor {
         let filename = self.filename.clone();
         let read_task = cx.spawn(async move |this, cx| {
             let (state, content) = match handle.fs_read(&path).await {
-                Ok(result) => {
-                    if result.too_large {
-                        (FileState::TooLarge, None)
-                    } else {
-                        (FileState::Loaded, Some(result.content))
-                    }
-                }
+                Ok(result) if result.too_large => (FileState::TooLarge, None),
+                Ok(result) if result.error.is_some() => (
+                    FileState::Error {
+                        error: result.error.unwrap_or("unknown error".to_string()),
+                    },
+                    None,
+                ),
+                Ok(result) => (FileState::Loaded, Some(result.content)),
                 Err(e) => {
                     tracing::error!("fs/read failed for {}: {}", path, e);
                     (

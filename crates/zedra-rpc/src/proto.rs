@@ -433,6 +433,7 @@ pub struct SessionSwitchReq {
 pub struct SessionSwitchResult {
     pub session_id: String,
     pub workdir: Option<String>,
+    pub error: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -451,6 +452,7 @@ pub struct FsListResult {
     pub entries: Vec<FsEntry>,
     pub total: u32,
     pub has_more: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -470,6 +472,7 @@ pub struct FsReadReq {
 pub struct FsReadResult {
     pub content: String,
     pub too_large: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -494,6 +497,7 @@ pub struct FsStatResult {
     pub is_dir: bool,
     pub size: u64,
     pub modified: Option<u64>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -569,6 +573,7 @@ pub struct TermCreateReq {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TermCreateResult {
     pub id: String,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -638,6 +643,7 @@ pub struct GitStatusReq {}
 pub struct GitStatusResult {
     pub branch: String,
     pub entries: Vec<GitStatusEntry>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -659,6 +665,7 @@ pub struct GitDiffReq {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GitDiffResult {
     pub diff: String,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -669,6 +676,7 @@ pub struct GitLogReq {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GitLogResult {
     pub entries: Vec<GitLogEntry>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -688,6 +696,7 @@ pub struct GitCommitReq {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GitCommitResult {
     pub hash: String,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -696,7 +705,9 @@ pub struct GitStageReq {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct GitStageResult {}
+pub struct GitStageResult {
+    pub error: Option<String>,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GitUnstageReq {
@@ -704,7 +715,9 @@ pub struct GitUnstageReq {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct GitUnstageResult {}
+pub struct GitUnstageResult {
+    pub error: Option<String>,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GitBranchesReq {}
@@ -712,6 +725,7 @@ pub struct GitBranchesReq {}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GitBranchesResult {
     pub branches: Vec<GitBranchEntry>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -758,6 +772,7 @@ pub struct LspDiagnosticsReq {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LspDiagnosticsResult {
     pub diagnostics: Vec<LspDiagnostic>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
