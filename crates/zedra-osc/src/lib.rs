@@ -1,6 +1,6 @@
 /// State machine that scans raw PTY bytes for OSC sequences across chunk
-/// boundaries (split packets).  Handles both BEL (0x07) and ST (ESC `\`)
-/// terminators.  Only OSC 0, 2, 7, and 133 are decoded; all others are
+/// boundaries (split packets). Handles both BEL (0x07) and ST (ESC `\`)
+/// terminators. Only OSC 0, 2, 7, and 133 are decoded; all others are
 /// silently ignored.
 #[derive(Default)]
 pub struct OscScanner {

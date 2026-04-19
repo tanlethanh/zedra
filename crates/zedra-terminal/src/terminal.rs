@@ -11,11 +11,11 @@ use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, Processor};
 use gpui::{Context, Keystroke, Pixels, ScrollDelta, ScrollWheelEvent, Task, px};
 use tokio::sync::{broadcast, mpsc};
+use zedra_osc::{OscEvent, OscScanner};
 
 const REMOTE_TOUCH_SCROLL_STEP_PX: f32 = 12.0;
 
 use crate::keys::to_esc_str;
-use crate::osc::{OscEvent, OscScanner};
 
 /// Events emitted by the terminal to observers.
 #[derive(Debug, Clone)]

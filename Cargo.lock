@@ -10134,9 +10134,14 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "zedra-osc",
  "zedra-rpc",
  "zedra-telemetry",
 ]
+
+[[package]]
+name = "zedra-osc"
+version = "0.1.1"
 
 [[package]]
 name = "zedra-rpc"
@@ -10196,6 +10201,7 @@ dependencies = [
  "itertools 0.14.0",
  "tokio",
  "tracing",
+ "zedra-osc",
 ]
 
 [[package]]

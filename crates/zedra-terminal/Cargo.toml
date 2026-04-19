@@ -10,3 +10,4 @@ tracing.workspace = true
 itertools.workspace = true
 futures.workspace = true
 tokio.workspace = true
+zedra-osc = { path = "../zedra-osc" }

@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use zedra_rpc::osc::{encode_meta_preamble, OscEvent};
+use zedra_osc::OscEvent;
 use zedra_rpc::proto::*;
 use zedra_telemetry::Event;
 
@@ -78,6 +78,23 @@ fn ts() -> String {
         (s % 3600) / 60,
         s % 60
     )
+}
+
+/// Build a synthetic OSC preamble encoding cached title/CWD.
+/// Sent as seq=0 on TermAttach so the client seeds its meta from the PTY stream.
+fn encode_meta_preamble(title: &Option<String>, cwd: &Option<String>) -> Vec<u8> {
+    let mut out = Vec::new();
+    if let Some(t) = title {
+        out.extend_from_slice(b"\x1b]2;");
+        out.extend_from_slice(t.as_bytes());
+        out.push(0x07);
+    }
+    if let Some(c) = cwd {
+        out.extend_from_slice(b"\x1b]7;file://");
+        out.extend_from_slice(c.as_bytes());
+        out.push(0x07);
+    }
+    out
 }
 
 fn short_key(key: &[u8; 32]) -> String {
