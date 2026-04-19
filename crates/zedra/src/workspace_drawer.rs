@@ -67,7 +67,8 @@ impl WorkspaceDrawer {
                 cx,
             )
         });
-        let terminal_panel = cx.new(|cx| TerminalPanel::new(workspace_state.clone(), terminal_state, cx));
+        let terminal_panel =
+            cx.new(|cx| TerminalPanel::new(workspace_state.clone(), terminal_state, cx));
         let session_panel = cx.new(|cx| {
             SessionPanel::new(
                 workspace_state.clone(),
