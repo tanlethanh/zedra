@@ -68,7 +68,9 @@
 
 #define DRAWER_ANIMATION_DURATION_MS 300
 
-#define FONT_TITLE 28.0
+#define FONT_APP_TITLE 28.0
+
+#define FONT_TITLE 20.0
 
 #define FONT_HEADING 13.0
 
@@ -78,9 +80,11 @@
 
 #define ICON_LOGO 20.0
 
-#define ICON_NAV 18.0
+#define ICON_LG 24.0
 
-#define ICON_HEADER 18.0
+#define ICON_MD 18.0
+
+#define ICON_SM 16.0
 
 #define ICON_FILE 12.0
 
@@ -109,6 +113,13 @@ extern void gpui_ios_set_next_embedded_parent(void *parent_view_ptr,
 
 extern void *gpui_ios_get_window(void);
 
+extern void gpui_ios_attach_embedded_view(void *window_ptr,
+                                          void *parent_view_ptr,
+                                          float width_pts,
+                                          float height_pts);
+
+extern void gpui_ios_detach_embedded_view(void *window_ptr);
+
 /**
  * Called each frame from main.m before gpui_ios_request_frame.
  *
@@ -124,6 +135,8 @@ void *zedra_ios_mount_custom_sheet_content(void *parent_view_ptr,
                                            float height_pts);
 
 void zedra_ios_unmount_custom_sheet_content(void);
+
+bool zedra_ios_sheet_content_is_at_top(void);
 
 /**
  * Called from Obj-C whenever the screen scale is known (once, at launch).
