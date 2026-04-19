@@ -103,6 +103,12 @@
  */
 #define STALE_THRESHOLD_SECS 3
 
+extern void gpui_ios_set_next_embedded_parent(void *parent_view_ptr,
+                                              float width_pts,
+                                              float height_pts);
+
+extern void *gpui_ios_get_window(void);
+
 /**
  * Called each frame from main.m before gpui_ios_request_frame.
  *
@@ -112,6 +118,12 @@
 bool zedra_ios_check_pending_frame(void);
 
 void zedra_launch_gpui(void);
+
+void *zedra_ios_mount_custom_sheet_content(void *parent_view_ptr,
+                                           float width_pts,
+                                           float height_pts);
+
+void zedra_ios_unmount_custom_sheet_content(void);
 
 /**
  * Called from Obj-C whenever the screen scale is known (once, at launch).
@@ -186,6 +198,20 @@ extern void ios_present_selection(uint32_t callback_id,
                                   int32_t button_count,
                                   const char *const *labels,
                                   const int32_t *styles);
+
+/**
+ * Present a configurable native custom sheet with a GPUI canvas host.
+ */
+extern void ios_present_custom_sheet(int32_t detent_count,
+                                     const int32_t *detents,
+                                     int32_t initial_detent,
+                                     bool shows_grabber,
+                                     bool expands_on_scroll_edge,
+                                     bool edge_attached_in_compact_height,
+                                     bool width_follows_preferred_content_size_when_edge_attached,
+                                     bool has_corner_radius,
+                                     float corner_radius,
+                                     bool modal_in_presentation);
 
 /**
  * Open a URL in the system browser via UIApplication.

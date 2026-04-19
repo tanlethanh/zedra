@@ -21,6 +21,7 @@ const XCOM_URL: &str = "https://x.com/zedradev";
 pub enum HomeEvent {
     /// Navigate to a workspace (app should switch screen).
     NavigateToWorkspace,
+    NavigateToSettings,
 }
 
 impl EventEmitter<HomeEvent> for HomeView {}
@@ -124,6 +125,7 @@ impl Focusable for HomeView {
 impl Render for HomeView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let states = self.workspaces.read(cx).states().to_vec();
+        let top_inset = platform_bridge::status_bar_inset();
 
         let mut content = div()
             .flex()
@@ -170,6 +172,24 @@ impl Render for HomeView {
                                     .child("zedra.dev"),
                             ),
                     ),
+            );
+
+        let settings_button = div()
+            .id("home-settings-button")
+            .absolute()
+            .top(px(top_inset + 12.0))
+            .right(px(12.0))
+            .cursor_pointer()
+            .gap(px(6.0))
+            .hit_slop(px(10.0))
+            .on_click(cx.listener(|_this, _event, _window, cx| {
+                cx.emit(HomeEvent::NavigateToSettings);
+            }))
+            .child(
+                svg()
+                    .path("icons/settings.svg")
+                    .size(px(theme::ICON_LG))
+                    .text_color(rgb(theme::TEXT_MUTED)),
             );
 
         if !states.is_empty() {
@@ -289,6 +309,7 @@ impl Render for HomeView {
             .flex_col()
             .items_center()
             .justify_center()
+            .child(settings_button)
             .child(content)
             .child(
                 div()

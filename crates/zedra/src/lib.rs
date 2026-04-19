@@ -17,12 +17,16 @@ pub mod ui;
 
 // Sceens
 pub mod home_view;
+pub mod settings_view;
 
 // Semantic components
 pub mod file_explorer;
 pub mod git_panel;
 pub mod quick_action_panel;
 pub mod session_panel;
+pub mod sheet_demo_state;
+pub mod sheet_demo_view;
+pub mod sheet_host_view;
 pub mod terminal_card;
 pub mod terminal_panel;
 pub mod terminal_state;

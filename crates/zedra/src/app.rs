@@ -7,6 +7,7 @@ use crate::deeplink::{self, DeeplinkAction};
 use crate::home_view::{HomeEvent, HomeView};
 use crate::platform_bridge;
 use crate::quick_action_panel::{QuickActionEvent, QuickActionPanel};
+use crate::settings_view::{SettingsEvent, SettingsView};
 use crate::ui::{DrawerHost, DrawerSide};
 use crate::workspaces::{Workspaces, WorkspacesEvent};
 use crate::{fonts, workspace_action};
@@ -14,12 +15,14 @@ use crate::{fonts, workspace_action};
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum AppScreen {
     Home,
+    Settings,
     Workspace,
 }
 
 pub struct ZedraApp {
     screen: AppScreen,
     home_view: Entity<HomeView>,
+    settings_view: Entity<SettingsView>,
     workspaces: Entity<Workspaces>,
     quick_action_drawer: Entity<DrawerHost>,
     _subscriptions: Vec<Subscription>,
@@ -37,6 +40,10 @@ impl ZedraApp {
         // --- Home view ---
         let home_view = cx.new(|cx| HomeView::new(workspaces.clone(), cx));
         let sub = cx.subscribe(&home_view, Self::on_home_event);
+        subscriptions.push(sub);
+
+        let settings_view = cx.new(SettingsView::new);
+        let sub = cx.subscribe(&settings_view, Self::on_settings_event);
         subscriptions.push(sub);
 
         // --- Quick action panel ---
@@ -73,6 +80,7 @@ impl ZedraApp {
         let app = Self {
             screen: AppScreen::Home,
             home_view,
+            settings_view,
             workspaces,
             quick_action_drawer,
             _subscriptions: subscriptions,
@@ -127,6 +135,22 @@ impl ZedraApp {
         match event {
             HomeEvent::NavigateToWorkspace => {
                 self.set_screen(AppScreen::Workspace, cx);
+            }
+            HomeEvent::NavigateToSettings => {
+                self.set_screen(AppScreen::Settings, cx);
+            }
+        }
+    }
+
+    fn on_settings_event(
+        &mut self,
+        _: Entity<SettingsView>,
+        event: &SettingsEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SettingsEvent::NavigateHome => {
+                self.set_screen(AppScreen::Home, cx);
             }
         }
     }
@@ -235,6 +259,7 @@ impl ZedraApp {
             self.screen = screen;
             let screen_name = match screen {
                 AppScreen::Home => "home",
+                AppScreen::Settings => "settings",
                 AppScreen::Workspace => "workspace",
             };
             zedra_telemetry::send(Event::ScreenView {
@@ -248,6 +273,7 @@ impl ZedraApp {
     fn update_drawer_content(&mut self, cx: &mut Context<Self>) {
         let screen_view: AnyView = match self.screen {
             AppScreen::Home => self.home_view.clone().into(),
+            AppScreen::Settings => self.settings_view.clone().into(),
             AppScreen::Workspace => self
                 .workspaces
                 .read(cx)
@@ -273,7 +299,6 @@ impl Render for ZedraApp {
     }
 }
 
-/// Open a GPUI window with the correct app view.
 pub fn open_zedra_window(app: &mut App, window_options: WindowOptions) -> Result<AnyWindowHandle> {
     app.open_window(window_options, |window, cx| {
         let view = cx.new(|cx| ZedraApp::new(window, cx));

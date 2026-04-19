@@ -7,7 +7,9 @@
 /// in atomics, mirroring the Android JNI push model.
 use crate::active_terminal;
 use crate::deeplink;
-use crate::platform_bridge::{self, AlertButton, AlertButtonStyle, HapticFeedback, PlatformBridge};
+use crate::platform_bridge::{
+    self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback, PlatformBridge,
+};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Screen scale factor (e.g. 3.0 for @3x), stored as f32 bits.
@@ -96,6 +98,19 @@ unsafe extern "C" {
         button_count: i32,
         labels: *const *const std::ffi::c_char,
         styles: *const i32,
+    );
+    /// Present a configurable native custom sheet with a GPUI canvas host.
+    fn ios_present_custom_sheet(
+        detent_count: i32,
+        detents: *const i32,
+        initial_detent: i32,
+        shows_grabber: bool,
+        expands_on_scroll_edge: bool,
+        edge_attached_in_compact_height: bool,
+        width_follows_preferred_content_size_when_edge_attached: bool,
+        has_corner_radius: bool,
+        corner_radius: f32,
+        modal_in_presentation: bool,
     );
     /// Open a URL in the system browser via UIApplication.
     fn ios_open_url(url: *const std::ffi::c_char);
@@ -259,6 +274,28 @@ impl PlatformBridge for IosBridge {
                 buttons.len() as i32,
                 label_ptrs.as_ptr(),
                 styles.as_ptr(),
+            );
+        }
+    }
+
+    fn present_custom_sheet(&self, options: &CustomSheetOptions) {
+        let detents: Vec<i32> = options
+            .detents
+            .iter()
+            .map(|detent| detent.to_i32())
+            .collect();
+        unsafe {
+            ios_present_custom_sheet(
+                detents.len() as i32,
+                detents.as_ptr(),
+                options.initial_detent.to_i32(),
+                options.shows_grabber,
+                options.expands_on_scroll_edge,
+                options.edge_attached_in_compact_height,
+                options.width_follows_preferred_content_size_when_edge_attached,
+                options.corner_radius.is_some(),
+                options.corner_radius.unwrap_or_default(),
+                options.modal_in_presentation,
             );
         }
     }

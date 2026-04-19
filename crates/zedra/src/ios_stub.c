@@ -22,6 +22,17 @@ __attribute__((weak)) void ios_present_selection(
     int button_count,
     const char **labels,
     const int *styles) {}
+__attribute__((weak)) void ios_present_custom_sheet(
+    int detent_count,
+    const int *detents,
+    int initial_detent,
+    _Bool shows_grabber,
+    _Bool expands_on_scroll_edge,
+    _Bool edge_attached_in_compact_height,
+    _Bool width_follows_preferred_content_size_when_edge_attached,
+    _Bool has_corner_radius,
+    float corner_radius,
+    _Bool modal_in_presentation) {}
 __attribute__((weak)) void ios_trigger_haptic(int kind) {}
 
 // Firebase Analytics + Crashlytics stubs.
