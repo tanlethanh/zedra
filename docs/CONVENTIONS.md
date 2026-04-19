@@ -42,6 +42,21 @@ warn!(id = %terminal_id, err = %e, "terminal: attach failed");
 
 Always `platform_bridge::bridge()`. Never call platform APIs directly from UI code.
 
+## UI Design Source
+
+Read `docs/DESIGN.md` before creating or redesigning UI.
+
+- Treat it as the visual source of truth for tone, density, spacing, typography, and component styling.
+- New product UI should match the repo's dark, flat, quiet, tool-like direction.
+
+## Swift Native Integration
+
+Keep Swift access control consistent across native bridge helper types and APIs.
+
+- If a function returns a `fileprivate` type, mark the function `fileprivate`.
+- If a stored property uses a `fileprivate` type, mark the property or enclosing type `fileprivate`.
+- Do not mix `internal` APIs with `fileprivate` helper types by accident when adding iOS presentation helpers.
+
 ## Async Runtime Selection
 
 Choose the executor based on which thread/context owns the work:
@@ -69,6 +84,14 @@ div()
 ```
 
 Do not apply GPUI scroll overflow helpers to anonymous `Div`s.
+
+When the scroll area lives inside nested flex layouts, the parent chain must also provide a constrained height.
+
+- Use `size_full()` on the viewport wrapper that is expected to fill the sheet/window body.
+- Add `min_h_0()` to each intermediate flex child between the constrained viewport and the GPUI scroll node.
+- This is required for embedded native iOS sheet content, where GPUI otherwise tends to measure the scroll node at content height and `overflow_y_scroll()` will not produce a usable scroll range.
+
+See `docs/GPUI_NATIVE_PRESENTATIONS.md` for the native sheet gesture bridge and ownership split.
 
 ## WorkspaceState as Single Source of Truth
 

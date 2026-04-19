@@ -40,6 +40,46 @@ Required pieces:
 - resize + frame driving for the embedded surface
 - attach / detach when the native container is dismissed or reopened
 
+## Sheet scrolling contract
+
+Sheet-hosted GPUI content does not receive UIKit `touchesMoved` reliably once the
+native sheet starts competing for the same drag gesture.
+
+For custom sheet content that needs inner scrolling:
+
+- Swift owns the outer gesture source through a wrapper `UIScrollView`
+- Swift forwards scroll deltas into the embedded GPUI window as synthetic
+  `ScrollWheel` input
+- GPUI content reports whether it is currently at the top edge
+- Swift stops forwarding downward drags when content is already at top, allowing
+  the native sheet gesture to take over for dismiss / detent motion
+
+Current minimal bridge:
+
+- `gpui_ios_inject_scroll(...)` forwards native deltas into the embedded iOS GPUI window
+- `zedra_ios_sheet_content_is_at_top()` exposes the active sheet content boundary
+
+Current content participation:
+
+- markdown preview reports `is_at_top` from its `ScrollHandle`
+
+GPUI layout requirement:
+
+- the hosted GPUI viewport must be explicitly height-constrained
+- use `size_full()` on the sheet body viewport wrapper
+- use `min_h_0()` on intermediate flex children between the sheet host and the scrollable GPUI node
+- keep a stable `.id(...)` on the GPUI scroll node
+
+Without that layout chain, GPUI can measure the scroll node at content height, which makes the native scroll bridge appear wired up while inner scrolling still does not move.
+
+This contract is intentionally minimal:
+
+- native -> GPUI: scroll delta + phase
+- GPUI -> native: top-edge boolean
+
+Do not add a broader bidirectional gesture abstraction unless more sheet content
+types need it.
+
 ## Runtime model
 
 The custom sheet should feel instant.

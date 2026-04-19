@@ -46,6 +46,7 @@ pub mod workspaces;
 
 pub mod active_terminal;
 pub mod deeplink;
+pub mod native_presentation;
 pub mod platform_bridge;
 pub mod telemetry;
 

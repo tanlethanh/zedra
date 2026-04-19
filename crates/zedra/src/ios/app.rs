@@ -10,9 +10,9 @@ use gpui::*;
 use gpui_ios::IosPlatform;
 
 use crate::{
-    ZedraAssets, app, install_panic_hook, platform_bridge, sheet_host_view::SheetHostView,
+    ZedraAssets, app, install_panic_hook, native_presentation, platform_bridge,
+    sheet_host_view::SheetHostView,
 };
-use gpui::AnyView;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -180,4 +180,9 @@ pub extern "C" fn zedra_ios_unmount_custom_sheet_content() {
             }
         }
     });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_sheet_content_is_at_top() -> bool {
+    native_presentation::sheet_content_is_at_top()
 }

@@ -175,7 +175,7 @@ fn preview_content_for_path(path: &str) -> PreviewContent {
 }
 
 impl Render for TerminalPreviewView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let body: AnyElement = match &self.state {
             PreviewState::Idle => {
                 render_placeholder("Tap a file path in the terminal").into_any_element()
@@ -189,7 +189,14 @@ impl Render for TerminalPreviewView {
             }
             PreviewState::Loaded => match self.content {
                 PreviewContent::Editor => self.editor_view.clone().into_any_element(),
-                PreviewContent::Markdown => self.markdown_view.clone().into_any_element(),
+                PreviewContent::Markdown => div()
+                    .id("terminal-preview-markdown-viewport")
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .min_h_0()
+                    .child(self.markdown_view.clone())
+                    .into_any_element(),
             },
         };
 
@@ -226,6 +233,14 @@ impl Render for TerminalPreviewView {
                             .child(self.subtitle.clone()),
                     ),
             )
-            .child(div().flex_1().child(body))
+            .child(
+                div()
+                    .id("terminal-preview-body")
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .child(body),
+            )
     }
 }

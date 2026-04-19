@@ -19,6 +19,10 @@ impl SheetHostView {
 
 impl Render for SheetHostView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        self.content.clone()
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(div().flex_1().min_h_0().child(self.content.clone()))
     }
 }

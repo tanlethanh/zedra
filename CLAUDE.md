@@ -51,6 +51,9 @@ One QR scan connects you to your desktop. Full terminal, file browser, git, and 
 
 - `overflow_scroll()` and `overflow_y_scroll()` require the `Div` to have a stable `.id(...)`.
 - Always assign an explicit id before using GPUI scroll overflow helpers.
+- In nested flex layouts, especially native iOS sheet hosts, scrolling also depends on layout constraints, not just the scroll node itself.
+- Use `size_full()` on the hosted viewport and `min_h_0()` on intermediate flex children so the scroll node gets viewport height instead of content height.
+- If the content is embedded in a native sheet, keep UIKit responsible for the outer gesture and follow `docs/GPUI_NATIVE_PRESENTATIONS.md`.
 
 #### Events vs Actions
 

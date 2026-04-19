@@ -14,6 +14,18 @@ private func gpui_ios_handle_view_resize(
     _ windowPtr: UnsafeMutableRawPointer?, _ widthPts: Float, _ heightPts: Float
 )
 
+@_silgen_name("gpui_ios_inject_scroll")
+private func gpui_ios_inject_scroll(
+    _ windowPtr: UnsafeMutableRawPointer?,
+    _ originX: Float,
+    _ originY: Float,
+    _ deltaX: Float,
+    _ deltaY: Float,
+    _ velocityX: Float,
+    _ velocityY: Float,
+    _ phase: Int32
+)
+
 @_silgen_name("zedra_ios_mount_custom_sheet_content")
 private func zedra_ios_mount_custom_sheet_content(
     _ parentViewPtr: UnsafeMutableRawPointer?, _ widthPts: Float, _ heightPts: Float
@@ -21,6 +33,9 @@ private func zedra_ios_mount_custom_sheet_content(
 
 @_silgen_name("zedra_ios_unmount_custom_sheet_content")
 private func zedra_ios_unmount_custom_sheet_content()
+
+@_silgen_name("zedra_ios_sheet_content_is_at_top")
+private func zedra_ios_sheet_content_is_at_top() -> Bool
 
 fileprivate enum AlertActionStyle: Int32 {
     case `default` = 0
@@ -243,11 +258,18 @@ fileprivate struct CustomSheetConfiguration {
     )
 }
 
-final class CustomSheetViewController: UIViewController {
+final class CustomSheetViewController: UIViewController, UIGestureRecognizerDelegate {
     private let configuration: CustomSheetConfiguration
     private let canvasView = UIView()
+    private lazy var contentPanGesture = UIPanGestureRecognizer(
+        target: self,
+        action: #selector(handleCanvasPan(_:))
+    )
     private var embeddedWindow: UnsafeMutableRawPointer?
     private var displayLink: CADisplayLink?
+    private var sheetPanLinked = false
+    private weak var linkedSheetPanGesture: UIPanGestureRecognizer?
+    private var lastPanTranslationY: CGFloat = 0
 
     fileprivate init(configuration: CustomSheetConfiguration = .default) {
         self.configuration = configuration
@@ -273,12 +295,14 @@ final class CustomSheetViewController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         forceInitialEmbeddedFrameIfNeeded()
+        linkSheetPanGestureIfNeeded()
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         mountGpuiCanvasIfNeeded()
         resizeEmbeddedCanvasIfNeeded()
+        linkSheetPanGestureIfNeeded()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -303,6 +327,11 @@ final class CustomSheetViewController: UIViewController {
         canvasView.translatesAutoresizingMaskIntoConstraints = false
         canvasView.backgroundColor = .clear
         canvasView.accessibilityIdentifier = "zedra-custom-sheet-canvas"
+        contentPanGesture.cancelsTouchesInView = true
+        contentPanGesture.delaysTouchesBegan = false
+        contentPanGesture.delaysTouchesEnded = false
+        contentPanGesture.delegate = self
+        canvasView.addGestureRecognizer(contentPanGesture)
         view.addSubview(canvasView)
 
         NSLayoutConstraint.activate([
@@ -315,6 +344,100 @@ final class CustomSheetViewController: UIViewController {
 
         // Reserved integration seam: GPUI content should attach into `canvasView`
         // so UIKit provides only sheet chrome, gestures, and animation.
+    }
+
+    @objc
+    private func handleCanvasPan(_ gesture: UIPanGestureRecognizer) {
+        guard let embeddedWindow else {
+            return
+        }
+
+        let translation = gesture.translation(in: canvasView)
+        let deltaY = translation.y - lastPanTranslationY
+        let velocity = gesture.velocity(in: canvasView)
+        let location = gesture.location(in: canvasView)
+        let contentIsAtTop = zedra_ios_sheet_content_is_at_top()
+
+        switch gesture.state {
+        case .began:
+            linkedSheetPanGesture?.isEnabled = false
+            lastPanTranslationY = translation.y
+        case .changed:
+            gpui_ios_inject_scroll(
+                embeddedWindow,
+                Float(location.x),
+                Float(location.y),
+                0,
+                Float(deltaY),
+                0,
+                0,
+                1
+            )
+            lastPanTranslationY = translation.y
+        case .ended, .cancelled, .failed:
+            gpui_ios_inject_scroll(
+                embeddedWindow,
+                Float(location.x),
+                Float(location.y),
+                0,
+                0,
+                Float(velocity.x),
+                Float(velocity.y),
+                2
+            )
+            linkedSheetPanGesture?.isEnabled = true
+            gesture.setTranslation(.zero, in: canvasView)
+            lastPanTranslationY = 0
+        default:
+            break
+        }
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer === contentPanGesture {
+            let velocity = contentPanGesture.velocity(in: canvasView)
+            if zedra_ios_sheet_content_is_at_top(), velocity.y > abs(velocity.x), velocity.y > 0 {
+                return false
+            }
+            return abs(velocity.y) >= abs(velocity.x)
+        }
+
+        return true
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        false
+    }
+
+    private func linkSheetPanGestureIfNeeded() {
+        guard !sheetPanLinked else { return }
+        guard let container = sheetGestureContainerView() else { return }
+
+        let panRecognizers = container.gestureRecognizers?.compactMap { $0 as? UIPanGestureRecognizer } ?? []
+        guard !panRecognizers.isEmpty else { return }
+
+        for recognizer in panRecognizers where recognizer !== contentPanGesture {
+            if linkedSheetPanGesture == nil {
+                linkedSheetPanGesture = recognizer
+            }
+        }
+
+        sheetPanLinked = true
+    }
+
+    private func sheetGestureContainerView() -> UIView? {
+        var current: UIView? = view
+        while let candidate = current {
+            if let recognizers = candidate.gestureRecognizers,
+               recognizers.contains(where: { $0 is UIPanGestureRecognizer && $0 !== contentPanGesture }) {
+                return candidate
+            }
+            current = candidate.superview
+        }
+        return presentationController?.presentedView
     }
 
     private func mountGpuiCanvasIfNeeded() {
@@ -380,6 +503,7 @@ final class CustomSheetViewController: UIViewController {
             configuration.widthFollowsPreferredContentSizeWhenEdgeAttached
         sheet.preferredCornerRadius = configuration.preferredCornerRadius
     }
+
 }
 
 @_cdecl("ios_present_alert")

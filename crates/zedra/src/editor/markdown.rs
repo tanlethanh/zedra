@@ -4,17 +4,20 @@ use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, T
 
 use crate::editor::merge_highlights;
 use crate::fonts;
+use crate::native_presentation;
 use crate::platform_bridge;
 use crate::theme;
 
 pub struct MarkdownView {
     source: SharedString,
+    scroll_handle: ScrollHandle,
 }
 
 impl MarkdownView {
     pub fn new(source: impl Into<SharedString>) -> Self {
         Self {
             source: source.into(),
+            scroll_handle: ScrollHandle::new(),
         }
     }
 
@@ -100,21 +103,39 @@ impl InlineRenderBuffer {
 impl Render for MarkdownView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let document = parse_document(self.source.as_ref());
+        update_sheet_scroll_boundary(&self.scroll_handle);
 
         div()
+            .id("markdown-preview-scroll")
             .size_full()
-            .p(px(theme::SPACING_LG))
-            .flex()
-            .flex_col()
-            .gap(px(theme::SPACING_MD))
-            .children(
-                document
-                    .blocks
-                    .iter()
-                    .enumerate()
-                    .map(|(ix, block)| render_block(block, format!("md-{ix}"), window, cx)),
+            .min_h_0()
+            .track_scroll(&self.scroll_handle)
+            .overflow_y_scroll()
+            .on_scroll_wheel(cx.listener(|this, _event, _window, _cx| {
+                update_sheet_scroll_boundary(&this.scroll_handle);
+            }))
+            .child(
+                div()
+                    .w_full()
+                    .p(px(theme::SPACING_LG))
+                    .flex()
+                    .flex_col()
+                    .gap(px(theme::SPACING_MD))
+                    .children(
+                        document
+                            .blocks
+                            .iter()
+                            .enumerate()
+                            .map(|(ix, block)| render_block(block, format!("md-{ix}"), window, cx)),
+                    ),
             )
     }
+}
+
+fn update_sheet_scroll_boundary(scroll_handle: &ScrollHandle) {
+    let offset_y = f32::from(scroll_handle.offset().y);
+    let is_at_top = offset_y >= -0.5;
+    native_presentation::set_sheet_content_at_top(is_at_top);
 }
 
 fn parse_document(source: &str) -> MarkdownDocument {
