@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tracing::*;
 
 use crate::element::TerminalElement;
-use crate::terminal::Terminal;
+use crate::terminal::{Terminal, TerminalEvent};
 
 const FALLBACK_CELL_WIDTH: f32 = 9.0;
 const TERMINAL_LINE_HEIGHT: f32 = 16.0;
@@ -41,10 +41,6 @@ impl IntoRemoteSize for crate::terminal::TerminalSize {
     }
 }
 
-pub enum TerminalEvent {
-    RequestResize { cols: u16, rows: u16 },
-}
-
 pub struct TerminalView {
     terminal_id: String,
     terminal: Entity<Terminal>,
@@ -54,6 +50,8 @@ pub struct TerminalView {
     /// Top-left origin of the painted terminal grid within the window.
     /// Used to turn touch scroll positions into terminal cell coordinates.
     grid_origin: Option<Point<Pixels>>,
+    _event_task: Task<()>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl TerminalView {
@@ -65,20 +63,37 @@ impl TerminalView {
     ) -> Self {
         let initial_grid_size = TerminalView::compute_grid_size(window, viewport);
 
-        Self {
-            terminal: cx.new(|_cx| {
+        let terminal = cx.new(|_cx| {
                 Terminal::new(
                     initial_grid_size.columns,
                     initial_grid_size.rows,
                     initial_grid_size.cell_width,
                     initial_grid_size.line_height,
                 )
-            }),
+        });
+
+        // Subscribe to terminal events via tokio broadcast channel and emit them to the app
+        let mut event_rx = terminal.read(cx).subscribe_events();
+        let event_task = cx.spawn(async move |this, cx| {
+            while let Ok(event) = event_rx.recv().await {
+                if let Err(e) = this.update(cx, |_this, cx| {
+                    cx.emit(event);
+                    cx.notify();
+                }) {
+                    error!("failed to emit terminal event: {:?}", e);
+                }
+            }
+        });
+
+        Self {
+            terminal,
             terminal_id,
             focus_handle: cx.focus_handle(),
             scroll_offset_px: 0.0,
             last_remote_size: None,
             grid_origin: None,
+            _event_task: event_task,
+            _subscriptions: vec![],
         }
     }
 

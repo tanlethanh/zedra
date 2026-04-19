@@ -1,9 +1,11 @@
 use gpui::*;
 use tracing::*;
 use zedra_session::SessionHandle;
-use zedra_terminal::view::{TerminalEvent, TerminalView};
+use zedra_terminal::terminal::TerminalEvent;
+use zedra_terminal::view::TerminalView;
 
 use crate::active_terminal;
+use crate::terminal_state::TerminalState;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
 
 pub const TERMINAL_PENDING_ID: &str = "___PENDING___";
@@ -12,6 +14,7 @@ pub struct WorkspaceTerminal {
     terminal_id: String,
     #[allow(dead_code)]
     workspace_state: Entity<WorkspaceState>,
+    terminal_state: Entity<TerminalState>,
     session_handle: SessionHandle,
     terminal_view: Entity<TerminalView>,
     _subscriptions: Vec<Subscription>,
@@ -25,14 +28,13 @@ impl WorkspaceTerminal {
     pub fn new(
         terminal_id: String,
         workspace_state: Entity<WorkspaceState>,
+        terminal_state: Entity<TerminalState>,
         session_handle: SessionHandle,
         window: &mut Window,
         initial_viewport: Size<Pixels>,
         cx: &mut Context<Self>,
     ) -> Self {
         let attach_sub = cx.subscribe(&workspace_state, |this, _ws, event, cx| match event {
-            // Attach the input/ouput channel whenever receiving SyncComplete event.
-            // This mostly happens when the session reconnects.
             WorkspaceStateEvent::SyncComplete => {
                 info!("received SyncComplete event, attempt to attach input/output channel");
                 Self::attach_channel_to_terminal_view(
@@ -42,8 +44,6 @@ impl WorkspaceTerminal {
                     cx,
                 );
             }
-            // Attach the input/ouput channel whenever receiving TerminalCreated event.
-            // This happens when the user creates a new terminal and this Entity is created in advance.
             WorkspaceStateEvent::TerminalCreated { id } => {
                 if this.terminal_id == *id {
                     info!("received TerminalCreated event, attempt to attach input/output channel");
@@ -67,19 +67,30 @@ impl WorkspaceTerminal {
         let terminal_view =
             cx.new(|cx| TerminalView::new(terminal_id.clone(), window, initial_viewport, cx));
 
-        let resize_sub = cx.subscribe(&terminal_view, |this, _terminal, event, cx| match event {
-            TerminalEvent::RequestResize { cols, rows } => {
-                Self::resize_remote_terminal(
-                    this.session_handle.clone(),
-                    this.terminal_id.clone(),
-                    *cols,
-                    *rows,
-                    cx,
-                );
-            }
-        });
+        let terminal_events_sub =
+            cx.subscribe(&terminal_view, |this, _terminal, event, cx| match event {
+                TerminalEvent::RequestResize { cols, rows } => {
+                    Self::resize_remote_terminal(
+                        this.session_handle.clone(),
+                        this.terminal_id.clone(),
+                        *cols,
+                        *rows,
+                        cx,
+                    );
+                }
+                TerminalEvent::TitleChanged(title) => {
+                    let id = this.terminal_id.clone();
+                    let title = title.clone();
+                    this.terminal_state.update(cx, |ts, cx| {
+                        ts.set_title(&id, title);
+                        cx.notify();
+                    });
+                }
+                TerminalEvent::OscEvent(_event) => {
+                    // TODO: handle OSC events to update Title, progress
+                }
+            });
 
-        // Try to attach the channel to the view on creation.
         if terminal_id != TERMINAL_PENDING_ID {
             Self::attach_channel_to_terminal_view(
                 session_handle.clone(),
@@ -92,14 +103,13 @@ impl WorkspaceTerminal {
         Self {
             terminal_id,
             workspace_state,
+            terminal_state,
             session_handle,
             terminal_view,
-            _subscriptions: vec![attach_sub, resize_sub],
+            _subscriptions: vec![attach_sub, terminal_events_sub],
         }
     }
 
-    /// Wire keyboard-accessory input to this terminal's PTY channel.
-    /// Call whenever this terminal becomes workspace's mainview.
     pub fn register_as_active_input(&self, cx: &App) {
         let Some(sender) = self.terminal_view.read(cx).input_sender(cx) else {
             warn!(terminal_id = %self.terminal_id, "no input sender, skipping active input registration");
@@ -163,15 +173,23 @@ impl WorkspaceTerminal {
             return;
         }
 
-        cx.spawn(async move |_this, _cx| {
-            if let Err(error) = session_handle
+        cx.spawn(async move |this, cx| {
+            match session_handle
                 .terminal_resize(&terminal_id, cols, rows)
                 .await
             {
-                warn!(
-                    terminal_id,
-                    cols, rows, "failed to resize remote terminal: {}", error
-                );
+                Ok(_) => {
+                    info!(terminal_id, cols, rows, "resized remote terminal");
+                    if let Err(e) = this.update(cx, |_, cx| cx.notify()) {
+                        warn!("failed to notify from terminal resize task: {}", e);
+                    }
+                }
+                Err(error) => {
+                    warn!(
+                        terminal_id,
+                        cols, rows, "failed to resize remote terminal: {}", error
+                    );
+                }
             }
         })
         .detach();
@@ -180,10 +198,6 @@ impl WorkspaceTerminal {
 
 impl Render for WorkspaceTerminal {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex_1()
-            .h_full()
-            .w_full()
-            .child(self.terminal_view.clone())
+        div().size_full().child(self.terminal_view.clone())
     }
 }

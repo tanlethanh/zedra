@@ -1,41 +1,45 @@
 use gpui::*;
 
 use crate::terminal_card::{TerminalCardProps, render_terminal_card};
+use crate::terminal_state::TerminalState;
 use crate::workspace_state::WorkspaceState;
 use crate::{theme, workspace_action};
 
 pub struct TerminalPanel {
     workspace_state: Entity<WorkspaceState>,
+    terminal_state: Entity<TerminalState>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl TerminalPanel {
-    pub fn new(workspace_state: Entity<WorkspaceState>, _cx: &mut Context<Self>) -> Self {
-        Self { workspace_state }
+    pub fn new(
+        workspace_state: Entity<WorkspaceState>,
+        terminal_state: Entity<TerminalState>,
+        _cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            workspace_state,
+            terminal_state,
+            _subscriptions: vec![],
+        }
     }
 }
 
 impl Render for TerminalPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.workspace_state.read(cx);
-
         let active_id = state.active_terminal_id.clone();
         let terminal_ids = state.terminal_ids.clone();
 
-        // Collect terminal metadata while we still hold the borrow
         let terminals: Vec<_> = terminal_ids
             .iter()
             .enumerate()
             .map(|(i, tid)| {
                 let is_active = active_id.as_deref() == Some(tid.as_str());
-                let meta = state
-                    .remote_terminal(tid)
-                    .map(|t| t.meta().clone())
-                    .unwrap_or_default();
+                let meta = self.terminal_state.read(cx).meta(tid);
                 (i, tid.clone(), is_active, meta)
             })
             .collect();
-
-        // Data already cloned above; borrow ends here naturally.
 
         let mut content = div().pt(px(12.0)).flex().flex_col().flex_1();
 
@@ -79,7 +83,6 @@ impl Render for TerminalPanel {
             }
         }
 
-        // "New Terminal" button
         content = content.child(
             div()
                 .id("new-terminal-btn")

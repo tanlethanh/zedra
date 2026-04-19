@@ -4,6 +4,7 @@ use gpui::*;
 
 use crate::platform_bridge::{self, HapticFeedback};
 use crate::terminal_card::{TerminalCardProps, render_terminal_card};
+use crate::terminal_state::TerminalState;
 use crate::theme;
 use crate::transport_badge::phase_indicator_color;
 use crate::workspaces::Workspaces;
@@ -158,6 +159,7 @@ impl Render for QuickActionPanel {
         for index in 0..ws_count {
             let workspace_entity = workspaces.get(index).unwrap().clone();
             let state = workspace_entity.read(cx).workspace_state(cx);
+            let terminal_state: Entity<TerminalState> = workspace_entity.read(cx).terminal_state();
 
             let status_color = match state.connect_phase.clone() {
                 Some(p) => phase_indicator_color(&p),
@@ -235,10 +237,7 @@ impl Render for QuickActionPanel {
                         .active_terminal_id
                         .clone()
                         .is_some_and(|id| id == *tid);
-                    let meta = state
-                        .remote_terminal(tid)
-                        .map(|t| t.meta().clone())
-                        .unwrap_or_default();
+                    let meta = terminal_state.read(cx).meta(tid);
 
                     let on_close =
                         Box::new(cx.listener(move |this, _event: &ClickEvent, _window, cx| {

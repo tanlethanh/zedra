@@ -10,6 +10,7 @@ use crate::platform_bridge;
 use crate::platform_bridge::HapticFeedback;
 use crate::session_panel::SessionPanel;
 use crate::terminal_panel::TerminalPanel;
+use crate::terminal_state::TerminalState;
 use crate::theme;
 use crate::transport_badge::phase_indicator_color;
 use crate::transport_badge::transport_badge;
@@ -43,6 +44,7 @@ impl WorkspaceDrawer {
     pub fn new(
         cx: &mut Context<Self>,
         workspace_state: Entity<WorkspaceState>,
+        terminal_state: Entity<TerminalState>,
         session_state: Entity<SessionState>,
         session: Session,
         session_handle: SessionHandle,
@@ -65,7 +67,7 @@ impl WorkspaceDrawer {
                 cx,
             )
         });
-        let terminal_panel = cx.new(|cx| TerminalPanel::new(workspace_state.clone(), cx));
+        let terminal_panel = cx.new(|cx| TerminalPanel::new(workspace_state.clone(), terminal_state, cx));
         let session_panel = cx.new(|cx| {
             SessionPanel::new(
                 workspace_state.clone(),

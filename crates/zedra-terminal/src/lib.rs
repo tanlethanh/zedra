@@ -1,6 +1,7 @@
 pub mod element;
 pub mod input;
 pub mod keys;
+pub mod osc;
 pub mod terminal;
 pub mod view;
 

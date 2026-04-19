@@ -25,6 +25,7 @@ pub mod quick_action_panel;
 pub mod session_panel;
 pub mod terminal_card;
 pub mod terminal_panel;
+pub mod terminal_state;
 pub mod transport_badge;
 
 // Per-session workspace

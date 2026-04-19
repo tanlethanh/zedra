@@ -10,19 +10,43 @@ use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, Processor};
 use gpui::{Context, Keystroke, Pixels, ScrollDelta, ScrollWheelEvent, Task, px};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 const REMOTE_TOUCH_SCROLL_STEP_PX: f32 = 12.0;
 
 use crate::keys::to_esc_str;
+use crate::osc::{OscEvent, OscScanner};
 
-/// Event listener that collects terminal events
+/// Events emitted by the terminal to observers.
+#[derive(Debug, Clone)]
+pub enum TerminalEvent {
+    RequestResize { cols: u16, rows: u16 },
+    TitleChanged(Option<String>),
+    OscEvent(OscEvent),
+}
+
+/// Event listener that captures alacritty title events, queuing them as TerminalEvents.
 #[derive(Clone)]
-pub struct ZedraListener;
+pub struct ZedraListener {
+    event_tx: broadcast::Sender<TerminalEvent>,
+}
+
+impl ZedraListener {
+    fn new(event_tx: broadcast::Sender<TerminalEvent>) -> Self {
+        Self { event_tx }
+    }
+}
 
 impl EventListener for ZedraListener {
-    fn send_event(&self, _event: AlacTermEvent) {
-        // Events like title change, bell, etc. are ignored for now
+    fn send_event(&self, event: AlacTermEvent) {
+        let terminal_event = match event {
+            AlacTermEvent::Title(t) => TerminalEvent::TitleChanged(Some(t)),
+            AlacTermEvent::ResetTitle => TerminalEvent::TitleChanged(None),
+            _ => return,
+        };
+        if let Err(e) = self.event_tx.send(terminal_event) {
+            error!("failed to send terminal event: {:?}", e);
+        }
     }
 }
 
@@ -99,6 +123,8 @@ pub struct Terminal {
     mode: TermMode,
     size: TerminalSize,
     ime_state: Option<IMEState>,
+    scanner: OscScanner,
+    event_tx: broadcast::Sender<TerminalEvent>,
     input_tx: Option<mpsc::Sender<Vec<u8>>>,
     output_task: Option<Task<()>>,
 }
@@ -106,12 +132,14 @@ pub struct Terminal {
 impl Terminal {
     /// Create a new terminal with the given grid dimensions
     pub fn new(columns: usize, rows: usize, cell_width: Pixels, line_height: Pixels) -> Self {
+        let (event_tx, _) = broadcast::channel(100);
+        let listener = ZedraListener::new(event_tx.clone());
         let config = Config::default();
         let term_size = SimpleDimensions {
             columns,
             screen_lines: rows,
         };
-        let term = Term::new(config, &term_size, ZedraListener);
+        let term = Term::new(config, &term_size, listener);
 
         Self {
             term,
@@ -124,6 +152,8 @@ impl Terminal {
                 rows,
             },
             ime_state: None,
+            scanner: OscScanner::new(),
+            event_tx,
             input_tx: None,
             output_task: None,
         }
@@ -131,6 +161,10 @@ impl Terminal {
 
     pub fn is_channel_attached(&self) -> bool {
         self.input_tx.is_some() && self.output_task.is_some()
+    }
+
+    pub fn subscribe_events(&self) -> broadcast::Receiver<TerminalEvent> {
+        self.event_tx.subscribe()
     }
 
     /// Attach a channel for input and output bytes to the terminal emulator
@@ -150,6 +184,7 @@ impl Terminal {
             while let Some(bytes) = output_rx.recv().await {
                 let _ = this.update(cx, |this, cx| {
                     this.advance_bytes(&bytes);
+                    this.feed_osc_bytes(&bytes);
                     cx.notify();
                 });
             }
@@ -177,6 +212,19 @@ impl Terminal {
     pub fn advance_bytes(&mut self, bytes: &[u8]) {
         self.processor.advance(&mut self.term, bytes);
         self.mode = *self.term.mode();
+    }
+
+    /// Feed bytes from PTY output buffer into the OSC scanner
+    /// and emit events to the event channel.
+    pub fn feed_osc_bytes(&mut self, bytes: &[u8]) {
+        let osc_events = self.scanner.feed(bytes);
+        if !osc_events.is_empty() {
+            for event in osc_events {
+                if let Err(e) = self.event_tx.send(TerminalEvent::OscEvent(event)) {
+                    error!("failed to send osc event: {:?}", e);
+                }
+            }
+        }
     }
 
     /// Get a snapshot of the terminal content for rendering

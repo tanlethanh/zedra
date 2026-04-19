@@ -10,6 +10,7 @@ use zedra_session::{ConnectEvent, Session, SessionHandle, SessionState, signer::
 use crate::active_terminal;
 use crate::editor::git_sidebar::GitFileSection;
 use crate::platform_bridge::{self, AlertButton, HapticFeedback, status_bar_inset};
+use crate::terminal_state::TerminalState;
 use crate::theme;
 use crate::transport_badge::phase_indicator_color;
 use crate::ui::{DrawerHost, DrawerSide};
@@ -44,6 +45,7 @@ pub struct Workspace {
     content: Entity<WorkspaceContent>,
     workspace_state: Entity<WorkspaceState>,
     session_state: Entity<SessionState>,
+    terminal_state: Entity<TerminalState>,
     session: Session,
     editor: Entity<WorkspaceEditor>,
     gitdiff: Entity<WorkspaceGitdiff>,
@@ -58,34 +60,16 @@ pub struct Workspace {
 impl Workspace {
     pub fn new(
         workspace_state: Entity<WorkspaceState>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let session = Session::new();
         let session_state = cx.new(|_cx| session.state().clone());
+        let terminal_state = cx.new(|_| TerminalState::new());
 
         let editor = cx.new(|cx| WorkspaceEditor::new(session.handle().clone(), cx));
         let gitdiff = cx.new(|cx| WorkspaceGitdiff::new(session.handle().clone(), cx));
 
-        let initial_viewport = WorkspaceContent::fallback_mainview_viewport(window);
-        let terminals = workspace_state
-            .read(cx)
-            .terminal_ids
-            .clone()
-            .iter()
-            .map(|terminal_id| {
-                cx.new(|cx| {
-                    WorkspaceTerminal::new(
-                        terminal_id.to_string(),
-                        workspace_state.clone(),
-                        session.handle().clone(),
-                        window,
-                        initial_viewport,
-                        cx,
-                    )
-                })
-            })
-            .collect();
         let content = cx.new(|cx| {
             WorkspaceContent::new(
                 workspace_state.clone(),
@@ -98,6 +82,7 @@ impl Workspace {
             WorkspaceDrawer::new(
                 cx,
                 workspace_state.clone(),
+                terminal_state.clone(),
                 session_state.clone(),
                 session.clone(),
                 session.handle().clone(),
@@ -145,10 +130,12 @@ impl Workspace {
             content,
             workspace_state,
             session_state,
+            terminal_state,
             session,
             editor,
             gitdiff,
-            terminals,
+            // Terminals will be created after connection is established
+            terminals: vec![],
             seen_reconnect: false,
             _state_listener: None,
             _host_event_listener: Some(host_event_listener),
@@ -203,7 +190,7 @@ impl Workspace {
                         let workspace = workspace.clone();
                         cx.on_next_frame(move |window, cx| {
                             let _ = workspace.update(cx, |ws, cx| {
-                                ws.open_or_create_initial_terminal(window, cx);
+                                ws.initialize_workspace_terminals(window, cx);
                             });
                         });
                     }
@@ -243,10 +230,8 @@ impl Workspace {
         self.workspace_state.read(cx).endpoint_addr.clone()
     }
 
-    /// Return current terminal IDs and active terminal ID.
-    pub fn terminal_state(&self) -> (Vec<String>, Option<String>) {
-        // TODO: delegate to workspace_terminal when terminal management is wired up
-        (Vec::new(), None)
+    pub fn terminal_state(&self) -> Entity<TerminalState> {
+        self.terminal_state.clone()
     }
 
     /// Programmatically disconnect this workspace.
@@ -504,7 +489,6 @@ impl Workspace {
         self.drawer_host.update(cx, |host, cx| host.close(cx));
 
         let session_handle = self.session.handle().clone();
-        let workspace_state = self.workspace_state.clone();
         let initial_viewport = self.mainview_viewport(window, cx);
         let initial_grid_size = TerminalView::compute_grid_size(window, initial_viewport);
         let cols = initial_grid_size.columns;
@@ -512,16 +496,8 @@ impl Workspace {
 
         // Pre-create a workspace terminal entity with a placeholder terminal ID.
         // This is required due to the terminal view requires `window` to be available from main thread.
-        let workspace_terminal = cx.new(|cx| {
-            WorkspaceTerminal::new(
-                TERMINAL_PENDING_ID.to_string(),
-                workspace_state.clone(),
-                session_handle.clone(),
-                window,
-                initial_viewport,
-                cx,
-            )
-        });
+        let workspace_terminal =
+            self.create_terminal_entity(TERMINAL_PENDING_ID.to_string(), window, cx);
 
         cx.spawn(async move |workspace, cx| {
             let terminal_id = match session_handle
@@ -565,33 +541,11 @@ impl Workspace {
         self.drawer_host.update(cx, |host, cx| host.close(cx));
 
         let id = &action.id;
-        let terminal_entity = match self
-            .terminals
-            .iter()
-            .find(|t| t.read(cx).terminal_id() == id)
-            .cloned()
-        {
-            Some(e) => e,
-            None => {
-                // Terminal not yet tracked locally — create a view for it
-                info!("terminal not yet tracked locally, creating view for {}", id);
-                let session_handle = self.session.handle().clone();
-                let workspace_state = self.workspace_state.clone();
-                let initial_viewport = self.mainview_viewport(window, cx);
-                let entity = cx.new(|cx| {
-                    WorkspaceTerminal::new(
-                        id.clone(),
-                        workspace_state,
-                        session_handle,
-                        window,
-                        initial_viewport,
-                        cx,
-                    )
-                });
-                self.terminals.push(entity.clone());
-                entity
-            }
-        };
+        let terminal_entity = self.terminal_by_id(id, cx).unwrap_or_else(|| {
+            info!("terminal not yet tracked locally, creating view for {}", id);
+            let entity = self.create_terminal_entity(id.clone(), window, cx);
+            entity
+        });
 
         self.activate_terminal(id.clone(), terminal_entity, cx);
     }
@@ -643,6 +597,40 @@ impl Workspace {
         });
     }
 
+    /// Create a new terminal entity and add it to the terminals vec.
+    fn create_terminal_entity(
+        &mut self,
+        id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<WorkspaceTerminal> {
+        let initial_viewport = self.mainview_viewport(window, cx);
+        let entity = cx.new(|cx| {
+            WorkspaceTerminal::new(
+                id,
+                self.workspace_state.clone(),
+                self.terminal_state.clone(),
+                self.session.handle().clone(),
+                window,
+                initial_viewport,
+                cx,
+            )
+        });
+        self.terminals.push(entity.clone());
+        entity
+    }
+
+    fn terminal_by_id(
+        &self,
+        id: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<WorkspaceTerminal>> {
+        self.terminals
+            .iter()
+            .find(|t| t.read(cx).terminal_id() == id)
+            .cloned()
+    }
+
     fn mainview_viewport(&self, window: &mut Window, cx: &App) -> Size<Pixels> {
         self.content
             .read(cx)
@@ -650,9 +638,19 @@ impl Workspace {
             .unwrap_or_else(|| WorkspaceContent::fallback_mainview_viewport(window))
     }
 
-    fn open_or_create_initial_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Pre-create WorkspaceTerminal entities for all known IDs so their
+    /// Open or create the first terminal.
+    fn initialize_workspace_terminals(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let terminal_ids = self.workspace_state.read(cx).terminal_ids.clone();
-        if let Some(first_id) = terminal_ids.into_iter().next() {
+        let first_id = terminal_ids.first().cloned();
+
+        for id in terminal_ids {
+            if self.terminal_by_id(&id, cx).is_none() {
+                self.create_terminal_entity(id.clone(), window, cx);
+            }
+        }
+
+        if let Some(first_id) = first_id {
             info!("auto-opening first terminal on connect: {}", first_id);
             self.handle_open_terminal(&OpenTerminal { id: first_id }, window, cx);
         } else {

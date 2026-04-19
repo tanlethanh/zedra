@@ -50,8 +50,6 @@ pub struct WorkspaceState {
     pub active_terminal_id: Option<String>,
     #[serde(skip)]
     pub terminal_ids: Vec<String>,
-    #[serde(skip)]
-    pub remote_terminals: Vec<RemoteTerminal>,
 }
 
 fn store_path() -> Option<PathBuf> {
@@ -76,7 +74,6 @@ impl WorkspaceState {
         let session_id = session_state.snapshot.session_id.clone();
         self.connect_phase = Some(session_state.phase.clone());
         self.terminal_ids = session_handle.terminal_ids().clone();
-        self.remote_terminals = session_handle.terminals().clone();
 
         let snap = &session_state.snapshot;
         if !snap.hostname.is_empty() {
@@ -99,10 +96,6 @@ impl WorkspaceState {
         }
 
         cx.emit(WorkspaceStateEvent::StateChanged);
-    }
-
-    pub fn remote_terminal(&self, id: &str) -> Option<&RemoteTerminal> {
-        self.remote_terminals.iter().find(|t| t.id() == id)
     }
 
     pub fn emit_sync_complete(&self, cx: &mut Context<Self>) {
@@ -254,7 +247,6 @@ impl WorkspaceState {
             connect_phase: None,
             active_terminal_id: None,
             terminal_ids: Vec::new(),
-            remote_terminals: Vec::new(),
         })
     }
 }

@@ -11,8 +11,8 @@
 /// Used in the workspace drawer terminal tab and the quick-action panel.
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use zedra_rpc::osc::ShellState;
 
+use crate::terminal_state::ShellState;
 use crate::{fonts, theme};
 
 /// Props that describe how a single terminal card should be rendered.
@@ -161,7 +161,7 @@ pub fn render_terminal_card(props: TerminalCardProps) -> Stateful<Div> {
         .mx(px(theme::DRAWER_PADDING))
         .mb(px(6.0))
         .px(px(12.0))
-        .py(px(10.0))
+        .py(px(8.0))
         .rounded(px(6.0))
         .bg(rgb(theme::BG_CARD))
         .border_1()

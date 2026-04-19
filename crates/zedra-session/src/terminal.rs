@@ -1,9 +1,7 @@
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tracing::*;
-use zedra_rpc::osc::{OscEvent, OscScanner, TerminalMeta};
 use zedra_rpc::proto::{TermAttachReq, TermInput, TermOutput, ZedraProto};
 
 use crate::session_runtime;
@@ -15,9 +13,6 @@ pub struct RemoteTerminal(Arc<RemoteTerminalInner>);
 #[derive(Default)]
 pub struct RemoteTerminalInner {
     id: Mutex<String>,
-    meta: Mutex<TerminalMeta>,
-    osc_events: Mutex<VecDeque<OscEvent>>,
-    osc_scanner: Mutex<OscScanner>,
     input_tx: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
     output_rx: Mutex<Option<mpsc::Receiver<Vec<u8>>>>,
     last_seq: AtomicU64,
@@ -59,9 +54,6 @@ impl RemoteTerminal {
     pub(crate) fn new(id: String) -> Self {
         Self(Arc::new(RemoteTerminalInner {
             id: Mutex::new(id),
-            meta: Mutex::new(TerminalMeta::default()),
-            osc_events: Mutex::new(VecDeque::new()),
-            osc_scanner: Mutex::new(OscScanner::new()),
             input_tx: Mutex::new(None),
             output_rx: Mutex::new(None),
             last_seq: AtomicU64::new(0),
@@ -81,47 +73,6 @@ impl RemoteTerminal {
 
     pub fn update_seq(&self, seq: u64) {
         self.0.last_seq.store(seq, Ordering::Release);
-    }
-
-    pub fn update_meta(&self, title: Option<String>, cwd: Option<String>) {
-        self.0
-            .meta
-            .lock()
-            .map(|mut m| {
-                m.title = title;
-                m.cwd = cwd;
-            })
-            .ok();
-    }
-
-    pub fn scan_osc(&self, data: &[u8]) {
-        let events = self
-            .0
-            .osc_scanner
-            .lock()
-            .map(|mut s| s.feed(&data))
-            .unwrap_or_default();
-
-        if !events.is_empty() {
-            if let (Ok(mut meta), Ok(mut queue)) = (self.0.meta.lock(), self.0.osc_events.lock()) {
-                for ev in events {
-                    meta.apply(&ev);
-                    queue.push_back(ev);
-                }
-            }
-        }
-    }
-
-    pub fn meta(&self) -> TerminalMeta {
-        self.0.meta.lock().map(|m| m.clone()).unwrap_or_default()
-    }
-
-    pub fn drain_osc_events(&self) -> Vec<OscEvent> {
-        self.0
-            .osc_events
-            .lock()
-            .map(|mut q| q.drain(..).collect())
-            .unwrap_or_default()
     }
 
     pub async fn attach_remote(
