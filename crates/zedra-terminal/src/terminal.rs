@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 use std::cmp::min;
+use std::ops::Index;
+use std::path::{Path, PathBuf};
 use tracing::*;
 
 use alacritty_terminal::event::{Event as AlacTermEvent, EventListener};
@@ -23,6 +25,26 @@ pub enum TerminalEvent {
     RequestResize { cols: u16, rows: u16 },
     TitleChanged(Option<String>),
     OscEvent(OscEvent),
+    OpenHyperlink(TerminalHyperlink),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalHyperlink {
+    pub label: String,
+    pub target: TerminalHyperlinkTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminalHyperlinkTarget {
+    Url {
+        url: String,
+    },
+    File {
+        path: String,
+        relative_path: String,
+        line: Option<u32>,
+        column: Option<u32>,
+    },
 }
 
 /// Event listener that captures alacritty title events, queuing them as TerminalEvents.
@@ -454,6 +476,241 @@ impl Terminal {
     /// Send text directly to the PTY.
     pub fn handle_ime_text(&mut self, text: &str) {
         self.send_bytes_sync(text.as_bytes().to_vec());
+    }
+
+    pub fn hyperlink_at(
+        &self,
+        position: gpui::Point<Pixels>,
+        grid_origin: Option<gpui::Point<Pixels>>,
+        workdir: Option<&str>,
+    ) -> Option<TerminalHyperlink> {
+        let point = self.grid_point_at(position, grid_origin)?;
+        self.hyperlink_at_point(point, workdir)
+    }
+
+    fn grid_point_at(
+        &self,
+        position: gpui::Point<Pixels>,
+        grid_origin: Option<gpui::Point<Pixels>>,
+    ) -> Option<Point> {
+        let origin = grid_origin?;
+        let relative = position - origin;
+        if relative.x < px(0.0) || relative.y < px(0.0) {
+            return None;
+        }
+
+        let columns = self.size.columns.max(1);
+        let rows = self.size.rows.max(1);
+        let column = min(
+            (relative.x / self.size.cell_width) as usize,
+            columns.saturating_sub(1),
+        );
+        let viewport_line = min(
+            (relative.y / self.size.line_height) as usize,
+            rows.saturating_sub(1),
+        ) as i32;
+        let line = viewport_line - self.display_offset() as i32;
+        Some(Point::new(Line(line), Column(column)))
+    }
+
+    fn hyperlink_at_point(&self, point: Point, workdir: Option<&str>) -> Option<TerminalHyperlink> {
+        if point.line < Line(0) {
+            return None;
+        }
+
+        if let Some(hyperlink) = self.hyperlink_from_osc8(point, workdir) {
+            return Some(hyperlink);
+        }
+
+        let token = self.token_at_point(point)?;
+        Self::parse_terminal_link(&token, workdir)
+    }
+
+    fn hyperlink_from_osc8(
+        &self,
+        point: Point,
+        workdir: Option<&str>,
+    ) -> Option<TerminalHyperlink> {
+        let link = self.term.grid().index(point).hyperlink()?;
+        let url = link.uri().to_owned();
+        let label = self.bounds_word(point)?;
+        if Self::looks_like_url(&url) {
+            return Some(TerminalHyperlink {
+                label,
+                target: TerminalHyperlinkTarget::Url { url },
+            });
+        }
+
+        // Strip file:// so the absolute path is handled correctly by resolve_path.
+        let raw = url.strip_prefix("file://").unwrap_or(&url);
+        Self::parse_terminal_link(raw, workdir).map(|mut hyperlink| {
+            if hyperlink.label.is_empty() {
+                hyperlink.label = label;
+            }
+            hyperlink
+        })
+    }
+
+    fn token_at_point(&self, point: Point) -> Option<String> {
+        let line = self.bounds_word(point)?;
+        let trimmed = Self::trim_token(&line)?;
+        Some(trimmed.to_string())
+    }
+
+    fn bounds_word(&self, point: Point) -> Option<String> {
+        let line_start = self.term.line_search_left(point);
+        let line_end = self.term.line_search_right(point);
+        let mut text = String::new();
+        let mut hovered_offset = None;
+        let mut prev_len = 0usize;
+
+        for cell in self.term.grid().iter_from(line_start) {
+            if cell.point > line_end {
+                break;
+            }
+
+            let flags = cell.flags;
+            if flags.contains(alacritty_terminal::term::cell::Flags::LEADING_WIDE_CHAR_SPACER)
+                || flags.contains(alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER)
+            {
+                if cell.point == point {
+                    hovered_offset = Some(prev_len);
+                }
+                continue;
+            }
+
+            prev_len = text.len();
+            let ch = match cell.c {
+                '\t' => ' ',
+                c => c,
+            };
+            text.push(ch);
+
+            if cell.point == point {
+                hovered_offset = Some(prev_len);
+            }
+        }
+
+        let hovered_offset = hovered_offset?;
+        if hovered_offset >= text.len() {
+            return None;
+        }
+
+        let bytes = text.as_bytes();
+        let mut start = hovered_offset;
+        while start > 0 && !bytes[start - 1].is_ascii_whitespace() {
+            start -= 1;
+        }
+        let mut end = hovered_offset;
+        while end < bytes.len() && !bytes[end].is_ascii_whitespace() {
+            end += 1;
+        }
+        if start >= end {
+            return None;
+        }
+        Some(text[start..end].to_string())
+    }
+
+    fn parse_terminal_link(raw: &str, workdir: Option<&str>) -> Option<TerminalHyperlink> {
+        let token = Self::trim_token(raw)?;
+        if token.is_empty() {
+            return None;
+        }
+
+        if Self::looks_like_url(token) {
+            return Some(TerminalHyperlink {
+                label: token.to_string(),
+                target: TerminalHyperlinkTarget::Url {
+                    url: token.to_string(),
+                },
+            });
+        }
+
+        let (path, line, column) = Self::split_file_position(token);
+        let relative_path = Self::resolve_relative_path(path, workdir)?;
+        Some(TerminalHyperlink {
+            label: token.to_string(),
+            target: TerminalHyperlinkTarget::File {
+                path: path.to_string(),
+                relative_path,
+                line,
+                column,
+            },
+        })
+    }
+
+    fn looks_like_url(token: &str) -> bool {
+        token.starts_with("http://") || token.starts_with("https://")
+    }
+
+    fn trim_token(token: &str) -> Option<&str> {
+        let trimmed = token.trim_matches(|c: char| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    '"' | '\'' | '`' | ',' | ';' | '(' | ')' | '[' | ']' | '{' | '}'
+                )
+        });
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.trim_end_matches(['.', ':']))
+        }
+    }
+
+    fn split_file_position(token: &str) -> (&str, Option<u32>, Option<u32>) {
+        let mut pieces = token.rsplit(':');
+        let last = pieces.next();
+        let second = pieces.next();
+
+        let parse_u32 = |value: Option<&str>| value.and_then(|v| v.parse::<u32>().ok());
+        let last_num = parse_u32(last);
+        let second_num = parse_u32(second);
+
+        if let (Some(column), Some(line), Some(last), Some(second)) =
+            (last_num, second_num, last, second)
+        {
+            let suffix_len = last.len() + second.len() + 2;
+            let path_end = token.len().saturating_sub(suffix_len);
+            if path_end > 0 {
+                return (&token[..path_end], Some(line), Some(column));
+            }
+        }
+
+        if let (Some(line), Some(last)) = (last_num, last) {
+            let suffix_len = last.len() + 1;
+            let path_end = token.len().saturating_sub(suffix_len);
+            if path_end > 0 {
+                return (&token[..path_end], Some(line), None);
+            }
+        }
+
+        (token, None, None)
+    }
+
+    fn resolve_relative_path(path: &str, workdir: Option<&str>) -> Option<String> {
+        let path = path.trim();
+        if path.is_empty() {
+            return None;
+        }
+
+        let raw = Path::new(path);
+        let candidate = if raw.is_absolute() {
+            PathBuf::from(raw)
+        } else if let Some(workdir) = workdir {
+            Path::new(workdir).join(raw)
+        } else {
+            PathBuf::from(raw)
+        };
+
+        if let Some(workdir) = workdir {
+            let workdir_path = Path::new(workdir);
+            if let Ok(relative) = candidate.strip_prefix(workdir_path) {
+                return Some(relative.to_string_lossy().to_string());
+            }
+        }
+
+        Some(candidate.to_string_lossy().to_string())
     }
 
     fn send_mouse_scroll(

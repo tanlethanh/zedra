@@ -50,6 +50,7 @@ pub struct TerminalView {
     /// Top-left origin of the painted terminal grid within the window.
     /// Used to turn touch scroll positions into terminal cell coordinates.
     grid_origin: Option<Point<Pixels>>,
+    workdir: Option<String>,
     _event_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -92,6 +93,7 @@ impl TerminalView {
             scroll_offset_px: 0.0,
             last_remote_size: None,
             grid_origin: None,
+            workdir: None,
             _event_task: event_task,
             _subscriptions: vec![],
         }
@@ -254,6 +256,10 @@ impl TerminalView {
     pub fn set_grid_origin(&mut self, origin: Point<Pixels>) {
         self.grid_origin = Some(origin);
     }
+
+    pub fn set_workdir(&mut self, workdir: Option<String>) {
+        self.workdir = workdir;
+    }
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
@@ -279,6 +285,19 @@ impl Render for TerminalView {
             .when(keyboard_inset > px(0.0), |div| div.pb(keyboard_inset))
             .track_focus(&focus_handle)
             .key_context("Terminal")
+            .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                let hyperlink = event.mouse_position().and_then(|position| {
+                    this.terminal.read(cx).hyperlink_at(
+                        position,
+                        this.grid_origin,
+                        this.workdir.as_deref(),
+                    )
+                });
+                if let Some(hyperlink) = hyperlink {
+                    cx.emit(TerminalEvent::OpenHyperlink(hyperlink));
+                    return;
+                }
+            }))
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
                 match event.delta {
                     ScrollDelta::Lines(l) => {

@@ -1,10 +1,12 @@
 use gpui::*;
 use tracing::*;
 use zedra_session::SessionHandle;
-use zedra_terminal::terminal::TerminalEvent;
+use zedra_terminal::terminal::{TerminalEvent, TerminalHyperlinkTarget};
 use zedra_terminal::view::TerminalView;
 
 use crate::active_terminal;
+use crate::platform_bridge::{self, CustomSheetDetent, CustomSheetOptions};
+use crate::terminal_preview_view::TerminalPreviewView;
 use crate::terminal_state::TerminalState;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
 
@@ -17,6 +19,7 @@ pub struct WorkspaceTerminal {
     terminal_state: Entity<TerminalState>,
     session_handle: SessionHandle,
     terminal_view: Entity<TerminalView>,
+    preview: Entity<TerminalPreviewView>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -66,6 +69,13 @@ impl WorkspaceTerminal {
 
         let terminal_view =
             cx.new(|cx| TerminalView::new(terminal_id.clone(), window, initial_viewport, cx));
+        let workdir = workspace_state.read(cx).workdir.clone();
+        terminal_view.update(cx, |terminal_view, _cx| {
+            terminal_view.set_workdir(Some(workdir.clone()));
+        });
+        let preview = cx.new(|cx| {
+            TerminalPreviewView::new(session_handle.clone(), workspace_state.clone(), cx)
+        });
 
         let terminal_events_sub =
             cx.subscribe(&terminal_view, |this, _terminal, event, cx| match event {
@@ -89,6 +99,29 @@ impl WorkspaceTerminal {
                 TerminalEvent::OscEvent(_event) => {
                     // TODO: handle OSC events to update Title, progress
                 }
+                TerminalEvent::OpenHyperlink(hyperlink) => match &hyperlink.target {
+                    TerminalHyperlinkTarget::Url { url } => {
+                        platform_bridge::bridge().open_url(url);
+                    }
+                    TerminalHyperlinkTarget::File { .. } => {
+                        this.preview.update(cx, |preview, cx| {
+                            preview.open_hyperlink(hyperlink.clone(), cx);
+                        });
+                        platform_bridge::show_custom_sheet(
+                            CustomSheetOptions {
+                                detents: vec![CustomSheetDetent::Medium, CustomSheetDetent::Large],
+                                initial_detent: CustomSheetDetent::Medium,
+                                shows_grabber: true,
+                                expands_on_scroll_edge: true,
+                                edge_attached_in_compact_height: false,
+                                width_follows_preferred_content_size_when_edge_attached: false,
+                                corner_radius: None,
+                                modal_in_presentation: false,
+                            },
+                            this.preview.clone(),
+                        );
+                    }
+                },
             });
 
         if terminal_id != TERMINAL_PENDING_ID {
@@ -106,6 +139,7 @@ impl WorkspaceTerminal {
             terminal_state,
             session_handle,
             terminal_view,
+            preview,
             _subscriptions: vec![attach_sub, terminal_events_sub],
         }
     }
