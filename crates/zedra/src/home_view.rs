@@ -145,7 +145,7 @@ impl Render for HomeView {
                     .child(
                         div()
                             .text_color(rgb(theme::TEXT_PRIMARY))
-                            .text_size(px(theme::FONT_TITLE))
+                            .text_size(px(theme::FONT_APP_TITLE))
                             .font_family(fonts::HEADING_FONT_FAMILY)
                             .font_weight(FontWeight::EXTRA_BOLD)
                             .child("Zedra"),

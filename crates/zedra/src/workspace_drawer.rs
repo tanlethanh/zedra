@@ -152,7 +152,7 @@ impl WorkspaceDrawer {
             .child(
                 svg()
                     .path(self.tab_icon(tab))
-                    .size(px(theme::ICON_NAV))
+                    .size(px(theme::ICON_MD))
                     .text_color(color),
             )
     }
