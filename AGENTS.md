@@ -47,6 +47,11 @@ One QR scan connects you to your desktop. Full terminal, file browser, git, and 
 - Store subscriptions: `_subscriptions: Vec<Subscription>` to keep them alive
 - Avoid updating an entity while it's already being updated (panics)
 
+#### Scroll Containers
+
+- `overflow_scroll()` and `overflow_y_scroll()` require the `Div` to have a stable `.id(...)`.
+- Always assign an explicit id before using GPUI scroll overflow helpers.
+
 #### Events vs Actions
 
 **Events** (`cx.emit` + `cx.subscribe`) — child→parent communication:

@@ -56,6 +56,20 @@ Choose the executor based on which thread/context owns the work:
 
 For redraw, invalidation, `deferred(...)`, and `AnyView::cached(...)` behavior, see `docs/GPUI_RENDERING_MODEL.md`.
 
+## GPUI Scroll Containers
+
+`overflow_scroll()` and `overflow_y_scroll()` require the `Div` to have a stable `.id(...)`.
+
+Use:
+
+```rust
+div()
+    .id("my-scroll-area")
+    .overflow_y_scroll()
+```
+
+Do not apply GPUI scroll overflow helpers to anonymous `Div`s.
+
 ## WorkspaceState as Single Source of Truth
 
 All display reads from `WorkspaceState`, never `SessionHandle`.
