@@ -98,14 +98,11 @@ impl Render for QuickActionPanel {
                             .justify_center()
                             .cursor_pointer()
                             .hit_slop(px(10.0))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|_this, _event, _window, cx| {
-                                    platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-                                    cx.emit(QuickActionEvent::Close);
-                                    cx.emit(QuickActionEvent::GoHome);
-                                }),
-                            )
+                            .on_press(cx.listener(|_this, _event, _window, cx| {
+                                platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+                                cx.emit(QuickActionEvent::Close);
+                                cx.emit(QuickActionEvent::GoHome);
+                            }))
                             .child(
                                 svg()
                                     .path("icons/logo.svg")
@@ -133,13 +130,10 @@ impl Render for QuickActionPanel {
                             .justify_center()
                             .cursor_pointer()
                             .hit_slop(px(10.0))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|_this, _event, _window, cx| {
-                                    platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-                                    cx.emit(QuickActionEvent::Close);
-                                }),
-                            )
+                            .on_press(cx.listener(|_this, _event, _window, cx| {
+                                platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+                                cx.emit(QuickActionEvent::Close);
+                            }))
                             .child(
                                 svg()
                                     .path("icons/x.svg")
@@ -182,12 +176,9 @@ impl Render for QuickActionPanel {
                     .pb(px(6.0))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::hover_bg()))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.handle_switch_workspace(index, cx);
-                        }),
-                    )
+                    .on_press(cx.listener(move |this, _event, _window, cx| {
+                        this.handle_switch_workspace(index, cx);
+                    }))
                     .child(
                         div()
                             .flex()
