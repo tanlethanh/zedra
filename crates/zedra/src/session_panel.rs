@@ -127,7 +127,7 @@ impl Render for SessionPanel {
             .text_size(px(theme::FONT_BODY))
             .cursor_pointer()
             .hover(|s| s.bg(gpui::hsla(0.0, 0.6, 0.5, 0.1)))
-            .on_click(cx.listener(|_this, _event, window, cx| {
+            .on_press(cx.listener(|_this, _event, window, cx| {
                 window.dispatch_action(workspace_action::RequestDisconnect.boxed_clone(), cx);
             }))
             .child(div().flex().justify_center().child("Disconnect"));

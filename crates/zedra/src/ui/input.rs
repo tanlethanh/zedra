@@ -338,8 +338,8 @@ impl Input {
         cx.notify();
     }
 
-    fn handle_click(&mut self, _event: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
-        tracing::info!("Input clicked - focusing and requesting keyboard");
+    fn handle_press(&mut self, _event: &PressEvent, window: &mut Window, cx: &mut Context<Self>) {
+        tracing::info!("Input pressed - focusing and requesting keyboard");
         // Focus this element
         self.focus_handle.focus(window, cx);
         // Request keyboard
@@ -629,10 +629,10 @@ impl Render for Input {
             .id(("input", cx.entity_id()))
             .relative()
             .track_focus(&self.focus_handle)
-            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+            .on_pointer_down(|_, _, cx| {
                 cx.stop_propagation();
             })
-            .on_click(cx.listener(Self::handle_click))
+            .on_press(cx.listener(Self::handle_press))
             .on_key_down(cx.listener(Self::handle_key_down))
             .pl(px(horizontal_padding))
             .pr(px(horizontal_padding + self.trailing_gutter))

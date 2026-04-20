@@ -755,7 +755,7 @@ impl Render for FileExplorer {
                         .pl(px(12.0 + indent))
                         .pr(px(8.0))
                         .cursor_pointer()
-                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                        .on_press(cx.listener(move |this, _event, _window, cx| {
                             this.load_more_entries(load_more_for.clone(), cx);
                         }))
                         .child(
@@ -806,7 +806,7 @@ impl Render for FileExplorer {
                 .pl(px(12.0 + indent))
                 .pr(px(8.0))
                 .cursor_pointer()
-                .on_click(cx.listener(move |this, _event, window, cx| {
+                .on_press(cx.listener(move |this, _event, window, cx| {
                     if is_dir {
                         this.toggle_dir(&index_path, cx);
                     } else {

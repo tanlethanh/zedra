@@ -163,12 +163,9 @@ impl Render for HomeView {
                                 div()
                                     .underline()
                                     .cursor_pointer()
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|_this, _event, _window, _cx| {
-                                            platform_bridge::bridge().open_url(WEBSITE_URL);
-                                        }),
-                                    )
+                                    .on_press(cx.listener(|_this, _event, _window, _cx| {
+                                        platform_bridge::bridge().open_url(WEBSITE_URL);
+                                    }))
                                     .child("zedra.dev"),
                             ),
                     ),
@@ -182,7 +179,7 @@ impl Render for HomeView {
             .cursor_pointer()
             .gap(px(6.0))
             .hit_slop(px(10.0))
-            .on_click(cx.listener(|_this, _event, _window, cx| {
+            .on_press(cx.listener(|_this, _event, _window, cx| {
                 cx.emit(HomeEvent::NavigateToSettings);
             }))
             .child(
@@ -293,7 +290,7 @@ impl Render for HomeView {
         content = content.child(
             crate::button::outline_button("home-scan-qr", "Scan QR Code")
                 .w(px(theme::HOME_CARD_WIDTH))
-                .on_click(cx.listener(|this, _event, _window, _cx| {
+                .on_press(cx.listener(|this, _event, _window, _cx| {
                     this.handle_scan_qr();
                 })),
         );
@@ -375,7 +372,7 @@ fn workspace_card(
         .border_color(rgb(theme::BORDER_SUBTLE))
         .p(px(12.0))
         .cursor_pointer()
-        .on_click(cx.listener(move |this, _event, window, cx| {
+        .on_press(cx.listener(move |this, _event, window, cx| {
             platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
             this.handle_workspace_tap(index, window, cx);
         }))
@@ -437,12 +434,9 @@ fn social_button(
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |_this, _event, _window, _cx| {
-                platform_bridge::bridge().open_url(url);
-            }),
-        )
+        .on_press(cx.listener(move |_this, _event, _window, _cx| {
+            platform_bridge::bridge().open_url(url);
+        }))
         .child(
             svg()
                 .path(icon)

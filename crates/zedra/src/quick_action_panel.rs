@@ -230,10 +230,9 @@ impl Render for QuickActionPanel {
                         .is_some_and(|id| id == *tid);
                     let meta = terminal_state.read(cx).meta(tid);
 
-                    let on_close =
-                        Box::new(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
-                            this.handle_terminal_delete(index, tid_del.clone(), cx);
-                        }));
+                    let on_close = Box::new(cx.listener(move |this, _event, _window, cx| {
+                        this.handle_terminal_delete(index, tid_del.clone(), cx);
+                    }));
 
                     let card = render_terminal_card(TerminalCardProps {
                         id: format!("{}-{}", index, tid),
@@ -245,7 +244,7 @@ impl Render for QuickActionPanel {
                         last_exit_code: meta.last_exit_code,
                         on_close: Some(on_close),
                     })
-                    .on_click(cx.listener(
+                    .on_press(cx.listener(
                         move |this, _event, _window, cx| {
                             this.handle_switch_terminal(index, tid_click.clone(), cx);
                         },
@@ -279,7 +278,7 @@ impl Render for QuickActionPanel {
             crate::button::outline_button("quick-action-scan-qr", "Scan QR Code")
                 .mx(px(16.0))
                 .mt(px(12.0))
-                .on_click(cx.listener(|this, _event, _window, cx| {
+                .on_press(cx.listener(|this, _event, _window, cx| {
                     this.handle_scan_qr(cx);
                 })),
         );

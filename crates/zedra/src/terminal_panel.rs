@@ -47,16 +47,15 @@ impl Render for TerminalPanel {
             content = content.gap_1();
             for (index, tid, is_active, meta) in terminals {
                 let tid_del = tid.clone();
-                let on_close =
-                    Box::new(cx.listener(move |_this, _event: &ClickEvent, window, cx| {
-                        window.dispatch_action(
-                            workspace_action::CloseTerminal {
-                                id: tid_del.clone(),
-                            }
-                            .boxed_clone(),
-                            cx,
-                        );
-                    }));
+                let on_close = Box::new(cx.listener(move |_this, _event, window, cx| {
+                    window.dispatch_action(
+                        workspace_action::CloseTerminal {
+                            id: tid_del.clone(),
+                        }
+                        .boxed_clone(),
+                        cx,
+                    );
+                }));
 
                 let tid_tap = tid.clone();
                 let card = render_terminal_card(TerminalCardProps {
@@ -69,7 +68,7 @@ impl Render for TerminalPanel {
                     last_exit_code: meta.last_exit_code,
                     on_close: Some(on_close),
                 })
-                .on_click(cx.listener(move |_this, _event, window, cx| {
+                .on_press(cx.listener(move |_this, _event, window, cx| {
                     window.dispatch_action(
                         workspace_action::OpenTerminal {
                             id: tid_tap.clone(),
@@ -91,7 +90,7 @@ impl Render for TerminalPanel {
                 .px(px(8.0))
                 .py(px(8.0))
                 .cursor_pointer()
-                .on_click(cx.listener(|_this, _event, window, cx| {
+                .on_press(cx.listener(|_this, _event, window, cx| {
                     window.dispatch_action(workspace_action::CreateNewTerminal.boxed_clone(), cx);
                 }))
                 .child(

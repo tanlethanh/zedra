@@ -125,6 +125,15 @@ impl WorkspaceDrawer {
         }
     }
 
+    fn tab_id(&self, tab: DrawerTab) -> &'static str {
+        match tab {
+            DrawerTab::FileExplorer => "drawer-tab-file-explorer",
+            DrawerTab::GitDiff => "drawer-tab-git-diff",
+            DrawerTab::Terminals => "drawer-tab-terminals",
+            DrawerTab::Session => "drawer-tab-session",
+        }
+    }
+
     fn nav_icon(&self, tab: DrawerTab, cx: &mut Context<Self>) -> impl IntoElement {
         let is_active = self.current_tab == tab;
         let color = if is_active {
@@ -134,6 +143,7 @@ impl WorkspaceDrawer {
         };
 
         div()
+            .id(self.tab_id(tab))
             .w(px(36.0))
             .h(px(36.0))
             .flex()
@@ -143,13 +153,10 @@ impl WorkspaceDrawer {
             .cursor_pointer()
             .hit_slop(px(10.0))
             .hover(|s| s.bg(theme::hover_bg()))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _event, _window, cx| {
-                    platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-                    this.set_current_tab(tab, cx);
-                }),
-            )
+            .on_press(cx.listener(move |this, _event, _window, cx| {
+                platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+                this.set_current_tab(tab, cx);
+            }))
             .child(
                 svg()
                     .path(self.tab_icon(tab))
@@ -208,16 +215,10 @@ impl Render for WorkspaceDrawer {
                             .justify_center()
                             .cursor_pointer()
                             .hit_slop(px(10.0))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|_this, _event, window, cx| {
-                                    platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-                                    window.dispatch_action(
-                                        workspace_action::GoHome.boxed_clone(),
-                                        cx,
-                                    );
-                                }),
-                            )
+                            .on_press(cx.listener(|_this, _event, window, cx| {
+                                platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+                                window.dispatch_action(workspace_action::GoHome.boxed_clone(), cx);
+                            }))
                             .child(
                                 svg()
                                     .path("icons/logo.svg")

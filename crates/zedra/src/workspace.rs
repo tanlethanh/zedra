@@ -834,17 +834,14 @@ impl Render for WorkspaceContent {
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
-                            .hit_slop(px(10.0))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|_this, _event, window, cx| {
-                                    platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-                                    window.dispatch_action(
-                                        workspace_action::ToggleDrawer.boxed_clone(),
-                                        cx,
-                                    );
-                                }),
-                            )
+                            .hit_slop(px(20.0))
+                            .on_press(cx.listener(|_this, _event, window, cx| {
+                                platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+                                window.dispatch_action(
+                                    workspace_action::ToggleDrawer.boxed_clone(),
+                                    cx,
+                                );
+                            }))
                             .child(
                                 svg()
                                     .path("icons/menu.svg")
@@ -913,17 +910,14 @@ impl Render for WorkspaceContent {
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
-                            .hit_slop(px(10.0))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|_this, _event, window, cx| {
-                                    platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-                                    window.dispatch_action(
-                                        workspace_action::OpenQuickAction.boxed_clone(),
-                                        cx,
-                                    );
-                                }),
-                            )
+                            .hit_slop(px(20.0))
+                            .on_press(cx.listener(|_this, _event, window, cx| {
+                                platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+                                window.dispatch_action(
+                                    workspace_action::OpenQuickAction.boxed_clone(),
+                                    cx,
+                                );
+                            }))
                             .child(
                                 svg()
                                     .path("icons/package.svg")

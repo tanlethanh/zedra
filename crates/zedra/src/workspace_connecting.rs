@@ -60,7 +60,7 @@ fn render_details_toggle(expanded: bool, cx: &mut Context<WorkspaceConnecting>) 
         .items_center()
         .gap(px(4.0))
         .mb(px(theme::SPACING_SM))
-        .on_click(cx.listener(|this, _event, _window, _cx| {
+        .on_press(cx.listener(|this, _event, _window, _cx| {
             this.details_expanded = !this.details_expanded;
         }))
         .child(
@@ -146,7 +146,7 @@ fn render_discovery_rows(snap: &ConnectSnapshot) -> Div {
                 .gap(px(6.0))
                 .cursor_pointer()
                 .hover(|style| style.bg(theme::hover_bg()))
-                .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                .on_press(move |_, _, _| {
                     if direct_addrs.is_empty() {
                         return;
                     }

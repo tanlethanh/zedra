@@ -4,7 +4,7 @@
 ///
 /// ```rust
 /// render_terminal_card(props)
-///     .on_click(cx.listener(...))
+///     .on_press(cx.listener(...))
 ///     .on_long_press(cx.listener(...))
 /// ```
 ///
@@ -24,7 +24,7 @@ pub struct TerminalCardProps {
     pub cwd: Option<String>,
     pub shell_state: ShellState,
     pub last_exit_code: Option<i32>,
-    pub on_close: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
+    pub on_close: Option<Box<dyn Fn(&PressEvent, &mut Window, &mut App) + 'static>>,
 }
 
 /// Colour of the status dot based on shell state and last exit code.
@@ -84,7 +84,7 @@ fn strip_ps1_prefix(title: &str) -> &str {
 
 /// Render a terminal card element.
 ///
-/// Returns a `Div` — chain `.on_click()` and `.on_long_press()` for tap and
+/// Returns a `Div` — chain `.on_press()` and `.on_long_press()` for tap and
 /// long-press actions respectively.
 pub fn render_terminal_card(props: TerminalCardProps) -> Stateful<Div> {
     // Primary label: OSC 2 title (stripped of user@host: prefix) — the most
@@ -131,7 +131,7 @@ pub fn render_terminal_card(props: TerminalCardProps) -> Stateful<Div> {
             .justify_center()
             .cursor_pointer()
             .hit_slop(px(12.0))
-            .on_click(move |event, window, cx| {
+            .on_press(move |event, window, cx| {
                 close_fn(event, window, cx);
                 cx.stop_propagation();
             })

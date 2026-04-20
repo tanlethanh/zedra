@@ -125,7 +125,7 @@ impl Render for SettingsView {
                                     .id("settings-back-button")
                                     .hit_slop(px(10.0))
                                     .cursor_pointer()
-                                    .on_click(cx.listener(|_this, _event, _window, cx| {
+                                    .on_press(cx.listener(|_this, _event, _window, cx| {
                                         cx.emit(SettingsEvent::NavigateHome);
                                     }))
                                     .child(
@@ -191,7 +191,7 @@ impl Render for SettingsView {
                                     "Native Alert",
                                     "Native confirmation/failure prompts",
                                 )
-                                .on_click(cx.listener(|this, _event, _window, _cx| {
+                                .on_press(cx.listener(|this, _event, _window, _cx| {
                                     this.show_test_alert();
                                 })),
                             )
@@ -201,7 +201,7 @@ impl Render for SettingsView {
                                     "Native Selection",
                                     "Action sheet selection and behavior",
                                 )
-                                .on_click(cx.listener(|this, _event, _window, _cx| {
+                                .on_press(cx.listener(|this, _event, _window, _cx| {
                                     this.show_test_selection();
                                 })),
                             ),
@@ -217,7 +217,7 @@ impl Render for SettingsView {
                                     "Custom Sheet",
                                     "Native sheet with GPUI-rendered content",
                                 )
-                                .on_click(cx.listener(|this, _event, _window, cx| {
+                                .on_press(cx.listener(|this, _event, _window, cx| {
                                     this.show_test_custom_sheet(cx);
                                 })),
                             ),
