@@ -296,7 +296,11 @@ impl SessionHandle {
     // ─── RPC: git ────────────────────────────────────────────────────────────
 
     pub async fn git_status(&self) -> Result<GitStatusResult> {
-        Ok(self.client()?.rpc(GitStatusReq {}).await?)
+        let result: GitStatusResult = self.client()?.rpc(GitStatusReq {}).await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
+        Ok(result)
     }
 
     pub async fn git_diff(&self, path: Option<&str>, staged: bool) -> Result<String> {
@@ -307,16 +311,25 @@ impl SessionHandle {
                 staged,
             })
             .await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
         Ok(result.diff)
     }
 
     pub async fn git_log(&self, limit: Option<usize>) -> Result<Vec<GitLogEntry>> {
         let result: GitLogResult = self.client()?.rpc(GitLogReq { limit }).await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
         Ok(result.entries)
     }
 
     pub async fn git_branches(&self) -> Result<Vec<GitBranchEntry>> {
         let result: GitBranchesResult = self.client()?.rpc(GitBranchesReq {}).await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
         Ok(result.branches)
     }
 
@@ -338,26 +351,35 @@ impl SessionHandle {
                 paths: paths.to_vec(),
             })
             .await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
         Ok(result.hash)
     }
 
     pub async fn git_stage(&self, paths: &[String]) -> Result<()> {
-        let _: GitStageResult = self
+        let result: GitStageResult = self
             .client()?
             .rpc(GitStageReq {
                 paths: paths.to_vec(),
             })
             .await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
         Ok(())
     }
 
     pub async fn git_unstage(&self, paths: &[String]) -> Result<()> {
-        let _: GitUnstageResult = self
+        let result: GitUnstageResult = self
             .client()?
             .rpc(GitUnstageReq {
                 paths: paths.to_vec(),
             })
             .await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
         Ok(())
     }
 
@@ -381,6 +403,9 @@ impl SessionHandle {
                 launch_cmd,
             })
             .await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
 
         let terminal = RemoteTerminal::new(result.id.clone());
         if terminal.attach_remote(&client).await.is_ok() {
