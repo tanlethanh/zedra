@@ -6,7 +6,8 @@ cd "$(dirname "$0")/.."
 PROJECT="ios/Zedra.xcodeproj"
 WORKSPACE="ios/Zedra.xcworkspace"
 SCHEME="Zedra"
-BUNDLE_ID="dev.zedra.app"
+BUNDLE_ID_DEBUG="dev.zedra.app.debug"
+BUNDLE_ID_RELEASE="dev.zedra.app"
 
 usage() {
     echo "Usage: $0 [sim|device] [--no-build] [--release] [--preview] [--debug] [--device-id <UDID>] [--select-device] [--launch-url <URL>]"
@@ -65,6 +66,7 @@ xcode_target_flags() {
 MODE="${1:-sim}"
 BUILD_FLAGS=""
 XCODE_CONFIGURATION="Debug"
+BUNDLE_ID="$BUNDLE_ID_DEBUG"
 FORCED_DEVICE_ID=""
 SELECT_DEVICE=false
 LAUNCH_URL=""
@@ -84,6 +86,7 @@ while [ $i -lt ${#args[@]} ]; do
         --release)
             BUILD_FLAGS="$BUILD_FLAGS --release"
             XCODE_CONFIGURATION="Release"
+            BUNDLE_ID="$BUNDLE_ID_RELEASE"
             ;;
         --device-id)
             i=$((i + 1))
