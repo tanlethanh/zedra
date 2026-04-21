@@ -529,8 +529,6 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_getDisplayDensity(
         Ok(density) => {
             tracing::debug!(density, "jni: display density");
             *DISPLAY_DENSITY.lock().unwrap() = density;
-            // Also update the terminal crate's global for keyboard resize calculations
-            zedra_terminal::set_display_density(density);
             density
         }
         Err(e) => {
@@ -698,8 +696,6 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeKeyboardHeightCh
 ) {
     let h = height.max(0) as u32;
     KEYBOARD_HEIGHT.store(h, Ordering::Relaxed);
-    // Also update the terminal crate's global so TerminalView can read it
-    zedra_terminal::set_keyboard_height(h);
     tracing::debug!(height = h, "jni: keyboard height");
 
     let sender = get_command_sender();

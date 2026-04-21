@@ -30,8 +30,6 @@ static SAFE_AREA_BOTTOM: AtomicU32 = AtomicU32::new(0);
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_set_screen_scale(scale: f32) {
     SCREEN_SCALE.store(scale.to_bits(), Ordering::Relaxed);
-    // Sync display density to zedra-terminal for keyboard-avoiding-view row math.
-    zedra_terminal::set_display_density(scale);
     tracing::debug!("iOS screen scale: {}", scale);
 }
 
@@ -42,9 +40,7 @@ pub extern "C" fn zedra_ios_set_screen_scale(scale: f32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_set_keyboard_height(height_px: u32) {
     KEYBOARD_HEIGHT_PX.store(height_px, Ordering::Relaxed);
-    zedra_terminal::set_keyboard_height(height_px);
-    // Signal a forced render so the terminal resizes immediately on the next
-    // CADisplayLink tick rather than waiting for the next user interaction.
+    super::app::notify_main_window();
     tracing::debug!("iOS keyboard height: {}px", height_px);
 }
 

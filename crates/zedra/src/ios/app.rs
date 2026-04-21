@@ -43,11 +43,36 @@ unsafe extern "C" {
 
 /// Called each frame from main.m before gpui_ios_request_frame.
 ///
-/// Returns `false` — GPUI polling tasks handle view notifications internally
-/// via `cx.notify()`, so forced frames are no longer needed.
+/// Returns whether the app has explicit pending work that should be surfaced to
+/// the frame pump ahead of normal window invalidation. This hook currently does
+/// not report any such work, so it returns `false`.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_check_pending_frame() -> bool {
     false
+}
+
+pub(crate) fn notify_main_window() {
+    IOS_APP_CELL.with(|cell| {
+        IOS_WINDOW.with(|window| {
+            let Some(app_cell) = cell.borrow().as_ref().cloned() else {
+                return;
+            };
+            let Some(window) = *window.borrow() else {
+                return;
+            };
+
+            let Ok(mut app) = app_cell.try_borrow_mut() else {
+                tracing::debug!(
+                    "Zedra iOS: notify_main_window skipped due to re-entrant app borrow"
+                );
+                return;
+            };
+            let cx: &mut App = &mut app;
+            let _ = window.update(cx, |view, _window, cx| {
+                cx.notify(view.entity_id());
+            });
+        });
+    });
 }
 
 #[unsafe(no_mangle)]
