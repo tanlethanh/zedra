@@ -52,9 +52,11 @@ pub struct Workspace {
     terminals: Vec<Entity<WorkspaceTerminal>>,
     /// Becomes true once a ReconnectStarted event is seen; gates initial auto-open/create.
     seen_reconnect: bool,
-    /// Listens for workspace state changes and updates the session state accordingly.
-    _state_listener: Option<Task<()>>,
+    /// Listens for connect events and syncs them into SessionState/WorkspaceState.
+    _connect_listener: Option<Task<()>>,
+    /// Listens for host events/actions from the remote host.
     _host_event_listener: Option<Task<()>>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl Workspace {
@@ -97,6 +99,15 @@ impl Workspace {
             )
         });
 
+        let workspace_state_subscription = cx.subscribe(
+            &workspace_state,
+            |_workspace, workspace_state, event: &WorkspaceStateEvent, _cx| {
+                if matches!(event, WorkspaceStateEvent::StateChanged) {
+                    WorkspaceState::upsert(workspace_state.read(_cx).clone());
+                }
+            },
+        );
+
         let mut host_event_rx = session.subscribe_host_events();
         let host_event_listener = cx.spawn(async move |workspace, cx| {
             loop {
@@ -137,8 +148,9 @@ impl Workspace {
             // Terminals will be created after connection is established
             terminals: vec![],
             seen_reconnect: false,
-            _state_listener: None,
+            _connect_listener: None,
             _host_event_listener: Some(host_event_listener),
+            _subscriptions: vec![workspace_state_subscription],
         }
     }
 
@@ -155,7 +167,7 @@ impl Workspace {
         // Spawn GPUI task: reads ConnectEvents → applies to SessionState entity → cx.notify()
         if let Some(mut event_rx) = self.session.take_event_receiver() {
             let closed_notify = self.session.closed_notify();
-            self._state_listener = Some(cx.spawn_in(window, async move |workspace, cx| {
+            self._connect_listener = Some(cx.spawn_in(window, async move |workspace, cx| {
                 while let Some(event) = event_rx.recv().await {
                     let is_closed = matches!(event, ConnectEvent::ConnectionClosed);
                     if is_closed {

@@ -191,11 +191,13 @@ impl Workspaces {
 
         // Workspace state (from saved or fresh)
         let workspace_state = saved.unwrap_or_else(|| {
-            cx.new(|_cx| {
+            let workspace_state = cx.new(|_cx| {
                 let mut ws = WorkspaceState::default();
                 ws.endpoint_addr = encoded_addr.clone();
                 ws
-            })
+            });
+            self.states.push(workspace_state.clone());
+            workspace_state
         });
 
         // Create workspace entity
@@ -212,6 +214,7 @@ impl Workspaces {
         let ws_idx = self.entries.len() - 1;
         self.active_index = Some(ws_idx);
 
+        // TODO: this is not connected yet, it's just a signal to navigate to the workspace.
         cx.emit(WorkspacesEvent::Connected { index: ws_idx });
         cx.notify();
     }
