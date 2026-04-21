@@ -1,192 +1,75 @@
-
 # Zedra
 
-**Mobile remote editor. Code from anywhere.**
+Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + Metal). Secondary platform is Android (`gpui_android` + `gpui_wgpu` + Vulkan).
 
-One QR scan connects you to your desktop. Full terminal, file browser, git, and AI agents over an encrypted P2P tunnel. Built with GPUI for native GPU-accelerated rendering at 60 FPS.
+## Agent Workflow
 
-**Primary Platform**: iOS (Metal renderer via `gpui_ios`)
-**Secondary Platform**: Android (wgpu/Vulkan via `gpui_android` + `gpui_wgpu`)
+- Inspect the relevant code paths first and infer local patterns before proposing or making changes.
+- Ask before making any meaningful product or architectural decision. Tiny details may follow existing patterns without approval.
+- For normal feature work, prefer the smallest diff that fits the current design.
+- If the current structure is blocking quality, propose the refactor and wait for approval before doing broader cleanup.
+- Keep code concise, readable, and modular. Prefer clarifying code over adding comments.
+- Surface blockers quickly with a recommendation. Keep progress updates short and include reasoning or tradeoffs.
 
-## Rules
+## Debugging Workflow
 
-### Protocol Governance
+- Read the relevant code path deeply before changing behavior.
+- On mobile issues, prefer adding targeted `tracing` logs with a clear searchable prefix so the developer can run the app, reproduce, and return logs.
+- After the first failed debugging attempt, stop and ask for more information instead of arguing from hypotheses.
+- Prefer root-cause fixes once the issue is confirmed.
 
-`docs/PROTOCOL_SPECS.md` is canonical. Any protocol-layer change MUST update `zedra-rpc/src/proto.rs`, host/client handlers, and `docs/PROTOCOL_SPECS.md` in the same PR.
+## Repo Invariants
 
-### Telemetry Governance
+- `WorkspaceState` is the single source of truth for display state. Views read `WorkspaceState`, never `SessionHandle`, during render.
+- `render()` must stay pure. Side effects belong in event handlers, subscriptions, or async tasks.
+- Use `platform_bridge::bridge()` for platform integration. Do not call platform APIs directly from UI code.
+- Use `tracing` for logging. Never add `log::` calls.
+- Read `docs/DESIGN.md` before creating or redesigning UI.
 
-`crates/zedra-telemetry/src/lib.rs` defines the canonical `Event` enum — single source of truth for all telemetry.
+## Protocol And Telemetry
 
-**Privacy**: never include personal data (usernames, file paths, IPs). Opaque IDs, durations, counts, enum labels, booleans only.
+- `docs/PROTOCOL_SPECS.md` is canonical. Any protocol change must update `zedra-rpc/src/proto.rs`, the relevant host and client handlers, and `docs/PROTOCOL_SPECS.md` in the same change.
+- `crates/zedra-telemetry/src/lib.rs` defines the canonical telemetry `Event` enum.
+- Telemetry must not include personal data. Use opaque IDs, durations, counts, enum labels, and booleans only.
 
-### Critical Design Rules
+## Validation
 
-1. **WorkspaceState = single source of truth** — all display reads from `WorkspaceState`, never `SessionHandle` directly. See `docs/CONVENTIONS.md`.
-2. **render() must be pure** — no side effects. Mutations go in event handlers, `cx.spawn()`, or subscriptions.
-3. **PlatformBridge** — always `platform_bridge::bridge()`, never call platform APIs directly from UI code.
-4. **Logging** — `tracing` everywhere with `use tracing::*;` and `error|warn|info!`, never `log::` directly.
-5. **New UI must read `docs/DESIGN.md` first** — before creating or redesigning any UI, review `docs/DESIGN.md` and follow its tone, spacing, typography, and component guidance.
+- Prefer targeted checks over broad suites.
+- Add or update tests when there is an obvious existing place for them.
+- For UI, platform, and device-driven changes, add or update manual verification steps in `docs/MANUAL_TEST.md`.
+- Common checks:
+  - `cargo fmt`
+  - `cargo check -p zedra-rpc -p zedra-session -p zedra-terminal -p zedra-host`
+  - `bun run format`
+  - `bun run check`
 
-### GPUI Conventions
+## Platform Scope
 
-#### Context Types
+- iOS is the primary development path. See `docs/IOS_WORKFLOW.md` for build, install, launch, and logging commands.
+- Native iOS presentations should keep UIKit responsible for alerts, sheets, and keyboard accessories.
+- `UIGlassEffect` is public UIKit on iOS 26+. Use `if #available(iOS 26.0, *)`, not runtime probing.
+- In Swift bridge code, keep access control consistent with helper type visibility.
 
-- `App` — root context, read/update entities. Functions taking `&App` also accept `&Context<T>`.
-- `Context<T>` — provided when updating `Entity<T>`, derefs to `App`.
-- `Window` — window state (focus, actions, drawing). Passed as `window`, comes before `cx`.
-- `AsyncApp` — provided by `cx.spawn`, can be held across await points.
+## Vendor Zed
 
-#### Entity (State Container)
+- `vendor/zed` is a git submodule and an intentional part of the architecture, not just third-party reference code.
+- We patch `vendor/zed` and related GPUI/mobile crates directly when Zedra needs mobile support that upstream GPUI or Zed does not provide yet.
+- When changing behavior that touches GPUI, iOS/Android platform crates, rendering, input, or text handling, inspect `vendor/zed` first and treat it as part of the codebase.
+- For editor features, use Zed desktop code as a reference for concepts and architecture, but implement minimal mobile-specific versions in Zedra rather than trying to port desktop behavior wholesale.
 
-`Entity<T>` is a handle to state `T`. All stateful components are entities.
+## Docs Map
 
-- Create: `cx.new(|cx| T::new(...))`
-- Read: `entity.read(cx)` returns `&T`
-- Mutate: `entity.update(cx, |this, cx| { ... })` — provides `Context<T>`, returns closure value
-- Signal re-render: `cx.notify()` inside update closures
-- Store subscriptions: `_subscriptions: Vec<Subscription>` to keep them alive
-- Avoid updating an entity while it's already being updated (panics)
+- `docs/CONVENTIONS.md` — imports, logging, async runtime choice, `WorkspaceState`, platform bridge, scroll container rules
+- `docs/ARCHITECTURE.md` — crate boundaries, session flow, auth, RPC, transport
+- `docs/DESIGN.md` — product UI tone and component direction
+- `docs/IOS_WORKFLOW.md` — iOS build pipeline, FFI workflow, pitfalls
+- `docs/PROTOCOL_SPECS.md` — protocol contract
+- `docs/TELEMETRY.md` — telemetry events and privacy
+- `docs/MANUAL_TEST.md` — manual verification steps for UI and device work
+- `vendor/zed/` — GPUI, platform crates, grammars, and desktop reference implementations
 
-#### Scroll Containers
+## Recent Learnings
 
-- `overflow_scroll()` and `overflow_y_scroll()` require the `Div` to have a stable `.id(...)`.
-- Always assign an explicit id before using GPUI scroll overflow helpers.
-- In nested flex layouts, especially embedded native iOS sheets, the full parent chain must constrain height.
-- Use `size_full()` on the hosted viewport and `min_h_0()` on each flex child between the window root and the scroll node, or GPUI may measure the scroll area at content height and scrolling will silently fail.
-- For native-sheet GPUI content, keep the UIKit gesture bridge minimal and follow `docs/GPUI_NATIVE_PRESENTATIONS.md`.
-
-#### Events vs Actions
-
-**Events** (`cx.emit` + `cx.subscribe`) — child→parent communication:
-- Child: `impl EventEmitter<MyEvent> for MyComponent {}` + `cx.emit(MyEvent::Something)`
-- Parent: `cx.subscribe(&child_entity, |this, _emitter, event, cx| ...)`
-- Used for: state changes parents react to (e.g. `WorkspaceEvent::Disconnected`, `HomeEvent::NavigateToWorkspace`)
-
-**Actions** (`dispatch_action` + `on_action`) — cross-component commands through the view tree:
-- Define: `#[derive(Clone, PartialEq, Action)] #[action(namespace = workspace, no_json)]`
-- Dispatch: `window.dispatch_action(MyAction.boxed_clone(), cx)` — bubbles up the view tree
-- Handle: `.on_action(cx.listener(Self::handle_my_action))` in `render()`
-- Used for: commands from deep views handled by an ancestor (e.g. drawer button dispatches `ToggleDrawer`, `Workspace` handles it)
-
-**When to use which**: events when parent holds `Entity` reference to child. Actions when sender doesn't know who handles it (decoupled, bubbles through view tree).
-
-#### Concurrency
-
-All entity use and UI rendering is on a single foreground thread.
-
-- **`cx.spawn(async move |this, cx| { ... })`** — preferred for async work. Runs on foreground thread. `this: WeakEntity<T>`, `cx: &mut AsyncApp`. Use `this.update(cx, |this, cx| ...)` to mutate state on completion. Returns `Task<R>` — must be awaited, `.detach()`-ed, or stored (dropped = cancelled).
-- **`cx.background_spawn(async move { ... })`** — for CPU work on background threads. Often awaited by a foreground task that updates state with results.
-- **`session_runtime().spawn(...)`** — Tokio runtime for network I/O only. Use when `cx` is unavailable (e.g. inside native platform callbacks). Prefer `cx.spawn` everywhere else.
-
-#### Separation of Concerns (Session → UI)
-
-```
-Session / SessionHandle  — networking + RPC on Tokio (no GPUI dep)
-        ↓ mpsc::channel<ConnectEvent>
-SessionState (Entity)    — UI-thread state, apply_event() in cx.spawn loop
-        ↓ sync_from_session()
-WorkspaceState (Entity)  — display state, persisted to workspaces.json
-        ↓ .read(cx) in render()
-Views (WorkspaceContent, WorkspaceDrawer, panels)  — pure rendering
-```
-
-- `Workspace` orchestrates: wires Session → SessionState → WorkspaceState, handles actions
-- Views only read `Entity<WorkspaceState>` or `Entity<SessionState>` — never `SessionHandle`
-- Event bridge: `Session` emits `ConnectEvent` via mpsc. `Workspace.connect()` takes the receiver, processes in `cx.spawn` loop, applies to `SessionState` entity on UI thread
-
-### Native iOS UI Effects
-
-- Prefer native UIKit for keyboard accessories, alerts, sheets — not GPUI.
-- `UIGlassEffect` is public UIKit on iOS 26+ (`UIVisualEffect` subclass). Use compile-time `if #available(iOS 26.0, *)`, not runtime class probing.
-- In Swift native integration code, keep access control consistent across helper types and APIs. If a return type or stored property uses a `fileprivate` type, the function/property must also be `fileprivate` unless you intentionally widen the type visibility.
-
-## Quick Start
-
-### iOS (Primary)
-
-```bash
-git submodule update --init --recursive
-rustup target add aarch64-apple-ios aarch64-apple-ios-sim
-./scripts/run-ios.sh device              # full build + install + launch
-./scripts/ios-log.sh [--filter <pattern>] # stream device logs
-```
-
-See `docs/IOS_WORKFLOW.md` for full pipeline.
-
-### Android
-
-```bash
-git submodule update --init --recursive
-rustup target add aarch64-linux-android
-./scripts/dev-cycle.sh                   # build + install + launch
-```
-
-### Prerequisites
-
-| | iOS | Android |
-|---|---|---|
-| Build tool | Xcode 26+, xcodegen, libimobiledevice | Android NDK r25c+, Android SDK API 31+ |
-| Rust targets | `aarch64-apple-ios`, `aarch64-apple-ios-sim` | `aarch64-linux-android` |
-| Device | Physical (or simulator) | Physical device |
-
-## Architecture
-
-**iOS**: `Swift UIKit runtime → C FFI ↔ Rust → GPUI → Metal`
-**Android**: `JNI Thread → Command Queue → Main Thread → GPUI → wgpu → Vulkan`
-
-## Project Structure
-
-```
-crates/
-  zedra/              # Mobile cdylib (iOS + Android) — app views, workspace, platform bridge
-  zedra-host/         # Desktop host daemon — CLI, RPC, PTY, filesystem, git handlers
-  zedra-session/      # Mobile client — SessionHandle, iroh connection, auto-reconnect
-  zedra-terminal/     # Terminal emulation — alacritty VTE + GPUI rendering
-  zedra-rpc/          # Protocol types + QR pairing codec
-  zedra-telemetry/    # Pure telemetry — typed Event enum + TelemetryBackend trait
-ios/                  # Xcode project (xcodegen from project.yml)
-android/              # Android app (Gradle)
-vendor/zed/crates/    # GPUI platform crates (gpui_ios, gpui_android, gpui_wgpu)
-deploy/relay/         # Production iroh-relay deployment
-```
-
-## What Works
-
-- 60 FPS GPU rendering: Metal (iOS), wgpu/Vulkan (Android)
-- Touch input: tap, scroll, drawer pan, fling momentum
-- Navigation: DrawerHost (slide-from-left), push/pop views
-- Code editor: tree-sitter syntax highlighting, cursor, virtual scrolling
-- Remote terminal: alacritty VTE, bidi streaming, PTY resize
-- iroh transport: QUIC/TLS 1.3 direct P2P, relay fallback
-- PKI authentication: QR pairing (HMAC-SHA256), Ed25519 challenge-response reconnect
-- Session persistence: `workspaces.json`, PTY survival across reconnects
-- Auto-reconnect: exponential backoff (1s–30s), terminal output buffers, backlog replay
-- Connection monitoring: RTT, path type (direct/relay), byte stats
-- Firebase Analytics + Crashlytics (iOS), GA4 analytics (host daemon)
-
-## Pre-Commit Checks
-
-```bash
-cargo fmt
-cargo check -p zedra-rpc -p zedra-session -p zedra-terminal -p zedra-host
-bun run format   # JS/TS auto-fix
-bun run check    # JS/TS CI mode
-```
-
-## Documentation
-
-| Doc | Topic |
-|-----|-------|
-| `docs/CONVENTIONS.md` | Code conventions, imports, logging, WorkspaceState |
-| `docs/ARCHITECTURE.md` | Architecture, crates, auth flow, RPC methods |
-| `docs/GET_STARTED.md` | Build setup for iOS, Android, host daemon |
-| `docs/IOS_WORKFLOW.md` | iOS build pipeline, FFI, pitfalls |
-| `docs/PROTOCOL_SPECS.md` | Protocol/RPC contract |
-| `docs/TELEMETRY.md` | Telemetry events, privacy, backend setup |
-| `docs/RELAY.md` | Relay deployment |
-| `docs/NETWORK_TRANSPORT.md` | iroh transport, NAT traversal |
-
----
-
-**Last Updated**: 2026-04-17
+- GPUI scroll containers need an explicit `.id(...)`. In nested flex layouts, also constrain the full parent chain with `size_full()` and `min_h_0()` or scrolling can silently fail.
+- Prefer `cx.spawn(...)` for UI-thread async work and `session_runtime().spawn(...)` for Tokio session or network work when `cx` is unavailable.
+- Session-to-UI flow is `Session / SessionHandle -> ConnectEvent -> SessionState -> WorkspaceState -> Views`. Preserve that layering.

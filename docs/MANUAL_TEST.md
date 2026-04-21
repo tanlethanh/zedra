@@ -1,5 +1,11 @@
 # Manual Test Plan
 
+## Agent Notes
+
+- For UI, platform, and device-driven changes, agents should add or update the relevant manual verification steps in this document.
+- Prefer concrete reproduction steps and expected results over vague test descriptions.
+- When debugging, add targeted log instructions if the test depends on developer-run device validation.
+
 ## 1. Normal QR Scan → Connect
 
 1. Start host daemon: `zedra start --workdir .`

@@ -111,7 +111,7 @@ On connection drop: exponential backoff (1s→30s, max 10 attempts). Reuses stor
 
 ### Session → UI Bridge
 
-See GPUI Conventions in `CLAUDE.md`. Summary:
+See repo conventions in `AGENTS.md` and `docs/CONVENTIONS.md`. Summary:
 
 ```
 Session (Tokio) → ConnectEvent via mpsc → cx.spawn loop → SessionState Entity → WorkspaceState Entity → Views
