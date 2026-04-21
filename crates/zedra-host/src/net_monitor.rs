@@ -6,6 +6,10 @@
 
 use std::collections::BTreeSet;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 fn ts() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -76,11 +80,12 @@ fn classify_network(addrs: &BTreeSet<SocketAddr>, relay_only: bool) -> &'static 
 
 /// Spawn background tasks that watch for network changes and log them.
 pub fn spawn_net_monitor(endpoint: &iroh::Endpoint) {
-    spawn_addr_watcher(endpoint);
-    spawn_report_watcher(endpoint);
+    let recovery_in_flight = Arc::new(AtomicBool::new(false));
+    spawn_addr_watcher(endpoint, recovery_in_flight.clone());
+    spawn_report_watcher(endpoint, recovery_in_flight);
 }
 
-fn spawn_addr_watcher(endpoint: &iroh::Endpoint) {
+fn spawn_addr_watcher(endpoint: &iroh::Endpoint, recovery_in_flight: Arc<AtomicBool>) {
     use iroh::Watcher;
 
     let mut watcher = endpoint.watch_addr();
@@ -113,6 +118,12 @@ fn spawn_addr_watcher(endpoint: &iroh::Endpoint) {
             if !relays_changed && !addrs_changed {
                 continue;
             }
+
+            trigger_endpoint_recovery(
+                endpoint_clone.clone(),
+                recovery_in_flight.clone(),
+                "addr_changed",
+            );
 
             // Log details to tracing
             if relays_changed {
@@ -184,10 +195,11 @@ fn spawn_addr_watcher(endpoint: &iroh::Endpoint) {
     });
 }
 
-fn spawn_report_watcher(endpoint: &iroh::Endpoint) {
+fn spawn_report_watcher(endpoint: &iroh::Endpoint, recovery_in_flight: Arc<AtomicBool>) {
     use iroh::Watcher;
 
     let mut watcher = endpoint.net_report();
+    let endpoint_clone = endpoint.clone();
 
     tokio::spawn(async move {
         let mut prev = ReportSnapshot::empty();
@@ -255,6 +267,12 @@ fn spawn_report_watcher(endpoint: &iroh::Endpoint) {
             // User-facing: only print if the IP actually changed (= real network switch)
             let ip_changed = new_v4 != prev.global_v4 || new_v6 != prev.global_v6;
             if ip_changed {
+                trigger_endpoint_recovery(
+                    endpoint_clone.clone(),
+                    recovery_in_flight.clone(),
+                    "public_ip_changed",
+                );
+
                 let addr_str = new_v4
                     .map(|a| a.to_string())
                     .or_else(|| new_v6.map(|a| a.to_string()))
@@ -272,5 +290,40 @@ fn spawn_report_watcher(endpoint: &iroh::Endpoint) {
             prev.has_udp = new_udp;
             prev.captive_portal = new_captive;
         }
+    });
+}
+
+fn trigger_endpoint_recovery(
+    endpoint: iroh::Endpoint,
+    recovery_in_flight: Arc<AtomicBool>,
+    reason: &'static str,
+) {
+    if recovery_in_flight
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        tracing::debug!("net_monitor: recovery already running, skip {}", reason);
+        return;
+    }
+
+    tokio::spawn(async move {
+        tracing::info!("net_monitor: starting endpoint recovery ({})", reason);
+        endpoint.dns_resolver().reset().await;
+        match tokio::time::timeout(std::time::Duration::from_secs(8), endpoint.online()).await {
+            Ok(()) => {
+                let addr = endpoint.addr();
+                tracing::info!(
+                    "net_monitor: endpoint recovery complete ({}), relays={} addrs={}",
+                    reason,
+                    addr.relay_urls().count(),
+                    addr.ip_addrs().count()
+                );
+            }
+            Err(_) => {
+                tracing::warn!("net_monitor: endpoint recovery timed out ({})", reason);
+            }
+        }
+
+        recovery_in_flight.store(false, Ordering::Release);
     });
 }
