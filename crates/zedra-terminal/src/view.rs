@@ -106,11 +106,7 @@ impl TerminalView {
     pub fn compute_grid_size(window: &mut Window, viewport: Size<Pixels>) -> TerminalGridSize {
         let line_height = px(TERMINAL_LINE_HEIGHT);
         let cell_width = Self::measure_cell_width(window, line_height);
-        Self::compute_grid_size_with_metrics(
-            Self::visible_viewport(viewport),
-            cell_width,
-            line_height,
-        )
+        Self::compute_grid_size_with_metrics(viewport, cell_width, line_height)
     }
 
     fn measure_cell_width(window: &mut Window, line_height: Pixels) -> Pixels {
@@ -148,23 +144,6 @@ impl TerminalView {
         }
     }
 
-    /// The visible viewport is the viewport minus the keyboard inset.
-    fn visible_viewport(viewport: Size<Pixels>) -> Size<Pixels> {
-        Size {
-            width: viewport.width.max(px(0.0)),
-            height: (viewport.height - Self::keyboard_inset()).max(px(0.0)),
-        }
-    }
-
-    fn keyboard_inset() -> Pixels {
-        let density = crate::get_display_density();
-        if density > 0.0 {
-            px(crate::get_keyboard_height() as f32 / density)
-        } else {
-            px(0.0)
-        }
-    }
-
     pub fn is_channel_attached(&self, cx: &mut Context<Self>) -> bool {
         self.terminal.read(cx).is_channel_attached()
     }
@@ -197,11 +176,7 @@ impl TerminalView {
         line_height: Pixels,
         cx: &mut Context<Self>,
     ) {
-        let mut next = Self::compute_grid_size_with_metrics(actual_bounds, cell_width, line_height);
-        if crate::get_keyboard_height() > 0 {
-            let current_rows = self.terminal.read(cx).size().rows;
-            next.rows = next.rows.max(1).min(current_rows);
-        }
+        let next = Self::compute_grid_size_with_metrics(actual_bounds, cell_width, line_height);
         self.apply_grid_size(next, cx);
     }
 
@@ -276,13 +251,11 @@ impl Render for TerminalView {
         let content = terminal.content();
         let size = terminal.size();
         let focus_handle = self.focus_handle.clone();
-        let keyboard_inset = Self::keyboard_inset();
 
         div()
             .size_full()
             .overflow_hidden()
             .bg(rgb(0x0e0c0c))
-            .when(keyboard_inset > px(0.0), |div| div.pb(keyboard_inset))
             .track_focus(&focus_handle)
             .key_context("Terminal")
             .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {

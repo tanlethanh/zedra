@@ -1,4 +1,4 @@
-use gpui::*;
+use gpui::{prelude::FluentBuilder as _, *};
 use tracing::*;
 use zedra_session::SessionHandle;
 use zedra_terminal::terminal::{TerminalEvent, TerminalHyperlinkTarget};
@@ -24,6 +24,23 @@ pub struct WorkspaceTerminal {
 }
 
 impl WorkspaceTerminal {
+    fn keyboard_inset() -> Pixels {
+        let bridge = platform_bridge::bridge();
+        let density = bridge.density();
+        if density > 0.0 {
+            px(bridge.keyboard_height() as f32 / density)
+        } else {
+            px(0.0)
+        }
+    }
+
+    fn viewport_without_keyboard(viewport: Size<Pixels>) -> Size<Pixels> {
+        Size {
+            width: viewport.width.max(px(0.0)),
+            height: (viewport.height - Self::keyboard_inset()).max(px(0.0)),
+        }
+    }
+
     pub fn terminal_id(&self) -> &str {
         &self.terminal_id
     }
@@ -67,6 +84,7 @@ impl WorkspaceTerminal {
             _ => {}
         });
 
+        let initial_viewport = Self::viewport_without_keyboard(initial_viewport);
         let terminal_view =
             cx.new(|cx| TerminalView::new(terminal_id.clone(), window, initial_viewport, cx));
         let workdir = workspace_state.read(cx).workdir.clone();
@@ -231,7 +249,13 @@ impl WorkspaceTerminal {
 }
 
 impl Render for WorkspaceTerminal {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child(self.terminal_view.clone())
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let keyboard_inset = Self::keyboard_inset();
+
+        div()
+            .id(("workspace-terminal-surface", cx.entity_id()))
+            .size_full()
+            .when(keyboard_inset > px(0.0), |div| div.pb(keyboard_inset))
+            .child(self.terminal_view.clone())
     }
 }
