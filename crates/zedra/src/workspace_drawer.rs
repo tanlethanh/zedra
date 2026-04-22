@@ -42,6 +42,7 @@ pub struct WorkspaceDrawer {
 
 impl WorkspaceDrawer {
     pub fn new(
+        window: &mut Window,
         cx: &mut Context<Self>,
         workspace_state: Entity<WorkspaceState>,
         terminal_state: Entity<TerminalState>,
@@ -63,6 +64,7 @@ impl WorkspaceDrawer {
                 workspace_state.clone(),
                 session_state.clone(),
                 session.clone(),
+                window.window_handle(),
                 session_handle.clone(),
                 cx,
             )

@@ -28,6 +28,7 @@ impl GitPanel {
         workspace_state: Entity<WorkspaceState>,
         session_state: Entity<SessionState>,
         session: Session,
+        window: AnyWindowHandle,
         session_handle: SessionHandle,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -56,21 +57,29 @@ impl GitPanel {
         });
 
         let mut subscriptions = Vec::new();
+        let open_diff_window = window;
         subscriptions.push(cx.subscribe(
             &content,
-            |_this, _sidebar, event: &GitFileSelected, cx| {
-                cx.dispatch_action(&workspace_action::OpenGitDiff {
+            move |_this, _sidebar, event: &GitFileSelected, cx| {
+                let action = workspace_action::OpenGitDiff {
                     path: event.path.clone(),
                     section: section_to_u8(event.section),
+                };
+                let _ = cx.update_window(open_diff_window, |_, window, cx| {
+                    window.dispatch_action(action.boxed_clone(), cx);
                 });
             },
         ));
+        let item_actions_window = window;
         subscriptions.push(cx.subscribe(
             &content,
-            |_this, _sidebar, event: &GitFileLongPressed, cx| {
-                cx.dispatch_action(&workspace_action::GitShowItemActions {
+            move |_this, _sidebar, event: &GitFileLongPressed, cx| {
+                let action = workspace_action::GitShowItemActions {
                     path: event.path.clone(),
                     section: section_to_u8(event.section),
+                };
+                let _ = cx.update_window(item_actions_window, |_, window, cx| {
+                    window.dispatch_action(action.boxed_clone(), cx);
                 });
             },
         ));
