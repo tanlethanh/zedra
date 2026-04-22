@@ -43,7 +43,8 @@ pub const DRAWER_EDGE_ZONE: f32 = 56.0;
 pub const DRAWER_VELOCITY_THRESHOLD: f32 = 12.0;
 pub const DRAWER_BACKDROP_OPACITY: f32 = 0.4;
 pub const DRAWER_DEFAULT_WIDTH: f32 = 295.0;
-pub const DRAWER_ANIMATION_DURATION_MS: u64 = 300;
+pub const DRAWER_OPEN_ANIMATION_DURATION_MS: u64 = 160;
+pub const DRAWER_CLOSE_ANIMATION_DURATION_MS: u64 = 100;
 
 // Font sizes (pixels) — change these to scale all UI text
 pub const FONT_APP_TITLE: f32 = 28.0; // App main title ("Zedra")
