@@ -4,9 +4,6 @@ use zedra_session::{ConnectPhase, TransportSnapshot};
 
 use crate::theme;
 
-/// Seconds after last received bytes before a path is considered stale.
-pub const STALE_THRESHOLD_SECS: u64 = 3;
-
 /// Compute badge label and dot color from phase and transport.
 /// Returns `(label, dot_color)`.
 pub(crate) fn transport_badge(

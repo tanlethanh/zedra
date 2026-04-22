@@ -43,12 +43,53 @@ pub type ConnectedResult = (
     Vec<RemoteTerminal>,
 );
 
+const IDLE_STALE_INTERVAL_MULTIPLIER: u32 = 2;
+
+/// Tracks the last confirmed transport receive progress for UI idle state.
+///
+/// Reconnect is still driven by iroh timeouts. The UI should flip to idle
+/// earlier when the connection stops hearing back from the remote side.
+///
+/// Liveness is connection-wide, not selected-path-only:
+/// - any inbound bytes across any path keep the session active
+/// - selected path is only used for the transport label / RTT metadata
+///
+/// That avoids false idle when iroh is switching paths or when non-selected
+/// paths still carry valid traffic for the connection.
+#[derive(Debug)]
+struct IdleDetector {
+    last_recv_bytes: u64,
+    last_alive_at: Instant,
+}
+
+impl IdleDetector {
+    fn with_recv_baseline(now: Instant, recv_bytes_total: u64) -> Self {
+        Self {
+            last_recv_bytes: recv_bytes_total,
+            last_alive_at: now,
+        }
+    }
+
+    fn observe(&mut self, recv_bytes_total: u64, now: Instant) -> bool {
+        let recv_progressed = recv_bytes_total > self.last_recv_bytes;
+        if recv_progressed {
+            self.last_alive_at = now;
+        }
+        self.last_recv_bytes = recv_bytes_total;
+        recv_progressed
+    }
+
+    fn is_idle(&self, now: Instant, threshold: Duration) -> bool {
+        now.duration_since(self.last_alive_at) >= threshold
+    }
+}
+
 impl Default for ConnectConfig {
     fn default() -> Self {
         // Tighten QUIC timeouts for fast disconnect detection.
         // PING frames are tiny UDP packets — cheap even on mobile.
-        // Default iroh heartbeat is 5s; we lower to 2s so bytes_recv ticks
-        // every ~2 s and the stale counter in the session tab reacts quickly.
+        // Default iroh heartbeat is 5s; we lower to 2s so transport freshness
+        // is sampled quickly for the session badge.
         Self {
             alpn: ZEDRA_ALPN.to_vec(),
             alpns: vec![ZEDRA_ALPN.to_vec()],
@@ -186,6 +227,7 @@ pub enum ConnectEvent {
 
     PathReport {
         path: PathInfo,
+        num_paths: usize,
         bytes_sent_total: u64,
         bytes_recv_total: u64,
     },
@@ -626,15 +668,14 @@ impl Connector {
         let tx = self.tx.clone();
         let abort_signal = self.abort_signal.clone();
         let idle_check_interval = self.config.idle_check_interval;
+        let idle_stale_timeout = idle_check_interval * IDLE_STALE_INTERVAL_MULTIPLIER;
 
         tokio::spawn(async move {
             let mut paths = conn.paths();
             let mut prev_path: Option<PathInfo> = None;
             let mut prev_is_direct = false;
-            // Selected-path baseline sampled at the previous idle tick.
-            let mut idle_path: Option<PathInfo> = None;
-            let mut last_path_recv_bytes = 0u64;
-            let mut last_path_sent_bytes = 0u64;
+            let mut idle_detector =
+                IdleDetector::with_recv_baseline(Instant::now(), conn.stats().udp_rx.bytes);
 
             loop {
                 let path_list = paths.get();
@@ -674,6 +715,7 @@ impl Connector {
                     let _ = tx
                         .send(ConnectEvent::PathReport {
                             path: path.clone(),
+                            num_paths: path_list.len(),
                             // Use connection stats instead of path stats to accumulate all paths
                             bytes_sent_total: conn_stats.udp_tx.bytes,
                             bytes_recv_total: conn_stats.udp_rx.bytes,
@@ -701,33 +743,48 @@ impl Connector {
                         };
                     }
                     _ = tokio::time::sleep(idle_check_interval) => {
-                        if let Some(path) = paths.get().iter().find(|p| p.is_selected()) {
-                            let stats = path.stats();
-                            let cur_rx = stats.udp_rx.bytes;
-                            let cur_tx = stats.udp_tx.bytes;
-                            let is_path_changed = idle_path.as_ref() != Some(path);
+                        let path_list = paths.get();
+                        let selected_path = path_list.iter().find(|p| p.is_selected()).cloned();
+                        let conn_stats = conn.stats();
+                        let now = Instant::now();
+                        let recv_progressed = idle_detector.observe(conn_stats.udp_rx.bytes, now);
 
-                            if is_path_changed {
-                                // Re-baseline on path switch to avoid false idle from unrelated paths.
-                                idle_path = Some(path.clone());
-                                last_path_recv_bytes = cur_rx;
-                                last_path_sent_bytes = cur_tx;
-                                debug!("idle check: active - path changed");
-                                let _ = tx.send(ConnectEvent::ConnectionActive).await;
-                            } else if cur_rx == last_path_recv_bytes && cur_tx == last_path_sent_bytes {
-                                debug!("idle check: idle - selected path bytes unchanged");
-                                let _ = tx.send(ConnectEvent::ConnectionIdle).await;
-                            } else {
-                                debug!("idle check: active - selected path bytes changed ");
-                                let _ = tx.send(ConnectEvent::ConnectionActive).await;
-                                last_path_recv_bytes = cur_rx;
-                                last_path_sent_bytes = cur_tx;
-                            }
+                        if let Some(path) = selected_path.as_ref() {
+                            let _ = tx
+                                .send(ConnectEvent::PathReport {
+                                    path: path.clone(),
+                                    num_paths: path_list.len(),
+                                    bytes_sent_total: conn_stats.udp_tx.bytes,
+                                    bytes_recv_total: conn_stats.udp_rx.bytes,
+                                })
+                                .await;
                         } else {
-                            // No selected path is a transport-stale condition.
-                            idle_path = None;
-                            debug!("idle check: idle - no selected path");
+                            let _ = tx.send(ConnectEvent::NoActivePath).await;
+                        }
+
+                        if recv_progressed {
+                            debug!(
+                                "idle check: active - connection recv bytes changed ({})",
+                                conn_stats.udp_rx.bytes
+                            );
+                            let _ = tx.send(ConnectEvent::ConnectionActive).await;
+                        } else if idle_detector.is_idle(now, idle_stale_timeout) {
+                            debug!(
+                                "idle check: idle - no connection recv bytes for {:?}",
+                                idle_stale_timeout
+                            );
                             let _ = tx.send(ConnectEvent::ConnectionIdle).await;
+                        } else if selected_path.is_some() {
+                            debug!(
+                                "idle check: active - selected path present, waiting for recv progress"
+                            );
+                            let _ = tx.send(ConnectEvent::ConnectionActive).await;
+                        } else {
+                            debug!(
+                                "idle check: active - no selected path yet, within {:?}",
+                                idle_stale_timeout
+                            );
+                            let _ = tx.send(ConnectEvent::ConnectionActive).await;
                         }
                     }
                 }
@@ -833,5 +890,23 @@ impl Connector {
             fatal_error: None,
         });
         Err(err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_detector_requires_receive_progress_to_refresh_liveness() {
+        let start = Instant::now();
+        let mut detector = IdleDetector::with_recv_baseline(start, 10);
+        let threshold = Duration::from_secs(4);
+
+        assert!(!detector.observe(10, start + Duration::from_secs(2)));
+        assert!(detector.is_idle(start + Duration::from_secs(4), threshold));
+
+        assert!(detector.observe(11, start + Duration::from_secs(5)));
+        assert!(!detector.is_idle(start + Duration::from_secs(7), threshold));
     }
 }

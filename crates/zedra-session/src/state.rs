@@ -296,6 +296,17 @@ pub struct SessionState {
     pub phase_before_idle: Option<ConnectPhase>,
 }
 
+fn updated_last_alive_at(
+    previous: Option<&TransportSnapshot>,
+    bytes_recv_total: u64,
+    now: std::time::Instant,
+) -> Option<std::time::Instant> {
+    match previous {
+        Some(prev) if bytes_recv_total <= prev.bytes_recv => prev.last_alive_at,
+        _ => Some(now),
+    }
+}
+
 impl SessionState {
     pub fn elapsed_secs(&self) -> u64 {
         self.started_at.map(|t| t.elapsed().as_secs()).unwrap_or(0)
@@ -429,6 +440,7 @@ impl SessionState {
             }
             ConnectEvent::PathReport {
                 path,
+                num_paths,
                 bytes_sent_total,
                 bytes_recv_total,
             } => {
@@ -440,6 +452,11 @@ impl SessionState {
                     .as_ref()
                     .map(|t| t.is_direct)
                     .unwrap_or(false);
+                let last_alive_at = updated_last_alive_at(
+                    snap.transport.as_ref(),
+                    bytes_recv_total,
+                    std::time::Instant::now(),
+                );
                 let path_upgraded = (!prev_direct && is_direct)
                     || snap
                         .transport
@@ -450,13 +467,13 @@ impl SessionState {
                     is_direct,
                     remote_addr,
                     relay_url,
-                    num_paths: 1,
+                    num_paths,
                     rtt_ms: stats.rtt.as_millis() as u64,
                     bytes_sent: bytes_sent_total,
                     bytes_recv: bytes_recv_total,
                     path_upgraded,
                     network_hint,
-                    last_alive_at: Some(std::time::Instant::now()),
+                    last_alive_at,
                 });
             }
             ConnectEvent::PathUpgraded { .. } => {
@@ -465,9 +482,9 @@ impl SessionState {
                 }
             }
             ConnectEvent::NoActivePath => {
-                if let Some(ref mut t) = snap.transport {
-                    t.last_alive_at = None;
-                }
+                // Keep the last transport metadata and last_alive_at so UI can
+                // retain the last known path while idle state is driven by the
+                // liveness events above.
             }
             ConnectEvent::ReconnectStarted { reason } => {
                 self.phase = ConnectPhase::Reconnecting {
@@ -576,5 +593,68 @@ fn classify_ip(ip: std::net::IpAddr) -> NetworkHint {
                 NetworkHint::Internet
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_active_restores_connected_after_idle() {
+        let mut state = SessionState::new();
+
+        state.apply_event(ConnectEvent::Connected { total_ms: 0 });
+        assert!(matches!(state.phase, ConnectPhase::Connected));
+
+        state.apply_event(ConnectEvent::ConnectionIdle);
+        assert!(matches!(state.phase, ConnectPhase::Idle { .. }));
+
+        state.apply_event(ConnectEvent::ConnectionActive);
+        assert!(matches!(state.phase, ConnectPhase::Connected));
+    }
+
+    #[test]
+    fn connection_idle_does_not_override_reconnecting() {
+        let mut state = SessionState::new();
+
+        state.apply_event(ConnectEvent::ReconnectStarted {
+            reason: ReconnectReason::ConnectionLost,
+        });
+        state.apply_event(ConnectEvent::ConnectionIdle);
+
+        assert!(matches!(state.phase, ConnectPhase::Reconnecting { .. }));
+    }
+
+    #[test]
+    fn updated_last_alive_at_only_refreshes_on_receive_progress() {
+        let previous_alive_at = std::time::Instant::now();
+        let previous = TransportSnapshot {
+            is_direct: false,
+            remote_addr: "relay".into(),
+            relay_url: Some("https://relay.example".into()),
+            num_paths: 1,
+            rtt_ms: 42,
+            bytes_sent: 100,
+            bytes_recv: 200,
+            path_upgraded: false,
+            network_hint: None,
+            last_alive_at: Some(previous_alive_at),
+        };
+
+        let same_bytes = updated_last_alive_at(
+            Some(&previous),
+            previous.bytes_recv,
+            previous_alive_at + std::time::Duration::from_secs(5),
+        );
+        assert_eq!(same_bytes, Some(previous_alive_at));
+
+        let advanced = updated_last_alive_at(
+            Some(&previous),
+            previous.bytes_recv + 1,
+            previous_alive_at + std::time::Duration::from_secs(5),
+        );
+        assert!(advanced.is_some());
+        assert_ne!(advanced, Some(previous_alive_at));
     }
 }
