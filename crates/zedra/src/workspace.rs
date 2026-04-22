@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use gpui::{prelude::FluentBuilder as _, *};
 use tokio::sync::broadcast;
-use tracing::info;
+use tracing::*;
 use zedra_rpc::ZedraPairingTicket;
 use zedra_rpc::proto::HostEvent;
 use zedra_session::{ConnectEvent, Session, SessionHandle, SessionState, signer::ClientSigner};
@@ -82,6 +82,7 @@ impl Workspace {
         });
         let drawer = cx.new(|cx| {
             WorkspaceDrawer::new(
+                _window,
                 cx,
                 workspace_state.clone(),
                 terminal_state.clone(),
@@ -251,6 +252,20 @@ impl Workspace {
         self.session.disconnect();
         cx.emit(WorkspaceEvent::Disconnected);
         cx.notify();
+    }
+
+    pub fn open_terminal_from_quick_action(&mut self, id: String, cx: &mut Context<Self>) {
+        self.drawer_host.update(cx, |host, cx| host.close(cx));
+
+        if let Some(terminal_entity) = self.terminal_by_id(&id, cx) {
+            self.activate_terminal(id, terminal_entity, cx);
+        } else {
+            warn!("quick action requested uninitialized terminal {}", id);
+        }
+    }
+
+    pub fn close_terminal_from_quick_action(&mut self, id: String, cx: &mut Context<Self>) {
+        self.close_terminal_by_id(id, cx);
     }
 
     // ─── Action Handlers ─────────────────────────────────────────────────────
@@ -569,28 +584,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         info!("handle CloseTerminal from workspace");
-        let id = action.id.clone();
-
-        // Remove from local terminals vec
-        self.terminals.retain(|t| t.read(cx).terminal_id() != id);
-
-        // Clear active if it was the closed one
-        self.workspace_state.update(cx, |state, cx| {
-            if state.active_terminal_id.as_deref() == Some(id.as_str()) {
-                state.active_terminal_id = None;
-                active_terminal::clear_active_input();
-            }
-            cx.notify();
-        });
-
-        // Request close from host
-        let handle = self.session.handle().clone();
-        cx.spawn(async move |_workspace, _cx| {
-            if let Err(e) = handle.terminal_close(&id).await {
-                tracing::error!("terminal_close failed: {}", e);
-            }
-        })
-        .detach();
+        self.close_terminal_by_id(action.id.clone(), cx);
     }
 
     fn activate_terminal(
@@ -607,6 +601,26 @@ impl Workspace {
         self.content.update(cx, |c, cx| {
             c.set_main_view(terminal_entity.into(), cx);
         });
+    }
+
+    fn close_terminal_by_id(&mut self, id: String, cx: &mut Context<Self>) {
+        self.terminals.retain(|t| t.read(cx).terminal_id() != id);
+
+        self.workspace_state.update(cx, |state, cx| {
+            if state.active_terminal_id.as_deref() == Some(id.as_str()) {
+                state.active_terminal_id = None;
+                active_terminal::clear_active_input();
+            }
+            cx.notify();
+        });
+
+        let handle = self.session.handle().clone();
+        cx.spawn(async move |_workspace, _cx| {
+            if let Err(e) = handle.terminal_close(&id).await {
+                tracing::error!("terminal_close failed: {}", e);
+            }
+        })
+        .detach();
     }
 
     /// Create a new terminal entity and add it to the terminals vec.

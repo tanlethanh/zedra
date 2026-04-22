@@ -48,6 +48,7 @@ impl QuickActionPanel {
         self.workspaces
             .update(cx, |ws, cx| ws.switch_to(ws_index, cx));
         cx.emit(QuickActionEvent::Close);
+        cx.emit(QuickActionEvent::NavigateToWorkspace);
         cx.emit(QuickActionEvent::OpenTerminal { tid, ws_index });
     }
 

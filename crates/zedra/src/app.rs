@@ -4,13 +4,13 @@ use gpui::*;
 use zedra_telemetry::*;
 
 use crate::deeplink::{self, DeeplinkAction};
+use crate::fonts;
 use crate::home_view::{HomeEvent, HomeView};
 use crate::platform_bridge;
 use crate::quick_action_panel::{QuickActionEvent, QuickActionPanel};
 use crate::settings_view::{SettingsEvent, SettingsView};
 use crate::ui::{DrawerHost, DrawerSide};
 use crate::workspaces::{Workspaces, WorkspacesEvent};
-use crate::{fonts, workspace_action};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum AppScreen {
@@ -172,26 +172,19 @@ impl ZedraApp {
                 self.set_screen(AppScreen::Workspace, cx);
             }
             QuickActionEvent::OpenTerminal { tid, ws_index } => {
-                self.forward_action_to_workspace(
-                    &workspace_action::OpenTerminal { id: tid.clone() },
-                    *ws_index,
-                    cx,
-                );
+                self.set_screen(AppScreen::Workspace, cx);
+                self.open_terminal_from_quick_action(*ws_index, tid, cx);
             }
             QuickActionEvent::CloseTerminal { tid, ws_index } => {
-                self.forward_action_to_workspace(
-                    &workspace_action::CloseTerminal { id: tid.clone() },
-                    *ws_index,
-                    cx,
-                );
+                self.close_terminal_from_quick_action(*ws_index, tid, cx);
             }
         }
     }
 
-    fn forward_action_to_workspace(
+    fn open_terminal_from_quick_action(
         &self,
-        action: &dyn Action,
         ws_index: usize,
+        terminal_id: &str,
         cx: &mut Context<Self>,
     ) {
         if let Some(workspace) = self
@@ -200,13 +193,38 @@ impl ZedraApp {
             .workspace_by_index(ws_index)
             .cloned()
         {
-            workspace.update(cx, |_ws, cx| {
-                cx.dispatch_action(action);
+            workspace.update(cx, |ws, cx| {
+                ws.open_terminal_from_quick_action(terminal_id.to_string(), cx);
             });
         } else {
             tracing::warn!(
-                "workspace not found for index {} to forward action",
-                ws_index
+                "workspace not found for index {} to open terminal {} from quick action",
+                ws_index,
+                terminal_id
+            );
+        }
+    }
+
+    fn close_terminal_from_quick_action(
+        &self,
+        ws_index: usize,
+        terminal_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(workspace) = self
+            .workspaces
+            .read(cx)
+            .workspace_by_index(ws_index)
+            .cloned()
+        {
+            workspace.update(cx, |ws, cx| {
+                ws.close_terminal_from_quick_action(terminal_id.to_string(), cx);
+            });
+        } else {
+            tracing::warn!(
+                "workspace not found for index {} to close terminal {} from quick action",
+                ws_index,
+                terminal_id
             );
         }
     }
