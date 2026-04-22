@@ -104,8 +104,9 @@
 /**
  * Called each frame from main.m before gpui_ios_request_frame.
  *
- * Returns `false` — GPUI polling tasks handle view notifications internally
- * via `cx.notify()`, so forced frames are no longer needed.
+ * Returns whether the app has explicit pending work that should be surfaced to
+ * the frame pump ahead of normal window invalidation. This hook currently does
+ * not report any such work, so it returns `false`.
  */
 bool zedra_ios_check_pending_frame(void);
 
