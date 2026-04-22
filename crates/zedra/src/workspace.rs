@@ -104,7 +104,9 @@ impl Workspace {
             &workspace_state,
             |_workspace, workspace_state, event: &WorkspaceStateEvent, _cx| {
                 if matches!(event, WorkspaceStateEvent::StateChanged) {
-                    WorkspaceState::upsert(workspace_state.read(_cx).clone());
+                    WorkspaceState::upsert(workspace_state.read(_cx).clone())
+                        .map_err(|e| warn!("failed to upsert workspace state: {}", e))
+                        .ok();
                 }
             },
         );
