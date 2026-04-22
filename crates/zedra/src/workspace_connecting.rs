@@ -29,14 +29,24 @@ impl Render for WorkspaceConnecting {
             .bg(rgb(theme::BG_PRIMARY))
             .flex()
             .flex_col()
-            .items_center()
             .justify_start()
+            .px(px(theme::SPACING_LG))
             .pt(px(32.0))
-            .child(render_phase_title(&state.phase, &state.snapshot))
-            .child(render_details_toggle(expanded, cx))
-            .when(expanded, |d| {
-                d.child(render_detail(&state.phase, &state.snapshot))
-            })
+            .child(
+                div()
+                    .w_full()
+                    .max_w(px(theme::CONNECT_DETAIL_WIDTH))
+                    .mx_auto()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .child(render_phase_title(&state.phase, &state.snapshot))
+                    .child(render_details_toggle(expanded, cx))
+                    .when(expanded, |d| {
+                        d.child(render_detail(&state.phase, &state.snapshot))
+                    }),
+            )
     }
 }
 
@@ -88,6 +98,7 @@ fn render_phase_title(phase: &ConnectPhase, snap: &ConnectSnapshot) -> Div {
     };
 
     div()
+        .w_full()
         .mb(px(theme::SPACING_LG))
         .flex()
         .flex_col()
@@ -106,7 +117,11 @@ fn render_phase_title(phase: &ConnectPhase, snap: &ConnectSnapshot) -> Div {
                     .child(title),
             ),
         )
-        .child(render_transport_badge(label, color))
+        .child(
+            render_transport_badge(label, color)
+                .w_full()
+                .text_align(TextAlign::Center),
+        )
 }
 
 // ─── Phase status helpers ────────────────────────────────────────────────────
@@ -207,7 +222,8 @@ fn render_discovery_rows(snap: &ConnectSnapshot) -> Div {
 
 fn render_detail(phase: &ConnectPhase, snap: &ConnectSnapshot) -> Div {
     let mut col = div()
-        .w(px(theme::CONNECT_DETAIL_WIDTH))
+        .w_full()
+        .min_w_0()
         .flex()
         .flex_col()
         .gap(px(theme::SPACING_SM));
