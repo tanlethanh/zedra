@@ -1,19 +1,12 @@
-//! Workspace state and persistence.
-//!
-//! [WorkspaceState] is a shareable handle to [WorkspaceStateInner]. Clone is cheap (Arc).
-//! All reads go through methods so the inner can be shared across views/threads without blocking.
-
 use gpui::{Context, EventEmitter};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
+use tracing::*;
 
 use zedra_session::*;
 
 use crate::platform_bridge;
-
-/// Shared list of workspace states. Views hold an Arc and read via `.iter()` (no lock, non-blocking).
-pub type SharedWorkspaceStates = Arc<Vec<WorkspaceState>>;
 
 const STORE_DIR: &str = "zedra";
 const STORE_FILE: &str = "workspaces.json";
@@ -51,6 +44,22 @@ pub struct WorkspaceState {
     pub terminal_ids: Vec<String>,
 }
 
+/// PartialEq implementation for WorkspaceState.
+/// Compare all durable fields to prevent unnecessary updates.
+impl PartialEq for WorkspaceState {
+    fn eq(&self, other: &Self) -> bool {
+        self.endpoint_addr == other.endpoint_addr
+            && self.session_id == other.session_id
+            && self.strip_path == other.strip_path
+            && self.project_name == other.project_name
+            && self.workdir == other.workdir
+            && self.homedir == other.homedir
+            && self.hostname == other.hostname
+            && self.created_at == other.created_at
+            && self.updated_at == other.updated_at
+    }
+}
+
 static WORKSPACE_STORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn workspace_store_lock() -> &'static Mutex<()> {
@@ -62,7 +71,7 @@ fn store_path() -> Option<PathBuf> {
     let dir = PathBuf::from(data_dir).join(STORE_DIR);
     if !dir.exists() {
         if let Err(e) = std::fs::create_dir_all(&dir) {
-            tracing::error!(dir = ?dir, err = %e, "store: create dir failed");
+            error!(dir = ?dir, err = %e, "Failed to create directory: {e}");
             return None;
         }
     }
@@ -108,18 +117,25 @@ impl WorkspaceState {
     }
 
     /// Load all persisted workspaces from the store.
-    pub fn load() -> Vec<Self> {
-        let _guard = workspace_store_lock().lock().unwrap();
-        WorkspaceStore::load().workspaces
+    pub fn load() -> Result<Vec<Self>, String> {
+        let _guard = workspace_store_lock()
+            .lock()
+            .map_err(|e| format!("Failed to lock workspace store: {e}"))?;
+        Ok(WorkspaceStore::load()?.workspaces)
     }
 
     /// Removes a workspace from the store by its endpoint address.
-    pub fn remove_by_endpoint_add(endpoint_addr: &str) {
-        let _guard = workspace_store_lock().lock().unwrap();
-        let mut store = WorkspaceStore::load();
+    pub fn remove_by_endpoint_add(endpoint_addr: &str) -> Result<(), String> {
+        let _guard = workspace_store_lock()
+            .lock()
+            .map_err(|e| format!("Failed to lock workspace store: {e}"))?;
+        let mut store = WorkspaceStore::load()?;
+
         if store.remove_by_endpoint_addr(endpoint_addr) {
-            store.save();
+            store.save()?
         }
+
+        Ok(())
     }
 
     pub fn now_u64() -> u64 {
@@ -130,97 +146,63 @@ impl WorkspaceState {
     }
 
     /// Saves a workspace entry, updating an existing entry if one with the same endpoint_addr already exists.
-    pub fn upsert(entry: Self) {
-        let _guard = workspace_store_lock().lock().unwrap();
-        let mut store = WorkspaceStore::load();
-        store.upsert(entry);
-        store.save();
+    pub fn upsert(entry: Self) -> Result<(), String> {
+        let _guard = workspace_store_lock()
+            .lock()
+            .map_err(|e| format!("Failed to lock workspace store: {e}"))?;
+        let mut store = WorkspaceStore::load()?;
+        store.upsert(entry)?;
+
+        Ok(())
     }
 }
 
 impl WorkspaceStore {
-    fn load() -> Self {
-        let path = match store_path() {
+    fn load() -> Result<Self, String> {
+        let path: PathBuf = match store_path() {
             Some(p) => p,
-            None => {
-                tracing::warn!("WorkspaceState: no data directory available");
-                return Self::default();
-            }
+            None => return Err("No data directory available".to_string()),
         };
         if !path.exists() {
-            tracing::info!("WorkspaceState: no store file yet at {:?}", path);
-            return Self::default();
+            return Err(format!("No store file yet at {:?}", path));
         }
         match std::fs::read_to_string(&path) {
             Ok(json) => match serde_json::from_str::<Self>(&json) {
-                Ok(store) => {
-                    tracing::info!(
-                        "WorkspaceState: loaded {} workspace(s) from {:?}",
-                        store.workspaces.len(),
-                        path
-                    );
-                    store
-                }
-                Err(e) => {
-                    tracing::error!("WorkspaceState: parse error: {}", e);
-                    Self::default()
-                }
+                Ok(store) => Ok(store),
+                Err(e) => Err(format!("Parse error: {e}")),
             },
-            Err(e) => {
-                tracing::error!("WorkspaceState: read error: {}", e);
-                Self::default()
-            }
+            Err(e) => Err(format!("Read error: {e}")),
         }
     }
 
-    fn save(&self) {
+    fn save(&self) -> Result<(), String> {
         let path = match store_path() {
             Some(p) => p,
-            None => {
-                tracing::warn!("WorkspaceState: no data directory, skipping save");
-                return;
-            }
+            None => return Err("No data directory available".to_string()),
         };
         match serde_json::to_string_pretty(self) {
             Ok(json) => match std::fs::write(&path, json.as_bytes()) {
-                Ok(()) => tracing::info!(
-                    "WorkspaceState: saved {} workspace(s) to {:?}",
-                    self.workspaces.len(),
-                    path
-                ),
-                Err(e) => tracing::error!("WorkspaceState: write error: {}", e),
+                Ok(_) => Ok(()),
+                Err(e) => Err(format!("Write error: {e}")),
             },
-            Err(e) => tracing::error!("WorkspaceState: serialize error: {}", e),
+            Err(e) => Err(format!("Serialize error: {e}")),
         }
     }
 
-    fn upsert(&mut self, entry: WorkspaceState) {
+    fn upsert(&mut self, entry: WorkspaceState) -> Result<(), String> {
         let now = WorkspaceState::now_u64();
 
+        let mut changed = false;
         if let Some(idx) = self
             .workspaces
             .iter()
             .position(|w| w.endpoint_addr == entry.endpoint_addr)
         {
-            let mut workspace = self.workspaces[idx].clone();
-            workspace.session_id = entry.session_id.clone();
-            if !entry.strip_path.is_empty() {
-                workspace.strip_path = entry.strip_path.clone();
+            let workspace = self.workspaces[idx].clone();
+            if workspace != entry {
+                self.workspaces[idx] = entry;
+                changed = true;
             }
-            if !entry.hostname.is_empty() {
-                workspace.hostname = entry.hostname.clone();
-            }
-            if !entry.project_name.is_empty() {
-                workspace.project_name = entry.project_name.clone();
-            }
-            if !entry.workdir.is_empty() {
-                workspace.workdir = entry.workdir.clone();
-            }
-            if !entry.homedir.is_empty() {
-                workspace.homedir = entry.homedir.clone();
-            }
-            workspace.updated_at = now;
-            self.workspaces[idx] = workspace;
         } else {
             let mut entry = entry;
             entry.updated_at = now;
@@ -228,7 +210,14 @@ impl WorkspaceStore {
                 entry.created_at = now;
             }
             self.workspaces.push(entry);
+            changed = true;
         }
+
+        if changed {
+            self.save()?;
+        }
+
+        Ok(())
     }
 
     fn remove_by_endpoint_addr(&mut self, endpoint_addr: &str) -> bool {

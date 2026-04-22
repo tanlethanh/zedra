@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use gpui::*;
-use tracing::warn;
+use tracing::*;
 use zedra_rpc::ZedraPairingTicket;
 use zedra_session::signer::ClientSigner;
 
@@ -39,11 +39,15 @@ impl Workspaces {
         let signer = load_client_signer();
 
         let states = WorkspaceState::load()
-            .into_iter()
-            .map(|s| cx.new(|_cx| s))
-            .collect::<Vec<_>>();
-
-        tracing::info!("Workspaces: loaded {} saved workspace(s)", states.len());
+            .map_err(|e| error!("Failed to load saved workspace states: {e}"))
+            .map(|states| {
+                info!("Loaded {} saved workspace(s)", states.len());
+                states
+                    .into_iter()
+                    .map(|s| cx.new(|_cx| s))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
 
         let mut this = Self {
             entries: Vec::new(),
@@ -109,7 +113,7 @@ impl Workspaces {
                 cx.notify();
             }
         } else {
-            warn!("cannot switch to workspace index {}", index)
+            warn!("Index {index} out of range. Cannot switch to workspace.");
         }
     }
 
@@ -147,7 +151,7 @@ impl Workspaces {
         let state = match self.states.get(state_index) {
             Some(s) => s.clone(),
             None => {
-                tracing::error!("connect_saved: index {} out of range", state_index);
+                error!("Index {state_index} out of range. Cannot reconnect to saved workspace.");
                 return;
             }
         };
@@ -156,7 +160,7 @@ impl Workspaces {
         let endpoint_addr = state.read(cx).endpoint_addr.clone();
         match zedra_rpc::pairing::decode_endpoint_addr(&endpoint_addr) {
             Ok(addr) => {
-                tracing::info!("Reconnecting to workspace: {}", addr.id.fmt_short());
+                info!("Reconnecting to workspace: {}", addr.id.fmt_short());
                 self.connect_and_intialize_workspace(
                     addr,
                     None,
@@ -167,8 +171,10 @@ impl Workspaces {
                 );
             }
             Err(e) => {
-                tracing::error!("Failed to decode endpoint addr: {}", e);
-                WorkspaceState::remove_by_endpoint_add(&endpoint_addr);
+                error!("Failed to decode endpoint addr: {e}. Removing workspace state.");
+                WorkspaceState::remove_by_endpoint_add(&endpoint_addr)
+                    .map_err(|e| error!("Failed to remove workspace state: {e}"))
+                    .ok();
             }
         }
     }
@@ -183,7 +189,7 @@ impl Workspaces {
         cx: &mut Context<Self>,
     ) {
         let Some(signer) = self.signer.clone() else {
-            tracing::error!("connect: no client signer available");
+            error!("No client signer available. Cannot connect to workspace.");
             return;
         };
 
@@ -245,7 +251,7 @@ impl Workspaces {
                             Some(0)
                         };
 
-                        tracing::info!("Workspace disconnected; {} remaining", this.entries.len());
+                        info!("Workspace disconnected; {} remaining", this.entries.len());
                         cx.emit(WorkspacesEvent::Disconnected { index });
                     }
                 }
@@ -271,7 +277,9 @@ impl Workspaces {
     }
 
     pub fn remove_saved(&mut self, endpoint_addr: &str, cx: &mut Context<Self>) {
-        WorkspaceState::remove_by_endpoint_add(endpoint_addr);
+        WorkspaceState::remove_by_endpoint_add(endpoint_addr)
+            .map_err(|e| error!("Failed to remove workspace state: {e}"))
+            .ok();
         let state_index = self
             .states
             .iter()
@@ -296,7 +304,7 @@ fn load_client_signer() -> Option<Arc<dyn ClientSigner>> {
     match zedra_session::signer::FileClientSigner::load_or_generate(&key_path) {
         Ok(signer) => Some(Arc::new(signer)),
         Err(e) => {
-            tracing::error!("Failed to load client signing key: {}", e);
+            error!("Failed to load client signing key: {}", e);
             None
         }
     }
