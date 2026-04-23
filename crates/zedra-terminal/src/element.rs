@@ -240,6 +240,52 @@ impl LayoutRect {
     }
 }
 
+#[derive(Debug, Clone)]
+struct LayoutUnderline {
+    line: i32,
+    col: i32,
+    num_cells: usize,
+    color: Hsla,
+}
+
+impl LayoutUnderline {
+    fn new(line: i32, col: i32, num_cells: usize, color: Hsla) -> Self {
+        Self {
+            line,
+            col,
+            num_cells,
+            color,
+        }
+    }
+
+    fn paint(
+        &self,
+        origin: Point<Pixels>,
+        cell_width: Pixels,
+        line_height: Pixels,
+        window: &mut Window,
+    ) {
+        let underline_height = px(1.0);
+        let position = point(
+            (origin.x + self.col as f32 * cell_width).floor(),
+            origin.y + (self.line as f32 + 1.0) * line_height - underline_height,
+        );
+        let size = gpui::Size {
+            width: (cell_width * self.num_cells as f32).ceil(),
+            height: underline_height,
+        };
+        window.paint_quad(fill(Bounds::new(position, size), self.color));
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TokenCell {
+    col: i32,
+    start: usize,
+    end: usize,
+    color: Hsla,
+}
+
 /// Check if a cell is blank (following Zed's is_blank function)
 fn is_blank(cell: &IndexedCell) -> bool {
     if cell.cell.c != ' ' {
@@ -305,9 +351,10 @@ impl TerminalElement {
         display_offset: i32,
         grid_rows: usize,
         theme: &TerminalTheme,
-    ) -> (Vec<LayoutRect>, Vec<BatchedTextRun>) {
+    ) -> (Vec<LayoutRect>, Vec<BatchedTextRun>, Vec<LayoutUnderline>) {
         let mut batched_runs: Vec<BatchedTextRun> = Vec::new();
         let mut rects: Vec<LayoutRect> = Vec::new();
+        let mut underlines: Vec<LayoutUnderline> = Vec::new();
         let mut current_batch: Option<BatchedTextRun> = None;
 
         // Group cells by line (following Zed's chunk_by approach)
@@ -319,14 +366,21 @@ impl TerminalElement {
                 batched_runs.push(batch);
             }
 
-            for cell in line_cells {
-                let line = cell.point.line.0 + display_offset;
-                let col = cell.point.column.0 as i32;
+            let line_cells = line_cells.collect_vec();
+            let Some(first_cell) = line_cells.first() else {
+                continue;
+            };
+            let line = first_cell.point.line.0 + display_offset;
 
-                // Skip cells outside the visible grid (stale circular buffer data)
-                if line < 0 || line >= grid_rows as i32 {
-                    continue;
-                }
+            // Skip cells outside the visible grid (stale circular buffer data)
+            if line < 0 || line >= grid_rows as i32 {
+                continue;
+            }
+
+            underlines.extend(Self::line_hyperlink_underlines(&line_cells, line, theme));
+
+            for cell in line_cells {
+                let col = cell.point.column.0 as i32;
 
                 // Handle INVERSE flag
                 let mut fg = cell.cell.fg;
@@ -390,7 +444,118 @@ impl TerminalElement {
             batched_runs.push(batch);
         }
 
-        (rects, batched_runs)
+        (rects, batched_runs, underlines)
+    }
+
+    fn line_hyperlink_underlines(
+        cells: &[&IndexedCell],
+        line: i32,
+        theme: &TerminalTheme,
+    ) -> Vec<LayoutUnderline> {
+        let mut underlines = Vec::new();
+        let mut token = String::new();
+        let mut token_cells = Vec::new();
+        let mut token_has_explicit_hyperlink = false;
+
+        let flush_token = |token: &mut String,
+                           token_cells: &mut Vec<TokenCell>,
+                           token_has_explicit_hyperlink: &mut bool,
+                           underlines: &mut Vec<LayoutUnderline>| {
+            let raw = mem::take(token);
+            let token_cells = mem::take(token_cells);
+            let has_explicit_hyperlink = mem::take(token_has_explicit_hyperlink);
+
+            if raw.is_empty() {
+                return;
+            }
+
+            let Some(trimmed) = Terminal::trim_token(&raw) else {
+                return;
+            };
+
+            if !has_explicit_hyperlink && Terminal::parse_terminal_link(&raw, None).is_none() {
+                return;
+            }
+
+            let trimmed_start = trimmed.as_ptr() as usize - raw.as_ptr() as usize;
+            let trimmed_end = trimmed_start + trimmed.len();
+
+            let trimmed_cells = token_cells
+                .iter()
+                .filter(|cell| cell.end > trimmed_start && cell.start < trimmed_end)
+                .collect_vec();
+            let Some(first_cell) = trimmed_cells.first() else {
+                return;
+            };
+            let Some(last_cell) = trimmed_cells.last() else {
+                return;
+            };
+
+            let mut color = first_cell.color;
+            color.a = (color.a * 0.55).clamp(0.0, 1.0);
+            underlines.push(LayoutUnderline::new(
+                line,
+                first_cell.col,
+                (last_cell.col - first_cell.col + 1).max(0) as usize,
+                color,
+            ));
+        };
+
+        for cell in cells {
+            let flags = cell.cell.flags;
+            if flags.contains(CellFlags::LEADING_WIDE_CHAR_SPACER)
+                || flags.contains(CellFlags::WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+
+            let ch = match cell.cell.c {
+                '\t' => ' ',
+                c => c,
+            };
+
+            if ch.is_whitespace() {
+                flush_token(
+                    &mut token,
+                    &mut token_cells,
+                    &mut token_has_explicit_hyperlink,
+                    &mut underlines,
+                );
+                continue;
+            }
+
+            let start = token.len();
+            token.push(ch);
+            let end = token.len();
+
+            let mut fg = cell.cell.fg;
+            let mut bg = cell.cell.bg;
+            if flags.contains(CellFlags::INVERSE) {
+                mem::swap(&mut fg, &mut bg);
+            }
+
+            let mut fg_color = theme.convert_color(&fg);
+            if flags.contains(CellFlags::DIM) {
+                fg_color.a *= 0.7;
+            }
+
+            token_cells.push(TokenCell {
+                col: cell.point.column.0 as i32,
+                start,
+                end,
+                color: fg_color,
+            });
+            token_has_explicit_hyperlink |= cell.cell.hyperlink().is_some();
+        }
+
+        flush_token(
+            &mut token,
+            &mut token_cells,
+            &mut token_has_explicit_hyperlink,
+            &mut underlines,
+        );
+
+        underlines
     }
 }
 
@@ -509,7 +674,7 @@ impl Element for TerminalElement {
         window.paint_quad(fill(bounds, rgb(theme.background)));
 
         // Layout the grid (batch text runs, collect background rects)
-        let (rects, batched_runs) = Self::layout_grid(
+        let (rects, batched_runs, underlines) = Self::layout_grid(
             &layout.content.cells,
             layout.content.display_offset as i32,
             layout.content.grid_rows,
@@ -532,6 +697,10 @@ impl Element for TerminalElement {
                 window,
                 cx,
             );
+        }
+
+        for underline in &underlines {
+            underline.paint(origin, cell_width, line_height, window);
         }
 
         // Paint cursor (following Zed's cursor positioning)
@@ -569,6 +738,89 @@ impl Element for TerminalElement {
                 });
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::px;
+
+    use super::{LayoutUnderline, TerminalElement, TerminalTheme};
+    use crate::Terminal;
+
+    fn underline_spans(output: &[u8]) -> Vec<LayoutUnderline> {
+        let mut terminal = Terminal::new(160, 8, px(10.0), px(20.0));
+        terminal.advance_bytes(output);
+        let content = terminal.content();
+        let (_, _, underlines) = TerminalElement::layout_grid(
+            &content.cells,
+            content.display_offset as i32,
+            content.grid_rows,
+            &TerminalTheme::one_dark(),
+        );
+        underlines
+    }
+
+    #[test]
+    fn underlines_plain_file_links() {
+        let underlines = underline_spans(b"Visit src/main.rs:12:3 now\r\n");
+
+        assert_eq!(underlines.len(), 1);
+        assert_eq!(underlines[0].line, 0);
+        assert_eq!(underlines[0].col, 6);
+        assert_eq!(underlines[0].num_cells, 16);
+    }
+
+    #[test]
+    fn trims_wrapped_plain_file_links() {
+        let underlines = underline_spans(b"Open (\"src/main.rs:12:3\") next\r\n");
+
+        assert_eq!(underlines.len(), 1);
+        assert_eq!(underlines[0].col, 7);
+        assert_eq!(underlines[0].num_cells, 16);
+    }
+
+    #[test]
+    fn ignores_prompt_tokens_that_are_not_links() {
+        let underlines = underline_spans(b"git:(refactor-app-session-architecture\r\n");
+
+        assert!(underlines.is_empty());
+    }
+
+    #[test]
+    fn ignores_version_like_tokens_that_are_not_links() {
+        let underlines = underline_spans(b"v0.112.0 gpt-5.4 /model\r\n");
+
+        assert!(underlines.is_empty());
+    }
+
+    #[test]
+    fn ignores_bare_readme_that_is_not_a_link() {
+        let underlines = underline_spans(b"README\r\n");
+
+        assert!(underlines.is_empty());
+    }
+
+    #[test]
+    fn underlines_osc8_urls() {
+        let underlines = underline_spans(
+            b"Visit \x1b]8;;https://zedra.dev\x1b\\zedra.dev\x1b]8;;\x1b\\ now\r\n",
+        );
+
+        assert_eq!(underlines.len(), 1);
+        assert_eq!(underlines[0].col, 6);
+        assert_eq!(underlines[0].num_cells, 9);
+    }
+
+    #[test]
+    fn underlines_osc8_file_links() {
+        let underlines = underline_spans(
+            b"Open \x1b]8;;file:///repo/docs/guide.md\x1b\\docs/guide.md\x1b]8;;\x1b\\ now\r\n",
+        );
+
+        assert_eq!(underlines.len(), 1);
+        assert_eq!(underlines[0].col, 5);
+        assert_eq!(underlines[0].num_cells, 13);
     }
 }
 
