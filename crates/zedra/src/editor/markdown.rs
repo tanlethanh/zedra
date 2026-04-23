@@ -482,21 +482,34 @@ fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -
                     .w_full()
                     .flex()
                     .items_start()
-                    .gap(px(8.0))
+                    .gap(px(4.0))
                     .child(
                         div()
-                            .min_w(px(20.0))
+                            .flex_shrink_0()
+                            .min_w(px(16.0))
                             .text_color(rgb(theme::TEXT_MUTED))
                             .text_size(px(theme::FONT_BODY))
                             .line_height(px(theme::FONT_BODY + 6.0))
                             .font_family(fonts::MONO_FONT_FAMILY)
                             .child(marker),
                     )
-                    .child(div().flex_1().flex().flex_col().gap(px(8.0)).children(
-                        item.iter().enumerate().map(|(child_ix, child)| {
-                            render_block(child, format!("{key}-item-{ix}-{child_ix}"), window, cx)
-                        }),
-                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .w_0()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.0))
+                            .children(item.iter().enumerate().map(|(child_ix, child)| {
+                                render_block(
+                                    child,
+                                    format!("{key}-item-{ix}-{child_ix}"),
+                                    window,
+                                    cx,
+                                )
+                            })),
+                    )
             }))
             .into_any_element(),
         Block::CodeBlock { info, text } => {
