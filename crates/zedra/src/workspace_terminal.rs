@@ -127,8 +127,8 @@ impl WorkspaceTerminal {
                         });
                         platform_bridge::show_custom_sheet(
                             CustomSheetOptions {
-                                detents: vec![CustomSheetDetent::Medium, CustomSheetDetent::Large],
-                                initial_detent: CustomSheetDetent::Medium,
+                                detents: vec![CustomSheetDetent::Large],
+                                initial_detent: CustomSheetDetent::Large,
                                 shows_grabber: true,
                                 expands_on_scroll_edge: true,
                                 edge_attached_in_compact_height: false,
