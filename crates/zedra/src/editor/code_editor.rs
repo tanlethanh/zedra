@@ -9,6 +9,7 @@ use super::syntax_highlighter::{Highlighter, Language};
 use super::syntax_theme::SyntaxTheme;
 use super::text_buffer::Buffer;
 
+use crate::fonts;
 use crate::platform_bridge;
 use crate::theme;
 
@@ -246,6 +247,7 @@ impl Render for EditorView {
         let text_style = {
             let mut style = window.text_style();
             style.color = rgb(0xabb2bf).into();
+            style.font_family = fonts::MONO_FONT_FAMILY.into();
             style.font_size = px(FONT_SIZE).into();
             style
         };
@@ -255,6 +257,7 @@ impl Render for EditorView {
             .flex_col()
             .size_full()
             .bg(rgb(0x0e0c0c))
+            .font_family(fonts::MONO_FONT_FAMILY)
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 let keystroke = &event.keystroke;
