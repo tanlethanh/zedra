@@ -611,7 +611,10 @@ impl Terminal {
         Some(text[start..end].to_string())
     }
 
-    fn parse_terminal_link(raw: &str, workdir: Option<&str>) -> Option<TerminalHyperlink> {
+    pub(crate) fn parse_terminal_link(
+        raw: &str,
+        workdir: Option<&str>,
+    ) -> Option<TerminalHyperlink> {
         let token = Self::trim_token(raw)?;
         if token.is_empty() {
             return None;
@@ -627,6 +630,9 @@ impl Terminal {
         }
 
         let (path, line, column) = Self::split_file_position(token);
+        if !Self::looks_like_file_path(path) {
+            return None;
+        }
         let relative_path = Self::resolve_relative_path(path, workdir)?;
         Some(TerminalHyperlink {
             label: token.to_string(),
@@ -643,7 +649,94 @@ impl Terminal {
         token.starts_with("http://") || token.starts_with("https://")
     }
 
-    fn trim_token(token: &str) -> Option<&str> {
+    fn looks_like_file_path(path: &str) -> bool {
+        let path = path.trim();
+        if path.is_empty() || Self::looks_like_url(path) {
+            return false;
+        }
+
+        if path.contains(':') && !Self::looks_like_windows_drive_path(path) {
+            return false;
+        }
+
+        if path.starts_with("./") || path.starts_with("../") || path.starts_with("~/") {
+            return true;
+        }
+
+        if path.starts_with('/') {
+            return Self::looks_like_absolute_path(path);
+        }
+
+        if path.contains('/') || path.contains('\\') {
+            return true;
+        }
+
+        let file_name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+        if file_name.starts_with('.') && file_name.len() > 1 {
+            return true;
+        }
+
+        if Self::has_file_like_extension(file_name) {
+            return true;
+        }
+
+        Self::is_common_bare_filename(file_name)
+    }
+
+    fn looks_like_absolute_path(path: &str) -> bool {
+        let path = path.trim_start_matches('/');
+        if path.is_empty() {
+            return false;
+        }
+
+        if path.contains('/') || path.contains('\\') {
+            return true;
+        }
+
+        let file_name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+        (file_name.starts_with('.') && file_name.len() > 1)
+            || Self::has_file_like_extension(file_name)
+            || Self::is_common_bare_filename(file_name)
+    }
+
+    fn has_file_like_extension(file_name: &str) -> bool {
+        let Some((stem, extension)) = file_name.rsplit_once('.') else {
+            return false;
+        };
+
+        !stem.is_empty()
+            && !extension.is_empty()
+            && extension.chars().any(|ch| ch.is_ascii_alphabetic())
+    }
+
+    fn looks_like_windows_drive_path(path: &str) -> bool {
+        let bytes = path.as_bytes();
+        bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'\\' | b'/')
+    }
+
+    fn is_common_bare_filename(file_name: &str) -> bool {
+        file_name.eq_ignore_ascii_case("license")
+            || file_name.eq_ignore_ascii_case("licence")
+            || matches!(
+                file_name,
+                "Makefile"
+                    | "Dockerfile"
+                    | "Gemfile"
+                    | "Procfile"
+                    | "Podfile"
+                    | "Rakefile"
+                    | "Brewfile"
+                    | "Justfile"
+                    | "justfile"
+                    | "Tiltfile"
+                    | "Vagrantfile"
+            )
+    }
+
+    pub(crate) fn trim_token(token: &str) -> Option<&str> {
         let trimmed = token.trim_matches(|c: char| {
             c.is_whitespace()
                 || matches!(
@@ -839,4 +932,232 @@ fn normal_mouse_scroll_report(point: Point, button: u8, utf8: bool) -> Option<Ve
 fn encode_mouse_position(position: usize) -> [u8; 2] {
     let position = 32 + 1 + position;
     [(0xC0 + position / 64) as u8, (0x80 + (position & 63)) as u8]
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use alacritty_terminal::index::{Column, Line, Point};
+    use gpui::px;
+
+    use super::{Terminal, TerminalHyperlink, TerminalHyperlinkTarget};
+
+    fn terminal_with_output(output: &[u8]) -> Terminal {
+        let mut terminal = Terminal::new(160, 8, px(10.0), px(20.0));
+        terminal.advance_bytes(output);
+        terminal
+    }
+
+    fn point_for_substring(line: &str, needle: &str) -> Point {
+        let start = line.find(needle).expect("substring should exist");
+        let hovered_column = start + needle.len().saturating_sub(1) / 2;
+        Point::new(Line(0), Column(hovered_column))
+    }
+
+    fn file_target(
+        hyperlink: TerminalHyperlink,
+    ) -> (String, String, String, Option<u32>, Option<u32>) {
+        match hyperlink.target {
+            TerminalHyperlinkTarget::File {
+                path,
+                relative_path,
+                line,
+                column,
+            } => (hyperlink.label, path, relative_path, line, column),
+            other => panic!("expected file hyperlink, got {other:?}"),
+        }
+    }
+
+    fn url_target(hyperlink: TerminalHyperlink) -> (String, String) {
+        match hyperlink.target {
+            TerminalHyperlinkTarget::Url { url } => (hyperlink.label, url),
+            other => panic!("expected url hyperlink, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn detects_plain_file_links_from_grid_point() {
+        let line = "Visit src/main.rs:12:3 now";
+        let terminal = terminal_with_output(b"Visit src/main.rs:12:3 now\r\n");
+
+        let hyperlink = terminal
+            .hyperlink_at_point(point_for_substring(line, "src/main.rs"), Some("/repo"))
+            .expect("expected file hyperlink");
+        let (label, path, relative_path, line, column) = file_target(hyperlink);
+
+        assert_eq!(label, "src/main.rs:12:3");
+        assert_eq!(Path::new(&path), Path::new("src/main.rs"));
+        assert_eq!(Path::new(&relative_path), Path::new("src/main.rs"));
+        assert_eq!(line, Some(12));
+        assert_eq!(column, Some(3));
+    }
+
+    #[test]
+    fn trims_wrapping_punctuation_for_plain_file_links() {
+        let line = r#"Open ("src/main.rs:12:3") next"#;
+        let terminal = terminal_with_output(b"Open (\"src/main.rs:12:3\") next\r\n");
+
+        let hyperlink = terminal
+            .hyperlink_at_point(point_for_substring(line, "src/main.rs"), Some("/repo"))
+            .expect("expected wrapped file hyperlink");
+        let (label, path, relative_path, line, column) = file_target(hyperlink);
+
+        assert_eq!(label, "src/main.rs:12:3");
+        assert_eq!(Path::new(&path), Path::new("src/main.rs"));
+        assert_eq!(Path::new(&relative_path), Path::new("src/main.rs"));
+        assert_eq!(line, Some(12));
+        assert_eq!(column, Some(3));
+    }
+
+    #[test]
+    fn ignores_shell_prompt_tokens_from_grid_point() {
+        let line = "git:(refactor-app-session-architecture";
+        let terminal = terminal_with_output(b"git:(refactor-app-session-architecture\r\n");
+
+        assert_eq!(
+            terminal.hyperlink_at_point(
+                point_for_substring(line, "refactor-app-session-architecture"),
+                Some("/repo"),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn ignores_version_like_tokens_from_grid_point() {
+        let line = "v0.112.0 gpt-5.4 /model";
+        let terminal = terminal_with_output(b"v0.112.0 gpt-5.4 /model\r\n");
+
+        assert_eq!(
+            terminal.hyperlink_at_point(point_for_substring(line, "v0.112.0"), Some("/repo")),
+            None
+        );
+        assert_eq!(
+            terminal.hyperlink_at_point(point_for_substring(line, "gpt-5.4"), Some("/repo")),
+            None
+        );
+        assert_eq!(
+            terminal.hyperlink_at_point(point_for_substring(line, "/model"), Some("/repo")),
+            None
+        );
+    }
+
+    #[test]
+    fn ignores_readme_from_grid_point() {
+        let line = "README";
+        let terminal = terminal_with_output(b"README\r\n");
+
+        assert_eq!(
+            terminal.hyperlink_at_point(point_for_substring(line, "README"), Some("/repo")),
+            None
+        );
+    }
+
+    #[test]
+    fn detects_osc8_url_hyperlinks_from_grid_point() {
+        let line = "Visit zedra.dev now";
+        let terminal = terminal_with_output(
+            b"Visit \x1b]8;;https://zedra.dev\x1b\\zedra.dev\x1b]8;;\x1b\\ now\r\n",
+        );
+
+        let hyperlink = terminal
+            .hyperlink_at_point(point_for_substring(line, "zedra.dev"), Some("/repo"))
+            .expect("expected OSC 8 url hyperlink");
+        let (label, url) = url_target(hyperlink);
+
+        assert_eq!(label, "zedra.dev");
+        assert_eq!(url, "https://zedra.dev");
+    }
+
+    #[test]
+    fn detects_osc8_file_hyperlinks_from_grid_point() {
+        let line = "Open docs/guide.md now";
+        let terminal = terminal_with_output(
+            b"Open \x1b]8;;file:///repo/docs/guide.md\x1b\\docs/guide.md\x1b]8;;\x1b\\ now\r\n",
+        );
+
+        let hyperlink = terminal
+            .hyperlink_at_point(point_for_substring(line, "docs/guide.md"), Some("/repo"))
+            .expect("expected OSC 8 file hyperlink");
+        let (_label, path, relative_path, line, column) = file_target(hyperlink);
+
+        assert_eq!(Path::new(&path), Path::new("/repo/docs/guide.md"));
+        assert_eq!(Path::new(&relative_path), Path::new("docs/guide.md"));
+        assert_eq!(line, None);
+        assert_eq!(column, None);
+    }
+
+    #[test]
+    fn ignores_shell_prompt_branch_tokens() {
+        assert_eq!(
+            Terminal::parse_terminal_link("git:(refactor-app-session-architecture", Some("/repo")),
+            None
+        );
+        assert_eq!(Terminal::parse_terminal_link("hello", Some("/repo")), None);
+    }
+
+    #[test]
+    fn ignores_version_like_tokens() {
+        assert_eq!(
+            Terminal::parse_terminal_link("v0.112.0", Some("/repo")),
+            None
+        );
+        assert_eq!(
+            Terminal::parse_terminal_link("gpt-5.4", Some("/repo")),
+            None
+        );
+        assert_eq!(Terminal::parse_terminal_link("/model", Some("/repo")), None);
+    }
+
+    #[test]
+    fn ignores_bare_readme() {
+        assert_eq!(Terminal::parse_terminal_link("README", Some("/repo")), None);
+    }
+
+    #[test]
+    fn parses_relative_file_links() {
+        let hyperlink = Terminal::parse_terminal_link("src/main.rs:12:3", Some("/repo"))
+            .expect("expected file hyperlink");
+
+        assert_eq!(hyperlink.label, "src/main.rs:12:3");
+        assert_eq!(
+            hyperlink.target,
+            TerminalHyperlinkTarget::File {
+                path: "src/main.rs".into(),
+                relative_path: "src/main.rs".into(),
+                line: Some(12),
+                column: Some(3),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_common_bare_filenames() {
+        let hyperlink =
+            Terminal::parse_terminal_link("Makefile:8", Some("/repo")).expect("expected Makefile");
+
+        assert_eq!(
+            hyperlink.target,
+            TerminalHyperlinkTarget::File {
+                path: "Makefile".into(),
+                relative_path: "Makefile".into(),
+                line: Some(8),
+                column: None,
+            }
+        );
+    }
+
+    #[test]
+    fn preserves_url_links() {
+        let hyperlink = Terminal::parse_terminal_link("https://zedra.dev", Some("/repo"))
+            .expect("expected url hyperlink");
+
+        assert_eq!(
+            hyperlink.target,
+            TerminalHyperlinkTarget::Url {
+                url: "https://zedra.dev".into(),
+            }
+        );
+    }
 }
