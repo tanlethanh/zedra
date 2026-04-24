@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{prelude::FluentBuilder as _, *};
 use tokio::sync::broadcast;
@@ -9,6 +10,7 @@ use zedra_session::{ConnectEvent, Session, SessionHandle, SessionState, signer::
 
 use crate::active_terminal;
 use crate::editor::git_sidebar::GitFileSection;
+use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
 use crate::platform_bridge::{self, AlertButton, HapticFeedback, status_bar_inset};
 use crate::terminal_state::TerminalState;
 use crate::theme;
@@ -22,7 +24,7 @@ use crate::workspace_action::{
 use crate::workspace_connecting::WorkspaceConnecting;
 use crate::workspace_drawer::WorkspaceDrawer;
 use crate::workspace_editor::WorkspaceEditor;
-use crate::workspace_gitdiff::WorkspaceGitdiff;
+use crate::workspace_gitdiff::{GitdiffHeaderChanged, WorkspaceGitdiff};
 use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
 use crate::workspace_terminal::{TERMINAL_PENDING_ID, WorkspaceTerminal};
 use zedra_terminal::view::TerminalView;
@@ -56,7 +58,14 @@ pub struct Workspace {
     _connect_listener: Option<Task<()>>,
     /// Listens for host events/actions from the remote host.
     _host_event_listener: Option<Task<()>>,
+    pending_confirmation: SharedPendingSlot<PendingWorkspaceConfirmation>,
+    _pending_confirmation_task: Task<()>,
     _subscriptions: Vec<Subscription>,
+}
+
+enum PendingWorkspaceConfirmation {
+    DisconnectSession,
+    DeleteTerminal { id: String },
 }
 
 impl Workspace {
@@ -110,6 +119,19 @@ impl Workspace {
                 }
             },
         );
+        let gitdiff_subscription = cx.subscribe(
+            &gitdiff,
+            |this, _gitdiff, event: &GitdiffHeaderChanged, cx| {
+                this.content.update(cx, |content, cx| {
+                    content.set_git_diff_subtitle(
+                        event.filename.clone(),
+                        event.added,
+                        event.removed,
+                        cx,
+                    );
+                });
+            },
+        );
 
         let mut host_event_rx = session.subscribe_host_events();
         let host_event_listener = cx.spawn(async move |workspace, cx| {
@@ -138,6 +160,15 @@ impl Workspace {
             }
         });
 
+        let pending_confirmation = shared_pending_slot();
+        let confirmation_slot = pending_confirmation.clone();
+        let pending_confirmation_task =
+            spawn_periodic_task(cx, Duration::from_millis(50), move |this, cx| {
+                if let Some(confirmation) = confirmation_slot.take() {
+                    this.process_pending_confirmation(confirmation, cx);
+                }
+            });
+
         Self {
             drawer_host,
             drawer,
@@ -153,7 +184,9 @@ impl Workspace {
             seen_reconnect: false,
             _connect_listener: None,
             _host_event_listener: Some(host_event_listener),
-            _subscriptions: vec![workspace_state_subscription],
+            pending_confirmation,
+            _pending_confirmation_task: pending_confirmation_task,
+            _subscriptions: vec![workspace_state_subscription, gitdiff_subscription],
         }
     }
 
@@ -266,8 +299,8 @@ impl Workspace {
         }
     }
 
-    pub fn close_terminal_from_quick_action(&mut self, id: String, cx: &mut Context<Self>) {
-        self.close_terminal_by_id(id, cx);
+    pub fn close_terminal_from_quick_action(&mut self, id: String, _cx: &mut Context<Self>) {
+        self.request_terminal_delete_confirmation(id);
     }
 
     // ─── Action Handlers ─────────────────────────────────────────────────────
@@ -290,11 +323,26 @@ impl Workspace {
     fn handle_request_disconnect(
         &mut self,
         _action: &RequestDisconnect,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
     ) {
         info!("handle RequestDisconnect from workspace");
-        self.disconnect(cx);
+        window.hide_soft_keyboard();
+
+        let pending_confirmation = self.pending_confirmation.clone();
+        platform_bridge::show_alert(
+            "",
+            "Disconnect this session?",
+            vec![
+                AlertButton::destructive("Disconnect"),
+                AlertButton::cancel("Cancel"),
+            ],
+            move |button_index| {
+                if button_index == 0 {
+                    pending_confirmation.set(PendingWorkspaceConfirmation::DisconnectSession);
+                }
+            },
+        );
     }
 
     fn handle_toggle_drawer(
@@ -337,12 +385,7 @@ impl Workspace {
         self.content.update(cx, |c, cx| c.show_connecting_view(cx));
     }
 
-    fn handle_open_file(
-        &mut self,
-        action: &OpenFile,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn handle_open_file(&mut self, action: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
         info!("handle OpenFile from workspace");
         self.drawer_host
             .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
@@ -353,6 +396,7 @@ impl Workspace {
 
         let editor = self.editor.clone();
         self.content.update(cx, move |c, cx| {
+            c.clear_subtitle(cx);
             c.set_main_view(editor.into(), cx);
         });
     }
@@ -579,8 +623,7 @@ impl Workspace {
         let id = &action.id;
         let terminal_entity = self.terminal_by_id(id, cx).unwrap_or_else(|| {
             info!("terminal not yet tracked locally, creating view for {}", id);
-            let entity = self.create_terminal_entity(id.clone(), window, cx);
-            entity
+            self.create_terminal_entity(id.clone(), window, cx)
         });
 
         self.activate_terminal(id.clone(), terminal_entity, cx);
@@ -589,11 +632,13 @@ impl Workspace {
     fn handle_close_terminal(
         &mut self,
         action: &CloseTerminal,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
     ) {
         info!("handle CloseTerminal from workspace");
-        self.close_terminal_by_id(action.id.clone(), cx);
+        window.hide_soft_keyboard();
+
+        self.request_terminal_delete_confirmation(action.id.clone());
     }
 
     fn activate_terminal(
@@ -608,14 +653,17 @@ impl Workspace {
             cx.notify();
         });
         self.content.update(cx, |c, cx| {
+            c.clear_subtitle(cx);
             c.set_main_view(terminal_entity.into(), cx);
         });
     }
 
     fn close_terminal_by_id(&mut self, id: String, cx: &mut Context<Self>) {
         self.terminals.retain(|t| t.read(cx).terminal_id() != id);
+        self.session.handle().remove_terminal(&id);
 
         self.workspace_state.update(cx, |state, cx| {
+            state.terminal_ids.retain(|terminal_id| terminal_id != &id);
             if state.active_terminal_id.as_deref() == Some(id.as_str()) {
                 state.active_terminal_id = None;
                 active_terminal::clear_active_input();
@@ -630,6 +678,38 @@ impl Workspace {
             }
         })
         .detach();
+    }
+
+    fn process_pending_confirmation(
+        &mut self,
+        confirmation: PendingWorkspaceConfirmation,
+        cx: &mut Context<Self>,
+    ) {
+        match confirmation {
+            PendingWorkspaceConfirmation::DisconnectSession => self.disconnect(cx),
+            PendingWorkspaceConfirmation::DeleteTerminal { id } => {
+                self.close_terminal_by_id(id, cx)
+            }
+        }
+    }
+
+    fn request_terminal_delete_confirmation(&self, terminal_id: String) {
+        let pending_confirmation = self.pending_confirmation.clone();
+        platform_bridge::show_alert(
+            "",
+            "Delete this terminal?",
+            vec![
+                AlertButton::destructive("Delete"),
+                AlertButton::cancel("Cancel"),
+            ],
+            move |button_index| {
+                if button_index == 0 {
+                    pending_confirmation.set(PendingWorkspaceConfirmation::DeleteTerminal {
+                        id: terminal_id.clone(),
+                    });
+                }
+            },
+        );
     }
 
     /// Create a new terminal entity and add it to the terminals vec.
@@ -742,12 +822,21 @@ pub struct WorkspaceContent {
     workspace_state: Entity<WorkspaceState>,
     #[allow(dead_code)]
     session_handle: SessionHandle,
-    subtitle: SharedString,
+    subtitle: WorkspaceSubtitle,
     main_view: AnyView,
     focus_handle: FocusHandle,
     show_connecting: bool,
     connecting_view: Entity<WorkspaceConnecting>,
     mainview_bounds: Option<Bounds<Pixels>>,
+}
+
+enum WorkspaceSubtitle {
+    Default,
+    GitDiff {
+        filename: SharedString,
+        added: usize,
+        removed: usize,
+    },
 }
 
 impl WorkspaceContent {
@@ -762,7 +851,7 @@ impl WorkspaceContent {
 
         Self {
             main_view: empty_view.into(),
-            subtitle: SharedString::default(),
+            subtitle: WorkspaceSubtitle::Default,
             focus_handle: cx.focus_handle(),
             session_handle,
             workspace_state,
@@ -774,6 +863,26 @@ impl WorkspaceContent {
 
     pub fn set_main_view(&mut self, view: AnyView, cx: &mut Context<Self>) {
         self.main_view = view;
+        cx.notify();
+    }
+
+    pub fn clear_subtitle(&mut self, cx: &mut Context<Self>) {
+        self.subtitle = WorkspaceSubtitle::Default;
+        cx.notify();
+    }
+
+    pub fn set_git_diff_subtitle(
+        &mut self,
+        filename: String,
+        added: usize,
+        removed: usize,
+        cx: &mut Context<Self>,
+    ) {
+        self.subtitle = WorkspaceSubtitle::GitDiff {
+            filename: filename.into(),
+            added,
+            removed,
+        };
         cx.notify();
     }
 
@@ -821,13 +930,7 @@ impl Render for WorkspaceContent {
         let this = cx.weak_entity();
         let workspace_state = self.workspace_state.read(cx);
         let title = workspace_state.project_name.to_string();
-        let subtitle = {
-            if !self.subtitle.is_empty() {
-                self.subtitle.to_string()
-            } else {
-                workspace_state.strip_path.to_string()
-            }
-        };
+        let default_subtitle = workspace_state.strip_path.to_string();
         let net_dot_color = match workspace_state.connect_phase.clone() {
             Some(phase) => phase_indicator_color(&phase),
             None => theme::ACCENT_DIM,
@@ -924,8 +1027,8 @@ impl Render for WorkspaceContent {
                                             ),
                                     ),
                             )
-                            .child(
-                                div()
+                            .child(match &self.subtitle {
+                                WorkspaceSubtitle::Default => div()
                                     .w_full()
                                     .min_w_0()
                                     .truncate()
@@ -933,8 +1036,50 @@ impl Render for WorkspaceContent {
                                     .text_color(rgb(theme::TEXT_SECONDARY))
                                     .text_size(px(theme::FONT_BODY))
                                     .font_weight(FontWeight::MEDIUM)
-                                    .child(subtitle),
-                            ),
+                                    .child(default_subtitle)
+                                    .into_any_element(),
+                                WorkspaceSubtitle::GitDiff {
+                                    filename,
+                                    added,
+                                    removed,
+                                } => div()
+                                    .w_full()
+                                    .min_w_0()
+                                    .px_2()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap(px(6.0))
+                                    .text_size(px(theme::FONT_BODY))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .flex_shrink()
+                                            .truncate()
+                                            .text_center()
+                                            .text_color(rgb(theme::TEXT_SECONDARY))
+                                            .child(filename.clone()),
+                                    )
+                                    .when(*added > 0, |this| {
+                                        this.child(
+                                            div()
+                                                .flex_shrink_0()
+                                                .text_color(rgb(0x6fc17a))
+                                                .child(format!("+{}", added)),
+                                        )
+                                    })
+                                    .when(*removed > 0, |this| {
+                                        this.child(
+                                            div()
+                                                .flex_shrink_0()
+                                                .text_color(rgb(0xd57a7a))
+                                                .child(format!("-{}", removed)),
+                                        )
+                                    })
+                                    .into_any_element(),
+                            }),
                     )
                     .child(
                         div()

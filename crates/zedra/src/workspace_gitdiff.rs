@@ -10,6 +10,13 @@ use crate::placeholder::render_placeholder;
 const MAX_DIFF_BYTES: usize = 200 * 1024;
 
 #[derive(Clone, Debug)]
+pub struct GitdiffHeaderChanged {
+    pub filename: String,
+    pub added: usize,
+    pub removed: usize,
+}
+
+#[derive(Clone, Debug)]
 pub enum GitdiffState {
     Loading,
     Loaded,
@@ -23,6 +30,8 @@ pub struct WorkspaceGitdiff {
     session_handle: SessionHandle,
     diff_task: Option<Task<()>>,
 }
+
+impl EventEmitter<GitdiffHeaderChanged> for WorkspaceGitdiff {}
 
 impl WorkspaceGitdiff {
     pub fn new(session_handle: SessionHandle, cx: &mut App) -> Self {
@@ -40,6 +49,11 @@ impl WorkspaceGitdiff {
         let filename = path.rsplit('/').next().unwrap_or(&path).to_string();
         let filename_clone = filename.clone();
         self.state = GitdiffState::Loading;
+        cx.emit(GitdiffHeaderChanged {
+            filename,
+            added: 0,
+            removed: 0,
+        });
         cx.notify();
 
         // Drop any previous task before starting a new one.
@@ -60,12 +74,20 @@ impl WorkspaceGitdiff {
                                 let diffs = parse_unified_diff(&diff_text);
                                 let diff = diffs
                                     .into_iter()
-                                    .find(|d| d.new_path == path)
+                                    .find(|d| d.new_path == path || d.old_path == path)
                                     .unwrap_or(FileDiff {
                                         old_path: path.clone(),
                                         new_path: path.clone(),
                                         hunks: Vec::new(),
                                     });
+                                let (added, removed) = diff.change_counts();
+                                let _ = this.update(cx, |_this, cx| {
+                                    cx.emit(GitdiffHeaderChanged {
+                                        filename: filename_clone.clone(),
+                                        added,
+                                        removed,
+                                    });
+                                });
                                 (GitdiffState::Loaded, Some(diff))
                             }
                         }
