@@ -127,7 +127,9 @@ impl Render for MarkdownView {
                             .iter()
                             .enumerate()
                             .map(|(ix, block)| render_block(block, format!("md-{ix}"), window, cx)),
-                    ),
+                    )
+                    .selection_area()
+                    .id("markdown-preview-selection"),
             )
     }
 }
@@ -491,7 +493,11 @@ fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -
                             .text_size(px(theme::FONT_BODY))
                             .line_height(px(theme::FONT_BODY + 6.0))
                             .font_family(fonts::MONO_FONT_FAMILY)
-                            .child(marker),
+                            .child(
+                                StyledText::new(marker)
+                                    .selectable()
+                                    .selection_separator_after(" "),
+                            ),
                     )
                     .child(
                         div()
@@ -530,12 +536,21 @@ fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -
                         .text_color(rgb(theme::TEXT_MUTED))
                         .text_size(px(theme::FONT_DETAIL - 1.0))
                         .font_family(fonts::MONO_FONT_FAMILY)
-                        .child(info.clone()),
+                        .child(
+                            StyledText::new(info.clone())
+                                .selectable()
+                                .selection_separator_after("\n"),
+                        ),
                 );
             }
 
             container
                 .children(text.lines().map(|line| {
+                    let line = if line.is_empty() {
+                        " ".to_string()
+                    } else {
+                        line.to_string()
+                    };
                     div()
                         .w_full()
                         .text_color(rgb(theme::TEXT_PRIMARY))
@@ -543,11 +558,11 @@ fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -
                         .line_height(px(theme::FONT_DETAIL + 5.0))
                         .font_family(fonts::MONO_FONT_FAMILY)
                         .whitespace_nowrap()
-                        .child(if line.is_empty() {
-                            " ".to_string()
-                        } else {
-                            line.to_string()
-                        })
+                        .child(
+                            StyledText::new(line)
+                                .selectable()
+                                .selection_separator_after("\n"),
+                        )
                 }))
                 .into_any_element()
         }
@@ -627,13 +642,16 @@ fn render_inline_block(content: &[Inline], style: InlineBlockStyle, key: String)
     flatten_inlines(content, &mut buffer, InlineMarks::default());
 
     let base = block_style(style);
-    let styled = StyledText::new(buffer.text.clone()).with_highlights(merge_highlights(
-        buffer
-            .highlights
-            .into_iter()
-            .map(|run| (run.range, run.style))
-            .collect(),
-    ));
+    let styled = StyledText::new(buffer.text.clone())
+        .with_highlights(merge_highlights(
+            buffer
+                .highlights
+                .into_iter()
+                .map(|run| (run.range, run.style))
+                .collect(),
+        ))
+        .selectable()
+        .selection_separator_after(selection_separator_after(style));
 
     let link_ranges = buffer
         .links
@@ -837,5 +855,16 @@ fn block_style(style: InlineBlockStyle) -> BlockStyleSpec {
             font_family: fonts::MONO_FONT_FAMILY,
             weight: None,
         },
+    }
+}
+
+fn selection_separator_after(style: InlineBlockStyle) -> &'static str {
+    match style {
+        InlineBlockStyle::TableHeader | InlineBlockStyle::TableCell => "\t",
+        InlineBlockStyle::Title
+        | InlineBlockStyle::Section
+        | InlineBlockStyle::Heading
+        | InlineBlockStyle::Body
+        | InlineBlockStyle::Html => "\n",
     }
 }

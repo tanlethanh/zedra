@@ -75,3 +75,36 @@ zedra start --workdir . --relay-url https://sg1.relay.zedra.dev
 
 Expected: host connects to the specified relay; QR shows that relay URL in
 `relay` field of JSON output (`--json` flag).
+
+## 16. iOS Native Selection In Markdown Preview
+
+1. Connect to a session on iPhone or iOS simulator and open the terminal view
+2. Run:
+
+````bash
+cat >/tmp/zedra-markdown-selection.md <<'EOF'
+# Selection Test
+
+This paragraph should support native iOS selection inside the markdown preview.
+
+- First bullet item
+- Second bullet item
+
+```rust
+let answer = 42;
+println!("{answer}");
+```
+EOF
+printf '/tmp/zedra-markdown-selection.md:1\n'
+````
+
+3. Tap `/tmp/zedra-markdown-selection.md:1`
+4. Expected: the preview opens in markdown mode
+5. Long-press inside the heading or paragraph text
+6. Expected: native iOS selection handles and the system edit menu appear without any custom app long-press UI
+7. Drag a selection handle downward across the bullet list and into the code block
+8. Expected: the selection can extend across markdown blocks; visible list markers and code lines participate in the selected range instead of acting like dead zones
+9. With the selection still active, scroll the markdown preview vertically
+10. Expected: the native selection highlight and handles move with the selected text instead of staying fixed to the viewport
+11. Tap `Copy`
+12. Expected: the selection menu dismisses cleanly and the preview remains responsive to scrolling and link taps afterward
