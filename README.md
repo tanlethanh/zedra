@@ -11,7 +11,7 @@ An experimental remote editor on mobile with GPU rendering powered by Zed's GPUI
 
 ## Desktop daemon
 
-Note: Consider using Tailscale to always have direct connection between your computers. P2P connections are unreliable on home networks and may require relay service, which isn't optimized for low latency demand.
+Note: Zedra attempts to establish a direct connection between your computers, but sometimes it may be blocked by network conditions, specifically `Symmetric NAT` or `CGNAT` (commonly seen in home networks). In such cases, the connection still needs a relay fallback path. For now, it works best on LANs and the regions supported by relay servers. If you encounter noticeable high latency, please reach out to me. For those curious about this topic, I recommend reading [How NAT traversal works](https://tailscale.com/blog/how-nat-traversal-works)
 
 **Manual**
 ```bash
