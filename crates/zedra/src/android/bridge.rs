@@ -28,14 +28,6 @@ impl PlatformBridge for AndroidBridge {
         jni::get_keyboard_height() > 0
     }
 
-    fn show_keyboard(&self) {
-        jni::show_keyboard()
-    }
-
-    fn hide_keyboard(&self) {
-        jni::hide_keyboard()
-    }
-
     fn launch_qr_scanner(&self) {
         jni::launch_qr_scanner()
     }

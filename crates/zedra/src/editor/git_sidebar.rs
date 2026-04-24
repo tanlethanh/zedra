@@ -532,8 +532,8 @@ impl Render for GitSidebar {
 
         div()
             .track_focus(&self.focus_handle)
-            .on_pointer_down(|_, _, _cx| {
-                crate::platform_bridge::bridge().hide_keyboard();
+            .on_pointer_down(|_, window, _cx| {
+                window.hide_soft_keyboard();
             })
             .flex()
             .flex_col()

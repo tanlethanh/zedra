@@ -166,8 +166,6 @@ extern void *gpui_ios_get_window(void);
 
 extern bool gpui_ios_is_keyboard_visible(void *window_ptr);
 
-extern void gpui_ios_show_keyboard(void *window_ptr);
-
 extern void gpui_ios_hide_keyboard(void *window_ptr);
 
 /**

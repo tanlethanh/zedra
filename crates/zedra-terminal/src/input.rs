@@ -36,6 +36,18 @@ impl TerminalInputHandler {
             .map(|text| text.encode_utf16().count())
             .unwrap_or(" ".encode_utf16().count())
     }
+
+    fn accepts_text_input_policy() -> bool {
+        true
+    }
+
+    fn disable_default_keyboard_behavior_policy() -> bool {
+        true
+    }
+
+    fn disable_default_focus_behavior_policy() -> bool {
+        true
+    }
 }
 
 impl InputHandler for TerminalInputHandler {
@@ -55,7 +67,6 @@ impl InputHandler for TerminalInputHandler {
                 Self::synthetic_document_len(term.marked_text())
             })
             .unwrap_or(Self::synthetic_document_len(None));
-        debug!("selected_text_range → {pos}..{pos}");
         Some(UTF16Selection {
             range: pos..pos,
             reversed: false,
@@ -103,10 +114,6 @@ impl InputHandler for TerminalInputHandler {
         _window: &mut Window,
         cx: &mut App,
     ) {
-        debug!(
-            "replace_text_in_range range={:?} text={:?}",
-            replacement_range, text
-        );
         let entity = self.entity.clone();
         let text = text.to_string();
         let _ = entity.update(cx, move |term, cx| {
@@ -162,16 +169,12 @@ impl InputHandler for TerminalInputHandler {
 
     fn replace_and_mark_text_in_range(
         &mut self,
-        replacement_range: Option<Range<usize>>,
+        _replacement_range: Option<Range<usize>>,
         new_text: &str,
-        new_selected_range: Option<Range<usize>>,
+        _new_selected_range: Option<Range<usize>>,
         _window: &mut Window,
         cx: &mut App,
     ) {
-        debug!(
-            "replace_and_mark_text_in_range range={:?} text={:?} selected={:?}",
-            replacement_range, new_text, new_selected_range
-        );
         let text = new_text.to_string();
         let entity = self.entity.clone();
         let _ = entity.update(cx, move |term, cx| {
@@ -183,7 +186,6 @@ impl InputHandler for TerminalInputHandler {
     }
 
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut App) {
-        debug!("unmark_text");
         let entity = self.entity.clone();
         let _ = entity.update(cx, |term, cx| {
             // UIKit calls unmarkText between dictation hypothesis updates.
@@ -217,7 +219,15 @@ impl InputHandler for TerminalInputHandler {
     }
 
     fn accepts_text_input(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
-        true
+        Self::accepts_text_input_policy()
+    }
+
+    fn disable_default_keyboard_behavior(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
+        Self::disable_default_keyboard_behavior_policy()
+    }
+
+    fn disable_default_focus_behavior(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
+        Self::disable_default_focus_behavior_policy()
     }
 
     // fn dictation_started(&mut self, _window: &mut Window, cx: &mut App) {
@@ -262,5 +272,12 @@ mod tests {
     fn synthetic_document_len_tracks_utf16_units_for_marked_text() {
         assert_eq!(TerminalInputHandler::synthetic_document_len(Some("abc")), 3);
         assert_eq!(TerminalInputHandler::synthetic_document_len(Some("🙂")), 2);
+    }
+
+    #[test]
+    fn terminal_accepts_text_but_owns_keyboard_request() {
+        assert!(TerminalInputHandler::accepts_text_input_policy());
+        assert!(TerminalInputHandler::disable_default_keyboard_behavior_policy());
+        assert!(TerminalInputHandler::disable_default_focus_behavior_policy());
     }
 }

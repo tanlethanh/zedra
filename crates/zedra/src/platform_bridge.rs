@@ -264,8 +264,6 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn system_inset_bottom(&self) -> u32;
     fn keyboard_height(&self) -> u32;
     fn is_keyboard_visible(&self) -> bool;
-    fn show_keyboard(&self);
-    fn hide_keyboard(&self);
     fn launch_qr_scanner(&self);
     /// Returns the native user-facing app version (e.g. Android versionName / iOS CFBundleShortVersionString).
     fn app_version(&self) -> Option<String> {
@@ -371,7 +369,5 @@ impl PlatformBridge for StubBridge {
     fn is_keyboard_visible(&self) -> bool {
         false
     }
-    fn show_keyboard(&self) {}
-    fn hide_keyboard(&self) {}
     fn launch_qr_scanner(&self) {}
 }

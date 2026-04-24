@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use crate::{platform_bridge, theme};
+use crate::theme;
 
 fn clamp_byte_index(s: &str, mut i: usize) -> usize {
     i = i.min(s.len());
@@ -343,7 +343,7 @@ impl Input {
         // Focus this element
         self.focus_handle.focus(window, cx);
         // Request keyboard
-        platform_bridge::bridge().show_keyboard();
+        window.show_soft_keyboard();
         cx.notify();
     }
 

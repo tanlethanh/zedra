@@ -3,7 +3,7 @@ use std::time::Duration;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use crate::{platform_bridge, theme};
+use crate::theme;
 
 const DRAWER_DRAG_START_THRESHOLD: f32 = 10.0;
 const DRAWER_VERTICAL_CANCEL_RATIO: f32 = 1.25;
@@ -128,19 +128,35 @@ impl DrawerHost {
     }
 
     pub fn open(&mut self, cx: &mut Context<Self>) {
+        self.open_impl(None, cx);
+    }
+
+    pub fn open_with_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_impl(Some(window), cx);
+    }
+
+    fn open_impl(&mut self, window: Option<&mut Window>, cx: &mut Context<Self>) {
         if self.is_snap_animating() {
             return;
         }
         let w = f32::from(self.drawer_width);
-        self.start_snap(w, cx);
+        self.start_snap(w, window, cx);
         cx.emit(DrawerEvent::Opened);
     }
 
     pub fn close(&mut self, cx: &mut Context<Self>) {
+        self.close_impl(None, cx);
+    }
+
+    pub fn close_with_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_impl(Some(window), cx);
+    }
+
+    fn close_impl(&mut self, window: Option<&mut Window>, cx: &mut Context<Self>) {
         if self.is_snap_animating() {
             return;
         }
-        self.start_snap(0.0, cx);
+        self.start_snap(0.0, window, cx);
         cx.emit(DrawerEvent::Closed);
     }
 
@@ -176,17 +192,24 @@ impl DrawerHost {
         }
     }
 
+    fn hide_soft_keyboard(window: Option<&mut Window>) {
+        if let Some(window) = window {
+            window.hide_soft_keyboard();
+        }
+    }
+
     /// Dispatches a pointer move to the active gesture, if any.
     fn handle_pointer_move(
         &mut self,
         pointer_id: PointerId,
         position: Point<Pixels>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match self.gesture_state {
             GestureState::Pending {
                 pointer_id: pid, ..
-            } if pid == pointer_id => self.update_pending_drag(pointer_id, position, cx),
+            } if pid == pointer_id => self.update_pending_drag(pointer_id, position, window, cx),
             GestureState::Dragging { pointer_id: pid } if pid == pointer_id => {
                 self.update_direct_drag(f32::from(position.x), cx)
             }
@@ -195,7 +218,12 @@ impl DrawerHost {
     }
 
     /// Dispatches pointer up or cancel to the active gesture, if any.
-    fn handle_pointer_release(&mut self, pointer_id: PointerId, cx: &mut Context<Self>) {
+    fn handle_pointer_release(
+        &mut self,
+        pointer_id: PointerId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match self.gesture_state {
             GestureState::Pending {
                 pointer_id: pid, ..
@@ -204,7 +232,7 @@ impl DrawerHost {
                 cx.notify();
             }
             GestureState::Dragging { pointer_id: pid } if pid == pointer_id => {
-                self.end_direct_drag(cx)
+                self.end_direct_drag(window, cx)
             }
             _ => {}
         }
@@ -214,6 +242,7 @@ impl DrawerHost {
         &mut self,
         pointer_id: PointerId,
         position: Point<Pixels>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let GestureState::Pending {
@@ -254,12 +283,20 @@ impl DrawerHost {
         };
 
         if promote {
-            self.begin_direct_drag(pointer_id, f32::from(start.x));
+            self.begin_direct_drag(pointer_id, f32::from(start.x), window, cx);
             self.update_direct_drag(f32::from(position.x), cx);
         }
     }
 
-    fn begin_direct_drag(&mut self, pointer_id: PointerId, position_x: f32) {
+    fn begin_direct_drag(
+        &mut self,
+        pointer_id: PointerId,
+        position_x: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_handle.focus(window, cx);
+        window.hide_soft_keyboard();
         self.gesture_state = GestureState::Dragging { pointer_id };
         self.last_drag_x = position_x;
         self.last_drag_dx = 0.0;
@@ -278,7 +315,7 @@ impl DrawerHost {
         cx.notify();
     }
 
-    fn end_direct_drag(&mut self, cx: &mut Context<Self>) {
+    fn end_direct_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.gesture_state = GestureState::Idle;
         let width = f32::from(self.drawer_width);
         let current_offset = self.drawer_offset;
@@ -293,7 +330,7 @@ impl DrawerHost {
         } else {
             0.0
         };
-        self.start_snap(target, cx);
+        self.start_snap(target, Some(window), cx);
         if (current_offset - target).abs() >= 1.0 {
             cx.emit(if target == 0.0 {
                 DrawerEvent::Closed
@@ -303,16 +340,12 @@ impl DrawerHost {
         }
     }
 
-    fn start_snap(&mut self, target: f32, cx: &mut Context<Self>) {
+    fn start_snap(&mut self, target: f32, window: Option<&mut Window>, cx: &mut Context<Self>) {
         if self.is_snap_animating() {
             return;
         }
         let current_offset = self.drawer_offset;
         let duration_ms = Self::snap_duration_ms(current_offset, target);
-
-        if target > 0.0 {
-            platform_bridge::bridge().hide_keyboard();
-        }
 
         if (current_offset - target).abs() < 1.0 {
             self.drawer_offset = target;
@@ -328,6 +361,7 @@ impl DrawerHost {
             return;
         }
 
+        Self::hide_soft_keyboard(window);
         self.snap_from = current_offset;
         self.snap_target = Some(target);
         self.snap_started_at = Some(std::time::Instant::now());
@@ -390,15 +424,17 @@ impl Render for DrawerHost {
         // so the backdrop and panel each carry their own copies of these handlers.
         macro_rules! gesture_handlers {
             ($el:expr) => {
-                $el.on_pointer_move(cx.listener(|this, e: &PointerMoveEvent, _, cx| {
-                    this.handle_pointer_move(e.pointer_id, e.position, cx);
+                $el.on_pointer_move(cx.listener(|this, e: &PointerMoveEvent, window, cx| {
+                    this.handle_pointer_move(e.pointer_id, e.position, window, cx);
                 }))
-                .on_pointer_up(cx.listener(|this, e: &PointerUpEvent, _, cx| {
-                    this.handle_pointer_release(e.pointer_id, cx);
+                .on_pointer_up(cx.listener(|this, e: &PointerUpEvent, window, cx| {
+                    this.handle_pointer_release(e.pointer_id, window, cx);
                 }))
-                .on_pointer_cancel(cx.listener(|this, e: &PointerCancelEvent, _, cx| {
-                    this.handle_pointer_release(e.pointer_id, cx);
-                }))
+                .on_pointer_cancel(cx.listener(
+                    |this, e: &PointerCancelEvent, window, cx| {
+                        this.handle_pointer_release(e.pointer_id, window, cx);
+                    },
+                ))
             };
         }
 
@@ -412,12 +448,12 @@ impl Render for DrawerHost {
             .when(show_overlay, |el| {
                 let backdrop_base =
                     gesture_handlers!(div().absolute().inset_0().occlude().on_pointer_down(
-                        cx.listener(|this, _, _, cx| {
+                        cx.listener(|this, _, window, cx| {
                             if this.is_snap_animating() {
                                 return;
                             }
                             cx.emit(DrawerEvent::BackdropTapped);
-                            this.close(cx);
+                            this.close_with_window(window, cx);
                         })
                     ));
 
@@ -545,5 +581,42 @@ impl Render for DrawerHost {
                         }
                     })),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DrawerHost, DrawerSide};
+    use gpui::{AppContext as _, Empty, TestAppContext};
+
+    #[test]
+    fn direct_drag_claims_focus_and_hides_keyboard() {
+        let mut cx = TestAppContext::single();
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |_, cx| {
+                let content = cx.new(|_| Empty);
+                let drawer = cx.new(|_| Empty);
+                cx.new(|cx| DrawerHost::new(content.into(), drawer.into(), DrawerSide::Left, cx))
+            })
+            .unwrap()
+        });
+
+        window
+            .update(&mut cx, |drawer_host, window, cx| {
+                let previous_focus = cx.focus_handle();
+                previous_focus.focus(window, cx);
+                window.show_soft_keyboard();
+
+                assert!(previous_focus.is_focused(window));
+                assert!(window.is_soft_keyboard_visible());
+
+                drawer_host.begin_direct_drag(1, 0.0, window, cx);
+
+                assert!(drawer_host.focus_handle.is_focused(window));
+                assert!(!previous_focus.is_focused(window));
+                assert!(!window.is_soft_keyboard_visible());
+            })
+            .unwrap();
+        cx.quit();
     }
 }

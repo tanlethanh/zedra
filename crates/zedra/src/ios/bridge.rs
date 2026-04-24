@@ -64,7 +64,6 @@ pub struct IosBridge;
 unsafe extern "C" {
     fn gpui_ios_get_window() -> *mut std::ffi::c_void;
     fn gpui_ios_is_keyboard_visible(window_ptr: *mut std::ffi::c_void) -> bool;
-    fn gpui_ios_show_keyboard(window_ptr: *mut std::ffi::c_void);
     fn gpui_ios_hide_keyboard(window_ptr: *mut std::ffi::c_void);
     /// Present the AVFoundation QR scanner (defined in QRScanner.swift).
     fn ios_present_qr_scanner();
@@ -139,24 +138,6 @@ impl PlatformBridge for IosBridge {
                 return false;
             }
             gpui_ios_is_keyboard_visible(window)
-        }
-    }
-
-    fn show_keyboard(&self) {
-        unsafe {
-            let window = gpui_ios_get_window();
-            if !window.is_null() {
-                gpui_ios_show_keyboard(window);
-            }
-        }
-    }
-
-    fn hide_keyboard(&self) {
-        unsafe {
-            let window = gpui_ios_get_window();
-            if !window.is_null() {
-                gpui_ios_hide_keyboard(window);
-            }
         }
     }
 
@@ -355,7 +336,12 @@ pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
         }
     };
     if key_name == "dismiss_keyboard" {
-        platform_bridge::bridge().hide_keyboard();
+        unsafe {
+            let window = gpui_ios_get_window();
+            if !window.is_null() {
+                gpui_ios_hide_keyboard(window);
+            }
+        }
         return;
     }
 

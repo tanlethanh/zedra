@@ -320,6 +320,7 @@ pub struct TerminalElement {
     terminal: WeakEntity<Terminal>,
     focus_handle: FocusHandle,
     focused: bool,
+    keyboard_request_pending: bool,
 }
 
 impl TerminalElement {
@@ -331,6 +332,7 @@ impl TerminalElement {
         terminal: WeakEntity<Terminal>,
         focus_handle: FocusHandle,
         focused: bool,
+        keyboard_request_pending: bool,
     ) -> Self {
         Self {
             content,
@@ -340,6 +342,7 @@ impl TerminalElement {
             terminal,
             focus_handle,
             focused,
+            keyboard_request_pending,
         }
     }
 
@@ -657,6 +660,18 @@ impl Element for TerminalElement {
             TerminalInputHandler::new(self.terminal.clone(), bounds),
             cx,
         );
+        if self.keyboard_request_pending {
+            let view = self.view.clone();
+            let focus_handle = self.focus_handle.clone();
+            window.defer(cx, move |window, cx| {
+                let should_show = view
+                    .update(cx, |view, _cx| view.take_pending_keyboard_request())
+                    .unwrap_or(false);
+                if should_show && focus_handle.is_focused(window) {
+                    window.show_soft_keyboard();
+                }
+            });
+        }
 
         let cell_width = layout.cell_width;
         let line_height = layout.line_height;

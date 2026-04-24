@@ -279,10 +279,11 @@ impl Workspace {
     fn handle_open_quick_action(
         &mut self,
         _action: &OpenQuickAction,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         info!("handle OpenQuickAction from workspace");
+        window.hide_soft_keyboard();
         cx.emit(WorkspaceEvent::OpenQuickAction);
     }
 
@@ -299,16 +300,16 @@ impl Workspace {
     fn handle_toggle_drawer(
         &mut self,
         _action: &ToggleDrawer,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         info!("handle ToggleDrawer from workspace");
         let is_open = self.drawer_host.read(cx).is_open();
         self.drawer_host.update(cx, |host, cx| {
             if is_open {
-                host.close(cx);
+                host.close_with_window(&mut *window, cx);
             } else {
-                host.open(cx);
+                host.open_with_window(&mut *window, cx);
             }
         });
     }
@@ -316,32 +317,35 @@ impl Workspace {
     fn handle_close_drawer(
         &mut self,
         _action: &CloseDrawer,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         info!("handle CloseDrawer from workspace");
-        self.drawer_host.update(cx, |host, cx| host.close(cx));
+        self.drawer_host
+            .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
     }
 
     fn handle_show_connecting(
         &mut self,
         _action: &ShowConnecting,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         info!("handle ShowConnecting from workspace");
-        self.drawer_host.update(cx, |host, cx| host.close(cx));
+        self.drawer_host
+            .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
         self.content.update(cx, |c, cx| c.show_connecting_view(cx));
     }
 
     fn handle_open_file(
         &mut self,
         action: &OpenFile,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         info!("handle OpenFile from workspace");
-        self.drawer_host.update(cx, |host, cx| host.close(cx));
+        self.drawer_host
+            .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
 
         self.editor.update(cx, |e, cx| {
             e.open_file(action.path.clone(), cx);
@@ -356,11 +360,12 @@ impl Workspace {
     fn handle_open_git_diff(
         &mut self,
         action: &OpenGitDiff,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         info!("handle OpenGitDiff from workspace");
-        self.drawer_host.update(cx, |host, cx| host.close(cx));
+        self.drawer_host
+            .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
 
         let section = section_from_u8(action.section);
         self.gitdiff.update(cx, |g, cx| {
@@ -461,7 +466,7 @@ impl Workspace {
     fn handle_git_commit(
         &mut self,
         action: &GitCommit,
-        _window: &mut Window,
+        window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
         info!("handle GitCommit from workspace");
@@ -479,7 +484,7 @@ impl Workspace {
         let confirm_message = format!("Commit {file_label}?\n\n{message}");
 
         let handle = self.session.handle().clone();
-        platform_bridge::bridge().hide_keyboard();
+        window.hide_soft_keyboard();
         platform_bridge::show_alert(
             "",
             &confirm_message,
@@ -515,7 +520,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         info!("handle CreateNewTerminal from workspace");
-        self.drawer_host.update(cx, |host, cx| host.close(cx));
+        self.drawer_host
+            .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
 
         let session_handle = self.session.handle().clone();
         let initial_viewport = self.mainview_viewport(window, cx);
@@ -567,7 +573,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         info!("handle OpenTerminal from workspace");
-        self.drawer_host.update(cx, |host, cx| host.close(cx));
+        self.drawer_host
+            .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
 
         let id = &action.id;
         let terminal_entity = self.terminal_by_id(id, cx).unwrap_or_else(|| {
