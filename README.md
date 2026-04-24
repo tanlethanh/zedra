@@ -1,14 +1,19 @@
 # Zedra
 
-**Mobile remote editor. Code from anywhere.**
-
-One QR scan connects you to your desktop. Full terminal, file browser, git, and AI agents over an encrypted P2P tunnel. No port forwarding. No cloud.
+An experimental remote editor on mobile with GPU rendering powered by Zed's GPUI, P2P tunnel over QUIC/UDP by Iroh. Zedra focusses on providing mobile-first experience for developers to read code, view changes, run any AI agents on their terminals over a secure, P2P tunnel.
 
 ![Zedra](https://raw.githubusercontent.com/tanlethanh/zedra/main/packages/landing/public/OG.png)
 
-## Quick Start
+## Download App
 
-**curl**
+- iOS — [TestFlight](https://testflight.apple.com/join/1EWe2kRH)
+- Android — coming soon
+
+## Desktop daemon
+
+Note: Zedra attempts to establish a direct connection between your computers, but sometimes it may be blocked by network conditions, specifically `Symmetric NAT` or `CGNAT` (commonly seen in home networks). In such cases, the connection still needs a relay fallback path. For now, it works best on LANs and the regions supported by relay servers. If you encounter noticeable high latency, please reach out to me. For those curious about this topic, I recommend reading [How NAT traversal works](https://tailscale.com/blog/how-nat-traversal-works)
+
+**Manual**
 ```bash
 # Install Zedra CLI
 curl -fsSL zedra.dev/install.sh | sh
@@ -25,56 +30,14 @@ zedra start
 /zedra:zedra-start
 ```
 
-**Codex**
-```bash
-# Install CLI and setup Codex skill
-curl -fsSL zedra.dev/codex.sh | sh
-# then in Codex:
-/zedra-start
-```
-
-**OpenCode**
-```bash
-# Install CLI and setup OpenCode skill
-curl -fsSL zedra.dev/opencode.sh | sh
-# then in OpenCode:
-/zedra-start
-```
-
-**Gemini CLI**
-```bash
-gemini skills install https://github.com/tanlethanh/zedra-plugin.git --path plugins/zedra
-/zedra-start
-```
-
 Scan the QR code with the Zedra app. That's it.
-
-## What You Get
-
-|                 |                                                            |
-| --------------- | ---------------------------------------------------------- |
-| **AI Agents**   | Claude Code, Codex, Open Code — run and interact on mobile |
-| **Terminal**    | Full shell on your desktop, from your phone                |
-| **Files**       | Browse, open, and edit with syntax highlighting            |
-| **Git**         | Status, diff, log, commit — all from the palm of your hand |
-| **60 FPS**      | GPU-accelerated native rendering, not a web view           |
-| **Zero Config** | QR pairing, auto LAN/relay discovery, no setup             |
 
 ## How It Works
 
-```
-Phone ←──── encrypted QUIC tunnel ────→ Desktop
-       (LAN direct or relay fallback)
-```
-
 1. `zedra start` runs a lightweight daemon on your desktop
-2. Phone and desktop discover each other automatically — direct on LAN, relay when remote
+2. Phone and desktop discover each other automatically — direct P2P, relay fallback
 3. All traffic is encrypted end-to-end with TLS 1.3. Pairing requires physical QR scan — no credentials leave your device
 
-## Get the App
-
-- Android — coming soon
-- iOS — [TestFlight](https://testflight.apple.com/join/1EWe2kRH)
 
 ## Status
 
