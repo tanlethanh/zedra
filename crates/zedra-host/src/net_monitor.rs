@@ -308,6 +308,7 @@ fn trigger_endpoint_recovery(
 
     tokio::spawn(async move {
         tracing::info!("net_monitor: starting endpoint recovery ({})", reason);
+        endpoint.network_change().await;
         endpoint.dns_resolver().reset().await;
         match tokio::time::timeout(std::time::Duration::from_secs(8), endpoint.online()).await {
             Ok(()) => {
