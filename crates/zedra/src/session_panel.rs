@@ -3,117 +3,137 @@
 /// Displays host info, connection details, endpoints, and disconnect button.
 use gpui::*;
 
-use crate::theme;
-use crate::transport_badge::{format_bytes, render_transport_badge, transport_badge_info_phase};
-use crate::workspace_drawer::{WorkspaceDrawer, WorkspaceDrawerEvent};
-use zedra_session::SessionState;
+use crate::transport_badge::{format_bytes, render_transport_badge, transport_badge};
+use crate::workspace_state::WorkspaceState;
+use crate::{theme, workspace_action};
+use zedra_session::{SessionHandle, SessionState};
 
-/// Render the session tab content for the workspace drawer.
-pub fn render_session_tab(
-    session_state: Option<&SessionState>,
-    cx: &mut Context<WorkspaceDrawer>,
-) -> Div {
-    let inner = session_state.map(|s| s.get());
+pub struct SessionPanel {
+    #[allow(dead_code)]
+    workspace_state: Entity<WorkspaceState>,
+    session_state: Entity<SessionState>,
+    #[allow(dead_code)]
+    session_handle: SessionHandle,
+}
 
-    let is_empty = inner.as_ref().map(|s| s.phase.is_init()).unwrap_or(true);
-    if is_empty {
-        return div()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_color(rgb(theme::TEXT_MUTED))
+impl SessionPanel {
+    pub fn new(
+        workspace_state: Entity<WorkspaceState>,
+        session_state: Entity<SessionState>,
+        session_handle: SessionHandle,
+        _cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            workspace_state,
+            session_state,
+            session_handle,
+        }
+    }
+}
+
+impl Render for SessionPanel {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let session_state = self.session_state.read(cx);
+
+        let phase = session_state.phase();
+        let is_empty = phase.is_init();
+        if is_empty {
+            return div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(rgb(theme::TEXT_MUTED))
+                .text_size(px(theme::FONT_BODY))
+                .child("No active session");
+        }
+
+        let snap = session_state.snapshot();
+
+        let mut info = div().px(px(theme::DRAWER_PADDING)).flex().flex_col();
+
+        if !snap.username.is_empty() && !snap.hostname.is_empty() {
+            let host = format!("{}@{}", snap.username, snap.hostname);
+            info = info.child(info_row("Host", host));
+        }
+
+        if let Some(os) = snap.os_version.as_deref()
+            && let Some(arch) = snap.arch.as_deref()
+        {
+            let platform = format!("{} / {}", os, arch,);
+            info = info.child(info_row("Platform", platform));
+        }
+
+        if !snap.strip_path.is_empty() {
+            info = info.child(info_row("Directory", snap.strip_path.clone()));
+        }
+
+        if let Some(alpn) = snap.alpn.clone() {
+            info = info.child(info_row("Protocol", alpn));
+        }
+
+        if let Some(version) = snap.host_version.as_deref() {
+            let daemon_version = format!("v{}", version);
+            info = info.child(info_row("Daemon version", daemon_version));
+        }
+
+        // --- Connection badge ---
+        let (badge_label, badge_color) = transport_badge(&phase, snap.transport.as_ref());
+        info = info.child(
+            div()
+                .py(px(4.0))
+                .child(
+                    div()
+                        .text_color(rgb(theme::TEXT_MUTED))
+                        .text_size(px(theme::FONT_DETAIL))
+                        .child("Connection"),
+                )
+                .child(render_transport_badge(badge_label, badge_color)),
+        );
+
+        // --- Transport details ---
+        if let Some(t) = &snap.transport {
+            let remote_addr_label = format!("{} ({})", t.remote_addr, t.num_paths);
+            info = info.child(info_row("Remote Address", remote_addr_label));
+
+            info = info.child(info_row(
+                "Data",
+                format!(
+                    "{} sent / {} recv",
+                    format_bytes(t.bytes_sent),
+                    format_bytes(t.bytes_recv),
+                ),
+            ));
+        }
+
+        // --- Session section ---
+        if let Some(sid) = &snap.session_id {
+            info = info.child(info_row("Session ID", sid.clone()));
+        }
+
+        // --- Phase timing section ---
+        info = info.child(render_timing(&snap));
+
+        // --- Disconnect button ---
+        let disconnect_button = div()
+            .id("session-disconnect-btn")
+            .mt(px(8.0))
+            .px(px(12.0))
+            .py(px(8.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(rgb(theme::ACCENT_RED))
+            .text_color(rgb(theme::ACCENT_RED))
             .text_size(px(theme::FONT_BODY))
-            .child("No active session");
+            .cursor_pointer()
+            .hover(|s| s.bg(gpui::hsla(0.0, 0.6, 0.5, 0.1)))
+            .on_press(cx.listener(|_this, _event, window, cx| {
+                window.dispatch_action(workspace_action::RequestDisconnect.boxed_clone(), cx);
+            }))
+            .child(div().flex().justify_center().child("Disconnect"));
+
+        info.child(disconnect_button).child(div().h(px(16.0)))
     }
-
-    let inner = inner.unwrap();
-    let phase = &inner.phase;
-    let snap = &inner.snapshot;
-
-    let mut info = div().px(px(theme::DRAWER_PADDING)).flex().flex_col();
-
-    if !snap.username.is_empty() && !snap.hostname.is_empty() {
-        let host = format!("{}@{}", snap.username, snap.hostname);
-        info = info.child(info_row("Host", host));
-    }
-
-    if let Some(os) = snap.os_version.as_deref()
-        && let Some(arch) = snap.arch.as_deref()
-    {
-        let platform = format!("{} / {}", os, arch,);
-        info = info.child(info_row("Platform", platform));
-    }
-
-    if !snap.strip_path.is_empty() {
-        info = info.child(info_row("Directory", snap.strip_path.clone()));
-    }
-
-    if let Some(alpn) = snap.alpn.clone() {
-        info = info.child(info_row("Protocol", alpn));
-    }
-
-    if let Some(version) = snap.host_version.as_deref() {
-        let daemon_version = format!("v{}", version);
-        info = info.child(info_row("Daemon version", daemon_version));
-    }
-
-    // --- Connection badge ---
-    let (badge_label, badge_color) = transport_badge_info_phase(phase, snap.transport.as_ref());
-    info = info.child(
-        div()
-            .py(px(4.0))
-            .child(
-                div()
-                    .text_color(rgb(theme::TEXT_MUTED))
-                    .text_size(px(theme::FONT_DETAIL))
-                    .child("Connection"),
-            )
-            .child(render_transport_badge(badge_label, badge_color)),
-    );
-
-    // --- Transport details ---
-    if let Some(t) = &snap.transport {
-        let remote_addr_label = format!("{} ({})", t.remote_addr, t.num_paths);
-        info = info.child(info_row("Remote Address", remote_addr_label));
-
-        info = info.child(info_row(
-            "Data",
-            format!(
-                "{} sent / {} recv",
-                format_bytes(t.bytes_sent),
-                format_bytes(t.bytes_recv),
-            ),
-        ));
-    }
-
-    // --- Session section ---
-    if let Some(sid) = &snap.session_id {
-        info = info.child(info_row("Session ID", sid.clone()));
-    }
-
-    // --- Phase timing section ---
-    info = info.child(render_timing(snap));
-
-    // --- Disconnect button ---
-    let disconnect_button = div()
-        .id("session-disconnect-btn")
-        .mt(px(8.0))
-        .px(px(12.0))
-        .py(px(8.0))
-        .rounded(px(6.0))
-        .border_1()
-        .border_color(rgb(theme::ACCENT_RED))
-        .text_color(rgb(theme::ACCENT_RED))
-        .text_size(px(theme::FONT_BODY))
-        .cursor_pointer()
-        .hover(|s| s.bg(gpui::hsla(0.0, 0.6, 0.5, 0.1)))
-        .on_click(cx.listener(|_this, _event, _window, cx| {
-            cx.emit(WorkspaceDrawerEvent::DisconnectRequested);
-        }))
-        .child(div().flex().justify_center().child("Disconnect"));
-
-    info.child(disconnect_button).child(div().h(px(16.0)))
 }
 
 /// Render phase timing summary row.
@@ -134,7 +154,7 @@ fn render_timing(snap: &zedra_session::ConnectSnapshot) -> Div {
     if let Some(ms) = snap.auth_ms {
         timing_parts.push(format!("Auth {ms}ms"));
     }
-    if let Some(ms) = snap.fetch_ms {
+    if let Some(ms) = snap.sync_ms {
         timing_parts.push(format!("Info {ms}ms"));
     }
     if let Some(ms) = snap.resume_ms {

@@ -21,7 +21,7 @@ pub struct AndroidApp {
     platform: Option<Rc<AndroidPlatform>>,
     /// The GPUI AppCell (root context)
     app_cell: Option<Rc<AppCell>>,
-    /// Window handle (ZedraApp or PreviewApp depending on `preview` feature)
+    /// Window handle for the root GPUI app window.
     window: Option<AnyWindowHandle>,
     /// Whether a surface is currently available
     surface_available: bool,
@@ -349,10 +349,9 @@ impl AndroidApp {
         tracing::debug!(height, "app: keyboard height");
         if let (Some(app_cell), Some(window)) = (&self.app_cell, self.window) {
             let mut borrow = app_cell.borrow_mut();
-            let _ = window.update(&mut **borrow, |_, window, _| window.refresh());
-        }
-        if let Some(ref platform) = self.platform {
-            platform.request_frame_forced();
+            let _ = window.update(&mut **borrow, |view, _window, cx| {
+                cx.notify(view.entity_id());
+            });
         }
         Ok(())
     }

@@ -4,7 +4,7 @@ An experimental remote editor on mobile with GPU rendering powered by Zed's GPUI
 
 ![Zedra](https://raw.githubusercontent.com/tanlethanh/zedra/main/packages/landing/public/OG.png)
 
-## Get the App
+## Download App
 
 - iOS — [TestFlight](https://testflight.apple.com/join/1EWe2kRH)
 - Android — coming soon

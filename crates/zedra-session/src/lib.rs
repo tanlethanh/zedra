@@ -15,6 +15,11 @@ use std::sync::OnceLock;
 
 static SESSION_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
+/// Returns the shared Tokio runtime for session/network work.
+///
+/// Use this from reusable session-layer code that may be called from GPUI or
+/// other non-Tokio threads. Prefer this over bare `tokio::spawn()` unless the
+/// caller is already guaranteed to be running inside the session runtime.
 pub fn session_runtime() -> &'static tokio::runtime::Runtime {
     SESSION_RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()

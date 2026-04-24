@@ -1,76 +1,54 @@
 // Zedra — universal mobile application (Android + iOS)
 // Platform-specific code is gated with #[cfg(target_os)]
 
-// Generic async→main-thread channel
-pub mod pending;
-
-// Keyboard show/hide handler factory
-pub mod keyboard;
-
-// Shared color constants (Figma palette)
-pub mod theme;
-
-// Reusable UI components
-pub mod button;
-
-// Embedded fonts
-pub mod fonts;
-
-// Editor: text buffer, syntax highlighting, code editor view
-pub mod editor;
-
-// Mobile GPUI primitives: navigation, gestures, input
-pub mod mgpui;
-
-// Home screen
-pub mod home_view;
-
-// Workspace drawer (tabs: Files / Git / Terminal / Session)
-pub mod workspace_drawer;
-
-// Extracted drawer tab panels
-pub mod session_panel;
-pub mod terminal_card;
-pub mod terminal_panel;
-
-// Per-session workspace view (DrawerHost + WorkspaceContent + WorkspaceDrawer)
-pub mod workspace_view;
-
-// Quick-action right overlay (workspace switcher + home button)
-pub mod quick_action_panel;
-
-// Transport badge (P2P / Relay indicator) + format_bytes utility
-pub mod transport_badge;
-
-// Connection loading screen (shown while connecting / reconnecting / failed)
-pub mod connecting_view;
-
-// Active terminal input routing for platform FFI bridges
-pub mod active_terminal;
-
-// General deeplink handling (zedra:// URL scheme)
-pub mod deeplink;
-
-// Firebase telemetry backend registration (platform-agnostic API)
-pub mod telemetry;
-
 // Shared Zedra app (screen navigation + connection)
 pub mod app;
 
-// Standalone preview app for GPU stress-testing
-pub mod app_preview;
+// Generic async→main-thread channel
+pub mod pending;
 
-// File explorer view
+// Components
+pub mod button;
+pub mod editor;
+pub mod fonts;
+pub mod placeholder;
+pub mod theme;
+pub mod ui;
+
+// Sceens
+pub mod home_view;
+pub mod settings_view;
+
+// Semantic components
 pub mod file_explorer;
+pub mod git_panel;
+pub mod quick_action_panel;
+pub mod session_panel;
+pub mod sheet_demo_state;
+pub mod sheet_demo_view;
+pub mod sheet_host_view;
+pub mod terminal_card;
+pub mod terminal_panel;
+pub mod terminal_preview_view;
+pub mod terminal_state;
+pub mod transport_badge;
 
-// Platform abstraction (trait + StubBridge fallback)
-pub mod platform_bridge;
-
-// Workspace state and persistence (single model, serializable fields saved to store)
+// Per-session workspace
+pub mod workspace;
+pub mod workspace_action;
+pub mod workspace_connecting;
+pub mod workspace_drawer;
+pub mod workspace_editor;
+pub mod workspace_gitdiff;
 pub mod workspace_state;
-
-// Workspace collection manager (connection lifecycle, state sync)
+pub mod workspace_terminal;
 pub mod workspaces;
+
+pub mod active_terminal;
+pub mod deeplink;
+pub mod native_presentation;
+pub mod platform_bridge;
+pub mod telemetry;
 
 // Embedded assets (SVG icons) — shared across platforms
 use rust_embed::RustEmbed;

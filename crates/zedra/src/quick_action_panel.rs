@@ -2,9 +2,11 @@
 
 use gpui::*;
 
-use crate::platform_bridge;
+use crate::platform_bridge::{self, HapticFeedback};
 use crate::terminal_card::{TerminalCardProps, render_terminal_card};
+use crate::terminal_state::TerminalState;
 use crate::theme;
+use crate::transport_badge::phase_indicator_color;
 use crate::workspaces::Workspaces;
 
 #[derive(Clone, Debug)]
@@ -12,6 +14,8 @@ pub enum QuickActionEvent {
     Close,
     GoHome,
     NavigateToWorkspace,
+    OpenTerminal { tid: String, ws_index: usize },
+    CloseTerminal { tid: String, ws_index: usize },
 }
 
 impl EventEmitter<QuickActionEvent> for QuickActionPanel {}
@@ -41,33 +45,15 @@ impl QuickActionPanel {
     }
 
     fn handle_switch_terminal(&self, ws_index: usize, tid: String, cx: &mut Context<Self>) {
-        let view = self
-            .workspaces
-            .read(cx)
-            .get(ws_index)
-            .map(|e| e.view.clone());
         self.workspaces
             .update(cx, |ws, cx| ws.switch_to(ws_index, cx));
-        if let Some(view) = view {
-            view.update(cx, |ws, cx| {
-                ws.switch_to_terminal(&tid, cx);
-            });
-        }
         cx.emit(QuickActionEvent::Close);
         cx.emit(QuickActionEvent::NavigateToWorkspace);
+        cx.emit(QuickActionEvent::OpenTerminal { tid, ws_index });
     }
 
     fn handle_terminal_delete(&self, ws_index: usize, tid: String, cx: &mut Context<Self>) {
-        let view = self
-            .workspaces
-            .read(cx)
-            .get(ws_index)
-            .map(|e| e.view.clone());
-        if let Some(view) = view {
-            view.update(cx, |ws, cx| {
-                ws.request_terminal_delete(tid, cx);
-            });
-        }
+        cx.emit(QuickActionEvent::CloseTerminal { tid, ws_index });
     }
 }
 
@@ -83,14 +69,8 @@ impl Render for QuickActionPanel {
         let bottom_inset = platform_bridge::home_indicator_inset().max(10.0);
         let viewport_h = window.viewport_size().height;
 
-        let states = self.workspaces.read(cx).states().to_vec();
-        let handles = self.workspaces.read(cx).handles();
-
-        let workspaces: Vec<_> = states
-            .iter()
-            .filter(|s| s.workspace_index().is_some())
-            .cloned()
-            .collect();
+        let workspaces = self.workspaces.read(cx);
+        let ws_count = workspaces.len();
 
         let panel = div()
             .w_full()
@@ -119,13 +99,11 @@ impl Render for QuickActionPanel {
                             .justify_center()
                             .cursor_pointer()
                             .hit_slop(px(10.0))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|_this, _event, _window, cx| {
-                                    cx.emit(QuickActionEvent::Close);
-                                    cx.emit(QuickActionEvent::GoHome);
-                                }),
-                            )
+                            .on_press(cx.listener(|_this, _event, _window, cx| {
+                                platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+                                cx.emit(QuickActionEvent::Close);
+                                cx.emit(QuickActionEvent::GoHome);
+                            }))
                             .child(
                                 svg()
                                     .path("icons/logo.svg")
@@ -153,12 +131,10 @@ impl Render for QuickActionPanel {
                             .justify_center()
                             .cursor_pointer()
                             .hit_slop(px(10.0))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|_this, _event, _window, cx| {
-                                    cx.emit(QuickActionEvent::Close);
-                                }),
-                            )
+                            .on_press(cx.listener(|_this, _event, _window, cx| {
+                                platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+                                cx.emit(QuickActionEvent::Close);
+                            }))
                             .child(
                                 svg()
                                     .path("icons/x.svg")
@@ -175,21 +151,19 @@ impl Render for QuickActionPanel {
             .flex_col()
             .overflow_y_scroll();
 
-        for ws in &workspaces {
-            let index = ws.workspace_index().unwrap_or(0);
-            let is_connected = ws
-                .connect_phase()
-                .map(|p| p.is_connected())
-                .unwrap_or(false);
-            let status_color = if is_connected {
-                theme::ACCENT_GREEN
-            } else {
-                theme::ACCENT_RED
+        for index in 0..ws_count {
+            let workspace_entity = workspaces.get(index).unwrap().clone();
+            let state = workspace_entity.read(cx).workspace_state(cx);
+            let terminal_state: Entity<TerminalState> = workspace_entity.read(cx).terminal_state();
+
+            let status_color = match state.connect_phase.clone() {
+                Some(p) => phase_indicator_color(&p),
+                None => theme::ACCENT_DIM,
             };
-            let subtitle = match (ws.hostname().is_empty(), ws.strip_path().is_empty()) {
-                (false, false) => format!("{}:{}", ws.hostname(), ws.strip_path()),
-                (false, true) => ws.hostname().to_string(),
-                (true, false) => ws.strip_path().to_string(),
+            let subtitle = match (state.hostname.is_empty(), state.strip_path.is_empty()) {
+                (false, false) => format!("{}:{}", state.hostname, state.strip_path),
+                (false, true) => state.hostname.to_string(),
+                (true, false) => state.strip_path.to_string(),
                 (true, true) => String::new(),
             };
 
@@ -203,12 +177,9 @@ impl Render for QuickActionPanel {
                     .pb(px(6.0))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::hover_bg()))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.handle_switch_workspace(index, cx);
-                        }),
-                    )
+                    .on_press(cx.listener(move |this, _event, _window, cx| {
+                        this.handle_switch_workspace(index, cx);
+                    }))
                     .child(
                         div()
                             .flex()
@@ -230,7 +201,7 @@ impl Render for QuickActionPanel {
                                     .font_weight(FontWeight::MEDIUM)
                                     .min_w_0()
                                     .truncate()
-                                    .child(ws.project_name().to_string()),
+                                    .child(state.project_name.to_string()),
                             )
                             .child(
                                 div()
@@ -249,31 +220,20 @@ impl Render for QuickActionPanel {
                     ),
             );
 
-            if ws.terminal_ids().is_empty() {
-                content = content.child(
-                    div()
-                        .px(px(16.0))
-                        .pb(px(8.0))
-                        .text_color(rgb(theme::TEXT_MUTED))
-                        .text_size(px(theme::FONT_DETAIL))
-                        .child("No terminals"),
-                );
-            } else {
+            if !state.terminal_ids.is_empty() {
                 content = content.gap_1();
-                for (i, tid) in ws.terminal_ids().iter().enumerate() {
+                for (i, tid) in state.terminal_ids.iter().enumerate() {
                     let tid_click = tid.clone();
                     let tid_del = tid.clone();
-                    let is_active = ws.active_terminal_id().is_some_and(|id| id == tid);
-                    let meta = handles
-                        .get(index)
-                        .and_then(|h| h.terminal(tid))
-                        .map(|t| t.meta())
-                        .unwrap_or_default();
+                    let is_active = state
+                        .active_terminal_id
+                        .clone()
+                        .is_some_and(|id| id == *tid);
+                    let meta = terminal_state.read(cx).meta(tid);
 
-                    let on_close =
-                        Box::new(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
-                            this.handle_terminal_delete(index, tid_del.clone(), cx);
-                        }));
+                    let on_close = Box::new(cx.listener(move |this, _event, _window, cx| {
+                        this.handle_terminal_delete(index, tid_del.clone(), cx);
+                    }));
 
                     let card = render_terminal_card(TerminalCardProps {
                         id: format!("{}-{}", index, tid),
@@ -285,7 +245,7 @@ impl Render for QuickActionPanel {
                         last_exit_code: meta.last_exit_code,
                         on_close: Some(on_close),
                     })
-                    .on_click(cx.listener(
+                    .on_press(cx.listener(
                         move |this, _event, _window, cx| {
                             this.handle_switch_terminal(index, tid_click.clone(), cx);
                         },
@@ -304,7 +264,7 @@ impl Render for QuickActionPanel {
             );
         }
 
-        if workspaces.is_empty() {
+        if ws_count == 0 {
             content = content.child(
                 div()
                     .px(px(16.0))
@@ -319,7 +279,7 @@ impl Render for QuickActionPanel {
             crate::button::outline_button("quick-action-scan-qr", "Scan QR Code")
                 .mx(px(16.0))
                 .mt(px(12.0))
-                .on_click(cx.listener(|this, _event, _window, cx| {
+                .on_press(cx.listener(|this, _event, _window, cx| {
                     this.handle_scan_qr(cx);
                 })),
         );

@@ -34,6 +34,8 @@
 
 #define ACCENT_RED 14707829
 
+#define ACCENT_DIM 5263440
+
 #define DRAWER_PADDING 12.0
 
 #define SPACING_SM 8.0
@@ -41,10 +43,6 @@
 #define SPACING_MD 12.0
 
 #define SPACING_LG 16.0
-
-#define DRAWER_WIDTH 295.0
-
-#define QA_DRAWER_WIDTH 295.0
 
 #define HEADER_HEIGHT 48.0
 
@@ -60,13 +58,19 @@
 
 #define TERMINAL_LINE_HEIGHT 16.0
 
-#define DRAWER_EDGE_ZONE 44.0
+#define DRAWER_EDGE_ZONE 56.0
 
-#define DRAWER_VELOCITY_THRESHOLD 6.0
+#define DRAWER_VELOCITY_THRESHOLD 12.0
 
-#define ANIMATION_DURATION_MS 250
+#define DRAWER_BACKDROP_OPACITY 0.4
 
-#define FONT_TITLE 28.0
+#define DRAWER_DEFAULT_WIDTH 295.0
+
+#define DRAWER_ANIMATION_DURATION_MS 300
+
+#define FONT_APP_TITLE 28.0
+
+#define FONT_TITLE 20.0
 
 #define FONT_HEADING 13.0
 
@@ -76,9 +80,11 @@
 
 #define ICON_LOGO 20.0
 
-#define ICON_NAV 18.0
+#define ICON_LG 24.0
 
-#define ICON_HEADER 18.0
+#define ICON_MD 18.0
+
+#define ICON_SM 16.0
 
 #define ICON_FILE 12.0
 
@@ -101,15 +107,37 @@
  */
 #define STALE_THRESHOLD_SECS 3
 
+extern void gpui_ios_set_next_embedded_parent(void *parent_view_ptr,
+                                              float width_pts,
+                                              float height_pts);
+
+extern void *gpui_ios_get_window(void);
+
+extern void gpui_ios_attach_embedded_view(void *window_ptr,
+                                          void *parent_view_ptr,
+                                          float width_pts,
+                                          float height_pts);
+
+extern void gpui_ios_detach_embedded_view(void *window_ptr);
+
 /**
  * Called each frame from main.m before gpui_ios_request_frame.
  *
- * Returns `false` — GPUI polling tasks handle view notifications internally
- * via `cx.notify()`, so forced frames are no longer needed.
+ * Returns whether the app has explicit pending work that should be surfaced to
+ * the frame pump ahead of normal window invalidation. This hook currently does
+ * not report any such work, so it returns `false`.
  */
 bool zedra_ios_check_pending_frame(void);
 
 void zedra_launch_gpui(void);
+
+void *zedra_ios_mount_custom_sheet_content(void *parent_view_ptr,
+                                           float width_pts,
+                                           float height_pts);
+
+void zedra_ios_unmount_custom_sheet_content(void);
+
+bool zedra_ios_sheet_content_is_at_top(void);
 
 /**
  * Called from Obj-C whenever the screen scale is known (once, at launch).
@@ -138,12 +166,10 @@ extern void *gpui_ios_get_window(void);
 
 extern bool gpui_ios_is_keyboard_visible(void *window_ptr);
 
-extern void gpui_ios_show_keyboard(void *window_ptr);
-
 extern void gpui_ios_hide_keyboard(void *window_ptr);
 
 /**
- * Present the AVFoundation QR scanner (defined in ZedraQRScanner.m).
+ * Present the AVFoundation QR scanner (defined in QRScanner.swift).
  */
 extern void ios_present_qr_scanner(void);
 
@@ -156,6 +182,11 @@ extern const char *ios_get_documents_directory(void);
  * Returns the app's user-facing version string from Info.plist metadata.
  */
 extern const char *ios_get_app_version(void);
+
+/**
+ * Returns the app's build number string from Info.plist metadata.
+ */
+extern const char *ios_get_app_build_number(void);
 
 /**
  * Present a native UIAlertController with dynamic buttons.
@@ -181,12 +212,32 @@ extern void ios_present_selection(uint32_t callback_id,
                                   const int32_t *styles);
 
 /**
+ * Present a configurable native custom sheet with a GPUI canvas host.
+ */
+extern void ios_present_custom_sheet(int32_t detent_count,
+                                     const int32_t *detents,
+                                     int32_t initial_detent,
+                                     bool shows_grabber,
+                                     bool expands_on_scroll_edge,
+                                     bool edge_attached_in_compact_height,
+                                     bool width_follows_preferred_content_size_when_edge_attached,
+                                     bool has_corner_radius,
+                                     float corner_radius,
+                                     bool modal_in_presentation);
+
+/**
  * Open a URL in the system browser via UIApplication.
  */
 extern void ios_open_url(const char *url);
 
 /**
- * Called from the UIAlertController handler in main.m after the user taps a button.
+ * Trigger a UIKit haptic feedback generator.
+ * kind encoding matches HapticFeedback::to_i32().
+ */
+extern void ios_trigger_haptic(int32_t kind);
+
+/**
+ * Called from the native alert handler after the user taps a button.
  *
  * `callback_id` matches the value passed to `ios_present_alert`.
  * `button_index` is the 0-based index of the tapped button (matches the `buttons` array
@@ -200,7 +251,7 @@ void zedra_ios_alert_result(uint32_t callback_id, int32_t button_index);
 void zedra_ios_alert_dismiss(uint32_t callback_id);
 
 /**
- * Called from the action sheet handler in main.m after the user taps an item.
+ * Called from the native action sheet handler after the user taps an item.
  */
 void zedra_ios_selection_result(uint32_t callback_id, int32_t button_index);
 
@@ -214,25 +265,30 @@ void zedra_ios_selection_dismiss(uint32_t callback_id);
  *
  * Drops any unacknowledged alert callbacks so closures captured in them
  * (e.g. `PendingSlot` clones) are released and do not accumulate.
- * Wire this to `applicationDidEnterBackground` in `main.m`.
+ * Wire this to the iOS app delegate's `applicationDidEnterBackground`.
  */
 void zedra_ios_app_did_enter_background(void);
 
 /**
  * Called from the native keyboard accessory bar when a shortcut key button is tapped.
  *
- * `key` is one of: "escape", "tab", "left", "down", "up", "right", "enter".
+ * `key` is one of: "escape", "tab", "left", "down", "up", "right", "enter", "shift_enter".
  * Maps the name to the corresponding terminal escape sequence and sends it via the active session.
  */
 void zedra_ios_send_key_input(const char *key);
 
 /**
- * Called from main.m when the app is opened via a zedra:// URL.
+ * Called from the native terminal composer to send finalized text to the active terminal.
+ */
+void zedra_ios_send_terminal_text(const char *text);
+
+/**
+ * Called from the native app delegate when the app is opened via a `zedra://` URL.
  */
 void zedra_deeplink_received(const char *url);
 
 /**
- * Called from ZedraQRScanner.m after a successful QR scan.
+ * Called from the native QR scanner after a successful QR scan.
  *
  * Routes through the unified deeplink path (same as system URL intents).
  */

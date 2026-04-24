@@ -2,7 +2,7 @@
 ///
 /// Delegates every call to the corresponding function in `super::jni`.
 use crate::android::jni;
-use crate::platform_bridge::{AlertButton, PlatformBridge};
+use crate::platform_bridge::{AlertButton, HapticFeedback, PlatformBridge};
 
 pub struct AndroidBridge;
 
@@ -28,14 +28,6 @@ impl PlatformBridge for AndroidBridge {
         jni::get_keyboard_height() > 0
     }
 
-    fn show_keyboard(&self) {
-        jni::show_keyboard()
-    }
-
-    fn hide_keyboard(&self) {
-        jni::hide_keyboard()
-    }
-
     fn launch_qr_scanner(&self) {
         jni::launch_qr_scanner()
     }
@@ -46,6 +38,15 @@ impl PlatformBridge for AndroidBridge {
             None
         } else {
             Some(version)
+        }
+    }
+
+    fn app_build_number(&self) -> Option<String> {
+        let build_number = jni::get_app_build_number();
+        if build_number.trim().is_empty() {
+            None
+        } else {
+            Some(build_number)
         }
     }
 
@@ -63,5 +64,9 @@ impl PlatformBridge for AndroidBridge {
 
     fn present_selection(&self, id: u32, title: &str, message: &str, buttons: &[AlertButton]) {
         jni::show_selection(id, title, message, buttons);
+    }
+
+    fn trigger_haptic(&self, feedback: HapticFeedback) {
+        jni::trigger_haptic(feedback);
     }
 }

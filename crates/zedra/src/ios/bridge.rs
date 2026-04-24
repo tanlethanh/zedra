@@ -7,7 +7,9 @@
 /// in atomics, mirroring the Android JNI push model.
 use crate::active_terminal;
 use crate::deeplink;
-use crate::platform_bridge::{self, AlertButton, AlertButtonStyle, PlatformBridge};
+use crate::platform_bridge::{
+    self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback, PlatformBridge,
+};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Screen scale factor (e.g. 3.0 for @3x), stored as f32 bits.
@@ -28,8 +30,6 @@ static SAFE_AREA_BOTTOM: AtomicU32 = AtomicU32::new(0);
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_set_screen_scale(scale: f32) {
     SCREEN_SCALE.store(scale.to_bits(), Ordering::Relaxed);
-    // Sync display density to zedra-terminal for keyboard-avoiding-view row math.
-    zedra_terminal::set_display_density(scale);
     tracing::debug!("iOS screen scale: {}", scale);
 }
 
@@ -40,9 +40,7 @@ pub extern "C" fn zedra_ios_set_screen_scale(scale: f32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_set_keyboard_height(height_px: u32) {
     KEYBOARD_HEIGHT_PX.store(height_px, Ordering::Relaxed);
-    zedra_terminal::set_keyboard_height(height_px);
-    // Signal a forced render so the terminal resizes immediately on the next
-    // CADisplayLink tick rather than waiting for the next user interaction.
+    super::app::notify_main_window();
     tracing::debug!("iOS keyboard height: {}px", height_px);
 }
 
@@ -66,14 +64,15 @@ pub struct IosBridge;
 unsafe extern "C" {
     fn gpui_ios_get_window() -> *mut std::ffi::c_void;
     fn gpui_ios_is_keyboard_visible(window_ptr: *mut std::ffi::c_void) -> bool;
-    fn gpui_ios_show_keyboard(window_ptr: *mut std::ffi::c_void);
     fn gpui_ios_hide_keyboard(window_ptr: *mut std::ffi::c_void);
-    /// Present the AVFoundation QR scanner (defined in ZedraQRScanner.m).
+    /// Present the AVFoundation QR scanner (defined in QRScanner.swift).
     fn ios_present_qr_scanner();
     /// Returns the app's Documents directory path (from NSSearchPathForDirectoriesInDomains).
     fn ios_get_documents_directory() -> *const std::ffi::c_char;
     /// Returns the app's user-facing version string from Info.plist metadata.
     fn ios_get_app_version() -> *const std::ffi::c_char;
+    /// Returns the app's build number string from Info.plist metadata.
+    fn ios_get_app_build_number() -> *const std::ffi::c_char;
     /// Present a native UIAlertController with dynamic buttons.
     /// `labels` and `styles` are parallel arrays of length `button_count`.
     /// Style values: 0 = default, 1 = cancel, 2 = destructive.
@@ -95,8 +94,24 @@ unsafe extern "C" {
         labels: *const *const std::ffi::c_char,
         styles: *const i32,
     );
+    /// Present a configurable native custom sheet with a GPUI canvas host.
+    fn ios_present_custom_sheet(
+        detent_count: i32,
+        detents: *const i32,
+        initial_detent: i32,
+        shows_grabber: bool,
+        expands_on_scroll_edge: bool,
+        edge_attached_in_compact_height: bool,
+        width_follows_preferred_content_size_when_edge_attached: bool,
+        has_corner_radius: bool,
+        corner_radius: f32,
+        modal_in_presentation: bool,
+    );
     /// Open a URL in the system browser via UIApplication.
     fn ios_open_url(url: *const std::ffi::c_char);
+    /// Trigger a UIKit haptic feedback generator.
+    /// kind encoding matches HapticFeedback::to_i32().
+    fn ios_trigger_haptic(kind: i32);
 }
 
 impl PlatformBridge for IosBridge {
@@ -126,24 +141,6 @@ impl PlatformBridge for IosBridge {
         }
     }
 
-    fn show_keyboard(&self) {
-        unsafe {
-            let window = gpui_ios_get_window();
-            if !window.is_null() {
-                gpui_ios_show_keyboard(window);
-            }
-        }
-    }
-
-    fn hide_keyboard(&self) {
-        unsafe {
-            let window = gpui_ios_get_window();
-            if !window.is_null() {
-                gpui_ios_hide_keyboard(window);
-            }
-        }
-    }
-
     fn launch_qr_scanner(&self) {
         unsafe { ios_present_qr_scanner() };
     }
@@ -151,6 +148,18 @@ impl PlatformBridge for IosBridge {
     fn app_version(&self) -> Option<String> {
         unsafe {
             let ptr = ios_get_app_version();
+            if ptr.is_null() {
+                return None;
+            }
+            let cstr = std::ffi::CStr::from_ptr(ptr);
+            let s = cstr.to_str().ok()?.trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        }
+    }
+
+    fn app_build_number(&self) -> Option<String> {
+        unsafe {
+            let ptr = ios_get_app_build_number();
             if ptr.is_null() {
                 return None;
             }
@@ -177,6 +186,10 @@ impl PlatformBridge for IosBridge {
         if let Ok(c_url) = CString::new(url) {
             unsafe { ios_open_url(c_url.as_ptr()) };
         }
+    }
+
+    fn trigger_haptic(&self, feedback: HapticFeedback) {
+        unsafe { ios_trigger_haptic(feedback.to_i32()) };
     }
 
     fn present_alert(&self, id: u32, title: &str, message: &str, buttons: &[AlertButton]) {
@@ -241,9 +254,31 @@ impl PlatformBridge for IosBridge {
             );
         }
     }
+
+    fn present_custom_sheet(&self, options: &CustomSheetOptions) {
+        let detents: Vec<i32> = options
+            .detents
+            .iter()
+            .map(|detent| detent.to_i32())
+            .collect();
+        unsafe {
+            ios_present_custom_sheet(
+                detents.len() as i32,
+                detents.as_ptr(),
+                options.initial_detent.to_i32(),
+                options.shows_grabber,
+                options.expands_on_scroll_edge,
+                options.edge_attached_in_compact_height,
+                options.width_follows_preferred_content_size_when_edge_attached,
+                options.corner_radius.is_some(),
+                options.corner_radius.unwrap_or_default(),
+                options.modal_in_presentation,
+            );
+        }
+    }
 }
 
-/// Called from the UIAlertController handler in main.m after the user taps a button.
+/// Called from the native alert handler after the user taps a button.
 ///
 /// `callback_id` matches the value passed to `ios_present_alert`.
 /// `button_index` is the 0-based index of the tapped button (matches the `buttons` array
@@ -261,7 +296,7 @@ pub extern "C" fn zedra_ios_alert_dismiss(callback_id: u32) {
     platform_bridge::dispatch_alert_dismiss(callback_id);
 }
 
-/// Called from the action sheet handler in main.m after the user taps an item.
+/// Called from the native action sheet handler after the user taps an item.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_selection_result(callback_id: u32, button_index: i32) {
     if button_index >= 0 {
@@ -279,7 +314,7 @@ pub extern "C" fn zedra_ios_selection_dismiss(callback_id: u32) {
 ///
 /// Drops any unacknowledged alert callbacks so closures captured in them
 /// (e.g. `PendingSlot` clones) are released and do not accumulate.
-/// Wire this to `applicationDidEnterBackground` in `main.m`.
+/// Wire this to the iOS app delegate's `applicationDidEnterBackground`.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_app_did_enter_background() {
     platform_bridge::clear_pending_alerts();
@@ -287,7 +322,7 @@ pub extern "C" fn zedra_ios_app_did_enter_background() {
 
 /// Called from the native keyboard accessory bar when a shortcut key button is tapped.
 ///
-/// `key` is one of: "escape", "tab", "left", "down", "up", "right", "enter".
+/// `key` is one of: "escape", "tab", "left", "down", "up", "right", "enter", "shift_enter".
 /// Maps the name to the corresponding terminal escape sequence and sends it via the active session.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
@@ -301,7 +336,12 @@ pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
         }
     };
     if key_name == "dismiss_keyboard" {
-        platform_bridge::bridge().hide_keyboard();
+        unsafe {
+            let window = gpui_ios_get_window();
+            if !window.is_null() {
+                gpui_ios_hide_keyboard(window);
+            }
+        }
         return;
     }
 
@@ -313,12 +353,34 @@ pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
         "up" => b"\x1b[A",
         "right" => b"\x1b[C",
         "enter" => b"\r",
+        "shift_enter" => b"\n",
         _ => return,
     };
     active_terminal::send_to_active(bytes.to_vec());
 }
 
-/// Called from main.m when the app is opened via a zedra:// URL.
+/// Called from the native terminal composer to send finalized text to the active terminal.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_send_terminal_text(text: *const std::ffi::c_char) {
+    if text.is_null() {
+        return;
+    }
+
+    let text = unsafe {
+        match std::ffi::CStr::from_ptr(text).to_str() {
+            Ok(s) => s,
+            Err(_) => return,
+        }
+    };
+
+    if text.is_empty() {
+        return;
+    }
+
+    active_terminal::send_to_active(text.as_bytes().to_vec());
+}
+
+/// Called from the native app delegate when the app is opened via a `zedra://` URL.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_deeplink_received(url: *const std::ffi::c_char) {
     if url.is_null() {
@@ -334,7 +396,7 @@ pub extern "C" fn zedra_deeplink_received(url: *const std::ffi::c_char) {
     }
 }
 
-/// Called from ZedraQRScanner.m after a successful QR scan.
+/// Called from the native QR scanner after a successful QR scan.
 ///
 /// Routes through the unified deeplink path (same as system URL intents).
 #[unsafe(no_mangle)]

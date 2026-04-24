@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -20,10 +19,8 @@ struct SessionHandleInner {
     session_token: Mutex<Option<[u8; 32]>>,
     pending_ticket: Mutex<Option<zedra_rpc::ZedraPairingTicket>>,
     rpc_client: Mutex<Option<irpc::Client<ZedraProto>>>,
-    terminals: Mutex<Vec<Arc<RemoteTerminal>>>,
+    terminals: Mutex<Vec<RemoteTerminal>>,
     user_disconnect: AtomicBool,
-    git_needs_refresh: AtomicBool,
-    fs_changed_paths: Mutex<HashSet<String>>,
     observer_rpc_supported: AtomicBool,
 }
 
@@ -45,8 +42,6 @@ impl SessionHandle {
             rpc_client: Mutex::new(None),
             terminals: Mutex::new(Vec::new()),
             user_disconnect: AtomicBool::new(false),
-            git_needs_refresh: AtomicBool::new(false),
-            fs_changed_paths: Mutex::new(HashSet::new()),
             observer_rpc_supported: AtomicBool::new(true),
         }))
     }
@@ -145,40 +140,34 @@ impl SessionHandle {
         self.0
             .terminals
             .lock()
-            .map(|t| t.iter().map(|t| t.id.clone()).collect())
+            .map(|t| t.iter().map(|t| t.id()).collect())
             .unwrap_or_default()
     }
 
-    pub fn terminal(&self, id: &str) -> Option<Arc<RemoteTerminal>> {
+    pub fn terminal(&self, id: &str) -> Option<RemoteTerminal> {
         self.0
             .terminals
             .lock()
             .ok()
-            .and_then(|t| t.iter().find(|t| t.id == id).cloned())
+            .and_then(|t| t.iter().find(|t| t.id() == id).cloned())
     }
 
-    pub fn sync_terminals(&self, entries: &[TerminalSyncEntry]) {
-        let Ok(mut terminals) = self.0.terminals.lock() else {
-            return;
-        };
+    pub fn terminals(&self) -> Vec<RemoteTerminal> {
+        self.0
+            .terminals
+            .lock()
+            .map(|t| t.iter().cloned().collect())
+            .unwrap_or_default()
+    }
 
-        let mut by_id: std::collections::HashMap<_, _> =
-            terminals.drain(..).map(|t| (t.id.clone(), t)).collect();
-
-        for entry in entries {
-            let terminal = by_id
-                .remove(&entry.id)
-                .unwrap_or_else(|| RemoteTerminal::new(entry.id.clone()));
-            terminal.update_seq(entry.last_seq);
-            if let Ok(mut meta) = terminal.meta.lock() {
-                meta.title = entry.title.clone();
-                meta.cwd = entry.cwd.clone();
-            }
-            terminals.push(terminal);
+    /// Sync the terminal list with the given list of terminals.
+    pub fn set_terminals(&self, new_terminals: Vec<RemoteTerminal>) {
+        if let Ok(mut terminals_slot) = self.0.terminals.lock() {
+            *terminals_slot = new_terminals;
         }
     }
 
-    pub fn add_terminal(&self, terminal: Arc<RemoteTerminal>) {
+    pub fn add_terminal(&self, terminal: RemoteTerminal) {
         if let Ok(mut t) = self.0.terminals.lock() {
             t.push(terminal);
         }
@@ -186,29 +175,7 @@ impl SessionHandle {
 
     pub fn remove_terminal(&self, id: &str) {
         if let Ok(mut t) = self.0.terminals.lock() {
-            t.retain(|t| t.id != id);
-        }
-    }
-
-    pub fn take_git_refresh(&self) -> bool {
-        self.0.git_needs_refresh.swap(false, Ordering::AcqRel)
-    }
-
-    pub fn set_git_needs_refresh(&self) {
-        self.0.git_needs_refresh.store(true, Ordering::Release);
-    }
-
-    pub fn take_fs_changed(&self) -> Vec<String> {
-        self.0
-            .fs_changed_paths
-            .lock()
-            .map(|mut c| c.drain().collect())
-            .unwrap_or_default()
-    }
-
-    pub fn add_fs_changed(&self, path: String) {
-        if let Ok(mut c) = self.0.fs_changed_paths.lock() {
-            c.insert(path);
+            t.retain(|t| t.id() != id);
         }
     }
 
@@ -230,6 +197,9 @@ impl SessionHandle {
                 limit,
             })
             .await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
         Ok((result.entries, result.total, result.has_more))
     }
 
@@ -254,12 +224,16 @@ impl SessionHandle {
     }
 
     pub async fn fs_stat(&self, path: &str) -> Result<FsStatResult> {
-        Ok(self
+        let result = self
             .client()?
             .rpc(FsStatReq {
                 path: path.to_string(),
             })
-            .await?)
+            .await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
+        Ok(result)
     }
 
     pub async fn fs_watch(&self, path: &str) -> Result<FsWatchResult> {
@@ -322,7 +296,11 @@ impl SessionHandle {
     // ─── RPC: git ────────────────────────────────────────────────────────────
 
     pub async fn git_status(&self) -> Result<GitStatusResult> {
-        Ok(self.client()?.rpc(GitStatusReq {}).await?)
+        let result: GitStatusResult = self.client()?.rpc(GitStatusReq {}).await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
+        Ok(result)
     }
 
     pub async fn git_diff(&self, path: Option<&str>, staged: bool) -> Result<String> {
@@ -333,16 +311,25 @@ impl SessionHandle {
                 staged,
             })
             .await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
         Ok(result.diff)
     }
 
     pub async fn git_log(&self, limit: Option<usize>) -> Result<Vec<GitLogEntry>> {
         let result: GitLogResult = self.client()?.rpc(GitLogReq { limit }).await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
         Ok(result.entries)
     }
 
     pub async fn git_branches(&self) -> Result<Vec<GitBranchEntry>> {
         let result: GitBranchesResult = self.client()?.rpc(GitBranchesReq {}).await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
         Ok(result.branches)
     }
 
@@ -364,26 +351,35 @@ impl SessionHandle {
                 paths: paths.to_vec(),
             })
             .await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
         Ok(result.hash)
     }
 
     pub async fn git_stage(&self, paths: &[String]) -> Result<()> {
-        let _: GitStageResult = self
+        let result: GitStageResult = self
             .client()?
             .rpc(GitStageReq {
                 paths: paths.to_vec(),
             })
             .await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
         Ok(())
     }
 
     pub async fn git_unstage(&self, paths: &[String]) -> Result<()> {
-        let _: GitUnstageResult = self
+        let result: GitUnstageResult = self
             .client()?
             .rpc(GitUnstageReq {
                 paths: paths.to_vec(),
             })
             .await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
         Ok(())
     }
 
@@ -407,13 +403,18 @@ impl SessionHandle {
                 launch_cmd,
             })
             .await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
 
         let terminal = RemoteTerminal::new(result.id.clone());
-        self.attach_terminal(&client, &terminal).await?;
-        self.add_terminal(terminal);
-
-        tracing::info!("Terminal created: {}", result.id);
-        Ok(result.id)
+        if terminal.attach_remote(&client).await.is_ok() {
+            self.add_terminal(terminal);
+            tracing::info!("Terminal created: {}", result.id);
+            Ok(result.id)
+        } else {
+            Err(anyhow::anyhow!("Failed to attach terminal"))
+        }
     }
 
     pub async fn terminal_resize(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
@@ -440,102 +441,5 @@ impl SessionHandle {
     pub async fn terminal_list(&self) -> Result<Vec<String>> {
         let result: TermListResult = self.client()?.rpc(TermListReq {}).await?;
         Ok(result.terminals.into_iter().map(|e| e.id).collect())
-    }
-
-    pub async fn attach_terminal(
-        &self,
-        client: &irpc::Client<ZedraProto>,
-        terminal: &Arc<RemoteTerminal>,
-    ) -> Result<()> {
-        let (irpc_input_tx, mut irpc_output_rx) = client
-            .bidi_streaming::<TermAttachReq, TermInput, TermOutput>(
-                TermAttachReq {
-                    id: terminal.id.clone(),
-                    last_seq: terminal.last_seq(),
-                },
-                256,
-                256,
-            )
-            .await?;
-
-        let (bridge_tx, mut bridge_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
-        terminal.set_input_tx(bridge_tx);
-
-        tokio::spawn(async move {
-            while let Some(data) = bridge_rx.recv().await {
-                if irpc_input_tx.send(TermInput { data }).await.is_err() {
-                    break;
-                }
-            }
-        });
-
-        let terminal_pump = terminal.clone();
-        let last_seq = terminal.last_seq();
-        tokio::spawn(async move {
-            let mut first_msg = true;
-            loop {
-                match irpc_output_rx.recv().await {
-                    Ok(Some(output)) => {
-                        if output.seq == 0 {
-                            terminal_pump.push_output(output.data);
-                            terminal_pump.signal_needs_render();
-                            continue;
-                        }
-                        if first_msg {
-                            first_msg = false;
-                            if last_seq > 0 && output.seq > last_seq + 1 {
-                                terminal_pump.reset_osc_scanner();
-                                terminal_pump.push_output(b"\x1bc".to_vec());
-                            }
-                        }
-                        terminal_pump.update_seq(output.seq);
-                        terminal_pump.push_output(output.data);
-                        terminal_pump.signal_needs_render();
-                    }
-                    Ok(None) => break,
-                    Err(_) => break,
-                }
-            }
-        });
-
-        tracing::info!("Terminal {} attached (last_seq={})", terminal.id, last_seq);
-        Ok(())
-    }
-
-    pub async fn reattach_terminals(&self) -> Result<()> {
-        let client = self.client()?;
-        let terminals: Vec<_> = self
-            .0
-            .terminals
-            .lock()
-            .map(|t| t.clone())
-            .unwrap_or_default();
-
-        if terminals.is_empty() {
-            return Ok(());
-        }
-
-        let server_ids: HashSet<String> = match client.rpc(TermListReq {}).await {
-            Ok(result) => result.terminals.into_iter().map(|e| e.id).collect(),
-            Err(_) => HashSet::new(),
-        };
-
-        if let Ok(mut t) = self.0.terminals.lock() {
-            t.retain(|term| server_ids.contains(&term.id));
-        }
-
-        let terminals: Vec<_> = self
-            .0
-            .terminals
-            .lock()
-            .map(|t| t.clone())
-            .unwrap_or_default();
-        for terminal in &terminals {
-            if let Err(e) = self.attach_terminal(&client, terminal).await {
-                tracing::warn!("failed to reattach terminal {}: {}", terminal.id, e);
-            }
-        }
-
-        Ok(())
     }
 }

@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+use gpui::{AnyView, Entity, Render};
+
 // ---------------------------------------------------------------------------
 // Native alert API
 // ---------------------------------------------------------------------------
@@ -46,12 +48,42 @@ impl AlertButton {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CustomSheetDetent {
+    Medium,
+    Large,
+}
+
+impl CustomSheetDetent {
+    pub fn to_i32(self) -> i32 {
+        match self {
+            CustomSheetDetent::Medium => 0,
+            CustomSheetDetent::Large => 1,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CustomSheetOptions {
+    pub detents: Vec<CustomSheetDetent>,
+    pub initial_detent: CustomSheetDetent,
+    pub shows_grabber: bool,
+    pub expands_on_scroll_edge: bool,
+    pub edge_attached_in_compact_height: bool,
+    pub width_follows_preferred_content_size_when_edge_attached: bool,
+    pub corner_radius: Option<f32>,
+    pub modal_in_presentation: bool,
+}
+
 static NEXT_ALERT_ID: AtomicU32 = AtomicU32::new(1);
 static ALERT_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>) + Send>>>> =
     OnceLock::new();
 static NEXT_SELECTION_ID: AtomicU32 = AtomicU32::new(1);
 static SELECTION_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>) + Send>>>> =
     OnceLock::new();
+thread_local! {
+    static PENDING_CUSTOM_SHEET_VIEW: std::cell::RefCell<Option<AnyView>> = const { std::cell::RefCell::new(None) };
+}
 
 fn alert_callbacks() -> &'static Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>) + Send>>> {
     ALERT_CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -99,6 +131,24 @@ pub fn show_selection(
         .unwrap()
         .insert(id, Box::new(on_result));
     bridge().present_selection(id, title, message, &buttons);
+}
+
+/// Present a configurable native custom sheet.
+///
+/// The native platform owns sheet gestures and animation. The sheet body itself
+/// is a canvas host intended for GPUI-rendered content.
+pub fn show_custom_sheet<V>(options: CustomSheetOptions, view: Entity<V>)
+where
+    V: Render,
+{
+    PENDING_CUSTOM_SHEET_VIEW.with(|pending| {
+        *pending.borrow_mut() = Some(view.into());
+    });
+    bridge().present_custom_sheet(&options);
+}
+
+pub fn take_pending_custom_sheet_view() -> Option<AnyView> {
+    PENDING_CUSTOM_SHEET_VIEW.with(|pending| pending.borrow_mut().take())
 }
 
 /// Called from platform code after the user taps a button.
@@ -163,6 +213,48 @@ pub fn clear_pending_alerts() {
 }
 
 // ---------------------------------------------------------------------------
+// Haptic feedback API
+// ---------------------------------------------------------------------------
+
+/// Haptic feedback patterns, mapped to native equivalents on each platform.
+///
+/// iOS: UIImpactFeedbackGenerator, UISelectionFeedbackGenerator, UINotificationFeedbackGenerator.
+/// Android: View.performHapticFeedback with HapticFeedbackConstants (no VIBRATE permission needed).
+#[derive(Clone, Copy, Debug)]
+pub enum HapticFeedback {
+    ImpactLight,
+    ImpactMedium,
+    ImpactHeavy,
+    ImpactSoft,
+    ImpactRigid,
+    SelectionChanged,
+    NotificationSuccess,
+    NotificationWarning,
+    NotificationError,
+}
+
+impl HapticFeedback {
+    /// Stable integer encoding shared between Rust, C FFI, and JNI.
+    pub fn to_i32(self) -> i32 {
+        match self {
+            HapticFeedback::ImpactLight => 0,
+            HapticFeedback::ImpactMedium => 1,
+            HapticFeedback::ImpactHeavy => 2,
+            HapticFeedback::ImpactSoft => 3,
+            HapticFeedback::ImpactRigid => 4,
+            HapticFeedback::SelectionChanged => 5,
+            HapticFeedback::NotificationSuccess => 6,
+            HapticFeedback::NotificationWarning => 7,
+            HapticFeedback::NotificationError => 8,
+        }
+    }
+}
+
+pub fn trigger_haptic(feedback: HapticFeedback) {
+    bridge().trigger_haptic(feedback);
+}
+
+// ---------------------------------------------------------------------------
 // PlatformBridge trait
 // ---------------------------------------------------------------------------
 
@@ -172,11 +264,13 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn system_inset_bottom(&self) -> u32;
     fn keyboard_height(&self) -> u32;
     fn is_keyboard_visible(&self) -> bool;
-    fn show_keyboard(&self);
-    fn hide_keyboard(&self);
     fn launch_qr_scanner(&self);
-    /// Returns the native app build version displayed to users (e.g. Android versionName).
+    /// Returns the native user-facing app version (e.g. Android versionName / iOS CFBundleShortVersionString).
     fn app_version(&self) -> Option<String> {
+        None
+    }
+    /// Returns the native app build number (e.g. Android versionCode / iOS CFBundleVersion).
+    fn app_build_number(&self) -> Option<String> {
         None
     }
     /// Returns the app's writable data directory for persisting workspace state.
@@ -193,8 +287,12 @@ pub trait PlatformBridge: Send + Sync + 'static {
     /// `platform_bridge::dispatch_selection_result(id, button_index)` on selection,
     /// or `platform_bridge::dispatch_selection_dismiss(id)` if dismissed.
     fn present_selection(&self, _id: u32, _title: &str, _message: &str, _buttons: &[AlertButton]) {}
+    /// Display a configurable native custom sheet that hosts GPUI content.
+    fn present_custom_sheet(&self, _options: &CustomSheetOptions) {}
     /// Open a URL in the system browser.
     fn open_url(&self, _url: &str) {}
+    /// Trigger a haptic feedback pattern. No-op on platforms without haptic hardware.
+    fn trigger_haptic(&self, _feedback: HapticFeedback) {}
 }
 
 static BRIDGE: OnceLock<Box<dyn PlatformBridge>> = OnceLock::new();
@@ -205,6 +303,28 @@ pub fn set_bridge(bridge: impl PlatformBridge) {
 
 pub fn bridge() -> &'static dyn PlatformBridge {
     BRIDGE.get().map(|b| &**b).unwrap_or(&StubBridge)
+}
+
+/// Returns a normalized app version label as `version(buildNumber)` when both values exist.
+pub fn app_version_with_build_number() -> String {
+    let bridge = bridge();
+    let version = bridge
+        .app_version()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let build_number = bridge
+        .app_build_number()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+
+    match (version, build_number) {
+        (Some(version), Some(build_number)) if version != build_number => {
+            format!("{version}({build_number})")
+        }
+        (Some(version), _) => version,
+        (None, Some(build_number)) => build_number,
+        (None, None) => env!("CARGO_PKG_VERSION").to_string(),
+    }
 }
 
 /// Status bar top inset in logical pixels.
@@ -249,7 +369,5 @@ impl PlatformBridge for StubBridge {
     fn is_keyboard_visible(&self) -> bool {
         false
     }
-    fn show_keyboard(&self) {}
-    fn hide_keyboard(&self) {}
     fn launch_qr_scanner(&self) {}
 }

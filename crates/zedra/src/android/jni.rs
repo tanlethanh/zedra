@@ -12,7 +12,7 @@ use crate::android::{
     command_queue::{AndroidCommand, get_command_sender},
 };
 use crate::install_panic_hook;
-use crate::platform_bridge::{self, AlertButton, AlertButtonStyle};
+use crate::platform_bridge::{self, AlertButton, AlertButtonStyle, HapticFeedback};
 
 // Global storage for JavaVM to enable Rust→Java callbacks
 static JVM: Mutex<Option<Arc<JavaVM>>> = Mutex::new(None);
@@ -80,11 +80,19 @@ fn init_logging() {
     INIT.call_once(|| {
         android_logger::init_once(
             android_logger::Config::default()
-                .with_max_level(log::LevelFilter::Info)
+                .with_max_level(if cfg!(feature = "debug-logs") {
+                    log::LevelFilter::Debug
+                } else {
+                    log::LevelFilter::Info
+                })
                 .with_tag("zedra")
                 .with_filter(
                     android_logger::FilterBuilder::new()
-                        .parse("info,tracing::span=off,tracing::span::active=off")
+                        .parse(if cfg!(feature = "debug-logs") {
+                            "debug,tracing::span=off,tracing::span::active=off"
+                        } else {
+                            "info,tracing::span=off,tracing::span::active=off"
+                        })
                         .build(),
                 ),
         );
@@ -521,8 +529,6 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_getDisplayDensity(
         Ok(density) => {
             tracing::debug!(density, "jni: display density");
             *DISPLAY_DENSITY.lock().unwrap() = density;
-            // Also update the terminal crate's global for keyboard resize calculations
-            zedra_terminal::set_display_density(density);
             density
         }
         Err(e) => {
@@ -690,8 +696,6 @@ pub extern "system" fn Java_dev_zedra_app_GpuiSurfaceView_nativeKeyboardHeightCh
 ) {
     let h = height.max(0) as u32;
     KEYBOARD_HEIGHT.store(h, Ordering::Relaxed);
-    // Also update the terminal crate's global so TerminalView can read it
-    zedra_terminal::set_keyboard_height(h);
     tracing::debug!(height = h, "jni: keyboard height");
 
     let sender = get_command_sender();
@@ -890,6 +894,16 @@ pub fn get_app_version() -> String {
     out.lock().map(|s| s.clone()).unwrap_or_default()
 }
 
+/// Get the app build number from Android package metadata.
+pub fn get_app_build_number() -> String {
+    let out = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let out_clone = out.clone();
+    jni_call("get_app_build_number", move || {
+        get_app_build_number_inner(out_clone)
+    });
+    out.lock().map(|s| s.clone()).unwrap_or_default()
+}
+
 fn get_app_version_inner(output: std::sync::Arc<std::sync::Mutex<String>>) {
     let jvm = match JVM.lock() {
         Ok(guard) => match guard.as_ref() {
@@ -956,6 +970,77 @@ fn get_app_version_inner(output: std::sync::Arc<std::sync::Mutex<String>>) {
         }
         Err(e) => {
             tracing::error!("Failed to read app version string: {:?}", e);
+        }
+    }
+}
+
+fn get_app_build_number_inner(output: std::sync::Arc<std::sync::Mutex<String>>) {
+    let jvm = match JVM.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(jvm) => jvm.clone(),
+            None => {
+                tracing::error!("JVM not available for get_app_build_number");
+                return;
+            }
+        },
+        Err(e) => {
+            tracing::error!("Failed to lock JVM mutex: {:?}", e);
+            return;
+        }
+    };
+
+    let mut env = match jvm.get_env() {
+        Ok(env) => env,
+        Err(_) => match jvm.attach_current_thread_as_daemon() {
+            Ok(env) => env,
+            Err(e) => {
+                tracing::error!("Failed to attach thread for get_app_build_number: {:?}", e);
+                return;
+            }
+        },
+    };
+
+    let class = match env.find_class("dev/zedra/app/MainActivity") {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Failed to find MainActivity class: {:?}", e);
+            if env.exception_check().unwrap_or(false) {
+                env.exception_describe().ok();
+                env.exception_clear().ok();
+            }
+            return;
+        }
+    };
+
+    let value =
+        match env.call_static_method(&class, "getAppBuildNumber", "()Ljava/lang/String;", &[]) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("Failed to call getAppBuildNumber: {:?}", e);
+                if env.exception_check().unwrap_or(false) {
+                    env.exception_describe().ok();
+                    env.exception_clear().ok();
+                }
+                return;
+            }
+        };
+
+    let Ok(obj) = value.l() else {
+        return;
+    };
+    if obj.is_null() {
+        return;
+    }
+    let jstr = jni::objects::JString::from(obj);
+    match env.get_string(&jstr) {
+        Ok(v) => {
+            let s: String = v.into();
+            if let Ok(mut guard) = output.lock() {
+                *guard = s;
+            }
+        }
+        Err(e) => {
+            tracing::error!("Failed to read app build number string: {:?}", e);
         }
     }
 }
@@ -1287,6 +1372,59 @@ fn show_selection_inner(
         ],
     ) {
         tracing::error!("Failed to call showSelection: {:?}", error);
+        if env.exception_check().unwrap_or(false) {
+            env.exception_describe().ok();
+            env.exception_clear().ok();
+        }
+    }
+}
+
+/// Trigger a haptic feedback pattern on the Android surface view.
+pub fn trigger_haptic(feedback: HapticFeedback) {
+    let kind = feedback.to_i32();
+    jni_call("trigger_haptic", move || trigger_haptic_inner(kind));
+}
+
+fn trigger_haptic_inner(kind: i32) {
+    let jvm = match JVM.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(jvm) => jvm.clone(),
+            None => {
+                tracing::error!("JVM not available for haptic call");
+                return;
+            }
+        },
+        Err(e) => {
+            tracing::error!("Failed to lock JVM mutex: {:?}", e);
+            return;
+        }
+    };
+
+    let mut env = match jvm.get_env() {
+        Ok(env) => env,
+        Err(_) => match jvm.attach_current_thread_as_daemon() {
+            Ok(env) => env,
+            Err(e) => {
+                tracing::error!("Failed to attach thread for haptic: {:?}", e);
+                return;
+            }
+        },
+    };
+
+    let class = match env.find_class("dev/zedra/app/MainActivity") {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Failed to find MainActivity class: {:?}", e);
+            if env.exception_check().unwrap_or(false) {
+                env.exception_describe().ok();
+                env.exception_clear().ok();
+            }
+            return;
+        }
+    };
+
+    if let Err(e) = env.call_static_method(&class, "triggerHaptic", "(I)V", &[(kind).into()]) {
+        tracing::error!("jni: triggerHaptic failed: {:?}", e);
         if env.exception_check().unwrap_or(false) {
             env.exception_describe().ok();
             env.exception_clear().ok();

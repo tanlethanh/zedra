@@ -5,8 +5,9 @@
 // __attribute__((weak)) ensures the linker always prefers the strong Obj-C definition.
 __attribute__((weak)) void ios_present_qr_scanner(void) {}
 __attribute__((weak)) void ios_open_url(const char *url) {}
-__attribute__((weak)) const char* ios_get_documents_directory(void) { return 0; }
-__attribute__((weak)) const char* ios_get_app_version(void) { return 0; }
+__attribute__((weak)) const char *ios_get_documents_directory(void) { return 0; }
+__attribute__((weak)) const char *ios_get_app_version(void) { return 0; }
+__attribute__((weak)) const char *ios_get_app_build_number(void) { return 0; }
 __attribute__((weak)) void ios_present_alert(
     unsigned int callback_id,
     const char *title,
@@ -21,6 +22,18 @@ __attribute__((weak)) void ios_present_selection(
     int button_count,
     const char **labels,
     const int *styles) {}
+__attribute__((weak)) void ios_present_custom_sheet(
+    int detent_count,
+    const int *detents,
+    int initial_detent,
+    _Bool shows_grabber,
+    _Bool expands_on_scroll_edge,
+    _Bool edge_attached_in_compact_height,
+    _Bool width_follows_preferred_content_size_when_edge_attached,
+    _Bool has_corner_radius,
+    float corner_radius,
+    _Bool modal_in_presentation) {}
+__attribute__((weak)) void ios_trigger_haptic(int kind) {}
 
 // Firebase Analytics + Crashlytics stubs.
 // Real implementations live in ios/Zedra/ZedraFirebase.m and override at Xcode link time.

@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
-use zedra_rpc::osc::OscScanner;
+use zedra_osc::OscScanner;
 use zedra_rpc::proto::{BacklogEntry, HostEvent, TermOutput, TerminalSyncEntry};
 
 // ---------------------------------------------------------------------------

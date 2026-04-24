@@ -9,3 +9,8 @@ alacritty_terminal.workspace = true
 tracing.workspace = true
 itertools.workspace = true
 futures.workspace = true
+tokio.workspace = true
+zedra-osc = { path = "../zedra-osc" }
+
+[dev-dependencies]
+gpui = { path = "../../vendor/zed/crates/gpui", default-features = false, features = ["test-support"] }

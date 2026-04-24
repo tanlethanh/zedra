@@ -1,126 +1,177 @@
-/// Remote PTY handle. Durable across reconnects.
-///
-/// Pump task writes PTY output → UI subscribes via `subscribe_output()` channel.
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
+use tracing::*;
+use zedra_rpc::proto::{TermAttachReq, TermInput, TermOutput, ZedraProto};
 
-use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+use crate::session_runtime;
 
-pub use zedra_rpc::osc::{OscEvent, OscScanner, ShellState, TerminalMeta};
+/// Keep track of created terminals.
+#[derive(Clone)]
+pub struct RemoteTerminal(Arc<RemoteTerminalInner>);
 
-pub type OutputBuffer = Arc<Mutex<VecDeque<Vec<u8>>>>;
-pub type NotifyReceiver = UnboundedReceiver<()>;
-
-pub struct RemoteTerminal {
-    pub id: String,
-    pub output: OutputBuffer,
-    pub needs_render: Arc<AtomicBool>,
-    pub meta: Arc<Mutex<TerminalMeta>>,
-    pub osc_events: Arc<Mutex<VecDeque<OscEvent>>>,
-    osc_scanner: Mutex<OscScanner>,
-    input_tx: Mutex<Option<tokio::sync::mpsc::Sender<Vec<u8>>>>,
+#[derive(Default)]
+pub struct RemoteTerminalInner {
+    id: Mutex<String>,
+    input_tx: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
+    output_rx: Mutex<Option<mpsc::Receiver<Vec<u8>>>>,
     last_seq: AtomicU64,
-    notify_tx: Mutex<Option<UnboundedSender<()>>>,
+    /// Whether the terminal is currently attached to a remote client.
+    remote_attached: AtomicBool,
+    input_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    output_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl RemoteTerminalInner {
+    fn update_seq(&self, seq: u64) {
+        self.last_seq.store(seq, Ordering::Release);
+    }
+
+    fn store_channels(&self, input_tx: mpsc::Sender<Vec<u8>>, output_rx: mpsc::Receiver<Vec<u8>>) {
+        if let (Ok(mut input_tx_slot), Ok(mut output_rx_slot)) =
+            (self.input_tx.lock(), self.output_rx.lock())
+        {
+            *input_tx_slot = Some(input_tx);
+            *output_rx_slot = Some(output_rx);
+            self.remote_attached.store(true, Ordering::Release);
+        }
+    }
+
+    fn take_channels(&self) -> Option<(mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>)> {
+        if let (Ok(mut input_tx_slot), Ok(mut output_rx_slot)) =
+            (self.input_tx.lock(), self.output_rx.lock())
+        {
+            let input_tx = input_tx_slot.take()?;
+            let output_rx = output_rx_slot.take()?;
+            Some((input_tx, output_rx))
+        } else {
+            None
+        }
+    }
 }
 
 impl RemoteTerminal {
-    pub(crate) fn new(id: String) -> Arc<Self> {
-        Arc::new(Self {
-            id,
-            output: Arc::new(Mutex::new(VecDeque::new())),
-            needs_render: Arc::new(AtomicBool::new(false)),
-            meta: Arc::new(Mutex::new(TerminalMeta::default())),
-            osc_events: Arc::new(Mutex::new(VecDeque::new())),
-            osc_scanner: Mutex::new(OscScanner::new()),
+    pub(crate) fn new(id: String) -> Self {
+        Self(Arc::new(RemoteTerminalInner {
+            id: Mutex::new(id),
             input_tx: Mutex::new(None),
+            output_rx: Mutex::new(None),
             last_seq: AtomicU64::new(0),
-            notify_tx: Mutex::new(None),
-        })
+            remote_attached: AtomicBool::new(false),
+            input_task: Mutex::new(None),
+            output_task: Mutex::new(None),
+        }))
     }
 
-    pub fn subscribe_output(&self) -> NotifyReceiver {
-        let (tx, rx) = unbounded();
-        if let Ok(mut g) = self.notify_tx.lock() {
-            *g = Some(tx);
-        }
-        rx
+    pub fn id(&self) -> String {
+        self.0.id.lock().ok().map(|s| s.clone()).unwrap_or_default()
     }
 
     pub fn last_seq(&self) -> u64 {
-        self.last_seq.load(Ordering::Relaxed)
+        self.0.last_seq.load(Ordering::Acquire)
     }
 
-    pub(crate) fn update_seq(&self, seq: u64) {
-        self.last_seq.store(seq, Ordering::Relaxed);
+    pub fn update_seq(&self, seq: u64) {
+        self.0.last_seq.store(seq, Ordering::Release);
     }
 
-    pub(crate) fn set_input_tx(&self, tx: tokio::sync::mpsc::Sender<Vec<u8>>) {
-        if let Ok(mut g) = self.input_tx.lock() {
-            *g = Some(tx);
-        }
-    }
+    pub async fn attach_remote(
+        &self,
+        client: &irpc::Client<ZedraProto>,
+    ) -> Result<(), anyhow::Error> {
+        let (irpc_input_tx, mut irpc_output_rx) = client
+            .bidi_streaming::<TermAttachReq, TermInput, TermOutput>(
+                TermAttachReq {
+                    id: self.id(),
+                    last_seq: self.last_seq(),
+                },
+                256,
+                256,
+            )
+            .await?;
 
-    pub fn push_output(&self, data: Vec<u8>) {
-        let events = self
-            .osc_scanner
-            .lock()
-            .map(|mut s| s.feed(&data))
-            .unwrap_or_default();
+        info!("attached to remote terminal: {}", self.id());
 
-        if !events.is_empty() {
-            if let (Ok(mut meta), Ok(mut queue)) = (self.meta.lock(), self.osc_events.lock()) {
-                for ev in events {
-                    meta.apply(&ev);
-                    queue.push_back(ev);
+        let (input_tx, mut input_rx) = mpsc::channel::<Vec<u8>>(256);
+        let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>(256);
+
+        let input_task = session_runtime().spawn(async move {
+            while let Some(data) = input_rx.recv().await {
+                if let Err(e) = irpc_input_tx.send(TermInput { data }).await {
+                    info!("failed to send input: {:?}", e);
+                    break;
                 }
             }
+        });
+        if let Ok(mut input_task_slot) = self.0.input_task.lock() {
+            if let Some(prev_task) = input_task_slot.take() {
+                prev_task.abort();
+                info!("aborted previous terminal input task from reattach");
+            }
+            *input_task_slot = Some(input_task);
         }
 
-        if let Ok(mut buf) = self.output.lock() {
-            buf.push_back(data);
+        let terminal_inner = self.0.clone();
+        let output_task = session_runtime().spawn(async move {
+            loop {
+                match irpc_output_rx.recv().await {
+                    Ok(Some(output)) => {
+                        terminal_inner.update_seq(output.seq);
+                        if let Err(e) = output_tx.send(output.data).await {
+                            warn!("failed to forward terminal output: {:?}", e);
+                        }
+                    }
+                    Ok(None) => {
+                        info!("remote terminal closed or sender dropped, stopping output task");
+                        break;
+                    }
+                    Err(e) => {
+                        warn!("failed to receive terminal output: {:?}", e);
+                        break;
+                    }
+                }
+            }
+        });
+        if let Ok(mut output_task_slot) = self.0.output_task.lock() {
+            if let Some(prev_task) = output_task_slot.take() {
+                prev_task.abort();
+                info!("aborted previous terminal output task from reattach");
+            }
+            *output_task_slot = Some(output_task);
+        }
+
+        self.0.store_channels(input_tx, output_rx);
+        info!("stored channels for remote terminal: {}", self.id());
+
+        Ok(())
+    }
+
+    /// Takes ownership of the input/output channels.
+    pub fn take_chanel(&self) -> Result<(mpsc::Sender<Vec<u8>>, mpsc::Receiver<Vec<u8>>), String> {
+        if let Some((input_tx, output_rx)) = self.0.take_channels() {
+            Ok((input_tx, output_rx))
+        } else {
+            Err("no input/output channels available".to_string())
         }
     }
+}
 
-    pub(crate) fn reset_osc_scanner(&self) {
-        if let Ok(mut s) = self.osc_scanner.lock() {
-            s.reset();
+// Automatically abort the input/output tasks when the RemoteTerminalInner is dropped.
+// This is necessary to avoid leaking tasks when the RemoteTerminal is dropped without
+// taking ownership of the input/output channels. Mainly happens when user disconnects or closes the terminal.
+impl Drop for RemoteTerminalInner {
+    fn drop(&mut self) {
+        if let Ok(mut output_task_slot) = self.output_task.lock() {
+            if let Some(task) = output_task_slot.take() {
+                task.abort();
+                info!("aborted previous terminal output task from drop");
+            }
         }
-    }
-
-    pub fn meta(&self) -> TerminalMeta {
-        self.meta.lock().map(|m| m.clone()).unwrap_or_default()
-    }
-
-    pub fn drain_osc_events(&self) -> Vec<OscEvent> {
-        self.osc_events
-            .lock()
-            .map(|mut q| q.drain(..).collect())
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn signal_needs_render(&self) {
-        self.needs_render.store(true, Ordering::Release);
-        if let Some(tx) = self.notify_tx.lock().ok().and_then(|g| g.clone()) {
-            let _ = tx.unbounded_send(());
+        if let Ok(mut input_task_slot) = self.input_task.lock() {
+            if let Some(task) = input_task_slot.take() {
+                task.abort();
+                info!("aborted previous terminal input task from drop");
+            }
         }
-    }
-
-    pub fn make_input_fn(self: &Arc<Self>) -> Box<dyn Fn(Vec<u8>) + Send + 'static> {
-        let terminal = self.clone();
-        Box::new(move |data| {
-            terminal.send_input(data);
-        })
-    }
-
-    pub fn send_input(&self, data: Vec<u8>) -> bool {
-        let Some(tx) = self.input_tx.lock().ok().and_then(|g| g.clone()) else {
-            return false;
-        };
-        if let Err(e) = tx.try_send(data) {
-            tracing::warn!("terminal input: {e}");
-            return matches!(e, tokio::sync::mpsc::error::TrySendError::Full(_));
-        }
-        true
     }
 }

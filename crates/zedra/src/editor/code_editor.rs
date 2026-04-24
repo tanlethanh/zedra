@@ -3,11 +3,13 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use tracing::*;
 
 use super::syntax_highlighter::{Highlighter, Language};
 use super::syntax_theme::SyntaxTheme;
 use super::text_buffer::Buffer;
 
+use crate::fonts;
 use crate::platform_bridge;
 use crate::theme;
 
@@ -48,14 +50,16 @@ pub struct EditorView {
 }
 
 impl EditorView {
-    pub fn new(content: String, cx: &mut App) -> Self {
-        let mut highlighter = Highlighter::rust();
-        highlighter.parse(&content);
-        Self::build(content, highlighter, cx)
+    /// Create with automatic language detection from filename.
+    pub fn new(cx: &mut App) -> Self {
+        Self::build(
+            "".to_string(),
+            Highlighter::from_language(Language::PlainText),
+            cx,
+        )
     }
 
-    /// Create with automatic language detection from filename.
-    pub fn with_filename(content: String, filename: &str, cx: &mut App) -> Self {
+    pub fn new_with_content(filename: &str, content: String, cx: &mut App) -> Self {
         let mut highlighter = Highlighter::from_filename(filename);
         highlighter.parse(&content);
         Self::build(content, highlighter, cx)
@@ -78,7 +82,9 @@ impl EditorView {
     }
 
     /// Replace the entire buffer content (e.g. when loading a remote file).
-    pub fn set_content(&mut self, content: String) {
+    /// The language is detected from the filename.
+    pub fn set_content(&mut self, filename: &str, content: String) {
+        self.highlighter = Highlighter::from_filename(filename);
         self.buffer.set_text(content);
         self.highlighter.parse(self.buffer.text());
         self.cursor_offset = 0;
@@ -222,6 +228,7 @@ impl Render for EditorView {
         // Rebuild line cache only when buffer content changed.
         // During scroll, this is skipped entirely.
         if self.lines_dirty {
+            info!("rebuilding line cache by line_dirty flag");
             self.rebuild_line_cache();
         }
 
@@ -240,6 +247,7 @@ impl Render for EditorView {
         let text_style = {
             let mut style = window.text_style();
             style.color = rgb(0xabb2bf).into();
+            style.font_family = fonts::MONO_FONT_FAMILY.into();
             style.font_size = px(FONT_SIZE).into();
             style
         };
@@ -249,6 +257,7 @@ impl Render for EditorView {
             .flex_col()
             .size_full()
             .bg(rgb(0x0e0c0c))
+            .font_family(fonts::MONO_FONT_FAMILY)
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 let keystroke = &event.keystroke;

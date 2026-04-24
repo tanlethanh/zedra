@@ -3,31 +3,31 @@ use std::ops::Range;
 use tree_sitter::{Language as TSLanguage, Parser, Query, QueryCursor, StreamingIterator, Tree};
 
 const RUST_HIGHLIGHTS: &str =
-    include_str!("../../../../vendor/zed/crates/languages/src/rust/highlights.scm");
+    include_str!("../../../../vendor/zed/crates/grammars/src/rust/highlights.scm");
 const PYTHON_HIGHLIGHTS: &str =
-    include_str!("../../../../vendor/zed/crates/languages/src/python/highlights.scm");
+    include_str!("../../../../vendor/zed/crates/grammars/src/python/highlights.scm");
 const GO_HIGHLIGHTS: &str =
-    include_str!("../../../../vendor/zed/crates/languages/src/go/highlights.scm");
+    include_str!("../../../../vendor/zed/crates/grammars/src/go/highlights.scm");
 const JAVASCRIPT_HIGHLIGHTS: &str =
-    include_str!("../../../../vendor/zed/crates/languages/src/javascript/highlights.scm");
+    include_str!("../../../../vendor/zed/crates/grammars/src/javascript/highlights.scm");
 const TYPESCRIPT_HIGHLIGHTS: &str =
-    include_str!("../../../../vendor/zed/crates/languages/src/typescript/highlights.scm");
+    include_str!("../../../../vendor/zed/crates/grammars/src/typescript/highlights.scm");
 const TSX_HIGHLIGHTS: &str =
-    include_str!("../../../../vendor/zed/crates/languages/src/tsx/highlights.scm");
+    include_str!("../../../../vendor/zed/crates/grammars/src/tsx/highlights.scm");
 const C_HIGHLIGHTS: &str =
-    include_str!("../../../../vendor/zed/crates/languages/src/c/highlights.scm");
+    include_str!("../../../../vendor/zed/crates/grammars/src/c/highlights.scm");
 const CPP_HIGHLIGHTS: &str =
-    include_str!("../../../../vendor/zed/crates/languages/src/cpp/highlights.scm");
+    include_str!("../../../../vendor/zed/crates/grammars/src/cpp/highlights.scm");
 const CSS_HIGHLIGHTS: &str =
-    include_str!("../../../../vendor/zed/crates/languages/src/css/highlights.scm");
+    include_str!("../../../../vendor/zed/crates/grammars/src/css/highlights.scm");
 const JSON_HIGHLIGHTS: &str =
-    include_str!("../../../../vendor/zed/crates/languages/src/json/highlights.scm");
+    include_str!("../../../../vendor/zed/crates/grammars/src/json/highlights.scm");
 const YAML_HIGHLIGHTS: &str =
-    include_str!("../../../../vendor/zed/crates/languages/src/yaml/highlights.scm");
+    include_str!("../../../../vendor/zed/crates/grammars/src/yaml/highlights.scm");
 const BASH_HIGHLIGHTS: &str =
-    include_str!("../../../../vendor/zed/crates/languages/src/bash/highlights.scm");
+    include_str!("../../../../vendor/zed/crates/grammars/src/bash/highlights.scm");
 const MARKDOWN_HIGHLIGHTS: &str =
-    include_str!("../../../../vendor/zed/crates/languages/src/markdown/highlights.scm");
+    include_str!("../../../../vendor/zed/crates/grammars/src/markdown/highlights.scm");
 const CSHARP_HIGHLIGHTS: &str = include_str!("queries/csharp/highlights.scm");
 
 /// Supported programming languages for syntax highlighting.
@@ -194,9 +194,9 @@ impl Highlighter {
         }
     }
 
-    /// Create a highlighter configured for Rust syntax.
-    pub fn rust() -> Self {
-        Self::new(Language::Rust)
+    /// Create a highlighter for the specified language.
+    pub fn from_language(language: Language) -> Self {
+        Self::new(language)
     }
 
     /// Create a highlighter based on filename extension.

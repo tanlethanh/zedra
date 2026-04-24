@@ -1,25 +1,16 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-use futures::StreamExt;
-use futures::channel::mpsc::{UnboundedSender, unbounded};
 use gpui::*;
+use tracing::*;
 use zedra_rpc::ZedraPairingTicket;
-use zedra_session::{Session, SessionHandle, signer::ClientSigner};
+use zedra_session::signer::ClientSigner;
 
 use crate::pending::PendingSlot;
 use crate::platform_bridge;
-use crate::workspace_state::{SharedWorkspaceStates, WorkspaceState};
-use crate::workspace_view::{WorkspaceEvent, WorkspaceView, compute_terminal_dimensions};
+use crate::workspace::{Workspace, WorkspaceEvent};
+use crate::workspace_state::WorkspaceState;
 
 static PENDING_TICKET: PendingSlot<ZedraPairingTicket> = PendingSlot::new();
-
-pub struct Workspace {
-    pub view: Entity<WorkspaceView>,
-    pub session: Session,
-    needs_sync: Arc<AtomicBool>,
-    _state_listener: Task<()>,
-}
 
 #[derive(Clone, Debug)]
 pub enum WorkspacesEvent {
@@ -33,58 +24,55 @@ pub enum WorkspacesEvent {
 impl EventEmitter<WorkspacesEvent> for Workspaces {}
 
 pub struct Workspaces {
-    entries: Vec<Workspace>,
-    states: Vec<WorkspaceState>,
-    active: Option<usize>,
+    /// Workspace entries, one per state.
+    /// The entry is lazily loaded from the state when first opened,
+    /// and removed on disconnect.
+    entries: Vec<Entity<Workspace>>,
+    states: Vec<Entity<WorkspaceState>>,
+    active_index: Option<usize>,
     signer: Option<Arc<dyn ClientSigner>>,
     _subscriptions: Vec<Subscription>,
-    sync_notify_tx: UnboundedSender<()>,
-    _sync_listener: Task<()>,
 }
 
 impl Workspaces {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let signer = load_client_signer();
-        let states = WorkspaceState::load();
-        tracing::info!("Workspaces: loaded {} saved workspace(s)", states.len());
 
-        let (sync_notify_tx, mut sync_notify_rx) = unbounded::<()>();
-        let sync_listener = cx.spawn(async move |weak, cx| {
-            while sync_notify_rx.next().await.is_some() {
-                if weak.update(cx, |ws, cx| ws.sync_if_needed(cx)).is_err() {
-                    break;
-                }
-            }
-        });
+        let states = WorkspaceState::load()
+            .map_err(|e| error!("Failed to load saved workspace states: {e}"))
+            .map(|states| {
+                info!("Loaded {} saved workspace(s)", states.len());
+                states
+                    .into_iter()
+                    .map(|s| cx.new(|_cx| s))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
 
         let mut this = Self {
             entries: Vec::new(),
             states,
-            active: None,
             signer,
+            active_index: None,
             _subscriptions: Vec::new(),
-            sync_notify_tx,
-            _sync_listener: sync_listener,
         };
         this.emit_states_changed(cx);
         this
     }
 
-    // ─── Accessors ───────────────────────────────────────────────────────────
-
-    pub fn active(&self) -> Option<&Workspace> {
-        self.active.and_then(|i| self.entries.get(i))
+    pub fn active(&self) -> Option<&Entity<Workspace>> {
+        self.active_index.and_then(|i| self.entries.get(i))
     }
 
-    pub fn active_index(&self) -> Option<usize> {
-        self.active
+    pub fn active_view(&self) -> Option<AnyView> {
+        self.active().map(|e| AnyView::from(e.clone()))
     }
 
-    pub fn active_view(&self) -> Option<Entity<WorkspaceView>> {
-        self.active().map(|w| w.view.clone())
+    pub fn workspace_by_index(&self, index: usize) -> Option<&Entity<Workspace>> {
+        self.entries.get(index)
     }
 
-    pub fn get(&self, index: usize) -> Option<&Workspace> {
+    pub fn get(&self, index: usize) -> Option<&Entity<Workspace>> {
         self.entries.get(index)
     }
 
@@ -96,34 +84,38 @@ impl Workspaces {
         self.entries.is_empty()
     }
 
-    pub fn states(&self) -> &[WorkspaceState] {
+    pub fn states(&self) -> &[Entity<WorkspaceState>] {
         &self.states
     }
 
-    pub fn shared_states(&self) -> SharedWorkspaceStates {
-        Arc::new(self.states.clone())
-    }
-
-    pub fn handles(&self) -> Vec<SessionHandle> {
+    pub fn entry_by_endpoint_addr(
+        &self,
+        endpoint_addr: &str,
+        cx: &App,
+    ) -> Option<Entity<Workspace>> {
         self.entries
             .iter()
-            .map(|e| e.session.handle().clone())
-            .collect()
+            .find(|ws| ws.read(cx).endpoint_addr(cx) == endpoint_addr)
+            .cloned()
     }
 
-    // ─── Navigation ──────────────────────────────────────────────────────────
+    pub fn entry_index_by_endpoint_addr(&self, endpoint_addr: &str, cx: &App) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|ws| ws.read(cx).endpoint_addr(cx) == endpoint_addr)
+    }
 
     pub fn switch_to(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.entries.len() {
-            self.active = Some(index);
-            self.entries[index].view.update(cx, |ws, cx| {
-                ws.on_activate(cx);
-            });
-            cx.notify();
+            if let Some(ws) = self.entries.get(index) {
+                self.active_index = Some(index);
+                ws.update(cx, |ws, cx| ws.on_activate(cx));
+                cx.notify();
+            }
+        } else {
+            warn!("Index {index} out of range. Cannot switch to workspace.");
         }
     }
-
-    // ─── Connection ──────────────────────────────────────────────────────────
 
     /// Connect via QR pairing ticket (new device pairing).
     pub fn connect_ticket(
@@ -133,11 +125,10 @@ impl Workspaces {
         cx: &mut Context<Self>,
     ) {
         let addr = iroh::EndpointAddr::from(ticket.endpoint_id);
-        self.connect_internal(addr, Some(ticket), None, None, window, cx);
+        self.connect_and_intialize_workspace(addr, Some(ticket), None, None, window, cx);
     }
 
     /// Queue a ticket for deferred connection (when window not available).
-    /// Call `process_pending_ticket()` when window becomes available.
     pub fn connect_ticket_deferred(&mut self, ticket: ZedraPairingTicket, cx: &mut Context<Self>) {
         PENDING_TICKET.set(ticket);
         cx.notify();
@@ -160,138 +151,89 @@ impl Workspaces {
         let state = match self.states.get(state_index) {
             Some(s) => s.clone(),
             None => {
-                tracing::error!("connect_saved: index {} out of range", state_index);
+                error!("Index {state_index} out of range. Cannot reconnect to saved workspace.");
                 return;
             }
         };
 
-        match zedra_rpc::pairing::decode_endpoint_addr(state.endpoint_addr()) {
+        let session_id = state.read(cx).session_id.clone();
+        let endpoint_addr = state.read(cx).endpoint_addr.clone();
+        match zedra_rpc::pairing::decode_endpoint_addr(&endpoint_addr) {
             Ok(addr) => {
-                tracing::info!("Reconnecting to workspace: {}", addr.id.fmt_short());
-                self.connect_internal(
+                info!("Reconnecting to workspace: {}", addr.id.fmt_short());
+                self.connect_and_intialize_workspace(
                     addr,
                     None,
-                    Some(state.session_id().to_string()),
-                    Some(state),
+                    Some(session_id),
+                    Some(state.clone()),
                     window,
                     cx,
                 );
             }
             Err(e) => {
-                tracing::error!("Failed to decode endpoint addr: {}", e);
-                WorkspaceState::remove(state.endpoint_addr());
-                self.reload_states(cx);
+                error!("Failed to decode endpoint addr: {e}. Removing workspace state.");
+                WorkspaceState::remove_by_endpoint_add(&endpoint_addr)
+                    .map_err(|e| error!("Failed to remove workspace state: {e}"))
+                    .ok();
             }
         }
     }
 
-    /// Internal connection flow.
-    fn connect_internal(
+    fn connect_and_intialize_workspace(
         &mut self,
         addr: iroh::EndpointAddr,
         ticket: Option<ZedraPairingTicket>,
         session_id: Option<String>,
-        saved: Option<WorkspaceState>,
+        saved: Option<Entity<WorkspaceState>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(signer) = self.signer.clone() else {
-            tracing::error!("connect: no client signer available");
+            error!("No client signer available. Cannot connect to workspace.");
             return;
         };
 
         let encoded_addr = zedra_rpc::pairing::encode_endpoint_addr(&addr).unwrap_or_default();
 
-        let session = Session::new();
-        let handle = session.handle().clone();
-        let state = session.state().clone();
-        let needs_sync = Arc::new(AtomicBool::new(false));
-
-        let mut state_notify_rx = state.subscribe();
-        let sync_tx = self.sync_notify_tx.clone();
-        let flag = needs_sync.clone();
-        let state_listener = cx.spawn(async move |_, _| {
-            while state_notify_rx.next().await.is_some() {
-                flag.store(true, Ordering::Release);
-                let _ = sync_tx.unbounded_send(());
-            }
+        // Workspace state (from saved or fresh)
+        let workspace_state = saved.unwrap_or_else(|| {
+            let workspace_state = cx.new(|_cx| {
+                let mut ws = WorkspaceState::default();
+                ws.endpoint_addr = encoded_addr.clone();
+                ws
+            });
+            self.states.push(workspace_state.clone());
+            workspace_state
         });
 
-        if let Some(ref t) = ticket {
-            handle.set_pending_ticket(t.clone());
-        }
-        handle.set_session_id(session_id.clone());
-
-        let view = cx.new(|cx| WorkspaceView::new(handle.clone(), state.clone(), window, cx));
-        let pending_term_id = view.read(cx).pending_terminal_id.clone();
-        let pending_existing = view.read(cx).pending_existing_terminals.clone();
-        let (cols, rows, _, _) = compute_terminal_dimensions(window);
-
+        // Create workspace entity
+        let workspace = cx.new(|cx| Workspace::new(workspace_state.clone(), window, cx));
         self._subscriptions
-            .push(self.subscribe_workspace(&view, cx));
-        self.entries.push(Workspace {
-            view: view.clone(),
-            session: session.clone(),
-            needs_sync,
-            _state_listener: state_listener,
+            .push(self.subscribe_workspace_event(&workspace, cx));
+
+        // Start connection
+        workspace.update(cx, |ws, cx| {
+            ws.connect(addr, ticket.clone(), signer, session_id.clone(), window, cx);
         });
+
+        self.entries.push(workspace);
         let ws_idx = self.entries.len() - 1;
-        self.active = Some(ws_idx);
+        self.active_index = Some(ws_idx);
 
-        self.link_or_create_state(&encoded_addr, ws_idx, saved, cx);
-        if let Some(ws_state) = self
-            .states
-            .iter()
-            .find(|s| s.workspace_index() == Some(ws_idx))
-        {
-            let s = ws_state.clone();
-            view.update(cx, |v, cx| v.set_workspace_state(s, cx));
-        }
-
-        handle.set_endpoint_addr(addr.clone());
-        self.persist_active_workspaces();
-
-        let session_id_for_connect =
-            session_id.or_else(|| ticket.as_ref().map(|t| t.session_id.clone()));
-        session.connect(
-            addr,
-            ticket,
-            signer,
-            session_id_for_connect,
-            move |handle| {
-                let server_ids = handle.terminal_ids();
-                if !server_ids.is_empty() {
-                    tracing::info!("Session resumed: {} terminal(s)", server_ids.len());
-                    pending_existing.set(server_ids);
-                } else {
-                    let h = handle.clone();
-                    let slot = pending_term_id.clone();
-                    let (cols, rows) = (cols as u16, rows as u16);
-                    zedra_session::session_runtime().spawn(async move {
-                        match h.terminal_create(cols, rows).await {
-                            Ok(tid) => {
-                                tracing::info!("Terminal created: {tid}");
-                                slot.set(tid);
-                            }
-                            Err(e) => tracing::error!("terminal_create failed: {e}"),
-                        }
-                    });
-                }
-            },
-        );
-
+        // TODO: this is not connected yet, it's just a signal to navigate to the workspace.
         cx.emit(WorkspacesEvent::Connected { index: ws_idx });
         cx.notify();
     }
 
-    fn subscribe_workspace(
+    fn subscribe_workspace_event(
         &self,
-        view: &Entity<WorkspaceView>,
+        workspace: &Entity<Workspace>,
         cx: &mut Context<Self>,
     ) -> Subscription {
-        let view_entity = view.clone();
-        cx.subscribe(view, move |this, _emitter, event: &WorkspaceEvent, cx| {
-            match event {
+        let ws_entity = workspace.clone();
+        cx.subscribe(
+            workspace,
+            move |this, _emitter, event: &WorkspaceEvent, cx| match event {
                 WorkspaceEvent::GoHome => {
                     cx.emit(WorkspacesEvent::GoHome);
                 }
@@ -299,169 +241,53 @@ impl Workspaces {
                     cx.emit(WorkspacesEvent::OpenQuickAction);
                 }
                 WorkspaceEvent::Disconnected => {
-                    let index = this.entries.iter().position(|e| e.view == view_entity);
-                    if let Some(idx) = index {
-                        this.entries.remove(idx);
-                        tracing::info!("Workspace disconnected; {} remaining", this.entries.len());
-
-                        // Update active index
-                        this.active = if this.entries.is_empty() {
+                    let index = this.entries.iter().position(|e| *e == ws_entity);
+                    if let Some(index) = index {
+                        // Just remove the workspace entry, keep the state
+                        this.entries.remove(index);
+                        this.active_index = if this.entries.is_empty() {
                             None
                         } else {
                             Some(0)
                         };
 
-                        this.reload_states(cx);
-                        cx.emit(WorkspacesEvent::Disconnected { index: idx });
+                        info!("Workspace disconnected; {} remaining", this.entries.len());
+                        cx.emit(WorkspacesEvent::Disconnected { index });
                     }
                 }
-            }
-        })
+            },
+        )
     }
 
-    pub fn disconnect(&mut self, index: usize, cx: &mut Context<Self>) {
-        if let Some(entry) = self.entries.get(index) {
-            entry.view.update(cx, |ws, cx| ws.disconnect(cx));
+    /// Disconnect the workspace at the given index.
+    pub fn disconnect(&mut self, entry_index: usize, cx: &mut Context<Self>) {
+        if let Some(entry) = self.entries.get(entry_index) {
+            entry.update(cx, |ws, cx| ws.disconnect(cx));
         }
     }
 
-    // ─── State Management ────────────────────────────────────────────────────
-
-    fn link_or_create_state(
-        &mut self,
-        encoded_addr: &str,
-        ws_idx: usize,
-        saved: Option<WorkspaceState>,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(pos) = self
-            .states
+    pub fn disconnect_by_endpoint_addr(&mut self, endpoint_addr: &str, cx: &mut Context<Self>) {
+        if let Some(index) = self
+            .entries
             .iter()
-            .position(|s| s.endpoint_addr() == encoded_addr)
+            .position(|s| s.read(cx).endpoint_addr(cx) == endpoint_addr)
         {
-            self.states[pos] = WorkspaceState::update_inner(self.states[pos].clone(), |s| {
-                s.workspace_index = Some(ws_idx);
-            });
-        } else {
-            let new_state = if let Some(s) = saved {
-                WorkspaceState::update_inner(s, |s| {
-                    s.workspace_index = Some(ws_idx);
-                })
-            } else {
-                WorkspaceState::update_inner(WorkspaceState::default(), |s| {
-                    s.endpoint_addr = encoded_addr.to_string();
-                    s.workspace_index = Some(ws_idx);
-                })
-            };
-            self.states.push(new_state);
-        }
-        self.emit_states_changed(cx);
-    }
-
-    pub fn reload_states(&mut self, cx: &mut Context<Self>) {
-        let saved = WorkspaceState::load();
-        self.states = saved;
-
-        // Re-link active workspaces
-        for (ws_idx, entry) in self.entries.iter().enumerate() {
-            let encoded = entry
-                .session
-                .handle()
-                .endpoint_addr()
-                .and_then(|a| zedra_rpc::pairing::encode_endpoint_addr(&a).ok());
-            if let Some(addr) = &encoded {
-                if let Some(pos) = self
-                    .states
-                    .iter()
-                    .position(|s| s.endpoint_addr() == addr.as_str())
-                {
-                    self.states[pos] =
-                        WorkspaceState::update_inner(self.states[pos].clone(), |s| {
-                            s.workspace_index = Some(ws_idx);
-                        });
-                }
-            }
-        }
-        self.emit_states_changed(cx);
-    }
-
-    /// Sync workspace states that have been flagged by session state changes.
-    /// Call this in render() — it only syncs workspaces whose sessions signaled changes.
-    pub fn sync_if_needed(&mut self, cx: &mut Context<Self>) {
-        let mut any_changed = false;
-
-        for (ws_idx, entry) in self.entries.iter().enumerate() {
-            if !entry.needs_sync.swap(false, Ordering::AcqRel) {
-                continue;
-            }
-
-            // Find and update the corresponding WorkspaceState
-            if let Some(state) = self
-                .states
-                .iter_mut()
-                .find(|s| s.workspace_index() == Some(ws_idx))
-            {
-                let sess = entry.session.state().get();
-                let (terminal_ids, active_terminal_id) = entry.view.read(cx).terminal_state();
-                let session_id = entry.session.handle().session_id().unwrap_or_default();
-
-                *state = WorkspaceState::update_inner(state.clone(), |s| {
-                    s.connect_phase = Some(sess.phase);
-                    s.terminal_count = terminal_ids.len();
-                    s.terminal_ids = terminal_ids;
-                    s.active_terminal_id = active_terminal_id;
-
-                    let snap = &sess.snapshot;
-                    if !snap.hostname.is_empty() {
-                        s.hostname = snap.hostname.clone();
-                    }
-                    if !snap.workdir.is_empty() {
-                        s.workdir = snap.workdir.clone();
-                    }
-                    if !snap.project_name.is_empty() {
-                        s.project_name = snap.project_name.clone();
-                    }
-                    if !snap.strip_path.is_empty() {
-                        s.strip_path = snap.strip_path.clone();
-                    }
-                    if !snap.homedir.is_empty() {
-                        s.homedir = snap.homedir.clone();
-                    }
-                    if !session_id.is_empty() {
-                        s.session_id = session_id;
-                    }
-                });
-
-                // Push to view
-                let s = state.clone();
-                entry.view.update(cx, |v, cx| v.set_workspace_state(s, cx));
-                any_changed = true;
-            }
-        }
-
-        if any_changed {
-            self.emit_states_changed(cx);
+            self.disconnect(index, cx);
         }
     }
 
     pub fn remove_saved(&mut self, endpoint_addr: &str, cx: &mut Context<Self>) {
-        WorkspaceState::remove(endpoint_addr);
-        self.reload_states(cx);
-    }
-
-    fn persist_active_workspaces(&self) {
-        for entry in &self.entries {
-            if let Some(ws) =
-                WorkspaceState::from_session(entry.session.handle(), entry.session.state())
-            {
-                WorkspaceState::upsert(ws);
-            }
+        WorkspaceState::remove_by_endpoint_add(endpoint_addr)
+            .map_err(|e| error!("Failed to remove workspace state: {e}"))
+            .ok();
+        let state_index = self
+            .states
+            .iter()
+            .position(|s| s.read(cx).endpoint_addr == endpoint_addr);
+        if let Some(index) = state_index {
+            self.states.remove(index);
         }
-    }
-
-    /// Persist workspace states. Call periodically.
-    pub fn persist(&self) {
-        self.persist_active_workspaces();
+        cx.notify();
     }
 
     fn emit_states_changed(&mut self, cx: &mut Context<Self>) {
@@ -478,7 +304,7 @@ fn load_client_signer() -> Option<Arc<dyn ClientSigner>> {
     match zedra_session::signer::FileClientSigner::load_or_generate(&key_path) {
         Ok(signer) => Some(Arc::new(signer)),
         Err(e) => {
-            tracing::error!("Failed to load client signing key: {}", e);
+            error!("Failed to load client signing key: {}", e);
             None
         }
     }

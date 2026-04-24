@@ -1,0 +1,8 @@
+[package]
+name = "zedra-osc"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "zedra_osc"
+path = "src/lib.rs"

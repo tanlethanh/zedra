@@ -6,22 +6,25 @@ use zedra_telemetry::*;
 use crate::deeplink::{self, DeeplinkAction};
 use crate::fonts;
 use crate::home_view::{HomeEvent, HomeView};
-use crate::mgpui::{DrawerHost, DrawerSide};
+use crate::platform_bridge;
 use crate::quick_action_panel::{QuickActionEvent, QuickActionPanel};
-use crate::theme;
+use crate::settings_view::{SettingsEvent, SettingsView};
+use crate::ui::{DrawerHost, DrawerSide};
 use crate::workspaces::{Workspaces, WorkspacesEvent};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum AppScreen {
     Home,
+    Settings,
     Workspace,
 }
 
 pub struct ZedraApp {
     screen: AppScreen,
     home_view: Entity<HomeView>,
+    settings_view: Entity<SettingsView>,
     workspaces: Entity<Workspaces>,
-    qa_drawer: Entity<DrawerHost>,
+    quick_action_drawer: Entity<DrawerHost>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -39,6 +42,10 @@ impl ZedraApp {
         let sub = cx.subscribe(&home_view, Self::on_home_event);
         subscriptions.push(sub);
 
+        let settings_view = cx.new(SettingsView::new);
+        let sub = cx.subscribe(&settings_view, Self::on_settings_event);
+        subscriptions.push(sub);
+
         // --- Quick action panel ---
         let quick_action = cx.new(|cx| QuickActionPanel::new(workspaces.clone(), cx));
         let sub = cx.subscribe(&quick_action, Self::on_quick_action_event);
@@ -53,18 +60,19 @@ impl ZedraApp {
         subscriptions.push(sub);
 
         // --- Quick action drawer ---
-        let qa_drawer = cx.new(|cx| DrawerHost::new(home_view.clone().into(), cx));
-        qa_drawer.update(cx, |h, _| {
-            h.set_side(DrawerSide::Right);
-            h.set_width(px(theme::QA_DRAWER_WIDTH));
-            h.set_drawer(quick_action.clone().into());
+        let quick_action_drawer = cx.new(|cx| {
+            DrawerHost::new(
+                home_view.clone().into(),
+                quick_action.clone().into(),
+                DrawerSide::Right,
+                cx,
+            )
         });
 
         let saved_count = workspaces.read(cx).states().len();
         zedra_telemetry::send(Event::AppOpen {
             saved_workspaces: saved_count,
-            // TODO: use native app version
-            app_version: env!("CARGO_PKG_VERSION"),
+            app_version: platform_bridge::app_version_with_build_number(),
             platform: std::env::consts::OS,
             arch: std::env::consts::ARCH,
         });
@@ -72,36 +80,19 @@ impl ZedraApp {
         let app = Self {
             screen: AppScreen::Home,
             home_view,
+            settings_view,
             workspaces,
-            qa_drawer,
+            quick_action_drawer,
             _subscriptions: subscriptions,
         };
 
-        // Start background tasks (persist timer, state sync)
+        // Start background tasks (deeplink + state sync)
         app.start_background_tasks(cx);
 
         app
     }
 
     fn start_background_tasks(&self, cx: &mut Context<Self>) {
-        // Periodic persist (every 5 seconds)
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(Duration::from_secs(5)).await;
-                let should_continue = this
-                    .update(cx, |this, cx| {
-                        if !this.workspaces.read(cx).is_empty() {
-                            this.workspaces.read(cx).persist();
-                        }
-                    })
-                    .is_ok();
-                if !should_continue {
-                    break;
-                }
-            }
-        })
-        .detach();
-
         // Periodic state sync + deeplink check (every 100ms for responsiveness)
         cx.spawn(async move |this, cx| {
             loop {
@@ -121,16 +112,11 @@ impl ZedraApp {
         .detach();
     }
 
-    /// Called periodically to check deeplinks and sync state.
+    /// Called periodically to check deeplinks.
     fn tick(&mut self, cx: &mut Context<Self>) {
-        // Check for pending deeplinks
         if let Some(action) = deeplink::take_pending() {
             self.handle_deeplink_deferred(action, cx);
         }
-
-        // TODO: should use direct channel to update state changed immediately
-        // Sync session state to workspace state
-        self.workspaces.update(cx, |ws, cx| ws.sync_if_needed(cx));
     }
 
     fn handle_deeplink_deferred(&mut self, action: DeeplinkAction, cx: &mut Context<Self>) {
@@ -150,6 +136,22 @@ impl ZedraApp {
             HomeEvent::NavigateToWorkspace => {
                 self.set_screen(AppScreen::Workspace, cx);
             }
+            HomeEvent::NavigateToSettings => {
+                self.set_screen(AppScreen::Settings, cx);
+            }
+        }
+    }
+
+    fn on_settings_event(
+        &mut self,
+        _: Entity<SettingsView>,
+        event: &SettingsEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SettingsEvent::NavigateHome => {
+                self.set_screen(AppScreen::Home, cx);
+            }
         }
     }
 
@@ -161,7 +163,7 @@ impl ZedraApp {
     ) {
         match event {
             QuickActionEvent::Close => {
-                self.qa_drawer.update(cx, |h, cx| h.close(cx));
+                self.quick_action_drawer.update(cx, |h, cx| h.close(cx));
             }
             QuickActionEvent::GoHome => {
                 self.set_screen(AppScreen::Home, cx);
@@ -169,6 +171,61 @@ impl ZedraApp {
             QuickActionEvent::NavigateToWorkspace => {
                 self.set_screen(AppScreen::Workspace, cx);
             }
+            QuickActionEvent::OpenTerminal { tid, ws_index } => {
+                self.set_screen(AppScreen::Workspace, cx);
+                self.open_terminal_from_quick_action(*ws_index, tid, cx);
+            }
+            QuickActionEvent::CloseTerminal { tid, ws_index } => {
+                self.close_terminal_from_quick_action(*ws_index, tid, cx);
+            }
+        }
+    }
+
+    fn open_terminal_from_quick_action(
+        &self,
+        ws_index: usize,
+        terminal_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(workspace) = self
+            .workspaces
+            .read(cx)
+            .workspace_by_index(ws_index)
+            .cloned()
+        {
+            workspace.update(cx, |ws, cx| {
+                ws.open_terminal_from_quick_action(terminal_id.to_string(), cx);
+            });
+        } else {
+            tracing::warn!(
+                "workspace not found for index {} to open terminal {} from quick action",
+                ws_index,
+                terminal_id
+            );
+        }
+    }
+
+    fn close_terminal_from_quick_action(
+        &self,
+        ws_index: usize,
+        terminal_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(workspace) = self
+            .workspaces
+            .read(cx)
+            .workspace_by_index(ws_index)
+            .cloned()
+        {
+            workspace.update(cx, |ws, cx| {
+                ws.close_terminal_from_quick_action(terminal_id.to_string(), cx);
+            });
+        } else {
+            tracing::warn!(
+                "workspace not found for index {} to close terminal {} from quick action",
+                ws_index,
+                terminal_id
+            );
         }
     }
 
@@ -198,7 +255,7 @@ impl ZedraApp {
                 self.set_screen(AppScreen::Home, cx);
             }
             WorkspacesEvent::OpenQuickAction => {
-                self.qa_drawer.update(cx, |h, cx| h.open(cx));
+                self.quick_action_drawer.update(cx, |h, cx| h.open(cx));
             }
         }
     }
@@ -212,8 +269,6 @@ impl ZedraApp {
             // Process any pending ticket (from deeplinks)
             self.workspaces
                 .update(cx, |ws, cx| ws.process_pending_ticket(window, cx));
-            // Immediate sync on activation
-            self.workspaces.update(cx, |ws, cx| ws.sync_if_needed(cx));
         }
     }
 
@@ -222,6 +277,7 @@ impl ZedraApp {
             self.screen = screen;
             let screen_name = match screen {
                 AppScreen::Home => "home",
+                AppScreen::Settings => "settings",
                 AppScreen::Workspace => "workspace",
             };
             zedra_telemetry::send(Event::ScreenView {
@@ -235,6 +291,7 @@ impl ZedraApp {
     fn update_drawer_content(&mut self, cx: &mut Context<Self>) {
         let screen_view: AnyView = match self.screen {
             AppScreen::Home => self.home_view.clone().into(),
+            AppScreen::Settings => self.settings_view.clone().into(),
             AppScreen::Workspace => self
                 .workspaces
                 .read(cx)
@@ -242,7 +299,8 @@ impl ZedraApp {
                 .map(|v| v.into())
                 .unwrap_or_else(|| self.home_view.clone().into()),
         };
-        self.qa_drawer.update(cx, |h, _| h.set_content(screen_view));
+        self.quick_action_drawer
+            .update(cx, |h, _| h.set_content(screen_view));
     }
 }
 
@@ -255,25 +313,15 @@ impl Render for ZedraApp {
         div()
             .size_full()
             .font_family(fonts::MONO_FONT_FAMILY)
-            .child(self.qa_drawer.clone())
+            .child(self.quick_action_drawer.clone())
     }
 }
 
-/// Open a GPUI window with the correct app view.
 pub fn open_zedra_window(app: &mut App, window_options: WindowOptions) -> Result<AnyWindowHandle> {
-    if cfg!(feature = "preview") {
-        app.open_window(window_options, |window, cx| {
-            let view = cx.new(|cx| crate::app_preview::PreviewApp::new(window, cx));
-            window.refresh();
-            view
-        })
-        .map(|h| h.into())
-    } else {
-        app.open_window(window_options, |window, cx| {
-            let view = cx.new(|cx| ZedraApp::new(window, cx));
-            window.refresh();
-            view
-        })
-        .map(|h| h.into())
-    }
+    app.open_window(window_options, |window, cx| {
+        let view = cx.new(|cx| ZedraApp::new(window, cx));
+        window.refresh();
+        view
+    })
+    .map(|h| h.into())
 }

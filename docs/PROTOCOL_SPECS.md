@@ -152,6 +152,27 @@ If the client has no valid session token (first connection after restart, or tok
 - `FsWatch(FsWatchReq) -> FsWatchResult`
 - `FsUnwatch(FsUnwatchReq) -> FsUnwatchResult`
 
+### Error convention
+
+Most result structs carry `error: Option<String>`. When set, the operation failed and the host has already logged the cause. Client rules:
+
+- Treat `error: Some(msg)` as a terminal failure for that request.
+- All other fields are zero-valued when `error` is set (empty string, empty vec, `false`, `0`, `None`).
+- Never silently ignore a set `error` — propagate as `Err` or show in UI.
+
+Result types that carry `error`:
+`FsListResult`, `FsReadResult`, `FsStatResult`, `SessionSwitchResult`, `TermCreateResult`,
+`GitStatusResult`, `GitDiffResult`, `GitLogResult`, `GitCommitResult`, `GitStageResult`,
+`GitUnstageResult`, `GitBranchesResult`, `LspDiagnosticsResult`.
+
+Types that do **not** carry `error` (use dedicated status fields or enum variants instead):
+`FsWriteResult` (`ok: bool`), `GitCheckoutResult` (`ok: bool`), `FsWatchResult`/`FsUnwatchResult` (enum).
+
+### FsRead additional fields
+
+- `content`: file contents (empty on error or when `too_large`)
+- `too_large`: true when file exceeds the 500 KB limit
+
 ### FsList paging conventions
 
 - `offset` is zero-based index into stable listing order returned by host.
@@ -209,6 +230,10 @@ If the client has no valid session token (first connection after restart, or tok
 - `GitUnstage(GitUnstageReq) -> GitUnstageResult`
 - `GitBranches(GitBranchesReq) -> GitBranchesResult`
 - `GitCheckout(GitCheckoutReq) -> GitCheckoutResult`
+
+### Git error handling
+
+All Git result types carry `error: Option<String>`. Host sends error when git repo cannot be opened or the operation fails. Client `git_*` handle methods propagate these as `Err`.
 
 ### Git status conventions
 

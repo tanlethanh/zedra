@@ -123,9 +123,8 @@ Firebase is integrated via CocoaPods. Key files:
 |------|---------|
 | `ios/Podfile` | `FirebaseAnalytics`, `FirebaseCrashlytics` pods |
 | `ios/Zedra/GoogleService-Info.plist` | Firebase project config (from console) |
-| `ios/Zedra/ZedraFirebase.m` | Obj-C bridge: `logEvent`, `recordError`, `recordPanic` |
-| `ios/Zedra/SwiftCompatibilityShim.swift` | Empty file required by Firebase static pods |
-| `crates/zedra/src/ios/telemetry.rs` | Rust FFI declarations calling into `ZedraFirebase.m` |
+| `ios/Zedra/NativeBridge.swift` | Swift C-export bridge: `zedra_firebase_initialize`, `zedra_log_event`, `zedra_record_error`, `zedra_record_panic` |
+| `crates/zedra/src/ios/telemetry.rs` | Rust FFI declarations calling into `NativeBridge.swift` |
 | `crates/zedra/src/telemetry.rs` | `FirebaseBackend` — registers with `zedra_telemetry` |
 
 **Build**: `pod install` in `ios/`, then build via `.xcworkspace`.
@@ -205,7 +204,7 @@ and never transmitted alongside it.
 |------|------|
 | `crates/zedra-telemetry/src/lib.rs` | `Event` enum, `TelemetryBackend` trait, `send()`, `init()` |
 | `crates/zedra/src/telemetry.rs` | `FirebaseBackend` — registers Firebase with `zedra-telemetry` |
-| `crates/zedra/src/ios/telemetry.rs` | iOS FFI: Rust -> `ZedraFirebase.m` -> Firebase SDK |
+| `crates/zedra/src/ios/telemetry.rs` | iOS FFI: Rust -> `NativeBridge.swift` -> Firebase SDK |
 | `crates/zedra-host/src/telemetry.rs` | `HostBackend` — bridges GA4 `Ga4` <-> `zedra-telemetry` |
 | `crates/zedra-host/src/ga4.rs` | GA4 Measurement Protocol transport (`track_raw`, `host_panic_sync`) |
 

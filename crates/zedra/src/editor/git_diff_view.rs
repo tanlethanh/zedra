@@ -7,6 +7,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use gpui::*;
+use tracing::info;
 
 use super::syntax_highlighter::Highlighter;
 use super::syntax_theme::SyntaxTheme;
@@ -49,6 +50,37 @@ pub struct FileDiff {
     pub old_path: String,
     pub new_path: String,
     pub hunks: Vec<DiffHunk>,
+}
+
+impl FileDiff {
+    pub fn change_counts(&self) -> (usize, usize) {
+        let mut added = 0;
+        let mut removed = 0;
+
+        for hunk in &self.hunks {
+            for line in &hunk.lines {
+                match line.kind {
+                    DiffLineKind::Added => added += 1,
+                    DiffLineKind::Removed => removed += 1,
+                    DiffLineKind::Header | DiffLineKind::Unchanged => {}
+                }
+            }
+        }
+
+        (added, removed)
+    }
+
+    pub fn display_path(&self) -> String {
+        if self.old_path.is_empty() {
+            return self.new_path.clone();
+        }
+
+        if self.new_path.is_empty() || self.old_path == self.new_path {
+            self.old_path.clone()
+        } else {
+            format!("{} -> {}", self.old_path, self.new_path)
+        }
+    }
 }
 
 // ── Unified-diff parser ─────────────────────────────────────────────────────
@@ -196,7 +228,19 @@ pub struct GitDiffView {
 }
 
 impl GitDiffView {
-    pub fn new(diff: FileDiff, file_path: String, cx: &mut App) -> Self {
+    pub fn new(cx: &mut App) -> Self {
+        Self::build(
+            FileDiff {
+                old_path: String::new(),
+                new_path: String::new(),
+                hunks: Vec::new(),
+            },
+            String::new(),
+            cx,
+        )
+    }
+
+    pub fn build(diff: FileDiff, file_path: String, cx: &mut App) -> Self {
         let highlighter = Highlighter::from_filename(&file_path);
         Self {
             diff,
@@ -212,6 +256,15 @@ impl GitDiffView {
         }
     }
 
+    /// Set the diff content for the view.
+    /// The language is detected from the filename.
+    pub fn set_diff(&mut self, filename: String, diff: FileDiff, cx: &mut Context<Self>) {
+        self.diff = diff;
+        self.highlighter = Highlighter::from_filename(&filename);
+        self.rebuild_line_cache();
+        cx.notify();
+    }
+
     fn rebuild_line_cache(&mut self) {
         let line_count = self.total_lines();
         let lines: Vec<CachedDiffLine> = (0..line_count)
@@ -220,8 +273,7 @@ impl GitDiffView {
                 let (highlights, char_len) = match &line {
                     Some(l) if l.kind != DiffLineKind::Header => {
                         let h = self.line_highlights(&l.content);
-                        // prefix ("+ ", "- ", "  ") adds 2 chars
-                        let len = l.content.chars().count() + 2;
+                        let len = l.content.chars().count();
                         (h, len)
                     }
                     Some(l) => (Vec::new(), l.content.chars().count()),
@@ -242,7 +294,6 @@ impl GitDiffView {
     fn total_lines(&self) -> usize {
         let mut count = 1; // file header
         for hunk in &self.diff.hunks {
-            count += 1; // hunk header
             count += hunk.lines.len();
         }
         count
@@ -256,25 +307,12 @@ impl GitDiffView {
                 kind: DiffLineKind::Header,
                 old_line_num: None,
                 new_line_num: None,
-                content: format!("{} -> {}", self.diff.old_path, self.diff.new_path),
+                content: self.diff.display_path(),
             });
         }
         current += 1;
 
         for hunk in &self.diff.hunks {
-            if index == current {
-                return Some(DiffLine {
-                    kind: DiffLineKind::Header,
-                    old_line_num: None,
-                    new_line_num: None,
-                    content: format!(
-                        "@@ -{},{} +{},{} @@",
-                        hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
-                    ),
-                });
-            }
-            current += 1;
-
             for line in &hunk.lines {
                 if index == current {
                     return Some(line.clone());
@@ -320,6 +358,7 @@ impl Focusable for GitDiffView {
 impl Render for GitDiffView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.lines_dirty {
+            info!("rebuilding gitdiff line cache by lines_dirty flag");
             self.rebuild_line_cache();
         }
 
@@ -383,39 +422,39 @@ impl Render for GitDiffView {
                                     return div().h(px(LINE_HEIGHT)).into_any_element();
                                 };
 
-                                let (bg_color, gutter_text, prefix) = match line.kind {
-                                    DiffLineKind::Header => (rgb(0x131313), "".to_string(), ""),
+                                let (bg_color, gutter_text) = match line.kind {
+                                    DiffLineKind::Header => (rgb(0x131313), "".to_string()),
                                     DiffLineKind::Added => {
                                         let num = line
                                             .new_line_num
                                             .map(|n| format!("{:>3}", n))
                                             .unwrap_or_default();
-                                        (rgb(0x162016), num, "+ ")
+                                        (rgb(0x162016), num)
                                     }
                                     DiffLineKind::Removed => {
                                         let num = line
                                             .old_line_num
                                             .map(|n| format!("{:>3}", n))
                                             .unwrap_or_default();
-                                        (rgb(0x201616), num, "- ")
+                                        (rgb(0x201616), num)
                                     }
                                     DiffLineKind::Unchanged => {
                                         let num = line
                                             .new_line_num
                                             .map(|n| format!("{:>3}", n))
                                             .unwrap_or_default();
-                                        (rgb(0x0e0c0c), num, "  ")
+                                        (rgb(0x0e0c0c), num)
                                     }
                                 };
 
                                 let content = &line.content;
-                                let display_content = format!("{}{}", prefix, content);
 
                                 if line.kind == DiffLineKind::Header {
                                     return div()
+                                        .w_full()
                                         .flex()
                                         .flex_row()
-                                        .h(px(LINE_HEIGHT + 4.0))
+                                        .h(px(LINE_HEIGHT))
                                         .bg(bg_color)
                                         .px_2()
                                         .items_center()
@@ -428,25 +467,18 @@ impl Render for GitDiffView {
                                         .into_any_element();
                                 }
 
-                                let adjusted_highlights: Vec<(Range<usize>, HighlightStyle)> =
-                                    cached
-                                        .highlights
-                                        .iter()
-                                        .map(|(range, style)| {
-                                            let offset = prefix.len();
-                                            ((range.start + offset)..(range.end + offset), *style)
-                                        })
-                                        .collect();
-
-                                let styled_text = if display_content.is_empty() {
+                                let styled_text = if content.is_empty() {
                                     StyledText::new(" ")
                                         .with_default_highlights(&text_style, Vec::new())
                                 } else {
-                                    StyledText::new(display_content.clone())
-                                        .with_default_highlights(&text_style, adjusted_highlights)
+                                    StyledText::new(content.clone()).with_default_highlights(
+                                        &text_style,
+                                        cached.highlights.clone(),
+                                    )
                                 };
 
                                 div()
+                                    .w_full()
                                     .flex()
                                     .flex_row()
                                     .h(px(LINE_HEIGHT))
@@ -488,6 +520,7 @@ impl Render for GitDiffView {
                     }
                 })
                 .track_scroll(&self.scroll_handle)
+                .w_full()
                 .flex_1(),
             )
     }

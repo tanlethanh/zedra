@@ -7,9 +7,9 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-use crate::mgpui::input::Input;
-use crate::mgpui::{InputChanged, InputSubmit};
 use crate::theme;
+use crate::ui::input::Input;
+use crate::ui::{InputChanged, InputSubmit};
 
 // ── Git state types ─────────────────────────────────────────────────────────
 
@@ -292,7 +292,7 @@ impl GitSidebar {
             .h(px(28.0))
             .px(px(theme::DRAWER_PADDING))
             .cursor_pointer()
-            .on_click(cx.listener(move |this, _, _, cx| {
+            .on_press(cx.listener(move |this, _, _, cx| {
                 this.toggle_section(section_idx, cx);
             }))
             .child(
@@ -346,7 +346,7 @@ impl GitSidebar {
             .h(px(28.0))
             .px(px(theme::DRAWER_PADDING))
             .cursor_pointer()
-            .on_click({
+            .on_press({
                 let path = path.clone();
                 cx.listener(move |_this, _, _, cx| {
                     cx.emit(GitFileSelected {
@@ -437,10 +437,10 @@ impl GitSidebar {
                 0.35
             })
             .cursor_pointer()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+            .on_pointer_down(|_, _, cx| {
                 cx.stop_propagation();
             })
-            .on_click(cx.listener(|this, _, _, cx| {
+            .on_press(cx.listener(|this, _, _, cx| {
                 this.request_commit(cx);
             }))
             .child(
@@ -532,8 +532,8 @@ impl Render for GitSidebar {
 
         div()
             .track_focus(&self.focus_handle)
-            .on_mouse_down(MouseButton::Left, |_, _, _cx| {
-                crate::platform_bridge::bridge().hide_keyboard();
+            .on_pointer_down(|_, window, _cx| {
+                window.hide_soft_keyboard();
             })
             .flex()
             .flex_col()

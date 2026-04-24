@@ -71,6 +71,7 @@ postcard.workspace = true
 serde_bytes.workspace = true
 
 # Workspace crates
+zedra-osc = { path = "../zedra-osc" }
 zedra-rpc = { path = "../zedra-rpc" }
 zedra-telemetry.workspace = true
 
