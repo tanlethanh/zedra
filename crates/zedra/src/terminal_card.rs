@@ -47,30 +47,32 @@ fn cwd_last(cwd: &str) -> &str {
         .unwrap_or(cwd)
 }
 
-/// Detect a known AI agent from the raw OSC 2 title and return its brand icon path.
-/// Returns `None` when the title doesn't match any known agent.
-fn agent_icon(title: Option<&str>) -> Option<&'static str> {
-    let title = title.as_deref().unwrap_or("");
-    let t = title.to_ascii_lowercase();
-    if t.contains("claude") {
-        Some("icons/claude.svg")
-    } else if t.contains("opencode") || title.contains("OC |") {
-        Some("icons/opencode.svg")
-    } else if t.contains("codex") || t.contains("openai") {
-        Some("icons/openai.svg")
-    } else if t.contains("gemini") {
-        Some("icons/gemini.svg")
-    } else if t.contains("copilot") {
-        Some("icons/copilot.svg")
-    } else {
-        None
+/// Detect a known AI agent from the OSC 2 title or the running command line
+/// and return its brand icon path. Title takes precedence — agents like Claude
+/// Code set a descriptive title, but some CLIs only surface the command name.
+/// Returns `None` when neither source matches a known agent.
+pub fn agent_icon(title: Option<&str>, command: Option<&str>) -> Option<&'static str> {
+    for raw in [title, command].into_iter().flatten() {
+        let low = raw.to_ascii_lowercase();
+        if low.contains("claude") {
+            return Some("icons/claude.svg");
+        } else if low.contains("opencode") || raw.contains("OC |") {
+            return Some("icons/opencode.svg");
+        } else if low.contains("codex") || low.contains("openai") {
+            return Some("icons/openai.svg");
+        } else if low.contains("gemini") {
+            return Some("icons/gemini.svg");
+        } else if low.contains("copilot") {
+            return Some("icons/copilot.svg");
+        }
     }
+    None
 }
 
 /// Strip the `user@host:` prefix that default PS1 configs embed in OSC 2 titles.
 /// `alice@mybox:~/projects/zedra` → `~/projects/zedra`
 /// Returns the original string unchanged if no such prefix is found.
-fn strip_ps1_prefix(title: &str) -> &str {
+pub fn strip_ps1_prefix(title: &str) -> &str {
     if let Some(at) = title.find('@') {
         if let Some(colon_offset) = title[at..].find(':') {
             let path = &title[at + colon_offset + 1..];
@@ -117,7 +119,7 @@ pub fn render_terminal_card(props: TerminalCardProps) -> Stateful<Div> {
     let card_id = SharedString::from(format!("term-card-{}", props.id));
     let close_btn_id = SharedString::from(format!("term-close-{}", props.id));
     let is_active = props.is_active;
-    let icon_path = agent_icon(props.title.as_deref()).unwrap_or("icons/terminal.svg");
+    let icon_path = agent_icon(props.title.as_deref(), None).unwrap_or("icons/terminal.svg");
 
     // Build the right-side indicator up front so we can move on_close without borrow issues.
     let right_element: AnyElement = if let Some(close_fn) = props.on_close {

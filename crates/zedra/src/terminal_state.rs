@@ -14,6 +14,8 @@ pub struct TerminalMeta {
     pub cwd: Option<String>,
     pub last_exit_code: Option<i32>,
     pub shell_state: ShellState,
+    /// Last command line reported by OSC 633;E. Cleared when the shell returns to prompt.
+    pub current_command: Option<String>,
 }
 
 /// App-level entity that holds live terminal metadata (title, cwd, shell state)
@@ -56,6 +58,11 @@ impl TerminalState {
         if let Some(code) = exit_code {
             e.last_exit_code = Some(code);
         }
+        e.current_command = None;
+    }
+
+    pub fn set_current_command(&mut self, id: &str, command: String) {
+        self.entry(id).current_command = Some(command);
     }
 
     fn entry(&mut self, id: &str) -> &mut TerminalMeta {

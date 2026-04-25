@@ -10,6 +10,7 @@ use zedra_session::{ConnectEvent, Session, SessionHandle, SessionState, signer::
 use crate::active_terminal;
 use crate::editor::git_sidebar::GitFileSection;
 use crate::platform_bridge::{self, AlertButton, HapticFeedback, status_bar_inset};
+use crate::terminal_card::{agent_icon, strip_ps1_prefix};
 use crate::terminal_state::TerminalState;
 use crate::theme;
 use crate::transport_badge::phase_indicator_color;
@@ -75,6 +76,7 @@ impl Workspace {
         let content = cx.new(|cx| {
             WorkspaceContent::new(
                 workspace_state.clone(),
+                terminal_state.clone(),
                 session_state.clone(),
                 session.handle().clone(),
                 cx,
@@ -733,6 +735,7 @@ pub fn section_to_u8(section: GitFileSection) -> u8 {
 
 pub struct WorkspaceContent {
     workspace_state: Entity<WorkspaceState>,
+    terminal_state: Entity<TerminalState>,
     #[allow(dead_code)]
     session_handle: SessionHandle,
     subtitle: SharedString,
@@ -741,11 +744,13 @@ pub struct WorkspaceContent {
     show_connecting: bool,
     connecting_view: Entity<WorkspaceConnecting>,
     mainview_bounds: Option<Bounds<Pixels>>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl WorkspaceContent {
     pub fn new(
         workspace_state: Entity<WorkspaceState>,
+        terminal_state: Entity<TerminalState>,
         session_state: Entity<SessionState>,
         session_handle: SessionHandle,
         cx: &mut Context<Self>,
@@ -753,15 +758,20 @@ impl WorkspaceContent {
         let empty_view = cx.new(|_cx| Empty);
         let connecting = cx.new(|_cx| WorkspaceConnecting::new(session_state));
 
+        let terminal_state_sub = cx.observe(&terminal_state, |_, _, cx| cx.notify());
+        let workspace_state_sub = cx.observe(&workspace_state, |_, _, cx| cx.notify());
+
         Self {
             main_view: empty_view.into(),
             subtitle: SharedString::default(),
             focus_handle: cx.focus_handle(),
             session_handle,
             workspace_state,
+            terminal_state,
             show_connecting: false,
             connecting_view: connecting,
             mainview_bounds: None,
+            _subscriptions: vec![terminal_state_sub, workspace_state_sub],
         }
     }
 
@@ -814,13 +824,24 @@ impl Render for WorkspaceContent {
         let this = cx.weak_entity();
         let workspace_state = self.workspace_state.read(cx);
         let title = workspace_state.project_name.to_string();
-        let subtitle = {
-            if !self.subtitle.is_empty() {
-                self.subtitle.to_string()
-            } else {
+        let active_terminal_id = workspace_state.active_terminal_id.clone();
+        let meta = active_terminal_id
+            .as_deref()
+            .map(|id| self.terminal_state.read(cx).meta(id))
+            .unwrap_or_default();
+        let subtitle = if let Some(t) = meta.title.as_deref() {
+            let s = strip_ps1_prefix(t);
+            if s.is_empty() {
                 workspace_state.strip_path.to_string()
+            } else {
+                s.to_owned()
             }
+        } else if !self.subtitle.is_empty() {
+            self.subtitle.to_string()
+        } else {
+            workspace_state.strip_path.to_string()
         };
+        let agent_icon_path = agent_icon(meta.title.as_deref(), meta.current_command.as_deref());
         let net_dot_color = match workspace_state.connect_phase.clone() {
             Some(phase) => phase_indicator_color(&phase),
             None => theme::ACCENT_DIM,
@@ -921,12 +942,29 @@ impl Render for WorkspaceContent {
                                 div()
                                     .w_full()
                                     .min_w_0()
-                                    .truncate()
-                                    .text_center()
-                                    .text_color(rgb(theme::TEXT_SECONDARY))
-                                    .text_size(px(theme::FONT_BODY))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(subtitle),
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap(px(6.0))
+                                    .when_some(agent_icon_path, |d, path| {
+                                        d.child(
+                                            svg()
+                                                .path(path)
+                                                .size(px(14.0))
+                                                .flex_shrink_0()
+                                                .text_color(rgb(theme::TEXT_SECONDARY)),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_color(rgb(theme::TEXT_SECONDARY))
+                                            .text_size(px(theme::FONT_BODY))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(subtitle),
+                                    ),
                             ),
                     )
                     .child(

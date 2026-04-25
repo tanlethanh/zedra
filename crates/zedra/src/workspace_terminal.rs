@@ -1,5 +1,6 @@
 use gpui::{prelude::FluentBuilder as _, *};
 use tracing::*;
+use zedra_osc::OscEvent;
 use zedra_session::SessionHandle;
 use zedra_terminal::terminal::{TerminalEvent, TerminalHyperlinkTarget};
 use zedra_terminal::view::TerminalView;
@@ -114,8 +115,23 @@ impl WorkspaceTerminal {
                         cx.notify();
                     });
                 }
-                TerminalEvent::OscEvent(_event) => {
-                    // TODO: handle OSC events to update Title, progress
+                TerminalEvent::OscEvent(event) => {
+                    let id = this.terminal_id.clone();
+                    this.terminal_state.update(cx, |ts, cx| {
+                        match event {
+                            OscEvent::Title(title) => ts.set_title(&id, Some(title.clone())),
+                            OscEvent::ResetTitle => ts.set_title(&id, None),
+                            OscEvent::Cwd(cwd) => ts.set_cwd(&id, cwd.clone()),
+                            OscEvent::CommandLine(cmd) => ts.set_current_command(&id, cmd.clone()),
+                            OscEvent::CommandStart => ts.set_shell_running(&id),
+                            OscEvent::CommandEnd { exit_code } => {
+                                ts.set_shell_idle(&id, Some(*exit_code))
+                            }
+                            OscEvent::PromptReady => ts.set_shell_idle(&id, None),
+                            _ => return,
+                        }
+                        cx.notify();
+                    });
                 }
                 TerminalEvent::OpenHyperlink(hyperlink) => match &hyperlink.target {
                     TerminalHyperlinkTarget::Url { url } => {

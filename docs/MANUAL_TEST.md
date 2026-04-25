@@ -75,3 +75,20 @@ zedra start --workdir . --relay-url https://sg1.relay.zedra.dev
 
 Expected: host connects to the specified relay; QR shows that relay URL in
 `relay` field of JSON output (`--json` flag).
+
+## 9. Workspace Header Terminal Title + Agent Icon
+
+Requires shell integration emitting OSC 133/633/1337 (zsh + iTerm2 integration,
+or VS Code shell integration).
+
+1. Open a workspace, open a terminal.
+2. Type `claude` (or `opencode`, `codex`, `gemini`) — wait for prompt.
+
+Expected:
+- Header subtitle (below project name) updates from cwd to the terminal title.
+- Agent icon appears to the left of the subtitle matching the running CLI
+  (claude/opencode/openai/gemini/copilot).
+- After the agent exits and shell returns to prompt, icon disappears;
+  subtitle shows the last title (or falls back to cwd).
+- Switching to a different terminal in the drawer updates header to the
+  active terminal's title + icon.
