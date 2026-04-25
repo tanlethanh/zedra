@@ -914,6 +914,8 @@ pub async fn create_terminal(
             output_sender: output_sender.clone(),
             host_meta: host_meta.clone(),
             backlog: backlog.clone(),
+            created_at: std::time::SystemTime::now(),
+            started_at: std::time::Instant::now(),
         },
     );
 

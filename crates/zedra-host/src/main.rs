@@ -451,10 +451,10 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
             let url = format!("http://{}/api/status", addr.trim());
-            let client = reqwest::blocking::Client::new();
-            match client.get(&url).bearer_auth(token.trim()).send() {
+            let client = reqwest::Client::new();
+            match client.get(&url).bearer_auth(token.trim()).send().await {
                 Ok(resp) => {
-                    let body = resp.text().unwrap_or_default();
+                    let body = resp.text().await.unwrap_or_default();
                     let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                     let version = v["version"].as_str().unwrap_or("?");
                     let workdir = v["workdir"].as_str().unwrap_or("?");
@@ -470,6 +470,28 @@ async fn main() -> Result<()> {
                         "  endpoint_id: {}",
                         &endpoint_id[..endpoint_id.len().min(8)]
                     );
+                    if let Some(terminals) = v["terminals"].as_array() {
+                        println!("  terminals:   {}", terminals.len());
+                        for terminal in terminals {
+                            let id = terminal["id"].as_str().unwrap_or("?");
+                            let title = terminal["title"].as_str().unwrap_or("(untitled)");
+                            let session = terminal["session_name"]
+                                .as_str()
+                                .or_else(|| terminal["session_id"].as_str())
+                                .unwrap_or("?");
+                            let created = terminal["created_at_elapsed_secs"]
+                                .as_u64()
+                                .map(format_duration)
+                                .unwrap_or_else(|| "?".to_string());
+                            let uptime = terminal["uptime_secs"]
+                                .as_u64()
+                                .map(format_duration)
+                                .unwrap_or_else(|| "?".to_string());
+                            println!(
+                                "    {id}  {title}  created {created} ago  uptime {uptime}  session {session}"
+                            );
+                        }
+                    }
                 }
                 Err(e) => {
                     eprintln!("Failed to reach daemon: {}", e);

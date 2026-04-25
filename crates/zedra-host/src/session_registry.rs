@@ -13,7 +13,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use zedra_osc::OscScanner;
 use zedra_rpc::proto::{BacklogEntry, HostEvent, TermOutput, TerminalSyncEntry};
@@ -232,6 +232,10 @@ pub struct TermSession {
     pub host_meta: Arc<std::sync::Mutex<HostTermMeta>>,
     /// Per-terminal output backlog (seq + replay entries).
     pub backlog: Arc<std::sync::Mutex<TermBacklog>>,
+    /// Wall-clock creation time for operator-facing status output.
+    pub created_at: SystemTime,
+    /// Monotonic creation time for terminal uptime calculations.
+    pub started_at: Instant,
 }
 
 /// Summary of a session for listing purposes.
@@ -245,6 +249,16 @@ pub struct SessionInfo {
     pub last_activity_elapsed_secs: u64,
     /// Whether a client is currently attached to this session.
     pub is_occupied: bool,
+}
+
+/// Summary of a live terminal for operator-facing status output.
+#[derive(Debug, Clone)]
+pub struct TerminalInfo {
+    pub id: String,
+    pub title: Option<String>,
+    pub created_at_unix_secs: u64,
+    pub created_at_elapsed_secs: u64,
+    pub uptime_secs: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -863,6 +877,33 @@ impl ServerSession {
                 last_seq,
                 title,
                 cwd,
+            });
+        }
+        entries.sort_by(|a, b| a.id.cmp(&b.id));
+        entries
+    }
+
+    pub async fn terminal_infos(&self) -> Vec<TerminalInfo> {
+        let terms = self.terminals.lock().await;
+        let mut entries = Vec::with_capacity(terms.len());
+        for (id, term) in terms.iter() {
+            let title = term
+                .host_meta
+                .lock()
+                .ok()
+                .and_then(|meta| meta.title.clone());
+            let created_at_unix_secs = term
+                .created_at
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let uptime_secs = term.started_at.elapsed().as_secs();
+            entries.push(TerminalInfo {
+                id: id.clone(),
+                title,
+                created_at_unix_secs,
+                created_at_elapsed_secs: uptime_secs,
+                uptime_secs,
             });
         }
         entries.sort_by(|a, b| a.id.cmp(&b.id));
