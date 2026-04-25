@@ -163,15 +163,17 @@ printf 'src/main.rs:12:3\ngit:(refactor-app-session-architecture)\nhello\nREADME
 
 ## 14. Git Panel Diff Navigation
 
-1. Connect to a workspace with at least one modified file
+1. Connect to a workspace with at least one modified file and one untracked file
 2. Open the workspace drawer and switch to the Git Diff tab
 3. Tap a file entry in the git panel
 4. Expected: the drawer closes and the git diff view opens for the tapped file
 5. Expected: added and removed lines are indicated by full-width background color only; the diff text does not render a leading `+` or `-`
 6. Expected: added and removed backgrounds stay continuous across rows without thin gaps, including after horizontal scrolling long lines
 7. Expected: the workspace header subtitle shows the git filename plus added and removed totals, and long filenames truncate instead of overflowing
-8. Long-press a file entry
-9. Expected: the file action sheet opens for that entry instead of doing nothing
+8. Tap the untracked file entry
+9. Expected: the diff view shows the untracked file content as added lines
+10. Long-press a file entry
+11. Expected: the file action sheet opens for that entry instead of doing nothing
 
 ## 15. Markdown List Item Wrap In Preview
 

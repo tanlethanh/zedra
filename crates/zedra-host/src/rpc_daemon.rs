@@ -1626,12 +1626,21 @@ async fn dispatch(
         ZedraMessage::GitDiff(msg) => {
             session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
             match GitRepo::open(&state.workdir) {
-                Ok(repo) => {
-                    let diff = repo
-                        .diff(msg.path.as_deref(), msg.staged)
-                        .unwrap_or_default();
-                    let _ = msg.tx.send(GitDiffResult { diff, error: None }).await;
-                }
+                Ok(repo) => match repo.diff(msg.path.as_deref(), msg.staged) {
+                    Ok(diff) => {
+                        let _ = msg.tx.send(GitDiffResult { diff, error: None }).await;
+                    }
+                    Err(e) => {
+                        tracing::warn!("GitDiff: failed to diff {:?}: {}", msg.path, e);
+                        let _ = msg
+                            .tx
+                            .send(GitDiffResult {
+                                diff: String::new(),
+                                error: Some(e.to_string()),
+                            })
+                            .await;
+                    }
+                },
                 Err(e) => {
                     tracing::warn!("GitDiff: failed to open repo at {:?}: {}", state.workdir, e);
                     let _ = msg

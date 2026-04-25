@@ -64,7 +64,6 @@ impl WorkspaceGitdiff {
         let read_task = cx.spawn(async move |this, cx| {
             let (state, diff) = match section {
                 GitFileSection::Staged | GitFileSection::Unstaged | GitFileSection::Untracked => {
-                    // Untracked file diffs are provided by git in the unstaged set.
                     let staged = matches!(section, GitFileSection::Staged);
                     match handle.git_diff(Some(&path), staged).await {
                         Ok(diff_text) => {
