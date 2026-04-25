@@ -12,7 +12,9 @@
 2. Open app on device
 3. Tap "Scan QR" — scan the terminal QR code
 4. Expected: app connects, session panel shows "Connected", endpoint shown
-5. Navigate to terminal — verify PTY works (shell prompt, keystrokes echo)
+5. Open the workspace drawer immediately after connect
+6. Expected: file explorer root entries and git status are already loaded without waiting for the first drawer open to trigger them
+7. Navigate to terminal — verify PTY works (shell prompt, keystrokes echo)
 
 ## 2. QR Already Consumed
 
@@ -29,6 +31,8 @@
 3. Reopen — tap the saved workspace entry in the home screen
 4. Expected: reconnects using stored session ID (no QR needed); terminal
    backlog replays any missed output
+5. Expected: the workspace drawer Terminals tab shows the active remote
+   terminals from the host without creating a replacement terminal
 
 ## 4. Reconnect After Host Restart
 
@@ -37,6 +41,7 @@
 3. Wait 5 seconds, restart host: `zedra start --workdir .`
 4. Expected: app auto-reconnects (Reconnecting badge → Connected); session
    panel shows same or new session ID depending on `sessions.json` state
+5. Expected: after reconnect, file explorer root entries and git status refresh asynchronously without blocking the terminal from becoming usable
 
 ## 5. Host Unreachable → Retry
 

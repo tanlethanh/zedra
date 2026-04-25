@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
+use uuid::Uuid;
 use zedra_osc::OscScanner;
 use zedra_rpc::proto::{BacklogEntry, HostEvent, TermOutput, TerminalSyncEntry};
 
@@ -61,7 +62,6 @@ pub struct ServerSession {
     pub created_at: Instant,
     pub last_activity: Mutex<Instant>,
     pub terminals: Mutex<HashMap<String, TermSession>>,
-    pub next_term_id: Mutex<u64>,
     /// Client pubkeys authorized to attach to this session (per-session ACL).
     pub acl: Mutex<HashSet<[u8; 32]>>,
     /// Currently attached client pubkey. None = session is free.
@@ -225,6 +225,7 @@ pub struct TermSession {
     /// every keystroke.
     pub writer: Arc<std::sync::Mutex<Box<dyn Write + Send>>>,
     pub master: Box<dyn portable_pty::MasterPty + Send>,
+    pub child: Box<dyn portable_pty::Child + Send + Sync>,
     /// Swappable output sender. Updated on each TermAttach.
     pub output_sender: Arc<std::sync::Mutex<OutputSenderSlot>>,
     /// Host-side OSC metadata cache (title, CWD). Updated by the PTY reader
@@ -236,6 +237,29 @@ pub struct TermSession {
     pub created_at: SystemTime,
     /// Monotonic creation time for terminal uptime calculations.
     pub started_at: Instant,
+}
+
+impl TermSession {
+    pub fn terminate(mut self) -> bool {
+        match self.child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(err = %e, "failed to inspect terminal child before close");
+            }
+        }
+
+        if let Err(e) = self.child.kill() {
+            tracing::warn!(err = %e, "failed to terminate terminal child");
+            return false;
+        }
+
+        if let Err(e) = self.child.wait() {
+            tracing::warn!(err = %e, "failed to reap terminal child after close");
+        }
+
+        true
+    }
 }
 
 /// Summary of a session for listing purposes.
@@ -804,7 +828,6 @@ impl ServerSession {
             created_at: Instant::now(),
             last_activity: Mutex::new(Instant::now()),
             terminals: Mutex::new(HashMap::new()),
-            next_term_id: Mutex::new(1),
             acl: Mutex::new(HashSet::new()),
             active_client: Mutex::new(None),
             session_token: Mutex::new(None),
@@ -968,10 +991,7 @@ impl ServerSession {
 
     /// Allocate the next terminal ID for this session.
     pub async fn next_terminal_id(&self) -> String {
-        let mut id = self.next_term_id.lock().await;
-        let current = *id;
-        *id += 1;
-        format!("term-{}", current)
+        Uuid::new_v4().to_string()
     }
 
     /// Get backlog entries for a terminal after a given sequence number.
@@ -1249,10 +1269,12 @@ mod tests {
         let registry = SessionRegistry::new();
         let session = create_session(&registry).await;
 
-        let id1 = session.next_terminal_id().await;
-        let id2 = session.next_terminal_id().await;
-        assert_eq!(id1, "term-1");
-        assert_eq!(id2, "term-2");
+        let mut ids = std::collections::HashSet::new();
+        for _ in 0..128 {
+            let id = session.next_terminal_id().await;
+            assert!(Uuid::parse_str(&id).is_ok());
+            assert!(ids.insert(id));
+        }
     }
 
     #[tokio::test]

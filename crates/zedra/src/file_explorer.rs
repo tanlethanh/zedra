@@ -9,7 +9,7 @@ use zedra_session::{Session, SessionHandle, SessionState};
 
 use crate::theme;
 use crate::workspace_action;
-use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
+use crate::workspace_state::WorkspaceState;
 
 #[derive(Clone)]
 pub struct FileEntry {
@@ -123,16 +123,6 @@ impl FileExplorer {
             }
         });
 
-        let mut subscriptions = Vec::new();
-        subscriptions.push(cx.subscribe(
-            &workspace_state,
-            |this, _workspace, event: &WorkspaceStateEvent, cx| {
-                if matches!(event, WorkspaceStateEvent::SyncComplete) {
-                    this.handle_sync_complete(cx);
-                }
-            },
-        ));
-
         Self {
             entries: Vec::new(),
             focus_handle: cx.focus_handle(),
@@ -149,21 +139,21 @@ impl FileExplorer {
             workspace_state,
             session_state,
             session_handle,
-            _subscriptions: subscriptions,
+            _subscriptions: Vec::new(),
         }
     }
 
-    fn handle_sync_complete(&mut self, cx: &mut Context<Self>) {
+    pub fn refresh_after_sync(&mut self, cx: &mut Context<Self>) -> Task<()> {
         self.workdir = self.workspace_state.read(cx).workdir.to_string();
         self.request_epoch = self.request_epoch.wrapping_add(1);
         self.rebind_watches(cx);
         let show_loading = !self.remote_loaded && self.entries.is_empty();
-        self.request_root_listing(show_loading, cx);
+        self.request_root_listing(show_loading, cx)
     }
 
     /// Request root listing. When `show_loading` is false we preserve the
     /// existing tree and only apply if root structure actually changed.
-    fn request_root_listing(&mut self, show_loading: bool, cx: &mut Context<Self>) {
+    fn request_root_listing(&mut self, show_loading: bool, cx: &mut Context<Self>) -> Task<()> {
         info!("request root listing in {:?}", self.workdir);
         let epoch = self.request_epoch;
         self.fs_watch_path(".".to_string(), cx);
@@ -234,7 +224,6 @@ impl FileExplorer {
                 cx.notify();
             });
         })
-        .detach();
     }
 
     fn to_file_entries(entries: Vec<zedra_rpc::proto::FsEntry>) -> Vec<FileEntry> {
@@ -590,7 +579,7 @@ impl FileExplorer {
             return;
         }
         if path == "." {
-            self.request_root_listing(false, cx);
+            self.request_root_listing(false, cx).detach();
             return;
         }
         let lookup_path = self.event_path_to_entry_path(path);

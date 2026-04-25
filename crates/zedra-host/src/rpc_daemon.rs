@@ -885,7 +885,7 @@ pub async fn create_terminal(
     }
 
     let shell = ShellSession::spawn(cols, rows, opts)?;
-    let (pty_reader, pty_writer, master) = shell.take_reader();
+    let (pty_reader, pty_writer, master, child) = shell.take_reader();
     let id = session.next_terminal_id().await;
 
     tracing::info!(
@@ -911,6 +911,7 @@ pub async fn create_terminal(
         TermSession {
             writer: writer.clone(),
             master,
+            child,
             output_sender: output_sender.clone(),
             host_meta: host_meta.clone(),
             backlog: backlog.clone(),
@@ -1565,8 +1566,15 @@ async fn dispatch(
         }
 
         ZedraMessage::TermClose(msg) => {
-            session.terminals.lock().await.remove(&msg.id);
-            let _ = msg.tx.send(TermCloseResult { ok: true }).await;
+            let terminal = session.terminals.lock().await.remove(&msg.id);
+            let ok = if let Some(terminal) = terminal {
+                tokio::task::spawn_blocking(move || terminal.terminate())
+                    .await
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            let _ = msg.tx.send(TermCloseResult { ok }).await;
         }
 
         ZedraMessage::TermList(msg) => {

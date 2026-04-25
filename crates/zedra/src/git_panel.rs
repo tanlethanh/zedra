@@ -9,7 +9,7 @@ use crate::editor::git_sidebar::{
     GitFileStatus, GitRepoState, GitSidebar,
 };
 use crate::workspace_action;
-use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
+use crate::workspace_state::WorkspaceState;
 
 pub struct GitPanel {
     #[allow(dead_code)]
@@ -40,7 +40,7 @@ impl GitPanel {
                     Ok(HostEvent::GitChanged) => {
                         let should_break = this
                             .update(cx, |this, cx| {
-                                this.fetch_git_status(cx);
+                                this.fetch_git_status(cx).detach();
                             })
                             .is_err();
                         if should_break {
@@ -89,15 +89,6 @@ impl GitPanel {
                 this.handle_commit(event.message.clone(), event.paths.clone(), cx);
             },
         ));
-        subscriptions.push(cx.subscribe(
-            &workspace_state,
-            |this, _workspace, event: &WorkspaceStateEvent, cx| {
-                if matches!(event, WorkspaceStateEvent::SyncComplete) {
-                    this.fetch_git_status(cx);
-                }
-            },
-        ));
-
         Self {
             workspace_state,
             session_state,
@@ -113,10 +104,14 @@ impl GitPanel {
         &self.branch
     }
 
-    fn fetch_git_status(&mut self, cx: &mut Context<Self>) {
+    pub fn refresh_after_sync(&mut self, cx: &mut Context<Self>) -> Task<()> {
+        self.fetch_git_status(cx)
+    }
+
+    fn fetch_git_status(&mut self, cx: &mut Context<Self>) -> Task<()> {
         let handle = self.session_handle.clone();
         let content = self.content.clone();
-        let task = cx.spawn(async move |this, cx| match handle.git_status().await {
+        cx.spawn(async move |this, cx| match handle.git_status().await {
             Ok(result) => {
                 let repo_state = status_to_repo_state(&result.branch, &result.entries);
                 let _ = content.update(cx, |sidebar, cx| {
@@ -129,8 +124,7 @@ impl GitPanel {
             Err(e) => {
                 error!("git_status failed: {}", e);
             }
-        });
-        self.tasks.push(task);
+        })
     }
 
     fn handle_commit(&mut self, message: String, paths: Vec<String>, cx: &mut Context<Self>) {
@@ -157,7 +151,7 @@ impl GitPanel {
             // Refresh status after commit
             if result.is_ok() {
                 let _ = this.update(cx, |this, cx| {
-                    this.fetch_git_status(cx);
+                    this.fetch_git_status(cx).detach();
                 });
             }
         });

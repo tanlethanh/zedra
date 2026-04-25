@@ -10163,6 +10163,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "zedra-osc",
  "zedra-rpc",
  "zedra-telemetry",

@@ -68,6 +68,46 @@ enum PendingWorkspaceConfirmation {
     DeleteTerminal { id: String },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SyncRefreshMode {
+    InitialConnect,
+    Reconnect,
+}
+
+fn sync_refresh_mode_for_event(
+    event: &ConnectEvent,
+    seen_reconnect: &mut bool,
+) -> Option<SyncRefreshMode> {
+    if matches!(event, ConnectEvent::ReconnectStarted { .. }) {
+        *seen_reconnect = true;
+    }
+
+    if !matches!(event, ConnectEvent::SyncComplete { .. }) {
+        return None;
+    }
+
+    if *seen_reconnect {
+        Some(SyncRefreshMode::Reconnect)
+    } else {
+        Some(SyncRefreshMode::InitialConnect)
+    }
+}
+
+fn terminal_id_in_sync(id: &str, terminal_ids: &[String]) -> bool {
+    terminal_ids.iter().any(|synced_id| synced_id == id)
+}
+
+fn should_keep_terminal_entity(id: &str, terminal_ids: &[String]) -> bool {
+    id == TERMINAL_PENDING_ID || terminal_id_in_sync(id, terminal_ids)
+}
+
+fn active_terminal_is_stale_after_sync(
+    active_terminal_id: Option<&str>,
+    terminal_ids: &[String],
+) -> bool {
+    active_terminal_id.is_some_and(|id| !terminal_id_in_sync(id, terminal_ids))
+}
+
 impl Workspace {
     pub fn new(
         workspace_state: Entity<WorkspaceState>,
@@ -210,31 +250,82 @@ impl Workspace {
                         closed_notify.notify_waiters();
                     }
 
-                    let is_first_sync = match workspace.update(cx, |ws, cx| {
-                        if matches!(event, ConnectEvent::ReconnectStarted { .. }) {
-                            ws.seen_reconnect = true;
-                        }
-                        let is_first_sync = matches!(event, ConnectEvent::SyncComplete { .. })
-                            && !ws.seen_reconnect;
-
+                    let sync_refresh_mode = match workspace.update(cx, |ws, cx| {
+                        let sync_refresh_mode =
+                            sync_refresh_mode_for_event(&event, &mut ws.seen_reconnect);
                         ws.session_state.update(cx, |state, cx| {
                             state.apply_event(event.clone());
                             cx.notify();
                             ws.workspace_state.update(cx, |this, cx| {
                                 this.sync_from_session(ws.session_handle(), state, cx);
-                                if matches!(event, ConnectEvent::SyncComplete { .. }) {
-                                    this.emit_sync_complete(cx);
-                                    ws.content.update(cx, |c, cx| c.hide_connecting_view(cx));
-                                }
                             });
                         });
-                        is_first_sync
+                        sync_refresh_mode
                     }) {
-                        Ok(is_first_sync) => is_first_sync,
+                        Ok(sync_refresh_mode) => sync_refresh_mode,
                         Err(_) => break,
                     };
 
-                    if is_first_sync {
+                    if let Some(sync_refresh_mode) = sync_refresh_mode {
+                        let is_initial_connect =
+                            sync_refresh_mode == SyncRefreshMode::InitialConnect;
+                        let mut client_ready = false;
+                        for _ in 0..200 {
+                            client_ready = match workspace
+                                .update(cx, |ws, _cx| ws.session_handle().has_client())
+                            {
+                                Ok(ready) => ready,
+                                Err(_) => break,
+                            };
+                            if client_ready {
+                                break;
+                            }
+                            cx.background_executor()
+                                .timer(Duration::from_millis(10))
+                                .await;
+                        }
+                        if !client_ready {
+                            warn!("session handle was not ready after SyncComplete");
+                        }
+
+                        let refresh_task = match workspace.update(cx, |ws, cx| {
+                            ws.drawer
+                                .update(cx, |drawer, cx| drawer.refresh_after_sync(cx))
+                        }) {
+                            Ok(task) => task,
+                            Err(_) => break,
+                        };
+
+                        if is_initial_connect {
+                            refresh_task.await;
+                        } else {
+                            refresh_task.detach();
+                        }
+
+                        let should_initialize = match workspace.update(cx, |ws, cx| {
+                            let session_handle = ws.session.handle().clone();
+                            let session_state = ws.session_state.clone();
+                            let workspace_state = ws.workspace_state.clone();
+                            session_state.update(cx, |state, cx| {
+                                workspace_state.update(cx, |this, cx| {
+                                    this.sync_from_session(&session_handle, state, cx);
+                                });
+                            });
+                            ws.reconcile_terminals_after_sync(cx);
+                            ws.workspace_state.update(cx, |this, cx| {
+                                this.emit_sync_complete(cx);
+                            });
+                            ws.content.update(cx, |c, cx| c.hide_connecting_view(cx));
+                            is_initial_connect
+                        }) {
+                            Ok(should_initialize) => should_initialize,
+                            Err(_) => break,
+                        };
+
+                        if !should_initialize {
+                            continue;
+                        }
+
                         let workspace = workspace.clone();
                         cx.on_next_frame(move |window, cx| {
                             let _ = workspace.update(cx, |ws, cx| {
@@ -595,8 +686,6 @@ impl Workspace {
                     terminal.set_terminal_id(terminal_id.clone(), cx);
                 });
 
-                ws.terminals.push(workspace_terminal.clone());
-
                 ws.workspace_state.update(cx, |_state, cx| {
                     // The WorkspaceTerminal will need this subscription to attach the input/output channel.
                     cx.emit(WorkspaceStateEvent::TerminalCreated {
@@ -678,6 +767,31 @@ impl Workspace {
             }
         })
         .detach();
+    }
+
+    fn reconcile_terminals_after_sync(&mut self, cx: &mut Context<Self>) {
+        let terminal_ids = self.workspace_state.read(cx).terminal_ids.clone();
+        self.terminals.retain(|terminal| {
+            let id = terminal.read(cx).terminal_id().to_string();
+            should_keep_terminal_entity(&id, &terminal_ids)
+        });
+
+        let active_terminal_id = self.workspace_state.read(cx).active_terminal_id.clone();
+        let active_terminal_is_stale =
+            active_terminal_is_stale_after_sync(active_terminal_id.as_deref(), &terminal_ids);
+
+        if active_terminal_is_stale {
+            active_terminal::clear_active_input();
+            self.workspace_state.update(cx, |state, cx| {
+                state.active_terminal_id = None;
+                cx.notify();
+            });
+            let editor = self.editor.clone();
+            self.content.update(cx, |content, cx| {
+                content.clear_subtitle(cx);
+                content.set_main_view(editor.into(), cx);
+            });
+        }
     }
 
     fn process_pending_confirmation(
@@ -815,6 +929,89 @@ pub fn section_to_u8(section: GitFileSection) -> u8 {
         GitFileSection::Staged => 0,
         GitFileSection::Unstaged => 1,
         GitFileSection::Untracked => 2,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zedra_rpc::proto::SyncSessionResult;
+    use zedra_session::ReconnectReason;
+
+    fn sync_complete_event() -> ConnectEvent {
+        ConnectEvent::SyncComplete {
+            sync: SyncSessionResult {
+                session_id: "session-1".into(),
+                session_token: [1; 32],
+                hostname: "host".into(),
+                workdir: "/workspace".into(),
+                username: "user".into(),
+                home_dir: Some("/home/user".into()),
+                os: Some("macos".into()),
+                arch: Some("aarch64".into()),
+                os_version: Some("26.0".into()),
+                host_version: Some("0.1.1".into()),
+                terminals: Vec::new(),
+            },
+            sync_ms: 7,
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn initial_sync_waits_for_drawer_refresh() {
+        let mut seen_reconnect = false;
+
+        let mode = sync_refresh_mode_for_event(&sync_complete_event(), &mut seen_reconnect);
+
+        assert_eq!(mode, Some(SyncRefreshMode::InitialConnect));
+        assert!(!seen_reconnect);
+    }
+
+    #[::core::prelude::v1::test]
+    fn reconnect_sync_refreshes_drawer_in_background() {
+        let mut seen_reconnect = false;
+
+        let mode = sync_refresh_mode_for_event(
+            &ConnectEvent::ReconnectStarted {
+                reason: ReconnectReason::ConnectionLost,
+            },
+            &mut seen_reconnect,
+        );
+
+        assert_eq!(mode, None);
+        assert!(seen_reconnect);
+
+        let mode = sync_refresh_mode_for_event(&sync_complete_event(), &mut seen_reconnect);
+
+        assert_eq!(mode, Some(SyncRefreshMode::Reconnect));
+    }
+
+    #[::core::prelude::v1::test]
+    fn terminal_sync_keeps_only_pending_or_synced_terminal_views() {
+        let synced = vec!["remote-active".to_string()];
+
+        assert!(should_keep_terminal_entity("remote-active", &synced));
+        assert!(should_keep_terminal_entity(TERMINAL_PENDING_ID, &synced));
+        assert!(!should_keep_terminal_entity("stale-local", &synced));
+    }
+
+    #[::core::prelude::v1::test]
+    fn terminal_sync_treats_active_terminal_missing_from_host_as_stale() {
+        let synced = vec!["remote-active".to_string()];
+
+        assert!(!active_terminal_is_stale_after_sync(None, &synced));
+        assert!(!active_terminal_is_stale_after_sync(
+            Some("remote-active"),
+            &synced
+        ));
+        assert!(active_terminal_is_stale_after_sync(
+            Some("stale-local"),
+            &synced
+        ));
+        assert!(active_terminal_is_stale_after_sync(
+            Some("stale-local"),
+            &[]
+        ));
     }
 }
 

@@ -202,6 +202,7 @@ Types that do **not** carry `error` (use dedicated status fields or enum variant
 - `TermClose(TermCloseReq) -> TermCloseResult`
 - `TermList(TermListReq) -> TermListResult`
 - `SyncSessionResult.terminals -> Vec<TerminalSyncEntry>`
+- Terminal ids are opaque host-generated UUID strings.
 
 ### TermAttach conventions
 
@@ -395,4 +396,3 @@ Any protocol-layer change must include all applicable steps:
   - first pairing and PKI fallback now end with `SyncSession`
   - reconnect may skip `Authenticate/AuthProve` entirely when a valid reconnect token is present
 - Added rotating host-issued reconnect tokens bound to `(session_id, client_pubkey)`.
-

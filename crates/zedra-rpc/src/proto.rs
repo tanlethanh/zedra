@@ -396,6 +396,7 @@ pub struct SyncSessionResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalSyncEntry {
+    /// Opaque host-generated UUID string.
     pub id: String,
     pub last_seq: u64,
     pub title: Option<String>,
@@ -572,12 +573,14 @@ pub struct TermCreateReq {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TermCreateResult {
+    /// Opaque host-generated UUID string.
     pub id: String,
     pub error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TermAttachReq {
+    /// Opaque host-generated UUID string returned by `TermCreate` or sync.
     pub id: String,
     pub last_seq: u64,
 }
@@ -599,6 +602,7 @@ pub struct TermOutput {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TermResizeReq {
+    /// Opaque host-generated UUID string.
     pub id: String,
     pub cols: u16,
     pub rows: u16,
@@ -611,6 +615,7 @@ pub struct TermResizeResult {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TermCloseReq {
+    /// Opaque host-generated UUID string.
     pub id: String,
 }
 
@@ -629,6 +634,7 @@ pub struct TermListResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TermListEntry {
+    /// Opaque host-generated UUID string.
     pub id: String,
 }
 

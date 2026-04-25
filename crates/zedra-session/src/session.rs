@@ -264,11 +264,8 @@ impl Session {
                     "HostEvent: terminal created id={} launch_cmd={:?}",
                     id, launch_cmd,
                 );
-                let terminal = handle.terminal(id).unwrap_or_else(|| {
-                    let terminal = RemoteTerminal::new(id.clone());
-                    handle.add_terminal(terminal.clone());
-                    terminal
-                });
+                let terminal = RemoteTerminal::new(id.clone());
+                handle.add_terminal(terminal.clone());
                 if let Err(e) = terminal.attach_remote(client).await {
                     warn!(
                         "Failed to attach host-created terminal {}: {e}",

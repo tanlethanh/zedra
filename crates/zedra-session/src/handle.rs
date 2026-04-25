@@ -169,6 +169,8 @@ impl SessionHandle {
 
     pub fn add_terminal(&self, terminal: RemoteTerminal) {
         if let Ok(mut t) = self.0.terminals.lock() {
+            let id = terminal.id();
+            t.retain(|existing| existing.id() != id);
             t.push(terminal);
         }
     }
@@ -441,5 +443,50 @@ impl SessionHandle {
     pub async fn terminal_list(&self) -> Result<Vec<String>> {
         let result: TermListResult = self.client()?.rpc(TermListReq {}).await?;
         Ok(result.terminals.into_iter().map(|e| e.id).collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_terminal_replaces_existing_id() {
+        let handle = SessionHandle::new();
+        let old_terminal = RemoteTerminal::new("term-1".to_string());
+        old_terminal.update_seq(99);
+        let new_terminal = RemoteTerminal::new("term-1".to_string());
+        new_terminal.update_seq(1);
+
+        handle.add_terminal(old_terminal);
+        handle.add_terminal(new_terminal);
+
+        assert_eq!(handle.terminal_ids(), vec!["term-1"]);
+        assert_eq!(handle.terminal("term-1").unwrap().last_seq(), 1);
+    }
+
+    #[test]
+    fn set_terminals_syncs_to_remote_active_list() {
+        let handle = SessionHandle::new();
+        handle.add_terminal(RemoteTerminal::new("stale-local".to_string()));
+
+        handle.set_terminals(vec![
+            RemoteTerminal::new("term-2".to_string()),
+            RemoteTerminal::new("term-3".to_string()),
+        ]);
+
+        assert_eq!(handle.terminal_ids(), vec!["term-2", "term-3"]);
+        assert!(handle.terminal("stale-local").is_none());
+    }
+
+    #[test]
+    fn set_terminals_empty_remote_list_clears_local_terminals() {
+        let handle = SessionHandle::new();
+        handle.add_terminal(RemoteTerminal::new("stale-local".to_string()));
+
+        handle.set_terminals(Vec::new());
+
+        assert!(handle.terminal_ids().is_empty());
+        assert_eq!(handle.terminal_count(), 0);
     }
 }

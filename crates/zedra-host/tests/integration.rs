@@ -15,6 +15,11 @@ use zedra_host::session_registry::SessionRegistry;
 use zedra_rpc::proto::{self, *};
 use zedra_rpc::{decode_endpoint_addr, encode_endpoint_addr};
 
+#[cfg(unix)]
+fn process_exists(pid: u32) -> bool {
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
@@ -319,7 +324,7 @@ async fn test_rpc_terminal_over_relay() {
     let (_relay, relay_url) = spawn_test_relay().await.unwrap();
     let (host_ep, registry, identity, _dir) = setup_host(relay_url.clone()).await.unwrap();
 
-    let (client, _session_id, _client_pubkey, _sync) =
+    let (client, session_id, _client_pubkey, _sync) =
         connect_client(relay_url, &host_ep, &registry, &identity)
             .await
             .unwrap();
@@ -333,13 +338,24 @@ async fn test_rpc_terminal_over_relay() {
         })
         .await
         .unwrap();
-    assert!(result.id.starts_with("term-"));
+    assert!(uuid::Uuid::parse_str(&result.id).is_ok());
+    let terminal_id = result.id.clone();
+
+    #[cfg(unix)]
+    let child_pid = {
+        let session = registry.get(&session_id).await.unwrap();
+        let terminals = session.terminals.lock().await;
+        terminals
+            .get(&terminal_id)
+            .and_then(|terminal| terminal.child.process_id())
+            .expect("terminal child should have a pid")
+    };
 
     // Attach to terminal via bidi streaming
     let (input_tx, mut output_rx) = client
         .bidi_streaming::<TermAttachReq, TermInput, TermOutput>(
             TermAttachReq {
-                id: result.id.clone(),
+                id: terminal_id.clone(),
                 last_seq: 0,
             },
             256,
@@ -365,8 +381,22 @@ async fn test_rpc_terminal_over_relay() {
         other => panic!("expected terminal output, got {:?}", other),
     }
 
-    let close_result: TermCloseResult = client.rpc(TermCloseReq { id: result.id }).await.unwrap();
+    let close_result: TermCloseResult = client
+        .rpc(TermCloseReq {
+            id: terminal_id.clone(),
+        })
+        .await
+        .unwrap();
     assert!(close_result.ok);
+
+    let session = registry.get(&session_id).await.unwrap();
+    assert!(!session.terminals.lock().await.contains_key(&terminal_id));
+
+    #[cfg(unix)]
+    assert!(!process_exists(child_pid));
+
+    let close_again: TermCloseResult = client.rpc(TermCloseReq { id: terminal_id }).await.unwrap();
+    assert!(!close_again.ok);
 }
 
 /// Endpoint addr includes relay URL after going online.

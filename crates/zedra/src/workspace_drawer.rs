@@ -98,6 +98,19 @@ impl WorkspaceDrawer {
         cx.notify();
     }
 
+    pub fn refresh_after_sync(&mut self, cx: &mut Context<Self>) -> Task<()> {
+        let file_explorer = self
+            .file_explorer
+            .update(cx, |file_explorer, cx| file_explorer.refresh_after_sync(cx));
+        let git_panel = self
+            .git_panel
+            .update(cx, |git_panel, cx| git_panel.refresh_after_sync(cx));
+
+        cx.spawn(async move |_this, _cx| {
+            futures::future::join(file_explorer, git_panel).await;
+        })
+    }
+
     pub fn title_by_tab(&self, tab: DrawerTab, cx: &mut Context<Self>) -> (String, String) {
         let workspace_state = self.workspace_state.read(cx);
         let session_state = self.session_state.read(cx);

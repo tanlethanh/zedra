@@ -2,7 +2,7 @@
 // Uses portable-pty for cross-platform PTY support
 
 use anyhow::Result;
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 
 /// A spawned shell session with PTY
@@ -10,6 +10,7 @@ pub struct ShellSession {
     master: Box<dyn MasterPty + Send>,
     reader: Box<dyn Read + Send>,
     writer: Box<dyn Write + Send>,
+    child: Box<dyn Child + Send + Sync>,
 }
 
 /// Options for spawning a new shell session.
@@ -74,7 +75,7 @@ impl ShellSession {
         cmd.env("COLORTERM", "truecolor");
 
         // Spawn the shell process
-        let _child = pair
+        let child = pair
             .slave
             .spawn_command(cmd)
             .map_err(|e| anyhow::anyhow!("Failed to spawn shell: {}", e))?;
@@ -103,6 +104,7 @@ impl ShellSession {
             master: pair.master,
             reader,
             writer,
+            child,
         })
     }
 
@@ -113,8 +115,9 @@ impl ShellSession {
         Box<dyn Read + Send>,
         Box<dyn Write + Send>,
         Box<dyn MasterPty + Send>,
+        Box<dyn Child + Send + Sync>,
     ) {
-        (self.reader, self.writer, self.master)
+        (self.reader, self.writer, self.master, self.child)
     }
 }
 
@@ -135,7 +138,7 @@ mod tests {
     #[test]
     fn test_shell_write_read() {
         let session = ShellSession::spawn(80, 24, SpawnOptions::default()).unwrap();
-        let (mut reader, mut writer, _master) = session.take_reader();
+        let (mut reader, mut writer, _master, _child) = session.take_reader();
 
         // Writer should accept data
         assert!(writer.write_all(b"echo test\n").is_ok());
@@ -152,7 +155,7 @@ mod tests {
     #[test]
     fn test_shell_resize() {
         let session = ShellSession::spawn(80, 24, SpawnOptions::default()).unwrap();
-        let (_reader, _writer, master) = session.take_reader();
+        let (_reader, _writer, master, _child) = session.take_reader();
 
         let result = master.resize(PtySize {
             rows: 50,
