@@ -199,19 +199,54 @@ Claude Code has open feature requests for Sixel/Kitty rendering (#2266, #29254).
 
 ---
 
-## OSC sequences relevant to AI agents
+## Common OSC sequences and terminal metadata
 
-| Sequence | Purpose | Status in zedra-osc |
-|---|---|---|
-| OSC 0/2 | Terminal title | ✅ parsed |
-| OSC 7 | CWD | ✅ parsed |
-| OSC 133 A/B/C/D | Semantic zones (prompt/command boundaries) | ✅ parsed |
-| **OSC 633 A/B/C/D/E/P** | VS Code shell integration; `633;E` = command text | ❌ missing |
-| **OSC 8** | Hyperlinks | ❌ missing |
-| **OSC 9** | Desktop notifications (agent turn end) | ❌ missing |
-| OSC 1337 | iTerm2 inline images | ❌ missing (future) |
+OSC sequences are terminal control strings, usually shaped as `ESC ] <id> ; <payload> ST` or `ESC ] <id> ; <payload> BEL`.
+For Zedra, OSC should feed generic terminal metadata first. Agent identity, icons, notifications, command progress, and adapter routing should be downstream classifiers over that metadata, not special cases inside the OSC parser.
 
-OSC 633;E is particularly useful — captures the exact command line before execution, so we know when `claude` or `opencode` was invoked.
+Sources: [xterm control sequences](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html), [Ghostty VT reference](https://ghostty.org/docs/vt/reference), [VS Code shell integration](https://code.visualstudio.com/docs/terminal/shell-integration#_supported-escape-sequences), [iTerm2 escape codes](https://iterm2.com/documentation-escape-codes.html), [iTerm2 inline images](https://iterm2.com/documentation-images.html), and [Kitty desktop notifications](https://sw.kovidgoyal.net/kitty/desktop-notifications/).
+
+| Sequence | Function | Zedra metadata use | Current Zedra status |
+|---|---|---|---|
+Status legend: ✅ parsed = `zedra-osc` decodes it into a typed `OscEvent`. ✅ wired = `WorkspaceTerminal` handler routes the event into `TerminalState`. ➖ parsed but unwired = decoded but ignored by the app (no consumer yet).
+
+| Sequence | Function | Zedra metadata use | Current Zedra status |
+|---|---|---|---|
+| `OSC 0 ; <text>` | Set icon name and window title. Many shells use this as the broad "title" update. | Store latest title text; optionally remember source as `osc0`. | ✅ parsed + wired — `OscEvent::Title` updates `TerminalMeta.title` and feeds workspace header subtitle |
+| `OSC 1 ; <text>` | Set icon name only. Less useful on mobile, but can preserve a program-provided label separate from title. | Optional `icon_name` / `app_label` metadata. | ➖ parsed (`OscEvent::IconName`) — no consumer yet |
+| `OSC 2 ; <text>` | Set window title. This is the common title signal used by shells and TUIs. | Store latest title text; source should be separate from derived agent identity. | ✅ parsed + wired — same path as OSC 0 |
+| `OSC 3 ; <prop=value>` | xterm top-level window property. Rare outside X11-style terminals. | Usually ignore; do not sync unless a concrete use case appears. | ❌ missing |
+| `OSC 4 ; <index> ; <color>` | Query/change ANSI palette entries. | Renderer/theme state, not app metadata. Avoid syncing as terminal identity. | ❌ missing |
+| `OSC 5 ; <index> ; <color>` | Query/change special colors. | Renderer/theme state only. | ❌ missing |
+| `OSC 7 ; <file-uri>` | Report terminal current working directory, usually from shell integration. | Store normalized cwd plus original URI/source. | ✅ parsed + wired — `OscEvent::Cwd` updates `TerminalMeta.cwd` |
+| `OSC 8 ; <params> ; <uri>` | Begin/end explicit hyperlinks. Empty params/URI ends the current hyperlink. | Store in terminal grid/link spans, not global terminal metadata. Useful for file/URL preview and tap handling. | ✅ handled by terminal grid via alacritty hyperlink state; not emitted as `zedra-osc` metadata |
+| `OSC 9 ; <message>` | Desktop notification, originally iTerm-style and now supported by several terminals. | Store bounded notification event with terminal id, timestamp, body, and source. | ➖ parsed (`OscEvent::Notification` with `NotificationSource::Osc9`) — no consumer yet |
+| `OSC 9 ; 4 ; <state> ; <value>` | ConEmu/Ghostty progress report. States commonly map to inactive, in-progress, error, indeterminate, paused. | Store transient progress metadata with timeout/expiry; treat as advisory because programs may exit without clearing it. | ➖ parsed (`OscEvent::Progress`) — no consumer yet |
+| `OSC 10..19 ; <color>` | Query/change dynamic colors: foreground, background, cursor, pointer, highlight variants. | Renderer/theme state only. | ❌ missing |
+| `OSC 22 ; <shape>` | Pointer shape in terminals that support it. | Renderer/input affordance only, low priority for mobile. | ❌ missing |
+| `OSC 52 ; <clipboard> ; <base64>` | Query/change clipboard or selection data. Security-sensitive and may contain private data. | Do not store raw payload. If supported later, gate behind explicit policy and only keep minimal audit metadata. | ❌ missing |
+| `OSC 99 ; <params> : <payload>` | Kitty rich notification protocol with IDs, title/body payloads, close events, actions, and support queries. | Store typed notification fields and IDs; do not expose action execution without policy. | ➖ parsed (`OscEvent::Notification` with `NotificationSource::Osc99`) — no consumer yet |
+| `OSC 104 ; <indexes>` | Reset ANSI palette entries. | Renderer/theme state only. | ❌ missing |
+| `OSC 105 ; <indexes>` | Reset special colors. | Renderer/theme state only. | ❌ missing |
+| `OSC 110..119` | Reset dynamic colors such as foreground, background, and cursor color. | Renderer/theme state only. | ❌ missing |
+| `OSC 133 ; A/B/C/D` | FinalTerm/iTerm2 shell integration semantic zones: prompt start, command start, command executed, command finished with optional exit code. | Store shell state, command lifecycle timestamps, last exit code. Command text can be inferred from screen range but is less reliable than OSC 633 E. | ✅ parsed + wired — `PromptReady`/`CommandStart`/`CommandEnd { exit_code }` drive `TerminalMeta.shell_state` and `last_exit_code` |
+| `OSC 633 ; A/B/C/D/E/P` | VS Code shell integration. `A/B/C/D` mark prompt and command lifecycle, `E` provides escaped command line, `P` sets properties such as cwd. | Store command lifecycle, exact command line, cwd, nonce/provenance, and rich-detection capability. Strong generic source for "what is running". | ✅ parsed; A–D + E wired (`E` populates `TerminalMeta.current_command`, cleared on idle); `P` (`OscEvent::ShellProperty`) parsed but unwired |
+| `OSC 777 ; notify ; <title> ; <body>` | rxvt/urxvt-style simple notification, also used by some modern terminal tools. | Store notification title/body with source. | ➖ parsed (`OscEvent::Notification` with `NotificationSource::Osc777`) — no consumer yet |
+| `OSC 1337 ; File=...` | iTerm2 inline image/file-transfer protocol. | Renderer/media state; may be useful for future inline previews, but payload can be large. Do not put raw file data in app metadata. | ❌ missing |
+| `OSC 1337 ; RemoteHost=...` | iTerm2 shell integration remote user/host. | Optional remote host metadata; likely privacy-sensitive, avoid syncing unless needed. | ➖ parsed (`OscEvent::RemoteHost`) — no consumer yet |
+| `OSC 1337 ; CurrentDir=...` | iTerm2 shell integration cwd report; OSC 7 is the preferred generic equivalent. | Store cwd if OSC 7 is absent. | ✅ parsed + wired — emits `OscEvent::Cwd`, same path as OSC 7 |
+| `OSC 1337 ; SetUserVar=...` | iTerm2 user variable, base64-encoded. | Store only allowlisted keys if a feature needs them; otherwise ignore. | ➖ parsed (`OscEvent::UserVar`, raw base64) — no consumer yet |
+| `OSC 1337 ; ShellIntegrationVersion=...` | iTerm2 shell integration version and shell name. | Store shell integration capability/version metadata. | ➖ parsed (`OscEvent::ShellIntegrationVersion` + `OscEvent::ShellName`) — no consumer yet |
+| `OSC 1337 ; Block/UpdateBlock/Button/...` | iTerm2 blocks, folding, copy/custom buttons, and other UI extensions. | Future renderer/UI features; not core terminal identity. Buttons/actions need policy before execution. | ❌ missing |
+
+Implementation rule of thumb:
+
+- Parse known OSC sequences into typed events in `zedra-osc`.
+- Store normalized terminal facts in `TerminalMeta`, with source/provenance such as `osc2`, `osc7`, `osc133`, or `osc633`.
+- Keep payloads bounded. Do not persist arbitrary unknown OSC strings, clipboard contents, inline image data, or untrusted action commands.
+- Let AI-agent detection read terminal metadata as a classifier. For example, `OSC 633;E` can say the command line is `claude`, while the agent classifier decides that this maps to the Claude icon and adapter.
+
+OSC 633;E is particularly useful for command identity because it captures the exact shell-interpreted command line before execution. That makes it useful for any program, not just AI agents.
 
 ---
 
@@ -224,6 +259,17 @@ OSC 633;E is particularly useful — captures the exact command line before exec
 - MCP tool support alongside built-in tools
 
 ---
+
+## Current implementation status
+
+Wired through `zedra-osc` → `zedra-terminal` (`TerminalEvent::OscEvent`) → `WorkspaceTerminal` → `TerminalState`:
+
+- **TerminalMeta** carries `title`, `cwd`, `shell_state` (Unknown/Idle/Running), `last_exit_code`, and `current_command`. Keyed by terminal id, owned by the workspace-level `TerminalState` entity.
+- **Workspace header** (`crates/zedra/src/workspace.rs`) reads the active terminal's `TerminalMeta` and renders the title (PS1 prefix stripped) below the project name. When `agent_icon(title, current_command)` matches a known agent, the icon is drawn next to the subtitle.
+- **Agent classifier** (`crates/zedra/src/terminal_card.rs::agent_icon`) recognises claude / opencode / codex+openai / gemini / copilot from either the OSC 2 title or the OSC 633;E command line, so it works for agents that do *and* don't set a descriptive title.
+- **Shell lifecycle**: OSC 133/633 `A/B` set shell idle, `C` sets running, `D` sets idle and stores exit code. `current_command` is cleared on idle.
+
+Not yet wired (parsed only, no consumer): notifications (OSC 9/99/777), progress (OSC 9;4), shell integration version, remote host, user vars, OSC 633;P key/value properties, OSC 1 icon name. These will be plumbed when the corresponding UI surfaces are built.
 
 ## Integration options for zedra-host
 
@@ -238,8 +284,8 @@ zedra-host implements ACP server. Spawns coding agent as subprocess, wires stdin
 **Option C — PTY JSON stream scanning (Claude Code, no setup)**
 Scan PTY bytes for `--output-format stream-json` JSON lines alongside OSC scanning. Extract tool_use edits client-side. Fragile (ANSI interleaved) but requires zero user setup.
 
-**Option D — OSC 633 + semantic blocks**
-Add 633 parsing to zedra-osc. Capture command text (`633;E`) and output byte range (`633;C` → `633;D`). Agent-agnostic. Lets Zedra build "command blocks" like Warp. Doesn't give diff content directly but works for any tool.
+**Option D — OSC 633 + semantic blocks** *(parser landed; semantic blocks pending)*
+633 parsing is live in `zedra-osc`: command text (`633;E`) and prompt/command/exit lifecycle (`633;A/B/C/D`) are decoded and the lifecycle is wired into `TerminalMeta`. Capturing the per-command output byte range (between `C` and `D`) so Zedra can render Warp-style command blocks is the next step — agent-agnostic, works for any tool.
 
-**Option E — OSC 9 notification capture**
-Add OSC 9 parsing. Surface agent turn-end notifications as mobile push or in-app toast. Zero-friction — works for any agent that emits OSC 9, no server needed.
+**Option E — OSC 9 notification capture** *(parser landed; surface pending)*
+OSC 9 / 99 / 777 are decoded into `OscEvent::Notification { title, body, source }`. Surfacing them as mobile push or in-app toast still needs a notification consumer + platform bridge wiring.

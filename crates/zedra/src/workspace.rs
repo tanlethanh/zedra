@@ -12,6 +12,7 @@ use crate::active_terminal;
 use crate::editor::git_sidebar::GitFileSection;
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
 use crate::platform_bridge::{self, AlertButton, HapticFeedback, status_bar_inset};
+use crate::terminal_card::{agent_icon, strip_ps1_prefix};
 use crate::terminal_state::TerminalState;
 use crate::theme;
 use crate::transport_badge::phase_indicator_color;
@@ -124,6 +125,7 @@ impl Workspace {
         let content = cx.new(|cx| {
             WorkspaceContent::new(
                 workspace_state.clone(),
+                terminal_state.clone(),
                 session_state.clone(),
                 session.handle().clone(),
                 cx,
@@ -736,13 +738,14 @@ impl Workspace {
         terminal_entity: Entity<WorkspaceTerminal>,
         cx: &mut Context<Self>,
     ) {
+        let subtitle_id = id.clone();
         self.workspace_state.update(cx, |state, cx| {
             state.active_terminal_id = Some(id.clone());
             cx.emit(WorkspaceStateEvent::TerminalOpened { id });
             cx.notify();
         });
         self.content.update(cx, |c, cx| {
-            c.clear_subtitle(cx);
+            c.set_terminal_subtitle(subtitle_id, cx);
             c.set_main_view(terminal_entity.into(), cx);
         });
     }
@@ -1017,6 +1020,7 @@ mod tests {
 
 pub struct WorkspaceContent {
     workspace_state: Entity<WorkspaceState>,
+    terminal_state: Entity<TerminalState>,
     #[allow(dead_code)]
     session_handle: SessionHandle,
     subtitle: WorkspaceSubtitle,
@@ -1025,10 +1029,14 @@ pub struct WorkspaceContent {
     show_connecting: bool,
     connecting_view: Entity<WorkspaceConnecting>,
     mainview_bounds: Option<Bounds<Pixels>>,
+    _subscriptions: Vec<Subscription>,
 }
 
 enum WorkspaceSubtitle {
     Default,
+    Terminal {
+        id: String,
+    },
     GitDiff {
         filename: SharedString,
         added: usize,
@@ -1039,6 +1047,7 @@ enum WorkspaceSubtitle {
 impl WorkspaceContent {
     pub fn new(
         workspace_state: Entity<WorkspaceState>,
+        terminal_state: Entity<TerminalState>,
         session_state: Entity<SessionState>,
         session_handle: SessionHandle,
         cx: &mut Context<Self>,
@@ -1046,15 +1055,20 @@ impl WorkspaceContent {
         let empty_view = cx.new(|_cx| Empty);
         let connecting = cx.new(|_cx| WorkspaceConnecting::new(session_state));
 
+        let terminal_state_sub = cx.observe(&terminal_state, |_, _, cx| cx.notify());
+        let workspace_state_sub = cx.observe(&workspace_state, |_, _, cx| cx.notify());
+
         Self {
             main_view: empty_view.into(),
             subtitle: WorkspaceSubtitle::Default,
             focus_handle: cx.focus_handle(),
             session_handle,
             workspace_state,
+            terminal_state,
             show_connecting: false,
             connecting_view: connecting,
             mainview_bounds: None,
+            _subscriptions: vec![terminal_state_sub, workspace_state_sub],
         }
     }
 
@@ -1065,6 +1079,11 @@ impl WorkspaceContent {
 
     pub fn clear_subtitle(&mut self, cx: &mut Context<Self>) {
         self.subtitle = WorkspaceSubtitle::Default;
+        cx.notify();
+    }
+
+    pub fn set_terminal_subtitle(&mut self, id: String, cx: &mut Context<Self>) {
+        self.subtitle = WorkspaceSubtitle::Terminal { id };
         cx.notify();
     }
 
@@ -1235,6 +1254,51 @@ impl Render for WorkspaceContent {
                                     .font_weight(FontWeight::MEDIUM)
                                     .child(default_subtitle)
                                     .into_any_element(),
+                                WorkspaceSubtitle::Terminal { id } => {
+                                    let meta = self.terminal_state.read(cx).meta(id);
+                                    let subtitle = if let Some(title) = meta.title.as_deref() {
+                                        let stripped = strip_ps1_prefix(title);
+                                        if stripped.is_empty() {
+                                            default_subtitle.clone()
+                                        } else {
+                                            stripped.to_owned()
+                                        }
+                                    } else {
+                                        default_subtitle.clone()
+                                    };
+                                    let agent_icon_path = agent_icon(
+                                        meta.title.as_deref(),
+                                        meta.current_command.as_deref(),
+                                    );
+
+                                    div()
+                                        .w_full()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .justify_center()
+                                        .gap(px(6.0))
+                                        .when_some(agent_icon_path, |d, path| {
+                                            d.child(
+                                                svg()
+                                                    .path(path)
+                                                    .size(px(14.0))
+                                                    .flex_shrink_0()
+                                                    .text_color(rgb(theme::TEXT_SECONDARY)),
+                                            )
+                                        })
+                                        .child(
+                                            div()
+                                                .min_w_0()
+                                                .truncate()
+                                                .text_color(rgb(theme::TEXT_SECONDARY))
+                                                .text_size(px(theme::FONT_BODY))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .child(subtitle),
+                                        )
+                                        .into_any_element()
+                                }
                                 WorkspaceSubtitle::GitDiff {
                                     filename,
                                     added,

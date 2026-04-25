@@ -49,6 +49,7 @@ tree-sitter-php = "0.24"
 # Workspace crates
 zedra-session = { path = "../zedra-session" }
 zedra-terminal = { path = "../zedra-terminal" }
+zedra-osc = { path = "../zedra-osc" }
 zedra-rpc = { path = "../zedra-rpc" }
 zedra-telemetry.workspace = true
 iroh.workspace = true
