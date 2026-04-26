@@ -284,6 +284,7 @@ struct TokenCell {
     start: usize,
     end: usize,
     color: Hsla,
+    has_hyperlink: bool,
 }
 
 /// Check if a cell is blank (following Zed's is_blank function)
@@ -469,27 +470,24 @@ impl TerminalElement {
                 return;
             }
 
-            let Some(trimmed) = Terminal::trim_token(&raw) else {
+            let Some(trimmed) = Self::trim_underline_token(&raw) else {
                 return;
             };
 
-            if !has_explicit_hyperlink && Terminal::parse_terminal_link(&raw, None).is_none() {
+            if !has_explicit_hyperlink {
                 return;
             }
 
             let trimmed_start = trimmed.as_ptr() as usize - raw.as_ptr() as usize;
             let trimmed_end = trimmed_start + trimmed.len();
 
-            let trimmed_cells = token_cells
-                .iter()
-                .filter(|cell| cell.end > trimmed_start && cell.start < trimmed_end)
-                .collect_vec();
-            let Some(first_cell) = trimmed_cells.first() else {
+            let mut filtered = token_cells.iter().filter(|cell| {
+                cell.has_hyperlink && cell.end > trimmed_start && cell.start < trimmed_end
+            });
+            let Some(first_cell) = filtered.next() else {
                 return;
             };
-            let Some(last_cell) = trimmed_cells.last() else {
-                return;
-            };
+            let last_cell = filtered.last().unwrap_or(first_cell);
 
             let mut color = first_cell.color;
             color.a = (color.a * 0.55).clamp(0.0, 1.0);
@@ -544,6 +542,7 @@ impl TerminalElement {
                 start,
                 end,
                 color: fg_color,
+                has_hyperlink: cell.cell.hyperlink().is_some(),
             });
             token_has_explicit_hyperlink |= cell.cell.hyperlink().is_some();
         }
@@ -556,6 +555,21 @@ impl TerminalElement {
         );
 
         underlines
+    }
+
+    fn trim_underline_token(token: &str) -> Option<&str> {
+        let trimmed = token.trim_matches(|c: char| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    '"' | '\'' | '`' | ',' | ';' | '(' | ')' | '[' | ']' | '{' | '}'
+                )
+        });
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.trim_end_matches(['.', ':']))
+        }
     }
 }
 
@@ -759,22 +773,24 @@ mod tests {
     }
 
     #[test]
-    fn underlines_plain_file_links() {
+    fn does_not_underline_plain_file_links() {
         let underlines = underline_spans(b"Visit src/main.rs:12:3 now\r\n");
 
-        assert_eq!(underlines.len(), 1);
-        assert_eq!(underlines[0].line, 0);
-        assert_eq!(underlines[0].col, 6);
-        assert_eq!(underlines[0].num_cells, 16);
+        assert!(underlines.is_empty());
     }
 
     #[test]
-    fn trims_wrapped_plain_file_links() {
+    fn does_not_underline_wrapped_plain_file_links() {
         let underlines = underline_spans(b"Open (\"src/main.rs:12:3\") next\r\n");
 
-        assert_eq!(underlines.len(), 1);
-        assert_eq!(underlines[0].col, 7);
-        assert_eq!(underlines[0].num_cells, 16);
+        assert!(underlines.is_empty());
+    }
+
+    #[test]
+    fn does_not_underline_plain_urls() {
+        let underlines = underline_spans(b"Visit https://zedra.dev now\r\n");
+
+        assert!(underlines.is_empty());
     }
 
     #[test]
