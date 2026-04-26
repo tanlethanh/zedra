@@ -157,7 +157,7 @@ for runtime, devices in data['devices'].items():
 
             # Build app
             echo "==> Building app..."
-            xcodebuild build \
+            ZEDRA_SKIP_RUST_XCODE_BUILD=1 xcodebuild build \
                 $(xcode_target_flags) \
                 -scheme "$SCHEME" \
                 -configuration "$XCODE_CONFIGURATION" \
@@ -273,7 +273,7 @@ for runtime, devices in data['devices'].items():
 
             # Build app for device
             echo "==> Building app..."
-            xcodebuild build \
+            ZEDRA_SKIP_RUST_XCODE_BUILD=1 xcodebuild build \
                 $(xcode_target_flags) \
                 -scheme "$SCHEME" \
                 -configuration "$XCODE_CONFIGURATION" \

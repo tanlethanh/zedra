@@ -33,6 +33,11 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLSchemes: [zedra]
             CFBundleURLName: dev.zedra.app
+    preBuildScripts:
+      - name: "Build Rust FFI"
+        script: |
+          "${SRCROOT}/../scripts/xcode-build-rust.sh"
+        basedOnDependencyAnalysis: false
     postBuildScripts:
       - name: "Firebase Crashlytics dSYM Upload"
         script: "${PODS_ROOT}/FirebaseCrashlytics/run"
