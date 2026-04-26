@@ -318,6 +318,40 @@ async fn test_full_rpc_over_iroh() {
     assert_eq!(info.session_id.as_deref(), Some(session_id.as_str()));
 }
 
+/// Host info snapshots stream over a separate server-streaming subscription.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_host_info_subscription_over_relay() {
+    let (_relay, relay_url) = spawn_test_relay().await.unwrap();
+    let (host_ep, registry, identity, _dir) = setup_host(relay_url.clone()).await.unwrap();
+
+    let (client, _session_id, _client_pubkey, _sync) =
+        connect_client(relay_url, &host_ep, &registry, &identity)
+            .await
+            .unwrap();
+
+    let mut snapshots = client
+        .server_streaming(SubscribeHostInfoReq {}, 4)
+        .await
+        .unwrap();
+
+    let first = tokio::time::timeout(Duration::from_secs(8), snapshots.recv())
+        .await
+        .expect("timed out waiting for first host info snapshot")
+        .unwrap()
+        .expect("host info stream closed before first snapshot");
+    assert!(first.captured_at_ms > 0);
+    assert!(first.cpu_count > 0);
+    assert!(first.memory_total_bytes > 0);
+    assert!(first.memory_used_bytes <= first.memory_total_bytes);
+
+    let second = tokio::time::timeout(Duration::from_secs(7), snapshots.recv())
+        .await
+        .expect("timed out waiting for second host info snapshot")
+        .unwrap()
+        .expect("host info stream closed before second snapshot");
+    assert!(second.captured_at_ms >= first.captured_at_ms);
+}
+
 /// Terminal creation and I/O over iroh relay using bidi streaming.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_rpc_terminal_over_relay() {

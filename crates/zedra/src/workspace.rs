@@ -59,6 +59,8 @@ pub struct Workspace {
     _connect_listener: Option<Task<()>>,
     /// Listens for host events/actions from the remote host.
     _host_event_listener: Option<Task<()>>,
+    /// Listens for periodic host resource snapshots.
+    _host_info_listener: Option<Task<()>>,
     pending_confirmation: SharedPendingSlot<PendingWorkspaceConfirmation>,
     _pending_confirmation_task: Task<()>,
     _subscriptions: Vec<Subscription>,
@@ -202,6 +204,31 @@ impl Workspace {
             }
         });
 
+        let mut host_info_rx = session.subscribe_host_info();
+        let host_info_listener = cx.spawn(async move |workspace, cx| {
+            loop {
+                match host_info_rx.recv().await {
+                    Ok(snapshot) => {
+                        let should_break = workspace
+                            .update(cx, |ws, cx| {
+                                ws.workspace_state.update(cx, |this, cx| {
+                                    this.update_host_info(snapshot, cx);
+                                    cx.notify();
+                                });
+                            })
+                            .is_err();
+                        if should_break {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!("workspace host info listener lagged by {}", skipped);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+
         let pending_confirmation = shared_pending_slot();
         let confirmation_slot = pending_confirmation.clone();
         let pending_confirmation_task =
@@ -226,6 +253,7 @@ impl Workspace {
             seen_reconnect: false,
             _connect_listener: None,
             _host_event_listener: Some(host_event_listener),
+            _host_info_listener: Some(host_info_listener),
             pending_confirmation,
             _pending_confirmation_task: pending_confirmation_task,
             _subscriptions: vec![workspace_state_subscription, gitdiff_subscription],

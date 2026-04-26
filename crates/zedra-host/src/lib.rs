@@ -5,6 +5,7 @@ pub mod client;
 pub mod fs;
 pub mod ga4;
 pub mod git;
+pub mod host_info;
 pub mod identity;
 pub mod iroh_listener;
 pub mod net_monitor;

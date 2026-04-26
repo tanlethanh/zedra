@@ -147,6 +147,12 @@ pub enum ZedraProto {
     /// terminal state so the client can avoid a follow-up info/list round trip.
     #[rpc(tx = oneshot::Sender<SyncSessionResult>)]
     SyncSession(SyncSessionReq),
+
+    /// Subscribe to periodic host resource snapshots.
+    /// The host pushes a snapshot immediately after priming CPU counters, then
+    /// every five seconds until the client disconnects.
+    #[rpc(tx = mpsc::Sender<HostInfoSnapshot>)]
+    SubscribeHostInfo(SubscribeHostInfoReq),
 }
 
 // ---------------------------------------------------------------------------
@@ -558,6 +564,49 @@ pub enum HostEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Host info subscription types
+// ---------------------------------------------------------------------------
+
+/// Host resource subscription request — no fields; host owns the sampling interval.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SubscribeHostInfoReq {}
+
+/// Periodic host resource snapshot for display in the client session panel.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HostInfoSnapshot {
+    /// Unix timestamp in milliseconds when the host captured this snapshot.
+    pub captured_at_ms: u64,
+    /// Global CPU usage from 0.0 to 100.0.
+    pub cpu_usage_percent: f32,
+    pub cpu_count: u32,
+    pub memory_used_bytes: u64,
+    pub memory_total_bytes: u64,
+    pub swap_used_bytes: u64,
+    pub swap_total_bytes: u64,
+    pub system_uptime_secs: u64,
+    pub batteries: Vec<HostBatteryInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HostBatteryInfo {
+    /// Stable only within the current snapshot.
+    pub index: u32,
+    pub charge_percent: Option<u8>,
+    pub state: HostBatteryState,
+    pub time_remaining_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum HostBatteryState {
+    Unknown,
+    Charging,
+    Discharging,
+    Full,
+    Empty,
+    NotCharging,
+}
+
+// ---------------------------------------------------------------------------
 // Terminal types
 // ---------------------------------------------------------------------------
 
@@ -939,5 +988,29 @@ mod tests {
         assert_eq!(decoded.session_token, [9u8; 32]);
         assert_eq!(decoded.terminals.len(), 1);
         assert_eq!(decoded.terminals[0].last_seq, 42);
+    }
+
+    #[test]
+    fn host_info_snapshot_roundtrip() {
+        let snapshot = HostInfoSnapshot {
+            captured_at_ms: 1_700_000_000_000,
+            cpu_usage_percent: 42.5,
+            cpu_count: 8,
+            memory_used_bytes: 6 * 1024 * 1024 * 1024,
+            memory_total_bytes: 16 * 1024 * 1024 * 1024,
+            swap_used_bytes: 128 * 1024 * 1024,
+            swap_total_bytes: 2 * 1024 * 1024 * 1024,
+            system_uptime_secs: 12_345,
+            batteries: vec![HostBatteryInfo {
+                index: 0,
+                charge_percent: Some(87),
+                state: HostBatteryState::Discharging,
+                time_remaining_secs: Some(7_200),
+            }],
+        };
+
+        let encoded = postcard::to_allocvec(&snapshot).unwrap();
+        let decoded: HostInfoSnapshot = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded, snapshot);
     }
 }

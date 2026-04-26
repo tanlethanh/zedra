@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use tracing::*;
+use zedra_rpc::proto::HostInfoSnapshot;
 
 use zedra_session::*;
 
@@ -19,6 +20,7 @@ struct WorkspaceStore {
 pub enum WorkspaceStateEvent {
     StateChanged,
     SyncComplete,
+    HostInfoChanged,
     TerminalCreated { id: String },
     TerminalOpened { id: String },
 }
@@ -42,6 +44,8 @@ pub struct WorkspaceState {
     pub active_terminal_id: Option<String>,
     #[serde(skip)]
     pub terminal_ids: Vec<String>,
+    #[serde(skip)]
+    pub host_info: Option<HostInfoSnapshot>,
 }
 
 /// PartialEq implementation for WorkspaceState.
@@ -88,6 +92,12 @@ impl WorkspaceState {
         let session_id = session_state.snapshot.session_id.clone();
         self.connect_phase = Some(session_state.phase.clone());
         self.terminal_ids = session_handle.terminal_ids().clone();
+        if !matches!(
+            session_state.phase,
+            ConnectPhase::Connected | ConnectPhase::Idle { .. }
+        ) {
+            self.host_info = None;
+        }
 
         let snap = &session_state.snapshot;
         if !snap.hostname.is_empty() {
@@ -114,6 +124,11 @@ impl WorkspaceState {
 
     pub fn emit_sync_complete(&self, cx: &mut Context<Self>) {
         cx.emit(WorkspaceStateEvent::SyncComplete);
+    }
+
+    pub fn update_host_info(&mut self, host_info: HostInfoSnapshot, cx: &mut Context<Self>) {
+        self.host_info = Some(host_info);
+        cx.emit(WorkspaceStateEvent::HostInfoChanged);
     }
 
     /// Load all persisted workspaces from the store.

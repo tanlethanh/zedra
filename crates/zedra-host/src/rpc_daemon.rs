@@ -8,6 +8,7 @@
 
 use crate::fs::{Filesystem, LocalFs};
 use crate::git::GitRepo;
+use crate::host_info;
 use crate::identity::SharedIdentity;
 use crate::pty::{ShellSession, SpawnOptions};
 use crate::session_registry::{
@@ -1389,6 +1390,39 @@ async fn dispatch(
                     if irpc_tx.send(event).await.is_err() {
                         break;
                     }
+                }
+            });
+        }
+
+        ZedraMessage::SubscribeHostInfo(msg) => {
+            session.touch().await;
+            let irpc_tx = msg.tx;
+            tokio::spawn(async move {
+                let sampler = tokio::task::spawn_blocking(host_info::new_system_sampler).await;
+                let Ok(mut system) = sampler else {
+                    tracing::warn!("host_info: failed to initialize system sampler");
+                    return;
+                };
+
+                tokio::time::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
+                loop {
+                    let sampled = tokio::task::spawn_blocking(move || {
+                        let snapshot = host_info::collect_host_info_snapshot(&mut system);
+                        (system, snapshot)
+                    })
+                    .await;
+
+                    let Ok((next_system, snapshot)) = sampled else {
+                        tracing::warn!("host_info: sampler task failed");
+                        break;
+                    };
+                    system = next_system;
+
+                    if irpc_tx.send(snapshot).await.is_err() {
+                        break;
+                    }
+
+                    tokio::time::sleep(host_info::HOST_INFO_SAMPLE_INTERVAL).await;
                 }
             });
         }
