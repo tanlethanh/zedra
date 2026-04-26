@@ -144,6 +144,22 @@ printf 'src/main.rs:12:3\ngit:(refactor-app-session-architecture)\nhello\nREADME
 8. Tap the terminal a third time
 9. Expected: the terminal becomes focused again and the software keyboard reopens on that first tap after dismissal
 
+## 11a. Terminal Scroll To Bottom Native Button On iOS
+
+1. Connect to a session on iPhone or iOS simulator and open the terminal view
+2. Print enough output to create scrollback, for example `seq 1 200`
+3. Drag upward in the terminal until the view is several lines away from the bottom
+4. Expected: a small native circular arrow-down button materializes at the lower-right of the terminal
+5. Expected on iOS 26 or newer: the button uses UIKit glass; on older iOS it falls back to a native dark material
+6. Tap the arrow-down button
+7. Expected: the terminal scrolls to the latest output immediately, the native press feedback is visible briefly, then the button dematerializes
+8. Show the software keyboard, scroll away from the bottom again, and repeat
+9. Expected: the button stays above the keyboard/home indicator and still scrolls to the bottom
+10. Flick terminal scrollback so it continues moving with momentum, then tap the arrow-down button while momentum is still active
+11. Expected: the terminal stays pinned to the latest output instead of drifting back upward from the remaining momentum
+12. While the button is visible, switch to another terminal with enough scrollback and drag away from the bottom
+13. Expected: the previous terminal's button is gone, and the newly active terminal shows its own scroll-to-bottom button
+
 ## 12. Quick Action Terminal Navigation
 
 1. Connect to a session with at least two open terminals

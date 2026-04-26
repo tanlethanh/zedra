@@ -4,8 +4,8 @@ use tracing::*;
 use crate::active_terminal;
 use crate::deeplink;
 use crate::platform_bridge::{
-    self, AlertButton, AlertButtonStyle, CustomSheetOptions, FloatingButtonOptions, HapticFeedback,
-    PlatformBridge,
+    self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback,
+    NativeFloatingButtonOptions, PlatformBridge,
 };
 
 /// Screen scale factor (e.g. 3.0 for @3x), stored as f32 bits.
@@ -106,6 +106,20 @@ unsafe extern "C" {
     /// Trigger a UIKit haptic feedback generator.
     /// kind encoding matches HapticFeedback::to_i32().
     fn ios_trigger_haptic(kind: i32);
+    /// Position or update a native floating icon button.
+    fn ios_update_native_floating_button_with_icon(
+        callback_id: u32,
+        system_image_name: *const std::ffi::c_char,
+        accessibility_label: *const std::ffi::c_char,
+        x_pts: f32,
+        y_pts: f32,
+        width_pts: f32,
+        height_pts: f32,
+        icon_size_pts: f32,
+        icon_weight: i32,
+    );
+    /// Hide a native floating icon button.
+    fn ios_hide_native_floating_button(callback_id: u32);
 }
 
 impl PlatformBridge for IosBridge {
@@ -269,6 +283,33 @@ impl PlatformBridge for IosBridge {
                 options.modal_in_presentation,
             );
         }
+    }
+
+    fn update_native_floating_button(&self, id: u32, options: &NativeFloatingButtonOptions) {
+        use std::ffi::CString;
+
+        let system_image_name = CString::new(options.system_image_name.as_str())
+            .unwrap_or_else(|_| CString::new("circle").unwrap());
+        let accessibility_label = CString::new(options.accessibility_label.as_str())
+            .unwrap_or_else(|_| CString::new("").unwrap());
+        let bounds = options.bounds;
+        unsafe {
+            ios_update_native_floating_button_with_icon(
+                id,
+                system_image_name.as_ptr(),
+                accessibility_label.as_ptr(),
+                bounds.origin.x.as_f32(),
+                bounds.origin.y.as_f32(),
+                bounds.size.width.as_f32(),
+                bounds.size.height.as_f32(),
+                options.icon_size_pts,
+                options.icon_weight.as_i32(),
+            );
+        }
+    }
+
+    fn hide_native_floating_button(&self, id: u32) {
+        unsafe { ios_hide_native_floating_button(id) };
     }
 }
 

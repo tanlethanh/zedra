@@ -3,11 +3,12 @@
 /// Consolidates all platform-specific calls (density, insets, keyboard, QR scanner)
 /// behind a single trait. Android delegates to `android_jni`; the `StubBridge` fallback
 /// lets non-Android targets compile and run `cargo check`.
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use gpui::{AnyView, Entity, Render};
+use gpui::{AnyView, App, Bounds, Entity, Pixels, Render};
 
 // ---------------------------------------------------------------------------
 // Native alert API
@@ -75,14 +76,47 @@ pub struct CustomSheetOptions {
     pub modal_in_presentation: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct NativeFloatingButtonOptions {
+    pub system_image_name: String,
+    pub accessibility_label: String,
+    pub bounds: Bounds<Pixels>,
+    pub icon_size_pts: f32,
+    pub icon_weight: NativeFloatingButtonIconWeight,
+}
+
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum NativeFloatingButtonIconWeight {
+    Unspecified = 0,
+    UltraLight = 1,
+    Thin = 2,
+    Light = 3,
+    Regular = 4,
+    #[default]
+    Medium = 5,
+    Semibold = 6,
+    Bold = 7,
+    Heavy = 8,
+    Black = 9,
+}
+
+impl NativeFloatingButtonIconWeight {
+    pub fn as_i32(self) -> i32 {
+        self as i32
+    }
+}
+
 static NEXT_ALERT_ID: AtomicU32 = AtomicU32::new(1);
 static ALERT_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>) + Send>>>> =
     OnceLock::new();
 static NEXT_SELECTION_ID: AtomicU32 = AtomicU32::new(1);
 static SELECTION_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>) + Send>>>> =
     OnceLock::new();
+static NEXT_NATIVE_FLOATING_BUTTON_ID: AtomicU32 = AtomicU32::new(1);
 thread_local! {
     static PENDING_CUSTOM_SHEET_VIEW: std::cell::RefCell<Option<AnyView>> = const { std::cell::RefCell::new(None) };
+    static NATIVE_FLOATING_BUTTON_CALLBACKS: RefCell<HashMap<u32, Box<dyn FnMut(&mut App)>>> = RefCell::new(HashMap::new());
 }
 
 fn alert_callbacks() -> &'static Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>) + Send>>> {
@@ -151,6 +185,34 @@ pub fn take_pending_custom_sheet_view() -> Option<AnyView> {
     PENDING_CUSTOM_SHEET_VIEW.with(|pending| pending.borrow_mut().take())
 }
 
+pub(crate) fn allocate_native_floating_button_id() -> u32 {
+    NEXT_NATIVE_FLOATING_BUTTON_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+pub(crate) fn set_native_floating_button_callback(
+    id: u32,
+    on_press: impl FnMut(&mut App) + 'static,
+) {
+    NATIVE_FLOATING_BUTTON_CALLBACKS.with(|callbacks| {
+        callbacks.borrow_mut().insert(id, Box::new(on_press));
+    });
+}
+
+pub(crate) fn update_native_floating_button(id: u32, options: NativeFloatingButtonOptions) {
+    bridge().update_native_floating_button(id, &options);
+}
+
+fn hide_native_floating_button(id: u32) {
+    bridge().hide_native_floating_button(id);
+}
+
+pub(crate) fn remove_native_floating_button(id: u32) {
+    NATIVE_FLOATING_BUTTON_CALLBACKS.with(|callbacks| {
+        callbacks.borrow_mut().remove(&id);
+    });
+    hide_native_floating_button(id);
+}
+
 /// Called from platform code after the user taps a button.
 /// Dispatches the stored callback and removes it from the registry.
 pub fn dispatch_alert_result(callback_id: u32, button_index: usize) {
@@ -182,6 +244,15 @@ pub fn dispatch_selection_dismiss(callback_id: u32) {
     if let Some(cb) = cb {
         cb(None);
     }
+}
+
+/// Called from platform code after a native floating button is pressed.
+pub fn dispatch_native_floating_button_press(callback_id: u32, cx: &mut App) {
+    NATIVE_FLOATING_BUTTON_CALLBACKS.with(|callbacks| {
+        if let Some(callback) = callbacks.borrow_mut().get_mut(&callback_id) {
+            callback(cx);
+        }
+    });
 }
 
 /// Discard all pending alert callbacks without invoking them.
@@ -293,6 +364,10 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn open_url(&self, _url: &str) {}
     /// Trigger a haptic feedback pattern. No-op on platforms without haptic hardware.
     fn trigger_haptic(&self, _feedback: HapticFeedback) {}
+    /// Position or update a native floating icon button that is anchored by a GPUI wrapper.
+    fn update_native_floating_button(&self, _id: u32, _options: &NativeFloatingButtonOptions) {}
+    /// Hide a native floating icon button.
+    fn hide_native_floating_button(&self, _id: u32) {}
 }
 
 static BRIDGE: OnceLock<Box<dyn PlatformBridge>> = OnceLock::new();

@@ -766,6 +766,17 @@ impl Workspace {
         terminal_entity: Entity<WorkspaceTerminal>,
         cx: &mut Context<Self>,
     ) {
+        let previous_active_id = self.workspace_state.read(cx).active_terminal_id.clone();
+        if previous_active_id.as_deref() != Some(id.as_str()) {
+            if let Some(previous_terminal) =
+                previous_active_id.and_then(|active_id| self.terminal_by_id(&active_id, cx))
+            {
+                previous_terminal.update(cx, |terminal, cx| {
+                    terminal.deactivate(cx);
+                });
+            }
+        }
+
         let subtitle_id = id.clone();
         self.workspace_state.update(cx, |state, cx| {
             state.active_terminal_id = Some(id.clone());

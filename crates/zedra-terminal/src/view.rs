@@ -3,6 +3,7 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use gpui::*;
 use tokio::sync::mpsc;
@@ -13,6 +14,7 @@ use crate::terminal::{Terminal, TerminalEvent};
 
 const FALLBACK_CELL_WIDTH: f32 = 9.0;
 const TERMINAL_LINE_HEIGHT: f32 = 16.0;
+const TOUCH_SCROLL_SUPPRESSION_AFTER_SCROLL_TO_BOTTOM: Duration = Duration::from_millis(1000);
 
 /// Thread-safe buffer for receiving PTY output.
 pub type OutputBuffer = Arc<Mutex<VecDeque<Vec<u8>>>>;
@@ -54,6 +56,7 @@ pub struct TerminalView {
     /// Keyboard height in logical pixels. Updated by WorkspaceTerminal via deferred sync.
     /// Used to offset non-alt-screen content so the cursor stays visible above the keyboard.
     pub keyboard_inset: Pixels,
+    suppress_touch_scroll_until: Option<Instant>,
     /// Cached from terminal mode; updated each render so parent views can read without
     /// creating a GPUI dependency on the inner terminal entity.
     pub is_alt_screen: bool,
@@ -104,6 +107,7 @@ impl TerminalView {
             grid_origin: None,
             workdir: None,
             keyboard_inset: px(0.0),
+            suppress_touch_scroll_until: None,
             is_alt_screen: false,
             _event_task: event_task,
             _subscriptions: vec![],
@@ -234,18 +238,65 @@ impl TerminalView {
 
     /// Scroll the terminal by line count (positive = up).
     pub fn scroll(&mut self, cx: &mut Context<Self>, lines: i32) {
+        let previous_display_offset = self.display_offset(cx);
         self.terminal.update(cx, |terminal, _| {
             terminal.scroll(lines);
         });
+        self.emit_scrollback_position_if_changed(previous_display_offset, cx);
         cx.notify();
     }
 
     pub fn scroll_to_bottom(&mut self, cx: &mut Context<Self>) {
+        let previous_display_offset = self.display_offset(cx);
         self.scroll_offset_px = 0.0;
+        self.suppress_touch_scroll_until =
+            Some(Instant::now() + TOUCH_SCROLL_SUPPRESSION_AFTER_SCROLL_TO_BOTTOM);
         self.terminal.update(cx, |terminal, _| {
             terminal.scroll_to_bottom();
         });
+        self.emit_scrollback_position_if_changed(previous_display_offset, cx);
         cx.notify();
+    }
+
+    fn emit_scrollback_position_if_changed(
+        &self,
+        previous_display_offset: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let terminal = self.terminal.read(cx);
+        let display_offset = terminal.display_offset();
+        if display_offset == previous_display_offset {
+            return;
+        }
+
+        let history_size = terminal.history_size();
+        cx.emit(TerminalEvent::ScrollbackPositionChanged {
+            display_offset,
+            history_size,
+        });
+    }
+
+    fn should_ignore_touch_scroll(&mut self, event: &ScrollWheelEvent) -> bool {
+        if !matches!(event.delta, ScrollDelta::Pixels(_)) {
+            return false;
+        }
+
+        if matches!(event.touch_phase, TouchPhase::Started) {
+            self.suppress_touch_scroll_until = None;
+            return false;
+        }
+
+        let Some(until) = self.suppress_touch_scroll_until else {
+            return false;
+        };
+
+        if Instant::now() >= until {
+            self.suppress_touch_scroll_until = None;
+            return false;
+        }
+
+        self.scroll_offset_px = 0.0;
+        true
     }
 
     pub fn display_offset(&self, cx: &App) -> usize {
@@ -321,6 +372,12 @@ impl Render for TerminalView {
                 this.handle_terminal_press(event.position(), window, cx);
             }))
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
+                let previous_display_offset = this.display_offset(cx);
+                if this.should_ignore_touch_scroll(event) {
+                    cx.notify();
+                    return;
+                }
+
                 match event.delta {
                     ScrollDelta::Lines(l) => {
                         // Line-based scroll (e.g. mouse wheel): commit immediately
@@ -402,6 +459,7 @@ impl Render for TerminalView {
                         }
                     }
                 };
+                this.emit_scrollback_position_if_changed(previous_display_offset, cx);
                 // Always re-render — sub-line offset changes are visual even without whole-line commits
                 cx.notify();
             }))
@@ -421,6 +479,8 @@ impl Render for TerminalView {
 #[cfg(test)]
 mod tests {
     use super::TerminalView;
+    use crate::terminal::TerminalEvent;
+    use futures::{FutureExt as _, StreamExt as _};
     use gpui::{
         Modifiers, PointerButton, PointerDownEvent, PointerKind, PointerUpEvent, TestAppContext,
         TouchPhase, VisualTestContext, WindowHandle, point, px, size,
@@ -466,13 +526,35 @@ mod tests {
     }
 
     fn scroll_terminal_touch(window: WindowHandle<TerminalView>, cx: &mut TestAppContext) {
+        scroll_terminal_touch_with_phase(window, cx, TouchPhase::Moved);
+    }
+
+    fn scroll_terminal_touch_with_phase(
+        window: WindowHandle<TerminalView>,
+        cx: &mut TestAppContext,
+        touch_phase: TouchPhase,
+    ) {
         let mut window_cx = VisualTestContext::from_window(*window, cx);
         window_cx.simulate_event(gpui::ScrollWheelEvent {
             position: point(px(12.0), px(28.0)),
             delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(16.0))),
             modifiers: Modifiers::default(),
-            touch_phase: TouchPhase::Moved,
+            touch_phase,
         });
+    }
+
+    fn fill_terminal_history(window: WindowHandle<TerminalView>, cx: &mut TestAppContext) {
+        window
+            .update(cx, |terminal_view, _window, cx| {
+                terminal_view.terminal.update(cx, |terminal, _| {
+                    for line in 0..40 {
+                        terminal.advance_bytes(format!("line {line}\r\n").as_bytes());
+                    }
+                    terminal.scroll(5);
+                });
+                assert!(terminal_view.terminal.read(cx).display_offset() > 0);
+            })
+            .unwrap();
     }
 
     #[test]
@@ -574,6 +656,93 @@ mod tests {
             .update(&mut cx, |terminal, window, _| {
                 assert!(terminal.focus_handle.is_focused(window));
                 assert!(window.is_soft_keyboard_visible());
+            })
+            .unwrap();
+        cx.quit();
+    }
+
+    #[test]
+    fn scroll_to_bottom_suppresses_in_flight_touch_momentum() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+
+        fill_terminal_history(window, &mut cx);
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                terminal_view.scroll_to_bottom(cx);
+                assert_eq!(terminal_view.terminal.read(cx).display_offset(), 0);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        scroll_terminal_touch(window, &mut cx);
+        cx.run_until_parked();
+
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                assert_eq!(terminal_view.terminal.read(cx).display_offset(), 0);
+            })
+            .unwrap();
+        cx.quit();
+    }
+
+    #[test]
+    fn touch_scroll_emits_scrollback_position_from_view() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+
+        fill_terminal_history(window, &mut cx);
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                terminal_view.scroll_to_bottom(cx);
+                assert_eq!(terminal_view.terminal.read(cx).display_offset(), 0);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let root = window.root(&mut cx).unwrap();
+        let mut events = cx.events(&root);
+        scroll_terminal_touch_with_phase(window, &mut cx, TouchPhase::Started);
+        cx.run_until_parked();
+
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                assert!(terminal_view.display_offset(cx) > 0);
+            })
+            .unwrap();
+
+        match events.next().now_or_never().flatten() {
+            Some(TerminalEvent::ScrollbackPositionChanged { display_offset, .. }) => {
+                assert!(display_offset > 0);
+            }
+            event => panic!("expected synchronous scrollback event, got {event:?}"),
+        }
+        cx.quit();
+    }
+
+    #[test]
+    fn fresh_touch_scroll_cancels_scroll_to_bottom_suppression() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+
+        fill_terminal_history(window, &mut cx);
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                terminal_view.scroll_to_bottom(cx);
+                assert_eq!(terminal_view.terminal.read(cx).display_offset(), 0);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        scroll_terminal_touch_with_phase(window, &mut cx, TouchPhase::Started);
+        cx.run_until_parked();
+
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                assert!(terminal_view.terminal.read(cx).display_offset() > 0);
             })
             .unwrap();
         cx.quit();

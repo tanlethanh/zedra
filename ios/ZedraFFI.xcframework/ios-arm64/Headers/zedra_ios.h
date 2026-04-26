@@ -126,6 +126,8 @@ extern void gpui_ios_detach_embedded_view(void *window_ptr);
  */
 bool zedra_ios_check_pending_frame(void);
 
+void zedra_ios_native_floating_button_pressed(uint32_t callback_id);
+
 void zedra_launch_gpui(void);
 
 void *zedra_ios_mount_custom_sheet_content(void *parent_view_ptr,
@@ -234,17 +236,22 @@ extern void ios_open_url(const char *url);
 extern void ios_trigger_haptic(int32_t kind);
 
 /**
- * Present or update a native floating icon button.
+ * Position or update a native floating icon button.
  */
-extern void ios_present_floating_button(uint32_t callback_id,
-                                        const char *system_image_name,
-                                        const char *accessibility_label,
-                                        float bottom_offset_pts);
+extern void ios_update_native_floating_button_with_icon(uint32_t callback_id,
+                                                        const char *system_image_name,
+                                                        const char *accessibility_label,
+                                                        float x_pts,
+                                                        float y_pts,
+                                                        float width_pts,
+                                                        float height_pts,
+                                                        float icon_size_pts,
+                                                        int32_t icon_weight);
 
 /**
- * Dismiss a native floating icon button.
+ * Hide a native floating icon button.
  */
-extern void ios_dismiss_floating_button(uint32_t callback_id);
+extern void ios_hide_native_floating_button(uint32_t callback_id);
 
 /**
  * Called from the native alert handler after the user taps a button.
@@ -269,11 +276,6 @@ void zedra_ios_selection_result(uint32_t callback_id, int32_t button_index);
  * Called when an action sheet is dismissed without selecting an item.
  */
 void zedra_ios_selection_dismiss(uint32_t callback_id);
-
-/**
- * Called from the native floating button handler after the user taps it.
- */
-void zedra_ios_floating_button_result(uint32_t callback_id);
 
 /**
  * Called from the native app delegate when the app enters the background.

@@ -110,6 +110,8 @@
  */
 bool zedra_ios_check_pending_frame(void);
 
+void zedra_ios_native_floating_button_pressed(uint32_t callback_id);
+
 void zedra_launch_gpui(void);
 
 /**
@@ -190,6 +192,24 @@ extern void ios_present_selection(uint32_t callback_id,
  * Open a URL in the system browser via UIApplication.
  */
 extern void ios_open_url(const char *url);
+
+/**
+ * Position or update a native floating icon button.
+ */
+extern void ios_update_native_floating_button_with_icon(uint32_t callback_id,
+                                                        const char *system_image_name,
+                                                        const char *accessibility_label,
+                                                        float x_pts,
+                                                        float y_pts,
+                                                        float width_pts,
+                                                        float height_pts,
+                                                        float icon_size_pts,
+                                                        int32_t icon_weight);
+
+/**
+ * Hide a native floating icon button.
+ */
+extern void ios_hide_native_floating_button(uint32_t callback_id);
 
 /**
  * Called from the native alert handler after the user taps a button.

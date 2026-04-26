@@ -37,6 +37,9 @@ private func zedra_ios_unmount_custom_sheet_content()
 @_silgen_name("zedra_ios_sheet_content_is_at_top")
 private func zedra_ios_sheet_content_is_at_top() -> Bool
 
+@_silgen_name("zedra_ios_native_floating_button_pressed")
+private func zedra_ios_native_floating_button_pressed(_ callbackID: UInt32)
+
 fileprivate enum AlertActionStyle: Int32 {
     case `default` = 0
     case cancel = 1
@@ -157,6 +160,228 @@ enum NativePresentationBridge {
             return CustomSheetDetent(rawValue: rawValue)
         }
         return parsed.isEmpty ? [.medium, .large] : parsed
+    }
+}
+
+private let nativeFloatingButtonDefaultIconPointSize: CGFloat = 16.0
+private let nativeFloatingButtonDefaultIconWeightRawValue: Int32 = 5
+
+private final class NativeFloatingButtonController {
+    static let shared = NativeFloatingButtonController()
+
+    private final class Control {
+        private static let enterDuration: TimeInterval = 0.22
+        private static let exitDuration: TimeInterval = 0.18
+        private static let initialScale = CGAffineTransform(scaleX: 0.78, y: 0.78)
+        private static let exitScale = CGAffineTransform(scaleX: 0.86, y: 0.86)
+
+        let effectView: UIVisualEffectView
+        let button: UIButton
+        weak var window: UIWindow?
+        private var isVisible = false
+        private var animationGeneration: UInt64 = 0
+
+        init(callbackID: UInt32, owner: NativeFloatingButtonController) {
+            effectView = UIVisualEffectView(effect: nil)
+            effectView.clipsToBounds = true
+            effectView.transform = Self.initialScale
+
+            button = UIButton(type: .system)
+            button.tintColor = UIColor(white: 1.0, alpha: 0.92)
+            button.alpha = 0
+            button.addAction(
+                UIAction { [weak owner] _ in
+                    owner?.buttonTapped(callbackID: callbackID)
+                },
+                for: .touchUpInside
+            )
+            effectView.contentView.addSubview(button)
+        }
+
+        func update(
+            in window: UIWindow,
+            frame: CGRect,
+            systemImageName: String,
+            accessibilityLabel: String,
+            iconPointSize: CGFloat,
+            iconWeight: UIImage.SymbolWeight
+        ) {
+            let wasDetached = effectView.superview == nil || self.window !== window
+            if self.window !== window {
+                effectView.removeFromSuperview()
+                window.addSubview(effectView)
+                self.window = window
+            } else if effectView.superview == nil {
+                window.addSubview(effectView)
+            }
+
+            let imageConfig = UIImage.SymbolConfiguration(
+                pointSize: Self.resolvedIconPointSize(iconPointSize),
+                weight: iconWeight
+            )
+            button.setImage(
+                UIImage(systemName: systemImageName, withConfiguration: imageConfig),
+                for: .normal
+            )
+            button.accessibilityLabel = accessibilityLabel
+            effectView.frame = frame
+            effectView.layer.cornerRadius = min(frame.width, frame.height) / 2
+            if #available(iOS 13.0, *) {
+                effectView.layer.cornerCurve = .continuous
+            }
+            button.frame = effectView.bounds
+            effectView.isHidden = false
+            effectView.isUserInteractionEnabled = true
+            window.bringSubviewToFront(effectView)
+
+            if wasDetached || !isVisible {
+                materialize()
+            }
+        }
+
+        func dematerialize(completion: @escaping () -> Void) {
+            guard effectView.superview != nil else {
+                completion()
+                return
+            }
+
+            animationGeneration &+= 1
+            let generation = animationGeneration
+            isVisible = false
+            effectView.isUserInteractionEnabled = false
+            effectView.layer.removeAllAnimations()
+            button.layer.removeAllAnimations()
+
+            UIView.animate(
+                withDuration: Self.exitDuration,
+                delay: 0,
+                options: [.beginFromCurrentState, .curveEaseInOut],
+                animations: {
+                    self.effectView.effect = nil
+                    self.effectView.transform = Self.exitScale
+                    self.button.alpha = 0
+                },
+                completion: { _ in
+                    guard self.animationGeneration == generation else { return }
+                    self.effectView.removeFromSuperview()
+                    self.effectView.transform = Self.initialScale
+                    self.effectView.effect = nil
+                    completion()
+                }
+            )
+        }
+
+        private func materialize() {
+            animationGeneration &+= 1
+            isVisible = true
+            effectView.layer.removeAllAnimations()
+            button.layer.removeAllAnimations()
+
+            effectView.effect = nil
+            effectView.transform = Self.initialScale
+            button.alpha = 0
+
+            UIView.animate(
+                withDuration: Self.enterDuration,
+                delay: 0,
+                usingSpringWithDamping: 0.78,
+                initialSpringVelocity: 0.2,
+                options: [.beginFromCurrentState, .allowUserInteraction],
+                animations: {
+                    self.effectView.effect = Self.buttonEffect()
+                    self.effectView.transform = .identity
+                    self.button.alpha = 1
+                }
+            )
+        }
+
+        private static func buttonEffect() -> UIVisualEffect {
+            if #available(iOS 26.0, *) {
+                let effect = UIGlassEffect(style: .regular)
+                effect.isInteractive = true
+                effect.tintColor = UIColor(white: 0.08, alpha: 0.45)
+                return effect
+            }
+
+            return UIBlurEffect(style: .systemChromeMaterialDark)
+        }
+
+        static func symbolWeight(_ rawValue: Int32) -> UIImage.SymbolWeight {
+            switch rawValue {
+            case 0:
+                return .unspecified
+            case 1:
+                return .ultraLight
+            case 2:
+                return .thin
+            case 3:
+                return .light
+            case 4:
+                return .regular
+            case 5:
+                return .medium
+            case 6:
+                return .semibold
+            case 7:
+                return .bold
+            case 8:
+                return .heavy
+            case 9:
+                return .black
+            default:
+                return .semibold
+            }
+        }
+
+        private static func resolvedIconPointSize(_ pointSize: CGFloat) -> CGFloat {
+            guard pointSize.isFinite && pointSize > 0 else {
+                return nativeFloatingButtonDefaultIconPointSize
+            }
+
+            return pointSize
+        }
+    }
+
+    private var controls: [UInt32: Control] = [:]
+
+    func update(
+        callbackID: UInt32,
+        systemImageName: String,
+        accessibilityLabel: String,
+        frame: CGRect,
+        iconPointSize: CGFloat,
+        iconWeight: Int32
+    ) {
+        DispatchQueue.main.async {
+            let window = NativePresentationBridge.activeWindow()
+            let control = self.controls[callbackID] ?? {
+                let control = Control(callbackID: callbackID, owner: self)
+                self.controls[callbackID] = control
+                return control
+            }()
+            control.update(
+                in: window,
+                frame: frame.integral,
+                systemImageName: systemImageName,
+                accessibilityLabel: accessibilityLabel,
+                iconPointSize: iconPointSize,
+                iconWeight: Control.symbolWeight(iconWeight)
+            )
+        }
+    }
+
+    func hide(callbackID: UInt32) {
+        DispatchQueue.main.async {
+            guard let control = self.controls[callbackID] else { return }
+            control.dematerialize { [weak self, weak control] in
+                guard let self, let control, self.controls[callbackID] === control else { return }
+                self.controls.removeValue(forKey: callbackID)
+            }
+        }
+    }
+
+    private func buttonTapped(callbackID: UInt32) {
+        zedra_ios_native_floating_button_pressed(callbackID)
     }
 }
 
@@ -568,4 +793,61 @@ func ios_present_custom_sheet(
             isModalInPresentation: modalInPresentation
         )
     )
+}
+
+@_cdecl("ios_update_native_floating_button")
+func ios_update_native_floating_button(
+    _ callbackID: UInt32,
+    _ systemImageName: UnsafePointer<CChar>?,
+    _ accessibilityLabel: UnsafePointer<CChar>?,
+    _ xPts: Float,
+    _ yPts: Float,
+    _ widthPts: Float,
+    _ heightPts: Float
+) {
+    NativeFloatingButtonController.shared.update(
+        callbackID: callbackID,
+        systemImageName: NativePresentationBridge.string(systemImageName) ?? "circle",
+        accessibilityLabel: NativePresentationBridge.string(accessibilityLabel) ?? "",
+        frame: CGRect(
+            x: CGFloat(xPts),
+            y: CGFloat(yPts),
+            width: CGFloat(widthPts),
+            height: CGFloat(heightPts)
+        ),
+        iconPointSize: nativeFloatingButtonDefaultIconPointSize,
+        iconWeight: nativeFloatingButtonDefaultIconWeightRawValue
+    )
+}
+
+@_cdecl("ios_update_native_floating_button_with_icon")
+func ios_update_native_floating_button_with_icon(
+    _ callbackID: UInt32,
+    _ systemImageName: UnsafePointer<CChar>?,
+    _ accessibilityLabel: UnsafePointer<CChar>?,
+    _ xPts: Float,
+    _ yPts: Float,
+    _ widthPts: Float,
+    _ heightPts: Float,
+    _ iconSizePts: Float,
+    _ iconWeight: Int32
+) {
+    NativeFloatingButtonController.shared.update(
+        callbackID: callbackID,
+        systemImageName: NativePresentationBridge.string(systemImageName) ?? "circle",
+        accessibilityLabel: NativePresentationBridge.string(accessibilityLabel) ?? "",
+        frame: CGRect(
+            x: CGFloat(xPts),
+            y: CGFloat(yPts),
+            width: CGFloat(widthPts),
+            height: CGFloat(heightPts)
+        ),
+        iconPointSize: CGFloat(iconSizePts),
+        iconWeight: iconWeight
+    )
+}
+
+@_cdecl("ios_hide_native_floating_button")
+func ios_hide_native_floating_button(_ callbackID: UInt32) {
+    NativeFloatingButtonController.shared.hide(callbackID: callbackID)
 }
