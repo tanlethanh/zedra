@@ -339,10 +339,7 @@ impl Input {
     }
 
     fn handle_press(&mut self, _event: &PressEvent, window: &mut Window, cx: &mut Context<Self>) {
-        tracing::info!("Input pressed - focusing and requesting keyboard");
-        // Focus this element
         self.focus_handle.focus(window, cx);
-        // Request keyboard
         window.show_soft_keyboard();
         cx.notify();
     }

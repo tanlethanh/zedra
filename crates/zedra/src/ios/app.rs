@@ -6,6 +6,10 @@
 ///   3. gpui_ios_did_finish_launching — invokes callback → opens Metal window
 ///   4. gpui_ios_get_window()         — get window pointer for CADisplayLink
 ///   5. gpui_ios_request_frame()      — called each frame by CADisplayLink
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
+
 use gpui::*;
 use gpui_ios::IosPlatform;
 
@@ -13,9 +17,6 @@ use crate::{
     ZedraAssets, app, install_panic_hook, native_presentation, platform_bridge,
     sheet_host_view::SheetHostView,
 };
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::Arc;
 
 thread_local! {
     /// Kept alive so window.refresh() can be called from zedra_ios_check_pending_frame.
@@ -62,9 +63,6 @@ pub(crate) fn notify_main_window() {
             };
 
             let Ok(mut app) = app_cell.try_borrow_mut() else {
-                tracing::debug!(
-                    "Zedra iOS: notify_main_window skipped due to re-entrant app borrow"
-                );
                 return;
             };
             let cx: &mut App = &mut app;

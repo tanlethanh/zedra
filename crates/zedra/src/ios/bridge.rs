@@ -1,16 +1,12 @@
-/// iOS implementation of PlatformBridge.
-///
-/// Provides density, insets, keyboard control, and QR scanner via FFI to UIKit.
-///
-/// Safe area insets and screen scale are pushed from Obj-C via
-/// `zedra_ios_set_safe_area_insets` / `zedra_ios_set_screen_scale` and cached
-/// in atomics, mirroring the Android JNI push model.
+use std::sync::atomic::{AtomicU32, Ordering};
+use tracing::*;
+
 use crate::active_terminal;
 use crate::deeplink;
 use crate::platform_bridge::{
-    self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback, PlatformBridge,
+    self, AlertButton, AlertButtonStyle, CustomSheetOptions, FloatingButtonOptions, HapticFeedback,
+    PlatformBridge,
 };
-use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Screen scale factor (e.g. 3.0 for @3x), stored as f32 bits.
 /// Default 3.0 covers most modern iPhones until Obj-C pushes the real value.
@@ -30,7 +26,7 @@ static SAFE_AREA_BOTTOM: AtomicU32 = AtomicU32::new(0);
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_set_screen_scale(scale: f32) {
     SCREEN_SCALE.store(scale.to_bits(), Ordering::Relaxed);
-    tracing::debug!("iOS screen scale: {}", scale);
+    debug!("iOS screen scale: {}", scale);
 }
 
 /// Called from Obj-C when the software keyboard is about to appear or change height.
@@ -41,7 +37,6 @@ pub extern "C" fn zedra_ios_set_screen_scale(scale: f32) {
 pub extern "C" fn zedra_ios_set_keyboard_height(height_px: u32) {
     KEYBOARD_HEIGHT_PX.store(height_px, Ordering::Relaxed);
     super::app::notify_main_window();
-    tracing::debug!("iOS keyboard height: {}px", height_px);
 }
 
 /// Called from Obj-C with the current safe area insets in physical pixels
@@ -52,10 +47,9 @@ pub extern "C" fn zedra_ios_set_keyboard_height(height_px: u32) {
 pub extern "C" fn zedra_ios_set_safe_area_insets(top: f32, bottom: f32, _left: f32, _right: f32) {
     SAFE_AREA_TOP.store(top as u32, Ordering::Relaxed);
     SAFE_AREA_BOTTOM.store(bottom as u32, Ordering::Relaxed);
-    tracing::debug!(
+    info!(
         "iOS safe area insets: top={}px bottom={}px",
-        top as u32,
-        bottom as u32
+        top as u32, bottom as u32
     );
 }
 
@@ -390,9 +384,9 @@ pub extern "C" fn zedra_deeplink_received(url: *const std::ffi::c_char) {
     match s.to_str() {
         Ok(v) => match deeplink::parse(v) {
             Ok(action) => deeplink::enqueue(action),
-            Err(e) => tracing::error!("Invalid deeplink URL: {}", e),
+            Err(e) => error!("Invalid deeplink URL: {}", e),
         },
-        Err(e) => tracing::error!("Deeplink: invalid UTF-8: {}", e),
+        Err(e) => error!("Deeplink: invalid UTF-8: {}", e),
     }
 }
 
@@ -408,8 +402,8 @@ pub extern "C" fn zedra_qr_scanner_result(qr_string: *const std::ffi::c_char) {
     match s.to_str() {
         Ok(v) => match deeplink::parse(v) {
             Ok(action) => deeplink::enqueue(action),
-            Err(e) => tracing::error!("QR scan: invalid deeplink: {}", e),
+            Err(e) => error!("QR scan: invalid deeplink: {}", e),
         },
-        Err(e) => tracing::error!("QR result: invalid UTF-8: {}", e),
+        Err(e) => error!("QR result: invalid UTF-8: {}", e),
     }
 }
