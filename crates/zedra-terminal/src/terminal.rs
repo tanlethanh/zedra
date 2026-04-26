@@ -22,10 +22,18 @@ use crate::keys::to_esc_str;
 /// Events emitted by the terminal to observers.
 #[derive(Debug, Clone)]
 pub enum TerminalEvent {
-    RequestResize { cols: u16, rows: u16 },
+    RequestResize {
+        cols: u16,
+        rows: u16,
+    },
     TitleChanged(Option<String>),
     OscEvent(OscEvent),
     OpenHyperlink(TerminalHyperlink),
+    AltScreenChanged(bool),
+    ScrollbackPositionChanged {
+        display_offset: usize,
+        history_size: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -232,8 +240,15 @@ impl Terminal {
 
     /// Feed bytes from PTY output buffer into the terminal emulator
     pub fn advance_bytes(&mut self, bytes: &[u8]) {
+        let was_alt = self.mode.contains(TermMode::ALT_SCREEN);
+        let previous_display_offset = self.display_offset();
         self.processor.advance(&mut self.term, bytes);
         self.mode = *self.term.mode();
+        let is_alt = self.mode.contains(TermMode::ALT_SCREEN);
+        if is_alt != was_alt {
+            let _ = self.event_tx.send(TerminalEvent::AltScreenChanged(is_alt));
+        }
+        self.emit_scrollback_position_if_changed(previous_display_offset);
     }
 
     /// Feed bytes from PTY output buffer into the OSC scanner
@@ -328,6 +343,10 @@ impl Terminal {
         self.mode
     }
 
+    pub fn is_alt_screen(&self) -> bool {
+        self.mode.contains(TermMode::ALT_SCREEN)
+    }
+
     fn mouse_mode(&self, event: &ScrollWheelEvent) -> bool {
         self.input_tx.is_some()
             && !event.modifiers.shift
@@ -392,8 +411,16 @@ impl Terminal {
 
     /// Scroll the terminal by a number of lines (positive = up)
     pub fn scroll(&mut self, lines: i32) {
+        let previous_display_offset = self.display_offset();
         let scroll = Scroll::Delta(lines);
         self.term.scroll_display(scroll);
+        self.emit_scrollback_position_if_changed(previous_display_offset);
+    }
+
+    pub fn scroll_to_bottom(&mut self) {
+        let previous_display_offset = self.display_offset();
+        self.term.scroll_display(Scroll::Bottom);
+        self.emit_scrollback_position_if_changed(previous_display_offset);
     }
 
     /// Current display offset (0 = bottom, history_size = top)
@@ -404,6 +431,19 @@ impl Terminal {
     /// Get total history size
     pub fn history_size(&self) -> usize {
         self.term.grid().history_size()
+    }
+
+    fn emit_scrollback_position_if_changed(&self, previous_display_offset: usize) {
+        if self.display_offset() == previous_display_offset {
+            return;
+        }
+
+        let _ = self
+            .event_tx
+            .send(TerminalEvent::ScrollbackPositionChanged {
+                display_offset: self.display_offset(),
+                history_size: self.history_size(),
+            });
     }
 
     // --- IME / Input Composition ---
@@ -875,6 +915,14 @@ mod tests {
         terminal
     }
 
+    fn terminal_with_history() -> Terminal {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        for line in 0..12 {
+            terminal.advance_bytes(format!("line {line}\r\n").as_bytes());
+        }
+        terminal
+    }
+
     fn point_for_substring(line: &str, needle: &str) -> Point {
         let start = line.find(needle).expect("substring should exist");
         let hovered_column = start + needle.len().saturating_sub(1) / 2;
@@ -914,6 +962,30 @@ mod tests {
     }
 
     #[test]
+    fn scroll_to_bottom_resets_display_offset_and_emits_position() {
+        let mut terminal = terminal_with_history();
+        terminal.scroll(5);
+        assert!(terminal.display_offset() > 0);
+
+        let mut events = terminal.subscribe_events();
+        terminal.scroll_to_bottom();
+
+        assert_eq!(terminal.display_offset(), 0);
+        match events
+            .try_recv()
+            .expect("expected scrollback position event")
+        {
+            super::TerminalEvent::ScrollbackPositionChanged {
+                display_offset,
+                history_size,
+            } => {
+                assert_eq!(display_offset, 0);
+                assert!(history_size > 0);
+            }
+            event => panic!("unexpected event: {event:?}"),
+        }
+    }
+
     #[test]
     fn ignores_wrapped_plain_file_links_from_grid_point() {
         let line = r#"Open ("src/main.rs:12:3") next"#;

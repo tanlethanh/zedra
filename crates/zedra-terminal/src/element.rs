@@ -317,6 +317,7 @@ pub struct TerminalElement {
     content: TerminalContent,
     size: TerminalSize,
     scroll_offset_px: f32,
+    keyboard_inset: Pixels,
     view: WeakEntity<TerminalView>,
     terminal: WeakEntity<Terminal>,
     focus_handle: FocusHandle,
@@ -328,6 +329,7 @@ impl TerminalElement {
         content: TerminalContent,
         size: TerminalSize,
         scroll_offset_px: f32,
+        keyboard_inset: Pixels,
         view: WeakEntity<TerminalView>,
         terminal: WeakEntity<Terminal>,
         focus_handle: FocusHandle,
@@ -337,6 +339,7 @@ impl TerminalElement {
             content,
             size,
             scroll_offset_px,
+            keyboard_inset,
             view,
             terminal,
             focus_handle,
@@ -676,8 +679,39 @@ impl Element for TerminalElement {
         let grid_width = cell_width * layout.content.grid_cols as f32;
         let x_offset = ((bounds.size.width - grid_width) * 0.5).max(px(0.0));
         let grid_origin = point(bounds.origin.x + x_offset, bounds.origin.y);
-        // Apply smooth scroll offset: shifts grid vertically for sub-line scrolling
-        let origin = point(grid_origin.x, grid_origin.y + px(self.scroll_offset_px));
+        // Apply smooth scroll offset: shifts grid vertically for sub-line scrolling.
+        // For non-alt mode with keyboard visible, also shift up to keep the cursor above
+        // the keyboard. Offset is purely cursor-based: shift only as much as needed to
+        // bring the cursor bottom into the visible area. When cursor is already above the
+        // keyboard (e.g. Claude output top-aligned) the offset is zero.
+        // For non-alt mode with keyboard visible: if the cursor sits below the visible
+        // area (i.e. behind the keyboard), shift the entire terminal up by the full
+        // keyboard inset so the cursor is clear of the keyboard. No shift when cursor
+        // is already above the keyboard — avoids moving top-aligned content (e.g. a fresh
+        // Claude session) unnecessarily.
+        let is_alt = layout
+            .content
+            .mode
+            .contains(alacritty_terminal::term::TermMode::ALT_SCREEN);
+        let keyboard_cursor_offset_px =
+            if !is_alt && self.keyboard_inset > px(0.0) && layout.content.display_offset == 0 {
+                let line_height_f = (line_height / px(1.0)) as f32;
+                let keyboard_f = (self.keyboard_inset / px(1.0)) as f32;
+                let visible_height = (bounds.size.height / px(1.0)) as f32 - keyboard_f;
+                let cursor_line = layout.content.cursor.point.line.0.max(0) as f32;
+                let cursor_bottom = (cursor_line + 1.0) * line_height_f;
+                if cursor_bottom > visible_height {
+                    keyboard_f
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+        let origin = point(
+            grid_origin.x,
+            grid_origin.y + px(self.scroll_offset_px) - px(keyboard_cursor_offset_px),
+        );
 
         let theme = TerminalTheme::one_dark();
 
@@ -736,11 +770,18 @@ impl Element for TerminalElement {
         });
 
         // Reconcile the bounds with the actual size of the terminal.
-        // This may happen when the terminal is resized by layout changes, rotation
-        // or keyboard appearance/disappearance that push/pull an inset in TerminalView.
+        // This may happen when the terminal is resized by layout changes, rotation,
+        // or keyboard appearance/disappearance.
+        //
+        // Alt screen (vim, OpenCode): resize on any dimension change; TUIs need SIGWINCH.
+        // Non-alt screen (Claude, Codex): keep row count fixed only while the keyboard
+        // masks the bottom of the terminal. Other height changes still resize normally.
         let actual_rows = (bounds.size.height / line_height).floor() as usize;
         let actual_cols = (bounds.size.width / cell_width).floor() as usize;
-        if actual_rows != self.size.rows || actual_cols != self.size.columns {
+        let preserve_rows_for_keyboard = !is_alt && self.keyboard_inset > px(0.0);
+        let needs_reconcile = actual_cols != self.size.columns
+            || (!preserve_rows_for_keyboard && actual_rows != self.size.rows);
+        if needs_reconcile {
             let view = self.view.clone();
             let actual_bounds = bounds.size;
             window.defer(cx, move |_window, cx| {

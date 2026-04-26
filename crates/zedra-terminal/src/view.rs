@@ -51,7 +51,12 @@ pub struct TerminalView {
     /// Used to turn touch scroll positions into terminal cell coordinates.
     grid_origin: Option<Point<Pixels>>,
     workdir: Option<String>,
-    keyboard_request_pending: bool,
+    /// Keyboard height in logical pixels. Updated by WorkspaceTerminal via deferred sync.
+    /// Used to offset non-alt-screen content so the cursor stays visible above the keyboard.
+    pub keyboard_inset: Pixels,
+    /// Cached from terminal mode; updated each render so parent views can read without
+    /// creating a GPUI dependency on the inner terminal entity.
+    pub is_alt_screen: bool,
     _event_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -78,7 +83,10 @@ impl TerminalView {
         let mut event_rx = terminal.read(cx).subscribe_events();
         let event_task = cx.spawn(async move |this, cx| {
             while let Ok(event) = event_rx.recv().await {
-                if let Err(e) = this.update(cx, |_this, cx| {
+                if let Err(e) = this.update(cx, |this, cx| {
+                    if let TerminalEvent::AltScreenChanged(is_alt) = &event {
+                        this.is_alt_screen = *is_alt;
+                    }
                     cx.emit(event);
                     cx.notify();
                 }) {
@@ -95,7 +103,8 @@ impl TerminalView {
             last_remote_size: None,
             grid_origin: None,
             workdir: None,
-            keyboard_request_pending: false,
+            keyboard_inset: px(0.0),
+            is_alt_screen: false,
             _event_task: event_task,
             _subscriptions: vec![],
         }
@@ -228,6 +237,19 @@ impl TerminalView {
         self.terminal.update(cx, |terminal, _| {
             terminal.scroll(lines);
         });
+        cx.notify();
+    }
+
+    pub fn scroll_to_bottom(&mut self, cx: &mut Context<Self>) {
+        self.scroll_offset_px = 0.0;
+        self.terminal.update(cx, |terminal, _| {
+            terminal.scroll_to_bottom();
+        });
+        cx.notify();
+    }
+
+    pub fn display_offset(&self, cx: &App) -> usize {
+        self.terminal.read(cx).display_offset()
     }
 
     pub fn set_grid_origin(&mut self, origin: Point<Pixels>) {
@@ -387,11 +409,11 @@ impl Render for TerminalView {
                 content,
                 size,
                 self.scroll_offset_px,
+                self.keyboard_inset,
                 cx.weak_entity(),
                 self.terminal.downgrade(),
                 self.focus_handle.clone(),
                 self.focus_handle.is_focused(window),
-                self.keyboard_request_pending,
             ))
     }
 }
@@ -399,7 +421,10 @@ impl Render for TerminalView {
 #[cfg(test)]
 mod tests {
     use super::TerminalView;
-    use gpui::{Modifiers, TestAppContext, VisualTestContext, WindowHandle, point, px, size};
+    use gpui::{
+        Modifiers, PointerButton, PointerDownEvent, PointerKind, PointerUpEvent, TestAppContext,
+        TouchPhase, VisualTestContext, WindowHandle, point, px, size,
+    };
 
     fn open_terminal_window(cx: &mut TestAppContext) -> WindowHandle<TerminalView> {
         cx.open_window(size(px(320.0), px(240.0)), |window, cx| {
