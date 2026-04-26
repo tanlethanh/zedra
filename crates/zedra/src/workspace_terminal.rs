@@ -21,6 +21,13 @@ pub struct WorkspaceTerminal {
     session_handle: SessionHandle,
     terminal_view: Entity<TerminalView>,
     preview: Entity<TerminalPreviewView>,
+    /// Tracks whether the active terminal is in alt-screen mode (vim, opencode, etc.).
+    /// Updated via AltScreenChanged event — never read via terminal_view.read(cx) in render
+    /// to avoid creating a GPUI dependency that causes re-render cascades.
+    is_alt_screen: bool,
+    /// Last keyboard inset pushed to TerminalView. Compared against current platform value
+    /// without reading terminal_view in render, breaking the GPUI observer dependency.
+    last_synced_keyboard_inset: Pixels,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -156,6 +163,12 @@ impl WorkspaceTerminal {
                         );
                     }
                 },
+                TerminalEvent::AltScreenChanged(is_alt) => {
+                    this.is_alt_screen = *is_alt;
+                    cx.notify();
+                }
+                TerminalEvent::ScrollbackPositionChanged { display_offset, .. } => {
+                }
             });
 
         if terminal_id != TERMINAL_PENDING_ID {
@@ -174,21 +187,28 @@ impl WorkspaceTerminal {
             session_handle,
             terminal_view,
             preview,
+            is_alt_screen: false,
+            last_synced_keyboard_inset: px(0.0),
             _subscriptions: vec![attach_sub, terminal_events_sub],
         }
     }
 
-    pub fn register_as_active_input(&self, cx: &App) {
-        let Some(sender) = self.terminal_view.read(cx).input_sender(cx) else {
-            warn!(terminal_id = %self.terminal_id, "no input sender, skipping active input registration");
-            return;
-        };
+    pub fn register_as_active_input(&mut self, cx: &mut Context<Self>) {
+        match self.terminal_view.read(cx).input_sender(cx) {
+            Some(sender) => {
         let terminal_id = self.terminal_id.clone();
         active_terminal::set_active_input(Box::new(move |bytes| {
             if let Err(e) = sender.try_send(bytes) {
                 warn!(terminal_id, "failed to send input: {}", e);
             }
         }));
+            }
+            None => {
+                warn!(terminal_id = %self.terminal_id, "no input sender, skipping active input registration");
+                active_terminal::clear_active_input();
+            }
+        }
+
     }
 
     pub fn set_terminal_id(&mut self, terminal_id: String, cx: &mut Context<Self>) {
@@ -265,13 +285,33 @@ impl WorkspaceTerminal {
 }
 
 impl Render for WorkspaceTerminal {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let keyboard_inset = Self::keyboard_inset();
+
+        // Sync keyboard_inset to TerminalView for cursor-visibility offset in non-alt mode.
+        // Uses self.last_synced_keyboard_inset (not terminal_view.read(cx)) to avoid creating
+        // a GPUI render dependency on TerminalView, which would cause re-render cascades that
+        // make the keyboard dismiss and reopen on every PTY output frame.
+        if self.last_synced_keyboard_inset != keyboard_inset {
+            self.last_synced_keyboard_inset = keyboard_inset;
+            let tv = self.terminal_view.clone();
+            window.defer(cx, move |_, cx| {
+                tv.update(cx, |tv, cx| {
+                    tv.keyboard_inset = keyboard_inset;
+                    cx.notify();
+                });
+            });
+        }
 
         div()
             .id(("workspace-terminal-surface", cx.entity_id()))
             .size_full()
-            .when(keyboard_inset > px(0.0), |div| div.pb(keyboard_inset))
+            // Alt-screen TUIs (vim, OpenCode) need the container to shrink so reconcile fires
+            // and SIGWINCH is sent. Non-alt apps (Claude, Codex) keep their grid fixed; the
+            // element shifts content up so cursor stays visible above the keyboard instead.
+            .when(self.is_alt_screen && keyboard_inset > px(0.0), |div| {
+                div.pb(keyboard_inset)
+            })
             .child(self.terminal_view.clone())
     }
 }
