@@ -66,7 +66,9 @@
 
 #define DRAWER_DEFAULT_WIDTH 295.0
 
-#define DRAWER_ANIMATION_DURATION_MS 300
+#define DRAWER_OPEN_ANIMATION_DURATION_MS 160
+
+#define DRAWER_CLOSE_ANIMATION_DURATION_MS 100
 
 #define FONT_APP_TITLE 28.0
 
@@ -101,11 +103,6 @@
 #define EDITOR_LINE_HEIGHT 15.0
 
 #define EDITOR_GUTTER_WIDTH 36.0
-
-/**
- * Seconds after last received bytes before a path is considered stale.
- */
-#define STALE_THRESHOLD_SECS 3
 
 extern void gpui_ios_set_next_embedded_parent(void *parent_view_ptr,
                                               float width_pts,
@@ -237,6 +234,19 @@ extern void ios_open_url(const char *url);
 extern void ios_trigger_haptic(int32_t kind);
 
 /**
+ * Present or update a native floating icon button.
+ */
+extern void ios_present_floating_button(uint32_t callback_id,
+                                        const char *system_image_name,
+                                        const char *accessibility_label,
+                                        float bottom_offset_pts);
+
+/**
+ * Dismiss a native floating icon button.
+ */
+extern void ios_dismiss_floating_button(uint32_t callback_id);
+
+/**
  * Called from the native alert handler after the user taps a button.
  *
  * `callback_id` matches the value passed to `ios_present_alert`.
@@ -259,6 +269,11 @@ void zedra_ios_selection_result(uint32_t callback_id, int32_t button_index);
  * Called when an action sheet is dismissed without selecting an item.
  */
 void zedra_ios_selection_dismiss(uint32_t callback_id);
+
+/**
+ * Called from the native floating button handler after the user taps it.
+ */
+void zedra_ios_floating_button_result(uint32_t callback_id);
 
 /**
  * Called from the native app delegate when the app enters the background.
