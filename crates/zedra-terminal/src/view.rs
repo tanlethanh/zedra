@@ -238,33 +238,35 @@ impl TerminalView {
         self.workdir = workdir;
     }
 
-    pub(crate) fn take_pending_keyboard_request(&mut self) -> bool {
-        std::mem::take(&mut self.keyboard_request_pending)
-    }
-
-    fn handle_terminal_tap_start(
+    fn handle_terminal_press(
         &mut self,
         position: Point<Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self
-            .terminal
-            .read(cx)
-            .hyperlink_at(position, self.grid_origin, self.workdir.as_deref())
-            .is_some()
-        {
+        let hyperlink = self.terminal.read(cx).hyperlink_at(
+            position,
+            self.grid_origin,
+            self.workdir.as_deref(),
+        );
+        if let Some(hyperlink) = hyperlink {
+            cx.emit(TerminalEvent::OpenHyperlink(hyperlink));
             return;
         }
 
+        let is_focused = self.focus_handle.is_focused(window);
+        let keyboard_visible = window.is_soft_keyboard_visible();
+
         window.prevent_default();
 
-        if self.focus_handle.is_focused(window) {
+        if is_focused && keyboard_visible {
+            // Must explicitly hide the keyboard, window.blur only blurs the focus, not the keyboard.
             window.hide_soft_keyboard();
             window.blur();
-        } else {
+            cx.notify();
+        } else if !is_focused {
             self.focus_handle.focus(window, cx);
-            self.keyboard_request_pending = true;
+            window.show_soft_keyboard();
             cx.notify();
         }
     }
@@ -287,32 +289,14 @@ impl Render for TerminalView {
 
         div()
             .id("terminal-view")
+            .key_context("Terminal")
             .size_full()
             .overflow_hidden()
             .bg(rgb(0x0e0c0c))
             .track_focus(&focus_handle)
-            .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                if event.button == MouseButton::Left {
-                    this.handle_terminal_tap_start(event.position, window, cx);
-                }
-            }))
-            .capture_any_pointer_down(cx.listener(|this, event: &PointerDownEvent, window, cx| {
-                if event.is_primary && event.button == PointerButton::Primary {
-                    this.handle_terminal_tap_start(event.position, window, cx);
-                }
-            }))
-            .key_context("Terminal")
-            .on_press(cx.listener(|this, event: &PressEvent, _window, cx| {
-                let position = event.position();
-                let hyperlink = this.terminal.read(cx).hyperlink_at(
-                    position,
-                    this.grid_origin,
-                    this.workdir.as_deref(),
-                );
-                if let Some(hyperlink) = hyperlink {
-                    cx.emit(TerminalEvent::OpenHyperlink(hyperlink));
-                    return;
-                }
+            .manual_focus()
+            .on_press(cx.listener(|this, event: &PressEvent, window, cx| {
+                this.handle_terminal_press(event.position(), window, cx);
             }))
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
                 match event.delta {
@@ -425,7 +409,63 @@ mod tests {
 
     fn tap_terminal(window: WindowHandle<TerminalView>, cx: &mut TestAppContext) {
         let mut window_cx = VisualTestContext::from_window(*window, cx);
-        window_cx.simulate_click(point(px(12.0), px(12.0)), Modifiers::default());
+        let position = point(px(12.0), px(12.0));
+        window_cx.simulate_event(PointerDownEvent {
+            pointer_id: 1,
+            kind: PointerKind::Touch,
+            is_primary: true,
+            button: PointerButton::Primary,
+            position,
+            modifiers: Modifiers::default(),
+        });
+        window_cx.simulate_event(PointerUpEvent {
+            pointer_id: 1,
+            kind: PointerKind::Touch,
+            is_primary: true,
+            button: PointerButton::Primary,
+            position,
+            modifiers: Modifiers::default(),
+        });
+    }
+
+    fn pointer_down_terminal(window: WindowHandle<TerminalView>, cx: &mut TestAppContext) {
+        let mut window_cx = VisualTestContext::from_window(*window, cx);
+        window_cx.simulate_event(PointerDownEvent {
+            pointer_id: 1,
+            kind: PointerKind::Touch,
+            is_primary: true,
+            button: PointerButton::Primary,
+            position: point(px(12.0), px(12.0)),
+            modifiers: Modifiers::default(),
+        });
+    }
+
+    fn scroll_terminal_touch(window: WindowHandle<TerminalView>, cx: &mut TestAppContext) {
+        let mut window_cx = VisualTestContext::from_window(*window, cx);
+        window_cx.simulate_event(gpui::ScrollWheelEvent {
+            position: point(px(12.0), px(28.0)),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(16.0))),
+            modifiers: Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+        });
+    }
+
+    #[test]
+    fn terminal_pointer_down_does_not_focus_before_completed_press() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+
+        pointer_down_terminal(window, &mut cx);
+        cx.run_until_parked();
+
+        window
+            .update(&mut cx, |terminal, window, _| {
+                assert!(!terminal.focus_handle.is_focused(window));
+                assert!(!window.is_soft_keyboard_visible());
+            })
+            .unwrap();
+        cx.quit();
     }
 
     #[test]
@@ -467,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn focused_terminal_tap_blurs_even_when_keyboard_is_hidden() {
+    fn focused_terminal_tap_requests_keyboard_when_keyboard_is_hidden() {
         let mut cx = TestAppContext::single();
         let window = open_terminal_window(&mut cx);
         cx.run_until_parked();
@@ -486,8 +526,29 @@ mod tests {
 
         window
             .update(&mut cx, |terminal, window, _| {
-                assert!(!terminal.focus_handle.is_focused(window));
-                assert!(!window.is_soft_keyboard_visible());
+                assert!(terminal.focus_handle.is_focused(window));
+                assert!(window.is_soft_keyboard_visible());
+            })
+            .unwrap();
+        cx.quit();
+    }
+
+    #[test]
+    fn touch_scroll_does_not_toggle_keyboard() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+
+        tap_terminal(window, &mut cx);
+        cx.run_until_parked();
+
+        scroll_terminal_touch(window, &mut cx);
+        cx.run_until_parked();
+
+        window
+            .update(&mut cx, |terminal, window, _| {
+                assert!(terminal.focus_handle.is_focused(window));
+                assert!(window.is_soft_keyboard_visible());
             })
             .unwrap();
         cx.quit();

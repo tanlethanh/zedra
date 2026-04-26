@@ -40,14 +40,6 @@ impl TerminalInputHandler {
     fn accepts_text_input_policy() -> bool {
         true
     }
-
-    fn disable_default_keyboard_behavior_policy() -> bool {
-        true
-    }
-
-    fn disable_default_focus_behavior_policy() -> bool {
-        true
-    }
 }
 
 impl InputHandler for TerminalInputHandler {
@@ -222,14 +214,6 @@ impl InputHandler for TerminalInputHandler {
         Self::accepts_text_input_policy()
     }
 
-    fn disable_default_keyboard_behavior(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
-        Self::disable_default_keyboard_behavior_policy()
-    }
-
-    fn disable_default_focus_behavior(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
-        Self::disable_default_focus_behavior_policy()
-    }
-
     // fn dictation_started(&mut self, _window: &mut Window, cx: &mut App) {
     //     debug!("dictation_started");
     //     let entity = self.entity.clone();
@@ -275,9 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_accepts_text_but_owns_keyboard_request() {
+    fn terminal_accepts_text_input() {
         assert!(TerminalInputHandler::accepts_text_input_policy());
-        assert!(TerminalInputHandler::disable_default_keyboard_behavior_policy());
-        assert!(TerminalInputHandler::disable_default_focus_behavior_policy());
     }
 }
