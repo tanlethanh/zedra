@@ -442,6 +442,14 @@ impl Workspace {
         }
     }
 
+    pub fn create_terminal_from_quick_action(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.handle_create_new_terminal(&CreateNewTerminal, window, cx);
+    }
+
     pub fn close_terminal_from_quick_action(&mut self, id: String, _cx: &mut Context<Self>) {
         self.request_terminal_delete_confirmation(id);
     }
