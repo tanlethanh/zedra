@@ -1341,7 +1341,7 @@ impl Render for WorkspaceContent {
                                             d.child(
                                                 svg()
                                                     .path(path)
-                                                    .size(px(14.0))
+                                                    .size(px(12.0))
                                                     .flex_shrink_0()
                                                     .text_color(rgb(theme::TEXT_SECONDARY)),
                                             )
