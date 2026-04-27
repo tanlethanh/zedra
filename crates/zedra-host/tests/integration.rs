@@ -433,6 +433,94 @@ async fn test_rpc_terminal_over_relay() {
     assert!(!close_again.ok);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn test_terminal_reorder_updates_host_list_and_sync_order() {
+    let (_relay, relay_url) = spawn_test_relay().await.unwrap();
+    let (host_ep, registry, identity, _dir) = setup_host(relay_url.clone()).await.unwrap();
+
+    let (client, _session_id, _client_pubkey, _sync) =
+        connect_client(relay_url, &host_ep, &registry, &identity)
+            .await
+            .unwrap();
+
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        let result: TermCreateResult = client
+            .rpc(TermCreateReq {
+                cols: 80,
+                rows: 24,
+                launch_cmd: None,
+            })
+            .await
+            .unwrap();
+        assert!(result.error.is_none());
+        ids.push(result.id);
+    }
+
+    let initial_list: TermListResult = client.rpc(TermListReq {}).await.unwrap();
+    assert_eq!(
+        initial_list
+            .terminals
+            .iter()
+            .map(|entry| entry.id.clone())
+            .collect::<Vec<_>>(),
+        ids
+    );
+
+    let reordered_ids = vec![ids[2].clone(), ids[0].clone(), ids[1].clone()];
+    let reorder: TermReorderResult = client
+        .rpc(TermReorderReq {
+            ordered_ids: reordered_ids.clone(),
+        })
+        .await
+        .unwrap();
+    assert!(reorder.ok, "{:?}", reorder.error);
+
+    let list: TermListResult = client.rpc(TermListReq {}).await.unwrap();
+    assert_eq!(
+        list.terminals
+            .iter()
+            .map(|entry| entry.id.clone())
+            .collect::<Vec<_>>(),
+        reordered_ids
+    );
+    assert_eq!(
+        list.terminals
+            .iter()
+            .map(|entry| entry.position)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+
+    let sync: SyncSessionResult = client.rpc(SyncSessionReq {}).await.unwrap();
+    assert_eq!(
+        sync.terminals
+            .iter()
+            .map(|entry| entry.id.clone())
+            .collect::<Vec<_>>(),
+        reordered_ids
+    );
+    assert_eq!(
+        sync.terminals
+            .iter()
+            .map(|entry| entry.position)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+
+    let duplicate: TermReorderResult = client
+        .rpc(TermReorderReq {
+            ordered_ids: vec![ids[0].clone(), ids[0].clone(), ids[1].clone()],
+        })
+        .await
+        .unwrap();
+    assert!(!duplicate.ok);
+
+    for id in ids {
+        let _ = client.rpc(TermCloseReq { id }).await.unwrap();
+    }
+}
+
 /// Endpoint addr includes relay URL after going online.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_relay_url_in_endpoint_addr() {

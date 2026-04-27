@@ -37,13 +37,14 @@
 
 ## 3. Continue Session from Saved Workspace
 
-1. Connect via QR (test 1 above), navigate around, note session ID in panel
+1. Connect via QR (test 1 above), create at least three terminals, and note their order in the drawer Terminals tab
 2. Force-close the app
 3. Reopen — tap the saved workspace entry in the home screen
 4. Expected: reconnects using stored session ID (no QR needed); terminal
    backlog replays any missed output
 5. Expected: the workspace drawer Terminals tab shows the active remote
    terminals from the host without creating a replacement terminal
+6. Expected: terminal cards appear in the same order they had before force-close
 
 ## 4. Reconnect After Host Restart
 
@@ -56,12 +57,13 @@
 
 ## 5. Host Unreachable → Retry
 
-1. Connect via QR
+1. Connect via QR and create at least three terminals
 2. Take the host machine offline (disable network interface)
 3. Expected: badge shows "Reconnecting... (N)" counting up to 10
 4. After 10 attempts: badge shows "Disconnected" / home screen shows "Unreachable"
 5. Bring host network back up, tap "Retry"
 6. Expected: reconnects successfully
+7. Expected: the workspace drawer Terminals tab preserves the pre-reconnect terminal order
 
 ## 5a. Idle Before Reconnect
 
@@ -316,13 +318,16 @@ printf '\033]8;;file:///tmp/zedra-code-selection.rs:1:1\033\\/tmp/zedra-code-sel
 5. Expected: the alert dismisses and the terminal card remains visible
 6. Trigger the same delete again and tap `Delete`
 7. Expected: the terminal card is removed from the drawer immediately, without waiting for the remote delete RPC to finish
-8. Repeat terminal deletion from the quick action panel
-9. Expected: the same native confirmation alert appears there, and confirmed deletion removes the card immediately
-10. Open the Session tab and tap `Disconnect`
-11. Expected: a native confirmation alert appears with `Disconnect` and `Cancel`
-12. Tap `Cancel`, then retry and tap `Disconnect`
-13. Expected: the session disconnects only after confirmation
-14. Expected: the home workspace card immediately shows the disconnected/reconnect state instead of the old connected state
+8. Expected: if the deleted terminal was the active main view, the main view switches to another terminal
+9. Delete the remaining terminals one by one
+10. Expected: after the last terminal is deleted, the main view shows `No active terminal`
+11. Repeat terminal deletion from the quick action panel
+12. Expected: the same native confirmation alert appears there, and confirmed deletion removes the card immediately
+13. Open the Session tab and tap `Disconnect`
+14. Expected: a native confirmation alert appears with `Disconnect` and `Cancel`
+15. Tap `Cancel`, then retry and tap `Disconnect`
+16. Expected: the session disconnects only after confirmation
+17. Expected: the home workspace card immediately shows the disconnected/reconnect state instead of the old connected state
 
 ## 18. Workspace Header Terminal Title + Agent Icon
 

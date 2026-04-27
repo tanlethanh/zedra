@@ -153,6 +153,11 @@ pub enum ZedraProto {
     /// every five seconds until the client disconnects.
     #[rpc(tx = mpsc::Sender<HostInfoSnapshot>)]
     SubscribeHostInfo(SubscribeHostInfoReq),
+
+    /// Update terminal presentation order for the active session.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<TermReorderResult>)]
+    TermReorder(TermReorderReq),
 }
 
 // ---------------------------------------------------------------------------
@@ -397,6 +402,7 @@ pub struct SyncSessionResult {
     pub arch: Option<String>,
     pub os_version: Option<String>,
     pub host_version: Option<String>,
+    /// Ordered by host-owned terminal order. Creation order is the default.
     pub terminals: Vec<TerminalSyncEntry>,
 }
 
@@ -404,6 +410,7 @@ pub struct SyncSessionResult {
 pub struct TerminalSyncEntry {
     /// Opaque host-generated UUID string.
     pub id: String,
+    pub position: u64,
     pub last_seq: u64,
     pub title: Option<String>,
     pub cwd: Option<String>,
@@ -687,6 +694,19 @@ pub struct TermListResult {
 pub struct TermListEntry {
     /// Opaque host-generated UUID string.
     pub id: String,
+    pub position: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TermReorderReq {
+    /// Exact ordered set of active terminal ids for the session.
+    pub ordered_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TermReorderResult {
+    pub ok: bool,
+    pub error: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -979,6 +999,7 @@ mod tests {
             host_version: Some("0.1.1".into()),
             terminals: vec![TerminalSyncEntry {
                 id: "term-1".into(),
+                position: 0,
                 last_seq: 42,
                 title: Some("shell".into()),
                 cwd: Some("/workspace".into()),
@@ -990,6 +1011,7 @@ mod tests {
         assert_eq!(decoded.session_id, "sess-1");
         assert_eq!(decoded.session_token, [9u8; 32]);
         assert_eq!(decoded.terminals.len(), 1);
+        assert_eq!(decoded.terminals[0].position, 0);
         assert_eq!(decoded.terminals[0].last_seq, 42);
         assert_eq!(decoded.terminals[0].icon_name.as_deref(), Some("codex"));
     }

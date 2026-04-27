@@ -181,6 +181,30 @@ impl SessionHandle {
         }
     }
 
+    pub fn reorder_terminals(&self, ordered_ids: &[String]) -> bool {
+        let Ok(mut terminals) = self.0.terminals.lock() else {
+            return false;
+        };
+        if ordered_ids.len() != terminals.len() {
+            return false;
+        }
+
+        let mut by_id = terminals
+            .iter()
+            .map(|terminal| (terminal.id(), terminal.clone()))
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut reordered = Vec::with_capacity(ordered_ids.len());
+        for id in ordered_ids {
+            let Some(terminal) = by_id.remove(id) else {
+                return false;
+            };
+            reordered.push(terminal);
+        }
+
+        *terminals = reordered;
+        true
+    }
+
     pub async fn fs_list(&self, path: &str) -> Result<(Vec<FsEntry>, u32, bool)> {
         self.fs_list_page(path, 0, FS_LIST_DEFAULT_LIMIT).await
     }
@@ -444,6 +468,25 @@ impl SessionHandle {
         let result: TermListResult = self.client()?.rpc(TermListReq {}).await?;
         Ok(result.terminals.into_iter().map(|e| e.id).collect())
     }
+
+    pub async fn terminal_reorder(&self, ordered_ids: Vec<String>) -> Result<()> {
+        let result: TermReorderResult = self
+            .client()?
+            .rpc(TermReorderReq {
+                ordered_ids: ordered_ids.clone(),
+            })
+            .await?;
+        if let Some(error) = result.error {
+            return Err(anyhow::anyhow!(error));
+        }
+        if !result.ok {
+            return Err(anyhow::anyhow!("terminal reorder failed"));
+        }
+        if !self.reorder_terminals(&ordered_ids) {
+            tracing::warn!("host accepted terminal reorder that did not match local terminals");
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -488,5 +531,32 @@ mod tests {
 
         assert!(handle.terminal_ids().is_empty());
         assert_eq!(handle.terminal_count(), 0);
+    }
+
+    #[test]
+    fn reorder_terminals_applies_exact_local_terminal_order() {
+        let handle = SessionHandle::new();
+        handle.add_terminal(RemoteTerminal::new("term-a".to_string()));
+        handle.add_terminal(RemoteTerminal::new("term-b".to_string()));
+        handle.add_terminal(RemoteTerminal::new("term-c".to_string()));
+
+        assert!(handle.reorder_terminals(&[
+            "term-c".to_string(),
+            "term-a".to_string(),
+            "term-b".to_string()
+        ]));
+
+        assert_eq!(handle.terminal_ids(), vec!["term-c", "term-a", "term-b"]);
+    }
+
+    #[test]
+    fn reorder_terminals_rejects_unknown_or_partial_orders() {
+        let handle = SessionHandle::new();
+        handle.add_terminal(RemoteTerminal::new("term-a".to_string()));
+        handle.add_terminal(RemoteTerminal::new("term-b".to_string()));
+
+        assert!(!handle.reorder_terminals(&["term-a".to_string()]));
+        assert!(!handle.reorder_terminals(&["term-a".to_string(), "missing".to_string()]));
+        assert_eq!(handle.terminal_ids(), vec!["term-a", "term-b"]);
     }
 }

@@ -11,6 +11,7 @@ use zedra_session::{ConnectEvent, Session, SessionHandle, SessionState, signer::
 use crate::active_terminal;
 use crate::editor::git_sidebar::GitFileSection;
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
+use crate::placeholder::render_placeholder;
 use crate::platform_bridge::{self, AlertButton, HapticFeedback, status_bar_inset};
 use crate::terminal_card::strip_ps1_prefix;
 use crate::terminal_state::TerminalState;
@@ -109,6 +110,27 @@ fn active_terminal_is_stale_after_sync(
     terminal_ids: &[String],
 ) -> bool {
     active_terminal_id.is_some_and(|id| !terminal_id_in_sync(id, terminal_ids))
+}
+
+fn terminal_ids_after_close(closed_id: &str, terminal_ids: &[String]) -> Vec<String> {
+    terminal_ids
+        .iter()
+        .filter(|terminal_id| terminal_id.as_str() != closed_id)
+        .cloned()
+        .collect()
+}
+
+fn replacement_terminal_id_after_close(closed_id: &str, terminal_ids: &[String]) -> Option<String> {
+    let closed_index = terminal_ids
+        .iter()
+        .position(|terminal_id| terminal_id == closed_id)
+        .unwrap_or(0);
+    let remaining_terminal_ids = terminal_ids_after_close(closed_id, terminal_ids);
+
+    remaining_terminal_ids
+        .get(closed_index)
+        .or_else(|| remaining_terminal_ids.last())
+        .cloned()
 }
 
 impl Workspace {
@@ -793,17 +815,49 @@ impl Workspace {
     }
 
     fn close_terminal_by_id(&mut self, id: String, cx: &mut Context<Self>) {
+        let terminal_ids_before_close = self.workspace_state.read(cx).terminal_ids.clone();
+        let active_terminal_id = self.workspace_state.read(cx).active_terminal_id.clone();
+        let was_active_terminal = active_terminal_id.as_deref() == Some(id.as_str());
+        let remaining_terminal_ids = terminal_ids_after_close(&id, &terminal_ids_before_close);
+        let replacement_terminal_id = was_active_terminal
+            .then(|| replacement_terminal_id_after_close(&id, &terminal_ids_before_close))
+            .flatten();
+
+        if let Some(terminal) = self.terminal_by_id(&id, cx) {
+            terminal.update(cx, |terminal, cx| {
+                terminal.deactivate(cx);
+            });
+        }
+
         self.terminals.retain(|t| t.read(cx).terminal_id() != id);
         self.session.handle().remove_terminal(&id);
 
         self.workspace_state.update(cx, |state, cx| {
-            state.terminal_ids.retain(|terminal_id| terminal_id != &id);
-            if state.active_terminal_id.as_deref() == Some(id.as_str()) {
+            state.terminal_ids = terminal_ids_after_close(&id, &state.terminal_ids);
+            if was_active_terminal || state.terminal_ids.is_empty() {
                 state.active_terminal_id = None;
                 active_terminal::clear_active_input();
             }
             cx.notify();
         });
+
+        if let Some(replacement_id) = replacement_terminal_id {
+            if let Some(replacement_terminal) = self.terminal_by_id(&replacement_id, cx) {
+                self.activate_terminal(replacement_id, replacement_terminal, cx);
+            } else {
+                warn!(
+                    terminal_id = replacement_id,
+                    "replacement terminal entity missing after close"
+                );
+                self.content.update(cx, |content, cx| {
+                    content.set_no_active_terminal_view(cx);
+                });
+            }
+        } else if was_active_terminal || remaining_terminal_ids.is_empty() {
+            self.content.update(cx, |content, cx| {
+                content.set_no_active_terminal_view(cx);
+            });
+        }
 
         let handle = self.session.handle().clone();
         cx.spawn(async move |_workspace, _cx| {
@@ -1077,6 +1131,55 @@ mod tests {
             &[]
         ));
     }
+
+    #[::core::prelude::v1::test]
+    fn terminal_close_replacement_prefers_next_terminal() {
+        let terminal_ids = vec![
+            "terminal-a".to_string(),
+            "terminal-b".to_string(),
+            "terminal-c".to_string(),
+        ];
+
+        assert_eq!(
+            replacement_terminal_id_after_close("terminal-b", &terminal_ids),
+            Some("terminal-c".to_string())
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn terminal_close_replacement_falls_back_to_previous_terminal() {
+        let terminal_ids = vec![
+            "terminal-a".to_string(),
+            "terminal-b".to_string(),
+            "terminal-c".to_string(),
+        ];
+
+        assert_eq!(
+            replacement_terminal_id_after_close("terminal-c", &terminal_ids),
+            Some("terminal-b".to_string())
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn terminal_close_replacement_is_empty_for_last_terminal() {
+        let terminal_ids = vec!["terminal-a".to_string()];
+
+        assert_eq!(
+            replacement_terminal_id_after_close("terminal-a", &terminal_ids),
+            None
+        );
+        assert!(terminal_ids_after_close("terminal-a", &terminal_ids).is_empty());
+    }
+
+    #[::core::prelude::v1::test]
+    fn terminal_close_replacement_handles_stale_active_terminal() {
+        let terminal_ids = vec!["terminal-a".to_string(), "terminal-b".to_string()];
+
+        assert_eq!(
+            replacement_terminal_id_after_close("stale-terminal", &terminal_ids),
+            Some("terminal-a".to_string())
+        );
+    }
 }
 
 pub struct WorkspaceContent {
@@ -1138,6 +1241,12 @@ impl WorkspaceContent {
         cx.notify();
     }
 
+    pub fn set_no_active_terminal_view(&mut self, cx: &mut Context<Self>) {
+        self.subtitle = WorkspaceSubtitle::Default;
+        self.main_view = cx.new(|_cx| NoActiveTerminalView).into();
+        cx.notify();
+    }
+
     pub fn clear_subtitle(&mut self, cx: &mut Context<Self>) {
         self.subtitle = WorkspaceSubtitle::Default;
         cx.notify();
@@ -1192,6 +1301,14 @@ impl WorkspaceContent {
         }
 
         self.mainview_bounds = Some(bounds);
+    }
+}
+
+struct NoActiveTerminalView;
+
+impl Render for NoActiveTerminalView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        render_placeholder("No active terminal")
     }
 }
 

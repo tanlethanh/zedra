@@ -997,19 +997,21 @@ pub async fn create_terminal(
     // without locking session.terminals on every keystroke (Fix 3).
     let writer = Arc::new(std::sync::Mutex::new(pty_writer));
 
-    session.terminals.lock().await.insert(
-        id.clone(),
-        TermSession {
-            writer: writer.clone(),
-            master,
-            child,
-            output_sender: output_sender.clone(),
-            host_meta: host_meta.clone(),
-            backlog: backlog.clone(),
-            created_at: std::time::SystemTime::now(),
-            started_at: std::time::Instant::now(),
-        },
-    );
+    session
+        .insert_terminal(
+            id.clone(),
+            TermSession {
+                writer: writer.clone(),
+                master,
+                child,
+                output_sender: output_sender.clone(),
+                host_meta: host_meta.clone(),
+                backlog: backlog.clone(),
+                created_at: std::time::SystemTime::now(),
+                started_at: std::time::Instant::now(),
+            },
+        )
+        .await;
 
     let term_id = id.clone();
     tokio::task::spawn_blocking(move || {
@@ -1686,7 +1688,7 @@ async fn dispatch(
         }
 
         ZedraMessage::TermClose(msg) => {
-            let terminal = session.terminals.lock().await.remove(&msg.id);
+            let terminal = session.remove_terminal(&msg.id).await;
             let ok = if let Some(terminal) = terminal {
                 tokio::task::spawn_blocking(move || terminal.terminate())
                     .await
@@ -1698,12 +1700,31 @@ async fn dispatch(
         }
 
         ZedraMessage::TermList(msg) => {
-            let terms = session.terminals.lock().await;
-            let terminals = terms
-                .keys()
-                .map(|id| TermListEntry { id: id.clone() })
+            let terminals = session
+                .terminal_ids()
+                .await
+                .into_iter()
+                .enumerate()
+                .map(|(position, id)| TermListEntry {
+                    id,
+                    position: position as u64,
+                })
                 .collect();
             let _ = msg.tx.send(TermListResult { terminals }).await;
+        }
+
+        ZedraMessage::TermReorder(msg) => {
+            let result = match session.reorder_terminals(msg.ordered_ids.clone()).await {
+                Ok(()) => TermReorderResult {
+                    ok: true,
+                    error: None,
+                },
+                Err(error) => TermReorderResult {
+                    ok: false,
+                    error: Some(error),
+                },
+            };
+            let _ = msg.tx.send(result).await;
         }
 
         // -- Git --

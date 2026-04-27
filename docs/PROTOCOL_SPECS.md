@@ -202,6 +202,7 @@ Types that do **not** carry `error` (use dedicated status fields or enum variant
 - `TermResize(TermResizeReq) -> TermResizeResult`
 - `TermClose(TermCloseReq) -> TermCloseResult`
 - `TermList(TermListReq) -> TermListResult`
+- `TermReorder(TermReorderReq) -> TermReorderResult`
 - `SyncSessionResult.terminals -> Vec<TerminalSyncEntry>`
 - Terminal ids are opaque host-generated UUID strings.
 
@@ -212,6 +213,8 @@ Types that do **not** carry `error` (use dedicated status fields or enum variant
 - Host may send a synthetic metadata preamble as `TermOutput { seq: 0, ... }` before backlog replay. Clients must process the bytes as normal PTY output but must not use `seq=0` for backlog sequence tracking.
 - The synthetic preamble replays cached OSC metadata that may have fallen out of the backlog, including title, icon name, cwd, shell command line, command start/idle state, and last exit code.
 - Output `seq` is monotonic per session backlog stream and used for gap detection.
+- `SyncSessionResult.terminals` and `TermListResult.terminals` are ordered by host-owned terminal order. Creation order is the default until a client submits an explicit order.
+- `TerminalSyncEntry.position` and `TermListEntry.position` are zero-based positions in that host-owned order.
 - `TerminalSyncEntry.last_seq` is the host's latest backlog sequence observed for that terminal at sync time.
 - `TerminalSyncEntry.title`, `TerminalSyncEntry.cwd`, and `TerminalSyncEntry.icon_name` are the host's latest cached terminal metadata at sync time. `TermAttach` still replays the same metadata as PTY bytes so normal terminal-event consumers are seeded through one path.
 - Clients should keep local terminal tabs keyed by terminal id and use `last_seq` to seed reconnect `TermAttach` calls.
@@ -221,7 +224,8 @@ Types that do **not** carry `error` (use dedicated status fields or enum variant
 - `SyncSession` is the canonical bootstrap payload after a successful PKI attach.
 - Host rotates and returns a fresh `reconnect_token` on every successful `SyncSession` and `Reconnect`.
 - `session_id` in `SyncSessionResult` is authoritative and must replace any stale client-side session id.
-- `SyncSessionResult.terminals` is the authoritative server-side terminal set at bootstrap time.
+- `SyncSessionResult.terminals` is the authoritative server-side terminal set at bootstrap time. During reconnect, clients preserve the existing local order for terminals still present in that set and append any newly discovered host terminals unless the client has submitted an explicit host order.
+- `TermReorderReq.ordered_ids` must be an exact permutation of the current active terminal ids. The host rejects partial, duplicate, or unknown-id orders.
 - `ReconnectReq.reconnect_token` is opaque, host-issued, session-bound, and client-bound.
 - Reconnect tokens are currently ephemeral host memory only; host restart may invalidate them and force PKI fallback.
 

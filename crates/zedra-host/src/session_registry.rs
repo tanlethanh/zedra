@@ -62,6 +62,7 @@ pub struct ServerSession {
     pub created_at: Instant,
     pub last_activity: Mutex<Instant>,
     pub terminals: Mutex<HashMap<String, TermSession>>,
+    pub terminal_order: Mutex<Vec<String>>,
     /// Client pubkeys authorized to attach to this session (per-session ACL).
     pub acl: Mutex<HashSet<[u8; 32]>>,
     /// Currently attached client pubkey. None = session is free.
@@ -299,6 +300,75 @@ impl TermSession {
 
         true
     }
+}
+
+fn terminal_created_at_key(created_at: SystemTime) -> Duration {
+    created_at.duration_since(UNIX_EPOCH).unwrap_or_default()
+}
+
+fn ordered_terminal_ids_locked(
+    terms: &HashMap<String, TermSession>,
+    order: &mut Vec<String>,
+) -> Vec<String> {
+    ordered_terminal_ids_from_entries(
+        terms
+            .iter()
+            .map(|(id, term)| (id.clone(), terminal_created_at_key(term.created_at))),
+        order,
+    )
+}
+
+fn ordered_terminal_ids_from_entries(
+    entries: impl IntoIterator<Item = (String, Duration)>,
+    order: &mut Vec<String>,
+) -> Vec<String> {
+    let entries = entries.into_iter().collect::<Vec<_>>();
+    let active_ids = entries
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect::<HashSet<_>>();
+
+    order.retain(|id| active_ids.contains(id.as_str()));
+    let mut ordered = order.clone();
+
+    let mut missing = {
+        let known = order.iter().map(String::as_str).collect::<HashSet<_>>();
+        entries
+            .into_iter()
+            .filter(|(id, _)| !known.contains(id.as_str()))
+            .map(|(id, created_at)| (created_at, id))
+            .collect::<Vec<_>>()
+    };
+    missing.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+    for (_, id) in missing {
+        order.push(id.clone());
+        ordered.push(id);
+    }
+
+    ordered
+}
+
+fn validate_terminal_order<'a>(
+    ordered_ids: &[String],
+    active_ids: impl IntoIterator<Item = &'a str>,
+) -> Result<(), String> {
+    let active_ids = active_ids.into_iter().collect::<HashSet<_>>();
+    if ordered_ids.len() != active_ids.len() {
+        return Err("terminal order must include every active terminal".to_string());
+    }
+
+    let mut seen = HashSet::with_capacity(ordered_ids.len());
+    for id in ordered_ids {
+        if !active_ids.contains(id.as_str()) {
+            return Err(format!("unknown terminal id: {id}"));
+        }
+        if !seen.insert(id.as_str()) {
+            return Err(format!("duplicate terminal id: {id}"));
+        }
+    }
+
+    Ok(())
 }
 
 /// Summary of a session for listing purposes.
@@ -867,6 +937,7 @@ impl ServerSession {
             created_at: Instant::now(),
             last_activity: Mutex::new(Instant::now()),
             terminals: Mutex::new(HashMap::new()),
+            terminal_order: Mutex::new(Vec::new()),
             acl: Mutex::new(HashSet::new()),
             active_client: Mutex::new(None),
             session_token: Mutex::new(None),
@@ -921,8 +992,13 @@ impl ServerSession {
 
     pub async fn terminal_sync_entries(&self) -> Vec<TerminalSyncEntry> {
         let terms = self.terminals.lock().await;
-        let mut entries = Vec::with_capacity(terms.len());
-        for (id, term) in terms.iter() {
+        let mut order = self.terminal_order.lock().await;
+        let ordered_ids = ordered_terminal_ids_locked(&terms, &mut order);
+        let mut entries = Vec::with_capacity(ordered_ids.len());
+        for (position, id) in ordered_ids.into_iter().enumerate() {
+            let Some(term) = terms.get(&id) else {
+                continue;
+            };
             let (title, cwd, icon_name) = term
                 .host_meta
                 .lock()
@@ -935,21 +1011,32 @@ impl ServerSession {
                 .map(|b| b.next_seq.saturating_sub(1))
                 .unwrap_or(0);
             entries.push(TerminalSyncEntry {
-                id: id.clone(),
+                id,
+                position: position as u64,
                 last_seq,
                 title,
                 cwd,
                 icon_name,
             });
         }
-        entries.sort_by(|a, b| a.id.cmp(&b.id));
         entries
+    }
+
+    pub async fn terminal_ids(&self) -> Vec<String> {
+        let terms = self.terminals.lock().await;
+        let mut order = self.terminal_order.lock().await;
+        ordered_terminal_ids_locked(&terms, &mut order)
     }
 
     pub async fn terminal_infos(&self) -> Vec<TerminalInfo> {
         let terms = self.terminals.lock().await;
-        let mut entries = Vec::with_capacity(terms.len());
-        for (id, term) in terms.iter() {
+        let mut order = self.terminal_order.lock().await;
+        let ordered_ids = ordered_terminal_ids_locked(&terms, &mut order);
+        let mut entries = Vec::with_capacity(ordered_ids.len());
+        for id in ordered_ids {
+            let Some(term) = terms.get(&id) else {
+                continue;
+            };
             let title = term
                 .host_meta
                 .lock()
@@ -962,15 +1049,45 @@ impl ServerSession {
                 .as_secs();
             let uptime_secs = term.started_at.elapsed().as_secs();
             entries.push(TerminalInfo {
-                id: id.clone(),
+                id,
                 title,
                 created_at_unix_secs,
                 created_at_elapsed_secs: uptime_secs,
                 uptime_secs,
             });
         }
-        entries.sort_by(|a, b| a.id.cmp(&b.id));
         entries
+    }
+
+    pub async fn insert_terminal(&self, id: String, terminal: TermSession) {
+        let mut terms = self.terminals.lock().await;
+        terms.insert(id.clone(), terminal);
+
+        let mut order = self.terminal_order.lock().await;
+        if !order.iter().any(|existing_id| existing_id == &id) {
+            order.push(id);
+        }
+    }
+
+    pub async fn remove_terminal(&self, id: &str) -> Option<TermSession> {
+        let mut terms = self.terminals.lock().await;
+        let terminal = terms.remove(id);
+
+        if terminal.is_some() {
+            let mut order = self.terminal_order.lock().await;
+            order.retain(|terminal_id| terminal_id != id);
+        }
+
+        terminal
+    }
+
+    pub async fn reorder_terminals(&self, ordered_ids: Vec<String>) -> Result<(), String> {
+        let terms = self.terminals.lock().await;
+        validate_terminal_order(&ordered_ids, terms.keys().map(String::as_str))?;
+
+        let mut order = self.terminal_order.lock().await;
+        *order = ordered_ids;
+        Ok(())
     }
 
     /// Push a host-initiated event to the subscribed client, if any.
@@ -1072,6 +1189,71 @@ mod tests {
 
     async fn create_session(registry: &SessionRegistry) -> Arc<ServerSession> {
         registry.create_named("test", PathBuf::from("/tmp")).await
+    }
+
+    #[test]
+    fn terminal_order_keeps_existing_order_and_appends_missing_by_creation_time() {
+        let mut order = vec![
+            "stale".to_string(),
+            "term-b".to_string(),
+            "term-a".to_string(),
+        ];
+
+        let ordered = ordered_terminal_ids_from_entries(
+            [
+                ("term-a".to_string(), Duration::from_secs(30)),
+                ("term-c".to_string(), Duration::from_secs(10)),
+                ("term-b".to_string(), Duration::from_secs(20)),
+                ("term-d".to_string(), Duration::from_secs(10)),
+            ],
+            &mut order,
+        );
+
+        assert_eq!(ordered, vec!["term-b", "term-a", "term-c", "term-d"]);
+        assert_eq!(order, ordered);
+    }
+
+    #[test]
+    fn terminal_order_tiebreaks_missing_terminals_by_id() {
+        let mut order = Vec::new();
+
+        let ordered = ordered_terminal_ids_from_entries(
+            [
+                ("term-c".to_string(), Duration::from_secs(10)),
+                ("term-a".to_string(), Duration::from_secs(10)),
+                ("term-b".to_string(), Duration::from_secs(10)),
+            ],
+            &mut order,
+        );
+
+        assert_eq!(ordered, vec!["term-a", "term-b", "term-c"]);
+        assert_eq!(order, ordered);
+    }
+
+    #[test]
+    fn terminal_order_validation_accepts_exact_permutation() {
+        let ordered_ids = vec![
+            "term-c".to_string(),
+            "term-a".to_string(),
+            "term-b".to_string(),
+        ];
+
+        assert!(validate_terminal_order(&ordered_ids, ["term-a", "term-b", "term-c"]).is_ok());
+    }
+
+    #[test]
+    fn terminal_order_validation_rejects_partial_duplicate_and_unknown_ids() {
+        assert!(validate_terminal_order(&["term-a".to_string()], ["term-a", "term-b"]).is_err());
+        assert!(validate_terminal_order(
+            &["term-a".to_string(), "term-a".to_string()],
+            ["term-a", "term-b"]
+        )
+        .is_err());
+        assert!(validate_terminal_order(
+            &["term-a".to_string(), "missing".to_string()],
+            ["term-a", "term-b"]
+        )
+        .is_err());
     }
 
     #[tokio::test]
