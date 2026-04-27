@@ -1,7 +1,6 @@
 use std::ops::Range;
 use std::rc::Rc;
 
-use gpui::prelude::FluentBuilder;
 use gpui::*;
 use tracing::*;
 
@@ -32,9 +31,7 @@ pub struct EditorView {
     buffer: Buffer,
     highlighter: Highlighter,
     theme: SyntaxTheme,
-    cursor_offset: usize,
     scroll_handle: UniformListScrollHandle,
-    focus_handle: FocusHandle,
     /// Cached line data shared with the uniform_list closure via Rc.
     /// Only rebuilt when the buffer content changes.
     cached_lines: Rc<Vec<CachedLine>>,
@@ -51,28 +48,25 @@ pub struct EditorView {
 
 impl EditorView {
     /// Create with automatic language detection from filename.
-    pub fn new(cx: &mut App) -> Self {
+    pub fn new(_cx: &mut App) -> Self {
         Self::build(
             "".to_string(),
             Highlighter::from_language(Language::PlainText),
-            cx,
         )
     }
 
-    pub fn new_with_content(filename: &str, content: String, cx: &mut App) -> Self {
+    pub fn new_with_content(filename: &str, content: String, _cx: &mut App) -> Self {
         let mut highlighter = Highlighter::from_filename(filename);
         highlighter.parse(&content);
-        Self::build(content, highlighter, cx)
+        Self::build(content, highlighter)
     }
 
-    fn build(content: String, highlighter: Highlighter, cx: &mut App) -> Self {
+    fn build(content: String, highlighter: Highlighter) -> Self {
         Self {
             buffer: Buffer::new(content),
             highlighter,
             theme: SyntaxTheme::default_dark(),
-            cursor_offset: 0,
             scroll_handle: UniformListScrollHandle::new(),
-            focus_handle: cx.focus_handle(),
             cached_lines: Rc::new(Vec::new()),
             lines_dirty: true,
             h_scroll_offset: 0.0,
@@ -87,7 +81,6 @@ impl EditorView {
         self.highlighter = Highlighter::from_filename(filename);
         self.buffer.set_text(content);
         self.highlighter.parse(self.buffer.text());
-        self.cursor_offset = 0;
         self.lines_dirty = true;
         self.h_scroll_offset = 0.0;
         self.h_scroll_active = false;
@@ -110,84 +103,6 @@ impl EditorView {
         self.max_line_chars = lines.iter().map(|l| l.text.len()).max().unwrap_or(0);
         self.cached_lines = Rc::new(lines);
         self.lines_dirty = false;
-    }
-
-    fn move_cursor_left(&mut self) {
-        if self.cursor_offset > 0 {
-            let text = self.buffer.text();
-            self.cursor_offset = text[..self.cursor_offset]
-                .char_indices()
-                .next_back()
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-        }
-    }
-
-    fn move_cursor_right(&mut self) {
-        let text = self.buffer.text();
-        if self.cursor_offset < text.len() {
-            self.cursor_offset = text[self.cursor_offset..]
-                .char_indices()
-                .nth(1)
-                .map(|(i, _)| self.cursor_offset + i)
-                .unwrap_or(text.len());
-        }
-    }
-
-    fn move_cursor_up(&mut self) {
-        let (row, col) = self.buffer.offset_to_point(self.cursor_offset);
-        if row > 0 {
-            self.cursor_offset = self.buffer.point_to_offset(row - 1, col);
-        }
-    }
-
-    fn move_cursor_down(&mut self) {
-        let (row, col) = self.buffer.offset_to_point(self.cursor_offset);
-        if row + 1 < self.buffer.line_count() {
-            self.cursor_offset = self.buffer.point_to_offset(row + 1, col);
-        }
-    }
-
-    fn insert_char(&mut self, character: &str) {
-        self.buffer.insert(self.cursor_offset, character);
-        self.cursor_offset += character.len();
-        self.highlighter.parse(self.buffer.text());
-        self.lines_dirty = true;
-    }
-
-    fn insert_newline(&mut self) {
-        self.buffer.insert(self.cursor_offset, "\n");
-        self.cursor_offset += 1;
-        self.highlighter.parse(self.buffer.text());
-        self.lines_dirty = true;
-    }
-
-    fn backspace(&mut self) {
-        if self.cursor_offset > 0 {
-            let prev = self.buffer.text()[..self.cursor_offset]
-                .char_indices()
-                .next_back()
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-            self.buffer.delete(prev..self.cursor_offset);
-            self.cursor_offset = prev;
-            self.highlighter.parse(self.buffer.text());
-            self.lines_dirty = true;
-        }
-    }
-
-    fn delete_forward(&mut self) {
-        let text = self.buffer.text();
-        if self.cursor_offset < text.len() {
-            let next = text[self.cursor_offset..]
-                .char_indices()
-                .nth(1)
-                .map(|(i, _)| self.cursor_offset + i)
-                .unwrap_or(text.len());
-            self.buffer.delete(self.cursor_offset..next);
-            self.highlighter.parse(self.buffer.text());
-            self.lines_dirty = true;
-        }
     }
 
     /// Compute syntax highlights for a single line, with byte ranges relative
@@ -217,12 +132,6 @@ impl EditorView {
     }
 }
 
-impl Focusable for EditorView {
-    fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.focus_handle.clone()
-    }
-}
-
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Rebuild line cache only when buffer content changed.
@@ -233,7 +142,6 @@ impl Render for EditorView {
         }
 
         let line_count = self.cached_lines.len();
-        let (cursor_row, cursor_col) = self.buffer.offset_to_point(self.cursor_offset);
         let cached_lines = self.cached_lines.clone();
         let bottom_inset = f32::max(platform_bridge::home_indicator_inset(), BOTTOM_INSET_MIN);
         // uniform_list forces all items to the same height (item 0's measured height = LINE_HEIGHT).
@@ -258,52 +166,6 @@ impl Render for EditorView {
             .size_full()
             .bg(rgb(0x0e0c0c))
             .font_family(fonts::MONO_FONT_FAMILY)
-            .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                let keystroke = &event.keystroke;
-                let handled = match keystroke.key.as_str() {
-                    "backspace" => {
-                        this.backspace();
-                        true
-                    }
-                    "delete" => {
-                        this.delete_forward();
-                        true
-                    }
-                    "enter" => {
-                        this.insert_newline();
-                        true
-                    }
-                    "left" => {
-                        this.move_cursor_left();
-                        true
-                    }
-                    "right" => {
-                        this.move_cursor_right();
-                        true
-                    }
-                    "up" => {
-                        this.move_cursor_up();
-                        true
-                    }
-                    "down" => {
-                        this.move_cursor_down();
-                        true
-                    }
-                    _ => false,
-                };
-                if !handled {
-                    if let Some(ref key_char) = keystroke.key_char {
-                        if !keystroke.modifiers.control
-                            && !keystroke.modifiers.alt
-                            && !keystroke.modifiers.platform
-                        {
-                            this.insert_char(key_char);
-                        }
-                    }
-                }
-                cx.notify();
-            }))
             .on_scroll_wheel(
                 cx.listener(move |this, event: &ScrollWheelEvent, _window, cx| {
                     let (delta_x, delta_y) = match event.delta {
@@ -338,89 +200,85 @@ impl Render for EditorView {
                 }),
             )
             .child(
-                uniform_list("editor-lines", line_count + extra_items, {
-                    let text_style = text_style.clone();
-                    move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
-                        range
-                            .map(|line| -> AnyElement {
-                                // Trailing spacer items for bottom safe-area clearance.
-                                // Each renders at LINE_HEIGHT (uniform_list enforces uniform height),
-                                // so extra_items * LINE_HEIGHT >= bottom_inset.
-                                if line >= line_count {
-                                    return div().h(px(LINE_HEIGHT)).into_any_element();
-                                }
+                selection_area(
+                    uniform_list("editor-lines", line_count + extra_items, {
+                        let text_style = text_style.clone();
+                        move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
+                            range
+                                .map(|line| -> AnyElement {
+                                    // Trailing spacer items for bottom safe-area clearance.
+                                    // Each renders at LINE_HEIGHT (uniform_list enforces uniform height),
+                                    // so extra_items * LINE_HEIGHT >= bottom_inset.
+                                    if line >= line_count {
+                                        return div().h(px(LINE_HEIGHT)).into_any_element();
+                                    }
 
-                                let cached = &cached_lines[line];
-                                let show_cursor = cursor_row == line;
+                                    let cached = &cached_lines[line];
 
-                                let styled_text = if cached.text.is_empty() {
-                                    StyledText::new(" ")
-                                        .with_default_highlights(&text_style, Vec::new())
-                                } else {
-                                    StyledText::new(cached.text.clone()).with_default_highlights(
-                                        &text_style,
-                                        cached.highlights.clone(),
-                                    )
-                                };
+                                    let styled_text = if cached.text.is_empty() {
+                                        StyledText::new(" ")
+                                            .with_default_highlights(&text_style, Vec::new())
+                                    } else {
+                                        StyledText::new(cached.text.clone())
+                                            .with_default_highlights(
+                                                &text_style,
+                                                cached.highlights.clone(),
+                                            )
+                                    }
+                                    .selectable()
+                                    .selection_order(line as u64)
+                                    .selection_separator_after(if line + 1 < line_count {
+                                        "\n"
+                                    } else {
+                                        ""
+                                    });
 
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .h(px(LINE_HEIGHT))
-                                    .child(
-                                        div()
-                                            .w(px(GUTTER_WIDTH))
-                                            .h(px(LINE_HEIGHT))
-                                            .flex()
-                                            .items_center()
-                                            .justify_end()
-                                            .pr_2()
-                                            .text_color(hsla(0.0, 0.0, 0.83, 0.3))
-                                            .text_size(px(GUTTER_FONT_SIZE))
-                                            .child(cached.number.clone()),
-                                    )
-                                    .child(
-                                        // Clip container — stays within the row's flex width.
-                                        div()
-                                            .flex_1()
-                                            .h(px(LINE_HEIGHT))
-                                            .overflow_hidden()
-                                            .relative()
-                                            .child(
-                                                // Scrollable content — shifted left by h_scroll_offset.
-                                                div()
-                                                    .absolute()
-                                                    .top(px(0.0))
-                                                    .left(px(-h_scroll_offset))
-                                                    .h(px(LINE_HEIGHT))
-                                                    .flex()
-                                                    .items_center()
-                                                    .text_size(px(FONT_SIZE))
-                                                    .relative()
-                                                    .when(show_cursor, |this| {
-                                                        let char_width = FONT_SIZE * 0.6;
-                                                        let cursor_x =
-                                                            cursor_col as f32 * char_width;
-                                                        this.child(
-                                                            div()
-                                                                .absolute()
-                                                                .left(px(cursor_x))
-                                                                .top(px(0.0))
-                                                                .w(px(2.0))
-                                                                .h(px(LINE_HEIGHT))
-                                                                .bg(rgb(0x528bff)),
-                                                        )
-                                                    })
-                                                    .child(styled_text),
-                                            ),
-                                    )
-                                    .into_any_element()
-                            })
-                            .collect()
-                    }
-                })
-                .track_scroll(&self.scroll_handle)
-                .flex_1(),
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .h(px(LINE_HEIGHT))
+                                        .child(
+                                            div()
+                                                .w(px(GUTTER_WIDTH))
+                                                .h(px(LINE_HEIGHT))
+                                                .flex()
+                                                .items_center()
+                                                .justify_end()
+                                                .pr_2()
+                                                .text_color(hsla(0.0, 0.0, 0.83, 0.3))
+                                                .text_size(px(GUTTER_FONT_SIZE))
+                                                .child(cached.number.clone()),
+                                        )
+                                        .child(
+                                            // Clip container — stays within the row's flex width.
+                                            div()
+                                                .flex_1()
+                                                .h(px(LINE_HEIGHT))
+                                                .overflow_hidden()
+                                                .relative()
+                                                .child(
+                                                    // Scrollable content — shifted left by h_scroll_offset.
+                                                    div()
+                                                        .absolute()
+                                                        .top(px(0.0))
+                                                        .left(px(-h_scroll_offset))
+                                                        .h(px(LINE_HEIGHT))
+                                                        .flex()
+                                                        .items_center()
+                                                        .text_size(px(FONT_SIZE))
+                                                        .relative()
+                                                        .child(styled_text),
+                                                ),
+                                        )
+                                        .into_any_element()
+                                })
+                                .collect()
+                        }
+                    })
+                    .track_scroll(&self.scroll_handle)
+                    .flex_1(),
+                )
+                .id("code-editor-selection"),
             )
     }
 }
