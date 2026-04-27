@@ -16,6 +16,17 @@
 6. Expected: file explorer root entries and git status are already loaded without waiting for the first drawer open to trigger them
 7. Navigate to terminal — verify PTY works (shell prompt, keystrokes echo)
 
+## 1a. Host Info Subscription
+
+1. Start host daemon: `zedra start --workdir .`
+2. Connect from the app and open the workspace drawer
+3. Switch to the Session tab
+4. Expected within 5 seconds: CPU, RAM, uptime, and battery rows appear when the host exposes battery data
+5. Leave the Session tab open for at least 15 seconds while running a CPU or memory load on the host
+6. Expected: CPU/RAM values update roughly every 5 seconds without reconnecting or refreshing the drawer
+7. Disconnect the app
+8. Expected: host logs show no repeated host-info send errors after the stream closes
+
 ## 2. QR Already Consumed
 
 1. Start host: `zedra start --workdir .`
@@ -115,14 +126,18 @@ Expected: host connects to the specified relay; QR shows that relay URL in
 
 ```bash
 printf 'src/main.rs:12:3\ngit:(refactor-app-session-architecture)\nhello\nREADME\nv0.112.0\ngpt-5.4\n/model\n'
+printf '\033]8;;file://%s/src/main.rs:12:3\033\\src/main.rs:12:3\033]8;;\033\\\n' "$PWD"
+printf '\033]8;;https://zedra.dev\033\\zedra.dev\033]8;;\033\\\n'
 ```
 
-3. Expected before tapping: `src/main.rs:12:3` shows a subtle underline; `git:(refactor-app-session-architecture)`, `hello`, `README`, `v0.112.0`, `gpt-5.4`, and `/model` do not
-4. Tap `src/main.rs:12:3`
+3. Expected before tapping: only the OSC 8 `src/main.rs:12:3` and `zedra.dev` rows show a subtle underline; the plain `src/main.rs:12:3`, `git:(refactor-app-session-architecture)`, `hello`, `README`, `v0.112.0`, `gpt-5.4`, and `/model` rows do not
+4. Tap the underlined OSC 8 `src/main.rs:12:3`
 5. Expected: the terminal file preview opens for `src/main.rs` at line/column metadata
 6. Expected: the preview header metadata and code body both render with the app monospace font rather than a proportional fallback
-7. Tap `git:(refactor-app-session-architecture)`, `hello`, `README`, `v0.112.0`, `gpt-5.4`, and `/model`
-8. Expected: none of those tokens are treated as hyperlinks and no preview sheet opens
+7. Tap the underlined OSC 8 `zedra.dev`
+8. Expected: the URL opens externally
+9. Tap the plain `src/main.rs:12:3`, `git:(refactor-app-session-architecture)`, `hello`, `README`, `v0.112.0`, `gpt-5.4`, and `/model`
+10. Expected: none of those tokens are treated as hyperlinks and no preview sheet opens
 
 ## 10. Connecting Overlay Layout On Wide Screens
 
@@ -143,6 +158,10 @@ printf 'src/main.rs:12:3\ngit:(refactor-app-session-architecture)\nhello\nREADME
 7. Expected: the software keyboard dismisses, terminal focus is cleared, and the keyboard does not immediately reopen
 8. Tap the terminal a third time
 9. Expected: the terminal becomes focused again and the software keyboard reopens on that first tap after dismissal
+10. Dismiss the keyboard through a platform control or hardware-keyboard state while the terminal remains focused, then tap the terminal again
+11. Expected: the terminal stays focused and the software keyboard reopens
+12. With the keyboard visible, drag vertically in terminal content to scroll scrollback or a terminal app that handles touch scroll
+13. Expected: the terminal scrolls without dismissing the keyboard or clearing terminal focus
 
 ## 11a. Terminal Scroll To Bottom Native Button On iOS
 
@@ -168,6 +187,15 @@ printf 'src/main.rs:12:3\ngit:(refactor-app-session-architecture)\nhello\nREADME
 4. Expected: the quick action panel closes, the app switches to the workspace screen, and the tapped terminal becomes the main view
 5. Repeat from the workspace screen with a different terminal card
 6. Expected: the selected terminal becomes active immediately without getting stuck on the previous screen or terminal
+
+## 12a. Drawer Terminal List Stability During Network Reports
+
+1. Connect to a session with at least two open terminals
+2. Open the workspace drawer and switch to the Terminals tab
+3. Leave the drawer open until the client logs `net report changed`
+4. Expected: terminal cards remain visible and stable; the list does not disappear and reappear
+5. Switch to the Session tab while network/path details update, then switch back to Terminals
+6. Expected: the same terminal cards are still visible and ordered consistently
 
 ## 13. Drawer Close Tap During Snap
 
@@ -195,6 +223,8 @@ printf 'src/main.rs:12:3\ngit:(refactor-app-session-architecture)\nhello\nREADME
 9. Expected: the diff view shows the untracked file content as added lines
 10. Long-press a file entry
 11. Expected: the file action sheet opens for that entry instead of doing nothing
+12. Tap the dimmed backdrop outside the action sheet
+13. Expected: the native action sheet dismisses without staging or unstaging the file
 
 ## 15. Markdown List Item Wrap In Preview
 
@@ -243,6 +273,40 @@ printf '/tmp/zedra-markdown-selection.md:1\n'
 11. Tap `Copy`
 12. Expected: the selection menu dismisses cleanly and the preview remains responsive to scrolling and link taps afterward
 
+## 16a. iOS Native Selection In Code Preview
+
+1. Connect to a session on iPhone or iOS simulator and open the terminal view
+2. Run:
+
+```bash
+cat >/tmp/zedra-code-selection.rs <<'EOF'
+fn main() {
+    let answer = 42;
+    println!("{answer}");
+}
+EOF
+printf '\033]8;;file:///tmp/zedra-code-selection.rs:1:1\033\\/tmp/zedra-code-selection.rs:1\033]8;;\033\\\n'
+```
+
+3. Tap `/tmp/zedra-code-selection.rs:1`
+4. Expected: the preview opens in code editor mode
+5. Expected: the code view does not show the old blue logical caret
+6. Long-press inside a code line
+7. Expected: native iOS selection handles and the system edit menu appear for the code text
+8. Open a small code file from the workspace drawer so the code editor is visible as the main workspace view
+9. Tap the workspace header drawer and quick-action buttons
+10. Expected: the header buttons open their overlays immediately instead of waiting for selection recognition or starting selection in the code editor below
+11. With the workspace drawer open over the code editor, tap drawer tabs and controls
+12. Expected: drawer touches interact with the drawer immediately, including active tab changes, and do not start selection in the editor behind it
+13. With a code selection active, tap the workspace header or open drawer controls
+14. Expected: the selection dismisses and the tapped control responds immediately
+15. With a code selection active, tap empty space inside the editor but outside any code text
+16. Expected: the native selection dismisses instead of leaving stuck handles
+17. Drag a selection handle into empty horizontal or vertical space inside the editor
+18. Expected: the handle tracks to the nearest sensible text boundary instead of jumping to select all text before or after the handle
+19. Tap the code view and type with a hardware keyboard
+20. Expected: the file content remains unchanged because the editor is read-only
+
 ## 17. Native Confirmations For Terminal Delete And Session Disconnect
 
 1. Connect to a session with at least two terminals open
@@ -262,20 +326,32 @@ printf '/tmp/zedra-markdown-selection.md:1\n'
 
 ## 18. Workspace Header Terminal Title + Agent Icon
 
-Requires shell integration emitting OSC 133/633/1337 (zsh + iTerm2 integration,
-or VS Code shell integration).
+Zedra currently uses OSC 1 icon-name updates as the primary active-agent signal.
+Shells should emit the command name as OSC 1 when an AI CLI starts, then a
+non-agent prompt/path icon name when the shell returns to prompt.
 
 1. Open a workspace, open a terminal.
-2. Type `claude` (or `opencode`, `codex`, `gemini`) — wait for prompt.
+2. Type `claude` (or another supported AI CLI such as `opencode`, `codex`,
+   `gemini`, `amp`, `cline`, `cursor-agent`, `goose`, `hermes-agent`,
+   `junie`, `kilo`, `openclaw`, `openhands`, `pi`, `qodercli`, `qwen`, or
+   `trae-cli`) and observe it while running, then exit and wait for the shell
+   prompt.
 
 Expected:
 - Header subtitle (below project name) updates from cwd to the terminal title.
-- Agent icon appears to the left of the subtitle matching the running CLI
-  (claude/opencode/openai/gemini/copilot).
+- Agent icon appears in the header and terminal card matching the running CLI,
+  based on OSC 1 icon-name updates rather than terminal title text.
+- If the agent changes the terminal title while running, the icon remains
+  stable.
 - After the agent exits and shell returns to prompt, icon disappears;
-  subtitle shows the last title (or falls back to cwd).
+  subtitle shows the last title (or falls back to cwd), even if the title still
+  mentions the agent.
 - Switching to a different terminal in the drawer updates header to the
   active terminal's title + icon.
+- Relaunch the client app while an AI CLI command is still running in the
+  remote terminal. Expected: after reconnect/reattach, the terminal card and
+  workspace header restore the agent icon from host-persisted OSC 1 metadata
+  without waiting for a new command to start or a new OSC 1 event to arrive.
 
 ## 19. Xcode Rust Build Target
 
@@ -286,3 +362,9 @@ Expected:
 5. Expected: the build log shows `ZedraRustFFI`, then `Building Rust for Xcode (..., iphoneos, ...)`, before `ProcessXCFramework`
 6. Switch the scheme configuration to Release and press Build
 7. Expected: the Rust build log includes `Release mode enabled`
+
+## 20. iOS Portrait Orientation Lock
+
+1. Launch the app on an iPhone or iOS simulator in portrait orientation
+2. Rotate the device or simulator to landscape left and landscape right
+3. Expected: Zedra remains in upright portrait orientation and does not relayout into a landscape window
