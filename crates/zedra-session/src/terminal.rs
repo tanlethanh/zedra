@@ -116,7 +116,9 @@ impl RemoteTerminal {
             loop {
                 match irpc_output_rx.recv().await {
                     Ok(Some(output)) => {
-                        terminal_inner.update_seq(output.seq);
+                        if output.seq != 0 {
+                            terminal_inner.update_seq(output.seq);
+                        }
                         if let Err(e) = output_tx.send(output.data).await {
                             warn!("failed to forward terminal output: {:?}", e);
                         }

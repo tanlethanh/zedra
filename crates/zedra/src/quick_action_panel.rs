@@ -241,6 +241,7 @@ impl Render for QuickActionPanel {
                         is_active,
                         title: meta.title,
                         cwd: meta.cwd,
+                        agent_icon: meta.agent_icon,
                         shell_state: meta.shell_state,
                         last_exit_code: meta.last_exit_code,
                         on_close: Some(on_close),

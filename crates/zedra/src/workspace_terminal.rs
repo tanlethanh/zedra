@@ -212,13 +212,14 @@ impl WorkspaceTerminal {
                         match event {
                             OscEvent::Title(title) => ts.set_title(&id, Some(title.clone())),
                             OscEvent::ResetTitle => ts.set_title(&id, None),
+                            OscEvent::IconName(name) => ts.set_icon_name(&id, name.clone()),
                             OscEvent::Cwd(cwd) => ts.set_cwd(&id, cwd.clone()),
                             OscEvent::CommandLine(cmd) => ts.set_current_command(&id, cmd.clone()),
                             OscEvent::CommandStart => ts.set_shell_running(&id),
                             OscEvent::CommandEnd { exit_code } => {
                                 ts.set_shell_idle(&id, Some(*exit_code))
                             }
-                            OscEvent::PromptReady => ts.set_shell_idle(&id, None),
+                            OscEvent::PromptReady => ts.set_prompt_ready(&id),
                             _ => return,
                         }
                         cx.notify();

@@ -407,6 +407,8 @@ pub struct TerminalSyncEntry {
     pub last_seq: u64,
     pub title: Option<String>,
     pub cwd: Option<String>,
+    #[serde(default)]
+    pub icon_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -980,6 +982,7 @@ mod tests {
                 last_seq: 42,
                 title: Some("shell".into()),
                 cwd: Some("/workspace".into()),
+                icon_name: Some("codex".into()),
             }],
         };
         let encoded = postcard::to_allocvec(&result).unwrap();
@@ -988,6 +991,7 @@ mod tests {
         assert_eq!(decoded.session_token, [9u8; 32]);
         assert_eq!(decoded.terminals.len(), 1);
         assert_eq!(decoded.terminals[0].last_seq, 42);
+        assert_eq!(decoded.terminals[0].icon_name.as_deref(), Some("codex"));
     }
 
     #[test]

@@ -12,7 +12,7 @@ use crate::host_info;
 use crate::identity::SharedIdentity;
 use crate::pty::{ShellSession, SpawnOptions};
 use crate::session_registry::{
-    AttachResult, ConsumeSlotResult, HostTermMeta, OutputSenderSlot, ServerSession,
+    AttachResult, ConsumeSlotResult, HostShellState, HostTermMeta, OutputSenderSlot, ServerSession,
     SessionRegistry, TermBacklog, TermSession, MAX_WATCHED_PATHS_PER_SESSION,
 };
 use anyhow::Result;
@@ -23,7 +23,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use zedra_osc::OscEvent;
 use zedra_rpc::proto::*;
 use zedra_telemetry::Event;
 
@@ -81,21 +80,112 @@ fn ts() -> String {
     )
 }
 
-/// Build a synthetic OSC preamble encoding cached title/CWD.
+/// Build a synthetic OSC preamble encoding cached terminal metadata.
 /// Sent as seq=0 on TermAttach so the client seeds its meta from the PTY stream.
-fn encode_meta_preamble(title: &Option<String>, cwd: &Option<String>) -> Vec<u8> {
+fn encode_meta_preamble(meta: &HostTermMeta) -> Vec<u8> {
     let mut out = Vec::new();
-    if let Some(t) = title {
+    if let Some(t) = &meta.title {
         out.extend_from_slice(b"\x1b]2;");
         out.extend_from_slice(t.as_bytes());
         out.push(0x07);
     }
-    if let Some(c) = cwd {
+    if let Some(name) = &meta.icon_name {
+        out.extend_from_slice(b"\x1b]1;");
+        out.extend_from_slice(name.as_bytes());
+        out.push(0x07);
+    }
+    if let Some(c) = &meta.cwd {
         out.extend_from_slice(b"\x1b]7;file://");
         out.extend_from_slice(c.as_bytes());
         out.push(0x07);
     }
+
+    match meta.shell_state {
+        HostShellState::Running => {
+            if let Some(command) = &meta.current_command {
+                out.extend_from_slice(b"\x1b]633;E;");
+                out.extend_from_slice(escape_osc633(command).as_bytes());
+                out.push(0x07);
+            }
+            out.extend_from_slice(b"\x1b]633;C\x07");
+        }
+        HostShellState::Idle => {
+            if let Some(exit_code) = meta.last_exit_code {
+                out.extend_from_slice(b"\x1b]633;D;");
+                out.extend_from_slice(exit_code.to_string().as_bytes());
+                out.push(0x07);
+            } else {
+                out.extend_from_slice(b"\x1b]633;A\x07");
+            }
+        }
+        HostShellState::Unknown => {}
+    }
     out
+}
+
+fn escape_osc633(raw: &str) -> String {
+    let mut escaped = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        match ch {
+            '\\' | ';' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+#[cfg(test)]
+mod terminal_meta_preamble_tests {
+    use super::*;
+    use zedra_osc::{OscEvent, OscScanner};
+
+    #[test]
+    fn running_preamble_replays_command_before_start() {
+        let meta = HostTermMeta {
+            title: Some("Editing terminal_state.rs".to_owned()),
+            icon_name: Some("codex".to_owned()),
+            cwd: Some("/Users/thomasle/projects/zedra".to_owned()),
+            current_command: Some("npx @openai/codex --prompt 'a;b'".to_owned()),
+            shell_state: HostShellState::Running,
+            last_exit_code: None,
+            ..HostTermMeta::default()
+        };
+
+        let bytes = encode_meta_preamble(&meta);
+        let events = OscScanner::new().feed(&bytes);
+
+        assert!(
+            matches!(&events[0], OscEvent::Title(title) if title == "Editing terminal_state.rs")
+        );
+        assert!(matches!(&events[1], OscEvent::IconName(icon_name) if icon_name == "codex"));
+        assert!(
+            matches!(&events[2], OscEvent::Cwd(cwd) if cwd == "/Users/thomasle/projects/zedra")
+        );
+        assert!(
+            matches!(&events[3], OscEvent::CommandLine(command) if command == "npx @openai/codex --prompt 'a;b'")
+        );
+        assert!(matches!(events[4], OscEvent::CommandStart));
+    }
+
+    #[test]
+    fn idle_preamble_replays_last_exit_code() {
+        let meta = HostTermMeta {
+            shell_state: HostShellState::Idle,
+            last_exit_code: Some(17),
+            ..HostTermMeta::default()
+        };
+
+        let bytes = encode_meta_preamble(&meta);
+        let events = OscScanner::new().feed(&bytes);
+
+        assert!(matches!(
+            events.as_slice(),
+            [OscEvent::CommandEnd { exit_code: 17 }]
+        ));
+    }
 }
 
 fn short_key(key: &[u8; 32]) -> String {
@@ -936,18 +1026,13 @@ pub async fn create_terminal(
                     let data = buf[..n].to_vec();
 
                     // Scan for OSC sequences to keep the per-terminal metadata
-                    // cache (title, CWD) up to date. This runs on every PTY
+                    // cache up to date. This runs on every PTY
                     // chunk so the host always has the latest values even after
                     // old backlog entries have been evicted.
                     if let Ok(mut m) = host_meta.lock() {
                         let events = m.scanner.feed(&data);
                         for ev in events {
-                            match ev {
-                                OscEvent::Title(t) => m.title = Some(t),
-                                OscEvent::ResetTitle => m.title = None,
-                                OscEvent::Cwd(c) => m.cwd = Some(c),
-                                _ => {}
-                            }
+                            m.apply_osc_event(&ev);
                         }
                     }
 
@@ -1443,17 +1528,18 @@ async fn dispatch(
                 }
             }
 
-            // Synthetic metadata preamble (seq=0): inject cached title/CWD so
-            // the client seeds TerminalMeta even when those OSC sequences were
-            // evicted from the backlog. seq=0 is a reserved marker; the client
-            // pump processes its data but skips seq tracking and gap detection.
+            // Synthetic metadata preamble (seq=0): inject cached OSC terminal
+            // metadata so the client seeds TerminalMeta even when those OSC
+            // sequences were evicted from the backlog. seq=0 is a reserved
+            // marker; the client pump processes its data but skips seq
+            // tracking and gap detection.
             // Extract the preamble bytes while holding the sync lock, then send
             // after releasing it to avoid holding a MutexGuard across an await.
             let preamble: Option<Vec<u8>> = {
                 let terms = session.terminals.lock().await;
                 terms.get(&term_id).and_then(|term| {
                     term.host_meta.lock().ok().and_then(|meta| {
-                        let p = encode_meta_preamble(&meta.title, &meta.cwd);
+                        let p = encode_meta_preamble(&meta);
                         if p.is_empty() {
                             None
                         } else {

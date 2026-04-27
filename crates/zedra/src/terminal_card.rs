@@ -22,6 +22,7 @@ pub struct TerminalCardProps {
     pub is_active: bool,
     pub title: Option<String>,
     pub cwd: Option<String>,
+    pub agent_icon: Option<&'static str>,
     pub shell_state: ShellState,
     pub last_exit_code: Option<i32>,
     pub on_close: Option<Box<dyn Fn(&PressEvent, &mut Window, &mut App) + 'static>>,
@@ -45,28 +46,6 @@ fn cwd_last(cwd: &str) -> &str {
         .map(|i| &cwd[i + 1..])
         .filter(|s| !s.is_empty())
         .unwrap_or(cwd)
-}
-
-/// Detect a known AI agent from the OSC 2 title or the running command line
-/// and return its brand icon path. Title takes precedence — agents like Claude
-/// Code set a descriptive title, but some CLIs only surface the command name.
-/// Returns `None` when neither source matches a known agent.
-pub fn agent_icon(title: Option<&str>, command: Option<&str>) -> Option<&'static str> {
-    for raw in [title, command].into_iter().flatten() {
-        let low = raw.to_ascii_lowercase();
-        if low.contains("claude") {
-            return Some("icons/claude.svg");
-        } else if low.contains("opencode") || raw.contains("OC |") {
-            return Some("icons/opencode.svg");
-        } else if low.contains("codex") || low.contains("openai") {
-            return Some("icons/openai.svg");
-        } else if low.contains("gemini") {
-            return Some("icons/gemini.svg");
-        } else if low.contains("copilot") {
-            return Some("icons/copilot.svg");
-        }
-    }
-    None
 }
 
 /// Strip the `user@host:` prefix that default PS1 configs embed in OSC 2 titles.
@@ -119,7 +98,7 @@ pub fn render_terminal_card(props: TerminalCardProps) -> Stateful<Div> {
     let card_id = SharedString::from(format!("term-card-{}", props.id));
     let close_btn_id = SharedString::from(format!("term-close-{}", props.id));
     let is_active = props.is_active;
-    let icon_path = agent_icon(props.title.as_deref(), None).unwrap_or("icons/terminal.svg");
+    let icon_path = props.agent_icon.unwrap_or("icons/terminal.svg");
 
     // Build the right-side indicator up front so we can move on_close without borrow issues.
     let right_element: AnyElement = if let Some(close_fn) = props.on_close {

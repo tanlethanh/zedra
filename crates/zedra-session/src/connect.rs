@@ -924,12 +924,14 @@ mod tests {
                     last_seq: 4,
                     title: None,
                     cwd: None,
+                    icon_name: None,
                 },
                 TerminalSyncEntry {
                     id: "term-3".to_string(),
                     last_seq: 9,
                     title: None,
                     cwd: None,
+                    icon_name: None,
                 },
             ],
             None,
@@ -955,6 +957,7 @@ mod tests {
                 last_seq: 0,
                 title: None,
                 cwd: None,
+                icon_name: None,
             }],
             Some(std::slice::from_ref(&old_terminal)),
         );
@@ -975,6 +978,7 @@ mod tests {
                 last_seq: 5,
                 title: None,
                 cwd: None,
+                icon_name: None,
             }],
             Some(std::slice::from_ref(&existing)),
         );
@@ -994,6 +998,7 @@ mod tests {
                 last_seq: 0,
                 title: None,
                 cwd: None,
+                icon_name: None,
             }],
             Some(&[local_only, active_remote]),
         );

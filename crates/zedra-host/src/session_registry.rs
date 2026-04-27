@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use uuid::Uuid;
-use zedra_osc::OscScanner;
+use zedra_osc::{OscEvent, OscScanner};
 use zedra_rpc::proto::{BacklogEntry, HostEvent, TermOutput, TerminalSyncEntry};
 
 // ---------------------------------------------------------------------------
@@ -157,11 +157,15 @@ pub struct OutputSenderSlot {
 /// Per-terminal OSC metadata tracked by the host PTY reader.
 ///
 /// Updated in real-time as PTY output flows through, so the host always has
-/// the latest known title and CWD regardless of backlog eviction.
+/// the latest known terminal metadata regardless of backlog eviction.
 pub struct HostTermMeta {
     pub scanner: OscScanner,
     pub title: Option<String>,
+    pub icon_name: Option<String>,
     pub cwd: Option<String>,
+    pub current_command: Option<String>,
+    pub shell_state: HostShellState,
+    pub last_exit_code: Option<i32>,
 }
 
 impl Default for HostTermMeta {
@@ -169,7 +173,42 @@ impl Default for HostTermMeta {
         Self {
             scanner: OscScanner::new(),
             title: None,
+            icon_name: None,
             cwd: None,
+            current_command: None,
+            shell_state: HostShellState::Unknown,
+            last_exit_code: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HostShellState {
+    #[default]
+    Unknown,
+    Idle,
+    Running,
+}
+
+impl HostTermMeta {
+    pub fn apply_osc_event(&mut self, event: &OscEvent) {
+        match event {
+            OscEvent::Title(title) => self.title = Some(title.clone()),
+            OscEvent::ResetTitle => self.title = None,
+            OscEvent::IconName(name) => self.icon_name = Some(name.clone()),
+            OscEvent::Cwd(cwd) => self.cwd = Some(cwd.clone()),
+            OscEvent::CommandLine(command) => self.current_command = Some(command.clone()),
+            OscEvent::CommandStart => self.shell_state = HostShellState::Running,
+            OscEvent::CommandEnd { exit_code } => {
+                self.shell_state = HostShellState::Idle;
+                self.last_exit_code = Some(*exit_code);
+                self.current_command = None;
+            }
+            OscEvent::PromptReady => {
+                self.shell_state = HostShellState::Idle;
+                self.current_command = None;
+            }
+            _ => {}
         }
     }
 }
@@ -228,7 +267,7 @@ pub struct TermSession {
     pub child: Box<dyn portable_pty::Child + Send + Sync>,
     /// Swappable output sender. Updated on each TermAttach.
     pub output_sender: Arc<std::sync::Mutex<OutputSenderSlot>>,
-    /// Host-side OSC metadata cache (title, CWD). Updated by the PTY reader
+    /// Host-side OSC metadata cache. Updated by the PTY reader
     /// task as output bytes flow through. Used to seed the client on attach.
     pub host_meta: Arc<std::sync::Mutex<HostTermMeta>>,
     /// Per-terminal output backlog (seq + replay entries).
@@ -884,12 +923,12 @@ impl ServerSession {
         let terms = self.terminals.lock().await;
         let mut entries = Vec::with_capacity(terms.len());
         for (id, term) in terms.iter() {
-            let (title, cwd) = term
+            let (title, cwd, icon_name) = term
                 .host_meta
                 .lock()
                 .ok()
-                .map(|meta| (meta.title.clone(), meta.cwd.clone()))
-                .unwrap_or((None, None));
+                .map(|meta| (meta.title.clone(), meta.cwd.clone(), meta.icon_name.clone()))
+                .unwrap_or((None, None, None));
             let last_seq = term
                 .backlog
                 .lock()
@@ -900,6 +939,7 @@ impl ServerSession {
                 last_seq,
                 title,
                 cwd,
+                icon_name,
             });
         }
         entries.sort_by(|a, b| a.id.cmp(&b.id));

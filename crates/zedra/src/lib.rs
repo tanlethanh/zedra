@@ -8,6 +8,7 @@ pub mod app;
 pub mod pending;
 
 // Components
+pub mod agent;
 pub mod button;
 pub mod editor;
 pub mod fonts;

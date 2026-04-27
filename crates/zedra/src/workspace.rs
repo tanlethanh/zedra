@@ -5,14 +5,14 @@ use gpui::{prelude::FluentBuilder as _, *};
 use tokio::sync::broadcast;
 use tracing::*;
 use zedra_rpc::ZedraPairingTicket;
-use zedra_rpc::proto::HostEvent;
+use zedra_rpc::proto::{HostEvent, SyncSessionResult};
 use zedra_session::{ConnectEvent, Session, SessionHandle, SessionState, signer::ClientSigner};
 
 use crate::active_terminal;
 use crate::editor::git_sidebar::GitFileSection;
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
 use crate::platform_bridge::{self, AlertButton, HapticFeedback, status_bar_inset};
-use crate::terminal_card::{agent_icon, strip_ps1_prefix};
+use crate::terminal_card::strip_ps1_prefix;
 use crate::terminal_state::TerminalState;
 use crate::theme;
 use crate::transport_badge::phase_indicator_color;
@@ -187,7 +187,6 @@ impl Workspace {
                                 let session_state = ws.session_state.read(cx).clone();
                                 ws.workspace_state.update(cx, |this, cx| {
                                     this.sync_from_session(ws.session_handle(), &session_state, cx);
-                                    cx.notify();
                                 });
                             })
                             .is_err();
@@ -290,6 +289,9 @@ impl Workspace {
                                 this.sync_from_session(ws.session_handle(), state, cx);
                             });
                         });
+                        if let ConnectEvent::SyncComplete { sync, .. } = &event {
+                            ws.seed_terminal_meta_from_sync(sync, cx);
+                        }
                         sync_refresh_mode
                     }) {
                         Ok(sync_refresh_mode) => sync_refresh_mode,
@@ -374,11 +376,6 @@ impl Workspace {
             });
 
         self.content.update(cx, |c, cx| c.show_connecting_view(cx));
-    }
-
-    /// Called when this workspace becomes the active workspace.
-    pub fn on_activate(&mut self, _cx: &mut Context<Self>) {
-        //
     }
 
     pub fn session_handle(&self) -> &SessionHandle {
@@ -600,7 +597,10 @@ impl Workspace {
         platform_bridge::show_selection(
             "",
             &display_path,
-            vec![AlertButton::default(main_action_label)],
+            vec![
+                AlertButton::default(main_action_label),
+                AlertButton::cancel("Cancel"),
+            ],
             move |selection| {
                 match selection {
                     Some(0) => {
@@ -837,6 +837,25 @@ impl Workspace {
                 content.set_main_view(editor.into(), cx);
             });
         }
+    }
+
+    fn seed_terminal_meta_from_sync(&mut self, sync: &SyncSessionResult, cx: &mut Context<Self>) {
+        if sync.terminals.is_empty() {
+            return;
+        }
+
+        self.terminal_state.update(cx, |state, cx| {
+            for terminal in &sync.terminals {
+                state.set_title(&terminal.id, terminal.title.clone());
+                if let Some(cwd) = &terminal.cwd {
+                    state.set_cwd(&terminal.id, cwd.clone());
+                }
+                if let Some(icon_name) = &terminal.icon_name {
+                    state.set_icon_name(&terminal.id, icon_name.clone());
+                }
+            }
+            cx.notify();
+        });
     }
 
     fn process_pending_confirmation(
@@ -1308,10 +1327,7 @@ impl Render for WorkspaceContent {
                                     } else {
                                         default_subtitle.clone()
                                     };
-                                    let agent_icon_path = agent_icon(
-                                        meta.title.as_deref(),
-                                        meta.current_command.as_deref(),
-                                    );
+                                    let agent_icon_path = meta.agent_icon;
 
                                     div()
                                         .w_full()
