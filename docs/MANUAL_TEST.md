@@ -316,20 +316,24 @@ printf '\033]8;;file:///tmp/zedra-code-selection.rs:1:1\033\\/tmp/zedra-code-sel
 1. Connect to a session with at least two terminals open
 2. Open the workspace drawer Terminals tab and tap the close affordance on one terminal card
 3. Expected: a native confirmation alert appears with `Delete` and `Cancel`
-4. Tap `Cancel`
+4. Tap outside the alert
 5. Expected: the alert dismisses and the terminal card remains visible
-6. Trigger the same delete again and tap `Delete`
-7. Expected: the terminal card is removed from the drawer immediately, without waiting for the remote delete RPC to finish
-8. Expected: if the deleted terminal was the active main view, the main view switches to another terminal
-9. Delete the remaining terminals one by one
-10. Expected: after the last terminal is deleted, the main view shows `No active terminal`
-11. Repeat terminal deletion from the quick action panel
-12. Expected: the same native confirmation alert appears there, and confirmed deletion removes the card immediately
-13. Open the Session tab and tap `Disconnect`
-14. Expected: a native confirmation alert appears with `Disconnect` and `Cancel`
-15. Tap `Cancel`, then retry and tap `Disconnect`
-16. Expected: the session disconnects only after confirmation
-17. Expected: the home workspace card immediately shows the disconnected/reconnect state instead of the old connected state
+6. Trigger the same delete again and tap `Cancel`
+7. Expected: the alert dismisses and the terminal card remains visible
+8. Trigger the same delete again and tap `Delete`
+9. Expected: the terminal card is removed from the drawer immediately, without waiting for the remote delete RPC to finish
+10. Expected: if the deleted terminal was the active main view, the main view switches to another terminal
+11. Delete the remaining terminals one by one
+12. Expected: after the last terminal is deleted, the main view shows `No active terminal`
+13. Repeat terminal deletion from the quick action panel
+14. Expected: the same native confirmation alert appears there, and confirmed deletion removes the card immediately
+15. Open the Session tab and tap `Disconnect`
+16. Expected: a native confirmation alert appears with `Disconnect` and `Cancel`
+17. Tap outside the alert
+18. Expected: the alert dismisses and the session remains connected
+19. Tap `Cancel`, then retry and tap `Disconnect`
+20. Expected: the session disconnects only after confirmation
+21. Expected: the home workspace card immediately shows the disconnected/reconnect state instead of the old connected state
 
 ## 18. Workspace Header Terminal Title + Agent Icon
 

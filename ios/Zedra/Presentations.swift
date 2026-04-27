@@ -101,6 +101,67 @@ private final class PresentationDismissDelegate: NSObject, UIAdaptivePresentatio
     }
 }
 
+private final class AlertOutsideTapDismissHandler: NSObject, UIGestureRecognizerDelegate {
+    private let callbackID: UInt32
+    private weak var alert: UIAlertController?
+    private weak var gestureHost: UIView?
+    private var tapGesture: UITapGestureRecognizer?
+    private var handled = false
+
+    init(callbackID: UInt32, alert: UIAlertController) {
+        self.callbackID = callbackID
+        self.alert = alert
+    }
+
+    func install() {
+        guard let host = alert?.view.window else { return }
+
+        let recognizer = UITapGestureRecognizer(
+            target: self,
+            action: #selector(handleOutsideTap(_:))
+        )
+        recognizer.cancelsTouchesInView = false
+        recognizer.delegate = self
+        host.addGestureRecognizer(recognizer)
+
+        gestureHost = host
+        tapGesture = recognizer
+    }
+
+    func markHandled() {
+        guard !handled else { return }
+        handled = true
+        cleanup()
+    }
+
+    @objc
+    private func handleOutsideTap(_ gesture: UITapGestureRecognizer) {
+        guard gesture.state == .ended, !handled, let alert else { return }
+
+        markHandled()
+        alert.dismiss(animated: true) {
+            zedra_ios_alert_dismiss(self.callbackID)
+        }
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldReceive touch: UITouch
+    ) -> Bool {
+        guard let alertView = alert?.view else { return false }
+        let point = touch.location(in: alertView)
+        return !alertView.bounds.contains(point)
+    }
+
+    private func cleanup() {
+        if let tapGesture {
+            gestureHost?.removeGestureRecognizer(tapGesture)
+        }
+        tapGesture = nil
+        gestureHost = nil
+    }
+}
+
 enum NativePresentationBridge {
     /// Returns the active key window, preferring foreground-active scenes.
     /// Falls back progressively to any visible window, then a last-resort empty window.
@@ -387,6 +448,7 @@ private final class NativeFloatingButtonController {
 
 private enum PresentationCoordinator {
     private static let dismissAssociationKey = "zedra_presentation_dismiss_delegate"
+    private static let alertOutsideTapAssociationKey = "zedra_alert_outside_tap_handler"
 
     static func presentAlert(
         callbackID: UInt32,
@@ -399,15 +461,25 @@ private enum PresentationCoordinator {
             guard let presenter = NativePresentationBridge.topViewController() else { return }
 
             let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+            let outsideTapHandler = AlertOutsideTapDismissHandler(callbackID: callbackID, alert: alert)
+            objc_setAssociatedObject(
+                alert,
+                alertOutsideTapAssociationKey,
+                outsideTapHandler,
+                .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+            )
 
             for index in 0..<buttonLabels.count {
                 let style = buttonStyles[safe: index] ?? .default
                 alert.addAction(UIAlertAction(title: buttonLabels[index], style: style.uiKitStyle) { _ in
+                    outsideTapHandler.markHandled()
                     zedra_ios_alert_result(callbackID, Int32(index))
                 })
             }
 
-            presenter.present(alert, animated: true)
+            presenter.present(alert, animated: true) {
+                outsideTapHandler.install()
+            }
         }
     }
 
