@@ -274,3 +274,13 @@ Expected:
   subtitle shows the last title (or falls back to cwd).
 - Switching to a different terminal in the drawer updates header to the
   active terminal's title + icon.
+
+## 19. Xcode Rust Build Target
+
+1. Open `ios/Zedra.xcworkspace` in Xcode
+2. Select an iOS simulator destination and press Build
+3. Expected: the build log shows `ZedraRustFFI`, then `Building Rust for Xcode (..., iphonesimulator, ...)`, before `ProcessXCFramework`
+4. Select a connected iOS device destination and press Build
+5. Expected: the build log shows `ZedraRustFFI`, then `Building Rust for Xcode (..., iphoneos, ...)`, before `ProcessXCFramework`
+6. Switch the scheme configuration to Release and press Build
+7. Expected: the Rust build log includes `Release mode enabled`

@@ -25,10 +25,11 @@
 
 ### Native-Only Rebuild (~5s vs ~60s)
 
-Skip Rust rebuild when only changing Swift/ObjC:
+Xcode builds run the Rust build target by default. Skip it when only
+changing Swift/ObjC:
 
 ```bash
-cd ios && xcodegen generate && xcodebuild build \
+cd ios && xcodegen generate && ZEDRA_SKIP_RUST_XCODE_BUILD=1 xcodebuild build \
   -project Zedra.xcodeproj -scheme Zedra \
   -destination "id=<DEVICE_ID>" -allowProvisioningUpdates -quiet
 ```
@@ -45,7 +46,8 @@ cd ios && xcodegen generate && xcodebuild build \
 
 ```
 crates/zedra/ (Rust)
-  → cargo build --target aarch64-apple-ios (staticlib)
+  → Xcode Rust build target selects iphoneos or iphonesimulator
+  → cargo build --target aarch64-apple-ios or aarch64-apple-ios-sim (staticlib)
   → xcodebuild -create-xcframework
   → ios/ZedraFFI.xcframework/
   → cd ios && xcodegen generate → Zedra.xcodeproj
@@ -60,6 +62,7 @@ crates/zedra/ (Rust)
 ```
 scripts/
   build-ios.sh        # Rust → ZedraFFI.xcframework
+  xcode-build-rust.sh # Xcode target wrapper around build-ios.sh
   run-ios.sh          # Full pipeline: build + install + launch
   log-ios.sh          # Stream device logs
 
@@ -119,7 +122,20 @@ main.m → UIApplicationMain → ZedraAppDelegate
 
 ### Deployment Target
 
-Must match in `scripts/build-ios.sh` (`IPHONEOS_DEPLOYMENT_TARGET`), `ios/project.yml` (`deploymentTarget.iOS`), and Xcode. Current: `26.0`.
+Must match in `scripts/build-ios.sh` (`IPHONEOS_DEPLOYMENT_TARGET`), `ios/project.yml` (`deploymentTarget.iOS`), and Xcode. Current: `16.0`.
+
+### Xcode Rust Build Target
+
+`ios/project.yml` adds a `ZedraRustFFI` aggregate target that calls
+`scripts/xcode-build-rust.sh` and declares `ZedraFFI.xcframework` as its output.
+The app target depends on `ZedraRustFFI`, so Rust rebuilds before Xcode processes
+the XCFramework for linking. The wrapper reads Xcode's `PLATFORM_NAME`,
+`CONFIGURATION`, and `IPHONEOS_DEPLOYMENT_TARGET`, then invokes `build-ios.sh
+--device` or `build-ios.sh --sim` with `--release` when needed.
+
+Set `ZEDRA_SKIP_RUST_XCODE_BUILD=1` for command-line native-only builds.
+Set `ZEDRA_IOS_BUILD_FLAGS` in a scheme environment to pass extra flags such
+as `--preview` or `--debug`.
 
 ### Linker Flags
 
@@ -135,8 +151,8 @@ Automatic in `ios/project.yml`. Pass `-allowProvisioningUpdates` to xcodebuild.
 
 ## Known Pitfalls
 
-- **Stale xcframework**: always run `build-ios.sh` after Rust changes. Xcode-only rebuild uses old `.a`.
+- **Stale xcframework**: Xcode builds refresh the matching Rust slice through the `ZedraRustFFI` dependency target. If you skip that target or use `--no-build`, run `build-ios.sh` after Rust changes.
 - **New extern "C" call**: must add weak stub in `ios_stub.c` or staticlib will be stale.
-- **xcodegen required**: after editing `project.yml`, run `cd ios && xcodegen generate`.
+- **xcodegen required**: after editing `project.yml`, run `cd ios && xcodegen generate`. `run-ios.sh` does this automatically only when `ios/project.yml` is newer than the generated project; set `ZEDRA_FORCE_XCODEGEN=1` to force regeneration.
 - **Metal device**: iOS uses `system_default()` directly. macOS `isRemovable()`/`isLowPower()` selectors crash on iOS.
 - **`with_input_handler` log spam**: harmless — UIKit queries text input before IosWindow is registered.

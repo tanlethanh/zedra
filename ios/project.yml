@@ -14,6 +14,8 @@ targets:
     sources:
       - path: Zedra
     dependencies:
+      - target: ZedraRustFFI
+        link: false
       - framework: ZedraFFI.xcframework
         embed: false
       # System frameworks required by GPUI (Metal rendering + CoreText)
@@ -33,11 +35,6 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLSchemes: [zedra]
             CFBundleURLName: dev.zedra.app
-    preBuildScripts:
-      - name: "Build Rust FFI"
-        script: |
-          "${SRCROOT}/../scripts/xcode-build-rust.sh"
-        basedOnDependencyAnalysis: false
     postBuildScripts:
       - name: "Firebase Crashlytics dSYM Upload"
         script: "${PODS_ROOT}/FirebaseCrashlytics/run"
@@ -68,3 +65,14 @@ targets:
           INFOPLIST_KEY_CFBundleDisplayName: "Zedra Dev"
         Release:
           PRODUCT_BUNDLE_IDENTIFIER: dev.zedra.app
+
+aggregateTargets:
+  ZedraRustFFI:
+    buildScripts:
+      - name: "Build Rust FFI"
+        script: |
+          "${SRCROOT}/../scripts/xcode-build-rust.sh"
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - "$(SRCROOT)/ZedraFFI.xcframework"
+          - "$(SRCROOT)/ZedraFFI.xcframework/Info.plist"
