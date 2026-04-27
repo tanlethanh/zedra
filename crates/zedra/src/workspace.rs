@@ -406,6 +406,9 @@ impl Workspace {
     /// Programmatically disconnect this workspace.
     pub fn disconnect(&mut self, cx: &mut Context<Self>) {
         self.session.disconnect();
+        self.workspace_state.update(cx, |state, cx| {
+            state.mark_disconnected(cx);
+        });
         cx.emit(WorkspaceEvent::Disconnected);
         cx.notify();
     }

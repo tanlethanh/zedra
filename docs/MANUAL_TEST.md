@@ -258,6 +258,8 @@ printf '/tmp/zedra-markdown-selection.md:1\n'
 11. Expected: a native confirmation alert appears with `Disconnect` and `Cancel`
 12. Tap `Cancel`, then retry and tap `Disconnect`
 13. Expected: the session disconnects only after confirmation
+14. Expected: the home workspace card immediately shows the disconnected/reconnect state instead of the old connected state
+
 ## 18. Workspace Header Terminal Title + Agent Icon
 
 Requires shell integration emitting OSC 133/633/1337 (zsh + iTerm2 integration,

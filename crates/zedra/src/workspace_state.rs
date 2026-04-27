@@ -83,6 +83,20 @@ fn store_path() -> Option<PathBuf> {
 }
 
 impl WorkspaceState {
+    fn clear_runtime_state_for_disconnect(&mut self) {
+        self.connect_phase = Some(ConnectPhase::Disconnected);
+        self.active_terminal_id = None;
+        self.terminal_ids.clear();
+        self.host_info = None;
+    }
+
+    pub fn mark_disconnected(&mut self, cx: &mut Context<Self>) {
+        self.clear_runtime_state_for_disconnect();
+
+        cx.emit(WorkspaceStateEvent::StateChanged);
+        cx.notify();
+    }
+
     pub fn sync_from_session(
         &mut self,
         session_handle: &SessionHandle,
@@ -243,3 +257,42 @@ impl WorkspaceStore {
 }
 
 impl EventEmitter<WorkspaceStateEvent> for WorkspaceState {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disconnect_clears_runtime_state_without_touching_saved_fields() {
+        let mut state = WorkspaceState {
+            endpoint_addr: "endpoint".into(),
+            session_id: "session".into(),
+            project_name: "project".into(),
+            connect_phase: Some(ConnectPhase::Connected),
+            active_terminal_id: Some("terminal-1".into()),
+            terminal_ids: vec!["terminal-1".into(), "terminal-2".into()],
+            host_info: Some(HostInfoSnapshot {
+                captured_at_ms: 100,
+                cpu_usage_percent: 25.0,
+                cpu_count: 8,
+                memory_used_bytes: 1024,
+                memory_total_bytes: 2048,
+                swap_used_bytes: 0,
+                swap_total_bytes: 0,
+                system_uptime_secs: 30,
+                batteries: Vec::new(),
+            }),
+            ..Default::default()
+        };
+
+        state.clear_runtime_state_for_disconnect();
+
+        assert_eq!(state.endpoint_addr, "endpoint");
+        assert_eq!(state.session_id, "session");
+        assert_eq!(state.project_name, "project");
+        assert_eq!(state.connect_phase, Some(ConnectPhase::Disconnected));
+        assert_eq!(state.active_terminal_id, None);
+        assert!(state.terminal_ids.is_empty());
+        assert_eq!(state.host_info, None);
+    }
+}
