@@ -11,9 +11,13 @@ Native presentation stays in UIKit.
 - `platform_bridge` is the Rust entry point for native presentation requests.
 - `ios/Zedra/Presentations.swift` is the Swift presentation layer.
 - `platform_bridge::show_custom_sheet(options, view)` takes the caller-owned GPUI view entity to host in the sheet.
+- `native_floating_button(...)` is a GPUI element wrapper that owns position,
+  lifecycle, and the caller callback while Swift draws the native glass button
+  at the wrapper bounds.
 - UIKit owns:
   - alert
   - selection / action sheet
+  - floating icon button chrome and glass effect
   - sheet detents
   - sheet gestures
   - sheet animation
@@ -106,5 +110,7 @@ Current custom sheet content reads shared state from the main app, then renders 
 Use native components for native behavior.
 
 - alerts and selections: fully native
+- floating icon buttons: GPUI wrapper for position/lifecycle/callback, native
+  chrome
 - custom sheet: native shell + GPUI content
 - QR scanner / dictation preview: separate native flows unless we intentionally generalize them
