@@ -21,7 +21,8 @@ use crate::ui::{DrawerHost, DrawerSide};
 use crate::workspace_action::{self, GoHome, OpenQuickAction, RequestDisconnect};
 use crate::workspace_action::{
     CloseDrawer, CloseTerminal, CreateNewTerminal, GitCommit, GitShowItemActions, GitStage,
-    GitUnstage, OpenFile, OpenGitDiff, OpenTerminal, ShowConnecting, ToggleDrawer,
+    GitUnstage, OpenFile, OpenGitDiff, OpenTerminal, RestartConnection, ShowConnecting,
+    ToggleDrawer,
 };
 use crate::workspace_connecting::WorkspaceConnecting;
 use crate::workspace_drawer::WorkspaceDrawer;
@@ -54,6 +55,7 @@ pub struct Workspace {
     editor: Entity<WorkspaceEditor>,
     gitdiff: Entity<WorkspaceGitdiff>,
     terminals: Vec<Entity<WorkspaceTerminal>>,
+    connection_request: Option<ConnectionRequest>,
     /// Becomes true once a ReconnectStarted event is seen; gates initial auto-open/create.
     seen_reconnect: bool,
     /// Listens for connect events and syncs them into SessionState/WorkspaceState.
@@ -70,6 +72,14 @@ pub struct Workspace {
 enum PendingWorkspaceConfirmation {
     DisconnectSession,
     DeleteTerminal { id: String },
+}
+
+#[derive(Clone)]
+struct ConnectionRequest {
+    addr: iroh::EndpointAddr,
+    ticket: Option<ZedraPairingTicket>,
+    signer: Arc<dyn ClientSigner>,
+    session_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -271,6 +281,7 @@ impl Workspace {
             gitdiff,
             // Terminals will be created after connection is established
             terminals: vec![],
+            connection_request: None,
             seen_reconnect: false,
             _connect_listener: None,
             _host_event_listener: Some(host_event_listener),
@@ -392,11 +403,43 @@ impl Workspace {
         }
 
         let session_id = session_id.or_else(|| ticket.as_ref().map(|t| t.session_id.clone()));
-        self.session
-            .connect(addr, ticket, signer, session_id.clone(), move |_handle| {
-                info!("session {:?} connected", session_id);
-            });
+        let request = ConnectionRequest {
+            addr,
+            ticket,
+            signer,
+            session_id,
+        };
+        self.connection_request = Some(request.clone());
+        self.start_connection(request);
 
+        self.content.update(cx, |c, cx| c.show_connecting_view(cx));
+    }
+
+    fn start_connection(&self, request: ConnectionRequest) {
+        let session_id = request.session_id.clone();
+        self.session.connect(
+            request.addr,
+            request.ticket,
+            request.signer,
+            session_id.clone(),
+            move |_handle| {
+                info!("session {:?} connected", session_id);
+            },
+        );
+    }
+
+    fn restart_connection(&mut self, cx: &mut Context<Self>) {
+        let Some(mut request) = self.connection_request.clone() else {
+            warn!("restart connection requested without a connection request");
+            return;
+        };
+
+        if self.session_state.read(cx).snapshot.register_ms.is_some() {
+            request.ticket = None;
+        }
+
+        info!("restart connection requested");
+        self.start_connection(request);
         self.content.update(cx, |c, cx| c.show_connecting_view(cx));
     }
 
@@ -534,6 +577,17 @@ impl Workspace {
         self.drawer_host
             .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
         self.content.update(cx, |c, cx| c.show_connecting_view(cx));
+    }
+
+    fn handle_restart_connection(
+        &mut self,
+        _action: &RestartConnection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!("handle RestartConnection from workspace");
+        window.hide_soft_keyboard();
+        self.restart_connection(cx);
     }
 
     fn handle_open_file(&mut self, action: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
@@ -1026,6 +1080,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_toggle_drawer))
             .on_action(cx.listener(Self::handle_close_drawer))
             .on_action(cx.listener(Self::handle_show_connecting))
+            .on_action(cx.listener(Self::handle_restart_connection))
             .on_action(cx.listener(Self::handle_open_file))
             .on_action(cx.listener(Self::handle_open_git_diff))
             .on_action(cx.listener(Self::handle_git_stage))

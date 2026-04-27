@@ -127,35 +127,40 @@ impl Session {
                 }
 
                 let existing_terminals = handle.terminals().clone();
-                let result = match reconnect_reason.take() {
-                    Some(reason) => {
-                        let max_attempts = 10;
-                        info!("reconnect to {addr:?}, session: {session_id:?} reason {reason:?} max_attempts {max_attempts}",);
-                        connector
-                            .reconnect_loop(
-                                addr.clone(),
-                                None,
-                                signer.clone(),
-                                session_id.clone(),
-                                session_token,
-                                reason,
-                                max_attempts,
-                                Some(existing_terminals)
-                            )
-                            .await
+                let result = if let Some(reason) = reconnect_reason.take() {
+                    let max_attempts = 10;
+                    info!("reconnect to {addr:?}, session: {session_id:?} reason {reason:?} max_attempts {max_attempts}",);
+                    tokio::select! {
+                        _ = abort_signal.cancelled() => {
+                            connector.abort();
+                            break;
+                        }
+                        result = connector.reconnect_loop(
+                            addr.clone(),
+                            None,
+                            signer.clone(),
+                            session_id.clone(),
+                            session_token,
+                            reason,
+                            max_attempts,
+                            Some(existing_terminals),
+                        ) => result,
                     }
-                    None => {
-                        info!("start connect to {addr:?}, session: {session_id:?}");
-                        connector
-                            .connect(
-                                addr.clone(),
-                                ticket.as_ref(),
-                                signer.clone(),
-                                session_id.clone(),
-                                session_token,
-                                Some(existing_terminals)
-                            )
-                            .await
+                } else {
+                    info!("start connect to {addr:?}, session: {session_id:?}");
+                    tokio::select! {
+                        _ = abort_signal.cancelled() => {
+                            connector.abort();
+                            break;
+                        }
+                        result = connector.connect(
+                            addr.clone(),
+                            ticket.as_ref(),
+                            signer.clone(),
+                            session_id.clone(),
+                            session_token,
+                            Some(existing_terminals),
+                        ) => result,
                     }
                 };
 

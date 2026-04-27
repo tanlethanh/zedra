@@ -1,13 +1,17 @@
+use std::{f32::consts::TAU, time::Duration};
+
 use gpui::{prelude::FluentBuilder as _, *};
 use zedra_session::{ConnectPhase, ConnectSnapshot, SessionState, TransportSnapshot};
 
-use crate::platform_bridge::{self, AlertButton};
+use crate::platform_bridge::{self, AlertButton, HapticFeedback};
 use crate::theme;
 use crate::transport_badge::{format_bytes, render_transport_badge, transport_badge};
+use crate::workspace_action;
 
 pub struct WorkspaceConnecting {
     session_state: Entity<SessionState>,
     details_expanded: bool,
+    restart_animation_id: u64,
 }
 
 impl WorkspaceConnecting {
@@ -15,6 +19,7 @@ impl WorkspaceConnecting {
         Self {
             session_state,
             details_expanded: false,
+            restart_animation_id: 0,
         }
     }
 }
@@ -41,7 +46,12 @@ impl Render for WorkspaceConnecting {
                     .flex()
                     .flex_col()
                     .items_center()
-                    .child(render_phase_title(&state.phase, &state.snapshot))
+                    .child(render_phase_title(
+                        &state.phase,
+                        &state.snapshot,
+                        self.restart_animation_id,
+                        cx,
+                    ))
                     .child(render_details_toggle(expanded, cx))
                     .when(expanded, |d| {
                         d.child(render_detail(&state.phase, &state.snapshot))
@@ -87,7 +97,12 @@ fn render_details_toggle(expanded: bool, cx: &mut Context<WorkspaceConnecting>) 
         )
 }
 
-fn render_phase_title(phase: &ConnectPhase, snap: &ConnectSnapshot) -> Div {
+fn render_phase_title(
+    phase: &ConnectPhase,
+    snap: &ConnectSnapshot,
+    restart_animation_id: u64,
+    cx: &mut Context<WorkspaceConnecting>,
+) -> Div {
     let (label, color) = transport_badge(phase, snap.transport.as_ref());
 
     let title = match phase {
@@ -105,23 +120,79 @@ fn render_phase_title(phase: &ConnectPhase, snap: &ConnectSnapshot) -> Div {
         .items_center()
         .gap(px(8.0))
         .child(
-            div().flex().flex_row().items_center().gap(px(8.0)).child(
-                div()
-                    .w(px(160.0))
-                    .min_w_0()
-                    .truncate()
-                    .text_align(TextAlign::Center)
-                    .text_color(rgb(theme::TEXT_PRIMARY))
-                    .text_size(px(theme::FONT_HEADING))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(title),
-            ),
+            div()
+                .relative()
+                .max_w_full()
+                .min_w_0()
+                .h(px(28.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .w(px(140.0))
+                        .min_w_0()
+                        .truncate()
+                        .text_align(TextAlign::Center)
+                        .text_color(rgb(theme::TEXT_PRIMARY))
+                        .text_size(px(theme::FONT_HEADING))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .right(px(-16.0))
+                        .top_0()
+                        .child(render_restart_button(restart_animation_id, cx)),
+                ),
         )
         .child(
             render_transport_badge(label, color)
                 .w_full()
                 .text_align(TextAlign::Center),
         )
+}
+
+fn render_restart_button(
+    restart_animation_id: u64,
+    cx: &mut Context<WorkspaceConnecting>,
+) -> Stateful<Div> {
+    div()
+        .id("restart-connection-button")
+        .w(px(28.0))
+        .h(px(28.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.0))
+        .hit_slop(px(10.0))
+        .on_press(cx.listener(|this, _event, window, cx| {
+            this.restart_animation_id = this.restart_animation_id.wrapping_add(1);
+            platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+            window.dispatch_action(workspace_action::RestartConnection.boxed_clone(), cx);
+            cx.notify();
+        }))
+        .child(render_restart_icon(restart_animation_id))
+}
+
+fn render_restart_icon(restart_animation_id: u64) -> AnyElement {
+    let icon = svg()
+        .path("icons/refresh-ccw.svg")
+        .size(px(14.0))
+        .text_color(rgb(theme::TEXT_MUTED));
+
+    if restart_animation_id == 0 {
+        icon.into_any_element()
+    } else {
+        icon.with_animation(
+            ElementId::NamedInteger("restart-connection-spin".into(), restart_animation_id),
+            Animation::new(Duration::from_millis(450)).with_easing(ease_out_quint()),
+            |icon, delta| icon.with_transformation(Transformation::rotate(radians(TAU * delta))),
+        )
+        .into_any_element()
+    }
 }
 
 // ─── Phase status helpers ────────────────────────────────────────────────────
