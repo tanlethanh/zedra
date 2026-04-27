@@ -211,6 +211,7 @@ impl DrawerHost {
                 pointer_id: pid, ..
             } if pid == pointer_id => self.update_pending_drag(pointer_id, position, window, cx),
             GestureState::Dragging { pointer_id: pid } if pid == pointer_id => {
+                window.prevent_default();
                 self.update_direct_drag(f32::from(position.x), cx)
             }
             _ => {}
@@ -232,6 +233,7 @@ impl DrawerHost {
                 cx.notify();
             }
             GestureState::Dragging { pointer_id: pid } if pid == pointer_id => {
+                window.prevent_default();
                 self.end_direct_drag(window, cx)
             }
             _ => {}
@@ -295,6 +297,7 @@ impl DrawerHost {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        window.prevent_default();
         self.focus_handle.focus(window, cx);
         window.hide_soft_keyboard();
         self.gesture_state = GestureState::Dragging { pointer_id };
@@ -587,7 +590,10 @@ impl Render for DrawerHost {
 #[cfg(test)]
 mod tests {
     use super::{DrawerHost, DrawerSide};
-    use gpui::{AppContext as _, Empty, TestAppContext};
+    use gpui::{
+        AppContext as _, Empty, Modifiers, PlatformInput, PointerButton, PointerDownEvent,
+        PointerKind, PointerMoveEvent, TestAppContext, point, px,
+    };
 
     #[test]
     fn direct_drag_claims_focus_and_hides_keyboard() {
@@ -617,6 +623,100 @@ mod tests {
                 assert!(!window.is_soft_keyboard_visible());
             })
             .unwrap();
+        cx.quit();
+    }
+
+    #[test]
+    fn horizontal_edge_drag_prevents_default_touch_scroll() {
+        let mut cx = TestAppContext::single();
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |_, cx| {
+                let content = cx.new(|_| Empty);
+                let drawer = cx.new(|_| Empty);
+                cx.new(|cx| DrawerHost::new(content.into(), drawer.into(), DrawerSide::Left, cx))
+            })
+            .unwrap()
+        });
+        let window = window.into();
+
+        cx.update_window(window, |_, window, cx| {
+            window.draw(cx).clear();
+
+            window.dispatch_event(
+                PlatformInput::PointerDown(PointerDownEvent {
+                    pointer_id: 1,
+                    kind: PointerKind::Touch,
+                    is_primary: true,
+                    button: PointerButton::Primary,
+                    position: point(px(1.0), px(100.0)),
+                    modifiers: Modifiers::default(),
+                }),
+                cx,
+            );
+
+            let result = window.dispatch_event(
+                PlatformInput::PointerMove(PointerMoveEvent {
+                    pointer_id: 1,
+                    kind: PointerKind::Touch,
+                    is_primary: true,
+                    pressed_button: Some(PointerButton::Primary),
+                    position: point(px(40.0), px(102.0)),
+                    modifiers: Modifiers::default(),
+                }),
+                cx,
+            );
+
+            assert!(result.default_prevented);
+        })
+        .unwrap();
+
+        cx.quit();
+    }
+
+    #[test]
+    fn vertical_edge_pan_keeps_touch_scroll_available() {
+        let mut cx = TestAppContext::single();
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |_, cx| {
+                let content = cx.new(|_| Empty);
+                let drawer = cx.new(|_| Empty);
+                cx.new(|cx| DrawerHost::new(content.into(), drawer.into(), DrawerSide::Left, cx))
+            })
+            .unwrap()
+        });
+        let window = window.into();
+
+        cx.update_window(window, |_, window, cx| {
+            window.draw(cx).clear();
+
+            window.dispatch_event(
+                PlatformInput::PointerDown(PointerDownEvent {
+                    pointer_id: 1,
+                    kind: PointerKind::Touch,
+                    is_primary: true,
+                    button: PointerButton::Primary,
+                    position: point(px(1.0), px(100.0)),
+                    modifiers: Modifiers::default(),
+                }),
+                cx,
+            );
+
+            let result = window.dispatch_event(
+                PlatformInput::PointerMove(PointerMoveEvent {
+                    pointer_id: 1,
+                    kind: PointerKind::Touch,
+                    is_primary: true,
+                    pressed_button: Some(PointerButton::Primary),
+                    position: point(px(3.0), px(130.0)),
+                    modifiers: Modifiers::default(),
+                }),
+                cx,
+            );
+
+            assert!(!result.default_prevented);
+        })
+        .unwrap();
+
         cx.quit();
     }
 }

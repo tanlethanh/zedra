@@ -210,7 +210,9 @@ printf '\033]8;;https://zedra.dev\033\\zedra.dev\033]8;;\033\\\n'
 7. Compare the release-to-open snap against the release-to-close snap
 8. Drag the drawer closed and start a new open drag as soon as it looks fully closed
 9. Release a drag when the drawer is only slightly away from the open or closed target
-10. Expected: input is ignored until the current snap animation finishes; the drawer does not reverse, restart, or jump to a new position, and close unlocks immediately when the visual close ends without an extra dead interval
+10. In a long drawer tab, try a mostly vertical swipe inside the tab content, then a mostly horizontal drawer drag from the same scrollable area
+11. Expected: vertical swipes scroll the tab content without dragging the drawer; once the drawer claims a horizontal drag, the tab content does not scroll under the gesture
+12. Expected: input is ignored until the current snap animation finishes; the drawer does not reverse, restart, or jump to a new position, and close unlocks immediately when the visual close ends without an extra dead interval
 
 ## 14. Git Panel Diff Navigation
 
