@@ -420,11 +420,17 @@ Terminal should use both protocols:
 
 That lets the terminal remain keyboard-capable without pretending it is editable document text.
 
-Suggested behavior:
+Current keyboard behavior:
 
-- tap: focus terminal and show keyboard
+- tap when focus or keyboard is missing: focus terminal and show keyboard
+- tap when focused and keyboard is visible: hide keyboard and blur terminal
+- keyboard and IME continue through `handle_input(...)`
+
+Future transcript selection should be a separate non-editable selection path:
+
 - long press on transcript: start non-editable selection
 - selection shows copy actions, not editable caret behavior
+- selection must not take over the terminal keyboard input handler
 
 ## Recommended Built-In GPUI Helpers
 
