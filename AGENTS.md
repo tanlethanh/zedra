@@ -40,6 +40,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - Common checks:
   - `cargo fmt`
   - `cargo check -p zedra-rpc -p zedra-session -p zedra-terminal -p zedra-host`
+  - `cargo check --manifest-path vendor/zed/Cargo.toml -p gpui_ios -p gpui` for vendored GPUI/iOS framework patches
   - `bun run format`
   - `bun run check`
 
@@ -55,6 +56,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - `vendor/zed` is a git submodule and an intentional part of the architecture, not just third-party reference code.
 - We patch `vendor/zed` and related GPUI/mobile crates directly when Zedra needs mobile support that upstream GPUI or Zed does not provide yet.
 - When changing behavior that touches GPUI, iOS/Android platform crates, rendering, input, or text handling, inspect `vendor/zed` first and treat it as part of the codebase.
+- Run vendored package checks through `vendor/zed/Cargo.toml`. The root workspace excludes `vendor`, and `cargo check -p gpui_ios` from the root can hit a Cargo feature resolver panic because `gpui_ios` is only a target-specific path dependency there.
 - For editor features, use Zed desktop code as a reference for concepts and architecture, but implement minimal mobile-specific versions in Zedra rather than trying to port desktop behavior wholesale.
 
 ## Docs Map
