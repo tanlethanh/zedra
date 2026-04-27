@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -601,7 +602,7 @@ impl Workspace {
 
         let editor = self.editor.clone();
         self.content.update(cx, move |c, cx| {
-            c.clear_subtitle(cx);
+            c.set_file_subtitle(action.path.clone(), cx);
             c.set_main_view(editor.into(), cx);
         });
     }
@@ -1113,6 +1114,36 @@ pub fn section_to_u8(section: GitFileSection) -> u8 {
     }
 }
 
+fn workspace_relative_path(path: &str, workdir: &str) -> String {
+    let path = path.trim();
+    if path.is_empty() {
+        return String::new();
+    }
+
+    let file_path = Path::new(path);
+    if file_path.is_absolute() {
+        if !workdir.is_empty() {
+            if let Ok(relative) = file_path.strip_prefix(Path::new(workdir)) {
+                let relative = relative.to_string_lossy();
+                return if relative.is_empty() {
+                    ".".to_string()
+                } else {
+                    relative.into_owned()
+                };
+            }
+        }
+
+        return path.to_string();
+    }
+
+    let relative = path.trim_start_matches("./").trim_start_matches('/');
+    if relative.is_empty() {
+        ".".to_string()
+    } else {
+        relative.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1243,6 +1274,22 @@ mod tests {
             Some("terminal-a".to_string())
         );
     }
+
+    #[::core::prelude::v1::test]
+    fn workspace_relative_path_strips_workspace_prefix() {
+        assert_eq!(
+            workspace_relative_path("/workspace/src/main.rs", "/workspace"),
+            "src/main.rs"
+        );
+        assert_eq!(
+            workspace_relative_path("./README.md", "/workspace"),
+            "README.md"
+        );
+        assert_eq!(
+            workspace_relative_path("/other/README.md", "/workspace"),
+            "/other/README.md"
+        );
+    }
 }
 
 pub struct WorkspaceContent {
@@ -1261,6 +1308,9 @@ pub struct WorkspaceContent {
 
 enum WorkspaceSubtitle {
     Default,
+    File {
+        path: SharedString,
+    },
     Terminal {
         id: String,
     },
@@ -1317,6 +1367,14 @@ impl WorkspaceContent {
 
     pub fn set_terminal_subtitle(&mut self, id: String, cx: &mut Context<Self>) {
         self.subtitle = WorkspaceSubtitle::Terminal { id };
+        cx.notify();
+    }
+
+    pub fn set_file_subtitle(&mut self, path: String, cx: &mut Context<Self>) {
+        let workdir = self.workspace_state.read(cx).workdir.clone();
+        self.subtitle = WorkspaceSubtitle::File {
+            path: workspace_relative_path(&path, &workdir).into(),
+        };
         cx.notify();
     }
 
@@ -1494,6 +1552,16 @@ impl Render for WorkspaceContent {
                                     .text_size(px(theme::FONT_BODY))
                                     .font_weight(FontWeight::MEDIUM)
                                     .child(default_subtitle)
+                                    .into_any_element(),
+                                WorkspaceSubtitle::File { path } => div()
+                                    .w_full()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_center()
+                                    .text_color(rgb(theme::TEXT_SECONDARY))
+                                    .text_size(px(theme::FONT_BODY))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(path.clone())
                                     .into_any_element(),
                                 WorkspaceSubtitle::Terminal { id } => {
                                     let meta = self.terminal_state.read(cx).meta(id);
