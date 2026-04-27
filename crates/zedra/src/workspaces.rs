@@ -107,11 +107,8 @@ impl Workspaces {
 
     pub fn switch_to(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.entries.len() {
-            if let Some(ws) = self.entries.get(index) {
-                self.active_index = Some(index);
-                ws.update(cx, |ws, cx| ws.on_activate(cx));
-                cx.notify();
-            }
+            self.active_index = Some(index);
+            cx.notify();
         } else {
             warn!("Index {index} out of range. Cannot switch to workspace.");
         }

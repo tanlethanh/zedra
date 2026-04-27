@@ -48,6 +48,20 @@ pub struct WorkspaceState {
     pub host_info: Option<HostInfoSnapshot>,
 }
 
+#[derive(Clone, PartialEq)]
+struct WorkspaceStateSyncSnapshot {
+    session_id: String,
+    strip_path: String,
+    project_name: String,
+    workdir: String,
+    homedir: String,
+    hostname: String,
+    connect_phase: Option<ConnectPhase>,
+    active_terminal_id: Option<String>,
+    terminal_ids: Vec<String>,
+    host_info: Option<HostInfoSnapshot>,
+}
+
 /// PartialEq implementation for WorkspaceState.
 /// Compare all durable fields to prevent unnecessary updates.
 impl PartialEq for WorkspaceState {
@@ -83,6 +97,21 @@ fn store_path() -> Option<PathBuf> {
 }
 
 impl WorkspaceState {
+    fn sync_snapshot(&self) -> WorkspaceStateSyncSnapshot {
+        WorkspaceStateSyncSnapshot {
+            session_id: self.session_id.clone(),
+            strip_path: self.strip_path.clone(),
+            project_name: self.project_name.clone(),
+            workdir: self.workdir.clone(),
+            homedir: self.homedir.clone(),
+            hostname: self.hostname.clone(),
+            connect_phase: self.connect_phase.clone(),
+            active_terminal_id: self.active_terminal_id.clone(),
+            terminal_ids: self.terminal_ids.clone(),
+            host_info: self.host_info.clone(),
+        }
+    }
+
     fn clear_runtime_state_for_disconnect(&mut self) {
         self.connect_phase = Some(ConnectPhase::Disconnected);
         self.active_terminal_id = None;
@@ -103,6 +132,20 @@ impl WorkspaceState {
         session_state: &SessionState,
         cx: &mut Context<Self>,
     ) {
+        if !self.sync_fields_from_session(session_handle, session_state) {
+            return;
+        }
+
+        cx.emit(WorkspaceStateEvent::StateChanged);
+        cx.notify();
+    }
+
+    fn sync_fields_from_session(
+        &mut self,
+        session_handle: &SessionHandle,
+        session_state: &SessionState,
+    ) -> bool {
+        let before = self.sync_snapshot();
         let session_id = session_state.snapshot.session_id.clone();
         self.connect_phase = Some(session_state.phase.clone());
         self.terminal_ids = session_handle.terminal_ids().clone();
@@ -133,7 +176,7 @@ impl WorkspaceState {
             self.session_id = session_id.clone();
         }
 
-        cx.emit(WorkspaceStateEvent::StateChanged);
+        self.sync_snapshot() != before
     }
 
     pub fn emit_sync_complete(&self, cx: &mut Context<Self>) {
@@ -294,5 +337,46 @@ mod tests {
         assert_eq!(state.active_terminal_id, None);
         assert!(state.terminal_ids.is_empty());
         assert_eq!(state.host_info, None);
+    }
+
+    #[test]
+    fn sync_fields_ignores_network_only_session_snapshot_changes() {
+        let session = Session::new();
+        let mut session_state = SessionState::new();
+        session_state.phase = ConnectPhase::Connected;
+        session_state.snapshot.session_id = Some("session".into());
+        session_state.snapshot.has_ipv4 = true;
+        session_state.snapshot.has_ipv6 = true;
+        session_state.snapshot.mapping_varies = Some(false);
+        session_state.snapshot.relay_latency_ms = Some(12);
+
+        let mut state = WorkspaceState {
+            session_id: "session".into(),
+            connect_phase: Some(ConnectPhase::Connected),
+            ..Default::default()
+        };
+
+        assert!(!state.sync_fields_from_session(session.handle(), &session_state));
+
+        session_state.snapshot.relay_latency_ms = Some(30);
+
+        assert!(!state.sync_fields_from_session(session.handle(), &session_state));
+    }
+
+    #[test]
+    fn sync_fields_reports_workspace_phase_changes() {
+        let session = Session::new();
+        let mut session_state = SessionState::new();
+        session_state.phase = ConnectPhase::Connected;
+        session_state.snapshot.session_id = Some("session".into());
+
+        let mut state = WorkspaceState {
+            session_id: "session".into(),
+            connect_phase: Some(ConnectPhase::Sync),
+            ..Default::default()
+        };
+
+        assert!(state.sync_fields_from_session(session.handle(), &session_state));
+        assert_eq!(state.connect_phase, Some(ConnectPhase::Connected));
     }
 }
