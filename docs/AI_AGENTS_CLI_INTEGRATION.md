@@ -213,7 +213,7 @@ Status legend: ✅ parsed = `zedra-osc` decodes it into a typed `OscEvent`. ✅ 
 | Sequence | Function | Zedra metadata use | Current Zedra status |
 |---|---|---|---|
 | `OSC 0 ; <text>` | Set icon name and window title. Many shells use this as the broad "title" update. | Store latest title text; optionally remember source as `osc0`. | ✅ parsed + wired — `OscEvent::Title` updates `TerminalMeta.title` and feeds workspace header subtitle |
-| `OSC 1 ; <text>` | Set icon name only. Less useful on mobile, but can preserve a program-provided label separate from title. | Optional `icon_name` / `app_label` metadata. | ➖ parsed (`OscEvent::IconName`) — no consumer yet |
+| `OSC 1 ; <text>` | Set icon name only. In our observed shells, title hooks emit the command name here at launch, then a path-like icon name when the prompt returns. | Primary app-side agent identity signal. A supported agent name latches `active_agent_icon`; a non-agent icon name clears it. | ✅ parsed + wired — `OscEvent::IconName` drives primary `active_agent_icon` detection |
 | `OSC 2 ; <text>` | Set window title. This is the common title signal used by shells and TUIs. | Store latest title text; source should be separate from derived agent identity. | ✅ parsed + wired — same path as OSC 0 |
 | `OSC 3 ; <prop=value>` | xterm top-level window property. Rare outside X11-style terminals. | Usually ignore; do not sync unless a concrete use case appears. | ❌ missing |
 | `OSC 4 ; <index> ; <color>` | Query/change ANSI palette entries. | Renderer/theme state, not app metadata. Avoid syncing as terminal identity. | ❌ missing |
@@ -244,9 +244,9 @@ Implementation rule of thumb:
 - Parse known OSC sequences into typed events in `zedra-osc`.
 - Store normalized terminal facts in `TerminalMeta`, with source/provenance such as `osc2`, `osc7`, `osc133`, or `osc633`.
 - Keep payloads bounded. Do not persist arbitrary unknown OSC strings, clipboard contents, inline image data, or untrusted action commands.
-- Let AI-agent detection read terminal metadata as a classifier. For example, `OSC 633;E` can say the command line is `claude`, while the agent classifier decides that this maps to the Claude icon and adapter.
+- Let AI-agent detection read terminal metadata as a classifier. Today `OSC 1` is the primary app-side identity signal because it is the signal emitted by the shells we run in practice. `OSC 633;E` command lines remain useful supporting metadata and a fallback for terminals that do not emit icon names.
 
-OSC 633;E is particularly useful for command identity because it captures the exact shell-interpreted command line before execution. That makes it useful for any program, not just AI agents.
+OSC 633;E is still useful for command identity because it captures the exact shell-interpreted command line before execution. That makes it useful for any program, not just AI agents, but Zedra does not currently depend on it for the primary AI-agent icon path.
 
 ---
 
@@ -264,12 +264,13 @@ OSC 633;E is particularly useful for command identity because it captures the ex
 
 Wired through `zedra-osc` → `zedra-terminal` (`TerminalEvent::OscEvent`) → `WorkspaceTerminal` → `TerminalState`:
 
-- **TerminalMeta** carries `title`, `cwd`, `shell_state` (Unknown/Idle/Running), `last_exit_code`, and `current_command`. Keyed by terminal id, owned by the workspace-level `TerminalState` entity.
-- **Workspace header** (`crates/zedra/src/workspace.rs`) reads the active terminal's `TerminalMeta` and renders the title (PS1 prefix stripped) below the project name. When `agent_icon(title, current_command)` matches a known agent, the icon is drawn next to the subtitle.
-- **Agent classifier** (`crates/zedra/src/terminal_card.rs::agent_icon`) recognises claude / opencode / codex+openai / gemini / copilot from either the OSC 2 title or the OSC 633;E command line, so it works for agents that do *and* don't set a descriptive title.
-- **Shell lifecycle**: OSC 133/633 `A/B` set shell idle, `C` sets running, `D` sets idle and stores exit code. `current_command` is cleared on idle.
+- **TerminalMeta** carries `title`, `cwd`, `shell_state` (Unknown/Idle/Running), `last_exit_code`, `current_command`, `active_agent_kind`, and the command-scoped `active_agent_icon`. Keyed by terminal id, owned by the workspace-level `TerminalState` entity.
+- **Workspace header** (`crates/zedra/src/workspace.rs`) reads the active terminal's `TerminalMeta` and renders the title (PS1 prefix stripped) below the project name. When `active_agent_icon` is set for the running command, the icon is drawn next to the subtitle.
+- **Agent classifier** (`crates/zedra/src/agent.rs::detect`) recognises the confirmed terminal AI CLIs we have icon support for: Amp, Claude Code, Cline, Codex, Cursor Agent, Gemini CLI, GitHub Copilot, Goose, Hermes Agent, Junie, Kilo Code, OpenClaw, opencode, OpenHands, Pi, Qoder, Qwen Code, Trae Agent, and Zencoder. Terminal title text is display metadata only and is not used for agent identity.
+- **Shell lifecycle**: OSC 1 icon name drives the primary active-agent state: supported agent names set `active_agent_kind` / `active_agent_icon`, while non-agent prompt/path icon names clear them. OSC 133/633 lifecycle still records idle/running state, exit code, and command-line metadata where available, but it does not override OSC 1 once icon-name identity has appeared for a terminal.
+- **Host reattach replay**: `zedra-host` caches the same OSC-derived title, icon name, cwd, command line, shell state, and last exit code while reading PTY output. `SyncSessionResult.terminals` includes the cached OSC 1 icon name for the host snapshot, `Workspace` seeds `TerminalState` from that snapshot, and `TermAttach` also emits a synthetic `seq=0` OSC preamble before backlog replay so normal terminal-event consumers restore metadata even when the original OSC bytes are no longer in the backlog.
 
-Not yet wired (parsed only, no consumer): notifications (OSC 9/99/777), progress (OSC 9;4), shell integration version, remote host, user vars, OSC 633;P key/value properties, OSC 1 icon name. These will be plumbed when the corresponding UI surfaces are built.
+Not yet wired (parsed only, no consumer): notifications (OSC 9/99/777), progress (OSC 9;4), shell integration version, remote host, user vars, OSC 633;P key/value properties. These will be plumbed when the corresponding UI surfaces are built.
 
 ## Integration options for zedra-host
 
