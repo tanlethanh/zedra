@@ -223,11 +223,29 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:
 3. Tap the keyboard dictation microphone and dictate a short command fragment such as `echo hello`
 4. Expected: a compact native glass/material preview appears above the keyboard and updates with the live dictated text
 5. Stop dictation
-6. Expected: the preview hides, and the dictated text is inserted into the PTY once, without a stuck marked-text underline or duplicate characters
+6. Expected: the preview hides, and the dictated text stays inserted in the PTY once, without being removed, without a stuck marked-text underline, and without duplicate characters
 7. Repeat with a dictated phrase that includes a newline or return command
 8. Expected: newline input is routed as terminal enter rather than leaving literal marked text behind
 9. Start dictation again, then cancel or force recognition failure by stopping before speech is recognized
 10. Expected: the preview hides, the terminal remains focused, no stale dictation text is committed, and normal keyboard typing still reaches the PTY
+
+## 11c. Native Keyboard Suggestions On iOS
+
+1. On iPhone or iOS simulator, disable the simulator hardware keyboard so the software keyboard is visible
+2. Connect to a session and tap the terminal
+3. Type a partial word such as `hell`
+4. Expected: iOS native inline predictions or suggestion candidates appear when supported by the OS and keyboard settings
+5. Accept a suggestion
+6. Expected: the accepted text is inserted into the PTY once, without enabling a native caret, edit menu, or terminal text-selection handles
+7. Resume or reconnect to an existing terminal with text already at the prompt, then press software-keyboard backspace repeatedly
+8. Expected: each backspace is routed to the PTY and can delete the existing prompt text rather than stopping after the synthetic prediction context is empty
+9. Dictate a short fragment, stop dictation so it commits, then press backspace
+10. Expected: the dictated characters can be deleted from the PTY one character at a time
+11. Type command-like text with lowercase letters, straight quotes, hyphens, or double spaces
+12. Expected: autocapitalization, smart quotes, smart dashes, and smart insert/delete do not rewrite the command text
+13. Open the workspace Git sidebar and focus the Commit message input
+14. Type prose and accept an available native suggestion
+15. Expected: the suggestion inserts into the commit message, while smart punctuation and autocapitalization remain disabled
 
 ## 12. Quick Action Terminal Navigation
 

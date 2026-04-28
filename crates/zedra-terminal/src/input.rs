@@ -34,6 +34,10 @@ impl TerminalInputHandler {
         true
     }
 
+    fn text_input_traits_policy() -> PlatformTextInputTraits {
+        PlatformTextInputTraits::keyboard_suggestions()
+    }
+
     fn send_text_to_terminal(term: &mut Terminal, text: &str) {
         let mut plain_text = String::new();
         for ch in text.chars() {
@@ -48,6 +52,7 @@ impl TerminalInputHandler {
                     key: "enter".to_string(),
                     key_char: None,
                 });
+                term.clear_text_input_context();
             } else {
                 plain_text.push(ch);
             }
@@ -55,6 +60,16 @@ impl TerminalInputHandler {
 
         if !plain_text.is_empty() {
             term.handle_ime_text(&plain_text);
+        }
+    }
+
+    fn send_backspaces_to_terminal(term: &mut Terminal, count: usize) {
+        for _ in 0..count {
+            term.handle_keystroke(&Keystroke {
+                modifiers: Modifiers::default(),
+                key: "backspace".to_string(),
+                key_char: None,
+            });
         }
     }
 }
@@ -131,16 +146,19 @@ impl InputHandler for TerminalInputHandler {
                     cx.notify();
                     return;
                 }
-                if term.marked_text().is_some() {
+                if term.consume_committed_dictation_cleanup_delete(replacement_range.clone()) {
+                    cx.notify();
+                    return;
+                }
+                if term.has_uncommitted_marked_text() {
                     term.clear_marked_state();
                     cx.notify();
                     return;
                 }
-                term.handle_keystroke(&Keystroke {
-                    modifiers: Modifiers::default(),
-                    key: "backspace".to_string(),
-                    key_char: None,
-                });
+                let removed_text =
+                    term.replace_text_input_context_range(replacement_range.clone(), "");
+                let count = removed_text.chars().count().max(1);
+                Self::send_backspaces_to_terminal(term, count);
             } else if !text.is_empty() {
                 if term.is_dictation_active() {
                     term.replace_marked_text_in_range(replacement_range.clone(), text, None);
@@ -148,7 +166,12 @@ impl InputHandler for TerminalInputHandler {
                     return;
                 }
 
-                term.clear_marked_state();
+                if term.has_uncommitted_marked_text() {
+                    term.clear_marked_state();
+                }
+                let removed_text =
+                    term.replace_text_input_context_range(replacement_range.clone(), &text);
+                Self::send_backspaces_to_terminal(term, removed_text.chars().count());
                 Self::send_text_to_terminal(term, &text);
             }
         });
@@ -253,14 +276,40 @@ impl InputHandler for TerminalInputHandler {
     fn accepts_text_input(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
         Self::accepts_text_input_policy()
     }
+
+    fn text_input_traits(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> PlatformTextInputTraits {
+        Self::text_input_traits_policy()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::TerminalInputHandler;
+    use gpui::{PlatformTextAutocapitalization, PlatformTextInputTrait, PlatformTextInputTraits};
 
     #[test]
     fn terminal_accepts_text_input() {
         assert!(TerminalInputHandler::accepts_text_input_policy());
+    }
+
+    #[test]
+    fn terminal_requests_native_keyboard_suggestions_without_smart_punctuation() {
+        let traits = TerminalInputHandler::text_input_traits_policy();
+
+        assert_eq!(traits, PlatformTextInputTraits::keyboard_suggestions());
+        assert_eq!(
+            traits.autocapitalization,
+            PlatformTextAutocapitalization::None
+        );
+        assert_eq!(traits.inline_prediction, PlatformTextInputTrait::Enabled);
+        assert_eq!(traits.autocorrection, PlatformTextInputTrait::Enabled);
+        assert_eq!(traits.spell_checking, PlatformTextInputTrait::Disabled);
+        assert_eq!(traits.smart_quotes, PlatformTextInputTrait::Disabled);
+        assert_eq!(traits.smart_dashes, PlatformTextInputTrait::Disabled);
+        assert_eq!(traits.smart_insert_delete, PlatformTextInputTrait::Disabled);
     }
 }

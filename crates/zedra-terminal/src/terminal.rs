@@ -570,6 +570,51 @@ impl Terminal {
         }
     }
 
+    pub fn replace_text_input_context_range(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+        text: &str,
+    ) -> String {
+        let state = self.ime_state_mut();
+        if state.document_text.is_empty() {
+            state.document_text.push(' ');
+        }
+
+        let document_len = Self::utf16_len(&state.document_text);
+        let selection = state
+            .selected_range
+            .clone()
+            .unwrap_or(document_len..document_len);
+        let requested_range = replacement_range.unwrap_or(selection.clone());
+        let requested_range = Self::clamp_utf16_range(&state.document_text, requested_range);
+        let context_start = if state.document_text.starts_with(' ') {
+            1
+        } else {
+            0
+        };
+        // Important: the leading space is a UIKit-only sentinel that keeps
+        // deleteBackward addressable when there is no local terminal text. It
+        // must never count as text removed from the PTY.
+        let edit_range =
+            requested_range.start.max(context_start)..requested_range.end.max(context_start);
+        let edit_range = Self::clamp_utf16_range(&state.document_text, edit_range);
+        let removed_text = if edit_range.end == selection.end.max(context_start) {
+            let byte_range = Self::byte_range_from_utf16(&state.document_text, &edit_range);
+            state.document_text[byte_range].to_string()
+        } else {
+            String::new()
+        };
+        let (document_text, inserted_range) =
+            Self::replace_utf16_range(&state.document_text, edit_range, text);
+
+        state.document_text = document_text;
+        state.marked_text.clear();
+        state.marked_range = None;
+        state.selected_range = Some(inserted_range.end..inserted_range.end);
+        state.committed_dictation_pending_cleanup = false;
+        removed_text
+    }
+
     /// Clear the marked text.
     pub fn clear_marked_state(&mut self) {
         if let Some(state) = self.ime_state.as_mut() {
@@ -580,6 +625,19 @@ impl Terminal {
             if !state.dictation_active {
                 state.document_text.clear();
             }
+        }
+    }
+
+    pub fn clear_text_input_context(&mut self) {
+        if let Some(state) = self.ime_state.as_mut() {
+            if state.dictation_active {
+                return;
+            }
+            state.document_text.clear();
+            state.marked_text.clear();
+            state.marked_range = None;
+            state.selected_range = None;
+            state.committed_dictation_pending_cleanup = false;
         }
     }
 
@@ -598,6 +656,46 @@ impl Terminal {
         self.ime_state
             .as_ref()
             .is_some_and(|state| state.committed_dictation_pending_cleanup)
+    }
+
+    pub fn has_uncommitted_marked_text(&self) -> bool {
+        self.marked_text().is_some() && !self.has_committed_dictation_pending_cleanup()
+    }
+
+    pub fn consume_committed_dictation_cleanup_delete(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+    ) -> bool {
+        let Some(state) = self.ime_state.as_mut() else {
+            return false;
+        };
+        if state.dictation_active || !state.committed_dictation_pending_cleanup {
+            return false;
+        }
+
+        let (Some(replacement_range), Some(marked_range)) =
+            (replacement_range, state.marked_range.clone())
+        else {
+            return false;
+        };
+
+        let replacement_range = Self::clamp_utf16_range(&state.document_text, replacement_range);
+        let marked_range = Self::clamp_utf16_range(&state.document_text, marked_range);
+        if replacement_range.start > marked_range.start || replacement_range.end < marked_range.end
+        {
+            return false;
+        }
+
+        // Critical: after dictation commits, UIKit may delete the whole marked
+        // placeholder as cleanup. That must clear only our synthetic text store;
+        // sending terminal backspaces here would erase the already-committed
+        // dictated command.
+        state.document_text.clear();
+        state.marked_text.clear();
+        state.marked_range = None;
+        state.selected_range = None;
+        state.committed_dictation_pending_cleanup = false;
+        true
     }
 
     pub fn replace_marked_text_in_range(
@@ -1609,6 +1707,7 @@ mod tests {
         assert_eq!(terminal.finish_dictation(), Some("echo hello".to_string()));
         assert!(!terminal.is_dictation_active());
         assert!(terminal.has_committed_dictation_pending_cleanup());
+        assert!(!terminal.has_uncommitted_marked_text());
         assert_eq!(terminal.marked_text(), Some("echo hello"));
         assert_eq!(terminal.text_input_document(), " echo hello");
         assert_eq!(terminal.marked_text_range(), Some(1..11));
@@ -1705,6 +1804,178 @@ mod tests {
         assert_eq!(terminal.text_input_document(), " hello");
         assert_eq!(terminal.marked_text_range(), Some(1..6));
         assert_eq!(terminal.text_input_selection_range(), 6..6);
+    }
+
+    #[test]
+    fn keyboard_text_input_context_tracks_committed_text_for_predictions() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        let removed = terminal.replace_text_input_context_range(None, "hell");
+        assert_eq!(removed, "");
+        assert_eq!(terminal.text_input_document(), " hell");
+        assert_eq!(terminal.text_input_selection_range(), 5..5);
+        assert_eq!(terminal.marked_text_range(), None);
+
+        let removed = terminal.replace_text_input_context_range(Some(1..5), "hello");
+        assert_eq!(removed, "hell");
+        assert_eq!(terminal.text_input_document(), " hello");
+        assert_eq!(terminal.text_input_selection_range(), 6..6);
+
+        terminal.clear_text_input_context();
+        assert_eq!(terminal.text_input_document(), " ");
+        assert_eq!(terminal.text_input_selection_range(), 1..1);
+    }
+
+    #[test]
+    fn keyboard_text_input_context_keeps_backspace_available_at_context_start() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        let removed = terminal.replace_text_input_context_range(Some(0..1), "");
+        assert_eq!(removed, "");
+        assert_eq!(terminal.text_input_document(), " ");
+        assert_eq!(terminal.text_input_selection_range(), 1..1);
+
+        let removed = terminal.replace_text_input_context_range(Some(0..1), "");
+        assert_eq!(removed, "");
+        assert_eq!(terminal.text_input_document(), " ");
+        assert_eq!(terminal.text_input_selection_range(), 1..1);
+
+        terminal.replace_text_input_context_range(None, "x");
+        assert_eq!(terminal.text_input_document(), " x");
+        assert_eq!(terminal.text_input_selection_range(), 2..2);
+    }
+
+    #[test]
+    fn keyboard_text_input_context_does_not_count_placeholder_as_removed_text() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.replace_text_input_context_range(None, "hell");
+
+        let removed = terminal.replace_text_input_context_range(Some(0..5), "hello");
+        assert_eq!(removed, "hell");
+        assert_eq!(terminal.text_input_document(), " hello");
+        assert_eq!(terminal.text_input_selection_range(), 6..6);
+    }
+
+    #[test]
+    fn keyboard_text_input_context_delete_whole_document_excludes_placeholder() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.replace_text_input_context_range(None, "hell");
+
+        let removed = terminal.replace_text_input_context_range(Some(0..5), "");
+        assert_eq!(removed, "hell");
+        assert_eq!(terminal.text_input_document(), " ");
+        assert_eq!(terminal.text_input_selection_range(), 1..1);
+    }
+
+    #[test]
+    fn keyboard_text_input_context_tracks_utf16_ranges_for_predictions() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.replace_text_input_context_range(None, "a😀");
+        assert_eq!(terminal.text_input_document(), " a😀");
+        assert_eq!(terminal.text_input_selection_range(), 4..4);
+
+        let removed = terminal.replace_text_input_context_range(Some(2..4), "");
+        assert_eq!(removed, "😀");
+        assert_eq!(removed.chars().count(), 1);
+        assert_eq!(terminal.text_input_document(), " a");
+        assert_eq!(terminal.text_input_selection_range(), 2..2);
+    }
+
+    #[test]
+    fn keyboard_text_input_context_replacement_inside_context_does_not_emit_backspace_text() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.replace_text_input_context_range(None, "abcdef");
+
+        let removed = terminal.replace_text_input_context_range(Some(2..4), "XY");
+        assert_eq!(removed, "");
+        assert_eq!(terminal.text_input_document(), " aXYdef");
+        assert_eq!(terminal.text_input_selection_range(), 4..4);
+    }
+
+    #[test]
+    fn committed_dictation_text_remains_deletable_as_keyboard_context() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.begin_dictation();
+        terminal.set_marked_text("hello".to_string());
+        assert_eq!(terminal.finish_dictation(), Some("hello".to_string()));
+
+        let removed = terminal.replace_text_input_context_range(Some(5..6), "");
+        assert_eq!(removed, "o");
+        assert!(!terminal.has_committed_dictation_pending_cleanup());
+        assert_eq!(terminal.marked_text(), None);
+        assert_eq!(terminal.marked_text_range(), None);
+        assert_eq!(terminal.text_input_document(), " hell");
+        assert_eq!(terminal.text_input_selection_range(), 5..5);
+    }
+
+    #[test]
+    fn committed_dictation_placeholder_cleanup_does_not_delete_terminal_text() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.begin_dictation();
+        terminal.set_marked_text("hello".to_string());
+        assert_eq!(terminal.finish_dictation(), Some("hello".to_string()));
+
+        assert!(terminal.consume_committed_dictation_cleanup_delete(Some(1..6)));
+        assert_eq!(terminal.marked_text(), None);
+        assert_eq!(terminal.marked_text_range(), None);
+        assert_eq!(terminal.text_input_document(), " ");
+        assert_eq!(terminal.text_input_selection_range(), 1..1);
+    }
+
+    #[test]
+    fn committed_dictation_placeholder_cleanup_accepts_range_with_placeholder() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.begin_dictation();
+        terminal.set_marked_text("hello".to_string());
+        assert_eq!(terminal.finish_dictation(), Some("hello".to_string()));
+
+        assert!(terminal.consume_committed_dictation_cleanup_delete(Some(0..6)));
+        assert_eq!(terminal.text_input_document(), " ");
+        assert!(!terminal.has_committed_dictation_pending_cleanup());
+    }
+
+    #[test]
+    fn committed_dictation_partial_delete_is_not_placeholder_cleanup() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.begin_dictation();
+        terminal.set_marked_text("hello".to_string());
+        assert_eq!(terminal.finish_dictation(), Some("hello".to_string()));
+
+        assert!(!terminal.consume_committed_dictation_cleanup_delete(Some(5..6)));
+        assert!(terminal.has_committed_dictation_pending_cleanup());
+    }
+
+    #[test]
+    fn live_dictation_delete_is_not_committed_placeholder_cleanup() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.begin_dictation();
+        terminal.set_marked_text("hello".to_string());
+
+        assert!(!terminal.consume_committed_dictation_cleanup_delete(Some(1..6)));
+        assert!(terminal.is_dictation_active());
+        assert_eq!(terminal.marked_text(), Some("hello"));
+        assert_eq!(terminal.text_input_document(), " hello");
+    }
+
+    #[test]
+    fn empty_committed_dictation_has_no_placeholder_cleanup_delete() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.begin_dictation();
+        assert_eq!(terminal.finish_dictation(), None);
+
+        assert!(!terminal.consume_committed_dictation_cleanup_delete(Some(1..1)));
+        assert!(!terminal.has_committed_dictation_pending_cleanup());
+        assert_eq!(terminal.text_input_document(), " ");
     }
 
     #[test]

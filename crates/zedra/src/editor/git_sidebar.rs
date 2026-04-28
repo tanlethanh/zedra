@@ -187,6 +187,7 @@ impl GitSidebar {
                 .placeholder("Commit message")
                 .trailing_gutter(40.0)
                 .multiline(true)
+                .native_suggestions(true)
                 .max_lines(8)
         });
         let mut subscriptions = Vec::new();

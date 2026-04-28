@@ -197,6 +197,8 @@ pub struct Input {
     placeholder: String,
     /// Whether to obscure text (for passwords)
     secure: bool,
+    /// Whether to ask the platform keyboard for native inline suggestions.
+    native_suggestions: bool,
     /// Focus handle for GPUI focus management
     focus_handle: FocusHandle,
     /// Last time a key was pressed (for cursor blink pause)
@@ -220,6 +222,7 @@ impl Input {
             display_value: String::new(),
             placeholder: String::new(),
             secure: false,
+            native_suggestions: false,
             focus_handle: cx.focus_handle(),
             last_keystroke: None,
             compact: false,
@@ -249,6 +252,20 @@ impl Input {
     pub fn secure(mut self, secure: bool) -> Self {
         self.secure = secure;
         self
+    }
+
+    /// Enable native platform keyboard suggestions when supported.
+    pub fn native_suggestions(mut self, native_suggestions: bool) -> Self {
+        self.native_suggestions = native_suggestions;
+        self
+    }
+
+    fn text_input_traits_policy(native_suggestions: bool, secure: bool) -> PlatformTextInputTraits {
+        if native_suggestions && !secure {
+            PlatformTextInputTraits::keyboard_suggestions()
+        } else {
+            PlatformTextInputTraits::default()
+        }
     }
 
     /// Use a smaller, denser layout for compact toolbars and sidebars.
@@ -572,11 +589,62 @@ impl EntityInputHandler for Input {
     ) -> Option<usize> {
         Some(self.byte_to_utf16_offset(self.cursor_byte()))
     }
+
+    fn text_input_traits(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> PlatformTextInputTraits {
+        Self::text_input_traits_policy(self.native_suggestions, self.secure)
+    }
 }
 
 impl Focusable for Input {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Input;
+    use gpui::{PlatformTextAutocapitalization, PlatformTextInputTrait, PlatformTextInputTraits};
+
+    fn assert_mutating_traits_disabled(traits: PlatformTextInputTraits) {
+        assert_eq!(
+            traits.autocapitalization,
+            PlatformTextAutocapitalization::None
+        );
+        assert_eq!(traits.spell_checking, PlatformTextInputTrait::Disabled);
+        assert_eq!(traits.smart_quotes, PlatformTextInputTrait::Disabled);
+        assert_eq!(traits.smart_dashes, PlatformTextInputTrait::Disabled);
+        assert_eq!(traits.smart_insert_delete, PlatformTextInputTrait::Disabled);
+    }
+
+    #[test]
+    fn input_text_input_traits_default_to_disabled() {
+        assert_eq!(
+            Input::text_input_traits_policy(false, false),
+            PlatformTextInputTraits::default()
+        );
+    }
+
+    #[test]
+    fn input_native_suggestions_opt_in_to_keyboard_suggestions() {
+        let traits = Input::text_input_traits_policy(true, false);
+
+        assert_eq!(traits, PlatformTextInputTraits::keyboard_suggestions());
+        assert_eq!(traits.inline_prediction, PlatformTextInputTrait::Enabled);
+        assert_eq!(traits.autocorrection, PlatformTextInputTrait::Enabled);
+        assert_mutating_traits_disabled(traits);
+    }
+
+    #[test]
+    fn secure_input_disables_native_suggestions_even_when_requested() {
+        assert_eq!(
+            Input::text_input_traits_policy(true, true),
+            PlatformTextInputTraits::default()
+        );
     }
 }
 
