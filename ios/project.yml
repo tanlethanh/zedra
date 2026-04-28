@@ -59,12 +59,34 @@ targets:
         OTHER_LDFLAGS: ["$(inherited)", "-ObjC", "-all_load"]
         CLANG_ENABLE_OBJC_ARC: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        DEAD_CODE_STRIPPING: YES
       configs:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: dev.zedra.app.debug
           INFOPLIST_KEY_CFBundleDisplayName: "Zedra Dev"
+          COPY_PHASE_STRIP: NO
+          DEBUG_INFORMATION_FORMAT: dwarf
+          ENABLE_TESTABILITY: YES
+          GCC_OPTIMIZATION_LEVEL: 0
+          MTL_ENABLE_DEBUG_INFO: INCLUDE_SOURCE
+          ONLY_ACTIVE_ARCH: YES
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
         Release:
           PRODUCT_BUNDLE_IDENTIFIER: dev.zedra.app
+          COPY_PHASE_STRIP: YES
+          DEBUG_INFORMATION_FORMAT: "dwarf-with-dsym"
+          DEPLOYMENT_POSTPROCESSING: YES
+          ENABLE_DEBUG_DYLIB: NO
+          ENABLE_NS_ASSERTIONS: NO
+          ENABLE_TESTABILITY: NO
+          GCC_OPTIMIZATION_LEVEL: s
+          MTL_ENABLE_DEBUG_INFO: NO
+          STRIP_INSTALLED_PRODUCT: YES
+          STRIP_STYLE: all
+          SWIFT_COMPILATION_MODE: wholemodule
+          SWIFT_OPTIMIZATION_LEVEL: "-O"
+          VALIDATE_PRODUCT: YES
 
 schemes:
   Zedra:

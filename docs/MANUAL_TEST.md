@@ -440,6 +440,10 @@ Expected:
 5. Expected: the build log shows `ZedraRustFFI`, then `Building Rust for Xcode (..., iphoneos, ...)`, before `ProcessXCFramework`
 6. Select the `Zedra Release` scheme with the connected iOS device destination and press Run
 7. Expected: the Rust build log includes `Release mode enabled`, and Xcode installs and launches the production `Zedra` app
+8. Run `./scripts/build-ios.sh --device --release --debug`
+9. Expected: the command fails before compiling and says iOS release builds cannot enable debug flags
+10. Archive the app with the Release configuration
+11. Expected: the archive uses the production bundle id `dev.zedra.app`, generates a dSYM, and has Xcode Release strip/validation settings enabled
 
 ## 20. iOS Portrait Orientation Lock
 

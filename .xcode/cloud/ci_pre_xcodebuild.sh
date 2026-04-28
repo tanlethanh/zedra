@@ -31,7 +31,7 @@ echo "==> Rust version: $(rustc --version)"
 # ── Determine build profile ──────────────────────────────────────────────────
 # Use --release for archive (App Store) builds; debug otherwise.
 RUST_PROFILE_FLAG=""
-if [ "${CI_CONFIGURATION:-}" = "Release" ]; then
+if [ "${CI_CONFIGURATION:-}" = "Release" ] || [ "${CI_XCODEBUILD_ACTION:-}" = "archive" ]; then
     RUST_PROFILE_FLAG="--release"
     echo "==> Using release profile"
 else

@@ -52,19 +52,24 @@ cargo build -p zedra-host --release
 
 # iOS Release Pipeline
 
-Two options are provided:
-- **Option A** — GitHub Actions + xcodebuild (full control, runs on every push)
-- **Option B** — Xcode Cloud (Apple-managed signing, native TestFlight integration)
+The supported iOS paths are:
+- **Xcode Cloud** — Apple-managed signing, native TestFlight integration
+- **Manual local release** — local Xcode 26+ archive/export when CI is unavailable
 
-## Prerequisites (both options)
+The checked-in GitHub Actions release workflow currently ships `zedra-host`
+desktop/server artifacts only. Do not use GitHub-hosted Actions for iOS until
+the runner has the required Xcode/iOS SDK, or a self-hosted macOS runner is
+added.
 
-- Apple Developer Program membership (team ID `4R7EAZY462`)
+## Prerequisites
+
+- Apple Developer Program membership (team ID `GHV27CNR5U`)
 - App record created in App Store Connect (`dev.zedra.app`)
 - Bundle ID `dev.zedra.app` registered in Certificates, Identifiers & Profiles
 
 ---
 
-## Option A: GitHub Actions
+## Unsupported: GitHub Actions
 
 ### How it works
 
@@ -83,9 +88,10 @@ push v* tag  (or manual dispatch)
   └─ xcrun altool --upload-app  → TestFlight
 ```
 
-Workflow file: `.github/workflows/ios-release.yml`
+No iOS GitHub Actions workflow is currently committed. The checked-in
+`.github/workflows/release.yml` is for host binaries only.
 
-### One-time setup
+### If resurrecting this path
 
 #### 1. Create an App Store Connect API key
 
@@ -110,26 +116,25 @@ Workflow file: `.github/workflows/ios-release.yml`
 
 ```xml
 <key>teamID</key>
-<string>4R7EAZY462</string>
+<string>GHV27CNR5U</string>
 ```
 
-### Triggering a release
+### Triggering
 
 ```bash
-# Tag and push — triggers the workflow automatically
+# After an iOS workflow is added, tag and push to trigger it.
 git tag v1.0.0
 git push origin v1.0.0
 ```
 
-Or trigger manually from **Actions → iOS Release → Run workflow** and choose
-`testflight` or `skip-upload`.
+Manual dispatch also requires adding an iOS workflow first.
 
 ### Xcode version note
 
 `macos-15` runners ship with Xcode 16.x. The project targets iOS 16.0
 (matching `ios/project.yml`). When GitHub-hosted runners include Xcode 26,
 update `IPHONEOS_DEPLOYMENT_TARGET` in the workflow and `ios/project.yml`.
-For Xcode 26 / iOS 26 builds today, use **Option B**.
+For Xcode 26 / iOS 26 builds today, use Xcode Cloud or a local Mac.
 
 ### Upload step note
 
@@ -139,7 +144,7 @@ directly with the same P8 key.
 
 ---
 
-## Option B: Xcode Cloud
+## Xcode Cloud
 
 ### How it works
 
@@ -227,7 +232,7 @@ accepted by App Store Connect — it does not need to match the tag number.
 
 Use this when CI is unavailable or you want to ship a hotfix without waiting for
 the automated pipeline. Requires Xcode signed in with an Apple ID that has access
-to team `4R7EAZY462`.
+to team `GHV27CNR5U`.
 
 ### Step 1 — Bump the version
 
@@ -246,6 +251,8 @@ CURRENT_PROJECT_VERSION: "2"   # must be higher than last accepted build
 
 This produces `ios/ZedraFFI.xcframework/ios-arm64/libzedra.a`.
 The `.a` is gitignored and must be rebuilt whenever Rust code changes.
+Release Rust builds reject debug-only flags such as `--debug` and
+`--debug-telemetry`.
 
 ### Step 3 — Generate the Xcode project and install pods
 
