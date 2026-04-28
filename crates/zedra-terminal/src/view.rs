@@ -337,6 +337,11 @@ impl TerminalView {
             window.hide_soft_keyboard();
             window.blur();
             cx.notify();
+        } else if is_focused {
+            // Keyboard might not be visible when already focused.
+            // It does nothing if the keyboard is already visible.
+            window.show_soft_keyboard();
+            cx.notify();
         } else if !is_focused {
             self.focus_handle.focus(window, cx);
             window.show_soft_keyboard();
