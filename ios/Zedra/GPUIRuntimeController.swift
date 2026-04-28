@@ -127,7 +127,7 @@ final class GPUIRuntimeController: NSObject {
 
         let heightPx = UInt32(endFrame.height * UIScreen.main.scale)
         zedra_ios_set_keyboard_height(heightPx)
-        gpui_ios_set_software_keyboard_visible(true)
+        gpui_ios_set_software_keyboard_visible(heightPx > 0)
     }
 
     @objc

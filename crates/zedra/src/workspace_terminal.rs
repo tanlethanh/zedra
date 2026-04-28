@@ -12,7 +12,9 @@ use crate::button::{
     NativeFloatingButtonId, hide_native_floating_button, native_floating_button,
     native_floating_button_id,
 };
-use crate::platform_bridge::{self, CustomSheetDetent, CustomSheetOptions};
+use crate::platform_bridge::{
+    self, CustomSheetDetent, CustomSheetOptions, NativeDictationPreviewOptions,
+};
 use crate::terminal_preview_view::TerminalPreviewView;
 use crate::terminal_state::TerminalState;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
@@ -37,6 +39,7 @@ pub struct WorkspaceTerminal {
     /// without reading terminal_view in render, breaking the GPUI observer dependency.
     last_synced_keyboard_inset: Pixels,
     scroll_to_bottom_button_id: NativeFloatingButtonId,
+    dictation_preview_id: u32,
     scroll_to_bottom_button_visible: bool,
     scroll_to_bottom_button_hide_pending: bool,
     scroll_to_bottom_button_hide_generation: u64,
@@ -64,6 +67,10 @@ impl WorkspaceTerminal {
     fn scroll_button_bottom_offset() -> f32 {
         let keyboard_inset = (Self::keyboard_inset() / px(1.0)) as f32;
         platform_bridge::home_indicator_inset().max(keyboard_inset)
+    }
+
+    fn dictation_preview_bottom_offset() -> f32 {
+        24.0 + Self::scroll_button_bottom_offset()
     }
 
     fn should_show_scroll_to_bottom_button(display_offset: usize) -> bool {
@@ -98,6 +105,7 @@ impl WorkspaceTerminal {
         self.scroll_to_bottom_button_hide_generation =
             self.scroll_to_bottom_button_hide_generation.wrapping_add(1);
         hide_native_floating_button(self.scroll_to_bottom_button_id);
+        platform_bridge::hide_native_dictation_preview(self.dictation_preview_id);
         self.set_scroll_to_bottom_button_visible(false, false, cx);
     }
 
@@ -252,6 +260,28 @@ impl WorkspaceTerminal {
                     this.is_alt_screen = *is_alt;
                     cx.notify();
                 }
+                TerminalEvent::DictationPreviewChanged(text) => {
+                    let active_terminal_id =
+                        this.workspace_state.read(cx).active_terminal_id.clone();
+                    let is_active =
+                        active_terminal_id.as_deref() == Some(this.terminal_id.as_str());
+                    if !is_active {
+                        return;
+                    }
+
+                    match text {
+                        Some(text) => platform_bridge::update_native_dictation_preview(
+                            this.dictation_preview_id,
+                            NativeDictationPreviewOptions {
+                                text: text.clone(),
+                                bottom_offset_pts: Self::dictation_preview_bottom_offset(),
+                            },
+                        ),
+                        None => platform_bridge::hide_native_dictation_preview(
+                            this.dictation_preview_id,
+                        ),
+                    }
+                }
                 TerminalEvent::ScrollbackPositionChanged { display_offset, .. } => {
                     let active_terminal_id =
                         this.workspace_state.read(cx).active_terminal_id.clone();
@@ -293,6 +323,7 @@ impl WorkspaceTerminal {
             is_alt_screen: false,
             last_synced_keyboard_inset: px(0.0),
             scroll_to_bottom_button_id: native_floating_button_id(),
+            dictation_preview_id: platform_bridge::allocate_native_dictation_preview_id(),
             scroll_to_bottom_button_visible: false,
             scroll_to_bottom_button_hide_pending: false,
             scroll_to_bottom_button_hide_generation: 0,
@@ -451,5 +482,6 @@ impl Render for WorkspaceTerminal {
 impl Drop for WorkspaceTerminal {
     fn drop(&mut self) {
         hide_native_floating_button(self.scroll_to_bottom_button_id);
+        platform_bridge::hide_native_dictation_preview(self.dictation_preview_id);
     }
 }

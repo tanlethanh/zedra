@@ -181,6 +181,19 @@ printf '\033]8;;https://zedra.dev\033\\zedra.dev\033]8;;\033\\\n'
 12. While the button is visible, switch to another terminal with enough scrollback and drag away from the bottom
 13. Expected: the previous terminal's button is gone, and the newly active terminal shows its own scroll-to-bottom button
 
+## 11b. Terminal Native Dictation On iOS
+
+1. Connect to a session on a physical iPhone and open the terminal view
+2. Tap the terminal so the software keyboard appears
+3. Tap the keyboard dictation microphone and dictate a short command fragment such as `echo hello`
+4. Expected: a compact native glass/material preview appears above the keyboard and updates with the live dictated text
+5. Stop dictation
+6. Expected: the preview hides, and the dictated text is inserted into the PTY once, without a stuck marked-text underline or duplicate characters
+7. Repeat with a dictated phrase that includes a newline or return command
+8. Expected: newline input is routed as terminal enter rather than leaving literal marked text behind
+9. Start dictation again, then cancel or force recognition failure by stopping before speech is recognized
+10. Expected: the preview hides, the terminal remains focused, no stale dictation text is committed, and normal keyboard typing still reaches the PTY
+
 ## 12. Quick Action Terminal Navigation
 
 1. Connect to a session with at least two open terminals

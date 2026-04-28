@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::cmp::min;
-use std::ops::Index;
+use std::ops::{Index, Range};
 use std::path::{Path, PathBuf};
 use tracing::*;
 
@@ -30,6 +30,7 @@ pub enum TerminalEvent {
     OscEvent(OscEvent),
     OpenHyperlink(TerminalHyperlink),
     AltScreenChanged(bool),
+    DictationPreviewChanged(Option<String>),
     ScrollbackPositionChanged {
         display_offset: usize,
         history_size: usize,
@@ -154,11 +155,20 @@ impl Dimensions for SimpleDimensions {
 
 #[derive(Default)]
 pub struct IMEState {
+    /// Synthetic document exposed to native text input APIs.
+    pub document_text: String,
     /// Composing/marked text. When `dictation_active` is true this holds the
     /// live hypothesis; otherwise it holds the active IME composition string.
     pub marked_text: String,
+    /// UTF-16 range of the marked text inside `document_text`.
+    pub marked_range: Option<Range<usize>>,
+    /// UTF-16 selection range inside `document_text`.
+    pub selected_range: Option<Range<usize>>,
     /// True while a dictation session is in progress.
     pub dictation_active: bool,
+    /// True after a dictation hypothesis has been committed while keeping the
+    /// synthetic text store available for UIKit's trailing dictation queries.
+    pub committed_dictation_pending_cleanup: bool,
 }
 
 /// Minimal terminal state wrapping alacritty_terminal::Term
@@ -465,15 +475,62 @@ impl Terminal {
             });
     }
 
+    fn emit_dictation_preview_changed(&self, text: Option<String>) {
+        let _ = self
+            .event_tx
+            .send(TerminalEvent::DictationPreviewChanged(text));
+    }
+
     // --- IME / Input Composition ---
 
     fn ime_state_mut(&mut self) -> &mut IMEState {
         self.ime_state.get_or_insert_with(IMEState::default)
     }
 
+    fn utf16_len(text: &str) -> usize {
+        text.encode_utf16().count()
+    }
+
+    fn byte_offset_from_utf16(text: &str, offset: usize) -> usize {
+        let mut utf16_count = 0;
+        for (utf8_index, ch) in text.char_indices() {
+            if utf16_count >= offset {
+                return utf8_index;
+            }
+            utf16_count += ch.len_utf16();
+        }
+        text.len()
+    }
+
+    fn byte_range_from_utf16(text: &str, range_utf16: &Range<usize>) -> Range<usize> {
+        Self::byte_offset_from_utf16(text, range_utf16.start)
+            ..Self::byte_offset_from_utf16(text, range_utf16.end)
+    }
+
+    fn clamp_utf16_range(text: &str, range: Range<usize>) -> Range<usize> {
+        let len = Self::utf16_len(text);
+        let start = range.start.min(len);
+        let end = range.end.min(len);
+        start.min(end)..start.max(end)
+    }
+
+    fn replace_utf16_range(
+        document: &str,
+        range: Range<usize>,
+        replacement: &str,
+    ) -> (String, Range<usize>) {
+        let range = Self::clamp_utf16_range(document, range);
+        let byte_range = Self::byte_range_from_utf16(document, &range);
+        let mut result = document.to_string();
+        result.replace_range(byte_range, replacement);
+
+        let replacement_end = range.start + Self::utf16_len(replacement);
+        (result, range.start..replacement_end)
+    }
+
     /// Set the marked/composing text. When dictation is active this is the live hypothesis.
     pub fn set_marked_text(&mut self, text: String) {
-        self.ime_state_mut().marked_text = text;
+        self.replace_marked_text_in_range(None, text, None);
     }
 
     /// Current marked text, if any.
@@ -486,49 +543,185 @@ impl Terminal {
         }
     }
 
+    /// Synthetic text document exposed to native text input APIs.
+    pub fn text_input_document(&self) -> &str {
+        match self.ime_state.as_ref() {
+            Some(state)
+                if state.dictation_active
+                    || state.marked_range.is_some()
+                    || !state.document_text.is_empty() =>
+            {
+                state.document_text.as_str()
+            }
+            _ => " ",
+        }
+    }
+
+    pub fn text_input_selection_range(&self) -> Range<usize> {
+        if let Some(selection) = self
+            .ime_state
+            .as_ref()
+            .and_then(|state| state.selected_range.clone())
+        {
+            selection
+        } else {
+            let len = Self::utf16_len(self.text_input_document());
+            len..len
+        }
+    }
+
     /// Clear the marked text.
     pub fn clear_marked_state(&mut self) {
         if let Some(state) = self.ime_state.as_mut() {
             state.marked_text.clear();
+            state.marked_range = None;
+            state.selected_range = None;
+            state.committed_dictation_pending_cleanup = false;
+            if !state.dictation_active {
+                state.document_text.clear();
+            }
         }
     }
 
     /// Range (in UTF-16 code units) of the current marked text, if any.
-    pub fn marked_text_range(&self) -> Option<std::ops::Range<usize>> {
-        let state = self.ime_state.as_ref()?;
-        if state.marked_text.is_empty() {
-            return None;
-        }
-        let len = state.marked_text.encode_utf16().count();
-        Some(0..len)
+    pub fn marked_text_range(&self) -> Option<Range<usize>> {
+        self.ime_state
+            .as_ref()
+            .and_then(|state| state.marked_range.clone())
     }
 
     pub fn is_dictation_active(&self) -> bool {
         self.ime_state.as_ref().is_some_and(|s| s.dictation_active)
     }
 
-    /// Begin a dictation session. Clears marked text.
+    pub fn has_committed_dictation_pending_cleanup(&self) -> bool {
+        self.ime_state
+            .as_ref()
+            .is_some_and(|state| state.committed_dictation_pending_cleanup)
+    }
+
+    pub fn replace_marked_text_in_range(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+        text: String,
+        selected_range: Option<Range<usize>>,
+    ) -> bool {
+        let dictation_active = {
+            let state = self.ime_state_mut();
+            if state.dictation_active && state.document_text.is_empty() {
+                state.document_text.push(' ');
+            }
+
+            let document_len = Self::utf16_len(&state.document_text);
+            let replacement_range = replacement_range
+                .or_else(|| state.marked_range.clone())
+                .or_else(|| state.selected_range.clone())
+                .unwrap_or(document_len..document_len);
+            let (document_text, inserted_range) =
+                Self::replace_utf16_range(&state.document_text, replacement_range, &text);
+
+            state.document_text = document_text;
+            state.marked_text = text.clone();
+            state.committed_dictation_pending_cleanup = false;
+            state.marked_range = if text.is_empty() && !state.dictation_active {
+                None
+            } else {
+                Some(inserted_range.clone())
+            };
+
+            let text_len = Self::utf16_len(&text);
+            let selected_range = selected_range
+                .map(|range| {
+                    inserted_range.start + range.start.min(text_len)
+                        ..inserted_range.start + range.end.min(text_len)
+                })
+                .unwrap_or_else(|| inserted_range.end..inserted_range.end);
+            state.selected_range = Some(selected_range);
+            state.dictation_active
+        };
+
+        if dictation_active {
+            self.emit_dictation_preview_changed(Some(text));
+        }
+
+        dictation_active
+    }
+
+    /// Begin a dictation session with a stable marked range in the text store.
     pub fn begin_dictation(&mut self) {
         let state = self.ime_state_mut();
+        if state.committed_dictation_pending_cleanup {
+            state.document_text.clear();
+            state.marked_text.clear();
+            state.marked_range = None;
+            state.selected_range = None;
+            state.committed_dictation_pending_cleanup = false;
+        }
+        let already_active = state.dictation_active;
         state.dictation_active = true;
-        state.marked_text.clear();
+        state.committed_dictation_pending_cleanup = false;
+        if !already_active {
+            if state.document_text.is_empty() {
+                state.document_text.push(' ');
+            }
+            let insertion = state
+                .selected_range
+                .as_ref()
+                .map(|range| range.end)
+                .unwrap_or_else(|| Self::utf16_len(&state.document_text));
+            state.marked_text.clear();
+            state.marked_range = Some(insertion..insertion);
+            state.selected_range = Some(insertion..insertion);
+            self.emit_dictation_preview_changed(Some(String::new()));
+        } else if state.marked_range.is_none() {
+            let insertion = state
+                .selected_range
+                .as_ref()
+                .map(|range| range.end)
+                .unwrap_or_else(|| Self::utf16_len(&state.document_text));
+            state.marked_range = Some(insertion..insertion);
+            state.selected_range = Some(insertion..insertion);
+        }
+    }
+
+    /// Finish dictation and return the current marked text, if any.
+    pub fn finish_dictation(&mut self) -> Option<String> {
+        let result = if let Some(state) = self.ime_state.as_mut() {
+            if !state.dictation_active {
+                return None;
+            }
+
+            state.dictation_active = false;
+            // Critical: UIKit may keep asking markedTextRange/textInRange after
+            // dictation finalization while UIDictationController reconciles its
+            // last hypothesis. Do not clear the synthetic document or marked
+            // range here; the next normal input/cancel/start path owns cleanup.
+            // This preserved store is read-only: repeated finish/final-result
+            // callbacks must not commit the same hypothesis to the terminal.
+            let text = state.marked_text.clone();
+            state.committed_dictation_pending_cleanup = !text.is_empty();
+            if text.is_empty() { None } else { Some(text) }
+        } else {
+            None
+        };
+
+        self.emit_dictation_preview_changed(None);
+        result
+    }
+
+    pub fn cancel_dictation(&mut self) {
+        if let Some(state) = self.ime_state.as_mut() {
+            state.dictation_active = false;
+            state.committed_dictation_pending_cleanup = false;
+        }
+        self.clear_marked_state();
+        self.emit_dictation_preview_changed(None);
     }
 
     /// End dictation, committing the current marked text (hypothesis) to the PTY.
     pub fn end_dictation(&mut self) {
-        let bytes = if let Some(state) = self.ime_state.as_mut() {
-            state.dictation_active = false;
-            let text = std::mem::take(&mut state.marked_text);
-            if text.is_empty() {
-                None
-            } else {
-                Some(text.into_bytes())
-            }
-        } else {
-            None
-        };
-        if let Some(bytes) = bytes {
-            self.send_bytes_sync(bytes);
+        if let Some(text) = self.finish_dictation() {
+            self.send_bytes_sync(text.into_bytes());
         }
     }
 
@@ -1388,6 +1581,166 @@ mod tests {
         match hyperlink.target {
             TerminalHyperlinkTarget::Url { url } => (hyperlink.label, url),
             other => panic!("expected url hyperlink, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn finish_dictation_returns_marked_text_and_preserves_text_input_store() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        terminal.begin_dictation();
+        terminal.set_marked_text("echo hello".to_string());
+
+        assert_eq!(terminal.finish_dictation(), Some("echo hello".to_string()));
+        assert!(!terminal.is_dictation_active());
+        assert!(terminal.has_committed_dictation_pending_cleanup());
+        assert_eq!(terminal.marked_text(), Some("echo hello"));
+        assert_eq!(terminal.text_input_document(), " echo hello");
+        assert_eq!(terminal.marked_text_range(), Some(1..11));
+    }
+
+    #[test]
+    fn finish_dictation_does_not_recommit_preserved_text_input_store() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        terminal.begin_dictation();
+        terminal.set_marked_text("echo hello".to_string());
+
+        assert_eq!(terminal.finish_dictation(), Some("echo hello".to_string()));
+        assert_eq!(terminal.finish_dictation(), None);
+        assert!(terminal.has_committed_dictation_pending_cleanup());
+        assert_eq!(terminal.marked_text(), Some("echo hello"));
+        assert_eq!(terminal.text_input_document(), " echo hello");
+        assert_eq!(terminal.marked_text_range(), Some(1..11));
+    }
+
+    #[test]
+    fn clear_marked_state_removes_committed_dictation_store_after_late_queries() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        terminal.begin_dictation();
+        terminal.set_marked_text("echo hello".to_string());
+        terminal.finish_dictation();
+
+        terminal.clear_marked_state();
+
+        assert_eq!(terminal.marked_text(), None);
+        assert_eq!(terminal.marked_text_range(), None);
+        assert_eq!(terminal.text_input_document(), " ");
+    }
+
+    #[test]
+    fn new_dictation_session_does_not_reuse_committed_dictation_store() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        terminal.begin_dictation();
+        terminal.set_marked_text("echo hello".to_string());
+        terminal.finish_dictation();
+
+        terminal.begin_dictation();
+
+        assert!(terminal.is_dictation_active());
+        assert_eq!(terminal.text_input_document(), " ");
+        assert_eq!(terminal.marked_text(), None);
+        assert_eq!(terminal.marked_text_range(), Some(1..1));
+        assert_eq!(terminal.text_input_selection_range(), 1..1);
+    }
+
+    #[test]
+    fn cancel_dictation_clears_text_input_store() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        terminal.begin_dictation();
+        terminal.set_marked_text("echo hello".to_string());
+
+        terminal.cancel_dictation();
+
+        assert!(!terminal.is_dictation_active());
+        assert_eq!(terminal.marked_text(), None);
+        assert_eq!(terminal.marked_text_range(), None);
+        assert_eq!(terminal.text_input_document(), " ");
+    }
+
+    #[test]
+    fn finish_dictation_returns_none_for_empty_hypothesis() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        terminal.begin_dictation();
+
+        assert_eq!(terminal.finish_dictation(), None);
+        assert!(!terminal.is_dictation_active());
+    }
+
+    #[test]
+    fn dictation_keeps_empty_hypothesis_visible_to_text_input() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        assert_eq!(terminal.text_input_document(), " ");
+        assert_eq!(terminal.marked_text_range(), None);
+
+        terminal.begin_dictation();
+
+        assert_eq!(terminal.text_input_document(), " ");
+        assert_eq!(terminal.marked_text_range(), Some(1..1));
+        assert_eq!(terminal.text_input_selection_range(), 1..1);
+    }
+
+    #[test]
+    fn dictation_marked_range_tracks_real_hypothesis_in_document() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.begin_dictation();
+        terminal.set_marked_text("hello".to_string());
+
+        assert_eq!(terminal.text_input_document(), " hello");
+        assert_eq!(terminal.marked_text_range(), Some(1..6));
+        assert_eq!(terminal.text_input_selection_range(), 6..6);
+    }
+
+    #[test]
+    fn dictation_replaces_existing_hypothesis_range() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.begin_dictation();
+        terminal.replace_marked_text_in_range(Some(1..1), "Hello".to_string(), None);
+        assert_eq!(terminal.text_input_document(), " Hello");
+        assert_eq!(terminal.marked_text_range(), Some(1..6));
+
+        terminal.replace_marked_text_in_range(Some(1..6), "Hello, how".to_string(), None);
+        assert_eq!(terminal.text_input_document(), " Hello, how");
+        assert_eq!(terminal.marked_text_range(), Some(1..11));
+        assert_eq!(terminal.text_input_selection_range(), 11..11);
+    }
+
+    #[test]
+    fn repeated_begin_dictation_preserves_live_hypothesis() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.begin_dictation();
+        terminal.set_marked_text("hello".to_string());
+        terminal.begin_dictation();
+
+        assert_eq!(terminal.text_input_document(), " hello");
+        assert_eq!(terminal.marked_text_range(), Some(1..6));
+    }
+
+    #[test]
+    fn dictation_preview_events_track_live_hypothesis() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let mut events = terminal.subscribe_events();
+
+        terminal.begin_dictation();
+        match events.try_recv().expect("expected dictation start event") {
+            super::TerminalEvent::DictationPreviewChanged(Some(text)) => assert_eq!(text, ""),
+            event => panic!("expected dictation preview start event, got {event:?}"),
+        }
+
+        terminal.set_marked_text("echo hello".to_string());
+        match events.try_recv().expect("expected dictation update event") {
+            super::TerminalEvent::DictationPreviewChanged(Some(text)) => {
+                assert_eq!(text, "echo hello");
+            }
+            event => panic!("expected dictation preview update event, got {event:?}"),
+        }
+
+        assert_eq!(terminal.finish_dictation(), Some("echo hello".to_string()));
+        match events.try_recv().expect("expected dictation end event") {
+            super::TerminalEvent::DictationPreviewChanged(None) => {}
+            event => panic!("expected dictation preview end event, got {event:?}"),
         }
     }
 

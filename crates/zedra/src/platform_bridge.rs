@@ -85,6 +85,12 @@ pub struct NativeFloatingButtonOptions {
     pub icon_weight: NativeFloatingButtonIconWeight,
 }
 
+#[derive(Clone, Debug)]
+pub struct NativeDictationPreviewOptions {
+    pub text: String,
+    pub bottom_offset_pts: f32,
+}
+
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum NativeFloatingButtonIconWeight {
@@ -114,6 +120,7 @@ static NEXT_SELECTION_ID: AtomicU32 = AtomicU32::new(1);
 static SELECTION_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>) + Send>>>> =
     OnceLock::new();
 static NEXT_NATIVE_FLOATING_BUTTON_ID: AtomicU32 = AtomicU32::new(1);
+static NEXT_NATIVE_DICTATION_PREVIEW_ID: AtomicU32 = AtomicU32::new(1);
 thread_local! {
     static PENDING_CUSTOM_SHEET_VIEW: std::cell::RefCell<Option<AnyView>> = const { std::cell::RefCell::new(None) };
     static NATIVE_FLOATING_BUTTON_CALLBACKS: RefCell<HashMap<u32, Box<dyn FnMut(&mut App)>>> = RefCell::new(HashMap::new());
@@ -211,6 +218,18 @@ pub(crate) fn remove_native_floating_button(id: u32) {
         callbacks.borrow_mut().remove(&id);
     });
     hide_native_floating_button(id);
+}
+
+pub(crate) fn allocate_native_dictation_preview_id() -> u32 {
+    NEXT_NATIVE_DICTATION_PREVIEW_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+pub(crate) fn update_native_dictation_preview(id: u32, options: NativeDictationPreviewOptions) {
+    bridge().update_native_dictation_preview(id, &options);
+}
+
+pub(crate) fn hide_native_dictation_preview(id: u32) {
+    bridge().hide_native_dictation_preview(id);
 }
 
 /// Called from platform code after the user taps a button.
@@ -368,6 +387,10 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn update_native_floating_button(&self, _id: u32, _options: &NativeFloatingButtonOptions) {}
     /// Hide a native floating icon button.
     fn hide_native_floating_button(&self, _id: u32) {}
+    /// Position or update a native dictation preview overlay.
+    fn update_native_dictation_preview(&self, _id: u32, _options: &NativeDictationPreviewOptions) {}
+    /// Hide a native dictation preview overlay.
+    fn hide_native_dictation_preview(&self, _id: u32) {}
 }
 
 static BRIDGE: OnceLock<Box<dyn PlatformBridge>> = OnceLock::new();

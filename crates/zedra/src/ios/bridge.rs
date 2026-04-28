@@ -5,7 +5,7 @@ use crate::active_terminal;
 use crate::deeplink;
 use crate::platform_bridge::{
     self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback,
-    NativeFloatingButtonOptions, PlatformBridge,
+    NativeDictationPreviewOptions, NativeFloatingButtonOptions, PlatformBridge,
 };
 
 /// Screen scale factor (e.g. 3.0 for @3x), stored as f32 bits.
@@ -120,6 +120,14 @@ unsafe extern "C" {
     );
     /// Hide a native floating icon button.
     fn ios_hide_native_floating_button(callback_id: u32);
+    /// Show or update a native dictation preview overlay.
+    fn ios_update_native_dictation_preview(
+        preview_id: u32,
+        text: *const std::ffi::c_char,
+        bottom_offset_pts: f32,
+    );
+    /// Hide a native dictation preview overlay.
+    fn ios_hide_native_dictation_preview(preview_id: u32);
 }
 
 impl PlatformBridge for IosBridge {
@@ -310,6 +318,20 @@ impl PlatformBridge for IosBridge {
 
     fn hide_native_floating_button(&self, id: u32) {
         unsafe { ios_hide_native_floating_button(id) };
+    }
+
+    fn update_native_dictation_preview(&self, id: u32, options: &NativeDictationPreviewOptions) {
+        use std::ffi::CString;
+
+        let text =
+            CString::new(options.text.as_str()).unwrap_or_else(|_| CString::new("").unwrap());
+        unsafe {
+            ios_update_native_dictation_preview(id, text.as_ptr(), options.bottom_offset_pts);
+        }
+    }
+
+    fn hide_native_dictation_preview(&self, id: u32) {
+        unsafe { ios_hide_native_dictation_preview(id) };
     }
 }
 

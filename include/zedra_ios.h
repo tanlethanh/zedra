@@ -254,6 +254,18 @@ extern void ios_update_native_floating_button_with_icon(uint32_t callback_id,
 extern void ios_hide_native_floating_button(uint32_t callback_id);
 
 /**
+ * Show or update a native dictation preview overlay.
+ */
+extern void ios_update_native_dictation_preview(uint32_t preview_id,
+                                                const char *text,
+                                                float bottom_offset_pts);
+
+/**
+ * Hide a native dictation preview overlay.
+ */
+extern void ios_hide_native_dictation_preview(uint32_t preview_id);
+
+/**
  * Called from the native alert handler after the user taps a button.
  *
  * `callback_id` matches the value passed to `ios_present_alert`.
