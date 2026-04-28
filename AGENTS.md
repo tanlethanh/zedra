@@ -49,6 +49,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - Use commit subjects in the form `feat|fix|chore|docs: <description>`.
 - When the change is scoped to a platform, feature, or crate, use `type(scope): <description>`, such as `feat(ios): ...`, `fix(host): ...`, or `chore(rpc): ...`.
 - Commits must include only changes related to the current feature or fix. Never stage or commit unrelated work, even when the worktree has multiple concurrent edits.
+- `vendor/zed` is a separate submodule with its own git style: clear, capitalized, imperative subjects, no conventional prefixes, optional crate scope such as `git_ui: Add history view`, and no trailing punctuation.
 
 ## Platform Scope
 

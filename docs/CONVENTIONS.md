@@ -58,6 +58,14 @@ Keep the description concise and describe the user-visible or maintainer-visible
 
 Keep each commit scoped to the current feature or fix. This repo often has multiple active edits in the same worktree, so do not stage or commit unrelated files or hunks.
 
+`vendor/zed` is a separate git submodule and follows the convention documented in `vendor/zed/.rules`:
+
+- Clear, capitalized, imperative subject with no trailing punctuation.
+- No conventional prefixes such as `fix:`, `feat:`, or `docs:`.
+- Optional crate scope when one crate is the clear scope, such as `git_ui: Add history view`.
+- Upstream squash commits append the PR number, such as `Fix crash in project panel (#12345)`.
+- The parent Zedra commit that updates the submodule pointer still follows the root repo convention.
+
 Before committing:
 
 - Inspect `git diff --cached --stat`, `git diff --cached --name-only`, and the staged hunks.
