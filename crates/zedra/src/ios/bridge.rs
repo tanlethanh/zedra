@@ -87,6 +87,7 @@ unsafe extern "C" {
         button_count: i32,
         labels: *const *const std::ffi::c_char,
         styles: *const i32,
+        image_names: *const *const std::ffi::c_char,
     );
     /// Present a configurable native custom sheet with a GPUI canvas host.
     fn ios_present_custom_sheet(
@@ -259,6 +260,15 @@ impl PlatformBridge for IosBridge {
                 AlertButtonStyle::Destructive => 2,
             })
             .collect();
+        let c_image_names: Vec<CString> = buttons
+            .iter()
+            .map(|b| {
+                CString::new(b.image_name.as_deref().unwrap_or(""))
+                    .unwrap_or_else(|_| CString::new("").unwrap())
+            })
+            .collect();
+        let image_name_ptrs: Vec<*const std::ffi::c_char> =
+            c_image_names.iter().map(|s| s.as_ptr()).collect();
         unsafe {
             ios_present_selection(
                 id,
@@ -267,6 +277,7 @@ impl PlatformBridge for IosBridge {
                 buttons.len() as i32,
                 label_ptrs.as_ptr(),
                 styles.as_ptr(),
+                image_name_ptrs.as_ptr(),
             );
         }
     }

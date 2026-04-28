@@ -26,6 +26,7 @@ pub enum AlertButtonStyle {
 pub struct AlertButton {
     pub label: String,
     pub style: AlertButtonStyle,
+    pub image_name: Option<String>,
 }
 
 impl AlertButton {
@@ -33,19 +34,27 @@ impl AlertButton {
         Self {
             label: label.into(),
             style: AlertButtonStyle::Default,
+            image_name: None,
         }
     }
     pub fn cancel(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
             style: AlertButtonStyle::Cancel,
+            image_name: None,
         }
     }
     pub fn destructive(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
             style: AlertButtonStyle::Destructive,
+            image_name: None,
         }
+    }
+
+    pub fn image(mut self, name: impl Into<String>) -> Self {
+        self.image_name = Some(name.into());
+        self
     }
 }
 

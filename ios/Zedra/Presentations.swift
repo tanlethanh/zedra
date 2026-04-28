@@ -203,6 +203,22 @@ enum NativePresentationBridge {
         }
     }
 
+    static func optionalStrings(
+        count: Int32,
+        labels: UnsafePointer<UnsafePointer<CChar>?>?
+    ) -> [String?] {
+        guard let labels, count > 0 else { return [] }
+        return (0..<Int(count)).map { index in
+            guard let value = string(labels[index]), !value.isEmpty else { return nil }
+            return value
+        }
+    }
+
+    static func actionImage(named imageName: String) -> UIImage? {
+        let image = UIImage(named: imageName) ?? UIImage(systemName: imageName)
+        return image?.withRenderingMode(.alwaysTemplate)
+    }
+
     fileprivate static func styles(count: Int32, styles: UnsafePointer<Int32>?) -> [AlertActionStyle] {
         guard count > 0 else { return [] }
         return (0..<Int(count)).map { index in
@@ -691,7 +707,8 @@ private enum PresentationCoordinator {
         title: String?,
         message: String?,
         buttonLabels: [String],
-        buttonStyles: [AlertActionStyle]
+        buttonStyles: [AlertActionStyle],
+        buttonImageNames: [String?]
     ) {
         DispatchQueue.main.async {
             guard let presenter = NativePresentationBridge.topViewController() else { return }
@@ -708,10 +725,15 @@ private enum PresentationCoordinator {
 
             for index in 0..<buttonLabels.count {
                 let style = buttonStyles[safe: index] ?? .default
-                sheet.addAction(UIAlertAction(title: buttonLabels[index], style: style.uiKitStyle) { _ in
+                let action = UIAlertAction(title: buttonLabels[index], style: style.uiKitStyle) { _ in
                     delegate.handled = true
                     zedra_ios_selection_result(callbackID, Int32(index))
-                })
+                }
+                if let imageName = buttonImageNames[safe: index].flatMap({ $0 }),
+                   let image = NativePresentationBridge.actionImage(named: imageName) {
+                    action.setValue(image, forKey: "image")
+                }
+                sheet.addAction(action)
             }
 
             presenter.present(sheet, animated: true)
@@ -1034,14 +1056,19 @@ func ios_present_selection(
     _ message: UnsafePointer<CChar>?,
     _ buttonCount: Int32,
     _ labels: UnsafePointer<UnsafePointer<CChar>?>?,
-    _ styles: UnsafePointer<Int32>?
+    _ styles: UnsafePointer<Int32>?,
+    _ imageNames: UnsafePointer<UnsafePointer<CChar>?>?
 ) {
     PresentationCoordinator.presentActionSheet(
         callbackID: callbackID,
         title: NativePresentationBridge.string(title),
         message: NativePresentationBridge.string(message),
         buttonLabels: NativePresentationBridge.strings(count: buttonCount, labels: labels),
-        buttonStyles: NativePresentationBridge.styles(count: buttonCount, styles: styles)
+        buttonStyles: NativePresentationBridge.styles(count: buttonCount, styles: styles),
+        buttonImageNames: NativePresentationBridge.optionalStrings(
+            count: buttonCount,
+            labels: imageNames
+        )
     )
 }
 

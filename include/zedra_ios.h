@@ -210,7 +210,8 @@ extern void ios_present_selection(uint32_t callback_id,
                                   const char *message,
                                   int32_t button_count,
                                   const char *const *labels,
-                                  const int32_t *styles);
+                                  const int32_t *styles,
+                                  const char *const *image_names);
 
 /**
  * Present a configurable native custom sheet with a GPUI canvas host.

@@ -45,7 +45,8 @@ __attribute__((weak)) void ios_present_selection(
     const char *message,
     int button_count,
     const char **labels,
-    const int *styles) {}
+    const int *styles,
+    const char **image_names) {}
 __attribute__((weak)) void ios_present_custom_sheet(
     int detent_count,
     const int *detents,
