@@ -1,15 +1,17 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::{Result as AnyhowResult, anyhow};
 use gpui::{prelude::FluentBuilder as _, *};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use tracing::*;
 use zedra_rpc::ZedraPairingTicket;
 use zedra_rpc::proto::{HostEvent, SyncSessionResult};
 use zedra_session::{ConnectEvent, Session, SessionHandle, SessionState, signer::ClientSigner};
 
 use crate::active_terminal;
+use crate::agent;
 use crate::editor::git_sidebar::GitFileSection;
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
 use crate::placeholder::render_placeholder;
@@ -21,9 +23,9 @@ use crate::transport_badge::phase_indicator_color;
 use crate::ui::{DrawerHost, DrawerSide};
 use crate::workspace_action::{self, GoHome, OpenQuickAction, RequestDisconnect};
 use crate::workspace_action::{
-    CloseDrawer, CloseTerminal, CreateNewTerminal, GitCommit, GitShowItemActions, GitStage,
-    GitUnstage, OpenFile, OpenGitDiff, OpenTerminal, RestartConnection, ShowConnecting,
-    ToggleDrawer,
+    AddSelectionToChat, CloseDrawer, CloseTerminal, CreateNewTerminal, GitCommit,
+    GitShowItemActions, GitStage, GitUnstage, OpenFile, OpenGitDiff, OpenTerminal,
+    RestartConnection, ShowConnecting, ToggleDrawer,
 };
 use crate::workspace_connecting::WorkspaceConnecting;
 use crate::workspace_drawer::WorkspaceDrawer;
@@ -65,15 +67,23 @@ pub struct Workspace {
     _host_event_listener: Option<Task<()>>,
     /// Listens for periodic host resource snapshots.
     _host_info_listener: Option<Task<()>>,
-    pending_confirmation: SharedPendingSlot<PendingWorkspaceConfirmation>,
-    _pending_confirmation_task: Task<()>,
+    pending_platform_action: SharedPendingSlot<PendingWorkspaceAction>,
+    _pending_platform_action_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
-enum PendingWorkspaceConfirmation {
+enum PendingWorkspaceAction {
     DisconnectSession,
-    DeleteTerminal { id: String },
+    DeleteTerminal {
+        id: String,
+    },
+    AddSelectionToChat {
+        target: AddToChatTarget,
+        input: agent::AddToChat,
+    },
 }
+
+const ADD_TO_CHAT_SEND_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
 struct ConnectionRequest {
@@ -81,6 +91,61 @@ struct ConnectionRequest {
     ticket: Option<ZedraPairingTicket>,
     signer: Arc<dyn ClientSigner>,
     session_id: Option<String>,
+}
+
+#[derive(Clone)]
+struct AddToChatTarget {
+    terminal_id: String,
+    kind: agent::Kind,
+    title: Option<String>,
+    cwd: Option<String>,
+    input_tx: mpsc::Sender<Vec<u8>>,
+}
+
+struct AgentTerminalTermCtx {
+    tid: String,
+    cwd: Option<PathBuf>,
+    input_tx: mpsc::Sender<Vec<u8>>,
+}
+
+impl agent::TermCtx for AgentTerminalTermCtx {
+    fn tid(&self) -> &str {
+        &self.tid
+    }
+
+    fn cwd(&self) -> Option<&Path> {
+        self.cwd.as_deref()
+    }
+
+    fn write(&mut self, bytes: Vec<u8>) -> AnyhowResult<()> {
+        self.input_tx
+            .try_send(bytes)
+            .map_err(|error| anyhow!("failed to send input to {}: {}", self.tid, error))
+    }
+
+    fn selection(&self) -> Option<&str> {
+        None
+    }
+}
+
+struct WorkspaceAgentApp;
+
+impl agent::AppCtx for WorkspaceAgentApp {
+    fn diff(&mut self, _diff: agent::Diff) -> AnyhowResult<()> {
+        Ok(())
+    }
+
+    fn open(&mut self, _loc: agent::Loc) -> AnyhowResult<()> {
+        Ok(())
+    }
+
+    fn pick(&mut self, _pick: agent::Pick) -> AnyhowResult<Option<String>> {
+        Ok(None)
+    }
+
+    fn status(&mut self, _status: agent::Status) -> AnyhowResult<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -261,12 +326,12 @@ impl Workspace {
             }
         });
 
-        let pending_confirmation = shared_pending_slot();
-        let confirmation_slot = pending_confirmation.clone();
-        let pending_confirmation_task =
+        let pending_platform_action = shared_pending_slot();
+        let platform_action_slot = pending_platform_action.clone();
+        let pending_platform_action_task =
             spawn_periodic_task(cx, Duration::from_millis(50), move |this, cx| {
-                if let Some(confirmation) = confirmation_slot.take() {
-                    this.process_pending_confirmation(confirmation, cx);
+                if let Some(action) = platform_action_slot.take() {
+                    this.process_pending_platform_action(action, cx);
                 }
             });
 
@@ -287,8 +352,8 @@ impl Workspace {
             _connect_listener: None,
             _host_event_listener: Some(host_event_listener),
             _host_info_listener: Some(host_info_listener),
-            pending_confirmation,
-            _pending_confirmation_task: pending_confirmation_task,
+            pending_platform_action,
+            _pending_platform_action_task: pending_platform_action_task,
             _subscriptions: vec![workspace_state_subscription, gitdiff_subscription],
         }
     }
@@ -477,12 +542,15 @@ impl Workspace {
     }
 
     pub fn open_terminal_from_quick_action(&mut self, id: String, cx: &mut Context<Self>) {
-        self.drawer_host.update(cx, |host, cx| host.close(cx));
+        self.activate_existing_terminal(id, cx);
+    }
 
+    fn activate_existing_terminal(&mut self, id: String, cx: &mut Context<Self>) {
+        self.drawer_host.update(cx, |host, cx| host.close(cx));
         if let Some(terminal_entity) = self.terminal_by_id(&id, cx) {
             self.activate_terminal(id, terminal_entity, cx);
         } else {
-            warn!("quick action requested uninitialized terminal {}", id);
+            warn!("requested uninitialized terminal {}", id);
         }
     }
 
@@ -524,7 +592,7 @@ impl Workspace {
         info!("handle RequestDisconnect from workspace");
         window.hide_soft_keyboard();
 
-        let pending_confirmation = self.pending_confirmation.clone();
+        let pending_platform_action = self.pending_platform_action.clone();
         platform_bridge::show_alert(
             "",
             "Disconnect this session?",
@@ -534,7 +602,7 @@ impl Workspace {
             ],
             move |button_index| {
                 if button_index == 0 {
-                    pending_confirmation.set(PendingWorkspaceConfirmation::DisconnectSession);
+                    pending_platform_action.set(PendingWorkspaceAction::DisconnectSession);
                 }
             },
         );
@@ -593,18 +661,88 @@ impl Workspace {
 
     fn handle_open_file(&mut self, action: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
         info!("handle OpenFile from workspace");
+        window.clear_read_only_selection_cache();
         self.drawer_host
             .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
 
+        let path = action.path.clone();
+        self.open_file_in_editor(path, cx);
+    }
+
+    fn open_file_in_editor(&mut self, path: String, cx: &mut Context<Self>) {
         self.editor.update(cx, |e, cx| {
-            e.open_file(action.path.clone(), cx);
+            e.open_file(path.clone(), cx);
         });
 
         let editor = self.editor.clone();
+        let content_path = path.clone();
         self.content.update(cx, move |c, cx| {
-            c.set_file_subtitle(action.path.clone(), cx);
+            c.set_file_subtitle(content_path.clone(), cx);
             c.set_main_view(editor.into(), cx);
         });
+    }
+
+    fn handle_add_selection_to_chat(
+        &mut self,
+        _action: &AddSelectionToChat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(selection) = self
+            .editor
+            .read(cx)
+            .selected_agent_context_range(window, cx)
+        else {
+            warn!("agent: add selection to chat missing selection");
+            return;
+        };
+
+        let workdir = self.workspace_state.read(cx).workdir.clone();
+        let input = agent::AddToChat {
+            rel: PathBuf::from(workspace_relative_path(&selection.path, &workdir)),
+            file: PathBuf::from(&selection.path),
+            start: selection.start,
+            end: selection.end,
+            text: selection.text,
+        };
+
+        let targets = self.add_to_chat_targets(cx);
+        if targets.is_empty() {
+            window.clear_read_only_selection_cache();
+            platform_bridge::show_selection(
+                "Add to Chat",
+                "No AI agent detected",
+                vec![AlertButton::cancel("OK")],
+                |_| {},
+            );
+            return;
+        }
+
+        let buttons = targets
+            .iter()
+            .enumerate()
+            .map(|(index, target)| add_to_chat_target_button(index, target))
+            .chain(std::iter::once(AlertButton::cancel("Cancel")))
+            .collect();
+        let pending_platform_action = self.pending_platform_action.clone();
+
+        platform_bridge::show_selection(
+            "Add to Chat",
+            "Choose an AI-agent terminal.",
+            buttons,
+            move |selection| {
+                let Some(index) = selection else {
+                    return;
+                };
+                let Some(target) = targets.get(index).cloned() else {
+                    return;
+                };
+
+                pending_platform_action
+                    .set(PendingWorkspaceAction::AddSelectionToChat { target, input });
+            },
+        );
+        window.clear_read_only_selection_cache();
     }
 
     fn handle_open_git_diff(
@@ -975,21 +1113,49 @@ impl Workspace {
         });
     }
 
-    fn process_pending_confirmation(
+    fn process_pending_platform_action(
         &mut self,
-        confirmation: PendingWorkspaceConfirmation,
+        action: PendingWorkspaceAction,
         cx: &mut Context<Self>,
     ) {
-        match confirmation {
-            PendingWorkspaceConfirmation::DisconnectSession => self.disconnect(cx),
-            PendingWorkspaceConfirmation::DeleteTerminal { id } => {
-                self.close_terminal_by_id(id, cx)
+        match action {
+            PendingWorkspaceAction::DisconnectSession => self.disconnect(cx),
+            PendingWorkspaceAction::DeleteTerminal { id } => self.close_terminal_by_id(id, cx),
+            PendingWorkspaceAction::AddSelectionToChat { target, input } => {
+                self.activate_existing_terminal(target.terminal_id.clone(), cx);
+                self.schedule_add_to_chat_after_activation(target, input, cx);
             }
         }
     }
 
+    fn schedule_add_to_chat_after_activation(
+        &self,
+        target: AddToChatTarget,
+        input: agent::AddToChat,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |_workspace, cx| {
+            // Let the terminal activation paint before the selected text is pasted.
+            cx.background_executor().timer(ADD_TO_CHAT_SEND_DELAY).await;
+
+            let kind = target.kind;
+            let mut adapter = agent::make_adapter(kind);
+            let mut term = AgentTerminalTermCtx {
+                tid: target.terminal_id,
+                cwd: target.cwd.map(PathBuf::from),
+                input_tx: target.input_tx,
+            };
+            let mut app = WorkspaceAgentApp;
+
+            if let Err(error) = adapter.add_to_chat(input, &mut term, &mut app) {
+                warn!(?kind, error = %error, "agent: add selection to chat failed");
+            }
+        })
+        .detach();
+    }
+
     fn request_terminal_delete_confirmation(&self, terminal_id: String) {
-        let pending_confirmation = self.pending_confirmation.clone();
+        let pending_platform_action = self.pending_platform_action.clone();
         platform_bridge::show_alert(
             "",
             "Delete this terminal?",
@@ -999,7 +1165,7 @@ impl Workspace {
             ],
             move |button_index| {
                 if button_index == 0 {
-                    pending_confirmation.set(PendingWorkspaceConfirmation::DeleteTerminal {
+                    pending_platform_action.set(PendingWorkspaceAction::DeleteTerminal {
                         id: terminal_id.clone(),
                     });
                 }
@@ -1039,6 +1205,34 @@ impl Workspace {
             .iter()
             .find(|t| t.read(cx).terminal_id() == id)
             .cloned()
+    }
+
+    fn add_to_chat_targets(&self, cx: &mut Context<Self>) -> Vec<AddToChatTarget> {
+        self.workspace_state
+            .read(cx)
+            .terminal_ids
+            .clone()
+            .into_iter()
+            .filter(|terminal_id| terminal_id != TERMINAL_PENDING_ID)
+            .filter_map(|terminal_id| {
+                let meta = self.terminal_state.read(cx).meta(&terminal_id);
+                let kind = meta.agent_kind?;
+                if kind == agent::Kind::Shell || !agent::make_adapter(kind).caps().add_to_chat {
+                    return None;
+                }
+
+                let terminal = self.terminal_by_id(&terminal_id, cx)?;
+                let input_tx = terminal.read(cx).input_sender(cx)?;
+
+                Some(AddToChatTarget {
+                    terminal_id,
+                    kind,
+                    title: meta.plain_title,
+                    cwd: meta.cwd,
+                    input_tx,
+                })
+            })
+            .collect()
     }
 
     fn mainview_viewport(&self, window: &mut Window, cx: &App) -> Size<Pixels> {
@@ -1083,6 +1277,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_show_connecting))
             .on_action(cx.listener(Self::handle_restart_connection))
             .on_action(cx.listener(Self::handle_open_file))
+            .on_action(cx.listener(Self::handle_add_selection_to_chat))
             .on_action(cx.listener(Self::handle_open_git_diff))
             .on_action(cx.listener(Self::handle_git_stage))
             .on_action(cx.listener(Self::handle_git_unstage))
@@ -1144,6 +1339,33 @@ fn workspace_relative_path(path: &str, workdir: &str) -> String {
     }
 }
 
+fn add_to_chat_target_button(index: usize, target: &AddToChatTarget) -> AlertButton {
+    let title = add_to_chat_target_title(index, target.title.as_deref(), target.cwd.as_deref());
+    let presentation = agent::make_adapter(target.kind).target_presentation(&title);
+    let button = AlertButton::default(presentation.label);
+    if let Some(image_name) = presentation.image_name {
+        button.image(image_name)
+    } else {
+        button
+    }
+}
+
+fn add_to_chat_target_title(index: usize, title: Option<&str>, cwd: Option<&str>) -> String {
+    title
+        .map(strip_ps1_prefix)
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            cwd.and_then(|cwd| {
+                cwd.rsplit('/')
+                    .find(|part| !part.is_empty())
+                    .map(ToOwned::to_owned)
+            })
+        })
+        .unwrap_or_else(|| format!("Terminal {}", index + 1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1196,6 +1418,76 @@ mod tests {
         let mode = sync_refresh_mode_for_event(&sync_complete_event(), &mut seen_reconnect);
 
         assert_eq!(mode, Some(SyncRefreshMode::Reconnect));
+    }
+
+    #[::core::prelude::v1::test]
+    fn add_to_chat_target_title_prefers_stripped_terminal_title() {
+        assert_eq!(
+            add_to_chat_target_title(
+                0,
+                Some("thomas@mac:~/projects/zedra"),
+                Some("/tmp/fallback"),
+            ),
+            "~/projects/zedra"
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn add_to_chat_target_title_falls_back_to_cwd_leaf() {
+        assert_eq!(
+            add_to_chat_target_title(1, Some(""), Some("/Users/thomasle/projects/zedra")),
+            "zedra"
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn add_to_chat_target_title_ignores_blank_cwd_segments() {
+        assert_eq!(
+            add_to_chat_target_title(1, None, Some("/Users/thomasle/projects/zedra/")),
+            "zedra"
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn add_to_chat_target_title_falls_back_to_terminal_number() {
+        assert_eq!(
+            add_to_chat_target_title(2, Some("   "), Some("/")),
+            "Terminal 3"
+        );
+        assert_eq!(add_to_chat_target_title(3, None, None), "Terminal 4");
+    }
+
+    #[::core::prelude::v1::test]
+    fn add_to_chat_target_button_uses_adapter_label_without_terminal_prefix() {
+        let (input_tx, _input_rx) = mpsc::channel(1);
+        let target = AddToChatTarget {
+            terminal_id: "terminal-1".into(),
+            kind: agent::Kind::OpenCode,
+            title: Some("opencode: /repo".into()),
+            cwd: Some("/repo".into()),
+            input_tx,
+        };
+
+        let button = add_to_chat_target_button(2, &target);
+
+        assert_eq!(button.label, "opencode: /repo");
+    }
+
+    #[::core::prelude::v1::test]
+    fn add_to_chat_target_button_uses_adapter_native_icon() {
+        let (input_tx, _input_rx) = mpsc::channel(1);
+        let target = AddToChatTarget {
+            terminal_id: "terminal-1".into(),
+            kind: agent::Kind::Codex,
+            title: Some("codex".into()),
+            cwd: None,
+            input_tx,
+        };
+
+        let button = add_to_chat_target_button(0, &target);
+
+        assert_eq!(button.label, "codex");
+        assert_eq!(button.image_name.as_deref(), Some("AgentCodex"));
     }
 
     #[::core::prelude::v1::test]

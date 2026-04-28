@@ -350,6 +350,10 @@ impl WorkspaceTerminal {
         self.refresh_scroll_to_bottom_button(cx, true);
     }
 
+    pub fn input_sender(&self, cx: &App) -> Option<tokio::sync::mpsc::Sender<Vec<u8>>> {
+        self.terminal_view.read(cx).input_sender(cx)
+    }
+
     pub fn set_terminal_id(&mut self, terminal_id: String, cx: &mut Context<Self>) {
         self.terminal_id = terminal_id.clone();
         self.deactivate(cx);

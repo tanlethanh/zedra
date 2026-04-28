@@ -12,7 +12,10 @@ pub enum ShellState {
 
 #[derive(Clone, Default, Debug)]
 pub struct TerminalMeta {
+    /// Raw terminal title as reported by OSC title updates.
     pub title: Option<String>,
+    /// Title with emoji and transient activity glyphs removed for compact picker labels.
+    pub plain_title: Option<String>,
     pub cwd: Option<String>,
     pub last_exit_code: Option<i32>,
     pub shell_state: ShellState,
@@ -54,7 +57,10 @@ impl TerminalState {
     }
 
     pub fn set_title(&mut self, id: &str, title: Option<String>) {
-        self.entry(id).title = title;
+        let plain_title = title.as_deref().and_then(plain_terminal_title);
+        let e = self.entry(id);
+        e.title = title;
+        e.plain_title = plain_title;
     }
 
     pub fn set_cwd(&mut self, id: &str, cwd: String) {
@@ -145,6 +151,67 @@ pub fn agent_kind_from_command(raw: &str) -> agent::Kind {
     agent::detect(raw)
 }
 
+fn plain_terminal_title(title: &str) -> Option<String> {
+    let mut plain = String::with_capacity(title.len());
+    let mut pending_space = false;
+
+    for ch in title.chars() {
+        if is_terminal_title_decoration(ch) {
+            pending_space = true;
+            continue;
+        }
+
+        if ch.is_whitespace() {
+            pending_space = true;
+            continue;
+        }
+
+        if pending_space && !plain.is_empty() {
+            plain.push(' ');
+        }
+        plain.push(ch);
+        pending_space = false;
+    }
+
+    (!plain.is_empty()).then_some(plain)
+}
+
+fn is_terminal_title_decoration(ch: char) -> bool {
+    let code = ch as u32;
+    matches!(
+        code,
+        0x00A9
+            | 0x00AE
+            | 0x203C
+            | 0x2049
+            | 0x20E3
+            | 0x2122
+            | 0x2139
+            | 0x231A..=0x231B
+            | 0x2328
+            | 0x23CF
+            | 0x23E9..=0x23F3
+            | 0x23F8..=0x23FA
+            | 0x24C2
+            | 0x25AA..=0x25AB
+            | 0x25B6
+            | 0x25C0
+            | 0x25FB..=0x25FE
+            | 0x2600..=0x27BF
+            | 0x2800..=0x28FF
+            | 0x2B1B..=0x2B1C
+            | 0x2B50
+            | 0x2B55
+            | 0x3030
+            | 0x303D
+            | 0x3297
+            | 0x3299
+            | 0xFE00..=0xFE0F
+            | 0x1F000..=0x1FAFF
+            | 0xE0020..=0xE007F
+    ) || ch == '\u{200d}'
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,6 +258,42 @@ mod tests {
             None,
             "title is display metadata, not an agent identity source"
         );
+    }
+
+    #[test]
+    fn title_updates_store_raw_and_plain_title_without_emoji() {
+        let mut state = TerminalState::new();
+        let id = "term-1";
+
+        state.set_title(id, Some("🤖  Fix auth flow 🚀".to_owned()));
+
+        let meta = state.meta(id);
+        assert_eq!(meta.title.as_deref(), Some("🤖  Fix auth flow 🚀"));
+        assert_eq!(meta.plain_title.as_deref(), Some("Fix auth flow"));
+    }
+
+    #[test]
+    fn plain_title_removes_joined_emoji_and_terminal_spinners() {
+        let mut state = TerminalState::new();
+        let id = "term-1";
+
+        state.set_title(id, Some("⠋ 👩‍💻  zedra".to_owned()));
+
+        let meta = state.meta(id);
+        assert_eq!(meta.title.as_deref(), Some("⠋ 👩‍💻  zedra"));
+        assert_eq!(meta.plain_title.as_deref(), Some("zedra"));
+    }
+
+    #[test]
+    fn plain_title_is_none_when_title_is_only_decoration() {
+        let mut state = TerminalState::new();
+        let id = "term-1";
+
+        state.set_title(id, Some(" ✨ 🚀 ".to_owned()));
+
+        let meta = state.meta(id);
+        assert_eq!(meta.title.as_deref(), Some(" ✨ 🚀 "));
+        assert_eq!(meta.plain_title, None);
     }
 
     #[test]
