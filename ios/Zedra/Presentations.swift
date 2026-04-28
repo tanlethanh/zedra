@@ -769,7 +769,7 @@ final class CustomSheetViewController: UIViewController, UIGestureRecognizerDele
     private var displayLink: CADisplayLink?
     private var sheetPanLinked = false
     private weak var linkedSheetPanGesture: UIPanGestureRecognizer?
-    private var lastPanTranslationY: CGFloat = 0
+    private var lastPanTranslation = CGPoint.zero
 
     fileprivate init(configuration: CustomSheetConfiguration = .default) {
         self.configuration = configuration
@@ -853,27 +853,29 @@ final class CustomSheetViewController: UIViewController, UIGestureRecognizerDele
         }
 
         let translation = gesture.translation(in: canvasView)
-        let deltaY = translation.y - lastPanTranslationY
+        let delta = CGPoint(
+            x: translation.x - lastPanTranslation.x,
+            y: translation.y - lastPanTranslation.y
+        )
         let velocity = gesture.velocity(in: canvasView)
         let location = gesture.location(in: canvasView)
-        let contentIsAtTop = zedra_ios_sheet_content_is_at_top()
 
         switch gesture.state {
         case .began:
             linkedSheetPanGesture?.isEnabled = false
-            lastPanTranslationY = translation.y
+            lastPanTranslation = translation
         case .changed:
             gpui_ios_inject_scroll(
                 embeddedWindow,
                 Float(location.x),
                 Float(location.y),
-                0,
-                Float(deltaY),
+                Float(delta.x),
+                Float(delta.y),
                 0,
                 0,
                 1
             )
-            lastPanTranslationY = translation.y
+            lastPanTranslation = translation
         case .ended, .cancelled, .failed:
             gpui_ios_inject_scroll(
                 embeddedWindow,
@@ -887,7 +889,7 @@ final class CustomSheetViewController: UIViewController, UIGestureRecognizerDele
             )
             linkedSheetPanGesture?.isEnabled = true
             gesture.setTranslation(.zero, in: canvasView)
-            lastPanTranslationY = 0
+            lastPanTranslation = .zero
         default:
             break
         }
@@ -899,7 +901,7 @@ final class CustomSheetViewController: UIViewController, UIGestureRecognizerDele
             if zedra_ios_sheet_content_is_at_top(), velocity.y > abs(velocity.x), velocity.y > 0 {
                 return false
             }
-            return abs(velocity.y) >= abs(velocity.x)
+            return true
         }
 
         return true
@@ -920,6 +922,7 @@ final class CustomSheetViewController: UIViewController, UIGestureRecognizerDele
         guard !panRecognizers.isEmpty else { return }
 
         for recognizer in panRecognizers where recognizer !== contentPanGesture {
+            recognizer.require(toFail: contentPanGesture)
             if linkedSheetPanGesture == nil {
                 linkedSheetPanGesture = recognizer
             }

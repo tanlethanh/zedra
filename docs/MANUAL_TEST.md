@@ -149,6 +149,30 @@ printf '\033]8;;https://zedra.dev\033\\zedra.dev\033]8;;\033\\\n'
 9. Tap the plain `src/main.rs:12:3`, `git:(refactor-app-session-architecture)`, `hello`, `README`, `v0.112.0`, `gpt-5.4`, and `/model`
 10. Expected: none of those tokens are treated as hyperlinks and no preview sheet opens
 
+## 9b. Terminal Preview Sheet Gesture Ownership
+
+1. Connect to a session on iPhone or iOS simulator and open the terminal view
+2. Run:
+
+```bash
+cat > /tmp/zedra-long-code.rs <<'EOF'
+fn main() {
+    let message = "this line is intentionally very long so the terminal preview code editor needs horizontal scrolling inside the native custom sheet without moving the sheet detent or dismissing the sheet while the drag is horizontal";
+    println!("{message}");
+}
+EOF
+printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:1\033]8;;\033\\\n'
+```
+
+3. Tap `/tmp/zedra-long-code.rs:1`
+4. Expected: the preview opens in code editor mode inside the native custom sheet
+5. Swipe horizontally across the long string line
+6. Expected: the code scrolls sideways and the native sheet does not move or dismiss
+7. Swipe mostly vertically inside the preview body
+8. Expected: the preview content scrolls vertically
+9. Scroll to the top of the preview body, then drag downward
+10. Expected: the native sheet moves or dismisses normally from the top edge
+
 ## 10. Connecting Overlay Layout On Wide Screens
 
 1. Open the app on a wide device or simulator width such as iPad or landscape iPhone

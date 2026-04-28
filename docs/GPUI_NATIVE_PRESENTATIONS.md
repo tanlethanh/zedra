@@ -51,12 +51,13 @@ native sheet starts competing for the same drag gesture.
 
 For custom sheet content that needs inner scrolling:
 
-- Swift owns the outer gesture source through a wrapper `UIScrollView`
-- Swift forwards scroll deltas into the embedded GPUI window as synthetic
-  `ScrollWheel` input
-- GPUI content reports whether it is currently at the top edge
-- Swift stops forwarding downward drags when content is already at top, allowing
-  the native sheet gesture to take over for dismiss / detent motion
+- Swift owns the outer gesture source through the custom sheet content pan recognizer
+- Swift forwards two-dimensional pan deltas into the embedded GPUI window as
+  synthetic `ScrollWheel` input
+- GPUI content reports whether it is currently at the top edge for vertical
+  sheet handoff
+- Swift rejects only downward vertical drags when content is already at top,
+  allowing the native sheet gesture to take over for dismiss / detent motion
 
 Current minimal bridge:
 
@@ -78,7 +79,7 @@ Without that layout chain, GPUI can measure the scroll node at content height, w
 
 This contract is intentionally minimal:
 
-- native -> GPUI: scroll delta + phase
+- native -> GPUI: two-dimensional scroll delta + phase
 - GPUI -> native: top-edge boolean
 
 Do not add a broader bidirectional gesture abstraction unless more sheet content
