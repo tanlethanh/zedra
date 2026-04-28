@@ -34,6 +34,8 @@
 
 #define ACCENT_RED 14707829
 
+#define ACCENT_DIM 5263440
+
 #define DRAWER_PADDING 12.0
 
 #define SPACING_SM 8.0
@@ -41,10 +43,6 @@
 #define SPACING_MD 12.0
 
 #define SPACING_LG 16.0
-
-#define DRAWER_WIDTH 295.0
-
-#define QA_DRAWER_WIDTH 295.0
 
 #define HEADER_HEIGHT 48.0
 
@@ -60,13 +58,21 @@
 
 #define TERMINAL_LINE_HEIGHT 16.0
 
-#define DRAWER_EDGE_ZONE 44.0
+#define DRAWER_EDGE_ZONE 56.0
 
-#define DRAWER_VELOCITY_THRESHOLD 6.0
+#define DRAWER_VELOCITY_THRESHOLD 12.0
 
-#define ANIMATION_DURATION_MS 250
+#define DRAWER_BACKDROP_OPACITY 0.4
 
-#define FONT_TITLE 28.0
+#define DRAWER_DEFAULT_WIDTH 295.0
+
+#define DRAWER_OPEN_ANIMATION_DURATION_MS 160
+
+#define DRAWER_CLOSE_ANIMATION_DURATION_MS 100
+
+#define FONT_APP_TITLE 28.0
+
+#define FONT_TITLE 20.0
 
 #define FONT_HEADING 13.0
 
@@ -76,9 +82,11 @@
 
 #define ICON_LOGO 20.0
 
-#define ICON_NAV 18.0
+#define ICON_LG 24.0
 
-#define ICON_HEADER 18.0
+#define ICON_MD 18.0
+
+#define ICON_SM 16.0
 
 #define ICON_FILE 12.0
 
@@ -96,10 +104,26 @@
 
 #define EDITOR_GUTTER_WIDTH 36.0
 
-/**
- * Seconds after last received bytes before a path is considered stale.
- */
-#define STALE_THRESHOLD_SECS 3
+typedef struct Caps Caps;
+
+
+
+
+
+
+
+extern void gpui_ios_set_next_embedded_parent(void *parent_view_ptr,
+                                              float width_pts,
+                                              float height_pts);
+
+extern void *gpui_ios_get_window(void);
+
+extern void gpui_ios_attach_embedded_view(void *window_ptr,
+                                          void *parent_view_ptr,
+                                          float width_pts,
+                                          float height_pts);
+
+extern void gpui_ios_detach_embedded_view(void *window_ptr);
 
 /**
  * Called each frame from main.m before gpui_ios_request_frame.
@@ -113,6 +137,14 @@ bool zedra_ios_check_pending_frame(void);
 void zedra_ios_native_floating_button_pressed(uint32_t callback_id);
 
 void zedra_launch_gpui(void);
+
+void *zedra_ios_mount_custom_sheet_content(void *parent_view_ptr,
+                                           float width_pts,
+                                           float height_pts);
+
+void zedra_ios_unmount_custom_sheet_content(void);
+
+bool zedra_ios_sheet_content_is_at_top(void);
 
 /**
  * Called from Obj-C whenever the screen scale is known (once, at launch).
@@ -140,8 +172,6 @@ void zedra_ios_set_safe_area_insets(float top, float bottom, float _left, float 
 extern void *gpui_ios_get_window(void);
 
 extern bool gpui_ios_is_keyboard_visible(void *window_ptr);
-
-extern void gpui_ios_show_keyboard(void *window_ptr);
 
 extern void gpui_ios_hide_keyboard(void *window_ptr);
 
@@ -189,9 +219,29 @@ extern void ios_present_selection(uint32_t callback_id,
                                   const int32_t *styles);
 
 /**
+ * Present a configurable native custom sheet with a GPUI canvas host.
+ */
+extern void ios_present_custom_sheet(int32_t detent_count,
+                                     const int32_t *detents,
+                                     int32_t initial_detent,
+                                     bool shows_grabber,
+                                     bool expands_on_scroll_edge,
+                                     bool edge_attached_in_compact_height,
+                                     bool width_follows_preferred_content_size_when_edge_attached,
+                                     bool has_corner_radius,
+                                     float corner_radius,
+                                     bool modal_in_presentation);
+
+/**
  * Open a URL in the system browser via UIApplication.
  */
 extern void ios_open_url(const char *url);
+
+/**
+ * Trigger a UIKit haptic feedback generator.
+ * kind encoding matches HapticFeedback::to_i32().
+ */
+extern void ios_trigger_haptic(int32_t kind);
 
 /**
  * Position or update a native floating icon button.
@@ -268,16 +318,6 @@ void zedra_ios_send_key_input(const char *key);
  * Called from the native terminal composer to send finalized text to the active terminal.
  */
 void zedra_ios_send_terminal_text(const char *text);
-
-/**
- * Called from the native terminal preview accessory when the user taps Send.
- */
-void zedra_ios_dictation_preview_commit(const char *text);
-
-/**
- * Called from the native terminal preview accessory when the user taps Cancel.
- */
-void zedra_ios_dictation_preview_cancel(void);
 
 /**
  * Called from the native app delegate when the app is opened via a `zedra://` URL.

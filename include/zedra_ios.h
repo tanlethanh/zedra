@@ -104,6 +104,8 @@
 
 #define EDITOR_GUTTER_WIDTH 36.0
 
+typedef struct Caps Caps;
+
 extern void gpui_ios_set_next_embedded_parent(void *parent_view_ptr,
                                               float width_pts,
                                               float height_pts);
@@ -340,4 +342,4 @@ extern void zedra_set_custom_key(const char *key, const char *value);
 
 extern void zedra_set_collection_enabled(int enabled);
 
-#endif  /* ZEDRA_IOS_H */
+#endif /* ZEDRA_IOS_H */
