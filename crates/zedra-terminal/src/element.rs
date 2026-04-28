@@ -3,6 +3,7 @@
 
 use std::mem;
 
+use alacritty_terminal::index::Point as AlacPoint;
 use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::vte::ansi::{Color as AlacColor, CursorShape, NamedColor};
 use gpui::*;
@@ -355,6 +356,7 @@ impl TerminalElement {
         display_offset: i32,
         grid_rows: usize,
         theme: &TerminalTheme,
+        detected_links: &[DetectedLink],
     ) -> (Vec<LayoutRect>, Vec<BatchedTextRun>, Vec<LayoutUnderline>) {
         let mut batched_runs: Vec<BatchedTextRun> = Vec::new();
         let mut rects: Vec<LayoutRect> = Vec::new();
@@ -382,6 +384,12 @@ impl TerminalElement {
             }
 
             underlines.extend(Self::line_hyperlink_underlines(&line_cells, line, theme));
+            underlines.extend(Self::line_plain_link_underlines(
+                &line_cells,
+                line,
+                theme,
+                detected_links,
+            ));
 
             for cell in line_cells {
                 let col = cell.point.column.0 as i32;
@@ -574,6 +582,90 @@ impl TerminalElement {
             Some(trimmed.trim_end_matches(['.', ':']))
         }
     }
+
+    /// Generate underlines for plain-text detected links (URLs and file paths without OSC 8).
+    /// Skips cells that already have an OSC 8 hyperlink to avoid double-underlining.
+    fn line_plain_link_underlines(
+        cells: &[&IndexedCell],
+        line: i32,
+        theme: &TerminalTheme,
+        detected_links: &[DetectedLink],
+    ) -> Vec<LayoutUnderline> {
+        if detected_links.is_empty() {
+            return Vec::new();
+        }
+
+        let mut underlines: Vec<LayoutUnderline> = Vec::new();
+        let mut span_start: Option<i32> = None;
+        let mut span_color = gpui::black();
+        let mut span_next_col = 0i32;
+
+        for cell in cells {
+            let flags = cell.cell.flags;
+            if flags.contains(CellFlags::LEADING_WIDE_CHAR_SPACER)
+                || flags.contains(CellFlags::WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+
+            // Cells with OSC 8 links are handled by line_hyperlink_underlines.
+            if cell.cell.hyperlink().is_some() {
+                if let Some(start_col) = span_start.take() {
+                    let num = (span_next_col - start_col).max(0) as usize;
+                    if num > 0 {
+                        underlines.push(LayoutUnderline::new(line, start_col, num, span_color));
+                    }
+                }
+                continue;
+            }
+
+            let col = cell.point.column.0 as i32;
+            let alac_point = AlacPoint::new(cell.point.line, cell.point.column);
+
+            // Skip whitespace cells so wrap-indent gaps in continuation lines
+            // don't get an underline drawn beneath empty cells.
+            let is_blank_cell = matches!(cell.cell.c, ' ' | '\0' | '\t');
+            let in_link = !is_blank_cell
+                && detected_links
+                    .iter()
+                    .any(|l| crate::terminal::point_in_link(alac_point, l));
+
+            if in_link {
+                let fg = cell.cell.fg;
+                let bg = cell.cell.bg;
+                let (display_fg, _display_bg) = if flags.contains(CellFlags::INVERSE) {
+                    (bg, fg)
+                } else {
+                    (fg, bg)
+                };
+                let mut color = theme.convert_color(&display_fg);
+                if flags.contains(CellFlags::DIM) {
+                    color.a *= 0.7;
+                }
+                color.a = (color.a * 0.55).clamp(0.0, 1.0);
+
+                if span_start.is_none() {
+                    span_start = Some(col);
+                    span_color = color;
+                }
+                span_next_col = col + 1;
+            } else if let Some(start_col) = span_start.take() {
+                let num = (span_next_col - start_col).max(0) as usize;
+                if num > 0 {
+                    underlines.push(LayoutUnderline::new(line, start_col, num, span_color));
+                }
+            }
+        }
+
+        if let Some(start_col) = span_start {
+            let num = (span_next_col - start_col).max(0) as usize;
+            if num > 0 {
+                underlines.push(LayoutUnderline::new(line, start_col, num, span_color));
+            }
+        }
+
+        underlines
+    }
 }
 
 impl IntoElement for TerminalElement {
@@ -724,6 +816,7 @@ impl Element for TerminalElement {
             layout.content.display_offset as i32,
             layout.content.grid_rows,
             &theme,
+            &layout.content.detected_links,
         );
 
         // Paint background rectangles first
@@ -762,10 +855,17 @@ impl Element for TerminalElement {
             &theme,
         );
 
+        // Store the actual painted origin (which already incorporates the
+        // smooth-scroll and keyboard-cursor offsets) so tap-to-grid conversion
+        // in TerminalView::handle_terminal_press maps to the same row the user
+        // sees on screen. Using the unshifted bounds origin would cause taps to
+        // miss links rendered above their grid coordinates when the keyboard is
+        // up.
+        let stored_origin = origin;
         let view = self.view.clone();
         window.defer(cx, move |_window, cx| {
             let _ = view.update(cx, |view, _cx| {
-                view.set_grid_origin(grid_origin);
+                view.set_grid_origin(stored_origin);
             });
         });
 
@@ -809,29 +909,39 @@ mod tests {
             content.display_offset as i32,
             content.grid_rows,
             &TerminalTheme::one_dark(),
+            &content.detected_links,
         );
         underlines
     }
 
     #[test]
-    fn does_not_underline_plain_file_links() {
+    fn underlines_plain_file_links() {
+        // "Visit " = 6 chars, "src/main.rs:12:3" = 16 chars
         let underlines = underline_spans(b"Visit src/main.rs:12:3 now\r\n");
 
-        assert!(underlines.is_empty());
+        assert_eq!(underlines.len(), 1);
+        assert_eq!(underlines[0].col, 6);
+        assert_eq!(underlines[0].num_cells, 16);
     }
 
     #[test]
-    fn does_not_underline_wrapped_plain_file_links() {
+    fn underlines_plain_file_links_stripped_of_surrounding_punctuation() {
+        // `("src/main.rs:12:3")` — inner `src/main.rs:12:3` starts at col 7, 16 chars
         let underlines = underline_spans(b"Open (\"src/main.rs:12:3\") next\r\n");
 
-        assert!(underlines.is_empty());
+        assert_eq!(underlines.len(), 1);
+        assert_eq!(underlines[0].col, 7);
+        assert_eq!(underlines[0].num_cells, 16);
     }
 
     #[test]
-    fn does_not_underline_plain_urls() {
+    fn underlines_plain_urls() {
+        // "Visit " = 6 chars, "https://zedra.dev" = 17 chars
         let underlines = underline_spans(b"Visit https://zedra.dev now\r\n");
 
-        assert!(underlines.is_empty());
+        assert_eq!(underlines.len(), 1);
+        assert_eq!(underlines[0].col, 6);
+        assert_eq!(underlines[0].num_cells, 17);
     }
 
     #[test]

@@ -80,6 +80,22 @@ impl EventListener for ZedraListener {
     }
 }
 
+/// A link detected in plain terminal text (no OSC 8 encoding).
+/// `start` and `end` are inclusive alacritty grid points.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DetectedLink {
+    pub start: Point,
+    pub end: Point,
+    pub text: String,
+    pub kind: DetectedLinkKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DetectedLinkKind {
+    Url,
+    FilePath,
+}
+
 /// Snapshot of terminal grid content for rendering
 #[derive(Clone)]
 pub struct TerminalContent {
@@ -90,6 +106,7 @@ pub struct TerminalContent {
     pub cursor_char: char,
     pub grid_rows: usize,
     pub grid_cols: usize,
+    pub detected_links: Vec<DetectedLink>,
 }
 
 /// A terminal cell with its grid position
@@ -279,6 +296,7 @@ impl Terminal {
         let cursor_point = content.cursor.point;
         let cursor_char = self.term.grid()[cursor_point].c;
 
+        let detected_links = self.detect_plain_links();
         TerminalContent {
             cells,
             mode: content.mode,
@@ -290,6 +308,7 @@ impl Terminal {
             cursor_char,
             grid_rows: self.size.rows,
             grid_cols: self.size.columns,
+            detected_links,
         }
     }
 
@@ -554,11 +573,151 @@ impl Terminal {
     }
 
     fn hyperlink_at_point(&self, point: Point, workdir: Option<&str>) -> Option<TerminalHyperlink> {
-        if point.line < Line(0) {
+        // Allow scrollback (negative lines) — alacritty's grid index supports
+        // negative lines down to `topmost_line()`. Reject anything below that
+        // to avoid an out-of-bounds index panic.
+        let topmost = self.term.grid().topmost_line();
+        let bottom = Line(self.size.rows as i32 - 1);
+        if point.line < topmost || point.line > bottom {
             return None;
         }
 
         self.hyperlink_from_osc8(point, workdir)
+            .or_else(|| self.plain_hyperlink_at_point(point, workdir))
+    }
+
+    fn plain_hyperlink_at_point(
+        &self,
+        point: Point,
+        workdir: Option<&str>,
+    ) -> Option<TerminalHyperlink> {
+        let links = self.detect_plain_links();
+        let link = links.into_iter().find(|l| point_in_link(point, l))?;
+        match link.kind {
+            DetectedLinkKind::Url => Some(TerminalHyperlink {
+                label: link.text.clone(),
+                target: TerminalHyperlinkTarget::Url { url: link.text },
+            }),
+            DetectedLinkKind::FilePath => {
+                let (path, line_num, col_num) = Self::split_file_position(&link.text);
+                let relative_path = Self::resolve_relative_path(path, workdir)?;
+                Some(TerminalHyperlink {
+                    label: link.text.clone(),
+                    target: TerminalHyperlinkTarget::File {
+                        path: path.to_string(),
+                        relative_path,
+                        line: line_num,
+                        column: col_num,
+                    },
+                })
+            }
+        }
+    }
+
+    /// Hot path: runs once per render frame via `content()`. Keep it lean —
+    /// see `tail_looks_like_cut_off_path` for the in-place trick.
+    pub fn detect_plain_links(&self) -> Vec<DetectedLink> {
+        use alacritty_terminal::term::cell::Flags;
+
+        let display_offset = self.display_offset() as i32;
+        let rows = self.size.rows as i32;
+        let cols = self.size.columns;
+        if rows == 0 || cols == 0 {
+            return Vec::new();
+        }
+
+        let top = -display_offset;
+        let bottom = rows - 1 - display_offset;
+
+        let mut links = Vec::new();
+        let mut logical_line: Vec<(Point, char)> = Vec::new();
+        // True when the previous physical line ended without WRAPLINE but its
+        // last visible char was a path-char — likely a Claude-style word-wrap
+        // with hard newline + leading-space indent on the next line.
+        let mut continuation_pending = false;
+
+        let mut line_idx = top;
+        while line_idx <= bottom {
+            let alac_line = Line(line_idx);
+            let row = &self.term.grid()[alac_line];
+
+            // WRAPLINE on last cell = soft wrap (alacritty filled the row);
+            // absent = hard newline.
+            let is_wrapped = row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
+
+            // Cell↔char must stay 1:1: skip wide-char spacers, NUL→space, so
+            // match offsets later map back to grid points correctly.
+            // Continuation lines drop leading whitespace so a hard-wrap with
+            // indent (e.g. Claude `Update(/.../zedra-t\n        erminal/...`)
+            // joins seamlessly.
+            let mut leading_skipped = !continuation_pending;
+            let mut row_cells: Vec<(Point, char)> = Vec::new();
+            let mut last_visible: Option<char> = None;
+            for col in 0..cols {
+                let col_idx = Column(col);
+                let cell = &row[col_idx];
+                let flags = cell.flags;
+                if flags.contains(Flags::LEADING_WIDE_CHAR_SPACER)
+                    || flags.contains(Flags::WIDE_CHAR_SPACER)
+                {
+                    continue;
+                }
+                let ch = match cell.c {
+                    '\0' => ' ',
+                    c => c,
+                };
+                if !leading_skipped {
+                    if ch.is_whitespace() {
+                        continue;
+                    }
+                    leading_skipped = true;
+                }
+                row_cells.push((Point::new(alac_line, col_idx), ch));
+                if !ch.is_whitespace() {
+                    last_visible = Some(ch);
+                }
+            }
+
+            // Soft-wrapped rows are content-full — never trim. Non-WRAPLINE
+            // rows carry padding spaces past visible text; trim so a join to
+            // the next line doesn't include a giant gap.
+            if !is_wrapped {
+                while row_cells
+                    .last()
+                    .map(|(_, c)| c.is_whitespace())
+                    .unwrap_or(false)
+                {
+                    row_cells.pop();
+                }
+            }
+
+            logical_line.extend(row_cells);
+
+            // Hard-wrap-with-indent join: only when tail looks cut mid-path.
+            // Loosening this (e.g., "ends in path-char") glues legit text like
+            // "Referenced file" onto the next line's path.
+            let _ = last_visible;
+            let cut_off_tail =
+                !is_wrapped && line_idx < bottom && tail_looks_like_cut_off_path(&logical_line);
+            let join_with_next = is_wrapped || cut_off_tail;
+
+            if !join_with_next {
+                detect_links_in_chars(&logical_line, &mut links);
+                logical_line.clear();
+                continuation_pending = false;
+            } else {
+                continuation_pending = !is_wrapped;
+            }
+
+            line_idx += 1;
+        }
+
+        // Flush any trailing logical line (e.g., bottom row had path-like tail).
+        if !logical_line.is_empty() {
+            detect_links_in_chars(&logical_line, &mut links);
+        }
+
+        links
     }
 
     fn hyperlink_from_osc8(
@@ -900,6 +1059,288 @@ fn encode_mouse_position(position: usize) -> [u8; 2] {
     [(0xC0 + position / 64) as u8, (0x80 + (position & 63)) as u8]
 }
 
+// ---------------------------------------------------------------------------
+// Plain-text link detection
+// ---------------------------------------------------------------------------
+
+// Conservative-by-design: paths need `/` AND a known extension; bare filenames
+// (`README`, `package.json`) deliberately rejected. Loosening invites false
+// positives. URL detection separately requires `http(s)://`.
+const FILE_EXTENSIONS: &[&str] = &[
+    "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "swift", "kt", "java", "c", "cc",
+    "cpp", "cxx", "h", "hh", "hpp", "hxx", "cs", "rb", "lua", "php", "zig", "dart", "ex", "exs",
+    "json", "json5", "toml", "yaml", "yml", "xml", "html", "htm", "css", "scss", "sass", "vue",
+    "md", "mdx", "rst", "txt", "sh", "bash", "zsh", "fish", "ps1", "bat", "lock", "mod", "sum",
+    "env", "ini", "cfg", "conf",
+];
+
+/// Returns true if alacritty grid point `p` falls within the inclusive span [link.start, link.end].
+pub fn point_in_link(p: Point, link: &DetectedLink) -> bool {
+    let start = link.start;
+    let end = link.end;
+    if p.line < start.line || p.line > end.line {
+        return false;
+    }
+    if p.line == start.line && p.column < start.column {
+        return false;
+    }
+    if p.line == end.line && p.column > end.column {
+        return false;
+    }
+    true
+}
+
+fn detect_links_in_chars(cells: &[(Point, char)], links: &mut Vec<DetectedLink>) {
+    if cells.is_empty() {
+        return;
+    }
+    let chars: Vec<char> = cells.iter().map(|(_, c)| *c).collect();
+    detect_urls_in_chars(&chars, cells, links);
+    detect_file_paths_in_chars(&chars, cells, links);
+}
+
+fn detect_urls_in_chars(chars: &[char], cells: &[(Point, char)], links: &mut Vec<DetectedLink>) {
+    let len = chars.len();
+    let mut i = 0;
+    while i < len {
+        let prefix = if chars_at_match(chars, i, "https://") {
+            8
+        } else if chars_at_match(chars, i, "http://") {
+            7
+        } else {
+            i += 1;
+            continue;
+        };
+
+        let start = i;
+        let mut end = start + prefix;
+
+        while end < len && !is_url_terminator(chars[end]) {
+            end += 1;
+        }
+        // Strip trailing punctuation
+        while end > start + prefix && is_url_trailing_punct(chars[end - 1]) {
+            end -= 1;
+        }
+
+        if end > start + prefix && end <= cells.len() {
+            let text: String = chars[start..end].iter().collect();
+            links.push(DetectedLink {
+                start: cells[start].0,
+                end: cells[end - 1].0,
+                text,
+                kind: DetectedLinkKind::Url,
+            });
+        }
+
+        i = end.max(start + prefix);
+    }
+}
+
+fn detect_file_paths_in_chars(
+    chars: &[char],
+    cells: &[(Point, char)],
+    links: &mut Vec<DetectedLink>,
+) {
+    // Scan around each '/' outward, terminating at whitespace or surrounding
+    // punctuation. This correctly handles paths embedded in tokens like
+    // `Update(/Users/.../file.rs)`, `error: src/main.rs`, or `(./foo.rs:1:2)`.
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        if chars[i] != '/' {
+            i += 1;
+            continue;
+        }
+
+        // Walk left to find the path's start.
+        let mut start = i;
+        while start > 0 && is_path_char(chars[start - 1]) {
+            start -= 1;
+        }
+        // Walk right to find the path's end.
+        let mut end = i + 1;
+        while end < len && is_path_char(chars[end]) {
+            end += 1;
+        }
+        // Strip ONLY trailing sentence punctuation `.,;!?`. Leading `.` is
+        // valid path syntax (`./foo.rs`, `../bar.rs`, `.hidden/file.rs`) and
+        // must be preserved.
+        while end > start && is_path_trailing_punct(chars[end - 1]) {
+            end -= 1;
+        }
+
+        let next_i = end.max(i + 1);
+        if start >= end {
+            i = next_i;
+            continue;
+        }
+
+        let segment: String = chars[start..end].iter().collect();
+
+        // URLs run first; skip `://` segments here so a URL ending in `.html`
+        // isn't double-counted as a file path.
+        if segment.contains("://") {
+            i = next_i;
+            continue;
+        }
+
+        // Must still contain a slash after stripping.
+        if !segment.contains('/') {
+            i = next_i;
+            continue;
+        }
+
+        // Parse optional :line:col suffix to isolate the actual path.
+        let (path_part, _line_num, _col_num) = split_file_position_chars(&segment);
+        if path_part.is_empty() {
+            i = next_i;
+            continue;
+        }
+
+        // Must have a known file extension.
+        let ext = std::path::Path::new(path_part)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if !FILE_EXTENSIONS.contains(&ext) {
+            i = next_i;
+            continue;
+        }
+
+        if start < cells.len() && end - 1 < cells.len() {
+            links.push(DetectedLink {
+                start: cells[start].0,
+                end: cells[end - 1].0,
+                text: segment,
+                kind: DetectedLinkKind::FilePath,
+            });
+        }
+
+        i = next_i;
+    }
+}
+
+fn is_path_char(c: char) -> bool {
+    !c.is_whitespace() && !is_surrounding_punct(c)
+}
+
+fn chars_at_match(chars: &[char], start: usize, pattern: &str) -> bool {
+    let mut pattern_chars = pattern.chars();
+    let mut i = start;
+    while let Some(pc) = pattern_chars.next() {
+        if i >= chars.len() || chars[i] != pc {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+fn is_url_terminator(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\'' | ']' | ')' | '}')
+}
+
+fn is_url_trailing_punct(c: char) -> bool {
+    matches!(
+        c,
+        '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '\''
+    )
+}
+
+fn is_surrounding_punct(c: char) -> bool {
+    matches!(
+        c,
+        '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>'
+    )
+}
+
+/// Tail token has `/` but no completed extension → likely cut mid-path.
+/// Drives the hard-newline+indent join in `detect_plain_links`.
+///
+/// Hot path: walks the cell slice in place, allocates only the small
+/// last-component string. Do NOT regress to stringifying the full logical
+/// line (was O(N²) over multi-line cut-off chains).
+fn tail_looks_like_cut_off_path(cells: &[(Point, char)]) -> bool {
+    let len = cells.len();
+
+    // Walk back over trailing whitespace.
+    let mut end = len;
+    while end > 0 && cells[end - 1].1.is_whitespace() {
+        end -= 1;
+    }
+    if end == 0 {
+        return false;
+    }
+
+    // Walk back over the trailing non-whitespace token.
+    let mut start = end;
+    while start > 0 && !cells[start - 1].1.is_whitespace() {
+        start -= 1;
+    }
+
+    // Locate the last `/` inside [start, end).
+    let mut last_slash: Option<usize> = None;
+    for i in start..end {
+        if cells[i].1 == '/' {
+            last_slash = Some(i);
+        }
+    }
+    let Some(slash_pos) = last_slash else {
+        return false;
+    };
+
+    // Token ends with `/` — last segment is empty, definitely no extension.
+    let comp_start = slash_pos + 1;
+    if comp_start >= end {
+        return true;
+    }
+
+    // Extract just the last path component (small alloc).
+    let comp: String = cells[comp_start..end].iter().map(|(_, c)| *c).collect();
+    let (path_only, _, _) = split_file_position_chars(&comp);
+    let ext = std::path::Path::new(path_only)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    !FILE_EXTENSIONS.contains(&ext)
+}
+
+fn is_path_trailing_punct(c: char) -> bool {
+    matches!(c, '.' | ',' | ';' | '!' | '?')
+}
+
+fn split_file_position_chars(token: &str) -> (&str, Option<u32>, Option<u32>) {
+    let mut pieces = token.rsplit(':');
+    let last = pieces.next();
+    let second = pieces.next();
+
+    let parse_u32 = |value: Option<&str>| value.and_then(|v| v.parse::<u32>().ok());
+    let last_num = parse_u32(last);
+    let second_num = parse_u32(second);
+
+    if let (Some(column), Some(line), Some(last), Some(second)) =
+        (last_num, second_num, last, second)
+    {
+        let suffix_len = last.len() + second.len() + 2;
+        let path_end = token.len().saturating_sub(suffix_len);
+        if path_end > 0 {
+            return (&token[..path_end], Some(line), Some(column));
+        }
+    }
+
+    if let (Some(line), Some(last)) = (last_num, last) {
+        let suffix_len = last.len() + 1;
+        let path_end = token.len().saturating_sub(suffix_len);
+        if path_end > 0 {
+            return (&token[..path_end], Some(line), None);
+        }
+    }
+
+    (token, None, None)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -951,14 +1392,18 @@ mod tests {
     }
 
     #[test]
-    fn ignores_plain_file_links_from_grid_point() {
+    fn detects_plain_file_links_from_grid_point() {
         let line = "Visit src/main.rs:12:3 now";
         let terminal = terminal_with_output(b"Visit src/main.rs:12:3 now\r\n");
 
-        assert_eq!(
-            terminal.hyperlink_at_point(point_for_substring(line, "src/main.rs"), Some("/repo")),
-            None
-        );
+        let hyperlink = terminal
+            .hyperlink_at_point(point_for_substring(line, "src/main.rs"), Some("/repo"))
+            .expect("expected plain file hyperlink");
+        let (_label, path, relative_path, line_num, col_num) = file_target(hyperlink);
+        assert_eq!(path, "src/main.rs");
+        assert_eq!(relative_path, "src/main.rs");
+        assert_eq!(line_num, Some(12));
+        assert_eq!(col_num, Some(3));
     }
 
     #[test]
@@ -987,25 +1432,29 @@ mod tests {
     }
 
     #[test]
-    fn ignores_wrapped_plain_file_links_from_grid_point() {
+    fn detects_plain_file_links_stripped_of_surrounding_punctuation() {
         let line = r#"Open ("src/main.rs:12:3") next"#;
         let terminal = terminal_with_output(b"Open (\"src/main.rs:12:3\") next\r\n");
 
-        assert_eq!(
-            terminal.hyperlink_at_point(point_for_substring(line, "src/main.rs"), Some("/repo")),
-            None
-        );
+        let hyperlink = terminal
+            .hyperlink_at_point(point_for_substring(line, "src/main.rs"), Some("/repo"))
+            .expect("expected plain file hyperlink stripped of surrounding punctuation");
+        let (_label, path, _relative_path, line_num, col_num) = file_target(hyperlink);
+        assert_eq!(path, "src/main.rs");
+        assert_eq!(line_num, Some(12));
+        assert_eq!(col_num, Some(3));
     }
 
     #[test]
-    fn ignores_plain_urls_from_grid_point() {
+    fn detects_plain_url_links_from_grid_point() {
         let line = "Visit https://zedra.dev now";
         let terminal = terminal_with_output(b"Visit https://zedra.dev now\r\n");
 
-        assert_eq!(
-            terminal.hyperlink_at_point(point_for_substring(line, "zedra.dev"), Some("/repo")),
-            None
-        );
+        let hyperlink = terminal
+            .hyperlink_at_point(point_for_substring(line, "zedra.dev"), Some("/repo"))
+            .expect("expected plain URL hyperlink");
+        let (_label, url) = url_target(hyperlink);
+        assert_eq!(url, "https://zedra.dev");
     }
 
     #[test]
@@ -1121,5 +1570,361 @@ mod tests {
         assert_eq!(Path::new(&relative_path), Path::new("README"));
         assert_eq!(line, None);
         assert_eq!(column, None);
+    }
+
+    // -- Plain link wrap detection ------------------------------------------------
+
+    fn narrow_terminal(cols: usize, rows: usize, output: &[u8]) -> Terminal {
+        let mut terminal = Terminal::new(cols, rows, px(10.0), px(20.0));
+        terminal.advance_bytes(output);
+        terminal
+    }
+
+    #[test]
+    fn detects_url_wrapped_across_two_lines() {
+        // 20-col terminal forces wrap. URL is 35 chars, total line is 41 chars.
+        // "Visit " = 6, "https://example.com/very/long/path" = 34 chars. 6+34 = 40 → wraps.
+        let terminal = narrow_terminal(20, 8, b"Visit https://example.com/very/long/path now\r\n");
+
+        let links = terminal.detect_plain_links();
+        assert_eq!(
+            links.len(),
+            1,
+            "expected exactly one URL link, got {:?}",
+            links
+        );
+        assert_eq!(links[0].kind, super::DetectedLinkKind::Url);
+        assert_eq!(links[0].text, "https://example.com/very/long/path");
+        // Start point should be on the first physical line at column 6.
+        assert_eq!(links[0].start.column.0, 6);
+    }
+
+    #[test]
+    fn detects_file_path_wrapped_across_two_lines() {
+        // 20-col terminal forces wrap. "Edit crates/zedra-host/src/main.rs:42:5 now"
+        // "Edit " = 5, path with line:col = 38 chars → wraps after col 19.
+        let terminal = narrow_terminal(20, 8, b"Edit crates/zedra-host/src/main.rs:42:5 now\r\n");
+
+        let links = terminal.detect_plain_links();
+        assert_eq!(links.len(), 1, "expected one file link, got {:?}", links);
+        assert_eq!(links[0].kind, super::DetectedLinkKind::FilePath);
+        assert_eq!(links[0].text, "crates/zedra-host/src/main.rs:42:5");
+        // The link spans at least two physical lines.
+        assert!(
+            links[0].end.line > links[0].start.line,
+            "expected link to span multiple lines: start={:?} end={:?}",
+            links[0].start,
+            links[0].end,
+        );
+    }
+
+    #[test]
+    fn hyperlink_at_point_resolves_wrapped_url_from_continuation_line() {
+        // 20-col terminal, URL wraps. Tap the continuation line.
+        let terminal = narrow_terminal(20, 8, b"Visit https://example.com/very/long/path now\r\n");
+        // Column 0 of line 1 is 'g' (continuation of `.../long/...`).
+        let point = Point::new(Line(1), Column(0));
+        let hyperlink = terminal
+            .hyperlink_at_point(point, Some("/repo"))
+            .expect("expected URL hyperlink on continuation line");
+        let (_label, url) = url_target(hyperlink);
+        assert_eq!(url, "https://example.com/very/long/path");
+    }
+
+    #[test]
+    fn hyperlink_at_point_resolves_wrapped_file_path_from_continuation_line() {
+        let terminal = narrow_terminal(20, 8, b"Edit crates/zedra-host/src/main.rs:42:5 now\r\n");
+        // Column 5 of line 1 should fall inside the wrapped path.
+        let point = Point::new(Line(1), Column(5));
+        let hyperlink = terminal
+            .hyperlink_at_point(point, Some("/repo"))
+            .expect("expected file hyperlink on continuation line");
+        let (_label, path, _rel, line_num, col_num) = file_target(hyperlink);
+        assert_eq!(path, "crates/zedra-host/src/main.rs");
+        assert_eq!(line_num, Some(42));
+        assert_eq!(col_num, Some(5));
+    }
+
+    #[test]
+    fn does_not_detect_bare_filename_without_slash() {
+        let terminal = terminal_with_output(b"Read package.json now\r\n");
+        let links = terminal.detect_plain_links();
+        assert!(
+            links.is_empty(),
+            "should not detect bare package.json, got {:?}",
+            links
+        );
+    }
+
+    #[test]
+    fn does_not_detect_unknown_extension() {
+        let terminal = terminal_with_output(b"Read src/foo.xyz now\r\n");
+        let links = terminal.detect_plain_links();
+        assert!(
+            links.is_empty(),
+            "should not detect unknown ext, got {:?}",
+            links
+        );
+    }
+
+    #[test]
+    fn detects_path_embedded_in_function_call_token() {
+        // Claude Code emits `Update(/abs/path/to/file.rs)` — path glued to
+        // tool name with `(` and to closing `)` with no whitespace.
+        let terminal = terminal_with_output(b"Update(/Users/me/repo/src/main.rs)\r\n");
+        let links = terminal.detect_plain_links();
+        assert_eq!(links.len(), 1, "expected one path link, got {:?}", links);
+        assert_eq!(links[0].kind, super::DetectedLinkKind::FilePath);
+        assert_eq!(links[0].text, "/Users/me/repo/src/main.rs");
+    }
+
+    #[test]
+    fn detects_path_embedded_in_function_call_token_wrapped() {
+        // 30-col terminal forces wrap mid-path inside `Update(...)`.
+        let terminal = narrow_terminal(30, 8, b"Update(/Users/me/repo/src/terminal.rs)\r\n");
+        let links = terminal.detect_plain_links();
+        assert_eq!(
+            links.len(),
+            1,
+            "expected one wrapped path link, got {:?}",
+            links
+        );
+        assert_eq!(links[0].text, "/Users/me/repo/src/terminal.rs");
+    }
+
+    #[test]
+    fn detects_path_in_scrollback_after_scroll_up() {
+        // Push enough lines to send the first path into scrollback, then
+        // scroll up so it becomes visible at a negative alacritty line.
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        terminal.advance_bytes(b"Read(crates/foo/file_a.rs)\r\n");
+        for i in 0..20 {
+            terminal.advance_bytes(format!("filler line {i}\r\n").as_bytes());
+        }
+        // Now first link is well above the screen. Scroll up to bring it back.
+        terminal.scroll(20);
+        assert!(terminal.display_offset() > 0, "should be scrolled");
+
+        let links = terminal.detect_plain_links();
+        let recovered = links.iter().find(|l| l.text == "crates/foo/file_a.rs");
+        assert!(
+            recovered.is_some(),
+            "expected to detect scrollback path, got {:?}",
+            links,
+        );
+        let link = recovered.unwrap();
+        assert!(
+            link.start.line < Line(0),
+            "link should be in scrollback (negative line), got {:?}",
+            link.start,
+        );
+
+        // Tap on that scrollback line should resolve the link.
+        let hl = terminal
+            .hyperlink_at_point(link.start, Some("/repo"))
+            .expect("expected hyperlink at scrollback point");
+        let (_l, path, _r, _ln, _c) = file_target(hl);
+        assert_eq!(path, "crates/foo/file_a.rs");
+    }
+
+    #[test]
+    fn detects_multiple_paths_on_separate_lines() {
+        let terminal = terminal_with_output(
+            b"Read(crates/foo/file1.rs)\r\nUpdate(crates/foo/file2.rs)\r\nWrite(crates/foo/file3.rs)\r\n",
+        );
+        let links = terminal.detect_plain_links();
+        assert_eq!(links.len(), 3, "expected 3 links, got {:?}", links);
+        assert_eq!(links[0].text, "crates/foo/file1.rs");
+        assert_eq!(links[1].text, "crates/foo/file2.rs");
+        assert_eq!(links[2].text, "crates/foo/file3.rs");
+
+        // Each should be tappable from a point on its own line.
+        for (i, expected_text) in [
+            "crates/foo/file1.rs",
+            "crates/foo/file2.rs",
+            "crates/foo/file3.rs",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let line_idx = i as i32;
+            let hl = terminal
+                .hyperlink_at_point(Point::new(Line(line_idx), Column(10)), Some("/repo"))
+                .unwrap_or_else(|| panic!("no link at line {}", line_idx));
+            let (_l, path, _r, _ln, _c) = file_target(hl);
+            assert_eq!(path, *expected_text, "line {} path mismatch", line_idx);
+        }
+    }
+
+    #[test]
+    fn detects_path_after_label_with_colon() {
+        // `error: src/main.rs:12:3` — `error:` precedes path with space.
+        let terminal = terminal_with_output(b"error: src/main.rs:12:3\r\n");
+        let links = terminal.detect_plain_links();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].text, "src/main.rs:12:3");
+    }
+
+    #[test]
+    fn detects_path_split_by_hard_newline_with_indent() {
+        // Claude Code word-wrap: line 0 ends mid-path with no trailing space,
+        // then `\n` followed by indent spaces, then path continues. WRAPLINE
+        // is NOT set on line 0 (hard newline). Detection must still work.
+        // Output: "Update(/Users/me/repo/src/zedra-t\n        erminal/src/main.rs)"
+        let terminal = terminal_with_output(
+            b"Update(/Users/me/repo/src/zedra-t\r\n        erminal/src/main.rs)\r\n",
+        );
+        let links = terminal.detect_plain_links();
+        assert_eq!(
+            links.len(),
+            1,
+            "expected one joined path link, got {:?}",
+            links,
+        );
+        assert_eq!(links[0].kind, super::DetectedLinkKind::FilePath);
+        assert_eq!(
+            links[0].text,
+            "/Users/me/repo/src/zedra-terminal/src/main.rs"
+        );
+        // Span must cross physical lines.
+        assert!(links[0].end.line > links[0].start.line);
+    }
+
+    #[test]
+    fn hyperlink_at_point_resolves_hard_wrapped_path_on_continuation_line() {
+        // Tap inside the indented continuation should resolve the full path.
+        let terminal = terminal_with_output(
+            b"Update(/Users/me/repo/src/zedra-t\r\n        erminal/src/main.rs)\r\n",
+        );
+        // Line 1, column 12 lands inside `erminal/src/main.rs`.
+        let point = Point::new(Line(1), Column(12));
+        let hyperlink = terminal
+            .hyperlink_at_point(point, Some("/Users/me/repo"))
+            .expect("expected file hyperlink on hard-wrapped continuation");
+        let (_label, path, _rel, _line, _col) = file_target(hyperlink);
+        assert_eq!(path, "/Users/me/repo/src/zedra-terminal/src/main.rs");
+    }
+
+    fn cells_from(s: &str) -> Vec<(super::Point, char)> {
+        s.chars()
+            .enumerate()
+            .map(|(i, c)| (super::Point::new(super::Line(0), super::Column(i)), c))
+            .collect()
+    }
+
+    #[test]
+    fn tail_cut_off_detects_incomplete_path() {
+        // Path cut mid-segment, no extension yet.
+        let cells = cells_from("Update(/Users/me/repo/src/zedra-t");
+        assert!(super::tail_looks_like_cut_off_path(&cells));
+    }
+
+    #[test]
+    fn tail_cut_off_detects_path_ending_with_slash() {
+        // Token ends with `/` — last component is empty → cut off.
+        let cells = cells_from("see crates/zedra/src/");
+        assert!(super::tail_looks_like_cut_off_path(&cells));
+    }
+
+    #[test]
+    fn tail_cut_off_rejects_completed_path() {
+        let cells = cells_from("see crates/zedra/src/main.rs");
+        assert!(!super::tail_looks_like_cut_off_path(&cells));
+    }
+
+    #[test]
+    fn tail_cut_off_rejects_completed_path_with_line_col() {
+        let cells = cells_from("see crates/zedra/src/main.rs:42:5");
+        assert!(!super::tail_looks_like_cut_off_path(&cells));
+    }
+
+    #[test]
+    fn tail_cut_off_rejects_token_without_slash() {
+        let cells = cells_from("Referenced file");
+        assert!(!super::tail_looks_like_cut_off_path(&cells));
+    }
+
+    #[test]
+    fn tail_cut_off_rejects_empty_input() {
+        let cells: Vec<(super::Point, char)> = Vec::new();
+        assert!(!super::tail_looks_like_cut_off_path(&cells));
+    }
+
+    #[test]
+    fn tail_cut_off_rejects_all_whitespace() {
+        let cells = cells_from("       ");
+        assert!(!super::tail_looks_like_cut_off_path(&cells));
+    }
+
+    #[test]
+    fn tail_cut_off_ignores_text_before_last_token() {
+        // Earlier tokens with completed paths shouldn't matter — only the tail.
+        let cells = cells_from("ok foo/done.rs then bar/wip-");
+        assert!(super::tail_looks_like_cut_off_path(&cells));
+    }
+
+    #[test]
+    fn tail_cut_off_handles_trailing_whitespace() {
+        // Trailing spaces shouldn't fool the detector — it walks past them.
+        let cells = cells_from("Update(/Users/repo/zedra-t   ");
+        assert!(super::tail_looks_like_cut_off_path(&cells));
+    }
+
+    #[test]
+    fn detects_dot_slash_relative_path() {
+        // `./scripts/run-ios.sh` — leading `.` must not be stripped.
+        let terminal = terminal_with_output(b"Run ./scripts/run-ios.sh now\r\n");
+        let links = terminal.detect_plain_links();
+        assert_eq!(links.len(), 1, "expected one link, got {:?}", links);
+        assert_eq!(links[0].text, "./scripts/run-ios.sh");
+    }
+
+    #[test]
+    fn detects_dot_dot_slash_relative_path() {
+        let terminal = terminal_with_output(b"see ../parent/file.rs now\r\n");
+        let links = terminal.detect_plain_links();
+        assert_eq!(links.len(), 1, "got {:?}", links);
+        assert_eq!(links[0].text, "../parent/file.rs");
+    }
+
+    #[test]
+    fn does_not_glue_referenced_file_label_to_indented_path() {
+        // Pattern: "-> Referenced file\n   crates/foo/file.rs" should detect
+        // the path on the second line WITHOUT eating the leading whitespace
+        // and gluing "file" to "crates".
+        let terminal = terminal_with_output(
+            b"-> Referenced file\r\n   crates/zedra-terminal/src/element.rs\r\n",
+        );
+        let links = terminal.detect_plain_links();
+        assert_eq!(links.len(), 1, "got {:?}", links);
+        assert_eq!(links[0].text, "crates/zedra-terminal/src/element.rs");
+    }
+
+    #[test]
+    fn detects_each_referenced_file_in_repeated_block() {
+        // Verifies the full pattern the user reported: 3+ "Referenced file\n
+        // <indented path>" entries each get their own link, not just the last.
+        let terminal = terminal_with_output(
+            b"-> Referenced file\r\n   crates/foo/a.rs\r\n\
+              -> Referenced file\r\n   crates/foo/b.rs\r\n\
+              -> Referenced file\r\n   crates/foo/c.rs\r\n",
+        );
+        let links = terminal.detect_plain_links();
+        let texts: Vec<_> = links.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec!["crates/foo/a.rs", "crates/foo/b.rs", "crates/foo/c.rs"],
+            "got {:?}",
+            links,
+        );
+    }
+
+    #[test]
+    fn does_not_redetect_url_as_file_path() {
+        // URL with .html extension shouldn't be double-counted as file path.
+        let terminal = terminal_with_output(b"Visit https://example.com/page.html now\r\n");
+        let links = terminal.detect_plain_links();
+        assert_eq!(links.len(), 1, "expected only URL match, got {:?}", links);
+        assert_eq!(links[0].kind, super::DetectedLinkKind::Url);
     }
 }
