@@ -79,11 +79,6 @@ pub fn backdrop_color() -> Hsla {
     gpui::hsla(0.0, 0.0, 0.075, 0.6)
 }
 
-// Hover highlight (white at 5% opacity)
-pub fn hover_bg() -> Hsla {
-    gpui::hsla(0.0, 0.0, 1.0, 0.05)
-}
-
 // Transport badge background
 pub fn badge_bg() -> Hsla {
     gpui::hsla(0.0, 0.0, 0.08, 0.8)

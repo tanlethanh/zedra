@@ -6,6 +6,14 @@
 - Prefer concrete reproduction steps and expected results over vague test descriptions.
 - When debugging, add targeted log instructions if the test depends on developer-run device validation.
 
+## 0. Mobile Hover Styling
+
+1. Open the app on iOS or Android
+2. Tap an outline button, drawer tab icon, the Session direct-address row, and the Session Disconnect button
+3. Expected: each tap still triggers its action
+4. Expected: no hover background remains stuck after tap, drag, or scroll interactions
+5. Expected: active, selected, destructive, and disabled states remain readable without hover styling
+
 ## 1. Normal QR Scan → Connect
 
 1. Start host daemon: `zedra start --workdir .`

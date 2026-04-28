@@ -231,7 +231,6 @@ fn render_discovery_rows(snap: &ConnectSnapshot) -> Div {
                 .flex_row()
                 .gap(px(6.0))
                 .cursor_pointer()
-                .hover(|style| style.bg(theme::hover_bg()))
                 .on_press(move |_, _, _| {
                     if direct_addrs.is_empty() {
                         return;

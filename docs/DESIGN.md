@@ -76,6 +76,7 @@ If a component feels busy, remove a line before adding a new one.
 - Keep primary actions obvious but not loud
 - Prefer icon-only actions when the meaning is clear
 - Keep touch targets forgiving via hit slop, not visual bulk
+- Hover is not a current mobile design state; controls must read correctly without hover-only reveals, fills, or tooltips
 
 ## Component Rules
 
@@ -105,6 +106,7 @@ If a component feels busy, remove a line before adding a new one.
 - Prefer monochrome icons and muted labels
 - Only increase contrast when the action is ready or focused
 - Avoid heavy filled buttons in workspace views
+- Express button state with pressed, selected, active, disabled, text, icon, and border styling rather than hover styling
 
 ## Git View Guidance
 

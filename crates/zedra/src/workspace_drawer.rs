@@ -167,7 +167,6 @@ impl WorkspaceDrawer {
             .rounded(px(6.0))
             .cursor_pointer()
             .hit_slop(px(10.0))
-            .hover(|s| s.bg(theme::hover_bg()))
             .on_press(cx.listener(move |this, _event, _window, cx| {
                 platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
                 this.set_current_tab(tab, cx);
