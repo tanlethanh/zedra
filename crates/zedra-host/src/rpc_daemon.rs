@@ -725,9 +725,8 @@ async fn handle_connect(
 
     // Check global authorization before issuing a challenge.
     if !is_new_client && !registry.is_globally_authorized(&pubkey).await {
-        // Drop tx to signal error; don't send a challenge to unknown clients.
         *failure_reason = "not_authorized";
-        drop(msg.tx);
+        let _ = msg.tx.send(ConnectResult::Unauthorized).await;
         anyhow::bail!("client not globally authorized");
     }
 
@@ -1081,6 +1080,180 @@ pub async fn create_terminal(
 // RPC dispatch
 // ---------------------------------------------------------------------------
 
+fn git_status_result(workdir: PathBuf) -> GitStatusResult {
+    match GitRepo::open(&workdir) {
+        Ok(repo) => {
+            let branch = repo.branch().unwrap_or_default();
+            let entries = repo
+                .status()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|e| GitStatusEntry {
+                    path: e.path,
+                    staged_status: e
+                        .staged_status
+                        .map(|status| format!("{:?}", status).to_lowercase()),
+                    unstaged_status: e
+                        .unstaged_status
+                        .map(|status| format!("{:?}", status).to_lowercase()),
+                })
+                .collect();
+            GitStatusResult {
+                branch,
+                entries,
+                error: None,
+            }
+        }
+        Err(e) => {
+            tracing::warn!("GitStatus: failed to open repo at {:?}: {}", workdir, e);
+            GitStatusResult {
+                branch: String::new(),
+                entries: vec![],
+                error: Some(e.to_string()),
+            }
+        }
+    }
+}
+
+fn git_diff_result(workdir: PathBuf, path: Option<String>, staged: bool) -> GitDiffResult {
+    match GitRepo::open(&workdir) {
+        Ok(repo) => match repo.diff(path.as_deref(), staged) {
+            Ok(diff) => GitDiffResult { diff, error: None },
+            Err(e) => {
+                tracing::warn!("GitDiff: failed to diff {:?}: {}", path, e);
+                GitDiffResult {
+                    diff: String::new(),
+                    error: Some(e.to_string()),
+                }
+            }
+        },
+        Err(e) => {
+            tracing::warn!("GitDiff: failed to open repo at {:?}: {}", workdir, e);
+            GitDiffResult {
+                diff: String::new(),
+                error: Some(e.to_string()),
+            }
+        }
+    }
+}
+
+fn git_log_result(workdir: PathBuf, limit: Option<usize>) -> GitLogResult {
+    match GitRepo::open(&workdir) {
+        Ok(repo) => {
+            let entries = repo
+                .log(limit.unwrap_or(20).min(500))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|e| GitLogEntry {
+                    id: e.id,
+                    message: e.message,
+                    author: e.author,
+                    timestamp: e.timestamp,
+                })
+                .collect();
+            GitLogResult {
+                entries,
+                error: None,
+            }
+        }
+        Err(e) => {
+            tracing::warn!("GitLog: failed to open repo at {:?}: {}", workdir, e);
+            GitLogResult {
+                entries: vec![],
+                error: Some(e.to_string()),
+            }
+        }
+    }
+}
+
+fn git_commit_result(
+    workdir: PathBuf,
+    message: String,
+    paths: Vec<String>,
+) -> (GitCommitResult, bool) {
+    match GitRepo::open(&workdir) {
+        Ok(repo) => match repo.commit(&message, &paths) {
+            Ok(hash) => (GitCommitResult { hash, error: None }, true),
+            Err(e) => {
+                tracing::warn!("GitCommit: commit failed: {}", e);
+                (
+                    GitCommitResult {
+                        hash: String::new(),
+                        error: Some(e.to_string()),
+                    },
+                    false,
+                )
+            }
+        },
+        Err(e) => {
+            tracing::warn!("GitCommit: failed to open repo at {:?}: {}", workdir, e);
+            (
+                GitCommitResult {
+                    hash: String::new(),
+                    error: Some(e.to_string()),
+                },
+                false,
+            )
+        }
+    }
+}
+
+fn git_stage_result(workdir: PathBuf, paths: Vec<String>) -> GitStageResult {
+    let error = GitRepo::open(&workdir)
+        .and_then(|repo| repo.stage(&paths))
+        .err()
+        .map(|e| {
+            tracing::warn!("GitStage failed: {}", e);
+            e.to_string()
+        });
+    GitStageResult { error }
+}
+
+fn git_unstage_result(workdir: PathBuf, paths: Vec<String>) -> GitUnstageResult {
+    let error = GitRepo::open(&workdir)
+        .and_then(|repo| repo.unstage(&paths))
+        .err()
+        .map(|e| {
+            tracing::warn!("GitUnstage failed: {}", e);
+            e.to_string()
+        });
+    GitUnstageResult { error }
+}
+
+fn git_branches_result(workdir: PathBuf) -> GitBranchesResult {
+    match GitRepo::open(&workdir) {
+        Ok(repo) => {
+            let branches = repo
+                .branches()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|b| GitBranchEntry {
+                    name: b.name,
+                    is_head: b.is_head,
+                })
+                .collect();
+            GitBranchesResult {
+                branches,
+                error: None,
+            }
+        }
+        Err(e) => {
+            tracing::warn!("GitBranches: failed to open repo at {:?}: {}", workdir, e);
+            GitBranchesResult {
+                branches: vec![],
+                error: Some(e.to_string()),
+            }
+        }
+    }
+}
+
+fn git_checkout_result(workdir: PathBuf, branch: String) -> GitCheckoutResult {
+    let ok = GitRepo::open(&workdir)
+        .and_then(|repo| repo.checkout(&branch))
+        .is_ok();
+    GitCheckoutResult { ok }
+}
+
 async fn dispatch(
     msg: ZedraMessage,
     session: Arc<ServerSession>,
@@ -1149,41 +1322,21 @@ async fn dispatch(
         }
 
         ZedraMessage::SwitchSession(msg) => {
-            // Verify the client is authorized in the target session's ACL,
-            // not just globally. This prevents a client from switching to a
-            // session it was never paired with.
-            match registry.get_by_name(&msg.session_name).await {
-                Some(target) if target.acl.lock().await.contains(&client_pubkey) => {
-                    target.touch().await;
-                    let workdir = target
-                        .workdir
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().into_owned());
-                    let _ = msg
-                        .tx
-                        .send(SessionSwitchResult {
-                            session_id: target.id.clone(),
-                            workdir,
-                            error: None,
-                        })
-                        .await;
-                }
-                _ => {
-                    let session_name = msg.session_name.clone();
-                    tracing::warn!(
-                        "SwitchSession: session {:?} not found or unauthorized",
-                        session_name
-                    );
-                    let _ = msg
-                        .tx
-                        .send(SessionSwitchResult {
-                            session_id: String::new(),
-                            workdir: None,
-                            error: Some(format!("session '{}' not found", session_name)),
-                        })
-                        .await;
-                }
-            }
+            tracing::warn!(
+                "SwitchSession: session switching is unsupported for {:?}",
+                msg.session_name
+            );
+            let _ = msg
+                .tx
+                .send(SessionSwitchResult {
+                    session_id: String::new(),
+                    workdir: None,
+                    error: Some(
+                        "session switching is unsupported; reconnect to the target session"
+                            .to_string(),
+                    ),
+                })
+                .await;
         }
 
         // -- Filesystem --
@@ -1730,232 +1883,115 @@ async fn dispatch(
         // -- Git --
         ZedraMessage::GitStatus(msg) => {
             session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
-            match GitRepo::open(&state.workdir) {
-                Ok(repo) => {
-                    let branch = repo.branch().unwrap_or_default();
-                    let entries = repo
-                        .status()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|e| GitStatusEntry {
-                            path: e.path,
-                            staged_status: e
-                                .staged_status
-                                .map(|status| format!("{:?}", status).to_lowercase()),
-                            unstaged_status: e
-                                .unstaged_status
-                                .map(|status| format!("{:?}", status).to_lowercase()),
-                        })
-                        .collect();
-                    let _ = msg
-                        .tx
-                        .send(GitStatusResult {
-                            branch,
-                            entries,
-                            error: None,
-                        })
-                        .await;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "GitStatus: failed to open repo at {:?}: {}",
-                        state.workdir,
-                        e
-                    );
-                    let _ = msg
-                        .tx
-                        .send(GitStatusResult {
-                            branch: String::new(),
-                            entries: vec![],
-                            error: Some(e.to_string()),
-                        })
-                        .await;
-                }
-            }
+            let workdir = state.workdir.clone();
+            let result = tokio::task::spawn_blocking(move || git_status_result(workdir))
+                .await
+                .unwrap_or_else(|e| GitStatusResult {
+                    branch: String::new(),
+                    entries: vec![],
+                    error: Some(format!("git status worker failed: {e}")),
+                });
+            let _ = msg.tx.send(result).await;
         }
 
         ZedraMessage::GitDiff(msg) => {
             session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
-            match GitRepo::open(&state.workdir) {
-                Ok(repo) => match repo.diff(msg.path.as_deref(), msg.staged) {
-                    Ok(diff) => {
-                        let _ = msg.tx.send(GitDiffResult { diff, error: None }).await;
-                    }
-                    Err(e) => {
-                        tracing::warn!("GitDiff: failed to diff {:?}: {}", msg.path, e);
-                        let _ = msg
-                            .tx
-                            .send(GitDiffResult {
-                                diff: String::new(),
-                                error: Some(e.to_string()),
-                            })
-                            .await;
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!("GitDiff: failed to open repo at {:?}: {}", state.workdir, e);
-                    let _ = msg
-                        .tx
-                        .send(GitDiffResult {
-                            diff: String::new(),
-                            error: Some(e.to_string()),
-                        })
-                        .await;
-                }
-            }
+            let workdir = state.workdir.clone();
+            let path = msg.path.clone();
+            let staged = msg.staged;
+            let result =
+                tokio::task::spawn_blocking(move || git_diff_result(workdir, path, staged))
+                    .await
+                    .unwrap_or_else(|e| GitDiffResult {
+                        diff: String::new(),
+                        error: Some(format!("git diff worker failed: {e}")),
+                    });
+            let _ = msg.tx.send(result).await;
         }
 
         ZedraMessage::GitLog(msg) => {
             session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
-            match GitRepo::open(&state.workdir) {
-                Ok(repo) => {
-                    let entries = repo
-                        .log(msg.limit.unwrap_or(20).min(500))
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|e| GitLogEntry {
-                            id: e.id,
-                            message: e.message,
-                            author: e.author,
-                            timestamp: e.timestamp,
-                        })
-                        .collect();
-                    let _ = msg
-                        .tx
-                        .send(GitLogResult {
-                            entries,
-                            error: None,
-                        })
-                        .await;
-                }
-                Err(e) => {
-                    tracing::warn!("GitLog: failed to open repo at {:?}: {}", state.workdir, e);
-                    let _ = msg
-                        .tx
-                        .send(GitLogResult {
-                            entries: vec![],
-                            error: Some(e.to_string()),
-                        })
-                        .await;
-                }
-            }
+            let workdir = state.workdir.clone();
+            let limit = msg.limit;
+            let result = tokio::task::spawn_blocking(move || git_log_result(workdir, limit))
+                .await
+                .unwrap_or_else(|e| GitLogResult {
+                    entries: vec![],
+                    error: Some(format!("git log worker failed: {e}")),
+                });
+            let _ = msg.tx.send(result).await;
         }
 
         ZedraMessage::GitCommit(msg) => {
             let files_staged = msg.paths.len();
-            match GitRepo::open(&state.workdir) {
-                Ok(repo) => match repo.commit(&msg.message, &msg.paths) {
-                    Ok(hash) => {
-                        session.rpc_git_commits.fetch_add(1, Ordering::Relaxed);
-                        zedra_telemetry::send(Event::GitCommitMade {
-                            files_staged,
-                            success: true,
-                        });
-                        let _ = msg.tx.send(GitCommitResult { hash, error: None }).await;
-                    }
-                    Err(e) => {
-                        tracing::warn!("GitCommit: commit failed: {}", e);
-                        zedra_telemetry::send(Event::GitCommitMade {
-                            files_staged,
-                            success: false,
-                        });
-                        let _ = msg
-                            .tx
-                            .send(GitCommitResult {
+            let workdir = state.workdir.clone();
+            let message = msg.message.clone();
+            let paths = msg.paths.clone();
+            let (result, success) =
+                tokio::task::spawn_blocking(move || git_commit_result(workdir, message, paths))
+                    .await
+                    .unwrap_or_else(|e| {
+                        (
+                            GitCommitResult {
                                 hash: String::new(),
-                                error: Some(e.to_string()),
-                            })
-                            .await;
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!(
-                        "GitCommit: failed to open repo at {:?}: {}",
-                        state.workdir,
-                        e
-                    );
-                    zedra_telemetry::send(Event::GitCommitMade {
-                        files_staged,
-                        success: false,
+                                error: Some(format!("git commit worker failed: {e}")),
+                            },
+                            false,
+                        )
                     });
-                    let _ = msg
-                        .tx
-                        .send(GitCommitResult {
-                            hash: String::new(),
-                            error: Some(e.to_string()),
-                        })
-                        .await;
-                }
+            if success {
+                session.rpc_git_commits.fetch_add(1, Ordering::Relaxed);
             }
+            zedra_telemetry::send(Event::GitCommitMade {
+                files_staged,
+                success,
+            });
+            let _ = msg.tx.send(result).await;
         }
 
         ZedraMessage::GitStage(msg) => {
             session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
-            let result = GitRepo::open(&state.workdir)
-                .and_then(|repo| repo.stage(&msg.paths))
-                .err()
-                .map(|e| {
-                    tracing::warn!("GitStage failed: {}", e);
-                    e.to_string()
+            let workdir = state.workdir.clone();
+            let paths = msg.paths.clone();
+            let result = tokio::task::spawn_blocking(move || git_stage_result(workdir, paths))
+                .await
+                .unwrap_or_else(|e| GitStageResult {
+                    error: Some(format!("git stage worker failed: {e}")),
                 });
-            let _ = msg.tx.send(GitStageResult { error: result }).await;
+            let _ = msg.tx.send(result).await;
         }
 
         ZedraMessage::GitUnstage(msg) => {
             session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
-            let result = GitRepo::open(&state.workdir)
-                .and_then(|repo| repo.unstage(&msg.paths))
-                .err()
-                .map(|e| {
-                    tracing::warn!("GitUnstage failed: {}", e);
-                    e.to_string()
+            let workdir = state.workdir.clone();
+            let paths = msg.paths.clone();
+            let result = tokio::task::spawn_blocking(move || git_unstage_result(workdir, paths))
+                .await
+                .unwrap_or_else(|e| GitUnstageResult {
+                    error: Some(format!("git unstage worker failed: {e}")),
                 });
-            let _ = msg.tx.send(GitUnstageResult { error: result }).await;
+            let _ = msg.tx.send(result).await;
         }
 
         ZedraMessage::GitBranches(msg) => {
             session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
-            match GitRepo::open(&state.workdir) {
-                Ok(repo) => {
-                    let branches = repo
-                        .branches()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|b| GitBranchEntry {
-                            name: b.name,
-                            is_head: b.is_head,
-                        })
-                        .collect();
-                    let _ = msg
-                        .tx
-                        .send(GitBranchesResult {
-                            branches,
-                            error: None,
-                        })
-                        .await;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "GitBranches: failed to open repo at {:?}: {}",
-                        state.workdir,
-                        e
-                    );
-                    let _ = msg
-                        .tx
-                        .send(GitBranchesResult {
-                            branches: vec![],
-                            error: Some(e.to_string()),
-                        })
-                        .await;
-                }
-            }
+            let workdir = state.workdir.clone();
+            let result = tokio::task::spawn_blocking(move || git_branches_result(workdir))
+                .await
+                .unwrap_or_else(|e| GitBranchesResult {
+                    branches: vec![],
+                    error: Some(format!("git branches worker failed: {e}")),
+                });
+            let _ = msg.tx.send(result).await;
         }
 
         ZedraMessage::GitCheckout(msg) => {
-            let ok = GitRepo::open(&state.workdir)
-                .and_then(|repo| repo.checkout(&msg.branch))
-                .is_ok();
-            let _ = msg.tx.send(GitCheckoutResult { ok }).await;
+            let workdir = state.workdir.clone();
+            let branch = msg.branch.clone();
+            let result = tokio::task::spawn_blocking(move || git_checkout_result(workdir, branch))
+                .await
+                .unwrap_or(GitCheckoutResult { ok: false });
+            let _ = msg.tx.send(result).await;
         }
 
         // -- AI --
@@ -1965,12 +2001,24 @@ async fn dispatch(
             // that might appear earlier in $PATH.
             let claude_bin =
                 std::env::var("ZEDRA_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string());
-            let prompt_bytes = msg.prompt.len();
+            let prompt = msg.prompt.clone();
+            let prompt_bytes = prompt.len();
             let ai_start = std::time::Instant::now();
-            let output = std::process::Command::new(&claude_bin)
-                .args(["--print", &msg.prompt])
-                .current_dir(&state.workdir)
-                .output();
+            let workdir = state.workdir.clone();
+            let prompt_for_command = prompt.clone();
+            let output = tokio::task::spawn_blocking(move || {
+                std::process::Command::new(&claude_bin)
+                    .args(["--print", prompt_for_command.as_str()])
+                    .current_dir(workdir)
+                    .output()
+            })
+            .await
+            .unwrap_or_else(|e| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("AI prompt worker failed: {e}"),
+                ))
+            });
             let duration_ms = ai_start.elapsed().as_millis() as u64;
 
             let (text, done, success) = match output {
@@ -1984,7 +2032,7 @@ async fn dispatch(
                 Err(e) => (
                     format!(
                         "Claude Code not found on host. Install with: npm i -g @anthropic-ai/claude-code\n\nPrompt was: {}\n\nError: {}",
-                        msg.prompt,
+                        prompt,
                         e
                     ),
                     true,

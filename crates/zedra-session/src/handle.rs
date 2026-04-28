@@ -360,13 +360,13 @@ impl SessionHandle {
     }
 
     pub async fn git_checkout(&self, branch: &str) -> Result<()> {
-        let _: GitCheckoutResult = self
+        let result: GitCheckoutResult = self
             .client()?
             .rpc(GitCheckoutReq {
                 branch: branch.to_string(),
             })
             .await?;
-        Ok(())
+        git_checkout_result(result, branch)
     }
 
     pub async fn git_commit(&self, message: &str, paths: &[String]) -> Result<String> {
@@ -489,6 +489,14 @@ impl SessionHandle {
     }
 }
 
+fn git_checkout_result(result: GitCheckoutResult, branch: &str) -> Result<()> {
+    if result.ok {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("git checkout failed for branch '{branch}'"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -558,5 +566,13 @@ mod tests {
         assert!(!handle.reorder_terminals(&["term-a".to_string()]));
         assert!(!handle.reorder_terminals(&["term-a".to_string(), "missing".to_string()]));
         assert_eq!(handle.terminal_ids(), vec!["term-a", "term-b"]);
+    }
+
+    #[test]
+    fn git_checkout_result_rejects_failed_host_result() {
+        assert!(git_checkout_result(GitCheckoutResult { ok: true }, "main").is_ok());
+
+        let err = git_checkout_result(GitCheckoutResult { ok: false }, "missing").unwrap_err();
+        assert!(err.to_string().contains("missing"));
     }
 }

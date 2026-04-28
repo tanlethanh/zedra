@@ -131,6 +131,10 @@ impl Workspaces {
         cx.notify();
     }
 
+    pub fn has_pending_ticket() -> bool {
+        PENDING_TICKET.has_pending()
+    }
+
     /// Process any pending ticket. Call this when window is available.
     pub fn process_pending_ticket(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ticket) = PENDING_TICKET.take() {

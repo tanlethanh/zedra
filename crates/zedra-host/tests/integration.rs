@@ -318,6 +318,38 @@ async fn test_full_rpc_over_iroh() {
     assert_eq!(info.session_id.as_deref(), Some(session_id.as_str()));
 }
 
+/// SwitchSession is kept in the protocol, but the host cannot change the
+/// per-connection dispatch session after authentication.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_switch_session_returns_explicit_unsupported_result() {
+    let (_relay, relay_url) = spawn_test_relay().await.unwrap();
+    let (host_ep, registry, identity, _dir) = setup_host(relay_url.clone()).await.unwrap();
+
+    let (client, _session_id, _client_pubkey, _sync) =
+        connect_client(relay_url, &host_ep, &registry, &identity)
+            .await
+            .unwrap();
+
+    let result: SessionSwitchResult = client
+        .rpc(SessionSwitchReq {
+            session_name: "test".to_string(),
+            last_notif_seq: 0,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.session_id.is_empty());
+    assert!(result.workdir.is_none());
+    assert!(
+        result
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("unsupported")),
+        "expected unsupported error, got {:?}",
+        result.error
+    );
+}
+
 /// Host info snapshots stream over a separate server-streaming subscription.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_host_info_subscription_over_relay() {
@@ -589,17 +621,20 @@ async fn test_auth_rejects_unauthorized_client() {
 
     // Try to connect without registering (unknown client, no session token)
     let unknown_pubkey = [99u8; 32];
-    let result = client
+    let result: ConnectResult = client
         .rpc(ConnectReq {
             client_pubkey: unknown_pubkey,
             session_id: "nonexistent".to_string(),
             session_token: None,
         })
-        .await;
+        .await
+        .unwrap();
 
-    // The connection should be dropped by the host since pubkey is not authorized
-    // (either error or the tx was dropped, or ConnectResult::SessionNotFound)
-    let _ = result; // may succeed or fail depending on timing
+    assert!(
+        matches!(result, ConnectResult::Unauthorized),
+        "expected Unauthorized, got {:?}",
+        result
+    );
 }
 
 /// Verify registration HMAC rejection.

@@ -775,8 +775,11 @@ impl Terminal {
             return None;
         }
 
-        self.hyperlink_from_osc8(point, workdir)
-            .or_else(|| self.plain_hyperlink_at_point(point, workdir))
+        if self.term.grid().index(point).hyperlink().is_some() {
+            return self.hyperlink_from_osc8(point, workdir);
+        }
+
+        self.plain_hyperlink_at_point(point, workdir)
     }
 
     fn plain_hyperlink_at_point(
@@ -793,11 +796,11 @@ impl Terminal {
             }),
             DetectedLinkKind::FilePath => {
                 let (path, line_num, col_num) = Self::split_file_position(&link.text);
-                let relative_path = Self::resolve_relative_path(path, workdir)?;
+                let (path, relative_path) = Self::resolve_file_target(path, workdir)?;
                 Some(TerminalHyperlink {
                     label: link.text.clone(),
                     target: TerminalHyperlinkTarget::File {
-                        path: path.to_string(),
+                        path,
                         relative_path,
                         line: line_num,
                         column: col_num,
@@ -992,16 +995,43 @@ impl Terminal {
             return Self::file_hyperlink_from_osc8(path, label, workdir);
         }
 
-        if Self::looks_like_external_uri(uri) {
-            return Some(TerminalHyperlink {
-                label,
-                target: TerminalHyperlinkTarget::Url {
-                    url: uri.to_string(),
-                },
-            });
+        if let Some(scheme) = Self::uri_scheme(uri) {
+            if Self::is_safe_external_scheme(scheme) {
+                return Some(TerminalHyperlink {
+                    label,
+                    target: TerminalHyperlinkTarget::Url {
+                        url: uri.to_string(),
+                    },
+                });
+            }
+
+            return None;
         }
 
         Self::file_hyperlink_from_osc8(uri, label, workdir)
+    }
+
+    fn is_safe_external_scheme(scheme: &str) -> bool {
+        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+    }
+
+    fn uri_scheme(uri: &str) -> Option<&str> {
+        if Self::looks_like_windows_drive_path(uri) {
+            return None;
+        }
+
+        let (scheme, _rest) = uri.split_once(':')?;
+        let mut chars = scheme.chars();
+        let first = chars.next()?;
+        if !first.is_ascii_alphabetic() {
+            return None;
+        }
+
+        if chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '.' | '-')) {
+            Some(scheme)
+        } else {
+            None
+        }
     }
 
     fn file_hyperlink_from_osc8(
@@ -1019,7 +1049,7 @@ impl Terminal {
             return None;
         }
 
-        let relative_path = Self::resolve_relative_path(path, workdir)?;
+        let (path, relative_path) = Self::resolve_file_target(path, workdir)?;
         Some(TerminalHyperlink {
             label: if label.is_empty() {
                 target.to_string()
@@ -1027,7 +1057,7 @@ impl Terminal {
                 label
             },
             target: TerminalHyperlinkTarget::File {
-                path: path.to_string(),
+                path,
                 relative_path,
                 line,
                 column,
@@ -1049,24 +1079,6 @@ impl Terminal {
             && bytes[0].is_ascii_alphabetic()
             && bytes[1] == b':'
             && matches!(bytes[2], b'\\' | b'/')
-    }
-
-    fn looks_like_external_uri(uri: &str) -> bool {
-        if Self::looks_like_windows_drive_path(uri) {
-            return false;
-        }
-
-        let Some((scheme, _rest)) = uri.split_once(':') else {
-            return false;
-        };
-
-        let mut chars = scheme.chars();
-        let Some(first) = chars.next() else {
-            return false;
-        };
-
-        first.is_ascii_alphabetic()
-            && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '.' | '-'))
     }
 
     fn split_file_position(token: &str) -> (&str, Option<u32>, Option<u32>) {
@@ -1099,7 +1111,7 @@ impl Terminal {
         (token, None, None)
     }
 
-    fn resolve_relative_path(path: &str, workdir: Option<&str>) -> Option<String> {
+    fn resolve_file_target(path: &str, workdir: Option<&str>) -> Option<(String, String)> {
         let path = path.trim();
         if path.is_empty() {
             return None;
@@ -1114,14 +1126,18 @@ impl Terminal {
             PathBuf::from(raw)
         };
 
-        if let Some(workdir) = workdir {
+        let relative_path = if let Some(workdir) = workdir {
             let workdir_path = Path::new(workdir);
             if let Ok(relative) = candidate.strip_prefix(workdir_path) {
-                return Some(relative.to_string_lossy().to_string());
+                relative.to_string_lossy().to_string()
+            } else {
+                candidate.to_string_lossy().to_string()
             }
-        }
+        } else {
+            candidate.to_string_lossy().to_string()
+        };
 
-        Some(candidate.to_string_lossy().to_string())
+        Some((candidate.to_string_lossy().to_string(), relative_path))
     }
 
     fn send_mouse_scroll(
@@ -1753,7 +1769,7 @@ mod tests {
             .hyperlink_at_point(point_for_substring(line, "src/main.rs"), Some("/repo"))
             .expect("expected plain file hyperlink");
         let (_label, path, relative_path, line_num, col_num) = file_target(hyperlink);
-        assert_eq!(path, "src/main.rs");
+        assert_eq!(path, "/repo/src/main.rs");
         assert_eq!(relative_path, "src/main.rs");
         assert_eq!(line_num, Some(12));
         assert_eq!(col_num, Some(3));
@@ -1793,7 +1809,7 @@ mod tests {
             .hyperlink_at_point(point_for_substring(line, "src/main.rs"), Some("/repo"))
             .expect("expected plain file hyperlink stripped of surrounding punctuation");
         let (_label, path, _relative_path, line_num, col_num) = file_target(hyperlink);
-        assert_eq!(path, "src/main.rs");
+        assert_eq!(path, "/repo/src/main.rs");
         assert_eq!(line_num, Some(12));
         assert_eq!(col_num, Some(3));
     }
@@ -1871,6 +1887,35 @@ mod tests {
     }
 
     #[test]
+    fn detects_osc8_http_url_hyperlinks_from_grid_point() {
+        let line = "Visit zedra.dev now";
+        let terminal = terminal_with_output(
+            b"Visit \x1b]8;;http://zedra.dev\x1b\\zedra.dev\x1b]8;;\x1b\\ now\r\n",
+        );
+
+        let hyperlink = terminal
+            .hyperlink_at_point(point_for_substring(line, "zedra.dev"), Some("/repo"))
+            .expect("expected OSC 8 http url hyperlink");
+        let (label, url) = url_target(hyperlink);
+
+        assert_eq!(label, "zedra.dev");
+        assert_eq!(url, "http://zedra.dev");
+    }
+
+    #[test]
+    fn rejects_osc8_custom_scheme_hyperlinks_from_grid_point() {
+        let line = "Run https://zedra.dev now";
+        let terminal = terminal_with_output(
+            b"Run \x1b]8;;zedra://open\x1b\\https://zedra.dev\x1b]8;;\x1b\\ now\r\n",
+        );
+
+        assert_eq!(
+            terminal.hyperlink_at_point(point_for_substring(line, "zedra.dev"), Some("/repo")),
+            None
+        );
+    }
+
+    #[test]
     fn detects_osc8_file_hyperlinks_from_grid_point() {
         let line = "Open docs/guide.md now";
         let terminal = terminal_with_output(
@@ -1880,6 +1925,24 @@ mod tests {
         let hyperlink = terminal
             .hyperlink_at_point(point_for_substring(line, "docs/guide.md"), Some("/repo"))
             .expect("expected OSC 8 file hyperlink");
+        let (_label, path, relative_path, line, column) = file_target(hyperlink);
+
+        assert_eq!(Path::new(&path), Path::new("/repo/docs/guide.md"));
+        assert_eq!(Path::new(&relative_path), Path::new("docs/guide.md"));
+        assert_eq!(line, Some(12));
+        assert_eq!(column, Some(3));
+    }
+
+    #[test]
+    fn detects_osc8_file_scheme_hyperlinks_from_grid_point() {
+        let line = "Open docs/guide.md now";
+        let terminal = terminal_with_output(
+            b"Open \x1b]8;;file:/repo/docs/guide.md:12:3\x1b\\docs/guide.md\x1b]8;;\x1b\\ now\r\n",
+        );
+
+        let hyperlink = terminal
+            .hyperlink_at_point(point_for_substring(line, "docs/guide.md"), Some("/repo"))
+            .expect("expected OSC 8 file scheme hyperlink");
         let (_label, path, relative_path, line, column) = file_target(hyperlink);
 
         assert_eq!(Path::new(&path), Path::new("/repo/docs/guide.md"));
@@ -1901,7 +1964,7 @@ mod tests {
         let (label, path, relative_path, line, column) = file_target(hyperlink);
 
         assert_eq!(label, "source");
-        assert_eq!(Path::new(&path), Path::new("src/main.rs"));
+        assert_eq!(Path::new(&path), Path::new("/repo/src/main.rs"));
         assert_eq!(Path::new(&relative_path), Path::new("src/main.rs"));
         assert_eq!(line, Some(12));
         assert_eq!(column, Some(3));
@@ -1919,7 +1982,7 @@ mod tests {
         let (label, path, relative_path, line, column) = file_target(hyperlink);
 
         assert_eq!(label, "README");
-        assert_eq!(Path::new(&path), Path::new("README"));
+        assert_eq!(Path::new(&path), Path::new("/repo/README"));
         assert_eq!(Path::new(&relative_path), Path::new("README"));
         assert_eq!(line, None);
         assert_eq!(column, None);
@@ -1993,7 +2056,7 @@ mod tests {
             .hyperlink_at_point(point, Some("/repo"))
             .expect("expected file hyperlink on continuation line");
         let (_label, path, _rel, line_num, col_num) = file_target(hyperlink);
-        assert_eq!(path, "crates/zedra-host/src/main.rs");
+        assert_eq!(path, "/repo/crates/zedra-host/src/main.rs");
         assert_eq!(line_num, Some(42));
         assert_eq!(col_num, Some(5));
     }
@@ -2077,7 +2140,7 @@ mod tests {
             .hyperlink_at_point(link.start, Some("/repo"))
             .expect("expected hyperlink at scrollback point");
         let (_l, path, _r, _ln, _c) = file_target(hl);
-        assert_eq!(path, "crates/foo/file_a.rs");
+        assert_eq!(path, "/repo/crates/foo/file_a.rs");
     }
 
     #[test]
@@ -2105,7 +2168,12 @@ mod tests {
                 .hyperlink_at_point(Point::new(Line(line_idx), Column(10)), Some("/repo"))
                 .unwrap_or_else(|| panic!("no link at line {}", line_idx));
             let (_l, path, _r, _ln, _c) = file_target(hl);
-            assert_eq!(path, *expected_text, "line {} path mismatch", line_idx);
+            assert_eq!(
+                path,
+                format!("/repo/{expected_text}"),
+                "line {} path mismatch",
+                line_idx
+            );
         }
     }
 

@@ -11,7 +11,8 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
+use std::path::Path;
 use std::sync::Arc;
 use zedra_host::client as zedra_client;
 use zedra_host::ga4::Ga4;
@@ -122,6 +123,62 @@ enum Commands {
         #[arg(long, short)]
         yes: bool,
     },
+}
+
+fn write_api_discovery_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
+    })?;
+    let file_name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no file name")
+    })?;
+    let file_name = file_name.to_string_lossy();
+
+    for _ in 0..16 {
+        let tmp_path = parent.join(format!(
+            ".{}.{}.{}.tmp",
+            file_name,
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+
+        let mut file = match options.open(&tmp_path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        };
+        #[cfg(unix)]
+        std::fs::set_permissions(
+            &tmp_path,
+            std::os::unix::fs::PermissionsExt::from_mode(0o600),
+        )?;
+
+        let write_result = file.write_all(contents).and_then(|_| file.sync_all());
+        drop(file);
+        if let Err(e) = write_result {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e);
+        }
+
+        if let Err(e) = std::fs::rename(&tmp_path, path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e);
+        }
+        return Ok(());
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not create a unique temporary api discovery file",
+    ))
 }
 
 #[tokio::main]
@@ -404,8 +461,19 @@ async fn main() -> Result<()> {
                 .await
                 {
                     Ok(addr) => {
-                        let _ = std::fs::write(config_dir.join("api-addr"), addr.to_string());
-                        let _ = std::fs::write(config_dir.join("api-token"), &token);
+                        let addr_string = addr.to_string();
+                        if let Err(e) = write_api_discovery_file(
+                            &config_dir.join("api-addr"),
+                            addr_string.as_bytes(),
+                        ) {
+                            tracing::warn!("Failed to write REST API address: {}", e);
+                        }
+                        if let Err(e) = write_api_discovery_file(
+                            &config_dir.join("api-token"),
+                            token.as_bytes(),
+                        ) {
+                            tracing::warn!("Failed to write REST API token: {}", e);
+                        }
                         tracing::info!("REST API listening on http://{}", addr);
                     }
                     Err(e) => tracing::warn!("Failed to start REST API: {}", e),
@@ -897,5 +965,36 @@ impl Drop for RawModeGuard {
                 std::io::Error::last_os_error()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn write_api_discovery_file_uses_0600_permissions_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let token_path = dir.path().join("api-token");
+
+        write_api_discovery_file(&token_path, b"first-token").unwrap();
+        assert_eq!(std::fs::read_to_string(&token_path).unwrap(), "first-token");
+        assert_eq!(
+            std::fs::metadata(&token_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        write_api_discovery_file(&token_path, b"second-token").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&token_path).unwrap(),
+            "second-token"
+        );
+        assert_eq!(
+            std::fs::metadata(&token_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 }

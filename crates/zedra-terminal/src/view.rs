@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use gpui::*;
 use tokio::sync::mpsc;
 use tracing::*;
+use zedra_osc::OscEvent;
 
 use crate::element::TerminalElement;
 use crate::terminal::{Terminal, TerminalEvent};
@@ -89,6 +90,9 @@ impl TerminalView {
                 if let Err(e) = this.update(cx, |this, cx| {
                     if let TerminalEvent::AltScreenChanged(is_alt) = &event {
                         this.is_alt_screen = *is_alt;
+                    }
+                    if let TerminalEvent::OscEvent(OscEvent::Cwd(cwd)) = &event {
+                        this.workdir = Some(cwd.clone());
                     }
                     cx.emit(event);
                     cx.notify();
@@ -484,11 +488,13 @@ impl Render for TerminalView {
 #[cfg(test)]
 mod tests {
     use super::TerminalView;
-    use crate::terminal::TerminalEvent;
+    use std::path::Path;
+
+    use crate::terminal::{TerminalEvent, TerminalHyperlinkTarget};
     use futures::{FutureExt as _, StreamExt as _};
     use gpui::{
-        Modifiers, PointerButton, PointerDownEvent, PointerKind, PointerUpEvent, TestAppContext,
-        TouchPhase, VisualTestContext, WindowHandle, point, px, size,
+        Modifiers, Pixels, Point, PointerButton, PointerDownEvent, PointerKind, PointerUpEvent,
+        TestAppContext, TouchPhase, VisualTestContext, WindowHandle, point, px, size,
     };
 
     fn open_terminal_window(cx: &mut TestAppContext) -> WindowHandle<TerminalView> {
@@ -498,8 +504,15 @@ mod tests {
     }
 
     fn tap_terminal(window: WindowHandle<TerminalView>, cx: &mut TestAppContext) {
+        tap_terminal_at(window, cx, point(px(12.0), px(12.0)));
+    }
+
+    fn tap_terminal_at(
+        window: WindowHandle<TerminalView>,
+        cx: &mut TestAppContext,
+        position: Point<Pixels>,
+    ) {
         let mut window_cx = VisualTestContext::from_window(*window, cx);
-        let position = point(px(12.0), px(12.0));
         window_cx.simulate_event(PointerDownEvent {
             pointer_id: 1,
             kind: PointerKind::Touch,
@@ -560,6 +573,57 @@ mod tests {
                 assert!(terminal_view.terminal.read(cx).display_offset() > 0);
             })
             .unwrap();
+    }
+
+    #[test]
+    fn osc_cwd_updates_relative_hyperlink_workdir() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+
+        let output =
+            b"\x1b]7;file:///repo/sub\x1b\\Open \x1b]8;;src/main.rs:12:3\x1b\\source\x1b]8;;\x1b\\ now\r\n";
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                terminal_view.set_grid_origin(point(px(0.0), px(0.0)));
+                terminal_view.terminal.update(cx, |terminal, _| {
+                    terminal.advance_bytes(output);
+                    terminal.feed_osc_bytes(output);
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let root = window.root(&mut cx).unwrap();
+        let mut events = cx.events(&root);
+        let target_position = window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                let size = terminal_view.terminal.read(cx).size();
+                point(size.cell_width * 7.0, size.line_height / 2.0)
+            })
+            .unwrap();
+
+        tap_terminal_at(window, &mut cx, target_position);
+        cx.run_until_parked();
+
+        match events.next().now_or_never().flatten() {
+            Some(TerminalEvent::OpenHyperlink(hyperlink)) => match hyperlink.target {
+                TerminalHyperlinkTarget::File {
+                    path,
+                    relative_path,
+                    line,
+                    column,
+                } => {
+                    assert_eq!(Path::new(&path), Path::new("/repo/sub/src/main.rs"));
+                    assert_eq!(Path::new(&relative_path), Path::new("src/main.rs"));
+                    assert_eq!(line, Some(12));
+                    assert_eq!(column, Some(3));
+                }
+                target => panic!("expected file hyperlink, got {target:?}"),
+            },
+            event => panic!("expected hyperlink event, got {event:?}"),
+        }
+        cx.quit();
     }
 
     #[test]
