@@ -175,6 +175,9 @@ as `--preview` or `--debug`. Release builds reject `--debug` and
 
 ### Release Builds
 
+In Xcode, choose the `Zedra Release` scheme to build, install, and run the
+Release configuration on a connected device.
+
 Release builds use Cargo's `release` profile, which enables ThinLTO, one
 codegen unit, symbol stripping, and `panic = "abort"` from the workspace
 `Cargo.toml`. The Xcode Release configuration strips the installed product,

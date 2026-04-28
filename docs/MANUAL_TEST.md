@@ -438,8 +438,8 @@ Expected:
 3. Expected: the build log shows `ZedraRustFFI`, then `Building Rust for Xcode (..., iphonesimulator, ...)`, before `ProcessXCFramework`
 4. Select a connected iOS device destination and press Build
 5. Expected: the build log shows `ZedraRustFFI`, then `Building Rust for Xcode (..., iphoneos, ...)`, before `ProcessXCFramework`
-6. Switch the scheme configuration to Release and press Build
-7. Expected: the Rust build log includes `Release mode enabled`
+6. Select the `Zedra Release` scheme with the connected iOS device destination and press Run
+7. Expected: the Rust build log includes `Release mode enabled`, and Xcode installs and launches the production `Zedra` app
 
 ## 20. iOS Portrait Orientation Lock
 

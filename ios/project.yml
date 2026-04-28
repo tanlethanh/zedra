@@ -66,6 +66,47 @@ targets:
         Release:
           PRODUCT_BUNDLE_IDENTIFIER: dev.zedra.app
 
+schemes:
+  Zedra:
+    management:
+      shared: true
+      orderHint: 0
+    build:
+      targets:
+        Zedra: all
+      parallelizeBuild: true
+      buildImplicitDependencies: true
+    run:
+      config: Debug
+    test:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+
+  Zedra Release:
+    management:
+      shared: true
+      orderHint: 1
+    build:
+      targets:
+        Zedra: all
+      parallelizeBuild: true
+      buildImplicitDependencies: true
+    run:
+      config: Release
+    test:
+      config: Release
+    profile:
+      config: Release
+    analyze:
+      config: Release
+    archive:
+      config: Release
+
 aggregateTargets:
   ZedraRustFFI:
     buildScripts:
