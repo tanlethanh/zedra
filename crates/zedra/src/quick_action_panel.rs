@@ -52,6 +52,29 @@ impl QuickActionPanel {
         cx.emit(QuickActionEvent::OpenTerminal { tid, ws_index });
     }
 
+    fn handle_create_terminal(&self, ws_index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.workspaces
+            .update(cx, |ws, cx| ws.switch_to(ws_index, cx));
+        cx.emit(QuickActionEvent::Close);
+        cx.emit(QuickActionEvent::NavigateToWorkspace);
+
+        if let Some(workspace) = self
+            .workspaces
+            .read(cx)
+            .workspace_by_index(ws_index)
+            .cloned()
+        {
+            workspace.update(cx, |ws, cx| {
+                ws.create_terminal_from_quick_action(window, cx);
+            });
+        } else {
+            tracing::warn!(
+                "workspace not found for index {} to create terminal from quick action",
+                ws_index
+            );
+        }
+    }
+
     fn handle_terminal_delete(&self, ws_index: usize, tid: String, cx: &mut Context<Self>) {
         cx.emit(QuickActionEvent::CloseTerminal { tid, ws_index });
     }
@@ -171,52 +194,79 @@ impl Render for QuickActionPanel {
                 div()
                     .id(SharedString::from(format!("ws-section-{}", index)))
                     .flex()
-                    .flex_col()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
                     .px(px(16.0))
                     .pt(px(12.0))
                     .pb(px(6.0))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme::hover_bg()))
                     .on_press(cx.listener(move |this, _event, _window, cx| {
                         this.handle_switch_workspace(index, cx);
                     }))
                     .child(
                         div()
+                            .flex_1()
+                            .min_w_0()
                             .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(6.0))
+                            .flex_col()
                             .child(
                                 div()
-                                    .w(px(theme::ICON_STATUS))
-                                    .h(px(theme::ICON_STATUS))
-                                    .rounded(px(3.0))
-                                    .bg(rgb(status_color)),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_color(rgb(theme::TEXT_PRIMARY))
-                                    .text_size(px(theme::FONT_BODY))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .min_w_0()
-                                    .truncate()
-                                    .child(state.project_name.to_string()),
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .child(
+                                        div()
+                                            .w(px(theme::ICON_STATUS))
+                                            .h(px(theme::ICON_STATUS))
+                                            .rounded(px(3.0))
+                                            .bg(rgb(status_color)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .text_color(rgb(theme::TEXT_PRIMARY))
+                                            .text_size(px(theme::FONT_BODY))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .min_w_0()
+                                            .truncate()
+                                            .child(state.project_name.to_string()),
+                                    ),
                             )
                             .child(
                                 div()
                                     .text_color(rgb(theme::TEXT_MUTED))
                                     .text_size(px(theme::FONT_BODY))
-                                    .child("\u{2192}"),
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(subtitle),
                             ),
                     )
                     .child(
                         div()
-                            .text_color(rgb(theme::TEXT_MUTED))
-                            .text_size(px(theme::FONT_BODY))
-                            .min_w_0()
-                            .truncate()
-                            .child(subtitle),
+                            .id(SharedString::from(format!(
+                                "quick-action-add-terminal-{}",
+                                index
+                            )))
+                            .w(px(36.0))
+                            .h(px(36.0))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .hit_slop(px(10.0))
+                            .on_pointer_down(|_, _, cx| cx.stop_propagation())
+                            .on_press(cx.listener(move |this, _event, window, cx| {
+                                platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+                                this.handle_create_terminal(index, window, cx);
+                                cx.stop_propagation();
+                            }))
+                            .child(
+                                svg()
+                                    .path("icons/plus.svg")
+                                    .size(px(16.0))
+                                    .text_color(rgb(theme::TEXT_MUTED)),
+                            ),
                     ),
             );
 
@@ -241,6 +291,7 @@ impl Render for QuickActionPanel {
                         is_active,
                         title: meta.title,
                         cwd: meta.cwd,
+                        agent_icon: meta.agent_icon,
                         shell_state: meta.shell_state,
                         last_exit_code: meta.last_exit_code,
                         on_close: Some(on_close),

@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -5,13 +6,15 @@ use gpui::{prelude::FluentBuilder as _, *};
 use tokio::sync::broadcast;
 use tracing::*;
 use zedra_rpc::ZedraPairingTicket;
-use zedra_rpc::proto::HostEvent;
+use zedra_rpc::proto::{HostEvent, SyncSessionResult};
 use zedra_session::{ConnectEvent, Session, SessionHandle, SessionState, signer::ClientSigner};
 
 use crate::active_terminal;
 use crate::editor::git_sidebar::GitFileSection;
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
+use crate::placeholder::render_placeholder;
 use crate::platform_bridge::{self, AlertButton, HapticFeedback, status_bar_inset};
+use crate::terminal_card::strip_ps1_prefix;
 use crate::terminal_state::TerminalState;
 use crate::theme;
 use crate::transport_badge::phase_indicator_color;
@@ -19,7 +22,8 @@ use crate::ui::{DrawerHost, DrawerSide};
 use crate::workspace_action::{self, GoHome, OpenQuickAction, RequestDisconnect};
 use crate::workspace_action::{
     CloseDrawer, CloseTerminal, CreateNewTerminal, GitCommit, GitShowItemActions, GitStage,
-    GitUnstage, OpenFile, OpenGitDiff, OpenTerminal, ShowConnecting, ToggleDrawer,
+    GitUnstage, OpenFile, OpenGitDiff, OpenTerminal, RestartConnection, ShowConnecting,
+    ToggleDrawer,
 };
 use crate::workspace_connecting::WorkspaceConnecting;
 use crate::workspace_drawer::WorkspaceDrawer;
@@ -52,12 +56,15 @@ pub struct Workspace {
     editor: Entity<WorkspaceEditor>,
     gitdiff: Entity<WorkspaceGitdiff>,
     terminals: Vec<Entity<WorkspaceTerminal>>,
+    connection_request: Option<ConnectionRequest>,
     /// Becomes true once a ReconnectStarted event is seen; gates initial auto-open/create.
     seen_reconnect: bool,
     /// Listens for connect events and syncs them into SessionState/WorkspaceState.
     _connect_listener: Option<Task<()>>,
     /// Listens for host events/actions from the remote host.
     _host_event_listener: Option<Task<()>>,
+    /// Listens for periodic host resource snapshots.
+    _host_info_listener: Option<Task<()>>,
     pending_confirmation: SharedPendingSlot<PendingWorkspaceConfirmation>,
     _pending_confirmation_task: Task<()>,
     _subscriptions: Vec<Subscription>,
@@ -66,6 +73,75 @@ pub struct Workspace {
 enum PendingWorkspaceConfirmation {
     DisconnectSession,
     DeleteTerminal { id: String },
+}
+
+#[derive(Clone)]
+struct ConnectionRequest {
+    addr: iroh::EndpointAddr,
+    ticket: Option<ZedraPairingTicket>,
+    signer: Arc<dyn ClientSigner>,
+    session_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SyncRefreshMode {
+    InitialConnect,
+    Reconnect,
+}
+
+fn sync_refresh_mode_for_event(
+    event: &ConnectEvent,
+    seen_reconnect: &mut bool,
+) -> Option<SyncRefreshMode> {
+    if matches!(event, ConnectEvent::ReconnectStarted { .. }) {
+        *seen_reconnect = true;
+    }
+
+    if !matches!(event, ConnectEvent::SyncComplete { .. }) {
+        return None;
+    }
+
+    if *seen_reconnect {
+        Some(SyncRefreshMode::Reconnect)
+    } else {
+        Some(SyncRefreshMode::InitialConnect)
+    }
+}
+
+fn terminal_id_in_sync(id: &str, terminal_ids: &[String]) -> bool {
+    terminal_ids.iter().any(|synced_id| synced_id == id)
+}
+
+fn should_keep_terminal_entity(id: &str, terminal_ids: &[String]) -> bool {
+    id == TERMINAL_PENDING_ID || terminal_id_in_sync(id, terminal_ids)
+}
+
+fn active_terminal_is_stale_after_sync(
+    active_terminal_id: Option<&str>,
+    terminal_ids: &[String],
+) -> bool {
+    active_terminal_id.is_some_and(|id| !terminal_id_in_sync(id, terminal_ids))
+}
+
+fn terminal_ids_after_close(closed_id: &str, terminal_ids: &[String]) -> Vec<String> {
+    terminal_ids
+        .iter()
+        .filter(|terminal_id| terminal_id.as_str() != closed_id)
+        .cloned()
+        .collect()
+}
+
+fn replacement_terminal_id_after_close(closed_id: &str, terminal_ids: &[String]) -> Option<String> {
+    let closed_index = terminal_ids
+        .iter()
+        .position(|terminal_id| terminal_id == closed_id)
+        .unwrap_or(0);
+    let remaining_terminal_ids = terminal_ids_after_close(closed_id, terminal_ids);
+
+    remaining_terminal_ids
+        .get(closed_index)
+        .or_else(|| remaining_terminal_ids.last())
+        .cloned()
 }
 
 impl Workspace {
@@ -84,6 +160,7 @@ impl Workspace {
         let content = cx.new(|cx| {
             WorkspaceContent::new(
                 workspace_state.clone(),
+                terminal_state.clone(),
                 session_state.clone(),
                 session.handle().clone(),
                 cx,
@@ -143,7 +220,6 @@ impl Workspace {
                                 let session_state = ws.session_state.read(cx).clone();
                                 ws.workspace_state.update(cx, |this, cx| {
                                     this.sync_from_session(ws.session_handle(), &session_state, cx);
-                                    cx.notify();
                                 });
                             })
                             .is_err();
@@ -154,6 +230,31 @@ impl Workspace {
                     Ok(_) => {}
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
                         tracing::warn!("workspace host event listener lagged by {}", skipped);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+
+        let mut host_info_rx = session.subscribe_host_info();
+        let host_info_listener = cx.spawn(async move |workspace, cx| {
+            loop {
+                match host_info_rx.recv().await {
+                    Ok(snapshot) => {
+                        let should_break = workspace
+                            .update(cx, |ws, cx| {
+                                ws.workspace_state.update(cx, |this, cx| {
+                                    this.update_host_info(snapshot, cx);
+                                    cx.notify();
+                                });
+                            })
+                            .is_err();
+                        if should_break {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!("workspace host info listener lagged by {}", skipped);
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
@@ -181,9 +282,11 @@ impl Workspace {
             gitdiff,
             // Terminals will be created after connection is established
             terminals: vec![],
+            connection_request: None,
             seen_reconnect: false,
             _connect_listener: None,
             _host_event_listener: Some(host_event_listener),
+            _host_info_listener: Some(host_info_listener),
             pending_confirmation,
             _pending_confirmation_task: pending_confirmation_task,
             _subscriptions: vec![workspace_state_subscription, gitdiff_subscription],
@@ -210,31 +313,85 @@ impl Workspace {
                         closed_notify.notify_waiters();
                     }
 
-                    let is_first_sync = match workspace.update(cx, |ws, cx| {
-                        if matches!(event, ConnectEvent::ReconnectStarted { .. }) {
-                            ws.seen_reconnect = true;
-                        }
-                        let is_first_sync = matches!(event, ConnectEvent::SyncComplete { .. })
-                            && !ws.seen_reconnect;
-
+                    let sync_refresh_mode = match workspace.update(cx, |ws, cx| {
+                        let sync_refresh_mode =
+                            sync_refresh_mode_for_event(&event, &mut ws.seen_reconnect);
                         ws.session_state.update(cx, |state, cx| {
                             state.apply_event(event.clone());
                             cx.notify();
                             ws.workspace_state.update(cx, |this, cx| {
                                 this.sync_from_session(ws.session_handle(), state, cx);
-                                if matches!(event, ConnectEvent::SyncComplete { .. }) {
-                                    this.emit_sync_complete(cx);
-                                    ws.content.update(cx, |c, cx| c.hide_connecting_view(cx));
-                                }
                             });
                         });
-                        is_first_sync
+                        if let ConnectEvent::SyncComplete { sync, .. } = &event {
+                            ws.seed_terminal_meta_from_sync(sync, cx);
+                        }
+                        sync_refresh_mode
                     }) {
-                        Ok(is_first_sync) => is_first_sync,
+                        Ok(sync_refresh_mode) => sync_refresh_mode,
                         Err(_) => break,
                     };
 
-                    if is_first_sync {
+                    if let Some(sync_refresh_mode) = sync_refresh_mode {
+                        let is_initial_connect =
+                            sync_refresh_mode == SyncRefreshMode::InitialConnect;
+                        let mut client_ready = false;
+                        for _ in 0..200 {
+                            client_ready = match workspace
+                                .update(cx, |ws, _cx| ws.session_handle().has_client())
+                            {
+                                Ok(ready) => ready,
+                                Err(_) => break,
+                            };
+                            if client_ready {
+                                break;
+                            }
+                            cx.background_executor()
+                                .timer(Duration::from_millis(10))
+                                .await;
+                        }
+                        if !client_ready {
+                            warn!("session handle was not ready after SyncComplete");
+                        }
+
+                        let refresh_task = match workspace.update(cx, |ws, cx| {
+                            ws.drawer
+                                .update(cx, |drawer, cx| drawer.refresh_after_sync(cx))
+                        }) {
+                            Ok(task) => task,
+                            Err(_) => break,
+                        };
+
+                        if is_initial_connect {
+                            refresh_task.await;
+                        } else {
+                            refresh_task.detach();
+                        }
+
+                        let should_initialize = match workspace.update(cx, |ws, cx| {
+                            let session_handle = ws.session.handle().clone();
+                            let session_state = ws.session_state.clone();
+                            let workspace_state = ws.workspace_state.clone();
+                            session_state.update(cx, |state, cx| {
+                                workspace_state.update(cx, |this, cx| {
+                                    this.sync_from_session(&session_handle, state, cx);
+                                });
+                            });
+                            ws.reconcile_terminals_after_sync(cx);
+                            ws.workspace_state.update(cx, |this, cx| {
+                                this.emit_sync_complete(cx);
+                            });
+                            ws.content.update(cx, |c, cx| c.hide_connecting_view(cx));
+                            is_initial_connect
+                        }) {
+                            Ok(should_initialize) => should_initialize,
+                            Err(_) => break,
+                        };
+
+                        if !should_initialize {
+                            continue;
+                        }
+
                         let workspace = workspace.clone();
                         cx.on_next_frame(move |window, cx| {
                             let _ = workspace.update(cx, |ws, cx| {
@@ -247,17 +404,44 @@ impl Workspace {
         }
 
         let session_id = session_id.or_else(|| ticket.as_ref().map(|t| t.session_id.clone()));
-        self.session
-            .connect(addr, ticket, signer, session_id.clone(), move |_handle| {
-                info!("session {:?} connected", session_id);
-            });
+        let request = ConnectionRequest {
+            addr,
+            ticket,
+            signer,
+            session_id,
+        };
+        self.connection_request = Some(request.clone());
+        self.start_connection(request);
 
         self.content.update(cx, |c, cx| c.show_connecting_view(cx));
     }
 
-    /// Called when this workspace becomes the active workspace.
-    pub fn on_activate(&mut self, _cx: &mut Context<Self>) {
-        //
+    fn start_connection(&self, request: ConnectionRequest) {
+        let session_id = request.session_id.clone();
+        self.session.connect(
+            request.addr,
+            request.ticket,
+            request.signer,
+            session_id.clone(),
+            move |_handle| {
+                info!("session {:?} connected", session_id);
+            },
+        );
+    }
+
+    fn restart_connection(&mut self, cx: &mut Context<Self>) {
+        let Some(mut request) = self.connection_request.clone() else {
+            warn!("restart connection requested without a connection request");
+            return;
+        };
+
+        if self.session_state.read(cx).snapshot.register_ms.is_some() {
+            request.ticket = None;
+        }
+
+        info!("restart connection requested");
+        self.start_connection(request);
+        self.content.update(cx, |c, cx| c.show_connecting_view(cx));
     }
 
     pub fn session_handle(&self) -> &SessionHandle {
@@ -285,6 +469,9 @@ impl Workspace {
     /// Programmatically disconnect this workspace.
     pub fn disconnect(&mut self, cx: &mut Context<Self>) {
         self.session.disconnect();
+        self.workspace_state.update(cx, |state, cx| {
+            state.mark_disconnected(cx);
+        });
         cx.emit(WorkspaceEvent::Disconnected);
         cx.notify();
     }
@@ -297,6 +484,14 @@ impl Workspace {
         } else {
             warn!("quick action requested uninitialized terminal {}", id);
         }
+    }
+
+    pub fn create_terminal_from_quick_action(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.handle_create_new_terminal(&CreateNewTerminal, window, cx);
     }
 
     pub fn close_terminal_from_quick_action(&mut self, id: String, _cx: &mut Context<Self>) {
@@ -385,6 +580,17 @@ impl Workspace {
         self.content.update(cx, |c, cx| c.show_connecting_view(cx));
     }
 
+    fn handle_restart_connection(
+        &mut self,
+        _action: &RestartConnection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!("handle RestartConnection from workspace");
+        window.hide_soft_keyboard();
+        self.restart_connection(cx);
+    }
+
     fn handle_open_file(&mut self, action: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
         info!("handle OpenFile from workspace");
         self.drawer_host
@@ -396,7 +602,7 @@ impl Workspace {
 
         let editor = self.editor.clone();
         self.content.update(cx, move |c, cx| {
-            c.clear_subtitle(cx);
+            c.set_file_subtitle(action.path.clone(), cx);
             c.set_main_view(editor.into(), cx);
         });
     }
@@ -476,7 +682,10 @@ impl Workspace {
         platform_bridge::show_selection(
             "",
             &display_path,
-            vec![AlertButton::default(main_action_label)],
+            vec![
+                AlertButton::default(main_action_label),
+                AlertButton::cancel("Cancel"),
+            ],
             move |selection| {
                 match selection {
                     Some(0) => {
@@ -595,8 +804,6 @@ impl Workspace {
                     terminal.set_terminal_id(terminal_id.clone(), cx);
                 });
 
-                ws.terminals.push(workspace_terminal.clone());
-
                 ws.workspace_state.update(cx, |_state, cx| {
                     // The WorkspaceTerminal will need this subscription to attach the input/output channel.
                     cx.emit(WorkspaceStateEvent::TerminalCreated {
@@ -647,29 +854,73 @@ impl Workspace {
         terminal_entity: Entity<WorkspaceTerminal>,
         cx: &mut Context<Self>,
     ) {
+        let previous_active_id = self.workspace_state.read(cx).active_terminal_id.clone();
+        if previous_active_id.as_deref() != Some(id.as_str()) {
+            if let Some(previous_terminal) =
+                previous_active_id.and_then(|active_id| self.terminal_by_id(&active_id, cx))
+            {
+                previous_terminal.update(cx, |terminal, cx| {
+                    terminal.deactivate(cx);
+                });
+            }
+        }
+
+        let subtitle_id = id.clone();
         self.workspace_state.update(cx, |state, cx| {
             state.active_terminal_id = Some(id.clone());
             cx.emit(WorkspaceStateEvent::TerminalOpened { id });
             cx.notify();
         });
         self.content.update(cx, |c, cx| {
-            c.clear_subtitle(cx);
+            c.set_terminal_subtitle(subtitle_id, cx);
             c.set_main_view(terminal_entity.into(), cx);
         });
     }
 
     fn close_terminal_by_id(&mut self, id: String, cx: &mut Context<Self>) {
+        let terminal_ids_before_close = self.workspace_state.read(cx).terminal_ids.clone();
+        let active_terminal_id = self.workspace_state.read(cx).active_terminal_id.clone();
+        let was_active_terminal = active_terminal_id.as_deref() == Some(id.as_str());
+        let remaining_terminal_ids = terminal_ids_after_close(&id, &terminal_ids_before_close);
+        let replacement_terminal_id = was_active_terminal
+            .then(|| replacement_terminal_id_after_close(&id, &terminal_ids_before_close))
+            .flatten();
+
+        if let Some(terminal) = self.terminal_by_id(&id, cx) {
+            terminal.update(cx, |terminal, cx| {
+                terminal.deactivate(cx);
+            });
+        }
+
         self.terminals.retain(|t| t.read(cx).terminal_id() != id);
         self.session.handle().remove_terminal(&id);
 
         self.workspace_state.update(cx, |state, cx| {
-            state.terminal_ids.retain(|terminal_id| terminal_id != &id);
-            if state.active_terminal_id.as_deref() == Some(id.as_str()) {
+            state.terminal_ids = terminal_ids_after_close(&id, &state.terminal_ids);
+            if was_active_terminal || state.terminal_ids.is_empty() {
                 state.active_terminal_id = None;
                 active_terminal::clear_active_input();
             }
             cx.notify();
         });
+
+        if let Some(replacement_id) = replacement_terminal_id {
+            if let Some(replacement_terminal) = self.terminal_by_id(&replacement_id, cx) {
+                self.activate_terminal(replacement_id, replacement_terminal, cx);
+            } else {
+                warn!(
+                    terminal_id = replacement_id,
+                    "replacement terminal entity missing after close"
+                );
+                self.content.update(cx, |content, cx| {
+                    content.set_no_active_terminal_view(cx);
+                });
+            }
+        } else if was_active_terminal || remaining_terminal_ids.is_empty() {
+            self.content.update(cx, |content, cx| {
+                content.set_no_active_terminal_view(cx);
+            });
+        }
 
         let handle = self.session.handle().clone();
         cx.spawn(async move |_workspace, _cx| {
@@ -678,6 +929,50 @@ impl Workspace {
             }
         })
         .detach();
+    }
+
+    fn reconcile_terminals_after_sync(&mut self, cx: &mut Context<Self>) {
+        let terminal_ids = self.workspace_state.read(cx).terminal_ids.clone();
+        self.terminals.retain(|terminal| {
+            let id = terminal.read(cx).terminal_id().to_string();
+            should_keep_terminal_entity(&id, &terminal_ids)
+        });
+
+        let active_terminal_id = self.workspace_state.read(cx).active_terminal_id.clone();
+        let active_terminal_is_stale =
+            active_terminal_is_stale_after_sync(active_terminal_id.as_deref(), &terminal_ids);
+
+        if active_terminal_is_stale {
+            active_terminal::clear_active_input();
+            self.workspace_state.update(cx, |state, cx| {
+                state.active_terminal_id = None;
+                cx.notify();
+            });
+            let editor = self.editor.clone();
+            self.content.update(cx, |content, cx| {
+                content.clear_subtitle(cx);
+                content.set_main_view(editor.into(), cx);
+            });
+        }
+    }
+
+    fn seed_terminal_meta_from_sync(&mut self, sync: &SyncSessionResult, cx: &mut Context<Self>) {
+        if sync.terminals.is_empty() {
+            return;
+        }
+
+        self.terminal_state.update(cx, |state, cx| {
+            for terminal in &sync.terminals {
+                state.set_title(&terminal.id, terminal.title.clone());
+                if let Some(cwd) = &terminal.cwd {
+                    state.set_cwd(&terminal.id, cwd.clone());
+                }
+                if let Some(icon_name) = &terminal.icon_name {
+                    state.set_icon_name(&terminal.id, icon_name.clone());
+                }
+            }
+            cx.notify();
+        });
     }
 
     fn process_pending_confirmation(
@@ -786,6 +1081,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_toggle_drawer))
             .on_action(cx.listener(Self::handle_close_drawer))
             .on_action(cx.listener(Self::handle_show_connecting))
+            .on_action(cx.listener(Self::handle_restart_connection))
             .on_action(cx.listener(Self::handle_open_file))
             .on_action(cx.listener(Self::handle_open_git_diff))
             .on_action(cx.listener(Self::handle_git_stage))
@@ -818,8 +1114,187 @@ pub fn section_to_u8(section: GitFileSection) -> u8 {
     }
 }
 
+fn workspace_relative_path(path: &str, workdir: &str) -> String {
+    let path = path.trim();
+    if path.is_empty() {
+        return String::new();
+    }
+
+    let file_path = Path::new(path);
+    if file_path.is_absolute() {
+        if !workdir.is_empty() {
+            if let Ok(relative) = file_path.strip_prefix(Path::new(workdir)) {
+                let relative = relative.to_string_lossy();
+                return if relative.is_empty() {
+                    ".".to_string()
+                } else {
+                    relative.into_owned()
+                };
+            }
+        }
+
+        return path.to_string();
+    }
+
+    let relative = path.trim_start_matches("./").trim_start_matches('/');
+    if relative.is_empty() {
+        ".".to_string()
+    } else {
+        relative.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zedra_rpc::proto::SyncSessionResult;
+    use zedra_session::ReconnectReason;
+
+    fn sync_complete_event() -> ConnectEvent {
+        ConnectEvent::SyncComplete {
+            sync: SyncSessionResult {
+                session_id: "session-1".into(),
+                session_token: [1; 32],
+                hostname: "host".into(),
+                workdir: "/workspace".into(),
+                username: "user".into(),
+                home_dir: Some("/home/user".into()),
+                os: Some("macos".into()),
+                arch: Some("aarch64".into()),
+                os_version: Some("26.0".into()),
+                host_version: Some("0.1.1".into()),
+                terminals: Vec::new(),
+            },
+            sync_ms: 7,
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn initial_sync_waits_for_drawer_refresh() {
+        let mut seen_reconnect = false;
+
+        let mode = sync_refresh_mode_for_event(&sync_complete_event(), &mut seen_reconnect);
+
+        assert_eq!(mode, Some(SyncRefreshMode::InitialConnect));
+        assert!(!seen_reconnect);
+    }
+
+    #[::core::prelude::v1::test]
+    fn reconnect_sync_refreshes_drawer_in_background() {
+        let mut seen_reconnect = false;
+
+        let mode = sync_refresh_mode_for_event(
+            &ConnectEvent::ReconnectStarted {
+                reason: ReconnectReason::ConnectionLost,
+            },
+            &mut seen_reconnect,
+        );
+
+        assert_eq!(mode, None);
+        assert!(seen_reconnect);
+
+        let mode = sync_refresh_mode_for_event(&sync_complete_event(), &mut seen_reconnect);
+
+        assert_eq!(mode, Some(SyncRefreshMode::Reconnect));
+    }
+
+    #[::core::prelude::v1::test]
+    fn terminal_sync_keeps_only_pending_or_synced_terminal_views() {
+        let synced = vec!["remote-active".to_string()];
+
+        assert!(should_keep_terminal_entity("remote-active", &synced));
+        assert!(should_keep_terminal_entity(TERMINAL_PENDING_ID, &synced));
+        assert!(!should_keep_terminal_entity("stale-local", &synced));
+    }
+
+    #[::core::prelude::v1::test]
+    fn terminal_sync_treats_active_terminal_missing_from_host_as_stale() {
+        let synced = vec!["remote-active".to_string()];
+
+        assert!(!active_terminal_is_stale_after_sync(None, &synced));
+        assert!(!active_terminal_is_stale_after_sync(
+            Some("remote-active"),
+            &synced
+        ));
+        assert!(active_terminal_is_stale_after_sync(
+            Some("stale-local"),
+            &synced
+        ));
+        assert!(active_terminal_is_stale_after_sync(
+            Some("stale-local"),
+            &[]
+        ));
+    }
+
+    #[::core::prelude::v1::test]
+    fn terminal_close_replacement_prefers_next_terminal() {
+        let terminal_ids = vec![
+            "terminal-a".to_string(),
+            "terminal-b".to_string(),
+            "terminal-c".to_string(),
+        ];
+
+        assert_eq!(
+            replacement_terminal_id_after_close("terminal-b", &terminal_ids),
+            Some("terminal-c".to_string())
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn terminal_close_replacement_falls_back_to_previous_terminal() {
+        let terminal_ids = vec![
+            "terminal-a".to_string(),
+            "terminal-b".to_string(),
+            "terminal-c".to_string(),
+        ];
+
+        assert_eq!(
+            replacement_terminal_id_after_close("terminal-c", &terminal_ids),
+            Some("terminal-b".to_string())
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn terminal_close_replacement_is_empty_for_last_terminal() {
+        let terminal_ids = vec!["terminal-a".to_string()];
+
+        assert_eq!(
+            replacement_terminal_id_after_close("terminal-a", &terminal_ids),
+            None
+        );
+        assert!(terminal_ids_after_close("terminal-a", &terminal_ids).is_empty());
+    }
+
+    #[::core::prelude::v1::test]
+    fn terminal_close_replacement_handles_stale_active_terminal() {
+        let terminal_ids = vec!["terminal-a".to_string(), "terminal-b".to_string()];
+
+        assert_eq!(
+            replacement_terminal_id_after_close("stale-terminal", &terminal_ids),
+            Some("terminal-a".to_string())
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn workspace_relative_path_strips_workspace_prefix() {
+        assert_eq!(
+            workspace_relative_path("/workspace/src/main.rs", "/workspace"),
+            "src/main.rs"
+        );
+        assert_eq!(
+            workspace_relative_path("./README.md", "/workspace"),
+            "README.md"
+        );
+        assert_eq!(
+            workspace_relative_path("/other/README.md", "/workspace"),
+            "/other/README.md"
+        );
+    }
+}
+
 pub struct WorkspaceContent {
     workspace_state: Entity<WorkspaceState>,
+    terminal_state: Entity<TerminalState>,
     #[allow(dead_code)]
     session_handle: SessionHandle,
     subtitle: WorkspaceSubtitle,
@@ -828,10 +1303,17 @@ pub struct WorkspaceContent {
     show_connecting: bool,
     connecting_view: Entity<WorkspaceConnecting>,
     mainview_bounds: Option<Bounds<Pixels>>,
+    _subscriptions: Vec<Subscription>,
 }
 
 enum WorkspaceSubtitle {
     Default,
+    File {
+        path: SharedString,
+    },
+    Terminal {
+        id: String,
+    },
     GitDiff {
         filename: SharedString,
         added: usize,
@@ -842,6 +1324,7 @@ enum WorkspaceSubtitle {
 impl WorkspaceContent {
     pub fn new(
         workspace_state: Entity<WorkspaceState>,
+        terminal_state: Entity<TerminalState>,
         session_state: Entity<SessionState>,
         session_handle: SessionHandle,
         cx: &mut Context<Self>,
@@ -849,15 +1332,20 @@ impl WorkspaceContent {
         let empty_view = cx.new(|_cx| Empty);
         let connecting = cx.new(|_cx| WorkspaceConnecting::new(session_state));
 
+        let terminal_state_sub = cx.observe(&terminal_state, |_, _, cx| cx.notify());
+        let workspace_state_sub = cx.observe(&workspace_state, |_, _, cx| cx.notify());
+
         Self {
             main_view: empty_view.into(),
             subtitle: WorkspaceSubtitle::Default,
             focus_handle: cx.focus_handle(),
             session_handle,
             workspace_state,
+            terminal_state,
             show_connecting: false,
             connecting_view: connecting,
             mainview_bounds: None,
+            _subscriptions: vec![terminal_state_sub, workspace_state_sub],
         }
     }
 
@@ -866,8 +1354,27 @@ impl WorkspaceContent {
         cx.notify();
     }
 
+    pub fn set_no_active_terminal_view(&mut self, cx: &mut Context<Self>) {
+        self.subtitle = WorkspaceSubtitle::Default;
+        self.main_view = cx.new(|_cx| NoActiveTerminalView).into();
+        cx.notify();
+    }
+
     pub fn clear_subtitle(&mut self, cx: &mut Context<Self>) {
         self.subtitle = WorkspaceSubtitle::Default;
+        cx.notify();
+    }
+
+    pub fn set_terminal_subtitle(&mut self, id: String, cx: &mut Context<Self>) {
+        self.subtitle = WorkspaceSubtitle::Terminal { id };
+        cx.notify();
+    }
+
+    pub fn set_file_subtitle(&mut self, path: String, cx: &mut Context<Self>) {
+        let workdir = self.workspace_state.read(cx).workdir.clone();
+        self.subtitle = WorkspaceSubtitle::File {
+            path: workspace_relative_path(&path, &workdir).into(),
+        };
         cx.notify();
     }
 
@@ -915,6 +1422,14 @@ impl WorkspaceContent {
         }
 
         self.mainview_bounds = Some(bounds);
+    }
+}
+
+struct NoActiveTerminalView;
+
+impl Render for NoActiveTerminalView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        render_placeholder("No active terminal")
     }
 }
 
@@ -1038,6 +1553,58 @@ impl Render for WorkspaceContent {
                                     .font_weight(FontWeight::MEDIUM)
                                     .child(default_subtitle)
                                     .into_any_element(),
+                                WorkspaceSubtitle::File { path } => div()
+                                    .w_full()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_center()
+                                    .text_color(rgb(theme::TEXT_SECONDARY))
+                                    .text_size(px(theme::FONT_BODY))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(path.clone())
+                                    .into_any_element(),
+                                WorkspaceSubtitle::Terminal { id } => {
+                                    let meta = self.terminal_state.read(cx).meta(id);
+                                    let subtitle = if let Some(title) = meta.title.as_deref() {
+                                        let stripped = strip_ps1_prefix(title);
+                                        if stripped.is_empty() {
+                                            default_subtitle.clone()
+                                        } else {
+                                            stripped.to_owned()
+                                        }
+                                    } else {
+                                        default_subtitle.clone()
+                                    };
+                                    let agent_icon_path = meta.agent_icon;
+
+                                    div()
+                                        .w_full()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .justify_center()
+                                        .gap(px(6.0))
+                                        .when_some(agent_icon_path, |d, path| {
+                                            d.child(
+                                                svg()
+                                                    .path(path)
+                                                    .size(px(12.0))
+                                                    .flex_shrink_0()
+                                                    .text_color(rgb(theme::TEXT_SECONDARY)),
+                                            )
+                                        })
+                                        .child(
+                                            div()
+                                                .min_w_0()
+                                                .truncate()
+                                                .text_color(rgb(theme::TEXT_SECONDARY))
+                                                .text_size(px(theme::FONT_BODY))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .child(subtitle),
+                                        )
+                                        .into_any_element()
+                                }
                                 WorkspaceSubtitle::GitDiff {
                                     filename,
                                     added,

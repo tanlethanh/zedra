@@ -14,6 +14,8 @@ targets:
     sources:
       - path: Zedra
     dependencies:
+      - target: ZedraRustFFI
+        link: false
       - framework: ZedraFFI.xcframework
         embed: false
       # System frameworks required by GPUI (Metal rendering + CoreText)
@@ -49,7 +51,7 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: Zedra
         INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.developer-tools"
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
         INFOPLIST_KEY_NSCameraUsageDescription: "Zedra needs camera access to scan QR codes for pairing"
         # $(inherited): include CocoaPods linker flags (Firebase etc.)
         # -ObjC: Force-load all ObjC classes/categories from static libs
@@ -63,3 +65,14 @@ targets:
           INFOPLIST_KEY_CFBundleDisplayName: "Zedra Dev"
         Release:
           PRODUCT_BUNDLE_IDENTIFIER: dev.zedra.app
+
+aggregateTargets:
+  ZedraRustFFI:
+    buildScripts:
+      - name: "Build Rust FFI"
+        script: |
+          "${SRCROOT}/../scripts/xcode-build-rust.sh"
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - "$(SRCROOT)/ZedraFFI.xcframework"
+          - "$(SRCROOT)/ZedraFFI.xcframework/Info.plist"

@@ -66,7 +66,9 @@
 
 #define DRAWER_DEFAULT_WIDTH 295.0
 
-#define DRAWER_ANIMATION_DURATION_MS 300
+#define DRAWER_OPEN_ANIMATION_DURATION_MS 160
+
+#define DRAWER_CLOSE_ANIMATION_DURATION_MS 100
 
 #define FONT_APP_TITLE 28.0
 
@@ -102,10 +104,7 @@
 
 #define EDITOR_GUTTER_WIDTH 36.0
 
-/**
- * Seconds after last received bytes before a path is considered stale.
- */
-#define STALE_THRESHOLD_SECS 3
+typedef struct Caps Caps;
 
 extern void gpui_ios_set_next_embedded_parent(void *parent_view_ptr,
                                               float width_pts,
@@ -128,6 +127,8 @@ extern void gpui_ios_detach_embedded_view(void *window_ptr);
  * not report any such work, so it returns `false`.
  */
 bool zedra_ios_check_pending_frame(void);
+
+void zedra_ios_native_floating_button_pressed(uint32_t callback_id);
 
 void zedra_launch_gpui(void);
 
@@ -237,6 +238,36 @@ extern void ios_open_url(const char *url);
 extern void ios_trigger_haptic(int32_t kind);
 
 /**
+ * Position or update a native floating icon button.
+ */
+extern void ios_update_native_floating_button_with_icon(uint32_t callback_id,
+                                                        const char *system_image_name,
+                                                        const char *accessibility_label,
+                                                        float x_pts,
+                                                        float y_pts,
+                                                        float width_pts,
+                                                        float height_pts,
+                                                        float icon_size_pts,
+                                                        int32_t icon_weight);
+
+/**
+ * Hide a native floating icon button.
+ */
+extern void ios_hide_native_floating_button(uint32_t callback_id);
+
+/**
+ * Show or update a native dictation preview overlay.
+ */
+extern void ios_update_native_dictation_preview(uint32_t preview_id,
+                                                const char *text,
+                                                float bottom_offset_pts);
+
+/**
+ * Hide a native dictation preview overlay.
+ */
+extern void ios_hide_native_dictation_preview(uint32_t preview_id);
+
+/**
  * Called from the native alert handler after the user taps a button.
  *
  * `callback_id` matches the value passed to `ios_present_alert`.
@@ -311,4 +342,4 @@ extern void zedra_set_custom_key(const char *key, const char *value);
 
 extern void zedra_set_collection_enabled(int enabled);
 
-#endif  /* ZEDRA_IOS_H */
+#endif /* ZEDRA_IOS_H */

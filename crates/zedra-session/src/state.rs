@@ -599,6 +599,23 @@ fn classify_ip(ip: std::net::IpAddr) -> NetworkHint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zedra_rpc::proto::SyncSessionResult;
+
+    fn sync_session_result() -> SyncSessionResult {
+        SyncSessionResult {
+            session_id: "session-1".into(),
+            session_token: [1; 32],
+            hostname: "host".into(),
+            workdir: "/workspace".into(),
+            username: "user".into(),
+            home_dir: Some("/home/user".into()),
+            os: Some("macos".into()),
+            arch: Some("aarch64".into()),
+            os_version: Some("26.0".into()),
+            host_version: Some("0.1.1".into()),
+            terminals: Vec::new(),
+        }
+    }
 
     #[test]
     fn connection_active_restores_connected_after_idle() {
@@ -624,6 +641,24 @@ mod tests {
         state.apply_event(ConnectEvent::ConnectionIdle);
 
         assert!(matches!(state.phase, ConnectPhase::Reconnecting { .. }));
+    }
+
+    #[test]
+    fn syncing_phase_stays_visible_until_connected() {
+        let mut state = SessionState::new();
+
+        state.apply_event(ConnectEvent::Syncing);
+        assert!(matches!(state.phase, ConnectPhase::Sync));
+
+        state.apply_event(ConnectEvent::SyncComplete {
+            sync: sync_session_result(),
+            sync_ms: 7,
+        });
+        assert!(matches!(state.phase, ConnectPhase::Sync));
+        assert_eq!(state.snapshot.sync_ms, Some(7));
+
+        state.apply_event(ConnectEvent::Connected { total_ms: 10 });
+        assert!(matches!(state.phase, ConnectPhase::Connected));
     }
 
     #[test]

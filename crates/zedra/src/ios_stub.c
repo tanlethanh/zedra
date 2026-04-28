@@ -5,6 +5,30 @@
 // __attribute__((weak)) ensures the linker always prefers the strong Obj-C definition.
 __attribute__((weak)) void ios_present_qr_scanner(void) {}
 __attribute__((weak)) void ios_open_url(const char *url) {}
+__attribute__((weak)) void ios_update_native_floating_button(
+    unsigned int callback_id,
+    const char *system_image_name,
+    const char *accessibility_label,
+    float x_pts,
+    float y_pts,
+    float width_pts,
+    float height_pts) {}
+__attribute__((weak)) void ios_update_native_floating_button_with_icon(
+    unsigned int callback_id,
+    const char *system_image_name,
+    const char *accessibility_label,
+    float x_pts,
+    float y_pts,
+    float width_pts,
+    float height_pts,
+    float icon_size_pts,
+    int icon_weight) {}
+__attribute__((weak)) void ios_hide_native_floating_button(unsigned int callback_id) {}
+__attribute__((weak)) void ios_update_native_dictation_preview(
+    unsigned int preview_id,
+    const char *text,
+    float bottom_offset_pts) {}
+__attribute__((weak)) void ios_hide_native_dictation_preview(unsigned int preview_id) {}
 __attribute__((weak)) const char *ios_get_documents_directory(void) { return 0; }
 __attribute__((weak)) const char *ios_get_app_version(void) { return 0; }
 __attribute__((weak)) const char *ios_get_app_build_number(void) { return 0; }

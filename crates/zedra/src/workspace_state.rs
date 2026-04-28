@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use tracing::*;
+use zedra_rpc::proto::HostInfoSnapshot;
 
 use zedra_session::*;
 
@@ -19,6 +20,7 @@ struct WorkspaceStore {
 pub enum WorkspaceStateEvent {
     StateChanged,
     SyncComplete,
+    HostInfoChanged,
     TerminalCreated { id: String },
     TerminalOpened { id: String },
 }
@@ -42,6 +44,22 @@ pub struct WorkspaceState {
     pub active_terminal_id: Option<String>,
     #[serde(skip)]
     pub terminal_ids: Vec<String>,
+    #[serde(skip)]
+    pub host_info: Option<HostInfoSnapshot>,
+}
+
+#[derive(Clone, PartialEq)]
+struct WorkspaceStateSyncSnapshot {
+    session_id: String,
+    strip_path: String,
+    project_name: String,
+    workdir: String,
+    homedir: String,
+    hostname: String,
+    connect_phase: Option<ConnectPhase>,
+    active_terminal_id: Option<String>,
+    terminal_ids: Vec<String>,
+    host_info: Option<HostInfoSnapshot>,
 }
 
 /// PartialEq implementation for WorkspaceState.
@@ -79,15 +97,64 @@ fn store_path() -> Option<PathBuf> {
 }
 
 impl WorkspaceState {
+    fn sync_snapshot(&self) -> WorkspaceStateSyncSnapshot {
+        WorkspaceStateSyncSnapshot {
+            session_id: self.session_id.clone(),
+            strip_path: self.strip_path.clone(),
+            project_name: self.project_name.clone(),
+            workdir: self.workdir.clone(),
+            homedir: self.homedir.clone(),
+            hostname: self.hostname.clone(),
+            connect_phase: self.connect_phase.clone(),
+            active_terminal_id: self.active_terminal_id.clone(),
+            terminal_ids: self.terminal_ids.clone(),
+            host_info: self.host_info.clone(),
+        }
+    }
+
+    fn clear_runtime_state_for_disconnect(&mut self) {
+        self.connect_phase = Some(ConnectPhase::Disconnected);
+        self.active_terminal_id = None;
+        self.terminal_ids.clear();
+        self.host_info = None;
+    }
+
+    pub fn mark_disconnected(&mut self, cx: &mut Context<Self>) {
+        self.clear_runtime_state_for_disconnect();
+
+        cx.emit(WorkspaceStateEvent::StateChanged);
+        cx.notify();
+    }
+
     pub fn sync_from_session(
         &mut self,
         session_handle: &SessionHandle,
         session_state: &SessionState,
         cx: &mut Context<Self>,
     ) {
+        if !self.sync_fields_from_session(session_handle, session_state) {
+            return;
+        }
+
+        cx.emit(WorkspaceStateEvent::StateChanged);
+        cx.notify();
+    }
+
+    fn sync_fields_from_session(
+        &mut self,
+        session_handle: &SessionHandle,
+        session_state: &SessionState,
+    ) -> bool {
+        let before = self.sync_snapshot();
         let session_id = session_state.snapshot.session_id.clone();
         self.connect_phase = Some(session_state.phase.clone());
         self.terminal_ids = session_handle.terminal_ids().clone();
+        if !matches!(
+            session_state.phase,
+            ConnectPhase::Connected | ConnectPhase::Idle { .. }
+        ) {
+            self.host_info = None;
+        }
 
         let snap = &session_state.snapshot;
         if !snap.hostname.is_empty() {
@@ -109,11 +176,16 @@ impl WorkspaceState {
             self.session_id = session_id.clone();
         }
 
-        cx.emit(WorkspaceStateEvent::StateChanged);
+        self.sync_snapshot() != before
     }
 
     pub fn emit_sync_complete(&self, cx: &mut Context<Self>) {
         cx.emit(WorkspaceStateEvent::SyncComplete);
+    }
+
+    pub fn update_host_info(&mut self, host_info: HostInfoSnapshot, cx: &mut Context<Self>) {
+        self.host_info = Some(host_info);
+        cx.emit(WorkspaceStateEvent::HostInfoChanged);
     }
 
     /// Load all persisted workspaces from the store.
@@ -228,3 +300,83 @@ impl WorkspaceStore {
 }
 
 impl EventEmitter<WorkspaceStateEvent> for WorkspaceState {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disconnect_clears_runtime_state_without_touching_saved_fields() {
+        let mut state = WorkspaceState {
+            endpoint_addr: "endpoint".into(),
+            session_id: "session".into(),
+            project_name: "project".into(),
+            connect_phase: Some(ConnectPhase::Connected),
+            active_terminal_id: Some("terminal-1".into()),
+            terminal_ids: vec!["terminal-1".into(), "terminal-2".into()],
+            host_info: Some(HostInfoSnapshot {
+                captured_at_ms: 100,
+                cpu_usage_percent: 25.0,
+                cpu_count: 8,
+                memory_used_bytes: 1024,
+                memory_total_bytes: 2048,
+                swap_used_bytes: 0,
+                swap_total_bytes: 0,
+                system_uptime_secs: 30,
+                batteries: Vec::new(),
+            }),
+            ..Default::default()
+        };
+
+        state.clear_runtime_state_for_disconnect();
+
+        assert_eq!(state.endpoint_addr, "endpoint");
+        assert_eq!(state.session_id, "session");
+        assert_eq!(state.project_name, "project");
+        assert_eq!(state.connect_phase, Some(ConnectPhase::Disconnected));
+        assert_eq!(state.active_terminal_id, None);
+        assert!(state.terminal_ids.is_empty());
+        assert_eq!(state.host_info, None);
+    }
+
+    #[test]
+    fn sync_fields_ignores_network_only_session_snapshot_changes() {
+        let session = Session::new();
+        let mut session_state = SessionState::new();
+        session_state.phase = ConnectPhase::Connected;
+        session_state.snapshot.session_id = Some("session".into());
+        session_state.snapshot.has_ipv4 = true;
+        session_state.snapshot.has_ipv6 = true;
+        session_state.snapshot.mapping_varies = Some(false);
+        session_state.snapshot.relay_latency_ms = Some(12);
+
+        let mut state = WorkspaceState {
+            session_id: "session".into(),
+            connect_phase: Some(ConnectPhase::Connected),
+            ..Default::default()
+        };
+
+        assert!(!state.sync_fields_from_session(session.handle(), &session_state));
+
+        session_state.snapshot.relay_latency_ms = Some(30);
+
+        assert!(!state.sync_fields_from_session(session.handle(), &session_state));
+    }
+
+    #[test]
+    fn sync_fields_reports_workspace_phase_changes() {
+        let session = Session::new();
+        let mut session_state = SessionState::new();
+        session_state.phase = ConnectPhase::Connected;
+        session_state.snapshot.session_id = Some("session".into());
+
+        let mut state = WorkspaceState {
+            session_id: "session".into(),
+            connect_phase: Some(ConnectPhase::Sync),
+            ..Default::default()
+        };
+
+        assert!(state.sync_fields_from_session(session.handle(), &session_state));
+        assert_eq!(state.connect_phase, Some(ConnectPhase::Connected));
+    }
+}

@@ -36,22 +36,42 @@ usage() {
     exit 1
 }
 
-# Generate Xcode project from project.yml, then run pod install if a Podfile exists
+# Generate Xcode project from project.yml only when the spec changed, then run
+# pod install only when CocoaPods integration may be stale.
 generate_project() {
-    if ! command -v xcodegen &>/dev/null; then
-        echo "Error: xcodegen not found. Install with: brew install xcodegen"
-        exit 1
+    local spec="ios/project.yml"
+    local project_file="$PROJECT/project.pbxproj"
+    local generated=false
+
+    if [ "${ZEDRA_FORCE_XCODEGEN:-}" = "1" ] || [ ! -f "$project_file" ] || [ "$spec" -nt "$project_file" ]; then
+        if ! command -v xcodegen &>/dev/null; then
+            echo "Error: xcodegen not found. Install with: brew install xcodegen"
+            exit 1
+        fi
+
+        echo "==> Generating Xcode project..."
+        (cd ios && xcodegen generate)
+        generated=true
+    else
+        echo "==> Xcode project up to date"
     fi
 
-    echo "==> Generating Xcode project..."
-    cd ios && xcodegen generate
+    if [ -f "ios/Podfile" ]; then
+        local pod_manifest="ios/Pods/Manifest.lock"
+        local pod_lock="ios/Podfile.lock"
 
-    if [ -f "Podfile" ]; then
-        echo "==> Running pod install..."
-        pod install --silent
+        if [ "$generated" = true ] || [ ! -f "$pod_manifest" ] || [ "ios/Podfile" -nt "$pod_manifest" ] || { [ -f "$pod_lock" ] && [ "$pod_lock" -nt "$pod_manifest" ]; }; then
+            if ! command -v pod &>/dev/null; then
+                echo "Error: pod not found. Install CocoaPods before building iOS." >&2
+                exit 1
+            fi
+
+            echo "==> Running pod install..."
+            (cd ios && pod install --silent)
+        else
+            echo "==> Pods up to date"
+        fi
     fi
-
-    cd ..
 }
 
 # Returns the right xcodebuild target flags: workspace if available, else project
@@ -157,7 +177,7 @@ for runtime, devices in data['devices'].items():
 
             # Build app
             echo "==> Building app..."
-            xcodebuild build \
+            ZEDRA_SKIP_RUST_XCODE_BUILD=1 xcodebuild build \
                 $(xcode_target_flags) \
                 -scheme "$SCHEME" \
                 -configuration "$XCODE_CONFIGURATION" \
@@ -273,7 +293,7 @@ for runtime, devices in data['devices'].items():
 
             # Build app for device
             echo "==> Building app..."
-            xcodebuild build \
+            ZEDRA_SKIP_RUST_XCODE_BUILD=1 xcodebuild build \
                 $(xcode_target_flags) \
                 -scheme "$SCHEME" \
                 -configuration "$XCODE_CONFIGURATION" \

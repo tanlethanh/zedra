@@ -142,6 +142,7 @@ If the client has no valid session token (first connection after restart, or tok
 - `GetSessionInfo(SessionInfoReq) -> SessionInfoResult`
 - `ListSessions(SessionListReq) -> SessionListResult`
 - `SwitchSession(SessionSwitchReq) -> SessionSwitchResult`
+- `SubscribeHostInfo(SubscribeHostInfoReq) -> stream HostInfoSnapshot`
 
 ## 5.4 Filesystem
 
@@ -201,14 +202,21 @@ Types that do **not** carry `error` (use dedicated status fields or enum variant
 - `TermResize(TermResizeReq) -> TermResizeResult`
 - `TermClose(TermCloseReq) -> TermCloseResult`
 - `TermList(TermListReq) -> TermListResult`
+- `TermReorder(TermReorderReq) -> TermReorderResult`
 - `SyncSessionResult.terminals -> Vec<TerminalSyncEntry>`
+- Terminal ids are opaque host-generated UUID strings.
 
 ### TermAttach conventions
 
 - Client passes `last_seq` to request backlog replay.
 - Host may replay missed output before live stream.
+- Host may send a synthetic metadata preamble as `TermOutput { seq: 0, ... }` before backlog replay. Clients must process the bytes as normal PTY output but must not use `seq=0` for backlog sequence tracking.
+- The synthetic preamble replays cached OSC metadata that may have fallen out of the backlog, including title, icon name, cwd, shell command line, command start/idle state, and last exit code.
 - Output `seq` is monotonic per session backlog stream and used for gap detection.
+- `SyncSessionResult.terminals` and `TermListResult.terminals` are ordered by host-owned terminal order. Creation order is the default until a client submits an explicit order.
+- `TerminalSyncEntry.position` and `TermListEntry.position` are zero-based positions in that host-owned order.
 - `TerminalSyncEntry.last_seq` is the host's latest backlog sequence observed for that terminal at sync time.
+- `TerminalSyncEntry.title`, `TerminalSyncEntry.cwd`, and `TerminalSyncEntry.icon_name` are the host's latest cached terminal metadata at sync time. `TermAttach` still replays the same metadata as PTY bytes so normal terminal-event consumers are seeded through one path.
 - Clients should keep local terminal tabs keyed by terminal id and use `last_seq` to seed reconnect `TermAttach` calls.
 
 ### SyncSession conventions
@@ -216,7 +224,8 @@ Types that do **not** carry `error` (use dedicated status fields or enum variant
 - `SyncSession` is the canonical bootstrap payload after a successful PKI attach.
 - Host rotates and returns a fresh `reconnect_token` on every successful `SyncSession` and `Reconnect`.
 - `session_id` in `SyncSessionResult` is authoritative and must replace any stale client-side session id.
-- `SyncSessionResult.terminals` is the authoritative server-side terminal set at bootstrap time.
+- `SyncSessionResult.terminals` is the authoritative server-side terminal set at bootstrap time. During reconnect, clients preserve the existing local order for terminals still present in that set and append any newly discovered host terminals unless the client has submitted an explicit host order.
+- `TermReorderReq.ordered_ids` must be an exact permutation of the current active terminal ids. The host rejects partial, duplicate, or unknown-id orders.
 - `ReconnectReq.reconnect_token` is opaque, host-issued, session-bound, and client-bound.
 - Reconnect tokens are currently ephemeral host memory only; host restart may invalidate them and force PKI fallback.
 
@@ -264,6 +273,31 @@ Client rules:
 - `TerminalCreated`: attach/open terminal view if relevant.
 - `GitChanged`: invalidate cached git state and refresh when appropriate.
 - `FsChanged { path }`: invalidate cached file tree for the watched path and reload affected expanded nodes.
+
+---
+
+## 6.1 Host Info Subscription
+
+`SubscribeHostInfo` is a separate server-streaming subscription for host resource display. It does not reuse `HostEvent`, because resource snapshots are periodic state rather than invalidation events.
+
+Current sampling behavior:
+
+- Host sends the first `HostInfoSnapshot` after CPU counters are primed.
+- Host sends subsequent snapshots every 5 seconds.
+- Stream ends when the client disconnects or stops reading.
+- Battery list may be empty when the platform does not expose battery data.
+
+Current snapshot fields:
+
+- `captured_at_ms`
+- `cpu_usage_percent`
+- `cpu_count`
+- `memory_used_bytes`
+- `memory_total_bytes`
+- `swap_used_bytes`
+- `swap_total_bytes`
+- `system_uptime_secs`
+- `batteries: Vec<HostBatteryInfo>`
 
 ---
 
@@ -352,6 +386,22 @@ Any protocol-layer change must include all applicable steps:
 
 ## 11) Protocol Changelog
 
+### 2026-04-27
+
+- Extended the `TermAttach` `seq=0` synthetic metadata preamble to replay cached OSC command lifecycle metadata, including command line, running/idle state, and last exit code, in addition to title, icon name, and cwd.
+- Added cached `icon_name` to `TerminalSyncEntry` so `SyncSession` carries the host's latest OSC 1 value alongside title and cwd.
+- Clients must continue processing `seq=0` preamble bytes as PTY output while excluding `seq=0` from terminal backlog sequence tracking.
+
+### 2026-04-26
+
+- Added host resource subscription:
+  - `SubscribeHostInfo(SubscribeHostInfoReq) -> stream HostInfoSnapshot`
+- Added host resource snapshot types:
+  - `HostInfoSnapshot`
+  - `HostBatteryInfo`
+  - `HostBatteryState`
+- Client displays the latest snapshot from `WorkspaceState` in the session panel.
+
 ### 2026-03-19
 
 - Added filesystem observer RPCs:
@@ -395,4 +445,3 @@ Any protocol-layer change must include all applicable steps:
   - first pairing and PKI fallback now end with `SyncSession`
   - reconnect may skip `Authenticate/AuthProve` entirely when a valid reconnect token is present
 - Added rotating host-issued reconnect tokens bound to `(session_id, client_pubkey)`.
-

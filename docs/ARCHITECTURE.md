@@ -117,6 +117,12 @@ See repo conventions in `AGENTS.md` and `docs/CONVENTIONS.md`. Summary:
 Session (Tokio) → ConnectEvent via mpsc → cx.spawn loop → SessionState Entity → WorkspaceState Entity → Views
 ```
 
+On the first successful sync, `Workspace` keeps the connecting UI in the Sync
+phase until drawer bootstrap data is fetched: the file explorer root listing
+and git status are refreshed before the initial terminal is opened or created.
+On reconnect, the same drawer refresh is triggered in the background so terminal
+reattach and user interaction are not blocked by file/git refresh latency.
+
 ## Security
 
 | Layer | Mechanism |

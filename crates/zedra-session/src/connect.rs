@@ -17,7 +17,7 @@ use zedra_rpc::{
     ZEDRA_RELAY_URLS, ZedraPairingTicket, compute_registration_hmac,
     proto::{
         AuthProveReq, AuthProveResult, ConnectReq, ConnectResult, RegisterReq, RegisterResult,
-        SyncSessionResult, ZEDRA_ALPN, ZedraProto,
+        SyncSessionResult, TerminalSyncEntry, ZEDRA_ALPN, ZedraProto,
     },
 };
 
@@ -136,6 +136,44 @@ pub struct Connector {
     config: ConnectConfig,
     abort_signal: CancellationToken,
     started_at: Option<Instant>,
+}
+
+fn reconcile_synced_terminals(
+    sync_entries: &[TerminalSyncEntry],
+    existing_terminals: Option<&[RemoteTerminal]>,
+) -> Vec<RemoteTerminal> {
+    let mut sync_by_id = sync_entries
+        .iter()
+        .map(|entry| (entry.id.as_str(), entry))
+        .collect::<HashMap<_, _>>();
+    let mut terminals = Vec::with_capacity(sync_entries.len());
+
+    if let Some(existing_terminals) = existing_terminals {
+        for terminal in existing_terminals {
+            let id = terminal.id();
+            if let Some(entry) = sync_by_id.remove(id.as_str()) {
+                terminals.push(reconcile_synced_terminal(entry, Some(terminal.clone())));
+            }
+        }
+    }
+
+    for entry in sync_entries {
+        if sync_by_id.remove(entry.id.as_str()).is_some() {
+            terminals.push(reconcile_synced_terminal(entry, None));
+        }
+    }
+
+    terminals
+}
+
+fn reconcile_synced_terminal(
+    entry: &TerminalSyncEntry,
+    existing_terminal: Option<RemoteTerminal>,
+) -> RemoteTerminal {
+    match existing_terminal {
+        Some(terminal) if terminal.last_seq() <= entry.last_seq => terminal,
+        _ => RemoteTerminal::new(entry.id.clone()),
+    }
 }
 
 impl Connector {
@@ -308,6 +346,7 @@ impl Connector {
             is_first_pairing,
         });
 
+        self.emit(ConnectEvent::Syncing);
         let t_sync = Instant::now();
         let terminals = self
             .process_sync(&client, &sync, existing_terminals)
@@ -581,25 +620,7 @@ impl Connector {
         sync: &SyncSessionResult,
         existing_terminals: Option<Vec<RemoteTerminal>>,
     ) -> Result<Vec<RemoteTerminal>, ConnectError> {
-        let mut by_id = existing_terminals
-            .as_ref()
-            .map(|ts| {
-                ts.iter()
-                    .map(|t| (t.id().clone(), t))
-                    .collect::<HashMap<_, _>>()
-            })
-            .unwrap_or_default();
-
-        let mut terminals = vec![];
-
-        for t_sync in &sync.terminals {
-            // If the terminal is already in the list, use the existing terminal.
-            let terminal = by_id
-                .remove(t_sync.id.as_str())
-                .map(|t| t.clone())
-                .unwrap_or_else(|| RemoteTerminal::new(t_sync.id.clone()));
-            terminals.push(terminal);
-        }
+        let terminals = reconcile_synced_terminals(&sync.terminals, existing_terminals.as_deref());
 
         join_all(terminals.iter().map(async |t| {
             if let Err(e) = t.attach_remote(client).await {
@@ -896,6 +917,7 @@ impl Connector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zedra_rpc::proto::TerminalSyncEntry;
 
     #[test]
     fn idle_detector_requires_receive_progress_to_refresh_liveness() {
@@ -908,5 +930,190 @@ mod tests {
 
         assert!(detector.observe(11, start + Duration::from_secs(5)));
         assert!(!detector.is_idle(start + Duration::from_secs(7), threshold));
+    }
+
+    #[test]
+    fn reconcile_synced_terminals_creates_remote_active_terminals() {
+        let terminals = reconcile_synced_terminals(
+            &[
+                TerminalSyncEntry {
+                    id: "term-2".to_string(),
+                    position: 0,
+                    last_seq: 4,
+                    title: None,
+                    cwd: None,
+                    icon_name: None,
+                },
+                TerminalSyncEntry {
+                    id: "term-3".to_string(),
+                    position: 0,
+                    last_seq: 9,
+                    title: None,
+                    cwd: None,
+                    icon_name: None,
+                },
+            ],
+            None,
+        );
+
+        assert_eq!(
+            terminals
+                .iter()
+                .map(|terminal| terminal.id())
+                .collect::<Vec<_>>(),
+            vec!["term-2", "term-3"]
+        );
+    }
+
+    #[test]
+    fn reconcile_synced_terminals_replaces_stale_reused_id() {
+        let old_terminal = RemoteTerminal::new("term-1".to_string());
+        old_terminal.update_seq(42);
+
+        let terminals = reconcile_synced_terminals(
+            &[TerminalSyncEntry {
+                id: "term-1".to_string(),
+                position: 0,
+                last_seq: 0,
+                title: None,
+                cwd: None,
+                icon_name: None,
+            }],
+            Some(std::slice::from_ref(&old_terminal)),
+        );
+
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(terminals[0].id(), "term-1");
+        assert_eq!(terminals[0].last_seq(), 0);
+    }
+
+    #[test]
+    fn reconcile_synced_terminals_reuses_current_terminal() {
+        let existing = RemoteTerminal::new("term-1".to_string());
+        existing.update_seq(2);
+
+        let terminals = reconcile_synced_terminals(
+            &[TerminalSyncEntry {
+                id: "term-1".to_string(),
+                position: 0,
+                last_seq: 5,
+                title: None,
+                cwd: None,
+                icon_name: None,
+            }],
+            Some(std::slice::from_ref(&existing)),
+        );
+
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(terminals[0].last_seq(), 2);
+    }
+
+    #[test]
+    fn reconcile_synced_terminals_preserves_existing_terminal_order() {
+        let existing_first = RemoteTerminal::new("term-b".to_string());
+        let existing_second = RemoteTerminal::new("term-a".to_string());
+
+        let terminals = reconcile_synced_terminals(
+            &[
+                TerminalSyncEntry {
+                    id: "term-a".to_string(),
+                    position: 0,
+                    last_seq: 0,
+                    title: None,
+                    cwd: None,
+                    icon_name: None,
+                },
+                TerminalSyncEntry {
+                    id: "term-b".to_string(),
+                    position: 0,
+                    last_seq: 0,
+                    title: None,
+                    cwd: None,
+                    icon_name: None,
+                },
+            ],
+            Some(&[existing_first, existing_second]),
+        );
+
+        assert_eq!(
+            terminals
+                .iter()
+                .map(|terminal| terminal.id())
+                .collect::<Vec<_>>(),
+            vec!["term-b", "term-a"]
+        );
+    }
+
+    #[test]
+    fn reconcile_synced_terminals_appends_new_remote_terminals_after_existing_order() {
+        let existing = RemoteTerminal::new("term-b".to_string());
+
+        let terminals = reconcile_synced_terminals(
+            &[
+                TerminalSyncEntry {
+                    id: "term-a".to_string(),
+                    position: 0,
+                    last_seq: 0,
+                    title: None,
+                    cwd: None,
+                    icon_name: None,
+                },
+                TerminalSyncEntry {
+                    id: "term-b".to_string(),
+                    position: 0,
+                    last_seq: 0,
+                    title: None,
+                    cwd: None,
+                    icon_name: None,
+                },
+                TerminalSyncEntry {
+                    id: "term-c".to_string(),
+                    position: 0,
+                    last_seq: 0,
+                    title: None,
+                    cwd: None,
+                    icon_name: None,
+                },
+            ],
+            Some(&[existing]),
+        );
+
+        assert_eq!(
+            terminals
+                .iter()
+                .map(|terminal| terminal.id())
+                .collect::<Vec<_>>(),
+            vec!["term-b", "term-a", "term-c"]
+        );
+    }
+
+    #[test]
+    fn reconcile_synced_terminals_drops_local_only_terminals() {
+        let local_only = RemoteTerminal::new("stale-local".to_string());
+        let active_remote = RemoteTerminal::new("active-remote".to_string());
+
+        let terminals = reconcile_synced_terminals(
+            &[TerminalSyncEntry {
+                id: "active-remote".to_string(),
+                position: 0,
+                last_seq: 0,
+                title: None,
+                cwd: None,
+                icon_name: None,
+            }],
+            Some(&[local_only, active_remote]),
+        );
+
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(terminals[0].id(), "active-remote");
+    }
+
+    #[test]
+    fn reconcile_synced_terminals_empty_remote_list_clears_local_list() {
+        let local = RemoteTerminal::new("stale-local".to_string());
+
+        let terminals = reconcile_synced_terminals(&[], Some(&[local]));
+
+        assert!(terminals.is_empty());
     }
 }

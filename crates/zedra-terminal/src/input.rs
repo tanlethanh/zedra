@@ -1,5 +1,4 @@
 use std::ops::Range;
-use tracing::*;
 
 use gpui::*;
 
@@ -31,22 +30,32 @@ impl TerminalInputHandler {
             ..Self::offset_from_utf16(text, range_utf16.end)
     }
 
-    fn synthetic_document_len(marked_text: Option<&str>) -> usize {
-        marked_text
-            .map(|text| text.encode_utf16().count())
-            .unwrap_or(" ".encode_utf16().count())
-    }
-
     fn accepts_text_input_policy() -> bool {
         true
     }
 
-    fn disable_default_keyboard_behavior_policy() -> bool {
-        true
-    }
+    fn send_text_to_terminal(term: &mut Terminal, text: &str) {
+        let mut plain_text = String::new();
+        for ch in text.chars() {
+            // Intercept `\n`/`\r` and send as enter keystroke.
+            if ch == '\n' || ch == '\r' {
+                if !plain_text.is_empty() {
+                    term.handle_ime_text(&plain_text);
+                    plain_text.clear();
+                }
+                term.handle_keystroke(&Keystroke {
+                    modifiers: Modifiers::default(),
+                    key: "enter".to_string(),
+                    key_char: None,
+                });
+            } else {
+                plain_text.push(ch);
+            }
+        }
 
-    fn disable_default_focus_behavior_policy() -> bool {
-        true
+        if !plain_text.is_empty() {
+            term.handle_ime_text(&plain_text);
+        }
     }
 }
 
@@ -57,30 +66,30 @@ impl InputHandler for TerminalInputHandler {
         _window: &mut Window,
         cx: &mut App,
     ) -> Option<UTF16Selection> {
-        let pos = self
-            .entity
-            .read_with(cx, |term, _| {
-                // UIKit's deleteBackward path expects the caret to sit within the
-                // document it sees via text_for_range/endOfDocument. When the terminal
-                // has no active marked text, we still expose a one-code-unit placeholder
-                // document so backspace can target that synthetic position.
-                Self::synthetic_document_len(term.marked_text())
-            })
-            .unwrap_or(Self::synthetic_document_len(None));
+        let selection = match self.entity.read_with(cx, |term, _| {
+            // UIKit's deleteBackward path expects the caret to sit within the
+            // document it sees via text_for_range/endOfDocument. When the terminal
+            // has no active marked text, we still expose a one-code-unit placeholder
+            // document so backspace can target that synthetic position.
+            term.text_input_selection_range()
+        }) {
+            Ok(selection) => selection,
+            Err(_) => {
+                let pos = " ".encode_utf16().count();
+                pos..pos
+            }
+        };
         Some(UTF16Selection {
-            range: pos..pos,
+            range: selection,
             reversed: false,
         })
     }
 
     fn marked_text_range(&mut self, _window: &mut Window, cx: &mut App) -> Option<Range<usize>> {
-        let range = self
-            .entity
+        self.entity
             .read_with(cx, |term, _| term.marked_text_range())
             .ok()
-            .flatten();
-        debug!("marked_text_range → {:?}", range);
-        range
+            .flatten()
     }
 
     fn text_for_range(
@@ -92,7 +101,7 @@ impl InputHandler for TerminalInputHandler {
     ) -> Option<String> {
         let doc = self
             .entity
-            .read_with(cx, |term, _| term.marked_text().unwrap_or(" ").to_string())
+            .read_with(cx, |term, _| term.text_input_document().to_string())
             .unwrap_or_else(|_| " ".to_string());
         let utf16_len = doc.encode_utf16().count();
         let start = range_utf16.start.min(utf16_len);
@@ -100,10 +109,6 @@ impl InputHandler for TerminalInputHandler {
         *adjusted_range = Some(start..end);
         let range = Self::range_from_utf16(&doc, &(start..end));
         let result = doc[range].to_string();
-        debug!(
-            "text_for_range {:?} → doc={:?} result={:?}",
-            range_utf16, doc, result
-        );
         Some(result)
     }
 
@@ -119,13 +124,18 @@ impl InputHandler for TerminalInputHandler {
         let _ = entity.update(cx, move |term, cx| {
             if replacement_range.is_some() && text.is_empty() {
                 // UIKit sends a delete (empty replacement) to clear the current selection.
-                // During dictation startup the pending buffer is empty — ignore to avoid
-                // forwarding a spurious backspace to the terminal.
                 if term.is_dictation_active() {
-                    debug!("replace_text_in_range: ignoring delete during dictation");
+                    if let Some(range) = replacement_range.clone() {
+                        term.replace_marked_text_in_range(Some(range), String::new(), None);
+                    }
+                    cx.notify();
                     return;
                 }
-                debug!("replace_text_in_range: sending backspace keystroke");
+                if term.marked_text().is_some() {
+                    term.clear_marked_state();
+                    cx.notify();
+                    return;
+                }
                 term.handle_keystroke(&Keystroke {
                     modifiers: Modifiers::default(),
                     key: "backspace".to_string(),
@@ -133,43 +143,20 @@ impl InputHandler for TerminalInputHandler {
                 });
             } else if !text.is_empty() {
                 if term.is_dictation_active() {
-                    debug!(
-                        "replace_text_in_range: dictation active, updating hypothesis {:?}",
-                        text
-                    );
-                    term.set_marked_text(text);
+                    term.replace_marked_text_in_range(replacement_range.clone(), text, None);
                     cx.notify();
                     return;
                 }
 
-                let mut plain_text = String::new();
-                for ch in text.chars() {
-                    // Intercept `\n`/`\r` and send as enter keystroke.
-                    if ch == '\n' || ch == '\r' {
-                        if !plain_text.is_empty() {
-                            term.handle_ime_text(&plain_text);
-                            plain_text.clear();
-                        }
-                        term.handle_keystroke(&Keystroke {
-                            modifiers: Modifiers::default(),
-                            key: "enter".to_string(),
-                            key_char: None,
-                        });
-                    } else {
-                        plain_text.push(ch);
-                    }
-                }
-
-                if !plain_text.is_empty() {
-                    term.handle_ime_text(&plain_text);
-                }
+                term.clear_marked_state();
+                Self::send_text_to_terminal(term, &text);
             }
         });
     }
 
     fn replace_and_mark_text_in_range(
         &mut self,
-        _replacement_range: Option<Range<usize>>,
+        replacement_range: Option<Range<usize>>,
         new_text: &str,
         _new_selected_range: Option<Range<usize>>,
         _window: &mut Window,
@@ -178,9 +165,53 @@ impl InputHandler for TerminalInputHandler {
         let text = new_text.to_string();
         let entity = self.entity.clone();
         let _ = entity.update(cx, move |term, cx| {
-            // Both IME composition and dictation hypothesis use set_marked_text —
-            // marked_text serves as dictation hypothesis when dictation_active=true.
-            term.set_marked_text(text);
+            // Both IME composition and dictation hypothesis use marked text.
+            term.replace_marked_text_in_range(replacement_range, text, _new_selected_range);
+            cx.notify();
+        });
+    }
+
+    fn dictation_started(&mut self, _window: &mut Window, cx: &mut App) {
+        let entity = self.entity.clone();
+        let _ = entity.update(cx, |term, cx| {
+            term.begin_dictation();
+            cx.notify();
+        });
+    }
+
+    fn insert_dictation_text(&mut self, text: &str, _window: &mut Window, cx: &mut App) {
+        let text = text.to_string();
+        let entity = self.entity.clone();
+        let _ = entity.update(cx, move |term, cx| {
+            if term.is_dictation_active() {
+                term.replace_marked_text_in_range(None, text, None);
+            } else if term.has_committed_dictation_pending_cleanup() {
+                // Critical: after committing a streamed dictation hypothesis,
+                // UIKit can still deliver a final dictation insertion while it
+                // reconciles the placeholder. The preserved synthetic document
+                // is for late native reads only; do not send it to the PTY again.
+                return;
+            } else {
+                Self::send_text_to_terminal(term, &text);
+            }
+            cx.notify();
+        });
+    }
+
+    fn dictation_ended(&mut self, _window: &mut Window, cx: &mut App) {
+        let entity = self.entity.clone();
+        let _ = entity.update(cx, |term, cx| {
+            if let Some(text) = term.finish_dictation() {
+                Self::send_text_to_terminal(term, &text);
+            };
+            cx.notify();
+        });
+    }
+
+    fn dictation_cancelled(&mut self, _window: &mut Window, cx: &mut App) {
+        let entity = self.entity.clone();
+        let _ = entity.update(cx, |term, cx| {
+            term.cancel_dictation();
             cx.notify();
         });
     }
@@ -188,11 +219,12 @@ impl InputHandler for TerminalInputHandler {
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut App) {
         let entity = self.entity.clone();
         let _ = entity.update(cx, |term, cx| {
-            // UIKit calls unmarkText between dictation hypothesis updates.
-            // Keep marked=true while dictation is active so the hypothesis range
-            // stays visible to UIKit.
+            // UIKit can call unmarkText between dictation hypothesis updates
+            // without first calling insertDictationResultPlaceholder on custom
+            // UITextInput clients. Preserve the marked range until a real
+            // commit or deletion clears it so UIDictationController can still
+            // find its previous hypothesis.
             if term.is_dictation_active() {
-                debug!("unmark_text: skipped during active dictation");
                 return;
             }
             term.clear_marked_state();
@@ -221,42 +253,6 @@ impl InputHandler for TerminalInputHandler {
     fn accepts_text_input(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
         Self::accepts_text_input_policy()
     }
-
-    fn disable_default_keyboard_behavior(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
-        Self::disable_default_keyboard_behavior_policy()
-    }
-
-    fn disable_default_focus_behavior(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
-        Self::disable_default_focus_behavior_policy()
-    }
-
-    // fn dictation_started(&mut self, _window: &mut Window, cx: &mut App) {
-    //     debug!("dictation_started");
-    //     let entity = self.entity.clone();
-    //     let _ = entity.update(cx, |term, cx| {
-    //         term.begin_dictation();
-    //         cx.notify();
-    //     });
-    // }
-
-    // fn insert_dictation_text(&mut self, text: &str, _window: &mut Window, cx: &mut App) {
-    //     debug!("insert_dictation_text {:?}", text);
-    //     let text = text.to_string();
-    //     let entity = self.entity.clone();
-    //     let _ = entity.update(cx, move |term, cx| {
-    //         term.set_marked_text(text);
-    //         cx.notify();
-    //     });
-    // }
-
-    // fn dictation_ended(&mut self, _window: &mut Window, cx: &mut App) {
-    //     debug!("dictation_ended");
-    //     let entity = self.entity.clone();
-    //     let _ = entity.update(cx, |term, cx| {
-    //         term.end_dictation();
-    //         cx.notify();
-    //     });
-    // }
 }
 
 #[cfg(test)]
@@ -264,20 +260,7 @@ mod tests {
     use super::TerminalInputHandler;
 
     #[test]
-    fn synthetic_document_len_uses_placeholder_when_empty() {
-        assert_eq!(TerminalInputHandler::synthetic_document_len(None), 1);
-    }
-
-    #[test]
-    fn synthetic_document_len_tracks_utf16_units_for_marked_text() {
-        assert_eq!(TerminalInputHandler::synthetic_document_len(Some("abc")), 3);
-        assert_eq!(TerminalInputHandler::synthetic_document_len(Some("🙂")), 2);
-    }
-
-    #[test]
-    fn terminal_accepts_text_but_owns_keyboard_request() {
+    fn terminal_accepts_text_input() {
         assert!(TerminalInputHandler::accepts_text_input_policy());
-        assert!(TerminalInputHandler::disable_default_keyboard_behavior_policy());
-        assert!(TerminalInputHandler::disable_default_focus_behavior_policy());
     }
 }

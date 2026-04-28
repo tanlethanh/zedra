@@ -41,7 +41,6 @@ public class MainActivity extends AppCompatActivity {
      * Show the soft keyboard (called from Rust via JNI)
      */
     public static void showKeyboard() {
-        Log.d(TAG, "showKeyboard called from native");
         if (sSurfaceView != null) {
             sSurfaceView.post(() -> sSurfaceView.requestKeyboard());
         }
@@ -252,7 +251,6 @@ public class MainActivity extends AppCompatActivity {
      * Hide the soft keyboard (called from Rust via JNI)
      */
     public static void hideKeyboard() {
-        Log.d(TAG, "hideKeyboard called from native");
         if (sSurfaceView != null) {
             sSurfaceView.post(() -> sSurfaceView.dismissKeyboard());
         }

@@ -1,16 +1,27 @@
+use std::time::Duration;
+
 use gpui::{prelude::FluentBuilder as _, *};
 use tracing::*;
+use zedra_osc::OscEvent;
 use zedra_session::SessionHandle;
 use zedra_terminal::terminal::{TerminalEvent, TerminalHyperlinkTarget};
 use zedra_terminal::view::TerminalView;
 
 use crate::active_terminal;
-use crate::platform_bridge::{self, CustomSheetDetent, CustomSheetOptions};
+use crate::button::{
+    NativeFloatingButtonId, hide_native_floating_button, native_floating_button,
+    native_floating_button_id,
+};
+use crate::platform_bridge::{
+    self, CustomSheetDetent, CustomSheetOptions, NativeDictationPreviewOptions,
+};
 use crate::terminal_preview_view::TerminalPreviewView;
 use crate::terminal_state::TerminalState;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
 
 pub const TERMINAL_PENDING_ID: &str = "___PENDING___";
+const SCROLL_TO_BOTTOM_BUTTON_THRESHOLD_LINES: usize = 50;
+const SCROLL_TO_BOTTOM_BUTTON_DISMISS_DELAY: Duration = Duration::from_millis(160);
 
 pub struct WorkspaceTerminal {
     terminal_id: String,
@@ -20,6 +31,18 @@ pub struct WorkspaceTerminal {
     session_handle: SessionHandle,
     terminal_view: Entity<TerminalView>,
     preview: Entity<TerminalPreviewView>,
+    /// Tracks whether the active terminal is in alt-screen mode (vim, opencode, etc.).
+    /// Updated via AltScreenChanged event — never read via terminal_view.read(cx) in render
+    /// to avoid creating a GPUI dependency that causes re-render cascades.
+    is_alt_screen: bool,
+    /// Last keyboard inset pushed to TerminalView. Compared against current platform value
+    /// without reading terminal_view in render, breaking the GPUI observer dependency.
+    last_synced_keyboard_inset: Pixels,
+    scroll_to_bottom_button_id: NativeFloatingButtonId,
+    dictation_preview_id: u32,
+    scroll_to_bottom_button_visible: bool,
+    scroll_to_bottom_button_hide_pending: bool,
+    scroll_to_bottom_button_hide_generation: u64,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -39,6 +62,82 @@ impl WorkspaceTerminal {
             width: viewport.width.max(px(0.0)),
             height: (viewport.height - Self::keyboard_inset()).max(px(0.0)),
         }
+    }
+
+    fn scroll_button_bottom_offset() -> f32 {
+        let keyboard_inset = (Self::keyboard_inset() / px(1.0)) as f32;
+        platform_bridge::home_indicator_inset().max(keyboard_inset)
+    }
+
+    fn dictation_preview_bottom_offset() -> f32 {
+        24.0 + Self::scroll_button_bottom_offset()
+    }
+
+    fn should_show_scroll_to_bottom_button(display_offset: usize) -> bool {
+        display_offset > SCROLL_TO_BOTTOM_BUTTON_THRESHOLD_LINES
+    }
+
+    fn set_scroll_to_bottom_button_visible(
+        &mut self,
+        visible: bool,
+        force: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if !force && self.scroll_to_bottom_button_visible == visible {
+            return;
+        }
+
+        self.scroll_to_bottom_button_visible = visible;
+        cx.notify();
+    }
+
+    fn refresh_scroll_to_bottom_button(&mut self, cx: &mut Context<Self>, force: bool) {
+        let display_offset = self.terminal_view.read(cx).display_offset(cx);
+        self.set_scroll_to_bottom_button_visible(
+            Self::should_show_scroll_to_bottom_button(display_offset),
+            force,
+            cx,
+        );
+    }
+
+    pub fn deactivate(&mut self, cx: &mut Context<Self>) {
+        self.scroll_to_bottom_button_hide_pending = false;
+        self.scroll_to_bottom_button_hide_generation =
+            self.scroll_to_bottom_button_hide_generation.wrapping_add(1);
+        hide_native_floating_button(self.scroll_to_bottom_button_id);
+        platform_bridge::hide_native_dictation_preview(self.dictation_preview_id);
+        self.set_scroll_to_bottom_button_visible(false, false, cx);
+    }
+
+    fn scroll_to_bottom(&mut self, cx: &mut Context<Self>) {
+        self.terminal_view.update(cx, |terminal_view, cx| {
+            terminal_view.scroll_to_bottom(cx);
+        });
+        self.schedule_scroll_to_bottom_button_hide(cx);
+    }
+
+    fn schedule_scroll_to_bottom_button_hide(&mut self, cx: &mut Context<Self>) {
+        self.scroll_to_bottom_button_hide_pending = true;
+        self.scroll_to_bottom_button_hide_generation =
+            self.scroll_to_bottom_button_hide_generation.wrapping_add(1);
+        let generation = self.scroll_to_bottom_button_hide_generation;
+
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(SCROLL_TO_BOTTOM_BUTTON_DISMISS_DELAY)
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if !this.scroll_to_bottom_button_hide_pending
+                    || this.scroll_to_bottom_button_hide_generation != generation
+                {
+                    return;
+                }
+
+                this.scroll_to_bottom_button_hide_pending = false;
+                this.refresh_scroll_to_bottom_button(cx, true);
+            });
+        })
+        .detach();
     }
 
     pub fn terminal_id(&self) -> &str {
@@ -79,6 +178,8 @@ impl WorkspaceTerminal {
                 if this.terminal_id == *id {
                     info!("received TerminalOpened event, registering as active input");
                     this.register_as_active_input(cx);
+                } else {
+                    this.deactivate(cx);
                 }
             }
             _ => {}
@@ -94,7 +195,6 @@ impl WorkspaceTerminal {
         let preview = cx.new(|cx| {
             TerminalPreviewView::new(session_handle.clone(), workspace_state.clone(), cx)
         });
-
         let terminal_events_sub =
             cx.subscribe(&terminal_view, |this, _terminal, event, cx| match event {
                 TerminalEvent::RequestResize { cols, rows } => {
@@ -114,8 +214,24 @@ impl WorkspaceTerminal {
                         cx.notify();
                     });
                 }
-                TerminalEvent::OscEvent(_event) => {
-                    // TODO: handle OSC events to update Title, progress
+                TerminalEvent::OscEvent(event) => {
+                    let id = this.terminal_id.clone();
+                    this.terminal_state.update(cx, |ts, cx| {
+                        match event {
+                            OscEvent::Title(title) => ts.set_title(&id, Some(title.clone())),
+                            OscEvent::ResetTitle => ts.set_title(&id, None),
+                            OscEvent::IconName(name) => ts.set_icon_name(&id, name.clone()),
+                            OscEvent::Cwd(cwd) => ts.set_cwd(&id, cwd.clone()),
+                            OscEvent::CommandLine(cmd) => ts.set_current_command(&id, cmd.clone()),
+                            OscEvent::CommandStart => ts.set_shell_running(&id),
+                            OscEvent::CommandEnd { exit_code } => {
+                                ts.set_shell_idle(&id, Some(*exit_code))
+                            }
+                            OscEvent::PromptReady => ts.set_prompt_ready(&id),
+                            _ => return,
+                        }
+                        cx.notify();
+                    });
                 }
                 TerminalEvent::OpenHyperlink(hyperlink) => match &hyperlink.target {
                     TerminalHyperlinkTarget::Url { url } => {
@@ -140,6 +256,52 @@ impl WorkspaceTerminal {
                         );
                     }
                 },
+                TerminalEvent::AltScreenChanged(is_alt) => {
+                    this.is_alt_screen = *is_alt;
+                    cx.notify();
+                }
+                TerminalEvent::DictationPreviewChanged(text) => {
+                    let active_terminal_id =
+                        this.workspace_state.read(cx).active_terminal_id.clone();
+                    let is_active =
+                        active_terminal_id.as_deref() == Some(this.terminal_id.as_str());
+                    if !is_active {
+                        return;
+                    }
+
+                    match text {
+                        Some(text) => platform_bridge::update_native_dictation_preview(
+                            this.dictation_preview_id,
+                            NativeDictationPreviewOptions {
+                                text: text.clone(),
+                                bottom_offset_pts: Self::dictation_preview_bottom_offset(),
+                            },
+                        ),
+                        None => platform_bridge::hide_native_dictation_preview(
+                            this.dictation_preview_id,
+                        ),
+                    }
+                }
+                TerminalEvent::ScrollbackPositionChanged { display_offset, .. } => {
+                    let active_terminal_id =
+                        this.workspace_state.read(cx).active_terminal_id.clone();
+                    let is_active =
+                        active_terminal_id.as_deref() == Some(this.terminal_id.as_str());
+                    if !is_active {
+                        this.deactivate(cx);
+                        return;
+                    }
+
+                    let should_show = Self::should_show_scroll_to_bottom_button(*display_offset);
+                    if should_show {
+                        this.scroll_to_bottom_button_hide_pending = false;
+                        this.scroll_to_bottom_button_hide_generation =
+                            this.scroll_to_bottom_button_hide_generation.wrapping_add(1);
+                    } else if this.scroll_to_bottom_button_hide_pending {
+                        return;
+                    }
+                    this.set_scroll_to_bottom_button_visible(should_show, false, cx);
+                }
             });
 
         if terminal_id != TERMINAL_PENDING_ID {
@@ -158,25 +320,39 @@ impl WorkspaceTerminal {
             session_handle,
             terminal_view,
             preview,
+            is_alt_screen: false,
+            last_synced_keyboard_inset: px(0.0),
+            scroll_to_bottom_button_id: native_floating_button_id(),
+            dictation_preview_id: platform_bridge::allocate_native_dictation_preview_id(),
+            scroll_to_bottom_button_visible: false,
+            scroll_to_bottom_button_hide_pending: false,
+            scroll_to_bottom_button_hide_generation: 0,
             _subscriptions: vec![attach_sub, terminal_events_sub],
         }
     }
 
-    pub fn register_as_active_input(&self, cx: &App) {
-        let Some(sender) = self.terminal_view.read(cx).input_sender(cx) else {
-            warn!(terminal_id = %self.terminal_id, "no input sender, skipping active input registration");
-            return;
-        };
-        let terminal_id = self.terminal_id.clone();
-        active_terminal::set_active_input(Box::new(move |bytes| {
-            if let Err(e) = sender.try_send(bytes) {
-                warn!(terminal_id, "failed to send input: {}", e);
+    pub fn register_as_active_input(&mut self, cx: &mut Context<Self>) {
+        match self.terminal_view.read(cx).input_sender(cx) {
+            Some(sender) => {
+                let terminal_id = self.terminal_id.clone();
+                active_terminal::set_active_input(Box::new(move |bytes| {
+                    if let Err(e) = sender.try_send(bytes) {
+                        warn!(terminal_id, "failed to send input: {}", e);
+                    }
+                }));
             }
-        }));
+            None => {
+                warn!(terminal_id = %self.terminal_id, "no input sender, skipping active input registration");
+                active_terminal::clear_active_input();
+            }
+        }
+
+        self.refresh_scroll_to_bottom_button(cx, true);
     }
 
     pub fn set_terminal_id(&mut self, terminal_id: String, cx: &mut Context<Self>) {
         self.terminal_id = terminal_id.clone();
+        self.deactivate(cx);
         self.terminal_view.update(cx, |terminal_view, _cx| {
             terminal_view.set_terminal_id(terminal_id);
         });
@@ -249,13 +425,63 @@ impl WorkspaceTerminal {
 }
 
 impl Render for WorkspaceTerminal {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let keyboard_inset = Self::keyboard_inset();
+
+        // Sync keyboard_inset to TerminalView for cursor-visibility offset in non-alt mode.
+        // Uses self.last_synced_keyboard_inset (not terminal_view.read(cx)) to avoid creating
+        // a GPUI render dependency on TerminalView, which would cause re-render cascades that
+        // make the keyboard dismiss and reopen on every PTY output frame.
+        if self.last_synced_keyboard_inset != keyboard_inset {
+            self.last_synced_keyboard_inset = keyboard_inset;
+            let tv = self.terminal_view.clone();
+            window.defer(cx, move |_, cx| {
+                tv.update(cx, |tv, cx| {
+                    tv.keyboard_inset = keyboard_inset;
+                    cx.notify();
+                });
+            });
+        }
+        let bottom_offset = Self::scroll_button_bottom_offset();
+        let this = cx.weak_entity();
 
         div()
             .id(("workspace-terminal-surface", cx.entity_id()))
+            .relative()
             .size_full()
-            .when(keyboard_inset > px(0.0), |div| div.pb(keyboard_inset))
+            // Alt-screen TUIs (vim, OpenCode) need the container to shrink so reconcile fires
+            // and SIGWINCH is sent. Non-alt apps (Claude, Codex) keep their grid fixed; the
+            // element shifts content up so cursor stays visible above the keyboard instead.
+            .when(self.is_alt_screen && keyboard_inset > px(0.0), |div| {
+                div.pb(keyboard_inset)
+            })
             .child(self.terminal_view.clone())
+            .when(self.scroll_to_bottom_button_visible, move |container| {
+                container.child(
+                    native_floating_button(
+                        ("terminal-scroll-to-bottom-button", this.entity_id()),
+                        self.scroll_to_bottom_button_id,
+                        "arrow.down",
+                        "Scroll to bottom",
+                        move |cx| {
+                            let _ = this.update(cx, |terminal, cx| {
+                                terminal.scroll_to_bottom(cx);
+                            });
+                        },
+                    )
+                    .absolute()
+                    .right(px(24.0))
+                    .bottom(px(24.0 + bottom_offset))
+                    .w(px(48.0))
+                    .h(px(48.0)),
+                )
+            })
+    }
+}
+
+impl Drop for WorkspaceTerminal {
+    fn drop(&mut self) {
+        hide_native_floating_button(self.scroll_to_bottom_button_id);
+        platform_bridge::hide_native_dictation_preview(self.dictation_preview_id);
     }
 }

@@ -6,14 +6,15 @@ use gpui::*;
 use crate::transport_badge::{format_bytes, render_transport_badge, transport_badge};
 use crate::workspace_state::WorkspaceState;
 use crate::{theme, workspace_action};
+use zedra_rpc::proto::{HostBatteryInfo, HostInfoSnapshot};
 use zedra_session::{SessionHandle, SessionState};
 
 pub struct SessionPanel {
-    #[allow(dead_code)]
     workspace_state: Entity<WorkspaceState>,
     session_state: Entity<SessionState>,
     #[allow(dead_code)]
     session_handle: SessionHandle,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl SessionPanel {
@@ -21,12 +22,15 @@ impl SessionPanel {
         workspace_state: Entity<WorkspaceState>,
         session_state: Entity<SessionState>,
         session_handle: SessionHandle,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Self {
+        let workspace_state_sub = cx.observe(&workspace_state, |_, _, cx| cx.notify());
+
         Self {
             workspace_state,
             session_state,
             session_handle,
+            _subscriptions: vec![workspace_state_sub],
         }
     }
 }
@@ -49,6 +53,7 @@ impl Render for SessionPanel {
         }
 
         let snap = session_state.snapshot();
+        let host_info = self.workspace_state.read(cx).host_info.clone();
 
         let mut info = div().px(px(theme::DRAWER_PADDING)).flex().flex_col();
 
@@ -62,6 +67,10 @@ impl Render for SessionPanel {
         {
             let platform = format!("{} / {}", os, arch,);
             info = info.child(info_row("Platform", platform));
+        }
+
+        if let Some(host_info) = host_info.as_ref() {
+            info = info.child(render_host_info(host_info));
         }
 
         if !snap.strip_path.is_empty() {
@@ -133,6 +142,46 @@ impl Render for SessionPanel {
             .child(div().flex().justify_center().child("Disconnect"));
 
         info.child(disconnect_button).child(div().h(px(16.0)))
+    }
+}
+
+fn render_host_info(host_info: &HostInfoSnapshot) -> Div {
+    let mut parts = vec![
+        format!("CPU {:.0}%", host_info.cpu_usage_percent),
+        format!(
+            "RAM {}",
+            format_percent(host_info.memory_used_bytes, host_info.memory_total_bytes)
+        ),
+    ];
+
+    if let Some(batteries) = format_batteries(&host_info.batteries) {
+        parts.push(format!("Batteries {batteries}"));
+    }
+
+    info_row("System Stats", parts.join(" \u{00b7} "))
+}
+
+fn format_percent(used: u64, total: u64) -> String {
+    if total == 0 {
+        "--%".to_string()
+    } else {
+        format!("{:.0}%", (used as f64 / total as f64) * 100.0)
+    }
+}
+
+fn format_batteries(batteries: &[HostBatteryInfo]) -> Option<String> {
+    let labels = batteries
+        .iter()
+        .filter_map(|battery| {
+            battery
+                .charge_percent
+                .map(|value| format!("{}%", value.min(100)))
+        })
+        .collect::<Vec<_>>();
+    if labels.is_empty() {
+        None
+    } else {
+        Some(labels.join(", "))
     }
 }
 

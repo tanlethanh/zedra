@@ -13,9 +13,10 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
-use zedra_osc::OscScanner;
+use uuid::Uuid;
+use zedra_osc::{OscEvent, OscScanner};
 use zedra_rpc::proto::{BacklogEntry, HostEvent, TermOutput, TerminalSyncEntry};
 
 // ---------------------------------------------------------------------------
@@ -61,7 +62,7 @@ pub struct ServerSession {
     pub created_at: Instant,
     pub last_activity: Mutex<Instant>,
     pub terminals: Mutex<HashMap<String, TermSession>>,
-    pub next_term_id: Mutex<u64>,
+    pub terminal_order: Mutex<Vec<String>>,
     /// Client pubkeys authorized to attach to this session (per-session ACL).
     pub acl: Mutex<HashSet<[u8; 32]>>,
     /// Currently attached client pubkey. None = session is free.
@@ -157,11 +158,15 @@ pub struct OutputSenderSlot {
 /// Per-terminal OSC metadata tracked by the host PTY reader.
 ///
 /// Updated in real-time as PTY output flows through, so the host always has
-/// the latest known title and CWD regardless of backlog eviction.
+/// the latest known terminal metadata regardless of backlog eviction.
 pub struct HostTermMeta {
     pub scanner: OscScanner,
     pub title: Option<String>,
+    pub icon_name: Option<String>,
     pub cwd: Option<String>,
+    pub current_command: Option<String>,
+    pub shell_state: HostShellState,
+    pub last_exit_code: Option<i32>,
 }
 
 impl Default for HostTermMeta {
@@ -169,7 +174,42 @@ impl Default for HostTermMeta {
         Self {
             scanner: OscScanner::new(),
             title: None,
+            icon_name: None,
             cwd: None,
+            current_command: None,
+            shell_state: HostShellState::Unknown,
+            last_exit_code: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HostShellState {
+    #[default]
+    Unknown,
+    Idle,
+    Running,
+}
+
+impl HostTermMeta {
+    pub fn apply_osc_event(&mut self, event: &OscEvent) {
+        match event {
+            OscEvent::Title(title) => self.title = Some(title.clone()),
+            OscEvent::ResetTitle => self.title = None,
+            OscEvent::IconName(name) => self.icon_name = Some(name.clone()),
+            OscEvent::Cwd(cwd) => self.cwd = Some(cwd.clone()),
+            OscEvent::CommandLine(command) => self.current_command = Some(command.clone()),
+            OscEvent::CommandStart => self.shell_state = HostShellState::Running,
+            OscEvent::CommandEnd { exit_code } => {
+                self.shell_state = HostShellState::Idle;
+                self.last_exit_code = Some(*exit_code);
+                self.current_command = None;
+            }
+            OscEvent::PromptReady => {
+                self.shell_state = HostShellState::Idle;
+                self.current_command = None;
+            }
+            _ => {}
         }
     }
 }
@@ -225,13 +265,110 @@ pub struct TermSession {
     /// every keystroke.
     pub writer: Arc<std::sync::Mutex<Box<dyn Write + Send>>>,
     pub master: Box<dyn portable_pty::MasterPty + Send>,
+    pub child: Box<dyn portable_pty::Child + Send + Sync>,
     /// Swappable output sender. Updated on each TermAttach.
     pub output_sender: Arc<std::sync::Mutex<OutputSenderSlot>>,
-    /// Host-side OSC metadata cache (title, CWD). Updated by the PTY reader
+    /// Host-side OSC metadata cache. Updated by the PTY reader
     /// task as output bytes flow through. Used to seed the client on attach.
     pub host_meta: Arc<std::sync::Mutex<HostTermMeta>>,
     /// Per-terminal output backlog (seq + replay entries).
     pub backlog: Arc<std::sync::Mutex<TermBacklog>>,
+    /// Wall-clock creation time for operator-facing status output.
+    pub created_at: SystemTime,
+    /// Monotonic creation time for terminal uptime calculations.
+    pub started_at: Instant,
+}
+
+impl TermSession {
+    pub fn terminate(mut self) -> bool {
+        match self.child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(err = %e, "failed to inspect terminal child before close");
+            }
+        }
+
+        if let Err(e) = self.child.kill() {
+            tracing::warn!(err = %e, "failed to terminate terminal child");
+            return false;
+        }
+
+        if let Err(e) = self.child.wait() {
+            tracing::warn!(err = %e, "failed to reap terminal child after close");
+        }
+
+        true
+    }
+}
+
+fn terminal_created_at_key(created_at: SystemTime) -> Duration {
+    created_at.duration_since(UNIX_EPOCH).unwrap_or_default()
+}
+
+fn ordered_terminal_ids_locked(
+    terms: &HashMap<String, TermSession>,
+    order: &mut Vec<String>,
+) -> Vec<String> {
+    ordered_terminal_ids_from_entries(
+        terms
+            .iter()
+            .map(|(id, term)| (id.clone(), terminal_created_at_key(term.created_at))),
+        order,
+    )
+}
+
+fn ordered_terminal_ids_from_entries(
+    entries: impl IntoIterator<Item = (String, Duration)>,
+    order: &mut Vec<String>,
+) -> Vec<String> {
+    let entries = entries.into_iter().collect::<Vec<_>>();
+    let active_ids = entries
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect::<HashSet<_>>();
+
+    order.retain(|id| active_ids.contains(id.as_str()));
+    let mut ordered = order.clone();
+
+    let mut missing = {
+        let known = order.iter().map(String::as_str).collect::<HashSet<_>>();
+        entries
+            .into_iter()
+            .filter(|(id, _)| !known.contains(id.as_str()))
+            .map(|(id, created_at)| (created_at, id))
+            .collect::<Vec<_>>()
+    };
+    missing.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+    for (_, id) in missing {
+        order.push(id.clone());
+        ordered.push(id);
+    }
+
+    ordered
+}
+
+fn validate_terminal_order<'a>(
+    ordered_ids: &[String],
+    active_ids: impl IntoIterator<Item = &'a str>,
+) -> Result<(), String> {
+    let active_ids = active_ids.into_iter().collect::<HashSet<_>>();
+    if ordered_ids.len() != active_ids.len() {
+        return Err("terminal order must include every active terminal".to_string());
+    }
+
+    let mut seen = HashSet::with_capacity(ordered_ids.len());
+    for id in ordered_ids {
+        if !active_ids.contains(id.as_str()) {
+            return Err(format!("unknown terminal id: {id}"));
+        }
+        if !seen.insert(id.as_str()) {
+            return Err(format!("duplicate terminal id: {id}"));
+        }
+    }
+
+    Ok(())
 }
 
 /// Summary of a session for listing purposes.
@@ -245,6 +382,16 @@ pub struct SessionInfo {
     pub last_activity_elapsed_secs: u64,
     /// Whether a client is currently attached to this session.
     pub is_occupied: bool,
+}
+
+/// Summary of a live terminal for operator-facing status output.
+#[derive(Debug, Clone)]
+pub struct TerminalInfo {
+    pub id: String,
+    pub title: Option<String>,
+    pub created_at_unix_secs: u64,
+    pub created_at_elapsed_secs: u64,
+    pub uptime_secs: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -790,7 +937,7 @@ impl ServerSession {
             created_at: Instant::now(),
             last_activity: Mutex::new(Instant::now()),
             terminals: Mutex::new(HashMap::new()),
-            next_term_id: Mutex::new(1),
+            terminal_order: Mutex::new(Vec::new()),
             acl: Mutex::new(HashSet::new()),
             active_client: Mutex::new(None),
             session_token: Mutex::new(None),
@@ -845,28 +992,102 @@ impl ServerSession {
 
     pub async fn terminal_sync_entries(&self) -> Vec<TerminalSyncEntry> {
         let terms = self.terminals.lock().await;
-        let mut entries = Vec::with_capacity(terms.len());
-        for (id, term) in terms.iter() {
-            let (title, cwd) = term
+        let mut order = self.terminal_order.lock().await;
+        let ordered_ids = ordered_terminal_ids_locked(&terms, &mut order);
+        let mut entries = Vec::with_capacity(ordered_ids.len());
+        for (position, id) in ordered_ids.into_iter().enumerate() {
+            let Some(term) = terms.get(&id) else {
+                continue;
+            };
+            let (title, cwd, icon_name) = term
                 .host_meta
                 .lock()
                 .ok()
-                .map(|meta| (meta.title.clone(), meta.cwd.clone()))
-                .unwrap_or((None, None));
+                .map(|meta| (meta.title.clone(), meta.cwd.clone(), meta.icon_name.clone()))
+                .unwrap_or((None, None, None));
             let last_seq = term
                 .backlog
                 .lock()
                 .map(|b| b.next_seq.saturating_sub(1))
                 .unwrap_or(0);
             entries.push(TerminalSyncEntry {
-                id: id.clone(),
+                id,
+                position: position as u64,
                 last_seq,
                 title,
                 cwd,
+                icon_name,
             });
         }
-        entries.sort_by(|a, b| a.id.cmp(&b.id));
         entries
+    }
+
+    pub async fn terminal_ids(&self) -> Vec<String> {
+        let terms = self.terminals.lock().await;
+        let mut order = self.terminal_order.lock().await;
+        ordered_terminal_ids_locked(&terms, &mut order)
+    }
+
+    pub async fn terminal_infos(&self) -> Vec<TerminalInfo> {
+        let terms = self.terminals.lock().await;
+        let mut order = self.terminal_order.lock().await;
+        let ordered_ids = ordered_terminal_ids_locked(&terms, &mut order);
+        let mut entries = Vec::with_capacity(ordered_ids.len());
+        for id in ordered_ids {
+            let Some(term) = terms.get(&id) else {
+                continue;
+            };
+            let title = term
+                .host_meta
+                .lock()
+                .ok()
+                .and_then(|meta| meta.title.clone());
+            let created_at_unix_secs = term
+                .created_at
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let uptime_secs = term.started_at.elapsed().as_secs();
+            entries.push(TerminalInfo {
+                id,
+                title,
+                created_at_unix_secs,
+                created_at_elapsed_secs: uptime_secs,
+                uptime_secs,
+            });
+        }
+        entries
+    }
+
+    pub async fn insert_terminal(&self, id: String, terminal: TermSession) {
+        let mut terms = self.terminals.lock().await;
+        terms.insert(id.clone(), terminal);
+
+        let mut order = self.terminal_order.lock().await;
+        if !order.iter().any(|existing_id| existing_id == &id) {
+            order.push(id);
+        }
+    }
+
+    pub async fn remove_terminal(&self, id: &str) -> Option<TermSession> {
+        let mut terms = self.terminals.lock().await;
+        let terminal = terms.remove(id);
+
+        if terminal.is_some() {
+            let mut order = self.terminal_order.lock().await;
+            order.retain(|terminal_id| terminal_id != id);
+        }
+
+        terminal
+    }
+
+    pub async fn reorder_terminals(&self, ordered_ids: Vec<String>) -> Result<(), String> {
+        let terms = self.terminals.lock().await;
+        validate_terminal_order(&ordered_ids, terms.keys().map(String::as_str))?;
+
+        let mut order = self.terminal_order.lock().await;
+        *order = ordered_ids;
+        Ok(())
     }
 
     /// Push a host-initiated event to the subscribed client, if any.
@@ -927,10 +1148,7 @@ impl ServerSession {
 
     /// Allocate the next terminal ID for this session.
     pub async fn next_terminal_id(&self) -> String {
-        let mut id = self.next_term_id.lock().await;
-        let current = *id;
-        *id += 1;
-        format!("term-{}", current)
+        Uuid::new_v4().to_string()
     }
 
     /// Get backlog entries for a terminal after a given sequence number.
@@ -971,6 +1189,71 @@ mod tests {
 
     async fn create_session(registry: &SessionRegistry) -> Arc<ServerSession> {
         registry.create_named("test", PathBuf::from("/tmp")).await
+    }
+
+    #[test]
+    fn terminal_order_keeps_existing_order_and_appends_missing_by_creation_time() {
+        let mut order = vec![
+            "stale".to_string(),
+            "term-b".to_string(),
+            "term-a".to_string(),
+        ];
+
+        let ordered = ordered_terminal_ids_from_entries(
+            [
+                ("term-a".to_string(), Duration::from_secs(30)),
+                ("term-c".to_string(), Duration::from_secs(10)),
+                ("term-b".to_string(), Duration::from_secs(20)),
+                ("term-d".to_string(), Duration::from_secs(10)),
+            ],
+            &mut order,
+        );
+
+        assert_eq!(ordered, vec!["term-b", "term-a", "term-c", "term-d"]);
+        assert_eq!(order, ordered);
+    }
+
+    #[test]
+    fn terminal_order_tiebreaks_missing_terminals_by_id() {
+        let mut order = Vec::new();
+
+        let ordered = ordered_terminal_ids_from_entries(
+            [
+                ("term-c".to_string(), Duration::from_secs(10)),
+                ("term-a".to_string(), Duration::from_secs(10)),
+                ("term-b".to_string(), Duration::from_secs(10)),
+            ],
+            &mut order,
+        );
+
+        assert_eq!(ordered, vec!["term-a", "term-b", "term-c"]);
+        assert_eq!(order, ordered);
+    }
+
+    #[test]
+    fn terminal_order_validation_accepts_exact_permutation() {
+        let ordered_ids = vec![
+            "term-c".to_string(),
+            "term-a".to_string(),
+            "term-b".to_string(),
+        ];
+
+        assert!(validate_terminal_order(&ordered_ids, ["term-a", "term-b", "term-c"]).is_ok());
+    }
+
+    #[test]
+    fn terminal_order_validation_rejects_partial_duplicate_and_unknown_ids() {
+        assert!(validate_terminal_order(&["term-a".to_string()], ["term-a", "term-b"]).is_err());
+        assert!(validate_terminal_order(
+            &["term-a".to_string(), "term-a".to_string()],
+            ["term-a", "term-b"]
+        )
+        .is_err());
+        assert!(validate_terminal_order(
+            &["term-a".to_string(), "missing".to_string()],
+            ["term-a", "term-b"]
+        )
+        .is_err());
     }
 
     #[tokio::test]
@@ -1208,10 +1491,12 @@ mod tests {
         let registry = SessionRegistry::new();
         let session = create_session(&registry).await;
 
-        let id1 = session.next_terminal_id().await;
-        let id2 = session.next_terminal_id().await;
-        assert_eq!(id1, "term-1");
-        assert_eq!(id2, "term-2");
+        let mut ids = std::collections::HashSet::new();
+        for _ in 0..128 {
+            let id = session.next_terminal_id().await;
+            assert!(Uuid::parse_str(&id).is_ok());
+            assert!(ids.insert(id));
+        }
     }
 
     #[tokio::test]

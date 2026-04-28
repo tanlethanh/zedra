@@ -6,7 +6,7 @@
 // host actions without going through the iroh transport.
 //
 // Endpoints:
-//   GET  /api/status              — daemon health + active session count
+//   GET  /api/status              — daemon health, active sessions, and terminals
 //   POST /api/terminal            — create a terminal in the active session
 //
 // Auth: every request must carry  Authorization: Bearer <token>
@@ -55,6 +55,40 @@ fn verify_token(headers: &HeaderMap, token: &str) -> bool {
 // Handlers
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Serialize)]
+struct StatusTerminal {
+    id: String,
+    session_id: String,
+    session_name: Option<String>,
+    title: Option<String>,
+    created_at_unix_secs: u64,
+    created_at_elapsed_secs: u64,
+    uptime_secs: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct StatusSession {
+    id: String,
+    name: Option<String>,
+    workdir: Option<String>,
+    terminal_count: usize,
+    uptime_secs: u64,
+    idle_secs: u64,
+    is_occupied: bool,
+    terminals: Vec<StatusTerminal>,
+}
+
+#[derive(Debug, Serialize)]
+struct StatusResp {
+    ok: bool,
+    version: &'static str,
+    endpoint_id: String,
+    workdir: String,
+    uptime_secs: u64,
+    sessions: Vec<StatusSession>,
+    terminals: Vec<StatusTerminal>,
+}
+
 async fn status(State(s): State<ApiState>, headers: HeaderMap) -> impl IntoResponse {
     if !verify_token(&headers, &s.token) {
         return (
@@ -68,13 +102,51 @@ async fn status(State(s): State<ApiState>, headers: HeaderMap) -> impl IntoRespo
     let workdir = s.daemon_state.workdir.to_string_lossy().to_string();
     let version = env!("CARGO_PKG_VERSION");
     let uptime_secs = s.daemon_state.started_at.elapsed().as_secs();
-    Json(serde_json::json!({
-        "ok": true,
-        "version": version,
-        "endpoint_id": endpoint_id,
-        "workdir": workdir,
-        "uptime_secs": uptime_secs,
-    }))
+    let session_infos = s.registry.list_sessions().await;
+    let mut sessions = Vec::with_capacity(session_infos.len());
+    let mut all_terminals = Vec::new();
+
+    for session_info in session_infos {
+        let terminal_infos = match s.registry.get(&session_info.id).await {
+            Some(session) => session.terminal_infos().await,
+            None => Vec::new(),
+        };
+        let terminals: Vec<StatusTerminal> = terminal_infos
+            .into_iter()
+            .map(|terminal| StatusTerminal {
+                id: terminal.id,
+                session_id: session_info.id.clone(),
+                session_name: session_info.name.clone(),
+                title: terminal.title,
+                created_at_unix_secs: terminal.created_at_unix_secs,
+                created_at_elapsed_secs: terminal.created_at_elapsed_secs,
+                uptime_secs: terminal.uptime_secs,
+            })
+            .collect();
+        all_terminals.extend(terminals.clone());
+        sessions.push(StatusSession {
+            id: session_info.id,
+            name: session_info.name,
+            workdir: session_info
+                .workdir
+                .map(|path| path.to_string_lossy().into_owned()),
+            terminal_count: session_info.terminal_count,
+            uptime_secs: session_info.created_at_elapsed_secs,
+            idle_secs: session_info.last_activity_elapsed_secs,
+            is_occupied: session_info.is_occupied,
+            terminals,
+        });
+    }
+
+    Json(StatusResp {
+        ok: true,
+        version,
+        endpoint_id,
+        workdir,
+        uptime_secs,
+        sessions,
+        terminals: all_terminals,
+    })
     .into_response()
 }
 

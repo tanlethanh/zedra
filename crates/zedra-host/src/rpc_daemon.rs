@@ -8,10 +8,11 @@
 
 use crate::fs::{Filesystem, LocalFs};
 use crate::git::GitRepo;
+use crate::host_info;
 use crate::identity::SharedIdentity;
 use crate::pty::{ShellSession, SpawnOptions};
 use crate::session_registry::{
-    AttachResult, ConsumeSlotResult, HostTermMeta, OutputSenderSlot, ServerSession,
+    AttachResult, ConsumeSlotResult, HostShellState, HostTermMeta, OutputSenderSlot, ServerSession,
     SessionRegistry, TermBacklog, TermSession, MAX_WATCHED_PATHS_PER_SESSION,
 };
 use anyhow::Result;
@@ -22,7 +23,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use zedra_osc::OscEvent;
 use zedra_rpc::proto::*;
 use zedra_telemetry::Event;
 
@@ -80,21 +80,112 @@ fn ts() -> String {
     )
 }
 
-/// Build a synthetic OSC preamble encoding cached title/CWD.
+/// Build a synthetic OSC preamble encoding cached terminal metadata.
 /// Sent as seq=0 on TermAttach so the client seeds its meta from the PTY stream.
-fn encode_meta_preamble(title: &Option<String>, cwd: &Option<String>) -> Vec<u8> {
+fn encode_meta_preamble(meta: &HostTermMeta) -> Vec<u8> {
     let mut out = Vec::new();
-    if let Some(t) = title {
+    if let Some(t) = &meta.title {
         out.extend_from_slice(b"\x1b]2;");
         out.extend_from_slice(t.as_bytes());
         out.push(0x07);
     }
-    if let Some(c) = cwd {
+    if let Some(name) = &meta.icon_name {
+        out.extend_from_slice(b"\x1b]1;");
+        out.extend_from_slice(name.as_bytes());
+        out.push(0x07);
+    }
+    if let Some(c) = &meta.cwd {
         out.extend_from_slice(b"\x1b]7;file://");
         out.extend_from_slice(c.as_bytes());
         out.push(0x07);
     }
+
+    match meta.shell_state {
+        HostShellState::Running => {
+            if let Some(command) = &meta.current_command {
+                out.extend_from_slice(b"\x1b]633;E;");
+                out.extend_from_slice(escape_osc633(command).as_bytes());
+                out.push(0x07);
+            }
+            out.extend_from_slice(b"\x1b]633;C\x07");
+        }
+        HostShellState::Idle => {
+            if let Some(exit_code) = meta.last_exit_code {
+                out.extend_from_slice(b"\x1b]633;D;");
+                out.extend_from_slice(exit_code.to_string().as_bytes());
+                out.push(0x07);
+            } else {
+                out.extend_from_slice(b"\x1b]633;A\x07");
+            }
+        }
+        HostShellState::Unknown => {}
+    }
     out
+}
+
+fn escape_osc633(raw: &str) -> String {
+    let mut escaped = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        match ch {
+            '\\' | ';' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+#[cfg(test)]
+mod terminal_meta_preamble_tests {
+    use super::*;
+    use zedra_osc::{OscEvent, OscScanner};
+
+    #[test]
+    fn running_preamble_replays_command_before_start() {
+        let meta = HostTermMeta {
+            title: Some("Editing terminal_state.rs".to_owned()),
+            icon_name: Some("codex".to_owned()),
+            cwd: Some("/Users/thomasle/projects/zedra".to_owned()),
+            current_command: Some("npx @openai/codex --prompt 'a;b'".to_owned()),
+            shell_state: HostShellState::Running,
+            last_exit_code: None,
+            ..HostTermMeta::default()
+        };
+
+        let bytes = encode_meta_preamble(&meta);
+        let events = OscScanner::new().feed(&bytes);
+
+        assert!(
+            matches!(&events[0], OscEvent::Title(title) if title == "Editing terminal_state.rs")
+        );
+        assert!(matches!(&events[1], OscEvent::IconName(icon_name) if icon_name == "codex"));
+        assert!(
+            matches!(&events[2], OscEvent::Cwd(cwd) if cwd == "/Users/thomasle/projects/zedra")
+        );
+        assert!(
+            matches!(&events[3], OscEvent::CommandLine(command) if command == "npx @openai/codex --prompt 'a;b'")
+        );
+        assert!(matches!(events[4], OscEvent::CommandStart));
+    }
+
+    #[test]
+    fn idle_preamble_replays_last_exit_code() {
+        let meta = HostTermMeta {
+            shell_state: HostShellState::Idle,
+            last_exit_code: Some(17),
+            ..HostTermMeta::default()
+        };
+
+        let bytes = encode_meta_preamble(&meta);
+        let events = OscScanner::new().feed(&bytes);
+
+        assert!(matches!(
+            events.as_slice(),
+            [OscEvent::CommandEnd { exit_code: 17 }]
+        ));
+    }
 }
 
 fn short_key(key: &[u8; 32]) -> String {
@@ -885,7 +976,7 @@ pub async fn create_terminal(
     }
 
     let shell = ShellSession::spawn(cols, rows, opts)?;
-    let (pty_reader, pty_writer, master) = shell.take_reader();
+    let (pty_reader, pty_writer, master, child) = shell.take_reader();
     let id = session.next_terminal_id().await;
 
     tracing::info!(
@@ -906,16 +997,21 @@ pub async fn create_terminal(
     // without locking session.terminals on every keystroke (Fix 3).
     let writer = Arc::new(std::sync::Mutex::new(pty_writer));
 
-    session.terminals.lock().await.insert(
-        id.clone(),
-        TermSession {
-            writer: writer.clone(),
-            master,
-            output_sender: output_sender.clone(),
-            host_meta: host_meta.clone(),
-            backlog: backlog.clone(),
-        },
-    );
+    session
+        .insert_terminal(
+            id.clone(),
+            TermSession {
+                writer: writer.clone(),
+                master,
+                child,
+                output_sender: output_sender.clone(),
+                host_meta: host_meta.clone(),
+                backlog: backlog.clone(),
+                created_at: std::time::SystemTime::now(),
+                started_at: std::time::Instant::now(),
+            },
+        )
+        .await;
 
     let term_id = id.clone();
     tokio::task::spawn_blocking(move || {
@@ -932,18 +1028,13 @@ pub async fn create_terminal(
                     let data = buf[..n].to_vec();
 
                     // Scan for OSC sequences to keep the per-terminal metadata
-                    // cache (title, CWD) up to date. This runs on every PTY
+                    // cache up to date. This runs on every PTY
                     // chunk so the host always has the latest values even after
                     // old backlog entries have been evicted.
                     if let Ok(mut m) = host_meta.lock() {
                         let events = m.scanner.feed(&data);
                         for ev in events {
-                            match ev {
-                                OscEvent::Title(t) => m.title = Some(t),
-                                OscEvent::ResetTitle => m.title = None,
-                                OscEvent::Cwd(c) => m.cwd = Some(c),
-                                _ => {}
-                            }
+                            m.apply_osc_event(&ev);
                         }
                     }
 
@@ -1390,6 +1481,39 @@ async fn dispatch(
             });
         }
 
+        ZedraMessage::SubscribeHostInfo(msg) => {
+            session.touch().await;
+            let irpc_tx = msg.tx;
+            tokio::spawn(async move {
+                let sampler = tokio::task::spawn_blocking(host_info::new_system_sampler).await;
+                let Ok(mut system) = sampler else {
+                    tracing::warn!("host_info: failed to initialize system sampler");
+                    return;
+                };
+
+                tokio::time::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
+                loop {
+                    let sampled = tokio::task::spawn_blocking(move || {
+                        let snapshot = host_info::collect_host_info_snapshot(&mut system);
+                        (system, snapshot)
+                    })
+                    .await;
+
+                    let Ok((next_system, snapshot)) = sampled else {
+                        tracing::warn!("host_info: sampler task failed");
+                        break;
+                    };
+                    system = next_system;
+
+                    if irpc_tx.send(snapshot).await.is_err() {
+                        break;
+                    }
+
+                    tokio::time::sleep(host_info::HOST_INFO_SAMPLE_INTERVAL).await;
+                }
+            });
+        }
+
         ZedraMessage::TermAttach(msg) => {
             session.touch().await;
 
@@ -1406,17 +1530,18 @@ async fn dispatch(
                 }
             }
 
-            // Synthetic metadata preamble (seq=0): inject cached title/CWD so
-            // the client seeds TerminalMeta even when those OSC sequences were
-            // evicted from the backlog. seq=0 is a reserved marker; the client
-            // pump processes its data but skips seq tracking and gap detection.
+            // Synthetic metadata preamble (seq=0): inject cached OSC terminal
+            // metadata so the client seeds TerminalMeta even when those OSC
+            // sequences were evicted from the backlog. seq=0 is a reserved
+            // marker; the client pump processes its data but skips seq
+            // tracking and gap detection.
             // Extract the preamble bytes while holding the sync lock, then send
             // after releasing it to avoid holding a MutexGuard across an await.
             let preamble: Option<Vec<u8>> = {
                 let terms = session.terminals.lock().await;
                 terms.get(&term_id).and_then(|term| {
                     term.host_meta.lock().ok().and_then(|meta| {
-                        let p = encode_meta_preamble(&meta.title, &meta.cwd);
+                        let p = encode_meta_preamble(&meta);
                         if p.is_empty() {
                             None
                         } else {
@@ -1563,17 +1688,43 @@ async fn dispatch(
         }
 
         ZedraMessage::TermClose(msg) => {
-            session.terminals.lock().await.remove(&msg.id);
-            let _ = msg.tx.send(TermCloseResult { ok: true }).await;
+            let terminal = session.remove_terminal(&msg.id).await;
+            let ok = if let Some(terminal) = terminal {
+                tokio::task::spawn_blocking(move || terminal.terminate())
+                    .await
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            let _ = msg.tx.send(TermCloseResult { ok }).await;
         }
 
         ZedraMessage::TermList(msg) => {
-            let terms = session.terminals.lock().await;
-            let terminals = terms
-                .keys()
-                .map(|id| TermListEntry { id: id.clone() })
+            let terminals = session
+                .terminal_ids()
+                .await
+                .into_iter()
+                .enumerate()
+                .map(|(position, id)| TermListEntry {
+                    id,
+                    position: position as u64,
+                })
                 .collect();
             let _ = msg.tx.send(TermListResult { terminals }).await;
+        }
+
+        ZedraMessage::TermReorder(msg) => {
+            let result = match session.reorder_terminals(msg.ordered_ids.clone()).await {
+                Ok(()) => TermReorderResult {
+                    ok: true,
+                    error: None,
+                },
+                Err(error) => TermReorderResult {
+                    ok: false,
+                    error: Some(error),
+                },
+            };
+            let _ = msg.tx.send(result).await;
         }
 
         // -- Git --
@@ -1626,12 +1777,21 @@ async fn dispatch(
         ZedraMessage::GitDiff(msg) => {
             session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
             match GitRepo::open(&state.workdir) {
-                Ok(repo) => {
-                    let diff = repo
-                        .diff(msg.path.as_deref(), msg.staged)
-                        .unwrap_or_default();
-                    let _ = msg.tx.send(GitDiffResult { diff, error: None }).await;
-                }
+                Ok(repo) => match repo.diff(msg.path.as_deref(), msg.staged) {
+                    Ok(diff) => {
+                        let _ = msg.tx.send(GitDiffResult { diff, error: None }).await;
+                    }
+                    Err(e) => {
+                        tracing::warn!("GitDiff: failed to diff {:?}: {}", msg.path, e);
+                        let _ = msg
+                            .tx
+                            .send(GitDiffResult {
+                                diff: String::new(),
+                                error: Some(e.to_string()),
+                            })
+                            .await;
+                    }
+                },
                 Err(e) => {
                     tracing::warn!("GitDiff: failed to open repo at {:?}: {}", state.workdir, e);
                     let _ = msg

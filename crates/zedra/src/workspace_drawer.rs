@@ -98,9 +98,21 @@ impl WorkspaceDrawer {
         cx.notify();
     }
 
+    pub fn refresh_after_sync(&mut self, cx: &mut Context<Self>) -> Task<()> {
+        let file_explorer = self
+            .file_explorer
+            .update(cx, |file_explorer, cx| file_explorer.refresh_after_sync(cx));
+        let git_panel = self
+            .git_panel
+            .update(cx, |git_panel, cx| git_panel.refresh_after_sync(cx));
+
+        cx.spawn(async move |_this, _cx| {
+            futures::future::join(file_explorer, git_panel).await;
+        })
+    }
+
     pub fn title_by_tab(&self, tab: DrawerTab, cx: &mut Context<Self>) -> (String, String) {
         let workspace_state = self.workspace_state.read(cx);
-        let session_state = self.session_state.read(cx);
         let title = workspace_state.project_name.to_string();
 
         let subtitle = match tab {
@@ -108,6 +120,7 @@ impl WorkspaceDrawer {
             DrawerTab::GitDiff => self.git_panel.read(cx).branch().to_string(),
             DrawerTab::Terminals => "terminals".to_string(),
             DrawerTab::Session => {
+                let session_state = self.session_state.read(cx);
                 let phase = session_state.phase();
                 let transport = session_state.snapshot().transport;
                 let (label, _) = transport_badge(&phase, transport.as_ref());
@@ -186,7 +199,13 @@ impl Render for WorkspaceDrawer {
         };
 
         let (title, subtitle) = self.title_by_tab(self.current_tab, cx);
-        let status_color = phase_indicator_color(&self.session_state.read(cx).phase());
+        let status_color = self
+            .workspace_state
+            .read(cx)
+            .connect_phase
+            .as_ref()
+            .map(phase_indicator_color)
+            .unwrap_or(theme::ACCENT_DIM);
 
         let top_inset = platform_bridge::status_bar_inset();
         let bottom_inset = platform_bridge::home_indicator_inset().max(10.0);

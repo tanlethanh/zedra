@@ -128,6 +128,14 @@ impl GitRepo {
 
     /// Diff output.
     pub fn diff(&self, path: Option<&str>, staged: bool) -> Result<String> {
+        if !staged {
+            if let Some(path) = path {
+                if self.is_untracked_path(path)? {
+                    return self.diff_untracked_file(path);
+                }
+            }
+        }
+
         let mut args = vec!["diff"];
         if staged {
             args.push("--cached");
@@ -137,6 +145,37 @@ impl GitRepo {
             args.push(p);
         }
         self.git(&args)
+    }
+
+    fn is_untracked_path(&self, path: &str) -> Result<bool> {
+        let output = Command::new("git")
+            .args(["ls-files", "--others", "--exclude-standard", "--", path])
+            .current_dir(&self.workdir)
+            .output()
+            .with_context(|| format!("git ls-files failed for {}", path))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("git ls-files: {}", stderr.trim());
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|candidate| candidate == path))
+    }
+
+    fn diff_untracked_file(&self, path: &str) -> Result<String> {
+        let output = Command::new("git")
+            .args(["diff", "--no-index", "--", "/dev/null", path])
+            .current_dir(&self.workdir)
+            .output()
+            .with_context(|| format!("git diff --no-index failed for {}", path))?;
+
+        if !output.status.success() && output.status.code() != Some(1) {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("git diff --no-index: {}", stderr.trim());
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     /// Commit log.
@@ -363,6 +402,19 @@ mod tests {
 
         let diff = repo.diff(None, false).unwrap();
         assert!(diff.contains("+line2"));
+    }
+
+    #[test]
+    fn diff_untracked_file() {
+        let (dir, repo) = init_repo();
+        std::fs::write(dir.path().join("new.txt"), "hello\nworld\n").unwrap();
+
+        let diff = repo.diff(Some("new.txt"), false).unwrap();
+        assert!(diff.contains("new file mode"));
+        assert!(diff.contains("--- /dev/null"));
+        assert!(diff.contains("new.txt"));
+        assert!(diff.contains("+hello"));
+        assert!(diff.contains("+world"));
     }
 
     #[test]

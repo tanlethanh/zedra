@@ -37,6 +37,7 @@ serde_json = { workspace = true, features = ["std"] }
 rand.workspace = true
 ed25519-dalek.workspace = true
 sha2.workspace = true
+uuid = { version = "1", features = ["v4"] }
 
 # Archive extraction (for self-update)
 flate2 = "1"
@@ -52,6 +53,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # System info
 hostname = "0.4"
+sysinfo = "0.31.4"
 
 # Unix process signaling (for workspace lock PID check)
 [target.'cfg(unix)'.dependencies]

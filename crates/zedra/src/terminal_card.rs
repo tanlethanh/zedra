@@ -22,6 +22,7 @@ pub struct TerminalCardProps {
     pub is_active: bool,
     pub title: Option<String>,
     pub cwd: Option<String>,
+    pub agent_icon: Option<&'static str>,
     pub shell_state: ShellState,
     pub last_exit_code: Option<i32>,
     pub on_close: Option<Box<dyn Fn(&PressEvent, &mut Window, &mut App) + 'static>>,
@@ -47,30 +48,10 @@ fn cwd_last(cwd: &str) -> &str {
         .unwrap_or(cwd)
 }
 
-/// Detect a known AI agent from the raw OSC 2 title and return its brand icon path.
-/// Returns `None` when the title doesn't match any known agent.
-fn agent_icon(title: Option<&str>) -> Option<&'static str> {
-    let title = title.as_deref().unwrap_or("");
-    let t = title.to_ascii_lowercase();
-    if t.contains("claude") {
-        Some("icons/claude.svg")
-    } else if t.contains("opencode") || title.contains("OC |") {
-        Some("icons/opencode.svg")
-    } else if t.contains("codex") || t.contains("openai") {
-        Some("icons/openai.svg")
-    } else if t.contains("gemini") {
-        Some("icons/gemini.svg")
-    } else if t.contains("copilot") {
-        Some("icons/copilot.svg")
-    } else {
-        None
-    }
-}
-
 /// Strip the `user@host:` prefix that default PS1 configs embed in OSC 2 titles.
 /// `alice@mybox:~/projects/zedra` → `~/projects/zedra`
 /// Returns the original string unchanged if no such prefix is found.
-fn strip_ps1_prefix(title: &str) -> &str {
+pub fn strip_ps1_prefix(title: &str) -> &str {
     if let Some(at) = title.find('@') {
         if let Some(colon_offset) = title[at..].find(':') {
             let path = &title[at + colon_offset + 1..];
@@ -117,7 +98,7 @@ pub fn render_terminal_card(props: TerminalCardProps) -> Stateful<Div> {
     let card_id = SharedString::from(format!("term-card-{}", props.id));
     let close_btn_id = SharedString::from(format!("term-close-{}", props.id));
     let is_active = props.is_active;
-    let icon_path = agent_icon(props.title.as_deref()).unwrap_or("icons/terminal.svg");
+    let icon_path = props.agent_icon.unwrap_or("icons/terminal.svg");
 
     // Build the right-side indicator up front so we can move on_close without borrow issues.
     let right_element: AnyElement = if let Some(close_fn) = props.on_close {

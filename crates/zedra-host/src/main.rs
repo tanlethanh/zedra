@@ -451,10 +451,10 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
             let url = format!("http://{}/api/status", addr.trim());
-            let client = reqwest::blocking::Client::new();
-            match client.get(&url).bearer_auth(token.trim()).send() {
+            let client = reqwest::Client::new();
+            match client.get(&url).bearer_auth(token.trim()).send().await {
                 Ok(resp) => {
-                    let body = resp.text().unwrap_or_default();
+                    let body = resp.text().await.unwrap_or_default();
                     let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                     let version = v["version"].as_str().unwrap_or("?");
                     let workdir = v["workdir"].as_str().unwrap_or("?");
@@ -470,6 +470,28 @@ async fn main() -> Result<()> {
                         "  endpoint_id: {}",
                         &endpoint_id[..endpoint_id.len().min(8)]
                     );
+                    if let Some(terminals) = v["terminals"].as_array() {
+                        println!("  terminals:   {}", terminals.len());
+                        for terminal in terminals {
+                            let id = terminal["id"].as_str().unwrap_or("?");
+                            let title = terminal["title"].as_str().unwrap_or("(untitled)");
+                            let session = terminal["session_name"]
+                                .as_str()
+                                .or_else(|| terminal["session_id"].as_str())
+                                .unwrap_or("?");
+                            let created = terminal["created_at_elapsed_secs"]
+                                .as_u64()
+                                .map(format_duration)
+                                .unwrap_or_else(|| "?".to_string());
+                            let uptime = terminal["uptime_secs"]
+                                .as_u64()
+                                .map(format_duration)
+                                .unwrap_or_else(|| "?".to_string());
+                            println!(
+                                "    {id}  {title}  created {created} ago  uptime {uptime}  session {session}"
+                            );
+                        }
+                    }
                 }
                 Err(e) => {
                     eprintln!("Failed to reach daemon: {}", e);
@@ -494,15 +516,16 @@ async fn main() -> Result<()> {
             }
             let url = format!("http://{}/api/terminal", addr.trim());
             let body = serde_json::json!({ "launch_cmd": launch_cmd });
-            let client = reqwest::blocking::Client::new();
+            let client = reqwest::Client::new();
             match client
                 .post(&url)
                 .bearer_auth(token.trim())
                 .json(&body)
                 .send()
+                .await
             {
                 Ok(resp) => {
-                    let text = resp.text().unwrap_or_default();
+                    let text = resp.text().await.unwrap_or_default();
                     println!("{}", text);
                 }
                 Err(e) => {
@@ -517,7 +540,7 @@ async fn main() -> Result<()> {
             if instances.is_empty() {
                 println!("No zedra instances found.");
             } else {
-                let http = reqwest::blocking::Client::builder()
+                let http = reqwest::Client::builder()
                     .timeout(std::time::Duration::from_secs(2))
                     .build()
                     .unwrap_or_default();
@@ -530,17 +553,18 @@ async fn main() -> Result<()> {
                         std::fs::read_to_string(config_dir.join("api-addr")).unwrap_or_default();
                     let token =
                         std::fs::read_to_string(config_dir.join("api-token")).unwrap_or_default();
-                    let status = if !addr.trim().is_empty() {
-                        let url = format!("http://{}/api/status", addr.trim());
-                        http.get(&url)
-                            .bearer_auth(token.trim())
-                            .send()
-                            .ok()
-                            .and_then(|r| r.text().ok())
-                            .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
-                    } else {
-                        None
-                    };
+                    let status =
+                        if addr.trim().is_empty() {
+                            None
+                        } else {
+                            let url = format!("http://{}/api/status", addr.trim());
+                            match http.get(&url).bearer_auth(token.trim()).send().await {
+                                Ok(resp) => resp.text().await.ok().and_then(|b| {
+                                    serde_json::from_str::<serde_json::Value>(&b).ok()
+                                }),
+                                Err(_) => None,
+                            }
+                        };
 
                     let workdir = status
                         .as_ref()

@@ -5,7 +5,9 @@ use iroh::EndpointAddr;
 use tokio::sync::{Notify, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use zedra_rpc::ZedraPairingTicket;
-use zedra_rpc::proto::{HostEvent, SubscribeReq, ZedraProto};
+use zedra_rpc::proto::{
+    HostEvent, HostInfoSnapshot, SubscribeHostInfoReq, SubscribeReq, ZedraProto,
+};
 
 use crate::RemoteTerminal;
 use crate::{
@@ -21,6 +23,8 @@ pub struct Session {
     event_rx: Arc<Mutex<Option<mpsc::Receiver<ConnectEvent>>>>,
     /// The event broadcast sender for host events from subscription.
     host_event_tx: broadcast::Sender<HostEvent>,
+    /// The host info broadcast sender for periodic resource snapshots.
+    host_info_tx: broadcast::Sender<HostInfoSnapshot>,
     /// Signal to abort the session from external sources.
     abort_signal: Arc<Mutex<CancellationToken>>,
     /// Notify when the session connection is closed.
@@ -35,6 +39,7 @@ impl Session {
         let abort_signal = Arc::new(Mutex::new(CancellationToken::new()));
         let closed_notify = Arc::new(Notify::new());
         let (host_event_tx, _) = broadcast::channel(64);
+        let (host_info_tx, _) = broadcast::channel(16);
 
         Self {
             handle,
@@ -44,6 +49,7 @@ impl Session {
             abort_signal,
             closed_notify,
             host_event_tx,
+            host_info_tx,
         }
     }
 
@@ -72,6 +78,10 @@ impl Session {
         self.host_event_tx.subscribe()
     }
 
+    pub fn subscribe_host_info(&self) -> broadcast::Receiver<HostInfoSnapshot> {
+        self.host_info_tx.subscribe()
+    }
+
     /// Start connection. Returns immediately; progress via `state()`.
     ///
     /// `on_connected` is called on the session runtime after successful connection,
@@ -92,6 +102,7 @@ impl Session {
         let closed_notify = self.closed_notify.clone();
         let on_connected = Arc::new(on_connected);
         let host_event_tx = self.host_event_tx.clone();
+        let host_info_tx = self.host_info_tx.clone();
 
         // Store credentials on handle
         handle.set_signer(signer.clone());
@@ -116,35 +127,40 @@ impl Session {
                 }
 
                 let existing_terminals = handle.terminals().clone();
-                let result = match reconnect_reason.take() {
-                    Some(reason) => {
-                        let max_attempts = 10;
-                        info!("reconnect to {addr:?}, session: {session_id:?} reason {reason:?} max_attempts {max_attempts}",);
-                        connector
-                            .reconnect_loop(
-                                addr.clone(),
-                                None,
-                                signer.clone(),
-                                session_id.clone(),
-                                session_token,
-                                reason,
-                                max_attempts,
-                                Some(existing_terminals)
-                            )
-                            .await
+                let result = if let Some(reason) = reconnect_reason.take() {
+                    let max_attempts = 10;
+                    info!("reconnect to {addr:?}, session: {session_id:?} reason {reason:?} max_attempts {max_attempts}",);
+                    tokio::select! {
+                        _ = abort_signal.cancelled() => {
+                            connector.abort();
+                            break;
+                        }
+                        result = connector.reconnect_loop(
+                            addr.clone(),
+                            None,
+                            signer.clone(),
+                            session_id.clone(),
+                            session_token,
+                            reason,
+                            max_attempts,
+                            Some(existing_terminals),
+                        ) => result,
                     }
-                    None => {
-                        info!("start connect to {addr:?}, session: {session_id:?}");
-                        connector
-                            .connect(
-                                addr.clone(),
-                                ticket.as_ref(),
-                                signer.clone(),
-                                session_id.clone(),
-                                session_token,
-                                Some(existing_terminals)
-                            )
-                            .await
+                } else {
+                    info!("start connect to {addr:?}, session: {session_id:?}");
+                    tokio::select! {
+                        _ = abort_signal.cancelled() => {
+                            connector.abort();
+                            break;
+                        }
+                        result = connector.connect(
+                            addr.clone(),
+                            ticket.as_ref(),
+                            signer.clone(),
+                            session_id.clone(),
+                            session_token,
+                            Some(existing_terminals),
+                        ) => result,
                     }
                 };
 
@@ -199,6 +215,47 @@ impl Session {
                                                 &subscribe_events,
                                                 event,
                                             ).await;
+                                        }
+                                    }
+                                }
+                            });
+                        }
+
+                        {
+                            let subscribe_client = client.clone();
+                            let subscribe_abort = abort_signal.clone();
+                            let subscribe_closed = closed_notify.clone();
+                            let subscribe_info = host_info_tx.clone();
+
+                            session_runtime().spawn(async move {
+                                let mut snapshots = match subscribe_client
+                                    .server_streaming(SubscribeHostInfoReq {}, 4)
+                                    .await
+                                {
+                                    Ok(rx) => rx,
+                                    Err(e) => {
+                                        warn!("host info subscribe failed: {}", e);
+                                        return;
+                                    }
+                                };
+
+                                loop {
+                                    tokio::select! {
+                                        _ = subscribe_abort.cancelled() => break,
+                                        _ = subscribe_closed.notified() => break,
+                                        snapshot = snapshots.recv() => {
+                                            let snapshot = match snapshot {
+                                                Ok(Some(snapshot)) => snapshot,
+                                                Ok(None) => {
+                                                    warn!("host info recv channel closed");
+                                                    break;
+                                                },
+                                                Err(e) => {
+                                                    warn!("host info recv failed: {}", e);
+                                                    break;
+                                                }
+                                            };
+                                            let _ = subscribe_info.send(snapshot);
                                         }
                                     }
                                 }
@@ -264,11 +321,8 @@ impl Session {
                     "HostEvent: terminal created id={} launch_cmd={:?}",
                     id, launch_cmd,
                 );
-                let terminal = handle.terminal(id).unwrap_or_else(|| {
-                    let terminal = RemoteTerminal::new(id.clone());
-                    handle.add_terminal(terminal.clone());
-                    terminal
-                });
+                let terminal = RemoteTerminal::new(id.clone());
+                handle.add_terminal(terminal.clone());
                 if let Err(e) = terminal.attach_remote(client).await {
                     warn!(
                         "Failed to attach host-created terminal {}: {e}",
@@ -308,5 +362,28 @@ mod tests {
 
         assert!(matches!(rx1.recv().await, Ok(HostEvent::GitChanged)));
         assert!(matches!(rx2.recv().await, Ok(HostEvent::GitChanged)));
+    }
+
+    #[tokio::test]
+    async fn subscribe_host_info_fans_out_to_multiple_receivers() {
+        let session = Session::new();
+        let mut rx1 = session.subscribe_host_info();
+        let mut rx2 = session.subscribe_host_info();
+
+        let snapshot = HostInfoSnapshot {
+            captured_at_ms: 1,
+            cpu_usage_percent: 12.5,
+            cpu_count: 4,
+            memory_used_bytes: 1024,
+            memory_total_bytes: 2048,
+            swap_used_bytes: 0,
+            swap_total_bytes: 0,
+            system_uptime_secs: 99,
+            batteries: Vec::new(),
+        };
+        let _ = session.host_info_tx.send(snapshot.clone());
+
+        assert_eq!(rx1.recv().await.unwrap(), snapshot);
+        assert_eq!(rx2.recv().await.unwrap(), snapshot);
     }
 }

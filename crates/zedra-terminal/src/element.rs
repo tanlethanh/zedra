@@ -3,6 +3,7 @@
 
 use std::mem;
 
+use alacritty_terminal::index::Point as AlacPoint;
 use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::vte::ansi::{Color as AlacColor, CursorShape, NamedColor};
 use gpui::*;
@@ -284,6 +285,7 @@ struct TokenCell {
     start: usize,
     end: usize,
     color: Hsla,
+    has_hyperlink: bool,
 }
 
 /// Check if a cell is blank (following Zed's is_blank function)
@@ -316,11 +318,11 @@ pub struct TerminalElement {
     content: TerminalContent,
     size: TerminalSize,
     scroll_offset_px: f32,
+    keyboard_inset: Pixels,
     view: WeakEntity<TerminalView>,
     terminal: WeakEntity<Terminal>,
     focus_handle: FocusHandle,
     focused: bool,
-    keyboard_request_pending: bool,
 }
 
 impl TerminalElement {
@@ -328,21 +330,21 @@ impl TerminalElement {
         content: TerminalContent,
         size: TerminalSize,
         scroll_offset_px: f32,
+        keyboard_inset: Pixels,
         view: WeakEntity<TerminalView>,
         terminal: WeakEntity<Terminal>,
         focus_handle: FocusHandle,
         focused: bool,
-        keyboard_request_pending: bool,
     ) -> Self {
         Self {
             content,
             size,
             scroll_offset_px,
+            keyboard_inset,
             view,
             terminal,
             focus_handle,
             focused,
-            keyboard_request_pending,
         }
     }
 
@@ -354,6 +356,7 @@ impl TerminalElement {
         display_offset: i32,
         grid_rows: usize,
         theme: &TerminalTheme,
+        detected_links: &[DetectedLink],
     ) -> (Vec<LayoutRect>, Vec<BatchedTextRun>, Vec<LayoutUnderline>) {
         let mut batched_runs: Vec<BatchedTextRun> = Vec::new();
         let mut rects: Vec<LayoutRect> = Vec::new();
@@ -381,6 +384,12 @@ impl TerminalElement {
             }
 
             underlines.extend(Self::line_hyperlink_underlines(&line_cells, line, theme));
+            underlines.extend(Self::line_plain_link_underlines(
+                &line_cells,
+                line,
+                theme,
+                detected_links,
+            ));
 
             for cell in line_cells {
                 let col = cell.point.column.0 as i32;
@@ -472,27 +481,24 @@ impl TerminalElement {
                 return;
             }
 
-            let Some(trimmed) = Terminal::trim_token(&raw) else {
+            let Some(trimmed) = Self::trim_underline_token(&raw) else {
                 return;
             };
 
-            if !has_explicit_hyperlink && Terminal::parse_terminal_link(&raw, None).is_none() {
+            if !has_explicit_hyperlink {
                 return;
             }
 
             let trimmed_start = trimmed.as_ptr() as usize - raw.as_ptr() as usize;
             let trimmed_end = trimmed_start + trimmed.len();
 
-            let trimmed_cells = token_cells
-                .iter()
-                .filter(|cell| cell.end > trimmed_start && cell.start < trimmed_end)
-                .collect_vec();
-            let Some(first_cell) = trimmed_cells.first() else {
+            let mut filtered = token_cells.iter().filter(|cell| {
+                cell.has_hyperlink && cell.end > trimmed_start && cell.start < trimmed_end
+            });
+            let Some(first_cell) = filtered.next() else {
                 return;
             };
-            let Some(last_cell) = trimmed_cells.last() else {
-                return;
-            };
+            let last_cell = filtered.last().unwrap_or(first_cell);
 
             let mut color = first_cell.color;
             color.a = (color.a * 0.55).clamp(0.0, 1.0);
@@ -547,6 +553,7 @@ impl TerminalElement {
                 start,
                 end,
                 color: fg_color,
+                has_hyperlink: cell.cell.hyperlink().is_some(),
             });
             token_has_explicit_hyperlink |= cell.cell.hyperlink().is_some();
         }
@@ -557,6 +564,105 @@ impl TerminalElement {
             &mut token_has_explicit_hyperlink,
             &mut underlines,
         );
+
+        underlines
+    }
+
+    fn trim_underline_token(token: &str) -> Option<&str> {
+        let trimmed = token.trim_matches(|c: char| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    '"' | '\'' | '`' | ',' | ';' | '(' | ')' | '[' | ']' | '{' | '}'
+                )
+        });
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.trim_end_matches(['.', ':']))
+        }
+    }
+
+    /// Generate underlines for plain-text detected links (URLs and file paths without OSC 8).
+    /// Skips cells that already have an OSC 8 hyperlink to avoid double-underlining.
+    fn line_plain_link_underlines(
+        cells: &[&IndexedCell],
+        line: i32,
+        theme: &TerminalTheme,
+        detected_links: &[DetectedLink],
+    ) -> Vec<LayoutUnderline> {
+        if detected_links.is_empty() {
+            return Vec::new();
+        }
+
+        let mut underlines: Vec<LayoutUnderline> = Vec::new();
+        let mut span_start: Option<i32> = None;
+        let mut span_color = gpui::black();
+        let mut span_next_col = 0i32;
+
+        for cell in cells {
+            let flags = cell.cell.flags;
+            if flags.contains(CellFlags::LEADING_WIDE_CHAR_SPACER)
+                || flags.contains(CellFlags::WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+
+            // Cells with OSC 8 links are handled by line_hyperlink_underlines.
+            if cell.cell.hyperlink().is_some() {
+                if let Some(start_col) = span_start.take() {
+                    let num = (span_next_col - start_col).max(0) as usize;
+                    if num > 0 {
+                        underlines.push(LayoutUnderline::new(line, start_col, num, span_color));
+                    }
+                }
+                continue;
+            }
+
+            let col = cell.point.column.0 as i32;
+            let alac_point = AlacPoint::new(cell.point.line, cell.point.column);
+
+            // Skip whitespace cells so wrap-indent gaps in continuation lines
+            // don't get an underline drawn beneath empty cells.
+            let is_blank_cell = matches!(cell.cell.c, ' ' | '\0' | '\t');
+            let in_link = !is_blank_cell
+                && detected_links
+                    .iter()
+                    .any(|l| crate::terminal::point_in_link(alac_point, l));
+
+            if in_link {
+                let fg = cell.cell.fg;
+                let bg = cell.cell.bg;
+                let (display_fg, _display_bg) = if flags.contains(CellFlags::INVERSE) {
+                    (bg, fg)
+                } else {
+                    (fg, bg)
+                };
+                let mut color = theme.convert_color(&display_fg);
+                if flags.contains(CellFlags::DIM) {
+                    color.a *= 0.7;
+                }
+                color.a = (color.a * 0.55).clamp(0.0, 1.0);
+
+                if span_start.is_none() {
+                    span_start = Some(col);
+                    span_color = color;
+                }
+                span_next_col = col + 1;
+            } else if let Some(start_col) = span_start.take() {
+                let num = (span_next_col - start_col).max(0) as usize;
+                if num > 0 {
+                    underlines.push(LayoutUnderline::new(line, start_col, num, span_color));
+                }
+            }
+        }
+
+        if let Some(start_col) = span_start {
+            let num = (span_next_col - start_col).max(0) as usize;
+            if num > 0 {
+                underlines.push(LayoutUnderline::new(line, start_col, num, span_color));
+            }
+        }
 
         underlines
     }
@@ -655,23 +761,8 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        window.handle_input(
-            &self.focus_handle,
-            TerminalInputHandler::new(self.terminal.clone(), bounds),
-            cx,
-        );
-        if self.keyboard_request_pending {
-            let view = self.view.clone();
-            let focus_handle = self.focus_handle.clone();
-            window.defer(cx, move |window, cx| {
-                let should_show = view
-                    .update(cx, |view, _cx| view.take_pending_keyboard_request())
-                    .unwrap_or(false);
-                if should_show && focus_handle.is_focused(window) {
-                    window.show_soft_keyboard();
-                }
-            });
-        }
+        let input_handler = TerminalInputHandler::new(self.terminal.clone(), bounds);
+        window.handle_input(&self.focus_handle, input_handler, cx);
 
         let cell_width = layout.cell_width;
         let line_height = layout.line_height;
@@ -680,8 +771,39 @@ impl Element for TerminalElement {
         let grid_width = cell_width * layout.content.grid_cols as f32;
         let x_offset = ((bounds.size.width - grid_width) * 0.5).max(px(0.0));
         let grid_origin = point(bounds.origin.x + x_offset, bounds.origin.y);
-        // Apply smooth scroll offset: shifts grid vertically for sub-line scrolling
-        let origin = point(grid_origin.x, grid_origin.y + px(self.scroll_offset_px));
+        // Apply smooth scroll offset: shifts grid vertically for sub-line scrolling.
+        // For non-alt mode with keyboard visible, also shift up to keep the cursor above
+        // the keyboard. Offset is purely cursor-based: shift only as much as needed to
+        // bring the cursor bottom into the visible area. When cursor is already above the
+        // keyboard (e.g. Claude output top-aligned) the offset is zero.
+        // For non-alt mode with keyboard visible: if the cursor sits below the visible
+        // area (i.e. behind the keyboard), shift the entire terminal up by the full
+        // keyboard inset so the cursor is clear of the keyboard. No shift when cursor
+        // is already above the keyboard — avoids moving top-aligned content (e.g. a fresh
+        // Claude session) unnecessarily.
+        let is_alt = layout
+            .content
+            .mode
+            .contains(alacritty_terminal::term::TermMode::ALT_SCREEN);
+        let keyboard_cursor_offset_px =
+            if !is_alt && self.keyboard_inset > px(0.0) && layout.content.display_offset == 0 {
+                let line_height_f = (line_height / px(1.0)) as f32;
+                let keyboard_f = (self.keyboard_inset / px(1.0)) as f32;
+                let visible_height = (bounds.size.height / px(1.0)) as f32 - keyboard_f;
+                let cursor_line = layout.content.cursor.point.line.0.max(0) as f32;
+                let cursor_bottom = (cursor_line + 1.0) * line_height_f;
+                if cursor_bottom > visible_height {
+                    keyboard_f
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+        let origin = point(
+            grid_origin.x,
+            grid_origin.y + px(self.scroll_offset_px) - px(keyboard_cursor_offset_px),
+        );
 
         let theme = TerminalTheme::one_dark();
 
@@ -694,6 +816,7 @@ impl Element for TerminalElement {
             layout.content.display_offset as i32,
             layout.content.grid_rows,
             &theme,
+            &layout.content.detected_links,
         );
 
         // Paint background rectangles first
@@ -732,19 +855,33 @@ impl Element for TerminalElement {
             &theme,
         );
 
+        // Store the actual painted origin (which already incorporates the
+        // smooth-scroll and keyboard-cursor offsets) so tap-to-grid conversion
+        // in TerminalView::handle_terminal_press maps to the same row the user
+        // sees on screen. Using the unshifted bounds origin would cause taps to
+        // miss links rendered above their grid coordinates when the keyboard is
+        // up.
+        let stored_origin = origin;
         let view = self.view.clone();
         window.defer(cx, move |_window, cx| {
             let _ = view.update(cx, |view, _cx| {
-                view.set_grid_origin(grid_origin);
+                view.set_grid_origin(stored_origin);
             });
         });
 
         // Reconcile the bounds with the actual size of the terminal.
-        // This may happen when the terminal is resized by layout changes, rotation
-        // or keyboard appearance/disappearance that push/pull an inset in TerminalView.
+        // This may happen when the terminal is resized by layout changes, rotation,
+        // or keyboard appearance/disappearance.
+        //
+        // Alt screen (vim, OpenCode): resize on any dimension change; TUIs need SIGWINCH.
+        // Non-alt screen (Claude, Codex): keep row count fixed only while the keyboard
+        // masks the bottom of the terminal. Other height changes still resize normally.
         let actual_rows = (bounds.size.height / line_height).floor() as usize;
         let actual_cols = (bounds.size.width / cell_width).floor() as usize;
-        if actual_rows != self.size.rows || actual_cols != self.size.columns {
+        let preserve_rows_for_keyboard = !is_alt && self.keyboard_inset > px(0.0);
+        let needs_reconcile = actual_cols != self.size.columns
+            || (!preserve_rows_for_keyboard && actual_rows != self.size.rows);
+        if needs_reconcile {
             let view = self.view.clone();
             let actual_bounds = bounds.size;
             window.defer(cx, move |_window, cx| {
@@ -772,27 +909,39 @@ mod tests {
             content.display_offset as i32,
             content.grid_rows,
             &TerminalTheme::one_dark(),
+            &content.detected_links,
         );
         underlines
     }
 
     #[test]
     fn underlines_plain_file_links() {
+        // "Visit " = 6 chars, "src/main.rs:12:3" = 16 chars
         let underlines = underline_spans(b"Visit src/main.rs:12:3 now\r\n");
 
         assert_eq!(underlines.len(), 1);
-        assert_eq!(underlines[0].line, 0);
         assert_eq!(underlines[0].col, 6);
         assert_eq!(underlines[0].num_cells, 16);
     }
 
     #[test]
-    fn trims_wrapped_plain_file_links() {
+    fn underlines_plain_file_links_stripped_of_surrounding_punctuation() {
+        // `("src/main.rs:12:3")` — inner `src/main.rs:12:3` starts at col 7, 16 chars
         let underlines = underline_spans(b"Open (\"src/main.rs:12:3\") next\r\n");
 
         assert_eq!(underlines.len(), 1);
         assert_eq!(underlines[0].col, 7);
         assert_eq!(underlines[0].num_cells, 16);
+    }
+
+    #[test]
+    fn underlines_plain_urls() {
+        // "Visit " = 6 chars, "https://zedra.dev" = 17 chars
+        let underlines = underline_spans(b"Visit https://zedra.dev now\r\n");
+
+        assert_eq!(underlines.len(), 1);
+        assert_eq!(underlines[0].col, 6);
+        assert_eq!(underlines[0].num_cells, 17);
     }
 
     #[test]
