@@ -12,6 +12,10 @@ pub struct OpenFile {
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
+pub struct AddSelectionToChat;
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
 pub struct OpenGitDiff {
     pub path: String,
     /// 0 = Staged, 1 = Unstaged, 2 = Untracked

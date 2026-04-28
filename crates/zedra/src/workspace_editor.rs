@@ -1,8 +1,10 @@
 use gpui::*;
 use zedra_session::SessionHandle;
 
-use crate::editor::code_editor::{EditorView, ParsedEditorSyntax};
-use crate::editor::markdown::{MarkdownView, is_markdown_path, parse_markdown_source};
+use crate::editor::code_editor::{CODE_EDITOR_SELECTION_AREA_ID, EditorView, ParsedEditorSyntax};
+use crate::editor::markdown::{
+    MARKDOWN_SELECTION_AREA_ID, MarkdownView, is_markdown_path, parse_markdown_source,
+};
 use crate::placeholder::render_placeholder;
 
 #[derive(Clone, Debug)]
@@ -168,6 +170,45 @@ impl WorkspaceEditor {
 
         self.read_task = Some(read_task);
     }
+
+    pub fn selected_agent_context_range(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> Option<EditorSelection> {
+        if !matches!(&self.state, FileState::Loaded) {
+            return None;
+        }
+
+        let selection = window.latest_read_only_selection()?;
+        let area_id = selection.area_id.to_string();
+        let (start, end) = match self.content {
+            EditorContent::Code if area_id == CODE_EDITOR_SELECTION_AREA_ID => self
+                .editor_view
+                .read(cx)
+                .line_range_for_selection(selection.range_utf16)?,
+            EditorContent::Markdown if area_id == MARKDOWN_SELECTION_AREA_ID => self
+                .markdown_view
+                .read(cx)
+                .line_range_for_selection(selection.range_utf16)?,
+            _ => return None,
+        };
+
+        Some(EditorSelection {
+            path: self.path.clone(),
+            start,
+            end,
+            text: selection.text,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EditorSelection {
+    pub path: String,
+    pub start: u32,
+    pub end: u32,
+    pub text: String,
 }
 
 impl Render for WorkspaceEditor {

@@ -10,6 +10,7 @@ use super::text_buffer::Buffer;
 use crate::fonts;
 use crate::platform_bridge;
 use crate::theme;
+use crate::workspace_action::AddSelectionToChat;
 
 const LINE_HEIGHT: f32 = theme::EDITOR_LINE_HEIGHT;
 const GUTTER_WIDTH: f32 = theme::EDITOR_GUTTER_WIDTH;
@@ -18,6 +19,7 @@ const GUTTER_FONT_SIZE: f32 = theme::EDITOR_GUTTER_FONT_SIZE;
 const BOTTOM_INSET_MIN: f32 = 100.0;
 const CODE_TEXT_COLOR: u32 = 0xabb2bf;
 const PENDING_SYNTAX_TEXT_COLOR: u32 = 0x7b8494;
+pub const CODE_EDITOR_SELECTION_AREA_ID: &str = "code-editor-selection";
 
 type LineHighlights = Vec<(Range<usize>, HighlightStyle)>;
 
@@ -124,6 +126,15 @@ impl EditorView {
         self.highlighter.language()
     }
 
+    pub fn line_range_for_selection(&self, range_utf16: Range<usize>) -> Option<(u32, u32)> {
+        let lines = self
+            .cached_lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>();
+        line_range_for_selection_lines(&lines, range_utf16)
+    }
+
     /// Rebuild the cached line data from the buffer text only.
     fn rebuild_line_cache(&mut self) {
         let line_count = self.buffer.line_count();
@@ -200,6 +211,44 @@ fn line_highlights_for_source(
     }
 
     super::merge_highlights(result)
+}
+
+fn selectable_line_len_utf16(line: &str) -> usize {
+    if line.is_empty() {
+        " ".encode_utf16().count()
+    } else {
+        line.encode_utf16().count()
+    }
+}
+
+fn line_range_for_selection_lines(lines: &[&str], range_utf16: Range<usize>) -> Option<(u32, u32)> {
+    if lines.is_empty() || range_utf16.is_empty() {
+        return None;
+    }
+
+    let selection_start = range_utf16.start;
+    let selection_end = range_utf16.end.saturating_sub(1);
+    let mut offset = 0;
+    let mut start_line = None;
+
+    for (line_index, line) in lines.iter().enumerate() {
+        let content_len = selectable_line_len_utf16(line);
+        let separator_len = usize::from(line_index + 1 < lines.len());
+        let segment_end = offset + content_len + separator_len;
+        let line_number = line_index as u32 + 1;
+
+        if start_line.is_none() && selection_start < segment_end {
+            start_line = Some(line_number);
+        }
+
+        if selection_end < segment_end {
+            return start_line.map(|start| (start, line_number));
+        }
+
+        offset = segment_end;
+    }
+
+    start_line.map(|start| (start, lines.len() as u32))
 }
 
 impl Render for EditorView {
@@ -349,7 +398,8 @@ impl Render for EditorView {
                     .track_scroll(&self.scroll_handle)
                     .flex_1(),
                 )
-                .id("code-editor-selection"),
+                .id(CODE_EDITOR_SELECTION_AREA_ID)
+                .action("Add to Chat", AddSelectionToChat),
             )
     }
 }
@@ -360,9 +410,26 @@ mod tests {
 
     use super::{
         CODE_TEXT_COLOR, EditorView, PENDING_SYNTAX_TEXT_COLOR, ParsedEditorSyntax,
-        code_text_color_for_highlighter,
+        code_text_color_for_highlighter, line_range_for_selection_lines,
     };
     use crate::editor::syntax_highlighter::{Highlighter, Language};
+
+    #[test]
+    fn maps_utf16_selection_to_code_lines() {
+        let lines = ["alpha", "beta", "gamma"];
+
+        assert_eq!(line_range_for_selection_lines(&lines, 0..5), Some((1, 1)));
+        assert_eq!(line_range_for_selection_lines(&lines, 2..8), Some((1, 2)));
+        assert_eq!(line_range_for_selection_lines(&lines, 8..16), Some((2, 3)));
+    }
+
+    #[test]
+    fn maps_empty_rendered_lines_to_their_own_line_number() {
+        let lines = ["alpha", "", "gamma"];
+
+        assert_eq!(line_range_for_selection_lines(&lines, 6..7), Some((2, 2)));
+        assert_eq!(line_range_for_selection_lines(&lines, 6..13), Some((2, 3)));
+    }
 
     #[test]
     fn applies_parsed_syntax_to_cached_line_highlights() {

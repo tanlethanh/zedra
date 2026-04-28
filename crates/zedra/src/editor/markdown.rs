@@ -1,6 +1,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -9,10 +10,12 @@ use crate::fonts;
 use crate::native_presentation;
 use crate::platform_bridge;
 use crate::theme;
+use crate::workspace_action::AddSelectionToChat;
 
 // Enough offscreen content to keep fast mobile scrolls smooth without
 // measuring the full markdown document.
 const MARKDOWN_LIST_OVERDRAW_PX: f32 = 1200.0;
+pub const MARKDOWN_SELECTION_AREA_ID: &str = "markdown-preview-selection";
 
 pub struct MarkdownView {
     document: MarkdownDocument,
@@ -48,6 +51,10 @@ impl MarkdownView {
     pub fn set_source(&mut self, source: impl Into<SharedString>) {
         let source = source.into();
         self.replace_document(parse_document(source.as_ref()));
+    }
+
+    pub fn line_range_for_selection(&self, range_utf16: Range<usize>) -> Option<(u32, u32)> {
+        self.document.line_range_for_selection(range_utf16)
     }
 
     pub(crate) fn set_parsed_source(&mut self, parsed: ParsedMarkdownSource) {
@@ -95,10 +102,16 @@ pub fn is_markdown_path(path: &str) -> bool {
 
 #[derive(Clone, Debug)]
 struct MarkdownDocument {
+    source: Arc<str>,
     blocks: Arc<[Block]>,
+    selection_map: Arc<[MarkdownSelectionSegment]>,
 }
 
 impl MarkdownDocument {
+    fn line_range_for_selection(&self, range_utf16: Range<usize>) -> Option<(u32, u32)> {
+        line_range_for_selection_map(&self.source, &self.selection_map, range_utf16)
+    }
+
     #[cfg(test)]
     fn total_block_count(&self) -> usize {
         self.blocks.iter().map(Block::total_block_count).sum()
@@ -108,9 +121,17 @@ impl MarkdownDocument {
 impl Default for MarkdownDocument {
     fn default() -> Self {
         Self {
+            source: Arc::from(""),
             blocks: Vec::new().into(),
+            selection_map: Vec::new().into(),
         }
     }
+}
+
+#[derive(Clone, Debug)]
+struct MarkdownSelectionSegment {
+    len_utf16: usize,
+    source_range: Range<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -234,7 +255,8 @@ impl Render for MarkdownView {
             .min_h_0()
             .child(
                 selection_area(markdown_list)
-                    .id("markdown-preview-selection")
+                    .id(MARKDOWN_SELECTION_AREA_ID)
+                    .action("Add to Chat", AddSelectionToChat)
                     .into_any_element(),
             )
     }
@@ -255,11 +277,529 @@ fn parse_document(source: &str) -> MarkdownDocument {
     options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
     options.insert(Options::ENABLE_GFM);
 
-    let events = Parser::new_ext(source, options).collect::<Vec<_>>();
+    let offset_events = Parser::new_ext(source, options)
+        .into_offset_iter()
+        .collect::<Vec<_>>();
+    let events = offset_events
+        .iter()
+        .map(|(event, _)| event.clone())
+        .collect::<Vec<_>>();
     let mut cursor = 0;
+    let mut selection_cursor = 0;
+    let mut selection_map = Vec::new();
+    build_selection_blocks(
+        source,
+        &offset_events,
+        &mut selection_cursor,
+        None,
+        &mut selection_map,
+    );
+
     MarkdownDocument {
+        source: Arc::from(source),
         blocks: parse_blocks(&events, &mut cursor, None).into(),
+        selection_map: selection_map.into(),
     }
+}
+
+fn build_selection_blocks(
+    source: &str,
+    events: &[(Event<'_>, Range<usize>)],
+    cursor: &mut usize,
+    end: Option<TagEnd>,
+    map: &mut Vec<MarkdownSelectionSegment>,
+) -> Option<Range<usize>> {
+    let mut source_range = None;
+
+    while *cursor < events.len() {
+        let (event, event_range) = &events[*cursor];
+        match event {
+            Event::End(tag_end) if Some(*tag_end) == end => {
+                merge_source_range(&mut source_range, event_range.clone());
+                *cursor += 1;
+                break;
+            }
+            Event::Start(Tag::Paragraph) => {
+                let start_range = event_range.clone();
+                *cursor += 1;
+                let block_range = build_selection_inlines(events, cursor, TagEnd::Paragraph, map)
+                    .unwrap_or(start_range);
+                push_selection_segment(map, "\n", block_range.clone());
+                merge_source_range(&mut source_range, block_range);
+            }
+            Event::Start(Tag::Heading { level, .. }) => {
+                let level = *level;
+                let start_range = event_range.clone();
+                *cursor += 1;
+                let block_range =
+                    build_selection_inlines(events, cursor, TagEnd::Heading(level), map)
+                        .unwrap_or(start_range);
+                push_selection_segment(map, "\n", block_range.clone());
+                merge_source_range(&mut source_range, block_range);
+            }
+            Event::Start(Tag::BlockQuote(_)) => {
+                let end_tag = match event {
+                    Event::Start(Tag::BlockQuote(kind)) => TagEnd::BlockQuote(*kind),
+                    _ => unreachable!(),
+                };
+                let start_range = event_range.clone();
+                *cursor += 1;
+                let block_range =
+                    build_selection_blocks(source, events, cursor, Some(end_tag), map)
+                        .unwrap_or(start_range);
+                merge_source_range(&mut source_range, block_range);
+            }
+            Event::Start(Tag::List(start)) => {
+                let ordered = start.is_some();
+                let start_number = start.unwrap_or(1) as usize;
+                let list_start_range = event_range.clone();
+                let mut list_range = Some(list_start_range);
+                let mut item_ix = 0;
+                *cursor += 1;
+
+                while *cursor < events.len() {
+                    let (event, event_range) = &events[*cursor];
+                    match event {
+                        Event::End(TagEnd::List(_)) => {
+                            merge_source_range(&mut list_range, event_range.clone());
+                            *cursor += 1;
+                            break;
+                        }
+                        Event::Start(Tag::Item) => {
+                            let item_range = event_range.clone();
+                            let marker = if ordered {
+                                format!("{}.", start_number + item_ix)
+                            } else {
+                                "•".to_string()
+                            };
+                            push_selection_segment(map, &marker, item_range.clone());
+                            push_selection_segment(map, " ", item_range.clone());
+                            *cursor += 1;
+
+                            let child_range = build_selection_blocks(
+                                source,
+                                events,
+                                cursor,
+                                Some(TagEnd::Item),
+                                map,
+                            )
+                            .unwrap_or_else(|| item_range.clone());
+                            merge_source_range(&mut list_range, item_range);
+                            merge_source_range(&mut list_range, child_range);
+                            item_ix += 1;
+                        }
+                        _ => *cursor += 1,
+                    }
+                }
+
+                if let Some(list_range) = list_range {
+                    merge_source_range(&mut source_range, list_range);
+                }
+            }
+            Event::Start(Tag::CodeBlock(kind)) => {
+                let block_start_range = event_range.clone();
+                let info = match kind {
+                    CodeBlockKind::Indented => None,
+                    CodeBlockKind::Fenced(info) => {
+                        let value = info.trim();
+                        (!value.is_empty()).then(|| value.to_string())
+                    }
+                };
+                let is_fenced = matches!(kind, CodeBlockKind::Fenced(_));
+                if let Some(info) = info {
+                    push_selection_segment(map, &info, block_start_range.clone());
+                    push_selection_segment(map, "\n", block_start_range.clone());
+                }
+
+                *cursor += 1;
+                let mut text = String::new();
+                let mut text_range = None;
+                while *cursor < events.len() {
+                    let (event, event_range) = &events[*cursor];
+                    match event {
+                        Event::End(TagEnd::CodeBlock) => {
+                            merge_source_range(&mut text_range, event_range.clone());
+                            *cursor += 1;
+                            break;
+                        }
+                        Event::Text(value)
+                        | Event::Code(value)
+                        | Event::Html(value)
+                        | Event::InlineHtml(value) => {
+                            merge_source_range(&mut text_range, event_range.clone());
+                            text.push_str(value);
+                            *cursor += 1;
+                        }
+                        Event::SoftBreak | Event::HardBreak => {
+                            merge_source_range(&mut text_range, event_range.clone());
+                            text.push('\n');
+                            *cursor += 1;
+                        }
+                        _ => *cursor += 1,
+                    }
+                }
+
+                let text_start = code_content_start(source, &block_start_range, is_fenced);
+                push_code_text_selection_segments(map, &text, text_start);
+                merge_source_range(&mut source_range, block_start_range);
+                if let Some(text_range) = text_range {
+                    merge_source_range(&mut source_range, text_range);
+                }
+            }
+            Event::Start(Tag::Table(_)) => {
+                let table_start_range = event_range.clone();
+                *cursor += 1;
+                let table_range =
+                    build_selection_table(events, cursor, map).unwrap_or(table_start_range);
+                merge_source_range(&mut source_range, table_range);
+            }
+            Event::Rule => {
+                merge_source_range(&mut source_range, event_range.clone());
+                *cursor += 1;
+            }
+            Event::Html(html) | Event::InlineHtml(html) => {
+                push_selection_segment(map, html, event_range.clone());
+                push_selection_segment(map, "\n", event_range.clone());
+                merge_source_range(&mut source_range, event_range.clone());
+                *cursor += 1;
+            }
+            Event::SoftBreak
+            | Event::HardBreak
+            | Event::Text(_)
+            | Event::Code(_)
+            | Event::TaskListMarker(_) => {
+                let block_range = build_selection_inlines_loose(events, cursor, map)
+                    .unwrap_or_else(|| event_range.clone());
+                push_selection_segment(map, "\n", block_range.clone());
+                merge_source_range(&mut source_range, block_range);
+            }
+            _ => {
+                merge_source_range(&mut source_range, event_range.clone());
+                *cursor += 1;
+            }
+        }
+    }
+
+    source_range
+}
+
+fn build_selection_table(
+    events: &[(Event<'_>, Range<usize>)],
+    cursor: &mut usize,
+    map: &mut Vec<MarkdownSelectionSegment>,
+) -> Option<Range<usize>> {
+    let mut source_range = None;
+
+    while *cursor < events.len() {
+        let (event, event_range) = &events[*cursor];
+        match event {
+            Event::End(TagEnd::Table) => {
+                merge_source_range(&mut source_range, event_range.clone());
+                *cursor += 1;
+                break;
+            }
+            Event::Start(Tag::TableHead) => {
+                merge_source_range(&mut source_range, event_range.clone());
+                *cursor += 1;
+            }
+            Event::End(TagEnd::TableHead) => {
+                merge_source_range(&mut source_range, event_range.clone());
+                *cursor += 1;
+            }
+            Event::Start(Tag::TableRow) => {
+                merge_source_range(&mut source_range, event_range.clone());
+                *cursor += 1;
+            }
+            Event::End(TagEnd::TableRow) => {
+                merge_source_range(&mut source_range, event_range.clone());
+                *cursor += 1;
+            }
+            Event::Start(Tag::TableCell) => {
+                let cell_start_range = event_range.clone();
+                *cursor += 1;
+                let cell_range = build_selection_inlines(events, cursor, TagEnd::TableCell, map)
+                    .unwrap_or(cell_start_range);
+                push_selection_segment(map, "\t", cell_range.clone());
+                merge_source_range(&mut source_range, cell_range);
+            }
+            _ => {
+                merge_source_range(&mut source_range, event_range.clone());
+                *cursor += 1;
+            }
+        }
+    }
+
+    source_range
+}
+
+fn build_selection_inlines_loose(
+    events: &[(Event<'_>, Range<usize>)],
+    cursor: &mut usize,
+    map: &mut Vec<MarkdownSelectionSegment>,
+) -> Option<Range<usize>> {
+    let mut source_range = None;
+
+    while *cursor < events.len() {
+        match &events[*cursor].0 {
+            Event::Start(Tag::Paragraph)
+            | Event::Start(Tag::Heading { .. })
+            | Event::Start(Tag::BlockQuote(_))
+            | Event::Start(Tag::List(_))
+            | Event::Start(Tag::CodeBlock(_))
+            | Event::Start(Tag::Table(_))
+            | Event::Rule
+            | Event::End(_) => break,
+            _ => {
+                let inline_range = build_selection_inline_event(events, cursor, map);
+                merge_optional_source_range(&mut source_range, inline_range);
+            }
+        }
+    }
+
+    source_range
+}
+
+fn build_selection_inlines(
+    events: &[(Event<'_>, Range<usize>)],
+    cursor: &mut usize,
+    end: TagEnd,
+    map: &mut Vec<MarkdownSelectionSegment>,
+) -> Option<Range<usize>> {
+    let mut source_range = None;
+
+    while *cursor < events.len() {
+        if let Event::End(tag_end) = &events[*cursor].0
+            && *tag_end == end
+        {
+            merge_source_range(&mut source_range, events[*cursor].1.clone());
+            *cursor += 1;
+            break;
+        }
+
+        let inline_range = build_selection_inline_event(events, cursor, map);
+        merge_optional_source_range(&mut source_range, inline_range);
+    }
+
+    source_range
+}
+
+fn build_selection_inline_event(
+    events: &[(Event<'_>, Range<usize>)],
+    cursor: &mut usize,
+    map: &mut Vec<MarkdownSelectionSegment>,
+) -> Option<Range<usize>> {
+    let (event, event_range) = &events[*cursor];
+    match event {
+        Event::Text(text) | Event::Code(text) | Event::Html(text) | Event::InlineHtml(text) => {
+            push_selection_segment(map, text, event_range.clone());
+            *cursor += 1;
+            Some(event_range.clone())
+        }
+        Event::SoftBreak => {
+            push_selection_segment(map, " ", event_range.clone());
+            *cursor += 1;
+            Some(event_range.clone())
+        }
+        Event::HardBreak => {
+            push_selection_segment(map, "\n", event_range.clone());
+            *cursor += 1;
+            Some(event_range.clone())
+        }
+        Event::TaskListMarker(checked) => {
+            push_selection_segment(
+                map,
+                if *checked { "[x]" } else { "[ ]" },
+                event_range.clone(),
+            );
+            push_selection_segment(map, " ", event_range.clone());
+            *cursor += 1;
+            Some(event_range.clone())
+        }
+        Event::Start(Tag::Emphasis) => {
+            let start_range = event_range.clone();
+            *cursor += 1;
+            let mut range = Some(start_range);
+            merge_optional_source_range(
+                &mut range,
+                build_selection_inlines(events, cursor, TagEnd::Emphasis, map),
+            );
+            range
+        }
+        Event::Start(Tag::Strong) => {
+            let start_range = event_range.clone();
+            *cursor += 1;
+            let mut range = Some(start_range);
+            merge_optional_source_range(
+                &mut range,
+                build_selection_inlines(events, cursor, TagEnd::Strong, map),
+            );
+            range
+        }
+        Event::Start(Tag::Strikethrough) => {
+            let start_range = event_range.clone();
+            *cursor += 1;
+            let mut range = Some(start_range);
+            merge_optional_source_range(
+                &mut range,
+                build_selection_inlines(events, cursor, TagEnd::Strikethrough, map),
+            );
+            range
+        }
+        Event::Start(Tag::Link { .. }) => {
+            let start_range = event_range.clone();
+            *cursor += 1;
+            let mut range = Some(start_range);
+            merge_optional_source_range(
+                &mut range,
+                build_selection_inlines(events, cursor, TagEnd::Link, map),
+            );
+            range
+        }
+        Event::Start(_) | Event::End(_) => {
+            let range = event_range.clone();
+            *cursor += 1;
+            Some(range)
+        }
+        _ => {
+            let range = event_range.clone();
+            *cursor += 1;
+            Some(range)
+        }
+    }
+}
+
+fn push_code_text_selection_segments(
+    map: &mut Vec<MarkdownSelectionSegment>,
+    text: &str,
+    source_start: usize,
+) {
+    if text.is_empty() {
+        return;
+    }
+
+    let mut byte_offset = 0;
+    for raw_line in text.split_inclusive('\n') {
+        let line = raw_line
+            .strip_suffix('\n')
+            .unwrap_or(raw_line)
+            .strip_suffix('\r')
+            .unwrap_or_else(|| raw_line.strip_suffix('\n').unwrap_or(raw_line));
+        let line_source_start = source_start + byte_offset;
+        let line_source_end = line_source_start + line.len();
+        let source_range = line_source_start..line_source_end;
+        let rendered_line = if line.is_empty() { " " } else { line };
+
+        push_selection_segment(map, rendered_line, source_range.clone());
+        push_selection_segment(map, "\n", source_range);
+        byte_offset += raw_line.len();
+    }
+}
+
+fn code_content_start(source: &str, block_range: &Range<usize>, is_fenced: bool) -> usize {
+    let source_len = source.len();
+    let start = block_range.start.min(source_len);
+    if !is_fenced {
+        return start;
+    }
+
+    let end = block_range.end.min(source_len);
+    source.as_bytes()[start..end]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map(|newline_offset| start + newline_offset + 1)
+        .unwrap_or(start)
+}
+
+fn push_selection_segment(
+    map: &mut Vec<MarkdownSelectionSegment>,
+    text: &str,
+    source_range: Range<usize>,
+) {
+    let len_utf16 = text.encode_utf16().count();
+    if len_utf16 == 0 {
+        return;
+    }
+    if let Some(last) = map.last_mut()
+        && last.source_range == source_range
+    {
+        last.len_utf16 += len_utf16;
+        return;
+    }
+    map.push(MarkdownSelectionSegment {
+        len_utf16,
+        source_range,
+    });
+}
+
+fn merge_optional_source_range(current: &mut Option<Range<usize>>, range: Option<Range<usize>>) {
+    if let Some(range) = range {
+        merge_source_range(current, range);
+    }
+}
+
+fn merge_source_range(current: &mut Option<Range<usize>>, range: Range<usize>) {
+    if let Some(current) = current {
+        current.start = current.start.min(range.start);
+        current.end = current.end.max(range.end);
+    } else {
+        *current = Some(range);
+    }
+}
+
+fn line_range_for_selection_map(
+    source: &str,
+    map: &[MarkdownSelectionSegment],
+    range_utf16: Range<usize>,
+) -> Option<(u32, u32)> {
+    if source.is_empty() || map.is_empty() || range_utf16.is_empty() {
+        return None;
+    }
+
+    let selection_start = range_utf16.start;
+    let selection_end = range_utf16.end.saturating_sub(1);
+    let mut offset = 0;
+    let mut start_line = None;
+
+    for segment in map {
+        let segment_end = offset + segment.len_utf16;
+        if start_line.is_none() && selection_start < segment_end {
+            start_line = Some(line_number_for_source_range_start(
+                source,
+                &segment.source_range,
+            ));
+        }
+
+        if selection_end < segment_end {
+            let end_line = line_number_for_source_range_end(source, &segment.source_range);
+            return start_line.map(|start| (start, end_line.max(start)));
+        }
+
+        offset = segment_end;
+    }
+
+    start_line.map(|start| (start, line_number_for_byte_offset(source, source.len())))
+}
+
+fn line_number_for_source_range_start(source: &str, range: &Range<usize>) -> u32 {
+    line_number_for_byte_offset(source, range.start)
+}
+
+fn line_number_for_source_range_end(source: &str, range: &Range<usize>) -> u32 {
+    let byte_offset = if range.end > range.start {
+        range.end.saturating_sub(1)
+    } else {
+        range.start
+    };
+    line_number_for_byte_offset(source, byte_offset)
+}
+
+fn line_number_for_byte_offset(source: &str, byte_offset: usize) -> u32 {
+    let byte_offset = byte_offset.min(source.len());
+    source.as_bytes()[..byte_offset]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count() as u32
+        + 1
 }
 
 fn parse_blocks(events: &[Event<'_>], cursor: &mut usize, end: Option<TagEnd>) -> Vec<Block> {
@@ -1017,6 +1557,40 @@ fn main() {}
         assert!(matches!(document.blocks[4], Block::CodeBlock { .. }));
         assert!(matches!(document.blocks[5], Block::Table(_)));
         assert!(document.total_block_count() > document.blocks.len());
+    }
+
+    #[test]
+    fn maps_markdown_selection_to_source_lines() {
+        let document = parse_document("# Title\n\nBody paragraph.\n");
+
+        assert_eq!(document.line_range_for_selection(0..5), Some((1, 1)));
+        assert_eq!(document.line_range_for_selection(0..11), Some((1, 3)));
+    }
+
+    #[test]
+    fn maps_markdown_code_block_selection_to_source_lines() {
+        let document = parse_document("```rust\nfn main() {}\n\n```\n");
+
+        assert_eq!(document.line_range_for_selection(5..17), Some((2, 2)));
+        assert_eq!(document.line_range_for_selection(18..19), Some((3, 3)));
+    }
+
+    #[test]
+    fn maps_markdown_task_list_selection_to_source_lines() {
+        let document = parse_document("- [x] Done\n- Todo\n");
+
+        assert_eq!(document.line_range_for_selection(0..11), Some((1, 1)));
+        assert_eq!(document.line_range_for_selection(11..18), Some((2, 2)));
+        assert_eq!(document.line_range_for_selection(0..18), Some((1, 2)));
+    }
+
+    #[test]
+    fn maps_markdown_table_selection_to_source_lines() {
+        let document = parse_document("| A | B |\n| - | - |\n| 1 | 2 |\n");
+
+        assert_eq!(document.line_range_for_selection(0..4), Some((1, 1)));
+        assert_eq!(document.line_range_for_selection(4..8), Some((3, 3)));
+        assert_eq!(document.line_range_for_selection(0..8), Some((1, 3)));
     }
 
     #[test]
