@@ -323,16 +323,24 @@ impl Render for HomeView {
                             .flex_row()
                             .gap(px(theme::SPACING_LG))
                             .opacity(0.8)
-                            .child(social_button("btn-xcom", "icons/xcom.svg", XCOM_URL, cx))
+                            .child(social_button(
+                                "btn-xcom",
+                                "icons/xcom.svg",
+                                26.0,
+                                XCOM_URL,
+                                cx,
+                            ))
                             .child(social_button(
                                 "btn-github",
                                 "icons/github.svg",
+                                32.0,
                                 GITHUB_URL,
                                 cx,
                             ))
                             .child(social_button(
                                 "btn-discord",
                                 "icons/discord.svg",
+                                36.0,
                                 DISCORD_URL,
                                 cx,
                             )),
@@ -350,7 +358,12 @@ impl Render for HomeView {
 fn app_version_text() -> String {
     static APP_VERSION_TEXT: OnceLock<String> = OnceLock::new();
     APP_VERSION_TEXT
-        .get_or_init(|| format!("v{}", platform_bridge::app_version_with_build_number()))
+        .get_or_init(|| {
+            format!(
+                "zedra v{}",
+                platform_bridge::app_version_with_build_number()
+            )
+        })
         .clone()
 }
 
@@ -424,6 +437,7 @@ fn workspace_card(
 fn social_button(
     id: &'static str,
     icon: &'static str,
+    size: f32,
     url: &'static str,
     cx: &mut Context<HomeView>,
 ) -> impl IntoElement {
@@ -440,7 +454,7 @@ fn social_button(
         .child(
             svg()
                 .path(icon)
-                .size(px(32.0))
+                .size(px(size))
                 .text_color(rgb(theme::TEXT_MUTED)),
         )
 }
