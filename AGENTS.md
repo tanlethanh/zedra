@@ -44,6 +44,12 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
   - `bun run format`
   - `bun run check`
 
+## Git Commits
+
+- Use commit subjects in the form `feat|fix|chore|docs: <description>`.
+- When the change is scoped to a platform, feature, or crate, use `type(scope): <description>`, such as `feat(ios): ...`, `fix(host): ...`, or `chore(rpc): ...`.
+- Commits must include only changes related to the current feature or fix. Never stage or commit unrelated work, even when the worktree has multiple concurrent edits.
+
 ## Platform Scope
 
 - iOS is the primary development path. See `docs/IOS_WORKFLOW.md` for build, install, launch, and logging commands.
@@ -61,7 +67,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 
 ## Docs Map
 
-- `docs/CONVENTIONS.md` — imports, logging, async runtime choice, `WorkspaceState`, platform bridge, scroll container rules
+- `docs/CONVENTIONS.md` — imports, logging, git commit subjects, async runtime choice, `WorkspaceState`, platform bridge, scroll container rules
 - `docs/ARCHITECTURE.md` — crate boundaries, session flow, auth, RPC, transport
 - `docs/DESIGN.md` — product UI tone and component direction
 - `docs/IOS_WORKFLOW.md` — iOS build pipeline, FFI workflow, pitfalls
