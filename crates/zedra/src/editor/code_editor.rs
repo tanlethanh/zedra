@@ -2,7 +2,6 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use gpui::*;
-use tracing::*;
 
 use super::syntax_highlighter::{Highlighter, Language};
 use super::syntax_theme::SyntaxTheme;
@@ -17,24 +16,49 @@ const GUTTER_WIDTH: f32 = theme::EDITOR_GUTTER_WIDTH;
 const FONT_SIZE: f32 = theme::EDITOR_FONT_SIZE;
 const GUTTER_FONT_SIZE: f32 = theme::EDITOR_GUTTER_FONT_SIZE;
 const BOTTOM_INSET_MIN: f32 = 100.0;
+const CODE_TEXT_COLOR: u32 = 0xabb2bf;
+const PENDING_SYNTAX_TEXT_COLOR: u32 = 0x7b8494;
 
-/// Cached per-line data (text, line number, syntax highlights).
+type LineHighlights = Vec<(Range<usize>, HighlightStyle)>;
+
+/// Cached per-line data (text, line number).
 /// Recomputed only when the buffer content changes, NOT on every scroll frame.
 struct CachedLine {
     text: String,
     number: String,
-    highlights: Vec<(Range<usize>, HighlightStyle)>,
+}
+
+pub struct ParsedEditorSyntax {
+    highlighter: Highlighter,
+    line_highlights: Vec<LineHighlights>,
+}
+
+impl ParsedEditorSyntax {
+    pub fn build(filename: &str, content: String) -> Self {
+        let mut highlighter = Highlighter::from_filename(filename);
+        highlighter.parse(&content);
+        let theme = SyntaxTheme::default_dark();
+        let buffer = Buffer::new(content);
+        let line_highlights = build_line_highlights(&buffer, &highlighter, &theme);
+        Self {
+            highlighter,
+            line_highlights,
+        }
+    }
 }
 
 /// A code editor view with syntax highlighting and virtual scrolling.
 pub struct EditorView {
     buffer: Buffer,
-    highlighter: Highlighter,
+    highlighter: Rc<Highlighter>,
     theme: SyntaxTheme,
     scroll_handle: UniformListScrollHandle,
     /// Cached line data shared with the uniform_list closure via Rc.
     /// Only rebuilt when the buffer content changes.
     cached_lines: Rc<Vec<CachedLine>>,
+    /// Syntax highlight data matching `cached_lines` by index. Built off the UI thread for
+    /// remote file opens, then swapped in without rebuilding the line text cache.
+    cached_line_highlights: Rc<Vec<LineHighlights>>,
     /// Whether cached_lines needs rebuilding.
     lines_dirty: bool,
     /// Horizontal scroll offset in logical pixels.
@@ -64,10 +88,11 @@ impl EditorView {
     fn build(content: String, highlighter: Highlighter) -> Self {
         Self {
             buffer: Buffer::new(content),
-            highlighter,
+            highlighter: Rc::new(highlighter),
             theme: SyntaxTheme::default_dark(),
             scroll_handle: UniformListScrollHandle::new(),
             cached_lines: Rc::new(Vec::new()),
+            cached_line_highlights: Rc::new(Vec::new()),
             lines_dirty: true,
             h_scroll_offset: 0.0,
             max_line_chars: 0,
@@ -78,58 +103,103 @@ impl EditorView {
     /// Replace the entire buffer content (e.g. when loading a remote file).
     /// The language is detected from the filename.
     pub fn set_content(&mut self, filename: &str, content: String) {
-        self.highlighter = Highlighter::from_filename(filename);
+        self.highlighter = Rc::new(Highlighter::from_filename(filename));
         self.buffer.set_text(content);
-        self.highlighter.parse(self.buffer.text());
+        self.cached_line_highlights = Rc::new(Vec::new());
         self.lines_dirty = true;
         self.h_scroll_offset = 0.0;
         self.h_scroll_active = false;
+    }
+
+    pub fn apply_parsed_syntax(&mut self, parsed: ParsedEditorSyntax) {
+        let ParsedEditorSyntax {
+            highlighter,
+            line_highlights,
+        } = parsed;
+        self.highlighter = Rc::new(highlighter);
+        self.cached_line_highlights = Rc::new(line_highlights);
     }
 
     pub fn language(&self) -> Language {
         self.highlighter.language()
     }
 
-    /// Rebuild the cached line data from the buffer and highlighter.
+    /// Rebuild the cached line data from the buffer text only.
     fn rebuild_line_cache(&mut self) {
         let line_count = self.buffer.line_count();
         let lines: Vec<CachedLine> = (0..line_count)
             .map(|line| CachedLine {
                 text: self.buffer.line_text(line).to_string(),
                 number: format!("{:>4}", line + 1),
-                highlights: self.line_highlights(line),
             })
             .collect();
         self.max_line_chars = lines.iter().map(|l| l.text.len()).max().unwrap_or(0);
+        if self.cached_line_highlights.len() != line_count {
+            self.cached_line_highlights = if self.highlighter.is_waiting_for_syntax() {
+                Rc::new(vec![Vec::new(); line_count])
+            } else {
+                Rc::new(build_line_highlights(
+                    &self.buffer,
+                    &self.highlighter,
+                    &self.theme,
+                ))
+            };
+        }
         self.cached_lines = Rc::new(lines);
         self.lines_dirty = false;
     }
+}
 
-    /// Compute syntax highlights for a single line, with byte ranges relative
-    /// to the start of that line's text (stripping trailing newline).
-    /// Ranges are sorted and non-overlapping (required by GPUI's compute_runs).
-    fn line_highlights(&self, line: usize) -> Vec<(Range<usize>, HighlightStyle)> {
-        let byte_range = self.buffer.line_byte_range(line);
-        let source = self.buffer.text();
-        let line_text = self.buffer.line_text(line);
+fn code_text_color_for_highlighter(highlighter: &Highlighter) -> u32 {
+    if highlighter.is_waiting_for_syntax() {
+        PENDING_SYNTAX_TEXT_COLOR
+    } else {
+        CODE_TEXT_COLOR
+    }
+}
 
-        let raw_highlights = self.highlighter.highlights(source, byte_range.clone());
-        let line_start = byte_range.start;
-        let line_end = line_start + line_text.len();
+fn build_line_highlights(
+    buffer: &Buffer,
+    highlighter: &Highlighter,
+    theme: &SyntaxTheme,
+) -> Vec<LineHighlights> {
+    (0..buffer.line_count())
+        .map(|line| {
+            let line_text = buffer.line_text(line);
+            line_highlights_for_source(
+                buffer.text(),
+                highlighter,
+                theme,
+                buffer.line_byte_range(line),
+                line_text.len(),
+            )
+        })
+        .collect()
+}
 
-        let mut result: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
-        for (span_range, capture_name) in &raw_highlights {
-            if let Some(style) = self.theme.get(capture_name) {
-                let start = span_range.start.max(line_start) - line_start;
-                let end = span_range.end.min(line_end) - line_start;
-                if start < end {
-                    result.push((start..end, style));
-                }
+fn line_highlights_for_source(
+    source: &str,
+    highlighter: &Highlighter,
+    theme: &SyntaxTheme,
+    byte_range: Range<usize>,
+    line_text_len: usize,
+) -> Vec<(Range<usize>, HighlightStyle)> {
+    let raw_highlights = highlighter.highlights(source, byte_range.clone());
+    let line_start = byte_range.start;
+    let line_end = line_start + line_text_len;
+
+    let mut result: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
+    for (span_range, capture_name) in &raw_highlights {
+        if let Some(style) = theme.get(capture_name) {
+            let start = span_range.start.max(line_start) - line_start;
+            let end = span_range.end.min(line_end) - line_start;
+            if start < end {
+                result.push((start..end, style));
             }
         }
-
-        super::merge_highlights(result)
     }
+
+    super::merge_highlights(result)
 }
 
 impl Render for EditorView {
@@ -137,12 +207,12 @@ impl Render for EditorView {
         // Rebuild line cache only when buffer content changed.
         // During scroll, this is skipped entirely.
         if self.lines_dirty {
-            info!("rebuilding line cache by line_dirty flag");
             self.rebuild_line_cache();
         }
 
         let line_count = self.cached_lines.len();
         let cached_lines = self.cached_lines.clone();
+        let cached_line_highlights = self.cached_line_highlights.clone();
         let bottom_inset = f32::max(platform_bridge::home_indicator_inset(), BOTTOM_INSET_MIN);
         // uniform_list forces all items to the same height (item 0's measured height = LINE_HEIGHT).
         // To get `bottom_inset` worth of scroll space we need enough extra items to cover it.
@@ -154,7 +224,7 @@ impl Render for EditorView {
 
         let text_style = {
             let mut style = window.text_style();
-            style.color = rgb(0xabb2bf).into();
+            style.color = rgb(code_text_color_for_highlighter(&self.highlighter)).into();
             style.font_family = fonts::MONO_FONT_FAMILY.into();
             style.font_size = px(FONT_SIZE).into();
             style
@@ -214,16 +284,17 @@ impl Render for EditorView {
                                     }
 
                                     let cached = &cached_lines[line];
+                                    let highlights = cached_line_highlights
+                                        .get(line)
+                                        .cloned()
+                                        .unwrap_or_default();
 
                                     let styled_text = if cached.text.is_empty() {
                                         StyledText::new(" ")
                                             .with_default_highlights(&text_style, Vec::new())
                                     } else {
                                         StyledText::new(cached.text.clone())
-                                            .with_default_highlights(
-                                                &text_style,
-                                                cached.highlights.clone(),
-                                            )
+                                            .with_default_highlights(&text_style, highlights)
                                     }
                                     .selectable()
                                     .selection_order(line as u64)
@@ -280,5 +351,62 @@ impl Render for EditorView {
                 )
                 .id("code-editor-selection"),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use super::{
+        CODE_TEXT_COLOR, EditorView, PENDING_SYNTAX_TEXT_COLOR, ParsedEditorSyntax,
+        code_text_color_for_highlighter,
+    };
+    use crate::editor::syntax_highlighter::{Highlighter, Language};
+
+    #[test]
+    fn applies_parsed_syntax_to_cached_line_highlights() {
+        let content = "fn main() {\n    let value = 1;\n}\n".to_string();
+        let mut editor = EditorView::build(content.clone(), Highlighter::from_filename("main.rs"));
+        editor.rebuild_line_cache();
+
+        let original_lines = editor.cached_lines.clone();
+        assert!(editor.cached_line_highlights[0].is_empty());
+
+        let parsed = ParsedEditorSyntax::build("main.rs", content);
+        assert_eq!(parsed.line_highlights.len(), editor.cached_lines.len());
+        let parsed_first_line_highlights = parsed.line_highlights[0].clone();
+        assert!(!parsed_first_line_highlights.is_empty());
+        editor.apply_parsed_syntax(parsed);
+
+        assert!(Rc::ptr_eq(&original_lines, &editor.cached_lines));
+        assert_eq!(
+            editor.cached_line_highlights[0],
+            parsed_first_line_highlights
+        );
+        assert!(
+            editor.cached_line_highlights[0]
+                .iter()
+                .all(|(range, _)| range.end <= editor.cached_lines[0].text.len())
+        );
+    }
+
+    #[test]
+    fn dims_code_text_only_while_syntax_is_pending() {
+        let pending = Highlighter::from_filename("main.rs");
+        assert_eq!(
+            code_text_color_for_highlighter(&pending),
+            PENDING_SYNTAX_TEXT_COLOR
+        );
+
+        let plain_text = Highlighter::from_language(Language::PlainText);
+        assert_eq!(
+            code_text_color_for_highlighter(&plain_text),
+            CODE_TEXT_COLOR
+        );
+
+        let mut parsed = Highlighter::from_filename("main.rs");
+        parsed.parse("fn main() {}\n");
+        assert_eq!(code_text_color_for_highlighter(&parsed), CODE_TEXT_COLOR);
     }
 }

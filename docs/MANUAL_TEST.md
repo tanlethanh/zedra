@@ -35,6 +35,17 @@
 7. Disconnect the app
 8. Expected: host logs show no repeated host-info send errors after the stream closes
 
+## 1b. Large File Explorer Responsiveness
+
+1. Start host daemon in a large repository: `zedra start --workdir /path/to/large/repo`
+2. Connect from the app and open the workspace drawer
+3. In the File Explorer tab, expand several directories and use "Load more" until the visible tree contains hundreds of rows
+4. Scroll the file explorer and repeatedly expand/collapse directories with already-loaded children
+5. Expected: scrolling and toggles stay responsive, without long UI stalls or accidental file opens from loading rows
+6. Tap a file row nested at least four levels deep
+7. Expected: the drawer starts closing immediately without stuttering while the file loads, the selected row highlight spans the full file explorer width, and file explorer rows use the same height as Git panel file rows
+8. Expected: before syntax highlighting appears, code text uses a subtly dim foreground; when highlighting applies, text rows do not jump, reorder, or visibly reload
+
 ## 2. QR Already Consumed
 
 1. Start host: `zedra start --workdir .`

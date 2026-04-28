@@ -37,6 +37,7 @@ pub const CONNECT_DETAIL_WIDTH: f32 = 300.0;
 pub const HEADER_BUTTON_SIZE: f32 = 42.0;
 pub const DRAWER_ICON_ZONE: f32 = 38.0;
 pub const TERMINAL_LINE_HEIGHT: f32 = 16.0;
+pub const PANEL_ITEM_HEIGHT: f32 = 28.0;
 
 // Drawer gesture thresholds
 pub const DRAWER_EDGE_ZONE: f32 = 56.0;

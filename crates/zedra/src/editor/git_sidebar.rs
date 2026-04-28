@@ -290,7 +290,7 @@ impl GitSidebar {
             .flex_row()
             .items_center()
             .justify_between()
-            .h(px(28.0))
+            .h(px(theme::PANEL_ITEM_HEIGHT))
             .px(px(theme::DRAWER_PADDING))
             .cursor_pointer()
             .on_press(cx.listener(move |this, _, _, cx| {
@@ -344,7 +344,7 @@ impl GitSidebar {
             .flex_row()
             .items_center()
             .justify_between()
-            .h(px(28.0))
+            .h(px(theme::PANEL_ITEM_HEIGHT))
             .px(px(theme::DRAWER_PADDING))
             .cursor_pointer()
             .on_press({
