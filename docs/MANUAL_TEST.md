@@ -146,8 +146,11 @@ printf '\033]8;;https://zedra.dev\033\\zedra.dev\033]8;;\033\\\n'
 1. Open the app on a wide device or simulator width such as iPad or landscape iPhone
 2. Start a new connection or reopen a saved workspace so the connecting overlay is visible
 3. Expected: the connecting content stays horizontally centered with visible left and right padding
-4. Rotate or resize while the overlay is visible
-5. Expected: the title, badge, and details remain in a bounded centered column instead of stretching edge to edge
+4. Expected: a restart connection icon appears immediately next to the title
+5. Tap the restart connection icon
+6. Expected: the icon rotates once, light haptic feedback fires, the current connection attempt restarts, and the overlay remains visible
+7. Rotate or resize while the overlay is visible
+8. Expected: the title, restart icon, badge, and details remain in a bounded centered column instead of stretching edge to edge
 
 ## 11. Terminal Keyboard Tap Toggle On iOS
 
@@ -198,10 +201,13 @@ printf '\033]8;;https://zedra.dev\033\\zedra.dev\033]8;;\033\\\n'
 
 1. Connect to a session with at least two open terminals
 2. Return to the home screen
-3. Open the quick action panel and tap a terminal card under the connected workspace
-4. Expected: the quick action panel closes, the app switches to the workspace screen, and the tapped terminal becomes the main view
-5. Repeat from the workspace screen with a different terminal card
-6. Expected: the selected terminal becomes active immediately without getting stuck on the previous screen or terminal
+3. Open the quick action panel and tap the add icon in the connected workspace header
+4. Expected: the quick action panel closes, the app switches to the workspace screen, and a new terminal becomes the main view
+5. Return to the home screen
+6. Open the quick action panel and tap a terminal card under the connected workspace
+7. Expected: the quick action panel closes, the app switches to the workspace screen, and the tapped terminal becomes the main view
+8. Repeat from the workspace screen with a different terminal card
+9. Expected: the selected terminal becomes active immediately without getting stuck on the previous screen or terminal
 
 ## 12a. Drawer Terminal List Stability During Network Reports
 
@@ -268,6 +274,8 @@ cat >/tmp/zedra-markdown-selection.md <<'EOF'
 
 This paragraph should support native iOS selection inside the markdown preview.
 
+[Open Zedra](https://zedra.dev)
+
 - First bullet item
 - Second bullet item
 
@@ -289,6 +297,8 @@ printf '/tmp/zedra-markdown-selection.md:1\n'
 10. Expected: the native selection highlight and handles move with the selected text instead of staying fixed to the viewport
 11. Tap `Copy`
 12. Expected: the selection menu dismisses cleanly and the preview remains responsive to scrolling and link taps afterward
+13. Tap `Open Zedra`
+14. Expected: `https://zedra.dev` opens externally
 
 ## 16a. iOS Native Selection In Code Preview
 
