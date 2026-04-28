@@ -35,7 +35,7 @@ The protocol layer includes:
 
 - Network transport: iroh QUIC.
 - RPC framing: `irpc` over iroh streams.
-- ALPN: `zedra/rpc/1` (see `ZEDRA_ALPN`).
+- ALPN: `zedra/rpc/2` (see `ZEDRA_ALPN` in `crates/zedra-rpc/src/proto.rs`).
 
 ### 2.2 Serialization
 
@@ -105,7 +105,7 @@ The protocol layer includes:
 If the client has no valid session token (first connection after restart, or token expired):
 
 1. `Connect(ConnectReq)` with `session_token: None`.
-2. `ConnectResult::Challenge { nonce, host_signature }` — server embeds the PKI challenge, saving an `Authenticate` RTT.
+2. `ConnectResult::Challenge { nonce, host_signature }` — server embeds the PKI challenge, saving a separate challenge request RTT.
 3. Verify `host_signature` against stored host `EndpointId`.
 4. `AuthProve(AuthProveReq)` with client signature.
 5. `AuthProveResult::Ok(SyncSessionResult)` — bootstrap data piggybacked.
@@ -122,6 +122,14 @@ If the client has no valid session token (first connection after restart, or tok
 
 - `Ping(PingReq)` / `PongResult` used for RTT and liveness.
 
+### 4.6 Deprecated Append-Only Auth Variant
+
+`Authenticate(AuthReq) -> AuthChallengeResult` remains in `ZedraProto` only
+because protocol enum order is append-only. It is reserved for wire compatibility
+and is not part of the active connection lifecycle. Current clients start auth
+with `Register` for first pairing or `Connect` for all other paths; the PKI
+challenge is carried by `ConnectResult::Challenge`.
+
 ---
 
 ## 5) RPC Surface (Current)
@@ -131,6 +139,7 @@ If the client has no valid session token (first connection after restart, or tok
 - `Register(RegisterReq) -> RegisterResult`
 - `Connect(ConnectReq) -> ConnectResult`
 - `AuthProve(AuthProveReq) -> AuthProveResult`
+- `Authenticate(AuthReq) -> AuthChallengeResult` (deprecated/reserved append-only variant; do not use in current clients)
 
 ## 5.2 Health
 
@@ -141,7 +150,7 @@ If the client has no valid session token (first connection after restart, or tok
 - `SyncSession(SyncSessionReq) -> SyncSessionResult` (mid-session only; bootstrap payload is piggybacked on `ConnectResult::Ok` and `AuthProveResult::Ok`)
 - `GetSessionInfo(SessionInfoReq) -> SessionInfoResult`
 - `ListSessions(SessionListReq) -> SessionListResult`
-- `SwitchSession(SessionSwitchReq) -> SessionSwitchResult`
+- `SwitchSession(SessionSwitchReq) -> SessionSwitchResult` (reserved/unsupported for active workspace switching; current host dispatch stays bound to the originally authenticated session)
 - `SubscribeHostInfo(SubscribeHostInfoReq) -> stream HostInfoSnapshot`
 
 ## 5.4 Filesystem
@@ -221,13 +230,21 @@ Types that do **not** carry `error` (use dedicated status fields or enum variant
 
 ### SyncSession conventions
 
-- `SyncSession` is the canonical bootstrap payload after a successful PKI attach.
-- Host rotates and returns a fresh `reconnect_token` on every successful `SyncSession` and `Reconnect`.
+- `SyncSession` is a mid-session state refresh; connect-time bootstrap is piggybacked on `ConnectResult::Ok` and `AuthProveResult::Ok`.
+- Host rotates and returns a fresh `session_token` on every successful `SyncSession`, token-accepted `Connect`, and `AuthProve` attach.
 - `session_id` in `SyncSessionResult` is authoritative and must replace any stale client-side session id.
 - `SyncSessionResult.terminals` is the authoritative server-side terminal set at bootstrap time. During reconnect, clients preserve the existing local order for terminals still present in that set and append any newly discovered host terminals unless the client has submitted an explicit host order.
 - `TermReorderReq.ordered_ids` must be an exact permutation of the current active terminal ids. The host rejects partial, duplicate, or unknown-id orders.
-- `ReconnectReq.reconnect_token` is opaque, host-issued, session-bound, and client-bound.
-- Reconnect tokens are currently ephemeral host memory only; host restart may invalidate them and force PKI fallback.
+- `ConnectReq.session_token` and `SyncSessionResult.session_token` are opaque, host-issued, session-bound, and client-bound.
+- Session tokens are currently ephemeral host memory only; host restart may invalidate them and force PKI fallback.
+
+### SwitchSession status
+
+`SwitchSession` is reserved for a future active-session transfer protocol. The
+current host handler returns an explicit unsupported error because it does not
+replace the session bound to the authenticated dispatch loop. Clients must not
+use it to switch the active workspace; connect to the target session through the
+normal `Connect`/`AuthProve` flow instead.
 
 ## 5.6 Git
 
@@ -386,6 +403,12 @@ Any protocol-layer change must include all applicable steps:
 
 ## 11) Protocol Changelog
 
+### 2026-04-28
+
+- Aligned docs with `ZEDRA_ALPN = b"zedra/rpc/2"`.
+- Documented `Authenticate` as a deprecated/reserved append-only enum variant.
+- Documented `SwitchSession` as reserved/unsupported for active workspace switching because the current host dispatch loop remains bound to the originally authenticated session.
+
 ### 2026-04-27
 
 - Extended the `TermAttach` `seq=0` synthetic metadata preamble to replay cached OSC command lifecycle metadata, including command line, running/idle state, and last exit code, in addition to title, icon name, and cwd.
@@ -423,25 +446,23 @@ Any protocol-layer change must include all applicable steps:
 
 ### 2026-03-28
 
-- Removed `Authenticate(AuthReq) -> AuthChallengeResult` RPC.
-- Removed `Reconnect(ReconnectReq) -> ReconnectResult` RPC.
-- Added unified `Connect(ConnectReq) -> ConnectResult` replacing both:
+- Deprecated `Authenticate(AuthReq) -> AuthChallengeResult` as a reserved append-only enum variant.
+- Removed the older standalone reconnect RPC from the active protocol.
+- Added unified `Connect(ConnectReq) -> ConnectResult` replacing the previous challenge request and standalone reconnect paths:
   - `ConnectReq` carries optional `session_token` for 1-RTT fast path.
   - `ConnectResult::Ok(SyncSessionResult)` — token valid; session attached immediately.
-  - `ConnectResult::Challenge { nonce, host_signature }` — no valid token; host embeds PKI challenge inline, saving a separate `Authenticate` RTT.
+  - `ConnectResult::Challenge { nonce, host_signature }` — no valid token; host embeds PKI challenge inline, saving a separate challenge request RTT.
 - `AuthProveResult::Ok` now carries `SyncSessionResult` (piggybacked bootstrap); separate `SyncSession` call no longer needed at connect time.
-- `SyncSessionResult.reconnect_token` renamed to `session_token`.
+- Renamed the bootstrap token field to `session_token`.
 - Session token storage changed to single-slot (`Option<([u8; 32], SessionToken)>`) per session — only one token is valid at a time, consumed atomically on validation. No TTL.
 - ALPN bumped to `zedra/rpc/2` (breaking change).
 
 ### 2026-03-26
 
-- Added fast reconnect bootstrap RPC:
-  - `Reconnect(ReconnectReq) -> ReconnectResult`
+- Added an earlier fast reconnect bootstrap RPC, later superseded by `Connect(session_token)` on 2026-03-28.
 - Added canonical session bootstrap RPC:
   - `SyncSession(SyncSessionReq) -> SyncSessionResult`
 - Added `TerminalSyncEntry` to return resumable terminal ids + latest backlog sequence + cached title/CWD.
 - Updated connection lifecycle:
   - first pairing and PKI fallback now end with `SyncSession`
-  - reconnect may skip `Authenticate/AuthProve` entirely when a valid reconnect token is present
-- Added rotating host-issued reconnect tokens bound to `(session_id, client_pubkey)`.
+  - token resume may skip PKI challenge/AuthProve entirely when a valid host-issued session token is present

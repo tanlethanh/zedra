@@ -29,8 +29,9 @@ Xcode builds run the Rust build target by default. Skip it when only
 changing Swift/ObjC:
 
 ```bash
-cd ios && xcodegen generate && ZEDRA_SKIP_RUST_XCODE_BUILD=1 xcodebuild build \
-  -project Zedra.xcodeproj -scheme Zedra \
+(cd ios && xcodegen generate && pod install)
+ZEDRA_SKIP_RUST_XCODE_BUILD=1 xcodebuild build \
+  -workspace ios/Zedra.xcworkspace -scheme Zedra \
   -destination "id=<DEVICE_ID>" -allowProvisioningUpdates -quiet
 ```
 
@@ -44,18 +45,41 @@ cd ios && xcodegen generate && ZEDRA_SKIP_RUST_XCODE_BUILD=1 xcodebuild build \
 
 ## Build Pipeline
 
+`./scripts/run-ios.sh`:
+
 ```
 crates/zedra/ (Rust)
-  → Xcode Rust build target selects iphoneos or iphonesimulator
-  → cargo build --target aarch64-apple-ios or aarch64-apple-ios-sim (staticlib)
+  → ./scripts/build-ios.sh --device or --sim
+  → cargo build --target aarch64-apple-ios or aarch64-apple-ios-sim -p zedra
+  → verify target/.../libzedra.a exists
   → xcodebuild -create-xcframework
   → ios/ZedraFFI.xcframework/
-  → cd ios && xcodegen generate → Zedra.xcodeproj
-  → xcodebuild build → Zedra.app
-  → xcrun devicectl install + launch
+  → xcodegen generate when ios/project.yml changed
+  → pod install when CocoaPods state is stale
+  → xcodebuild build with ZEDRA_SKIP_RUST_XCODE_BUILD=1
+  → xcrun devicectl or simctl install + launch
 ```
 
-**Note**: `Cargo.toml` declares `crate-type = ["cdylib", "staticlib"]`. The cdylib is for Android. On iOS the cdylib link step fails (expected) — `build-ios.sh` uses `|| true` and checks for the `.a` only. Weak stubs in `ios_stub.c` satisfy the linker.
+Xcode builds from the IDE:
+
+```
+Zedra app target
+  → depends on ZedraRustFFI aggregate target
+  → scripts/xcode-build-rust.sh reads PLATFORM_NAME / SDK_NAME / CONFIGURATION
+  → ./scripts/build-ios.sh --device or --sim [--release]
+  → Xcode links ios/ZedraFFI.xcframework
+```
+
+`run-ios.sh` uses `ios/Zedra.xcworkspace` when CocoaPods has created it, and
+falls back to `ios/Zedra.xcodeproj` otherwise. Direct `xcodebuild` commands for
+Firebase/CocoaPods builds should use the workspace.
+
+**Note**: `Cargo.toml` declares `crate-type = ["cdylib", "staticlib"]`. The
+cdylib is for Android. On iOS, `build-ios.sh` builds the `zedra` package for
+the selected target, fails on cargo errors, and checks for the `.a` before
+packaging the XCFramework. Weak stubs in `crates/zedra/src/ios_stub.c` satisfy
+Rust-to-iOS symbols during cargo linking; the real Swift/Obj-C definitions are
+provided by Xcode sources.
 
 ## Project Structure
 
@@ -65,6 +89,9 @@ scripts/
   xcode-build-rust.sh # Xcode target wrapper around build-ios.sh
   run-ios.sh          # Full pipeline: build + install + launch
   log-ios.sh          # Stream device logs
+
+crates/zedra/src/ios/bridge.rs  # Rust side of iOS FFI
+crates/zedra/src/ios_stub.c     # Weak C stubs for Rust → Swift symbols
 
 ios/
   project.yml         # XcodeGen spec (source of truth)
@@ -110,11 +137,11 @@ main.m → UIApplicationMain → ZedraAppDelegate
 
 **Rust → Swift**:
 1. Implement in Swift with `@_cdecl` (usually `NativeBridge.swift`)
-2. Declare `unsafe extern "C" { fn my_func(...); }` in `ios/bridge.rs`
-3. Add weak stub in `ios_stub.c`
+2. Declare `unsafe extern "C" { fn my_func(...); }` in `crates/zedra/src/ios/bridge.rs`
+3. Add weak stub in `crates/zedra/src/ios_stub.c`
 
 **Swift → Rust**:
-1. Add `#[unsafe(no_mangle)] pub extern "C" fn` in `ios/bridge.rs`
+1. Add `#[unsafe(no_mangle)] pub extern "C" fn` in `crates/zedra/src/ios/bridge.rs`
 2. Run `./scripts/build-ios.sh` (cbindgen regenerates `zedra_ios.h`)
 3. Call from Swift: `import ZedraFFI; my_rust_callback(...)`
 
@@ -129,13 +156,31 @@ Must match in `scripts/build-ios.sh` (`IPHONEOS_DEPLOYMENT_TARGET`), `ios/projec
 `ios/project.yml` adds a `ZedraRustFFI` aggregate target that calls
 `scripts/xcode-build-rust.sh` and declares `ZedraFFI.xcframework` as its output.
 The app target depends on `ZedraRustFFI`, so Rust rebuilds before Xcode processes
-the XCFramework for linking. The wrapper reads Xcode's `PLATFORM_NAME`,
-`CONFIGURATION`, and `IPHONEOS_DEPLOYMENT_TARGET`, then invokes `build-ios.sh
---device` or `build-ios.sh --sim` with `--release` when needed.
+the XCFramework for linking when building from Xcode. The wrapper loads
+`~/.cargo/env`, prepends common Homebrew/Cargo paths, reads Xcode's
+`PLATFORM_NAME`, `EFFECTIVE_PLATFORM_NAME`, `SDK_NAME`, `CONFIGURATION`, and
+`IPHONEOS_DEPLOYMENT_TARGET`, then invokes `build-ios.sh --device` or
+`build-ios.sh --sim` with `--release` when needed.
+
+`run-ios.sh` prebuilds only the selected Rust slice and then sets
+`ZEDRA_SKIP_RUST_XCODE_BUILD=1` for its `xcodebuild` call to avoid a duplicate
+Rust build. It also regenerates the Xcode project only when `ios/project.yml` is
+newer than `ios/Zedra.xcodeproj/project.pbxproj` unless
+`ZEDRA_FORCE_XCODEGEN=1` is set.
 
 Set `ZEDRA_SKIP_RUST_XCODE_BUILD=1` for command-line native-only builds.
 Set `ZEDRA_IOS_BUILD_FLAGS` in a scheme environment to pass extra flags such
-as `--preview` or `--debug`.
+as `--preview` or `--debug`. Release builds reject `--debug` and
+`--debug-telemetry`.
+
+### Release Builds
+
+Release builds use Cargo's `release` profile, which enables ThinLTO, one
+codegen unit, symbol stripping, and `panic = "abort"` from the workspace
+`Cargo.toml`. The Xcode Release configuration strips the installed product,
+uses whole-module Swift optimization, disables testability/assertions, keeps
+`dwarf-with-dsym` output for symbol uploads, and validates the product during
+archive/export.
 
 ### Linker Flags
 
@@ -152,7 +197,7 @@ Automatic in `ios/project.yml`. Pass `-allowProvisioningUpdates` to xcodebuild.
 ## Known Pitfalls
 
 - **Stale xcframework**: Xcode builds refresh the matching Rust slice through the `ZedraRustFFI` dependency target. If you skip that target or use `--no-build`, run `build-ios.sh` after Rust changes.
-- **New extern "C" call**: must add weak stub in `ios_stub.c` or staticlib will be stale.
+- **New extern "C" call**: must add weak stub in `crates/zedra/src/ios_stub.c` or staticlib will be stale.
 - **xcodegen required**: after editing `project.yml`, run `cd ios && xcodegen generate`. `run-ios.sh` does this automatically only when `ios/project.yml` is newer than the generated project; set `ZEDRA_FORCE_XCODEGEN=1` to force regeneration.
 - **Metal device**: iOS uses `system_default()` directly. macOS `isRemovable()`/`isLowPower()` selectors crash on iOS.
 - **`with_input_handler` log spam**: harmless — UIKit queries text input before IosWindow is registered.
