@@ -1,6 +1,8 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use std::path::Path;
+use std::sync::Arc;
 
 use crate::editor::merge_highlights;
 use crate::fonts;
@@ -8,27 +10,107 @@ use crate::native_presentation;
 use crate::platform_bridge;
 use crate::theme;
 
+// Enough offscreen content to keep fast mobile scrolls smooth without
+// measuring the full markdown document.
+const MARKDOWN_LIST_OVERDRAW_PX: f32 = 1200.0;
+
 pub struct MarkdownView {
-    source: SharedString,
-    scroll_handle: ScrollHandle,
+    document: MarkdownDocument,
+    list_state: ListState,
+    track_sheet_scroll_boundary: bool,
 }
 
 impl MarkdownView {
     pub fn new(source: impl Into<SharedString>) -> Self {
+        let source = source.into();
+        let document = parse_document(source.as_ref());
+        let list_state = ListState::new(
+            document.blocks.len(),
+            ListAlignment::Top,
+            px(MARKDOWN_LIST_OVERDRAW_PX),
+        );
         Self {
-            source: source.into(),
-            scroll_handle: ScrollHandle::new(),
+            document,
+            list_state,
+            track_sheet_scroll_boundary: false,
         }
     }
 
+    pub fn new_for_sheet(source: impl Into<SharedString>) -> Self {
+        let mut this = Self::new(source);
+        this.track_sheet_scroll_boundary = true;
+        this.list_state.set_scroll_handler(|event, _window, _cx| {
+            native_presentation::set_sheet_content_at_top(!event.is_scrolled);
+        });
+        this
+    }
+
     pub fn set_source(&mut self, source: impl Into<SharedString>) {
-        self.source = source.into();
+        let source = source.into();
+        self.replace_document(parse_document(source.as_ref()));
+    }
+
+    pub(crate) fn set_parsed_source(&mut self, parsed: ParsedMarkdownSource) {
+        self.replace_document(parsed.document);
+    }
+
+    fn replace_document(&mut self, document: MarkdownDocument) {
+        self.document = document;
+        // ListState caches row measurements. Reset it whenever the parsed block
+        // tree changes, or scroll position and item heights can be reused from
+        // the previous file.
+        self.list_state.reset(self.document.blocks.len());
     }
 }
 
-#[derive(Clone, Debug, Default)]
+pub(crate) struct ParsedMarkdownSource {
+    document: MarkdownDocument,
+}
+
+pub(crate) fn parse_markdown_source(source: String) -> ParsedMarkdownSource {
+    ParsedMarkdownSource {
+        document: parse_document(&source),
+    }
+}
+
+pub fn is_markdown_path(path: &str) -> bool {
+    let path = Path::new(path);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default();
+
+    let is_markdown_extension = matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "md" | "markdown" | "mdown" | "mkd" | "mkdn" | "mdtxt"
+    );
+    let is_bare_readme = extension.is_empty() && file_name.eq_ignore_ascii_case("readme");
+
+    is_markdown_extension || is_bare_readme
+}
+
+#[derive(Clone, Debug)]
 struct MarkdownDocument {
-    blocks: Vec<Block>,
+    blocks: Arc<[Block]>,
+}
+
+impl MarkdownDocument {
+    #[cfg(test)]
+    fn total_block_count(&self) -> usize {
+        self.blocks.iter().map(Block::total_block_count).sum()
+    }
+}
+
+impl Default for MarkdownDocument {
+    fn default() -> Self {
+        Self {
+            blocks: Vec::new().into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -51,6 +133,21 @@ enum Block {
     Table(TableBlock),
     Html(String),
     Rule,
+}
+
+impl Block {
+    #[cfg(test)]
+    fn total_block_count(&self) -> usize {
+        1 + match self {
+            Block::BlockQuote(children) => children.iter().map(Block::total_block_count).sum(),
+            Block::List { items, .. } => items
+                .iter()
+                .flat_map(|item| item.iter())
+                .map(Block::total_block_count)
+                .sum(),
+            _ => 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -101,42 +198,51 @@ impl InlineRenderBuffer {
 }
 
 impl Render for MarkdownView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let document = parse_document(self.source.as_ref());
-        update_sheet_scroll_boundary(&self.scroll_handle);
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        if self.track_sheet_scroll_boundary {
+            update_sheet_scroll_boundary(&self.list_state);
+        }
+
+        let blocks = Arc::clone(&self.document.blocks);
+
+        // Keep each top-level markdown block as one variable-height list row.
+        // Eagerly collecting every block here makes scrolling large READMEs
+        // rebuild the whole document on every frame.
+        let markdown_list = list(self.list_state.clone(), move |ix, window, cx| {
+            if let Some(block) = blocks.get(ix) {
+                div()
+                    .w_full()
+                    .px(px(theme::SPACING_LG))
+                    .when(ix == 0, |this| this.pt(px(theme::SPACING_LG)))
+                    .pb(if ix + 1 == blocks.len() {
+                        px(theme::SPACING_LG)
+                    } else {
+                        px(theme::SPACING_MD)
+                    })
+                    .child(render_block(block, format!("md-{ix}"), window, cx))
+                    .into_any_element()
+            } else {
+                Empty.into_any_element()
+            }
+        })
+        .with_sizing_behavior(ListSizingBehavior::Auto)
+        .size_full();
 
         div()
             .id("markdown-preview-scroll")
             .size_full()
             .min_h_0()
-            .track_scroll(&self.scroll_handle)
-            .overflow_y_scroll()
-            .on_scroll_wheel(cx.listener(|this, _event, _window, _cx| {
-                update_sheet_scroll_boundary(&this.scroll_handle);
-            }))
             .child(
-                div()
-                    .w_full()
-                    .p(px(theme::SPACING_LG))
-                    .flex()
-                    .flex_col()
-                    .gap(px(theme::SPACING_MD))
-                    .children(
-                        document
-                            .blocks
-                            .iter()
-                            .enumerate()
-                            .map(|(ix, block)| render_block(block, format!("md-{ix}"), window, cx)),
-                    )
-                    .selection_area()
-                    .id("markdown-preview-selection"),
+                selection_area(markdown_list)
+                    .id("markdown-preview-selection")
+                    .into_any_element(),
             )
     }
 }
 
-fn update_sheet_scroll_boundary(scroll_handle: &ScrollHandle) {
-    let offset_y = f32::from(scroll_handle.offset().y);
-    let is_at_top = offset_y >= -0.5;
+fn update_sheet_scroll_boundary(list_state: &ListState) {
+    let scroll_top = list_state.logical_scroll_top();
+    let is_at_top = scroll_top.item_ix == 0 && scroll_top.offset_in_item <= px(0.5);
     native_presentation::set_sheet_content_at_top(is_at_top);
 }
 
@@ -152,7 +258,7 @@ fn parse_document(source: &str) -> MarkdownDocument {
     let events = Parser::new_ext(source, options).collect::<Vec<_>>();
     let mut cursor = 0;
     MarkdownDocument {
-        blocks: parse_blocks(&events, &mut cursor, None),
+        blocks: parse_blocks(&events, &mut cursor, None).into(),
     }
 }
 
@@ -493,11 +599,7 @@ fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -
                             .text_size(px(theme::FONT_BODY))
                             .line_height(px(theme::FONT_BODY + 6.0))
                             .font_family(fonts::MONO_FONT_FAMILY)
-                            .child(
-                                StyledText::new(marker)
-                                    .selectable()
-                                    .selection_separator_after(" "),
-                            ),
+                            .child(markdown_text(StyledText::new(marker), " ")),
                     )
                     .child(
                         div()
@@ -536,11 +638,7 @@ fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -
                         .text_color(rgb(theme::TEXT_MUTED))
                         .text_size(px(theme::FONT_DETAIL - 1.0))
                         .font_family(fonts::MONO_FONT_FAMILY)
-                        .child(
-                            StyledText::new(info.clone())
-                                .selectable()
-                                .selection_separator_after("\n"),
-                        ),
+                        .child(markdown_text(StyledText::new(info.clone()), "\n")),
                 );
             }
 
@@ -558,11 +656,7 @@ fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -
                         .line_height(px(theme::FONT_DETAIL + 5.0))
                         .font_family(fonts::MONO_FONT_FAMILY)
                         .whitespace_nowrap()
-                        .child(
-                            StyledText::new(line)
-                                .selectable()
-                                .selection_separator_after("\n"),
-                        )
+                        .child(markdown_text(StyledText::new(line), "\n"))
                 }))
                 .into_any_element()
         }
@@ -626,6 +720,11 @@ fn render_table(table: &TableBlock, key: String) -> AnyElement {
         .into_any_element()
 }
 
+fn markdown_text(text: StyledText, selection_separator_after: &'static str) -> StyledText {
+    text.selectable()
+        .selection_separator_after(selection_separator_after)
+}
+
 #[derive(Clone, Copy)]
 enum InlineBlockStyle {
     Title,
@@ -642,16 +741,14 @@ fn render_inline_block(content: &[Inline], style: InlineBlockStyle, key: String)
     flatten_inlines(content, &mut buffer, InlineMarks::default());
 
     let base = block_style(style);
-    let styled = StyledText::new(buffer.text.clone())
-        .with_highlights(merge_highlights(
-            buffer
-                .highlights
-                .into_iter()
-                .map(|run| (run.range, run.style))
-                .collect(),
-        ))
-        .selectable()
-        .selection_separator_after(selection_separator_after(style));
+    let styled = StyledText::new(buffer.text.clone()).with_highlights(merge_highlights(
+        buffer
+            .highlights
+            .into_iter()
+            .map(|run| (run.range, run.style))
+            .collect(),
+    ));
+    let styled = markdown_text(styled, selection_separator_after(style));
 
     let link_ranges = buffer
         .links
@@ -866,5 +963,81 @@ fn selection_separator_after(style: InlineBlockStyle) -> &'static str {
         | InlineBlockStyle::Heading
         | InlineBlockStyle::Body
         | InlineBlockStyle::Html => "\n",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Block, MarkdownView, is_markdown_path, parse_document};
+
+    #[test]
+    fn detects_markdown_paths_for_preview_and_workspace_editor() {
+        assert!(is_markdown_path("/repo/README.md"));
+        assert!(is_markdown_path("/repo/readme"));
+        assert!(is_markdown_path("/repo/ReadMe.MD"));
+        assert!(is_markdown_path("/repo/docs/guide.markdown"));
+        assert!(is_markdown_path("/repo/notes.MKD"));
+        assert!(is_markdown_path("/repo/notes.mdtxt"));
+
+        assert!(!is_markdown_path("/repo/src/main.rs"));
+        assert!(!is_markdown_path("/repo/README_BACKUP"));
+        assert!(!is_markdown_path("/repo/README.txt"));
+        assert!(!is_markdown_path("/repo/Makefile"));
+    }
+
+    #[test]
+    fn parses_markdown_into_top_level_virtualization_rows() {
+        let document = parse_document(
+            r#"# Title
+
+Body paragraph.
+
+> Quote paragraph.
+>
+> - Nested quote item
+
+1. First
+2. Second
+
+```rust
+fn main() {}
+```
+
+| A | B |
+| - | - |
+| 1 | 2 |
+"#,
+        );
+
+        assert_eq!(document.blocks.len(), 6);
+        assert!(matches!(document.blocks[0], Block::Heading { .. }));
+        assert!(matches!(document.blocks[1], Block::Paragraph(_)));
+        assert!(matches!(document.blocks[2], Block::BlockQuote(_)));
+        assert!(matches!(document.blocks[3], Block::List { .. }));
+        assert!(matches!(document.blocks[4], Block::CodeBlock { .. }));
+        assert!(matches!(document.blocks[5], Block::Table(_)));
+        assert!(document.total_block_count() > document.blocks.len());
+    }
+
+    #[test]
+    fn markdown_view_resets_virtualized_rows_when_source_changes() {
+        let mut view = MarkdownView::new("# Title\n\nBody paragraph.");
+        assert_eq!(view.list_state.item_count(), view.document.blocks.len());
+        assert_eq!(view.document.blocks.len(), 2);
+
+        view.set_source(
+            r#"# Updated
+
+- First
+- Second
+
+```rust
+fn main() {}
+```
+"#,
+        );
+
+        assert_eq!(view.document.blocks.len(), 3);
+        assert_eq!(view.list_state.item_count(), view.document.blocks.len());
     }
 }

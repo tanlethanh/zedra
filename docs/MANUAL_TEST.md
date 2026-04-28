@@ -311,6 +311,18 @@ printf '\033]8;;file:///tmp/zedra-code-selection.rs:1:1\033\\/tmp/zedra-code-sel
 19. Tap the code view and type with a hardware keyboard
 20. Expected: the file content remains unchanged because the editor is read-only
 
+## 16b. Workspace Markdown File Rendering
+
+1. Connect to a workspace with a `README.md` or another markdown file
+2. Open the workspace drawer file list and tap the markdown file
+3. Expected: the drawer closes and the main workspace editor renders the file with markdown formatting instead of the code editor line gutter
+4. Expected: the workspace header subtitle shows the file's relative path, not the workspace cwd or an absolute path
+5. Open a non-markdown source file from the same file list
+6. Expected: the main workspace editor still opens the code editor with syntax highlighting and line numbers
+7. Open a large markdown file with many headings, paragraphs, lists, and fenced code blocks
+8. Expected: the rendered markdown has horizontal padding on both sides, including while scrolling
+9. Expected: the workspace remains responsive while the file loads and scrolling does not repeatedly reparse or rebuild every markdown block
+
 ## 17. Native Confirmations For Terminal Delete And Session Disconnect
 
 1. Connect to a session with at least two terminals open

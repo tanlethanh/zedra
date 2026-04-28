@@ -1,11 +1,12 @@
 use gpui::*;
-use std::path::Path;
 use tracing::error;
 use zedra_session::SessionHandle;
 use zedra_terminal::terminal::{TerminalHyperlink, TerminalHyperlinkTarget};
 
 use crate::editor::code_editor::EditorView;
-use crate::editor::markdown::MarkdownView;
+use crate::editor::markdown::{
+    MarkdownView, ParsedMarkdownSource, is_markdown_path, parse_markdown_source,
+};
 use crate::fonts;
 use crate::placeholder::render_placeholder;
 use crate::theme;
@@ -24,6 +25,11 @@ enum PreviewState {
 enum PreviewContent {
     Editor,
     Markdown,
+}
+
+enum LoadedPreviewContent {
+    Editor(String),
+    Markdown(ParsedMarkdownSource),
 }
 
 pub struct TerminalPreviewView {
@@ -49,7 +55,7 @@ impl TerminalPreviewView {
             session_handle,
             workspace_state,
             editor_view: cx.new(|cx| EditorView::new(cx)),
-            markdown_view: cx.new(|_cx| MarkdownView::new(SharedString::default())),
+            markdown_view: cx.new(|_cx| MarkdownView::new_for_sheet(SharedString::default())),
             state: PreviewState::Idle,
             content: PreviewContent::Editor,
             title: "Terminal Link".into(),
@@ -103,39 +109,52 @@ impl TerminalPreviewView {
 
                 let handle = self.session_handle.clone();
                 let filename = self.title.to_string();
+                let content_kind = self.content;
                 let read_task = cx.spawn(async move |this, cx| {
-                    let result = handle.fs_read(&path).await;
+                    let result = match handle.fs_read(&path).await {
+                        Ok(result) if result.too_large => Ok(None),
+                        Ok(result) if result.error.is_some() => Err(result.error.unwrap()),
+                        Ok(result) => {
+                            let content = match content_kind {
+                                PreviewContent::Editor => {
+                                    LoadedPreviewContent::Editor(result.content)
+                                }
+                                PreviewContent::Markdown => {
+                                    let parsed = cx
+                                        .background_spawn(async move {
+                                            parse_markdown_source(result.content)
+                                        })
+                                        .await;
+                                    LoadedPreviewContent::Markdown(parsed)
+                                }
+                            };
+                            Ok(Some(content))
+                        }
+                        Err(err) => Err(err.to_string()),
+                    };
                     let _ = this.update(cx, |this, cx| {
                         match result {
-                            Ok(result) if result.too_large => {
+                            Ok(None) => {
                                 this.state = PreviewState::TooLarge;
                             }
-                            Ok(result) if result.error.is_some() => {
-                                let msg = result.error.unwrap();
+                            Err(msg) => {
                                 error!("terminal link preview fs/read error for {}: {}", path, msg);
                                 this.state = PreviewState::Error(msg);
                             }
-                            Ok(result) => {
+                            Ok(Some(content)) => {
                                 this.state = PreviewState::Loaded;
-                                match this.content {
-                                    PreviewContent::Editor => {
+                                match content {
+                                    LoadedPreviewContent::Editor(content) => {
                                         this.editor_view.update(cx, |editor_view, _cx| {
-                                            editor_view.set_content(&filename, result.content);
+                                            editor_view.set_content(&filename, content);
                                         });
                                     }
-                                    PreviewContent::Markdown => {
+                                    LoadedPreviewContent::Markdown(parsed) => {
                                         this.markdown_view.update(cx, |markdown_view, _cx| {
-                                            markdown_view.set_source(result.content);
+                                            markdown_view.set_parsed_source(parsed);
                                         });
                                     }
                                 }
-                            }
-                            Err(err) => {
-                                error!(
-                                    "terminal link preview fs/read failed for {}: {}",
-                                    path, err
-                                );
-                                this.state = PreviewState::Error(err.to_string());
                             }
                         }
                         cx.notify();
@@ -148,26 +167,7 @@ impl TerminalPreviewView {
 }
 
 fn preview_content_for_path(path: &str) -> PreviewContent {
-    let path = Path::new(path);
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default();
-    let extension = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or_default();
-
-    let is_markdown_extension = matches!(
-        extension.to_ascii_lowercase().as_str(),
-        "md" | "markdown" | "mdown" | "mkd" | "mkdn" | "mdtxt"
-    );
-    let is_readme = file_name
-        .split('.')
-        .next()
-        .is_some_and(|stem| stem.eq_ignore_ascii_case("readme"));
-
-    if is_markdown_extension || is_readme {
+    if is_markdown_path(path) {
         PreviewContent::Markdown
     } else {
         PreviewContent::Editor
