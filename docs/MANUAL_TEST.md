@@ -324,6 +324,80 @@ printf '/tmp/zedra-markdown-wrap.md:1\n'
 4. Expected: the preview opens in markdown mode
 5. Expected: both the bullet item and the numbered item wrap onto multiple lines inside the text column; the marker stays visible and the wrapped lines do not overflow horizontally
 
+## 15a. Markdown Code Block Overflow In Preview
+
+1. Connect to a session and open the terminal view
+2. Run:
+
+````bash
+cat >/tmp/zedra-markdown-codeblock.md <<'EOF'
+# Code Block Test
+
+```bash
+printf '%s\n' 'this-is-a-very-long-command-that-should-stay-on-one-line-and-scroll-horizontally-instead-of-wrapping-or-clipping-on-mobile'
+```
+EOF
+printf '/tmp/zedra-markdown-codeblock.md:1\n'
+````
+
+3. Tap `/tmp/zedra-markdown-codeblock.md:1`
+4. Expected: the preview opens in markdown mode
+5. Expected: the fenced code block does not render a visible `bash` language label
+6. Expected: code block padding and line height are compact enough for a phone-sized sheet
+7. Swipe vertically starting inside the code block
+8. Expected: the markdown preview scrolls vertically and the code line does not drift horizontally
+9. Swipe horizontally inside the code block
+10. Expected: the long command scrolls horizontally without changing the surrounding vertical scroll position
+
+## 15b. Markdown Table Header And Overflow In Preview
+
+1. Connect to a session and open the terminal view
+2. Run:
+
+```bash
+cat >/tmp/zedra-markdown-table.md <<'EOF'
+# Table Test
+
+| Command | Description | Status |
+| - | - | - |
+| `printf '%s\n' value` | this is a very long description that should wrap inside the capped table column on mobile | ready |
+EOF
+printf '/tmp/zedra-markdown-table.md:1\n'
+```
+
+3. Tap `/tmp/zedra-markdown-table.md:1`
+4. Expected: the preview opens in markdown mode
+5. Expected: the table header row renders `Command`, `Description`, and `Status`
+6. Expected: table cell padding is compact like the code block padding
+7. Expected: the long description wraps inside the capped column instead of making the table extremely wide
+8. Swipe horizontally inside the table
+9. Expected: the table scrolls horizontally without changing the surrounding vertical scroll position
+10. Swipe vertically starting inside the table
+11. Expected: the markdown preview scrolls vertically and the table does not drift horizontally
+
+## 15c. Markdown Bottom Padding And Link Hit Slop
+
+1. Connect to a session and open the terminal view
+2. Run:
+
+```bash
+cat >/tmp/zedra-markdown-links.md <<'EOF'
+# Link Test
+
+Tap near [Zed](https://zed.dev), including slightly outside the blue text.
+
+Last visible line.
+EOF
+printf '/tmp/zedra-markdown-links.md:1\n'
+```
+
+3. Tap `/tmp/zedra-markdown-links.md:1`
+4. Expected: the preview opens in markdown mode
+5. Scroll to the bottom
+6. Expected: there is enough bottom padding to keep `Last visible line.` above the home indicator or sheet edge
+7. Tap slightly outside the visible `Zed` link text
+8. Expected: the link still opens, without starting text selection
+
 ## 16. iOS Native Selection In Markdown Preview
 
 1. Connect to a session on iPhone or iOS simulator and open the terminal view

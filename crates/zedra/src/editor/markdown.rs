@@ -15,6 +15,19 @@ use crate::workspace_action::AddSelectionToChat;
 // Enough offscreen content to keep fast mobile scrolls smooth without
 // measuring the full markdown document.
 const MARKDOWN_LIST_OVERDRAW_PX: f32 = 1200.0;
+const MARKDOWN_BOTTOM_INSET_MIN: f32 = 100.0;
+const MARKDOWN_LINK_HIT_SLOP: f32 = 8.0;
+const CODE_BLOCK_FONT_SIZE: f32 = theme::EDITOR_FONT_SIZE;
+const CODE_BLOCK_LINE_HEIGHT: f32 = theme::EDITOR_LINE_HEIGHT;
+const CODE_BLOCK_CHAR_WIDTH_FACTOR: f32 = 0.6;
+const CODE_BLOCK_TAB_WIDTH: usize = 4;
+const CODE_BLOCK_PADDING_X: f32 = theme::SPACING_SM;
+const CODE_BLOCK_PADDING_Y: f32 = 6.0;
+const TABLE_CELL_MIN_WIDTH: f32 = 80.0;
+const TABLE_CELL_MAX_WIDTH: f32 = 220.0;
+const TABLE_CELL_CHAR_WIDTH_FACTOR: f32 = 0.62;
+const TABLE_CELL_PADDING_X: f32 = CODE_BLOCK_PADDING_X;
+const TABLE_CELL_PADDING_Y: f32 = CODE_BLOCK_PADDING_Y;
 pub const MARKDOWN_SELECTION_AREA_ID: &str = "markdown-preview-selection";
 
 pub struct MarkdownView {
@@ -28,7 +41,7 @@ impl MarkdownView {
         let source = source.into();
         let document = parse_document(source.as_ref());
         let list_state = ListState::new(
-            document.blocks.len(),
+            markdown_list_item_count(document.blocks.len()),
             ListAlignment::Top,
             px(MARKDOWN_LIST_OVERDRAW_PX),
         );
@@ -66,8 +79,13 @@ impl MarkdownView {
         // ListState caches row measurements. Reset it whenever the parsed block
         // tree changes, or scroll position and item heights can be reused from
         // the previous file.
-        self.list_state.reset(self.document.blocks.len());
+        self.list_state
+            .reset(markdown_list_item_count(self.document.blocks.len()));
     }
+}
+
+fn markdown_list_item_count(block_count: usize) -> usize {
+    block_count + 1
 }
 
 pub(crate) struct ParsedMarkdownSource {
@@ -148,7 +166,6 @@ enum Block {
         items: Vec<Vec<Block>>,
     },
     CodeBlock {
-        info: Option<String>,
         text: String,
     },
     Table(TableBlock),
@@ -225,7 +242,11 @@ impl Render for MarkdownView {
         }
 
         let blocks = Arc::clone(&self.document.blocks);
-
+        let block_count = blocks.len();
+        let bottom_inset = f32::max(
+            platform_bridge::home_indicator_inset(),
+            MARKDOWN_BOTTOM_INSET_MIN,
+        );
         // Keep each top-level markdown block as one variable-height list row.
         // Eagerly collecting every block here makes scrolling large READMEs
         // rebuild the whole document on every frame.
@@ -242,6 +263,8 @@ impl Render for MarkdownView {
                     })
                     .child(render_block(block, format!("md-{ix}"), window, cx))
                     .into_any_element()
+            } else if ix == block_count {
+                div().h(px(bottom_inset)).into_any_element()
             } else {
                 Empty.into_any_element()
             }
@@ -398,18 +421,7 @@ fn build_selection_blocks(
             }
             Event::Start(Tag::CodeBlock(kind)) => {
                 let block_start_range = event_range.clone();
-                let info = match kind {
-                    CodeBlockKind::Indented => None,
-                    CodeBlockKind::Fenced(info) => {
-                        let value = info.trim();
-                        (!value.is_empty()).then(|| value.to_string())
-                    }
-                };
                 let is_fenced = matches!(kind, CodeBlockKind::Fenced(_));
-                if let Some(info) = info {
-                    push_selection_segment(map, &info, block_start_range.clone());
-                    push_selection_segment(map, "\n", block_start_range.clone());
-                }
 
                 *cursor += 1;
                 let mut text = String::new();
@@ -863,14 +875,7 @@ fn parse_blocks(events: &[Event<'_>], cursor: &mut usize, end: Option<TagEnd>) -
                     items,
                 });
             }
-            Event::Start(Tag::CodeBlock(kind)) => {
-                let info = match kind {
-                    CodeBlockKind::Indented => None,
-                    CodeBlockKind::Fenced(info) => {
-                        let value = info.trim();
-                        (!value.is_empty()).then(|| value.to_string())
-                    }
-                };
+            Event::Start(Tag::CodeBlock(_)) => {
                 *cursor += 1;
                 let mut text = String::new();
                 while *cursor < events.len() {
@@ -893,7 +898,7 @@ fn parse_blocks(events: &[Event<'_>], cursor: &mut usize, end: Option<TagEnd>) -
                         _ => *cursor += 1,
                     }
                 }
-                blocks.push(Block::CodeBlock { info, text });
+                blocks.push(Block::CodeBlock { text });
             }
             Event::Start(Tag::Table(_)) => {
                 *cursor += 1;
@@ -948,6 +953,17 @@ fn parse_table(events: &[Event<'_>], cursor: &mut usize) -> TableBlock {
                     table.headers = row;
                 } else {
                     table.rows.push(row);
+                }
+            }
+            Event::Start(Tag::TableCell) => {
+                *cursor += 1;
+                let cell = parse_inlines(events, cursor, TagEnd::TableCell);
+                if in_head {
+                    table.headers.push(cell);
+                } else if let Some(row) = table.rows.last_mut() {
+                    row.push(cell);
+                } else {
+                    table.rows.push(vec![cell]);
                 }
             }
             _ => *cursor += 1,
@@ -1160,29 +1176,14 @@ fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -
                     )
             }))
             .into_any_element(),
-        Block::CodeBlock { info, text } => {
-            let mut container = div()
-                .w_full()
-                .bg(rgb(theme::BG_CARD))
-                .border_1()
-                .border_color(rgb(theme::BORDER_DEFAULT))
-                .rounded(px(6.0))
-                .p(px(theme::SPACING_MD))
+        Block::CodeBlock { text } => {
+            let code_width = code_block_content_min_width(text);
+            let code_lines = div()
+                .min_w(px(code_width))
+                .px(px(CODE_BLOCK_PADDING_X))
+                .py(px(CODE_BLOCK_PADDING_Y))
                 .flex()
                 .flex_col()
-                .gap(px(6.0));
-
-            if let Some(info) = info {
-                container = container.child(
-                    div()
-                        .text_color(rgb(theme::TEXT_MUTED))
-                        .text_size(px(theme::FONT_DETAIL - 1.0))
-                        .font_family(fonts::MONO_FONT_FAMILY)
-                        .child(markdown_text(StyledText::new(info.clone()), "\n")),
-                );
-            }
-
-            container
                 .children(text.lines().map(|line| {
                     let line = if line.is_empty() {
                         " ".to_string()
@@ -1192,13 +1193,25 @@ fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -
                     div()
                         .w_full()
                         .text_color(rgb(theme::TEXT_PRIMARY))
-                        .text_size(px(theme::FONT_DETAIL))
-                        .line_height(px(theme::FONT_DETAIL + 5.0))
+                        .text_size(px(CODE_BLOCK_FONT_SIZE))
+                        .line_height(px(CODE_BLOCK_LINE_HEIGHT))
                         .font_family(fonts::MONO_FONT_FAMILY)
                         .whitespace_nowrap()
                         .child(markdown_text(StyledText::new(line), "\n"))
-                }))
-                .into_any_element()
+                }));
+
+            let mut container = div()
+                .id(format!("{key}-code-scroll"))
+                .w_full()
+                .bg(rgb(theme::BG_CARD))
+                .border_1()
+                .border_color(rgb(theme::BORDER_DEFAULT))
+                .rounded(px(6.0))
+                .overflow_x_scroll()
+                .child(code_lines);
+            container.style().restrict_scroll_to_axis = Some(true);
+
+            container.into_any_element()
         }
         Block::Table(table) => render_table(table, key),
         Block::Html(text) => {
@@ -1212,52 +1225,170 @@ fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -
     }
 }
 
-fn render_table(table: &TableBlock, key: String) -> AnyElement {
-    let mut rows = Vec::new();
-    if !table.headers.is_empty() {
-        rows.push(table.headers.clone());
-    }
-    rows.extend(table.rows.clone());
+fn code_block_content_min_width(text: &str) -> f32 {
+    let columns = text
+        .lines()
+        .map(code_block_display_columns)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    (columns as f32 * CODE_BLOCK_FONT_SIZE * CODE_BLOCK_CHAR_WIDTH_FACTOR).ceil()
+}
 
-    div()
+fn code_block_display_columns(line: &str) -> usize {
+    let mut columns = 0;
+    for ch in line.chars() {
+        if ch == '\t' {
+            columns += CODE_BLOCK_TAB_WIDTH - (columns % CODE_BLOCK_TAB_WIDTH);
+        } else {
+            columns += 1;
+        }
+    }
+    columns
+}
+
+fn render_table(table: &TableBlock, key: String) -> AnyElement {
+    let column_widths = table_column_widths(table);
+    let table_width = column_widths.iter().sum::<f32>().max(TABLE_CELL_MIN_WIDTH);
+    let rows = (!table.headers.is_empty())
+        .then_some((true, table.headers.as_slice()))
+        .into_iter()
+        .chain(table.rows.iter().map(|row| (false, row.as_slice())));
+    let row_count = table.rows.len() + usize::from(!table.headers.is_empty());
+
+    let table_body = div()
+        .w_full()
+        .min_w(px(table_width))
+        .flex()
+        .flex_col()
+        .children(
+            rows.into_iter()
+                .enumerate()
+                .map(|(row_ix, (is_header, row))| {
+                    let is_last_row = row_ix + 1 == row_count;
+                    div()
+                        .w_full()
+                        .flex()
+                        .border_b_1()
+                        .when(is_last_row, |this| {
+                            this.border_color(rgb(theme::BORDER_SUBTLE))
+                        })
+                        .border_color(rgb(theme::BORDER_SUBTLE))
+                        .children(row.iter().enumerate().map(|(cell_ix, cell)| {
+                            let cell_width = column_widths
+                                .get(cell_ix)
+                                .copied()
+                                .unwrap_or(TABLE_CELL_MIN_WIDTH);
+                            div()
+                                .flex_none()
+                                .w(px(cell_width))
+                                .min_w(px(cell_width))
+                                .max_w(px(TABLE_CELL_MAX_WIDTH))
+                                .px(px(TABLE_CELL_PADDING_X))
+                                .py(px(TABLE_CELL_PADDING_Y))
+                                .border_r_1()
+                                .border_color(rgb(theme::BORDER_SUBTLE))
+                                .child(render_inline_block(
+                                    &cell,
+                                    if is_header {
+                                        InlineBlockStyle::TableHeader
+                                    } else {
+                                        InlineBlockStyle::TableCell
+                                    },
+                                    format!("{key}-row-{row_ix}-cell-{cell_ix}"),
+                                ))
+                        }))
+                }),
+        );
+
+    let mut container = div()
+        .id(format!("{key}-table-scroll"))
         .w_full()
         .bg(rgb(theme::BG_CARD))
         .border_1()
         .border_color(rgb(theme::BORDER_DEFAULT))
         .rounded(px(6.0))
-        .overflow_hidden()
-        .flex()
-        .flex_col()
-        .children(rows.into_iter().enumerate().map(|(row_ix, row)| {
-            let is_last_row =
-                row_ix + 1 == table.rows.len() + usize::from(!table.headers.is_empty());
-            div()
-                .w_full()
-                .flex()
-                .border_b_1()
-                .when(is_last_row, |this| {
-                    this.border_color(rgb(theme::BORDER_SUBTLE))
-                })
-                .border_color(rgb(theme::BORDER_SUBTLE))
-                .children(row.into_iter().enumerate().map(|(cell_ix, cell)| {
-                    div()
-                        .flex_1()
-                        .min_w(px(96.0))
-                        .p(px(theme::SPACING_MD))
-                        .border_r_1()
-                        .border_color(rgb(theme::BORDER_SUBTLE))
-                        .child(render_inline_block(
-                            &cell,
-                            if row_ix == 0 && !table.headers.is_empty() {
-                                InlineBlockStyle::TableHeader
-                            } else {
-                                InlineBlockStyle::TableCell
-                            },
-                            format!("{key}-row-{row_ix}-cell-{cell_ix}"),
-                        ))
-                }))
-        }))
-        .into_any_element()
+        .overflow_x_scroll()
+        .child(table_body);
+    container.style().restrict_scroll_to_axis = Some(true);
+
+    container.into_any_element()
+}
+
+fn table_column_widths(table: &TableBlock) -> Vec<f32> {
+    let column_count = table
+        .headers
+        .len()
+        .max(table.rows.iter().map(Vec::len).max().unwrap_or_default());
+    let mut widths = vec![TABLE_CELL_MIN_WIDTH; column_count.max(1)];
+
+    for (ix, cell) in table.headers.iter().enumerate() {
+        widths[ix] = widths[ix].max(table_cell_min_width(cell));
+    }
+    for row in &table.rows {
+        for (ix, cell) in row.iter().enumerate() {
+            widths[ix] = widths[ix].max(table_cell_min_width(cell));
+        }
+    }
+
+    widths
+}
+
+fn table_cell_min_width(cell: &[Inline]) -> f32 {
+    let columns = inline_display_columns(cell).max(1);
+    (columns as f32 * theme::FONT_BODY * TABLE_CELL_CHAR_WIDTH_FACTOR + TABLE_CELL_PADDING_X * 2.0)
+        .ceil()
+        .clamp(TABLE_CELL_MIN_WIDTH, TABLE_CELL_MAX_WIDTH)
+}
+
+fn inline_display_columns(inlines: &[Inline]) -> usize {
+    let mut current = 0;
+    let mut max = 0;
+    add_inline_display_columns(inlines, &mut current, &mut max);
+    max.max(current)
+}
+
+fn add_inline_display_columns(inlines: &[Inline], current: &mut usize, max: &mut usize) {
+    for inline in inlines {
+        match inline {
+            Inline::Text(text) | Inline::Code(text) | Inline::Html(text) => {
+                add_display_text_columns(text, current, max);
+            }
+            Inline::Emphasis(children)
+            | Inline::Strong(children)
+            | Inline::Strikethrough(children) => {
+                add_inline_display_columns(children, current, max);
+            }
+            Inline::Link { content, .. } => {
+                add_inline_display_columns(content, current, max);
+            }
+            Inline::SoftBreak => {
+                *current += 1;
+            }
+            Inline::HardBreak => {
+                *max = (*max).max(*current);
+                *current = 0;
+            }
+            Inline::TaskMarker(_) => {
+                *current += 3;
+            }
+        }
+    }
+}
+
+fn add_display_text_columns(text: &str, current: &mut usize, max: &mut usize) {
+    for ch in text.chars() {
+        match ch {
+            '\n' => {
+                *max = (*max).max(*current);
+                *current = 0;
+            }
+            '\t' => {
+                *current += CODE_BLOCK_TAB_WIDTH - (*current % CODE_BLOCK_TAB_WIDTH);
+            }
+            _ => *current += 1,
+        }
+    }
 }
 
 fn markdown_text(text: StyledText, selection_separator_after: &'static str) -> StyledText {
@@ -1300,11 +1431,11 @@ fn render_inline_block(content: &[Inline], style: InlineBlockStyle, key: String)
         .iter()
         .map(|link| link.url.clone())
         .collect::<Vec<_>>();
-
     let text: AnyElement = if link_ranges.is_empty() {
         styled.into_any_element()
     } else {
         InteractiveText::new(key, styled)
+            .hit_slop(px(MARKDOWN_LINK_HIT_SLOP))
             .on_click(link_ranges, move |ix, _window, _cx| {
                 if let Some(url) = link_urls.get(ix) {
                     platform_bridge::bridge().open_url(url);
@@ -1508,7 +1639,11 @@ fn selection_separator_after(style: InlineBlockStyle) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Block, MarkdownView, is_markdown_path, parse_document};
+    use super::{
+        Block, Inline, MarkdownView, TABLE_CELL_MAX_WIDTH, TABLE_CELL_MIN_WIDTH, TableBlock,
+        code_block_display_columns, inline_display_columns, is_markdown_path,
+        markdown_list_item_count, parse_document, table_column_widths,
+    };
 
     #[test]
     fn detects_markdown_paths_for_preview_and_workspace_editor() {
@@ -1571,8 +1706,21 @@ fn main() {}
     fn maps_markdown_code_block_selection_to_source_lines() {
         let document = parse_document("```rust\nfn main() {}\n\n```\n");
 
-        assert_eq!(document.line_range_for_selection(5..17), Some((2, 2)));
-        assert_eq!(document.line_range_for_selection(18..19), Some((3, 3)));
+        assert_eq!(document.line_range_for_selection(0..12), Some((2, 2)));
+        assert_eq!(document.line_range_for_selection(13..14), Some((3, 3)));
+    }
+
+    #[test]
+    fn markdown_code_block_selection_omits_fenced_language_label() {
+        let document = parse_document("```bash\necho ok\n```\n");
+
+        assert_eq!(document.line_range_for_selection(0..4), Some((2, 2)));
+    }
+
+    #[test]
+    fn code_block_display_columns_expands_tabs() {
+        assert_eq!(code_block_display_columns("a\tb"), 5);
+        assert_eq!(code_block_display_columns("\tindented"), 12);
     }
 
     #[test]
@@ -1594,9 +1742,42 @@ fn main() {}
     }
 
     #[test]
+    fn parses_markdown_table_header_cells() {
+        let document = parse_document("| Header | Status |\n| - | - |\n| alpha | ok |\n");
+
+        let Block::Table(table) = &document.blocks[0] else {
+            panic!("expected table block");
+        };
+
+        assert_eq!(table.headers.len(), 2);
+        assert_eq!(inline_display_columns(&table.headers[0]), 6);
+        assert_eq!(inline_display_columns(&table.headers[1]), 6);
+        assert_eq!(table.rows.len(), 1);
+    }
+
+    #[test]
+    fn table_column_widths_cap_long_content() {
+        let table = TableBlock {
+            headers: vec![vec![Inline::Text("Name".to_string())]],
+            rows: vec![vec![vec![Inline::Text(
+                "very-long-value-that-needs-horizontal-scroll".to_string(),
+            )]]],
+        };
+
+        let widths = table_column_widths(&table);
+
+        assert_eq!(widths.len(), 1);
+        assert!(widths[0] > TABLE_CELL_MIN_WIDTH);
+        assert_eq!(widths[0], TABLE_CELL_MAX_WIDTH);
+    }
+
+    #[test]
     fn markdown_view_resets_virtualized_rows_when_source_changes() {
         let mut view = MarkdownView::new("# Title\n\nBody paragraph.");
-        assert_eq!(view.list_state.item_count(), view.document.blocks.len());
+        assert_eq!(
+            view.list_state.item_count(),
+            markdown_list_item_count(view.document.blocks.len())
+        );
         assert_eq!(view.document.blocks.len(), 2);
 
         view.set_source(
@@ -1612,6 +1793,9 @@ fn main() {}
         );
 
         assert_eq!(view.document.blocks.len(), 3);
-        assert_eq!(view.list_state.item_count(), view.document.blocks.len());
+        assert_eq!(
+            view.list_state.item_count(),
+            markdown_list_item_count(view.document.blocks.len())
+        );
     }
 }
