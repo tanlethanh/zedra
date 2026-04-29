@@ -58,6 +58,7 @@ pub struct Workspace {
     editor: Entity<WorkspaceEditor>,
     gitdiff: Entity<WorkspaceGitdiff>,
     terminals: Vec<Entity<WorkspaceTerminal>>,
+    persist_workspace_state: bool,
     connection_request: Option<ConnectionRequest>,
     /// Becomes true once a ReconnectStarted event is seen; gates initial auto-open/create.
     seen_reconnect: bool,
@@ -253,8 +254,10 @@ impl Workspace {
 
         let workspace_state_subscription = cx.subscribe(
             &workspace_state,
-            |_workspace, workspace_state, event: &WorkspaceStateEvent, _cx| {
-                if matches!(event, WorkspaceStateEvent::StateChanged) {
+            |workspace, workspace_state, event: &WorkspaceStateEvent, _cx| {
+                if workspace.persist_workspace_state
+                    && matches!(event, WorkspaceStateEvent::StateChanged)
+                {
                     WorkspaceState::upsert(workspace_state.read(_cx).clone())
                         .map_err(|e| warn!("failed to upsert workspace state: {}", e))
                         .ok();
@@ -347,6 +350,7 @@ impl Workspace {
             gitdiff,
             // Terminals will be created after connection is established
             terminals: vec![],
+            persist_workspace_state: true,
             connection_request: None,
             seen_reconnect: false,
             _connect_listener: None,
@@ -539,6 +543,11 @@ impl Workspace {
         });
         cx.emit(WorkspaceEvent::Disconnected);
         cx.notify();
+    }
+
+    pub fn prepare_for_saved_removal(&mut self) {
+        self.persist_workspace_state = false;
+        self.session.disconnect();
     }
 
     pub fn open_terminal_from_quick_action(&mut self, id: String, cx: &mut Context<Self>) {

@@ -110,8 +110,7 @@ impl HomeView {
 
     fn process_pending_delete(&self, endpoint_addr: String, cx: &mut Context<Self>) {
         self.workspaces.update(cx, |ws, cx| {
-            ws.disconnect_by_endpoint_addr(&endpoint_addr, cx);
-            ws.remove_saved(&endpoint_addr, cx);
+            ws.remove_by_endpoint_addr(&endpoint_addr, cx);
         });
     }
 }

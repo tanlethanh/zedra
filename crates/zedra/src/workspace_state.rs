@@ -84,9 +84,27 @@ fn workspace_store_lock() -> &'static Mutex<()> {
     WORKSPACE_STORE_LOCK.get_or_init(|| Mutex::new(()))
 }
 
+#[cfg(test)]
+static TEST_DATA_DIRECTORY: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+
+#[cfg(test)]
+fn test_data_directory() -> &'static Mutex<Option<PathBuf>> {
+    TEST_DATA_DIRECTORY.get_or_init(|| Mutex::new(None))
+}
+
+fn data_directory() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(dir) = test_data_directory().lock().ok().and_then(|g| g.clone()) {
+        return Some(dir);
+    }
+
+    platform_bridge::bridge()
+        .data_directory()
+        .map(PathBuf::from)
+}
+
 fn store_path() -> Option<PathBuf> {
-    let data_dir = platform_bridge::bridge().data_directory()?;
-    let dir = PathBuf::from(data_dir).join(STORE_DIR);
+    let dir = data_directory()?.join(STORE_DIR);
     if !dir.exists() {
         if let Err(e) = std::fs::create_dir_all(&dir) {
             error!(dir = ?dir, err = %e, "Failed to create directory: {e}");
@@ -236,7 +254,7 @@ impl WorkspaceStore {
             None => return Err("No data directory available".to_string()),
         };
         if !path.exists() {
-            return Err(format!("No store file yet at {:?}", path));
+            return Ok(Self::default());
         }
         match std::fs::read_to_string(&path) {
             Ok(json) => match serde_json::from_str::<Self>(&json) {
@@ -304,6 +322,39 @@ impl EventEmitter<WorkspaceStateEvent> for WorkspaceState {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    static TEST_STORE_DIRECTORY_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct TestDataDirectoryGuard {
+        path: PathBuf,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl Drop for TestDataDirectoryGuard {
+        fn drop(&mut self) {
+            *test_data_directory().lock().unwrap() = None;
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn set_test_data_directory(name: &str) -> TestDataDirectoryGuard {
+        let lock = TEST_STORE_DIRECTORY_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!(
+            "zedra-workspace-state-{name}-{}-{nanos}",
+            std::process::id()
+        ));
+        *test_data_directory().lock().unwrap() = Some(path.clone());
+        TestDataDirectoryGuard { path, _lock: lock }
+    }
 
     #[test]
     fn disconnect_clears_runtime_state_without_touching_saved_fields() {
@@ -378,5 +429,40 @@ mod tests {
 
         assert!(state.sync_fields_from_session(session.handle(), &session_state));
         assert_eq!(state.connect_phase, Some(ConnectPhase::Connected));
+    }
+
+    #[test]
+    fn upsert_creates_missing_workspace_store() {
+        let _guard = set_test_data_directory("upsert-creates-missing-store");
+
+        WorkspaceState::upsert(WorkspaceState {
+            endpoint_addr: "endpoint-a".into(),
+            project_name: "Project A".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let loaded = WorkspaceState::load().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].endpoint_addr, "endpoint-a");
+        assert_eq!(loaded[0].project_name, "Project A");
+    }
+
+    #[test]
+    fn remove_by_endpoint_addr_persists_removal() {
+        let _guard = set_test_data_directory("remove-persists-removal");
+        for endpoint_addr in ["endpoint-a", "endpoint-b"] {
+            WorkspaceState::upsert(WorkspaceState {
+                endpoint_addr: endpoint_addr.into(),
+                ..Default::default()
+            })
+            .unwrap();
+        }
+
+        WorkspaceState::remove_by_endpoint_add("endpoint-a").unwrap();
+
+        let loaded = WorkspaceState::load().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].endpoint_addr, "endpoint-b");
     }
 }
