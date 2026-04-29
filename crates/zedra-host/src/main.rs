@@ -23,6 +23,8 @@ use zedra_host::{
 use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
 
+mod setup;
+
 #[derive(Parser)]
 #[command(name = "zedra", about = "Desktop companion daemon for Zedra")]
 struct Cli {
@@ -111,6 +113,16 @@ enum Commands {
         /// Command to inject into the terminal on startup (e.g. "claude --resume <id>")
         #[arg(long)]
         launch_cmd: Option<String>,
+    },
+
+    /// Set up Zedra skills or plugins for an AI coding agent
+    Setup {
+        /// Skip interactive confirmation prompts
+        #[arg(short, long)]
+        yes: bool,
+
+        #[command(subcommand)]
+        agent: setup::SetupAgent,
     },
 
     /// Update zedra to the latest version
@@ -601,6 +613,10 @@ async fn main() -> Result<()> {
                     std::process::exit(1);
                 }
             }
+        }
+
+        Commands::Setup { yes, agent } => {
+            setup::run(agent, yes).await?;
         }
 
         Commands::List => {
