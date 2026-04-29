@@ -1613,6 +1613,59 @@ enum WorkspaceSubtitle {
     },
 }
 
+fn render_subtitle(text: impl IntoElement) -> AnyElement {
+    div()
+        .w_full()
+        .min_w_0()
+        .truncate()
+        .text_center()
+        .text_color(rgb(theme::TEXT_SECONDARY))
+        .text_size(px(theme::FONT_BODY))
+        .font_weight(FontWeight::MEDIUM)
+        .child(text)
+        .into_any_element()
+}
+
+fn render_gitdiff_subtitle(filename: SharedString, added: usize, removed: usize) -> AnyElement {
+    div()
+        .w_full()
+        .min_w_0()
+        .px_2()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_center()
+        .gap(px(6.0))
+        .text_size(px(theme::FONT_BODY))
+        .font_weight(FontWeight::MEDIUM)
+        .child(
+            div()
+                .min_w_0()
+                .flex_shrink()
+                .truncate()
+                .text_center()
+                .text_color(rgb(theme::TEXT_SECONDARY))
+                .child(filename),
+        )
+        .when(added > 0, |this| {
+            this.child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(rgb(0x6fc17a))
+                    .child(format!("+{}", added)),
+            )
+        })
+        .when(removed > 0, |this| {
+            this.child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(rgb(0xd57a7a))
+                    .child(format!("-{}", removed)),
+            )
+        })
+        .into_any_element()
+}
+
 impl WorkspaceContent {
     pub fn new(
         workspace_state: Entity<WorkspaceState>,
@@ -1693,6 +1746,29 @@ impl WorkspaceContent {
     pub fn hide_connecting_view(&mut self, cx: &mut Context<Self>) {
         self.show_connecting = false;
         cx.notify();
+    }
+
+    fn render_subtitle(&self, default_subtitle: &str, cx: &mut Context<Self>) -> AnyElement {
+        match &self.subtitle {
+            WorkspaceSubtitle::Default => render_subtitle(default_subtitle.to_owned()),
+            WorkspaceSubtitle::File { path } => render_subtitle(path.clone()),
+            WorkspaceSubtitle::Terminal { id } => {
+                let meta = self.terminal_state.read(cx).meta(id);
+                let subtitle = meta
+                    .title
+                    .as_deref()
+                    .map(strip_ps1_prefix)
+                    .filter(|title| !title.is_empty())
+                    .unwrap_or(default_subtitle)
+                    .to_owned();
+                render_subtitle(subtitle)
+            }
+            WorkspaceSubtitle::GitDiff {
+                filename,
+                added,
+                removed,
+            } => render_gitdiff_subtitle(filename.clone(), *added, *removed),
+        }
     }
 
     pub fn mainview_viewport(&self) -> Option<Size<Pixels>> {
@@ -1834,111 +1910,7 @@ impl Render for WorkspaceContent {
                                             ),
                                     ),
                             )
-                            .child(match &self.subtitle {
-                                WorkspaceSubtitle::Default => div()
-                                    .w_full()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_center()
-                                    .text_color(rgb(theme::TEXT_SECONDARY))
-                                    .text_size(px(theme::FONT_BODY))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(default_subtitle)
-                                    .into_any_element(),
-                                WorkspaceSubtitle::File { path } => div()
-                                    .w_full()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_center()
-                                    .text_color(rgb(theme::TEXT_SECONDARY))
-                                    .text_size(px(theme::FONT_BODY))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(path.clone())
-                                    .into_any_element(),
-                                WorkspaceSubtitle::Terminal { id } => {
-                                    let meta = self.terminal_state.read(cx).meta(id);
-                                    let subtitle = if let Some(title) = meta.title.as_deref() {
-                                        let stripped = strip_ps1_prefix(title);
-                                        if stripped.is_empty() {
-                                            default_subtitle.clone()
-                                        } else {
-                                            stripped.to_owned()
-                                        }
-                                    } else {
-                                        default_subtitle.clone()
-                                    };
-                                    let agent_icon_path = meta.agent_icon;
-
-                                    div()
-                                        .w_full()
-                                        .min_w_0()
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .justify_center()
-                                        .gap(px(6.0))
-                                        .when_some(agent_icon_path, |d, path| {
-                                            d.child(
-                                                svg()
-                                                    .path(path)
-                                                    .size(px(12.0))
-                                                    .flex_shrink_0()
-                                                    .text_color(rgb(theme::TEXT_SECONDARY)),
-                                            )
-                                        })
-                                        .child(
-                                            div()
-                                                .min_w_0()
-                                                .truncate()
-                                                .text_color(rgb(theme::TEXT_SECONDARY))
-                                                .text_size(px(theme::FONT_BODY))
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .child(subtitle),
-                                        )
-                                        .into_any_element()
-                                }
-                                WorkspaceSubtitle::GitDiff {
-                                    filename,
-                                    added,
-                                    removed,
-                                } => div()
-                                    .w_full()
-                                    .min_w_0()
-                                    .px_2()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .justify_center()
-                                    .gap(px(6.0))
-                                    .text_size(px(theme::FONT_BODY))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .flex_shrink()
-                                            .truncate()
-                                            .text_center()
-                                            .text_color(rgb(theme::TEXT_SECONDARY))
-                                            .child(filename.clone()),
-                                    )
-                                    .when(*added > 0, |this| {
-                                        this.child(
-                                            div()
-                                                .flex_shrink_0()
-                                                .text_color(rgb(0x6fc17a))
-                                                .child(format!("+{}", added)),
-                                        )
-                                    })
-                                    .when(*removed > 0, |this| {
-                                        this.child(
-                                            div()
-                                                .flex_shrink_0()
-                                                .text_color(rgb(0xd57a7a))
-                                                .child(format!("-{}", removed)),
-                                        )
-                                    })
-                                    .into_any_element(),
-                            }),
+                            .child(self.render_subtitle(&default_subtitle, cx)),
                     )
                     .child(
                         div()
