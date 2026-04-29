@@ -3,10 +3,8 @@ use tracing::error;
 use zedra_session::SessionHandle;
 use zedra_terminal::terminal::{TerminalHyperlink, TerminalHyperlinkTarget};
 
-use crate::editor::code_editor::EditorView;
-use crate::editor::markdown::{
-    MarkdownView, ParsedMarkdownSource, is_markdown_path, parse_markdown_source,
-};
+use crate::editor::code_editor::{EditorView, ParsedEditorSyntax};
+use crate::editor::markdown::{MarkdownView, is_markdown_path, parse_markdown_source};
 use crate::fonts;
 use crate::placeholder::render_placeholder;
 use crate::theme;
@@ -27,11 +25,6 @@ enum PreviewContent {
     Markdown,
 }
 
-enum LoadedPreviewContent {
-    Editor(String),
-    Markdown(ParsedMarkdownSource),
-}
-
 pub struct TerminalPreviewView {
     session_handle: SessionHandle,
     workspace_state: Entity<WorkspaceState>,
@@ -43,6 +36,7 @@ pub struct TerminalPreviewView {
     subtitle: SharedString,
     active_path: Option<String>,
     read_task: Option<Task<()>>,
+    open_epoch: u64,
 }
 
 impl TerminalPreviewView {
@@ -62,12 +56,18 @@ impl TerminalPreviewView {
             subtitle: "Tap a file link in the terminal to preview it here.".into(),
             active_path: None,
             read_task: None,
+            open_epoch: 0,
         }
     }
 
     pub fn open_hyperlink(&mut self, hyperlink: TerminalHyperlink, cx: &mut Context<Self>) {
+        self.open_epoch = self.open_epoch.wrapping_add(1);
+        let epoch = self.open_epoch;
         match hyperlink.target {
             TerminalHyperlinkTarget::Url { url } => {
+                let prev_task = self.read_task.take();
+                drop(prev_task);
+
                 self.active_path = None;
                 self.title = "External Link".into();
                 self.subtitle = url.into();
@@ -110,59 +110,113 @@ impl TerminalPreviewView {
                 let handle = self.session_handle.clone();
                 let filename = self.title.to_string();
                 let content_kind = self.content;
-                let read_task = cx.spawn(async move |this, cx| {
-                    let result = match handle.fs_read(&path).await {
-                        Ok(result) if result.too_large => Ok(None),
-                        Ok(result) if result.error.is_some() => Err(result.error.unwrap()),
-                        Ok(result) => {
-                            let content = match content_kind {
-                                PreviewContent::Editor => {
-                                    LoadedPreviewContent::Editor(result.content)
-                                }
-                                PreviewContent::Markdown => {
-                                    let parsed = cx
-                                        .background_spawn(async move {
-                                            parse_markdown_source(result.content)
-                                        })
-                                        .await;
-                                    LoadedPreviewContent::Markdown(parsed)
-                                }
-                            };
-                            Ok(Some(content))
-                        }
-                        Err(err) => Err(err.to_string()),
-                    };
-                    let _ = this.update(cx, |this, cx| {
-                        match result {
-                            Ok(None) => {
-                                this.state = PreviewState::TooLarge;
+                let read_task = cx.spawn(async move |this, cx| match handle.fs_read(&path).await {
+                    Ok(result) if result.too_large => {
+                        let _ = this.update(cx, |this, cx| {
+                            if this.should_ignore_load_result(epoch, &path, content_kind) {
+                                return;
                             }
-                            Err(msg) => {
-                                error!("terminal link preview fs/read error for {}: {}", path, msg);
-                                this.state = PreviewState::Error(msg);
+                            this.state = PreviewState::TooLarge;
+                            cx.notify();
+                        });
+                    }
+                    Ok(result) if result.error.is_some() => {
+                        let msg = result.error.unwrap_or("unknown error".to_string());
+                        let _ = this.update(cx, |this, cx| {
+                            if this.should_ignore_load_result(epoch, &path, content_kind) {
+                                return;
                             }
-                            Ok(Some(content)) => {
+                            error!("terminal link preview fs/read error for {}: {}", path, msg);
+                            this.state = PreviewState::Error(msg);
+                            cx.notify();
+                        });
+                    }
+                    Ok(result) => match content_kind {
+                        PreviewContent::Editor => {
+                            let content = result.content;
+                            let content_for_syntax = content.clone();
+                            let syntax_filename = filename.clone();
+                            if let Err(e) = this.update(cx, |this, cx| {
+                                if this.should_ignore_load_result(
+                                    epoch,
+                                    &path,
+                                    PreviewContent::Editor,
+                                ) {
+                                    return;
+                                }
                                 this.state = PreviewState::Loaded;
-                                match content {
-                                    LoadedPreviewContent::Editor(content) => {
-                                        this.editor_view.update(cx, |editor_view, _cx| {
-                                            editor_view.set_content(&filename, content);
-                                        });
-                                    }
-                                    LoadedPreviewContent::Markdown(parsed) => {
-                                        this.markdown_view.update(cx, |markdown_view, _cx| {
-                                            markdown_view.set_parsed_source(parsed);
-                                        });
-                                    }
-                                }
+                                this.editor_view.update(cx, |editor_view, _cx| {
+                                    editor_view.set_content(&filename, content);
+                                });
+                                cx.notify();
+                            }) {
+                                error!("terminal link preview update failed for {}: {}", path, e);
+                                return;
                             }
+
+                            let parsed_syntax = cx
+                                .background_spawn(async move {
+                                    ParsedEditorSyntax::build(&syntax_filename, content_for_syntax)
+                                })
+                                .await;
+
+                            let _ = this.update(cx, |this, cx| {
+                                if this.should_ignore_load_result(
+                                    epoch,
+                                    &path,
+                                    PreviewContent::Editor,
+                                ) {
+                                    return;
+                                }
+                                this.editor_view.update(cx, |editor_view, _cx| {
+                                    editor_view.apply_parsed_syntax(parsed_syntax);
+                                });
+                                cx.notify();
+                            });
                         }
-                        cx.notify();
-                    });
+                        PreviewContent::Markdown => {
+                            let parsed = cx
+                                .background_spawn(
+                                    async move { parse_markdown_source(result.content) },
+                                )
+                                .await;
+                            let _ = this.update(cx, |this, cx| {
+                                if this.should_ignore_load_result(
+                                    epoch,
+                                    &path,
+                                    PreviewContent::Markdown,
+                                ) {
+                                    return;
+                                }
+                                this.state = PreviewState::Loaded;
+                                this.markdown_view.update(cx, |markdown_view, _cx| {
+                                    markdown_view.set_parsed_source(parsed);
+                                });
+                                cx.notify();
+                            });
+                        }
+                    },
+                    Err(err) => {
+                        let msg = err.to_string();
+                        let _ = this.update(cx, |this, cx| {
+                            if this.should_ignore_load_result(epoch, &path, content_kind) {
+                                return;
+                            }
+                            error!("terminal link preview fs/read error for {}: {}", path, msg);
+                            this.state = PreviewState::Error(msg);
+                            cx.notify();
+                        });
+                    }
                 });
                 self.read_task = Some(read_task);
             }
         }
+    }
+
+    fn should_ignore_load_result(&self, epoch: u64, path: &str, content: PreviewContent) -> bool {
+        self.open_epoch != epoch
+            || self.active_path.as_deref() != Some(path)
+            || self.content != content
     }
 }
 

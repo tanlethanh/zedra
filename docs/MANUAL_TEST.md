@@ -215,12 +215,13 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:
 
 3. Tap `/tmp/zedra-long-code.rs:1`
 4. Expected: the preview opens in code editor mode inside the native custom sheet
-5. Swipe horizontally across the long string line
-6. Expected: the code scrolls sideways and the native sheet does not move or dismiss
-7. Swipe mostly vertically inside the preview body
-8. Expected: the preview content scrolls vertically
-9. Scroll to the top of the preview body, then drag downward
-10. Expected: the native sheet moves or dismisses normally from the top edge
+5. Expected: Rust keywords and string tokens gain syntax colors after the preview finishes parsing
+6. Swipe horizontally across the long string line
+7. Expected: the code scrolls sideways and the native sheet does not move or dismiss
+8. Swipe mostly vertically inside the preview body
+9. Expected: the preview content scrolls vertically
+10. Scroll to the top of the preview body, then drag downward
+11. Expected: the native sheet moves or dismisses normally from the top edge
 
 ## 10. Connecting Overlay Layout On Wide Screens
 
