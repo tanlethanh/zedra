@@ -12,6 +12,7 @@ pub const TEXT_SECONDARY: u32 = 0xcacaca;
 pub const TEXT_MUTED: u32 = 0x505050;
 
 // Border colors
+pub const BORDER_HIGHLIGHT: u32 = 0xcacaca;
 pub const BORDER_DEFAULT: u32 = 0x2c2c2c;
 pub const BORDER_ACTIVE: u32 = 0x505050;
 pub const BORDER_SUBTLE: u32 = 0x1a1a1a;
@@ -25,6 +26,7 @@ pub const ACCENT_DIM: u32 = 0x505050;
 
 // Spacing
 pub const DRAWER_PADDING: f32 = 12.0; // Horizontal padding for drawer tab content
+pub const SPACING_XS: f32 = 4.0;
 pub const SPACING_SM: f32 = 8.0;
 pub const SPACING_MD: f32 = 12.0;
 pub const SPACING_LG: f32 = 16.0;
