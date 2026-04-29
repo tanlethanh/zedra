@@ -23,11 +23,18 @@ zedra start
 
 **Claude Code**
 ```bash
-# Inside Claude Code session
-/plugin marketplace add tanlethanh/zedra-plugin
-/plugin install zedra@zedra
-# Restart Claude Code session and start Zedra
-/zedra:zedra-start
+zedra setup claude
+# In Claude Code, reload plugins and start Zedra
+/reload-plugins
+/zedra-start
+```
+
+**Codex**
+
+```bash
+zedra setup codex
+# In Codex, reload skills and start Zedra
+$zedra-start
 ```
 
 Scan the QR code with the Zedra app. That's it.
