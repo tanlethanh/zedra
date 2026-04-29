@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::cmp::min;
 use std::ops::{Index, Range};
 use std::path::{Path, PathBuf};
-use tracing::*;
+use tracing::{error, info};
 
 use alacritty_terminal::event::{Event as AlacTermEvent, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
@@ -169,6 +169,9 @@ pub struct IMEState {
     /// True after a dictation hypothesis has been committed while keeping the
     /// synthetic text store available for UIKit's trailing dictation queries.
     pub committed_dictation_pending_cleanup: bool,
+    /// Briefly guards against IMEs that rewrite a prior vowel by deleting it,
+    /// then reinserting the already-committed consonant before the composed vowel.
+    pub pending_redundant_insert: Option<String>,
 }
 
 /// Minimal terminal state wrapping alacritty_terminal::Term
@@ -507,6 +510,15 @@ impl Terminal {
             ..Self::byte_offset_from_utf16(text, range_utf16.end)
     }
 
+    fn char_before_utf16_offset(text: &str, offset: usize, context_start: usize) -> Option<String> {
+        if offset <= context_start {
+            return None;
+        }
+
+        let end = Self::byte_offset_from_utf16(text, offset);
+        text[..end].chars().last().map(|ch| ch.to_string())
+    }
+
     fn clamp_utf16_range(text: &str, range: Range<usize>) -> Range<usize> {
         let len = Self::utf16_len(text);
         let start = range.start.min(len);
@@ -575,11 +587,32 @@ impl Terminal {
         replacement_range: Option<Range<usize>>,
         text: &str,
     ) -> String {
+        self.replace_text_input_context_range_impl(replacement_range, text, false)
+    }
+
+    pub fn replace_text_input_context_range_from_context_rewrite(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+        text: &str,
+    ) -> String {
+        self.replace_text_input_context_range_impl(replacement_range, text, true)
+    }
+
+    fn replace_text_input_context_range_impl(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+        text: &str,
+        track_redundant_insert: bool,
+    ) -> String {
+        let input_replacement_range = replacement_range.clone();
         let state = self.ime_state_mut();
         if state.document_text.is_empty() {
             state.document_text.push(' ');
         }
 
+        let document_before = state.document_text.clone();
+        let marked_range_before = state.marked_range.clone();
+        let selection_before = state.selected_range.clone();
         let document_len = Self::utf16_len(&state.document_text);
         let selection = state
             .selected_range
@@ -604,15 +637,96 @@ impl Terminal {
         } else {
             String::new()
         };
+        let pending_redundant_insert = if input_replacement_range.is_some()
+            && text.is_empty()
+            && !removed_text.is_empty()
+            && track_redundant_insert
+        {
+            Self::char_before_utf16_offset(&state.document_text, edit_range.start, context_start)
+        } else {
+            None
+        };
         let (document_text, inserted_range) =
-            Self::replace_utf16_range(&state.document_text, edit_range, text);
+            Self::replace_utf16_range(&state.document_text, edit_range.clone(), text);
 
         state.document_text = document_text;
         state.marked_text.clear();
         state.marked_range = None;
         state.selected_range = Some(inserted_range.end..inserted_range.end);
         state.committed_dictation_pending_cleanup = false;
+        state.pending_redundant_insert = pending_redundant_insert;
+        info!(
+            replacement_range = ?input_replacement_range,
+            requested_range = ?requested_range,
+            edit_range = ?edit_range,
+            text = %text,
+            removed_text = %removed_text,
+            track_redundant_insert,
+            pending_redundant_insert = ?state.pending_redundant_insert,
+            document_before = %document_before,
+            document_after = %state.document_text,
+            marked_range_before = ?marked_range_before,
+            selection_before = ?selection_before,
+            selection_after = ?state.selected_range,
+            "KeyboardDebug terminal replace_text_input_context_range"
+        );
         removed_text
+    }
+
+    pub fn consume_pending_redundant_context_insert(&mut self, text: &str) -> Option<String> {
+        let Some(state) = self.ime_state.as_mut() else {
+            return None;
+        };
+        let Some(pending) = state.pending_redundant_insert.take() else {
+            return None;
+        };
+
+        let document_len = Self::utf16_len(&state.document_text);
+        let selection = state
+            .selected_range
+            .clone()
+            .unwrap_or(document_len..document_len);
+        let context_start = if state.document_text.starts_with(' ') {
+            1
+        } else {
+            0
+        };
+        let context_prefix = if selection.is_empty() {
+            Self::char_before_utf16_offset(&state.document_text, selection.start, context_start)
+        } else {
+            None
+        };
+
+        if context_prefix.as_deref() != Some(pending.as_str()) {
+            info!(
+                text = %text,
+                pending = %pending,
+                context_prefix = ?context_prefix,
+                selection = ?selection,
+                document = %state.document_text,
+                "KeyboardDebug terminal consume_pending_redundant_context_insert context_miss"
+            );
+            return None;
+        }
+
+        let Some(remainder) = text.strip_prefix(&pending) else {
+            info!(
+                text = %text,
+                pending = %pending,
+                "KeyboardDebug terminal consume_pending_redundant_context_insert text_miss"
+            );
+            return None;
+        };
+
+        info!(
+            text = %text,
+            pending = %pending,
+            remainder = %remainder,
+            selection = ?selection,
+            document = %state.document_text,
+            "KeyboardDebug terminal consume_pending_redundant_context_insert consumed"
+        );
+        Some(remainder.to_string())
     }
 
     /// Clear the marked text.
@@ -622,6 +736,7 @@ impl Terminal {
             state.marked_range = None;
             state.selected_range = None;
             state.committed_dictation_pending_cleanup = false;
+            state.pending_redundant_insert = None;
             if !state.dictation_active {
                 state.document_text.clear();
             }
@@ -638,6 +753,7 @@ impl Terminal {
             state.marked_range = None;
             state.selected_range = None;
             state.committed_dictation_pending_cleanup = false;
+            state.pending_redundant_insert = None;
         }
     }
 
@@ -666,16 +782,32 @@ impl Terminal {
         &mut self,
         replacement_range: Option<Range<usize>>,
     ) -> bool {
+        let input_replacement_range = replacement_range.clone();
         let Some(state) = self.ime_state.as_mut() else {
+            info!(
+                replacement_range = ?input_replacement_range,
+                "KeyboardDebug terminal consume_committed_dictation_cleanup_delete no_ime_state"
+            );
             return false;
         };
         if state.dictation_active || !state.committed_dictation_pending_cleanup {
+            info!(
+                replacement_range = ?input_replacement_range,
+                dictation_active = state.dictation_active,
+                pending_dictation_cleanup = state.committed_dictation_pending_cleanup,
+                "KeyboardDebug terminal consume_committed_dictation_cleanup_delete not_pending"
+            );
             return false;
         }
 
         let (Some(replacement_range), Some(marked_range)) =
             (replacement_range, state.marked_range.clone())
         else {
+            info!(
+                replacement_range = ?input_replacement_range,
+                marked_range = ?state.marked_range,
+                "KeyboardDebug terminal consume_committed_dictation_cleanup_delete missing_range"
+            );
             return false;
         };
 
@@ -683,6 +815,12 @@ impl Terminal {
         let marked_range = Self::clamp_utf16_range(&state.document_text, marked_range);
         if replacement_range.start > marked_range.start || replacement_range.end < marked_range.end
         {
+            info!(
+                replacement_range = ?replacement_range,
+                marked_range = ?marked_range,
+                document = %state.document_text,
+                "KeyboardDebug terminal consume_committed_dictation_cleanup_delete range_miss"
+            );
             return false;
         }
 
@@ -695,6 +833,12 @@ impl Terminal {
         state.marked_range = None;
         state.selected_range = None;
         state.committed_dictation_pending_cleanup = false;
+        state.pending_redundant_insert = None;
+        info!(
+            replacement_range = ?replacement_range,
+            marked_range = ?marked_range,
+            "KeyboardDebug terminal consume_committed_dictation_cleanup_delete consumed"
+        );
         true
     }
 
@@ -704,8 +848,17 @@ impl Terminal {
         text: String,
         selected_range: Option<Range<usize>>,
     ) -> bool {
-        let dictation_active = {
+        let input_replacement_range = replacement_range.clone();
+        let input_selected_range = selected_range.clone();
+        let (
+            dictation_active,
+            document_before,
+            document_after,
+            marked_range_after,
+            selection_after,
+        ) = {
             let state = self.ime_state_mut();
+            let document_before = state.document_text.clone();
             if state.dictation_active && state.document_text.is_empty() {
                 state.document_text.push(' ');
             }
@@ -721,6 +874,7 @@ impl Terminal {
             state.document_text = document_text;
             state.marked_text = text.clone();
             state.committed_dictation_pending_cleanup = false;
+            state.pending_redundant_insert = None;
             state.marked_range = if text.is_empty() && !state.dictation_active {
                 None
             } else {
@@ -735,8 +889,25 @@ impl Terminal {
                 })
                 .unwrap_or_else(|| inserted_range.end..inserted_range.end);
             state.selected_range = Some(selected_range);
-            state.dictation_active
+            (
+                state.dictation_active,
+                document_before,
+                state.document_text.clone(),
+                state.marked_range.clone(),
+                state.selected_range.clone(),
+            )
         };
+        info!(
+            replacement_range = ?input_replacement_range,
+            selected_range = ?input_selected_range,
+            text = %text,
+            dictation_active,
+            document_before = %document_before,
+            document_after = %document_after,
+            marked_range_after = ?marked_range_after,
+            selection_after = ?selection_after,
+            "KeyboardDebug terminal replace_marked_text_in_range"
+        );
 
         if dictation_active {
             self.emit_dictation_preview_changed(Some(text));
@@ -747,45 +918,85 @@ impl Terminal {
 
     /// Begin a dictation session with a stable marked range in the text store.
     pub fn begin_dictation(&mut self) {
-        let state = self.ime_state_mut();
-        if state.committed_dictation_pending_cleanup {
-            state.document_text.clear();
-            state.marked_text.clear();
-            state.marked_range = None;
-            state.selected_range = None;
-            state.committed_dictation_pending_cleanup = false;
-        }
-        let already_active = state.dictation_active;
-        state.dictation_active = true;
-        state.committed_dictation_pending_cleanup = false;
-        if !already_active {
-            if state.document_text.is_empty() {
-                state.document_text.push(' ');
+        let (
+            already_active,
+            document_before,
+            document_after,
+            marked_range_before,
+            marked_range_after,
+            selection_before,
+            selection_after,
+            emit_empty_preview,
+        ) = {
+            let state = self.ime_state_mut();
+            let document_before = state.document_text.clone();
+            let marked_range_before = state.marked_range.clone();
+            let selection_before = state.selected_range.clone();
+            if state.committed_dictation_pending_cleanup {
+                state.document_text.clear();
+                state.marked_text.clear();
+                state.marked_range = None;
+                state.selected_range = None;
+                state.committed_dictation_pending_cleanup = false;
+                state.pending_redundant_insert = None;
             }
-            let insertion = state
-                .selected_range
-                .as_ref()
-                .map(|range| range.end)
-                .unwrap_or_else(|| Self::utf16_len(&state.document_text));
-            state.marked_text.clear();
-            state.marked_range = Some(insertion..insertion);
-            state.selected_range = Some(insertion..insertion);
+            let already_active = state.dictation_active;
+            let mut emit_empty_preview = false;
+            state.dictation_active = true;
+            state.committed_dictation_pending_cleanup = false;
+            if !already_active {
+                if state.document_text.is_empty() {
+                    state.document_text.push(' ');
+                }
+                let insertion = state
+                    .selected_range
+                    .as_ref()
+                    .map(|range| range.end)
+                    .unwrap_or_else(|| Self::utf16_len(&state.document_text));
+                state.marked_text.clear();
+                state.marked_range = Some(insertion..insertion);
+                state.selected_range = Some(insertion..insertion);
+                emit_empty_preview = true;
+            } else if state.marked_range.is_none() {
+                let insertion = state
+                    .selected_range
+                    .as_ref()
+                    .map(|range| range.end)
+                    .unwrap_or_else(|| Self::utf16_len(&state.document_text));
+                state.marked_range = Some(insertion..insertion);
+                state.selected_range = Some(insertion..insertion);
+            }
+            (
+                already_active,
+                document_before,
+                state.document_text.clone(),
+                marked_range_before,
+                state.marked_range.clone(),
+                selection_before,
+                state.selected_range.clone(),
+                emit_empty_preview,
+            )
+        };
+        if emit_empty_preview {
             self.emit_dictation_preview_changed(Some(String::new()));
-        } else if state.marked_range.is_none() {
-            let insertion = state
-                .selected_range
-                .as_ref()
-                .map(|range| range.end)
-                .unwrap_or_else(|| Self::utf16_len(&state.document_text));
-            state.marked_range = Some(insertion..insertion);
-            state.selected_range = Some(insertion..insertion);
         }
+        info!(
+            already_active,
+            document_before = %document_before,
+            document_after = %document_after,
+            marked_range_before = ?marked_range_before,
+            marked_range_after = ?marked_range_after,
+            selection_before = ?selection_before,
+            selection_after = ?selection_after,
+            "KeyboardDebug terminal begin_dictation"
+        );
     }
 
     /// Finish dictation and return the current marked text, if any.
     pub fn finish_dictation(&mut self) -> Option<String> {
         let result = if let Some(state) = self.ime_state.as_mut() {
             if !state.dictation_active {
+                info!("KeyboardDebug terminal finish_dictation inactive");
                 return None;
             }
 
@@ -798,8 +1009,18 @@ impl Terminal {
             // callbacks must not commit the same hypothesis to the terminal.
             let text = state.marked_text.clone();
             state.committed_dictation_pending_cleanup = !text.is_empty();
+            state.pending_redundant_insert = None;
+            info!(
+                text = %text,
+                marked_range = ?state.marked_range,
+                selected_range = ?state.selected_range,
+                document = %state.document_text,
+                pending_dictation_cleanup = state.committed_dictation_pending_cleanup,
+                "KeyboardDebug terminal finish_dictation"
+            );
             if text.is_empty() { None } else { Some(text) }
         } else {
+            info!("KeyboardDebug terminal finish_dictation missing_ime_state");
             None
         };
 
@@ -808,6 +1029,12 @@ impl Terminal {
     }
 
     pub fn cancel_dictation(&mut self) {
+        info!(
+            dictation_active = self.is_dictation_active(),
+            marked_range = ?self.marked_text_range(),
+            document = %self.text_input_document(),
+            "KeyboardDebug terminal cancel_dictation"
+        );
         if let Some(state) = self.ime_state.as_mut() {
             state.dictation_active = false;
             state.committed_dictation_pending_cleanup = false;
@@ -1843,6 +2070,83 @@ mod tests {
         terminal.replace_text_input_context_range(None, "x");
         assert_eq!(terminal.text_input_document(), " x");
         assert_eq!(terminal.text_input_selection_range(), 2..2);
+    }
+
+    #[test]
+    fn keyboard_text_input_context_consumes_redundant_insert_after_ime_delete() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.replace_text_input_context_range(None, "h");
+        terminal.replace_text_input_context_range(None, "e");
+        let removed =
+            terminal.replace_text_input_context_range_from_context_rewrite(Some(2..3), "");
+
+        assert_eq!(removed, "e");
+        assert_eq!(terminal.text_input_document(), " h");
+        assert_eq!(terminal.text_input_selection_range(), 2..2);
+
+        assert_eq!(
+            terminal.consume_pending_redundant_context_insert("h"),
+            Some(String::new())
+        );
+        assert_eq!(terminal.text_input_document(), " h");
+
+        let removed = terminal.replace_text_input_context_range(None, "ê");
+        assert_eq!(removed, "");
+        assert_eq!(terminal.text_input_document(), " hê");
+        assert_eq!(terminal.text_input_selection_range(), 3..3);
+    }
+
+    #[test]
+    fn keyboard_text_input_context_keeps_non_matching_insert_after_ime_delete() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.replace_text_input_context_range(None, "h");
+        terminal.replace_text_input_context_range(None, "e");
+        terminal.replace_text_input_context_range_from_context_rewrite(Some(2..3), "");
+
+        assert_eq!(terminal.consume_pending_redundant_context_insert("x"), None);
+        let removed = terminal.replace_text_input_context_range(None, "x");
+
+        assert_eq!(removed, "");
+        assert_eq!(terminal.text_input_document(), " hx");
+        assert_eq!(terminal.text_input_selection_range(), 3..3);
+    }
+
+    #[test]
+    fn keyboard_text_input_context_does_not_consume_after_normal_delete() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.replace_text_input_context_range(None, "h");
+        terminal.replace_text_input_context_range(None, "e");
+        terminal.replace_text_input_context_range(Some(2..3), "");
+
+        assert_eq!(terminal.consume_pending_redundant_context_insert("h"), None);
+        let removed = terminal.replace_text_input_context_range(None, "h");
+
+        assert_eq!(removed, "");
+        assert_eq!(terminal.text_input_document(), " hh");
+        assert_eq!(terminal.text_input_selection_range(), 3..3);
+    }
+
+    #[test]
+    fn keyboard_text_input_context_consumes_redundant_prefix_only() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.replace_text_input_context_range(None, "c");
+        terminal.replace_text_input_context_range(None, "h");
+        terminal.replace_text_input_context_range(None, "a");
+        terminal.replace_text_input_context_range_from_context_rewrite(Some(3..4), "");
+
+        assert_eq!(
+            terminal.consume_pending_redundant_context_insert("hà"),
+            Some("à".to_string())
+        );
+        let removed = terminal.replace_text_input_context_range(None, "à");
+
+        assert_eq!(removed, "");
+        assert_eq!(terminal.text_input_document(), " chà");
+        assert_eq!(terminal.text_input_selection_range(), 4..4);
     }
 
     #[test]

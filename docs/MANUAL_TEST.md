@@ -313,6 +313,8 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:
 13. Open the workspace Git sidebar and focus the Commit message input
 14. Type prose and accept an available native suggestion
 15. Expected: the suggestion inserts into the commit message, while smart punctuation and autocapitalization remain disabled
+16. Switch the software keyboard to Vietnamese Telex and type `lee` and `chaf` in the terminal
+17. Expected: the PTY receives `lê` and `chà`, without duplicate base consonants such as `llê` or `chhà`
 
 ## 12. Quick Action Terminal Navigation
 

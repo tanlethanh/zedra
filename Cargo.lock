@@ -3038,6 +3038,7 @@ dependencies = [
  "pathfinder_geometry",
  "raw-window-handle",
  "smallvec",
+ "tracing",
  "util",
  "uuid",
  "zed-font-kit",
