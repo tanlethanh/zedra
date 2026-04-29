@@ -174,6 +174,23 @@ fn sync_refresh_mode_for_event(
     }
 }
 
+fn should_initialize_terminals_after_sync(
+    mode: SyncRefreshMode,
+    terminal_ids: &[String],
+    active_main_view: &WorkspaceMainView,
+) -> bool {
+    match mode {
+        SyncRefreshMode::InitialConnect => true,
+        SyncRefreshMode::Reconnect => {
+            let recovered_without_terminals = terminal_ids.is_empty()
+                && !matches!(active_main_view, WorkspaceMainView::NoActiveTerminal);
+            let main_view_was_reset = matches!(active_main_view, WorkspaceMainView::Default);
+
+            recovered_without_terminals || main_view_was_reset
+        }
+    }
+}
+
 fn should_apply_connect_event(_event: &ConnectEvent, user_disconnect: bool) -> bool {
     !user_disconnect
 }
@@ -458,11 +475,19 @@ impl Workspace {
                                 });
                             });
                             ws.reconcile_terminals_after_sync(cx);
+                            let should_initialize = {
+                                let state = ws.workspace_state.read(cx);
+                                should_initialize_terminals_after_sync(
+                                    sync_refresh_mode,
+                                    &state.terminal_ids,
+                                    &state.active_main_view,
+                                )
+                            };
                             ws.workspace_state.update(cx, |this, cx| {
                                 this.emit_sync_complete(cx);
                             });
                             ws.content.update(cx, |c, cx| c.hide_connecting_view(cx));
-                            is_initial_connect
+                            should_initialize
                         }) {
                             Ok(should_initialize) => should_initialize,
                             Err(_) => break,
@@ -1492,6 +1517,63 @@ mod tests {
         let mode = sync_refresh_mode_for_event(&sync_complete_event(), &mut seen_reconnect);
 
         assert_eq!(mode, Some(SyncRefreshMode::Reconnect));
+    }
+
+    #[::core::prelude::v1::test]
+    fn initial_sync_bootstraps_terminals() {
+        let terminal_ids = vec!["terminal-1".to_string()];
+
+        assert!(should_initialize_terminals_after_sync(
+            SyncRefreshMode::InitialConnect,
+            &terminal_ids,
+            &WorkspaceMainView::File {
+                path: "src/main.rs".into(),
+            },
+        ));
+    }
+
+    #[::core::prelude::v1::test]
+    fn reconnect_sync_bootstraps_after_host_restart_with_no_terminals() {
+        assert!(should_initialize_terminals_after_sync(
+            SyncRefreshMode::Reconnect,
+            &[],
+            &WorkspaceMainView::File {
+                path: "src/main.rs".into(),
+            },
+        ));
+    }
+
+    #[::core::prelude::v1::test]
+    fn reconnect_sync_bootstraps_when_main_view_was_reset() {
+        let terminal_ids = vec!["terminal-1".to_string()];
+
+        assert!(should_initialize_terminals_after_sync(
+            SyncRefreshMode::Reconnect,
+            &terminal_ids,
+            &WorkspaceMainView::Default,
+        ));
+    }
+
+    #[::core::prelude::v1::test]
+    fn reconnect_sync_preserves_file_view_when_host_has_terminals() {
+        let terminal_ids = vec!["terminal-1".to_string()];
+
+        assert!(!should_initialize_terminals_after_sync(
+            SyncRefreshMode::Reconnect,
+            &terminal_ids,
+            &WorkspaceMainView::File {
+                path: "src/main.rs".into(),
+            },
+        ));
+    }
+
+    #[::core::prelude::v1::test]
+    fn reconnect_sync_preserves_no_active_terminal_empty_state() {
+        assert!(!should_initialize_terminals_after_sync(
+            SyncRefreshMode::Reconnect,
+            &[],
+            &WorkspaceMainView::NoActiveTerminal,
+        ));
     }
 
     #[::core::prelude::v1::test]

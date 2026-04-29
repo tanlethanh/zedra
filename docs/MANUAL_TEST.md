@@ -126,6 +126,7 @@
 4. Expected: app auto-reconnects (Reconnecting badge → Connected); session
    panel shows same or new session ID depending on `sessions.json` state
 5. Expected: after reconnect, file explorer root entries and git status refresh asynchronously without blocking the terminal from becoming usable
+6. Expected: if the restarted host syncs zero terminals, the app creates and opens a fresh terminal instead of leaving the main view on `Loading ...`
 
 ## 5. Host Unreachable → Retry
 
@@ -136,6 +137,7 @@
 5. Bring host network back up, tap "Retry"
 6. Expected: reconnects successfully
 7. Expected: the workspace drawer Terminals tab preserves the pre-reconnect terminal order
+8. If the host was restarted and no remote terminals remain, expected: a fresh terminal is created and opened
 
 ## 5a. Idle Before Reconnect
 
