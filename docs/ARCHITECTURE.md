@@ -76,7 +76,7 @@ PKI reconnect:   Connect(None) → Challenge → AuthProve → Ok(SyncSessionRes
 | Auth/bootstrap | `Register`, `Connect`, `AuthProve`, `SyncSession` |
 | Health     | `Ping` |
 | Session    | `GetSessionInfo`, `ListSessions`, `SubscribeHostInfo` |
-| Filesystem | `FsList`, `FsRead`, `FsWrite`, `FsStat`, `FsWatch`, `FsUnwatch` |
+| Filesystem | `FsList`, `FsRead`, `FsWrite`, `FsStat`, `FsDocsTree`, `FsWatch`, `FsUnwatch` |
 | Terminal   | `TermCreate`, `TermAttach` (bidi stream), `TermResize`, `TermClose`, `TermList`, `TermReorder` |
 | Git        | `GitStatus`, `GitDiff`, `GitLog`, `GitCommit`, `GitStage`, `GitUnstage`, `GitBranches`, `GitCheckout` |
 | AI         | `AiPrompt` |

@@ -159,6 +159,7 @@ challenge is carried by `ConnectResult::Challenge`.
 - `FsRead(FsReadReq) -> FsReadResult`
 - `FsWrite(FsWriteReq) -> FsWriteResult`
 - `FsStat(FsStatReq) -> FsStatResult`
+- `FsDocsTree(FsDocsTreeReq) -> FsDocsTreeResult`
 - `FsWatch(FsWatchReq) -> FsWatchResult`
 - `FsUnwatch(FsUnwatchReq) -> FsUnwatchResult`
 
@@ -170,13 +171,14 @@ Most result structs carry `error: Option<String>`. When set, the operation faile
 - All other fields are zero-valued when `error` is set (empty string, empty vec, `false`, `0`, `None`).
 - Never silently ignore a set `error` — propagate as `Err` or show in UI.
 
-Result types that carry `error`:
+Result types that carry `error: Option<String>`:
 `FsListResult`, `FsReadResult`, `FsStatResult`, `SessionSwitchResult`, `TermCreateResult`,
 `GitStatusResult`, `GitDiffResult`, `GitLogResult`, `GitCommitResult`, `GitStageResult`,
 `GitUnstageResult`, `GitBranchesResult`, `LspDiagnosticsResult`.
 
-Types that do **not** carry `error` (use dedicated status fields or enum variants instead):
-`FsWriteResult` (`ok: bool`), `GitCheckoutResult` (`ok: bool`), `FsWatchResult`/`FsUnwatchResult` (enum).
+Types that use non-string status fields or enum variants instead:
+`FsWriteResult` (`ok: bool`), `GitCheckoutResult` (`ok: bool`), `FsWatchResult`/`FsUnwatchResult` (enum),
+`FsDocsTreeResult` (`error: Option<FsDocsTreeError>`).
 
 ### FsRead additional fields
 
@@ -188,6 +190,16 @@ Types that do **not** carry `error` (use dedicated status fields or enum variant
 - `offset` is zero-based index into stable listing order returned by host.
 - `limit` is clamped by host to `FS_LIST_DEFAULT_LIMIT` when necessary.
 - `has_more` indicates additional entries exist after this page.
+
+### FsDocsTree conventions
+
+- `rebuild = true` scans the requested directory, replaces the per-session in-memory docs-tree snapshot, and returns page 0.
+- `rebuild = false` serves a page from the matching `snapshot_id`; `CacheMiss` or `StaleSnapshot` means the client should ask the user to rebuild.
+- The host detects markdown files with case-insensitive `.md` and `.markdown` extensions only.
+- The host combines gitignore matching with built-in fallback ignores for dot-prefixed, generated, dependency, and build directories, and never follows symlink directories.
+- Limits: default page size `200`, max page size `1_000`, max offset `5_000`, max visited entries per rebuild `10_000`.
+- `truncated = true` means host caps prevented proving the full docs tree was scanned.
+- The client treats `Unsupported` as a compatibility result for older hosts and should not keep showing an active build state.
 
 ### FsWatch/FsUnwatch result enums
 
@@ -402,6 +414,18 @@ Any protocol-layer change must include all applicable steps:
 ---
 
 ## 11) Protocol Changelog
+
+### 2026-04-29
+
+- Added host-built docs tree RPC:
+  - `FsDocsTree(FsDocsTreeReq) -> FsDocsTreeResult`
+- Added recursive docs tree payload and typed docs-tree errors:
+  - `FsDocNode`
+  - `FsDocsTreeError::{InvalidPath, InvalidRequest, CacheMiss, StaleSnapshot, Busy, ScanFailed, Unsupported}`
+- Added bounded manual rebuild snapshot behavior:
+  - per-session in-memory cache
+  - 10 minute cache TTL
+  - no ALPN change
 
 ### 2026-04-28
 

@@ -6,6 +6,10 @@
 //   PKI reconnect:  Connect(None) → Challenge → AuthProve → Ok(SyncSessionResult) → (RPC calls)
 //   Health:         Ping (every 2s, foreground only, 5 misses = client reconnects)
 
+use crate::docs_tree::{
+    build_snapshot, docs_tree_cache_key, docs_tree_limit, snapshot_page_result,
+    validate_docs_tree_offset,
+};
 use crate::fs::{Filesystem, LocalFs};
 use crate::git::GitRepo;
 use crate::host_info;
@@ -1512,6 +1516,132 @@ async fn dispatch(
                             size: 0,
                             modified: None,
                             error: Some(e.to_string()),
+                        })
+                        .await;
+                }
+            }
+        }
+
+        ZedraMessage::FsDocsTree(msg) => {
+            if let Err(error) = validate_docs_tree_offset(msg.offset) {
+                let _ = msg
+                    .tx
+                    .send(FsDocsTreeResult {
+                        root: None,
+                        snapshot_id: None,
+                        next_offset: 0,
+                        has_more: false,
+                        truncated: false,
+                        error: Some(error),
+                    })
+                    .await;
+                return Ok(());
+            }
+
+            let path = match resolve_path(&state.workdir, &msg.path) {
+                Ok(path) => path,
+                Err(error) => {
+                    tracing::warn!("FsDocsTree: rejected path {:?}: {}", msg.path, error);
+                    let _ = msg
+                        .tx
+                        .send(FsDocsTreeResult {
+                            root: None,
+                            snapshot_id: None,
+                            next_offset: 0,
+                            has_more: false,
+                            truncated: false,
+                            error: Some(FsDocsTreeError::InvalidPath),
+                        })
+                        .await;
+                    return Ok(());
+                }
+            };
+
+            if !path.is_dir() {
+                let _ = msg
+                    .tx
+                    .send(FsDocsTreeResult {
+                        root: None,
+                        snapshot_id: None,
+                        next_offset: 0,
+                        has_more: false,
+                        truncated: false,
+                        error: Some(FsDocsTreeError::InvalidRequest(
+                            "docs tree path must be a directory".to_string(),
+                        )),
+                    })
+                    .await;
+                return Ok(());
+            }
+
+            let root_key = docs_tree_cache_key(&path);
+            let limit = docs_tree_limit(msg.limit);
+
+            if msg.rebuild {
+                if !session.try_begin_docs_tree_scan() {
+                    let _ = msg
+                        .tx
+                        .send(FsDocsTreeResult {
+                            root: None,
+                            snapshot_id: None,
+                            next_offset: 0,
+                            has_more: false,
+                            truncated: false,
+                            error: Some(FsDocsTreeError::Busy),
+                        })
+                        .await;
+                    return Ok(());
+                }
+
+                let scan_path = path.clone();
+                let scan_result = tokio::task::spawn_blocking(move || build_snapshot(scan_path))
+                    .await
+                    .map_err(|error| anyhow::anyhow!("docs tree scan task failed: {error}"))
+                    .and_then(|result| result);
+                session.finish_docs_tree_scan();
+
+                match scan_result {
+                    Ok(snapshot) => {
+                        // Manual rebuild replaces the snapshot and always restarts paging.
+                        let result = snapshot_page_result(&snapshot, 0, limit);
+                        session.store_docs_tree_snapshot(root_key, snapshot).await;
+                        let _ = msg.tx.send(result).await;
+                    }
+                    Err(error) => {
+                        tracing::error!("FsDocsTree: scan failed for {:?}: {}", path, error);
+                        let _ = msg
+                            .tx
+                            .send(FsDocsTreeResult {
+                                root: None,
+                                snapshot_id: None,
+                                next_offset: 0,
+                                has_more: false,
+                                truncated: false,
+                                error: Some(FsDocsTreeError::ScanFailed(error.to_string())),
+                            })
+                            .await;
+                    }
+                }
+                return Ok(());
+            }
+
+            match session
+                .docs_tree_page(&root_key, msg.snapshot_id.as_deref(), msg.offset, limit)
+                .await
+            {
+                Ok(result) => {
+                    let _ = msg.tx.send(result).await;
+                }
+                Err(error) => {
+                    let _ = msg
+                        .tx
+                        .send(FsDocsTreeResult {
+                            root: None,
+                            snapshot_id: None,
+                            next_offset: 0,
+                            has_more: false,
+                            truncated: false,
+                            error: Some(error),
                         })
                         .await;
                 }

@@ -46,6 +46,7 @@ tempfile = "3"
 
 # Filesystem
 directories = "5"
+ignore = "0.4"
 
 # Logging
 tracing = "0.1"
