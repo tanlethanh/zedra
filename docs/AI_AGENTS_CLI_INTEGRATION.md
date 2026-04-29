@@ -208,8 +208,6 @@ Agent icon assets are intentionally duplicated for the two renderers that need t
 
 Sources: [xterm control sequences](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html), [Ghostty VT reference](https://ghostty.org/docs/vt/reference), [VS Code shell integration](https://code.visualstudio.com/docs/terminal/shell-integration#_supported-escape-sequences), [iTerm2 escape codes](https://iterm2.com/documentation-escape-codes.html), [iTerm2 inline images](https://iterm2.com/documentation-images.html), and [Kitty desktop notifications](https://sw.kovidgoyal.net/kitty/desktop-notifications/).
 
-| Sequence | Function | Zedra metadata use | Current Zedra status |
-|---|---|---|---|
 Status legend: ✅ parsed = `zedra-osc` decodes it into a typed `OscEvent`. ✅ wired = `WorkspaceTerminal` handler routes the event into `TerminalState`. ➖ parsed but unwired = decoded but ignored by the app (no consumer yet).
 
 | Sequence | Function | Zedra metadata use | Current Zedra status |
@@ -267,7 +265,7 @@ OSC 633;E is still useful for command identity because it captures the exact she
 Wired through `zedra-osc` → `zedra-terminal` (`TerminalEvent::OscEvent`) → `WorkspaceTerminal` → `TerminalState`:
 
 - **TerminalMeta** carries `title`, `cwd`, `shell_state` (Unknown/Idle/Running), `last_exit_code`, `current_command`, `active_agent_kind`, and the command-scoped `active_agent_icon`. Keyed by terminal id, owned by the workspace-level `TerminalState` entity.
-- **Workspace header** (`crates/zedra/src/workspace.rs`) reads the active terminal's `TerminalMeta` and renders the title (PS1 prefix stripped) below the project name. When `active_agent_icon` is set for the running command, the icon is drawn next to the subtitle.
+- **Workspace header** (`crates/zedra/src/workspace.rs`) reads the active terminal's `TerminalMeta` and renders the title (PS1 prefix stripped) below the project name. Agent icons remain on terminal cards and related terminal surfaces, not in the header subtitle.
 - **Agent classifier** (`crates/zedra/src/agent.rs::detect`) recognises the confirmed terminal AI CLIs we have icon support for: Amp, Claude Code, Cline, Codex, Cursor Agent, Gemini CLI, GitHub Copilot, Goose, Hermes Agent, Junie, Kilo Code, OpenClaw, opencode, OpenHands, Pi, Qoder, Qwen Code, Trae Agent, and Zencoder. Terminal title text is display metadata only and is not used for agent identity.
 - **Add to Chat** supports every detected non-shell agent. Claude Code receives an `@file#Lx-Ly` mention; all other agents receive a bracketed-paste fenced context block with the source range, without automatic submit.
 - **Shell lifecycle**: OSC 1 icon name drives the primary active-agent state: supported agent names set `active_agent_kind` / `active_agent_icon`, while non-agent prompt/path icon names clear them. OSC 133/633 lifecycle still records idle/running state, exit code, and command-line metadata where available, but it does not override OSC 1 once icon-name identity has appeared for a terminal.
