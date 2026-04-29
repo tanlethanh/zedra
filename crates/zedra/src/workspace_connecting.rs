@@ -177,7 +177,10 @@ fn render_phase_title(
         .child(
             render_transport_badge(label, color)
                 .w_full()
-                .text_align(TextAlign::Center),
+                .text_align(TextAlign::Center)
+                .flex()
+                .flex_col()
+                .items_center(),
         )
 }
 
@@ -253,6 +256,7 @@ fn render_discovery_rows(snap: &ConnectSnapshot) -> Div {
         );
         d = d.child(
             div()
+                .id("direct-addresses-row")
                 .flex()
                 .flex_row()
                 .gap(px(6.0))
