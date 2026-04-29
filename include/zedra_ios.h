@@ -58,6 +58,8 @@
 
 #define TERMINAL_LINE_HEIGHT 16.0
 
+#define PANEL_ITEM_HEIGHT 28.0
+
 #define DRAWER_EDGE_ZONE 56.0
 
 #define DRAWER_VELOCITY_THRESHOLD 12.0
@@ -104,7 +106,13 @@
 
 #define EDITOR_GUTTER_WIDTH 36.0
 
-typedef struct Caps Caps;
+typedef struct AgentCaps AgentCaps;
+
+
+
+
+
+
 
 extern void gpui_ios_set_next_embedded_parent(void *parent_view_ptr,
                                               float width_pts,
@@ -358,4 +366,4 @@ extern void zedra_set_custom_key(const char *key, const char *value);
 
 extern void zedra_set_collection_enabled(int enabled);
 
-#endif /* ZEDRA_IOS_H */
+#endif  /* ZEDRA_IOS_H */
