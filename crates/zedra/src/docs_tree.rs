@@ -40,7 +40,6 @@ pub struct DocsTree {
     collapsed_dirs: HashSet<String>,
     focus_handle: FocusHandle,
     scroll_handle: UniformListScrollHandle,
-    selected_file_path: Option<String>,
     build_state: DocsBuildState,
     build_epoch: u64,
     workdir: String,
@@ -50,6 +49,7 @@ pub struct DocsTree {
     loading_more: bool,
     pending_rebuild_confirmation: SharedPendingSlot<()>,
     _pending_rebuild_confirmation_task: Task<()>,
+    _workspace_state_subscription: Subscription,
     workspace_state: Entity<WorkspaceState>,
     session_handle: SessionHandle,
 }
@@ -74,6 +74,7 @@ impl DocsTree {
             let state = workspace_state.read(cx);
             (state.workdir.to_string(), persisted_collapsed_dirs(state))
         };
+        let workspace_state_subscription = cx.observe(&workspace_state, |_, _, cx| cx.notify());
         Self {
             root: None,
             flat_rows: Vec::new(),
@@ -81,7 +82,6 @@ impl DocsTree {
             collapsed_dirs,
             focus_handle: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
-            selected_file_path: None,
             build_state: DocsBuildState::NotBuilt,
             build_epoch: 0,
             workdir,
@@ -91,6 +91,7 @@ impl DocsTree {
             loading_more: false,
             pending_rebuild_confirmation,
             _pending_rebuild_confirmation_task: pending_rebuild_confirmation_task,
+            _workspace_state_subscription: workspace_state_subscription,
             workspace_state,
             session_handle,
         }
@@ -119,7 +120,6 @@ impl DocsTree {
         self.root = None;
         self.flat_rows.clear();
         self.flat_dirty = true;
-        self.selected_file_path = None;
         self.snapshot_id = None;
         self.next_offset = 0;
         self.has_more = false;
@@ -352,9 +352,10 @@ impl DocsTree {
 
         let path = row.path.clone();
         let is_selected = self
-            .selected_file_path
-            .as_deref()
-            .is_some_and(|selected| selected == path);
+            .workspace_state
+            .read(cx)
+            .active_main_view
+            .is_file_path(&path);
 
         let mut row_el = div()
             .id(format!("docs-tree-file-row-{index}"))
@@ -367,8 +368,7 @@ impl DocsTree {
             .items_center()
             .gap(px(7.0))
             .cursor_pointer()
-            .on_press(cx.listener(move |this, _event, window, cx| {
-                this.selected_file_path = Some(path.clone());
+            .on_press(cx.listener(move |_this, _event, window, cx| {
                 window.dispatch_action(
                     workspace_action::OpenFile { path: path.clone() }.boxed_clone(),
                     cx,

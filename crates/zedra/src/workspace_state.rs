@@ -25,6 +25,57 @@ pub enum WorkspaceStateEvent {
     TerminalOpened { id: String },
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum WorkspaceMainView {
+    #[default]
+    Default,
+    File {
+        path: String,
+    },
+    GitDiff {
+        path: String,
+        section: u8,
+    },
+    Terminal {
+        id: String,
+    },
+    NoActiveTerminal,
+}
+
+impl WorkspaceMainView {
+    pub fn file_path(&self) -> Option<&str> {
+        match self {
+            Self::File { path } => Some(path),
+            _ => None,
+        }
+    }
+
+    pub fn is_file_path(&self, path: &str) -> bool {
+        self.file_path().is_some_and(|active| active == path)
+    }
+
+    pub fn git_diff(&self) -> Option<(&str, u8)> {
+        match self {
+            Self::GitDiff { path, section } => Some((path, *section)),
+            _ => None,
+        }
+    }
+
+    pub fn is_git_diff(&self, path: &str, section: u8) -> bool {
+        self.git_diff()
+            .is_some_and(|(active_path, active_section)| {
+                active_path == path && active_section == section
+            })
+    }
+
+    pub fn terminal_id(&self) -> Option<&str> {
+        match self {
+            Self::Terminal { id } => Some(id),
+            _ => None,
+        }
+    }
+}
+
 /// Shareable workspace state. Clone copies the Arc only. Read via methods (non-blocking).
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct WorkspaceState {
@@ -45,6 +96,8 @@ pub struct WorkspaceState {
     pub connect_phase: Option<ConnectPhase>,
     #[serde(skip)]
     pub active_terminal_id: Option<String>,
+    #[serde(skip)]
+    pub active_main_view: WorkspaceMainView,
     #[serde(skip)]
     pub terminal_ids: Vec<String>,
     #[serde(skip)]
@@ -137,6 +190,7 @@ impl WorkspaceState {
     fn clear_runtime_state_for_disconnect(&mut self) {
         self.connect_phase = Some(ConnectPhase::Disconnected);
         self.active_terminal_id = None;
+        self.active_main_view = WorkspaceMainView::Default;
         self.terminal_ids.clear();
         self.host_info = None;
     }
@@ -208,6 +262,19 @@ impl WorkspaceState {
     pub fn update_host_info(&mut self, host_info: HostInfoSnapshot, cx: &mut Context<Self>) {
         self.host_info = Some(host_info);
         cx.emit(WorkspaceStateEvent::HostInfoChanged);
+    }
+
+    pub fn set_active_main_view(
+        &mut self,
+        active_main_view: WorkspaceMainView,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_main_view == active_main_view {
+            return;
+        }
+
+        self.active_main_view = active_main_view;
+        cx.notify();
     }
 
     pub fn set_docs_tree_dir_collapsed(
@@ -385,6 +452,43 @@ mod tests {
     }
 
     #[test]
+    fn active_main_view_projects_file_selection_only_for_file_views() {
+        let file_view = WorkspaceMainView::File {
+            path: "src/main.rs".into(),
+        };
+        assert!(file_view.is_file_path("src/main.rs"));
+        assert_eq!(file_view.file_path(), Some("src/main.rs"));
+        assert_eq!(file_view.git_diff(), None);
+        assert_eq!(file_view.terminal_id(), None);
+
+        let git_diff_view = WorkspaceMainView::GitDiff {
+            path: "src/main.rs".into(),
+            section: 1,
+        };
+        assert!(!git_diff_view.is_file_path("src/main.rs"));
+
+        let terminal_view = WorkspaceMainView::Terminal {
+            id: "terminal-1".into(),
+        };
+        assert!(!terminal_view.is_file_path("src/main.rs"));
+    }
+
+    #[test]
+    fn active_main_view_projects_git_diff_selection_by_path_and_section() {
+        let git_diff_view = WorkspaceMainView::GitDiff {
+            path: "src/main.rs".into(),
+            section: 1,
+        };
+
+        assert!(git_diff_view.is_git_diff("src/main.rs", 1));
+        assert_eq!(git_diff_view.git_diff(), Some(("src/main.rs", 1)));
+        assert!(!git_diff_view.is_git_diff("src/main.rs", 0));
+        assert!(!git_diff_view.is_git_diff("src/lib.rs", 1));
+        assert_eq!(git_diff_view.file_path(), None);
+        assert_eq!(git_diff_view.terminal_id(), None);
+    }
+
+    #[test]
     fn disconnect_clears_runtime_state_without_touching_saved_fields() {
         let mut state = WorkspaceState {
             endpoint_addr: "endpoint".into(),
@@ -392,6 +496,9 @@ mod tests {
             project_name: "project".into(),
             connect_phase: Some(ConnectPhase::Connected),
             active_terminal_id: Some("terminal-1".into()),
+            active_main_view: WorkspaceMainView::Terminal {
+                id: "terminal-1".into(),
+            },
             terminal_ids: vec!["terminal-1".into(), "terminal-2".into()],
             host_info: Some(HostInfoSnapshot {
                 captured_at_ms: 100,
@@ -414,6 +521,7 @@ mod tests {
         assert_eq!(state.project_name, "project");
         assert_eq!(state.connect_phase, Some(ConnectPhase::Disconnected));
         assert_eq!(state.active_terminal_id, None);
+        assert_eq!(state.active_main_view, WorkspaceMainView::Default);
         assert!(state.terminal_ids.is_empty());
         assert_eq!(state.host_info, None);
     }

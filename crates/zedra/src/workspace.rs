@@ -31,7 +31,7 @@ use crate::workspace_connecting::WorkspaceConnecting;
 use crate::workspace_drawer::WorkspaceDrawer;
 use crate::workspace_editor::WorkspaceEditor;
 use crate::workspace_gitdiff::{GitdiffHeaderChanged, WorkspaceGitdiff};
-use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
+use crate::workspace_state::{WorkspaceMainView, WorkspaceState, WorkspaceStateEvent};
 use crate::workspace_terminal::{TERMINAL_PENDING_ID, WorkspaceTerminal};
 use zedra_terminal::view::TerminalView;
 
@@ -679,6 +679,9 @@ impl Workspace {
     }
 
     fn open_file_in_editor(&mut self, path: String, cx: &mut Context<Self>) {
+        self.workspace_state.update(cx, |state, cx| {
+            state.set_active_main_view(WorkspaceMainView::File { path: path.clone() }, cx);
+        });
         self.editor.update(cx, |e, cx| {
             e.open_file(path.clone(), cx);
         });
@@ -765,6 +768,16 @@ impl Workspace {
             .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
 
         let section = section_from_u8(action.section);
+        let active_section = section_to_u8(section);
+        self.workspace_state.update(cx, |state, cx| {
+            state.set_active_main_view(
+                WorkspaceMainView::GitDiff {
+                    path: action.path.clone(),
+                    section: active_section,
+                },
+                cx,
+            );
+        });
         self.gitdiff.update(cx, |g, cx| {
             g.open_diff(action.path.clone(), section, cx);
         });
@@ -1015,6 +1028,7 @@ impl Workspace {
         let subtitle_id = id.clone();
         self.workspace_state.update(cx, |state, cx| {
             state.active_terminal_id = Some(id.clone());
+            state.set_active_main_view(WorkspaceMainView::Terminal { id: id.clone() }, cx);
             cx.emit(WorkspaceStateEvent::TerminalOpened { id });
             cx.notify();
         });
@@ -1028,8 +1042,14 @@ impl Workspace {
         let terminal_ids_before_close = self.workspace_state.read(cx).terminal_ids.clone();
         let active_terminal_id = self.workspace_state.read(cx).active_terminal_id.clone();
         let was_active_terminal = active_terminal_id.as_deref() == Some(id.as_str());
-        let remaining_terminal_ids = terminal_ids_after_close(&id, &terminal_ids_before_close);
-        let replacement_terminal_id = was_active_terminal
+        let active_main_terminal_id = self
+            .workspace_state
+            .read(cx)
+            .active_main_view
+            .terminal_id()
+            .map(ToOwned::to_owned);
+        let was_active_main_terminal = active_main_terminal_id.as_deref() == Some(id.as_str());
+        let replacement_terminal_id = was_active_main_terminal
             .then(|| replacement_terminal_id_after_close(&id, &terminal_ids_before_close))
             .flatten();
 
@@ -1048,6 +1068,9 @@ impl Workspace {
                 state.active_terminal_id = None;
                 active_terminal::clear_active_input();
             }
+            if was_active_main_terminal {
+                state.set_active_main_view(WorkspaceMainView::NoActiveTerminal, cx);
+            }
             cx.notify();
         });
 
@@ -1063,7 +1086,7 @@ impl Workspace {
                     content.set_no_active_terminal_view(cx);
                 });
             }
-        } else if was_active_terminal || remaining_terminal_ids.is_empty() {
+        } else if was_active_main_terminal {
             self.content.update(cx, |content, cx| {
                 content.set_no_active_terminal_view(cx);
             });
@@ -1088,13 +1111,29 @@ impl Workspace {
         let active_terminal_id = self.workspace_state.read(cx).active_terminal_id.clone();
         let active_terminal_is_stale =
             active_terminal_is_stale_after_sync(active_terminal_id.as_deref(), &terminal_ids);
+        let active_main_terminal_id = self
+            .workspace_state
+            .read(cx)
+            .active_main_view
+            .terminal_id()
+            .map(ToOwned::to_owned);
+        let active_main_terminal_is_stale =
+            active_terminal_is_stale_after_sync(active_main_terminal_id.as_deref(), &terminal_ids);
 
-        if active_terminal_is_stale {
-            active_terminal::clear_active_input();
+        if active_terminal_is_stale || active_main_terminal_is_stale {
             self.workspace_state.update(cx, |state, cx| {
-                state.active_terminal_id = None;
+                if active_terminal_is_stale {
+                    state.active_terminal_id = None;
+                    active_terminal::clear_active_input();
+                }
+                if active_main_terminal_is_stale {
+                    state.set_active_main_view(WorkspaceMainView::Default, cx);
+                }
                 cx.notify();
             });
+        }
+
+        if active_main_terminal_is_stale {
             let editor = self.editor.clone();
             self.content.update(cx, |content, cx| {
                 content.clear_subtitle(cx);

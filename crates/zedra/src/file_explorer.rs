@@ -79,7 +79,6 @@ pub struct FileExplorer {
     flat_dirty: bool,
     workdir: String,
     watched_paths: HashSet<String>,
-    selected_file_path: Option<String>,
     last_refresh_at: HashMap<String, Instant>,
     request_epoch: u64,
     /// Keep track all tasks spawned by the file explorer. All dropped when the file explorer is dropped.
@@ -104,6 +103,7 @@ impl FileExplorer {
     ) -> Self {
         let workdir = workspace_state.read(cx).workdir.to_string();
         let mut host_event_rx = session.subscribe_host_events();
+        let workspace_state_subscription = cx.observe(&workspace_state, |_, _, cx| cx.notify());
         let host_event_task = cx.spawn(async move |this, cx| {
             loop {
                 match host_event_rx.recv().await {
@@ -136,14 +136,13 @@ impl FileExplorer {
             flat_entries: Vec::new(),
             flat_dirty: false,
             watched_paths: HashSet::new(),
-            selected_file_path: None,
             last_refresh_at: HashMap::new(),
             request_epoch: 0,
             tasks: vec![host_event_task],
             workspace_state,
             session_state,
             session_handle,
-            _subscriptions: Vec::new(),
+            _subscriptions: vec![workspace_state_subscription],
         }
     }
 
@@ -796,9 +795,10 @@ impl FileExplorer {
         let is_selected = !is_dir
             && !row_path.is_empty()
             && self
-                .selected_file_path
-                .as_deref()
-                .is_some_and(|selected| selected == row_path);
+                .workspace_state
+                .read(cx)
+                .active_main_view
+                .is_file_path(&row_path);
 
         let index_path_for_toggle = index_path.clone();
         let mut row = div()
@@ -816,7 +816,6 @@ impl FileExplorer {
                 if is_dir {
                     this.toggle_dir(&index_path_for_toggle, cx);
                 } else if !row_path.is_empty() {
-                    this.selected_file_path = Some(row_path.clone());
                     window.dispatch_action(
                         workspace_action::OpenFile {
                             path: row_path.clone(),

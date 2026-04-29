@@ -169,6 +169,12 @@ pub struct GitCommitRequested {
 
 impl EventEmitter<GitCommitRequested> for GitSidebar {}
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ActiveGitDiff {
+    path: String,
+    section: GitFileSection,
+}
+
 pub struct GitSidebar {
     repo_state: GitRepoState,
     section_expanded: [bool; 3], // [staged, unstaged, untracked]
@@ -176,6 +182,7 @@ pub struct GitSidebar {
     commit_input: Entity<Input>,
     commit_message: String,
     committing: bool,
+    active_diff: Option<ActiveGitDiff>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -218,6 +225,7 @@ impl GitSidebar {
             commit_input,
             commit_message: String::new(),
             committing: false,
+            active_diff: None,
             _subscriptions: subscriptions,
         }
     }
@@ -228,6 +236,30 @@ impl GitSidebar {
 
     pub fn set_repo_state(&mut self, state: GitRepoState, cx: &mut Context<Self>) {
         self.repo_state = state;
+        cx.notify();
+    }
+
+    pub fn set_active_diff(
+        &mut self,
+        path: String,
+        section: GitFileSection,
+        cx: &mut Context<Self>,
+    ) {
+        let active_diff = Some(ActiveGitDiff { path, section });
+        if self.active_diff == active_diff {
+            return;
+        }
+
+        self.active_diff = active_diff;
+        cx.notify();
+    }
+
+    pub fn clear_active_diff(&mut self, cx: &mut Context<Self>) {
+        if self.active_diff.is_none() {
+            return;
+        }
+
+        self.active_diff = None;
         cx.notify();
     }
 
@@ -337,8 +369,22 @@ impl GitSidebar {
         let section = file.section;
         let insertions = file.insertions;
         let deletions = file.deletions;
+        let is_active = self
+            .active_diff
+            .as_ref()
+            .is_some_and(|active| active.path == file.path && active.section == file.section);
+        let status_color = if is_active {
+            theme::TEXT_SECONDARY
+        } else {
+            theme::TEXT_MUTED
+        };
+        let filename_color = if is_active {
+            theme::TEXT_PRIMARY
+        } else {
+            theme::TEXT_SECONDARY
+        };
 
-        div()
+        let mut row = div()
             .id(SharedString::from(path.clone()))
             .flex()
             .flex_row()
@@ -375,14 +421,15 @@ impl GitSidebar {
                     .child(
                         div()
                             .w(px(ICON_SIZE))
-                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_color(rgb(status_color))
                             .text_size(px(theme::FONT_BODY))
                             .child(status.icon()),
                     )
                     .child(
                         div()
-                            .text_color(rgb(theme::TEXT_SECONDARY))
                             .text_size(px(theme::FONT_BODY))
+                            .when(is_active, |el| el.font_weight(FontWeight::MEDIUM))
+                            .text_color(rgb(filename_color))
                             .overflow_hidden()
                             .child(filename),
                     ),
@@ -408,7 +455,13 @@ impl GitSidebar {
                                 .child(format!("-{}", deletions)),
                         )
                     }),
-            )
+            );
+
+        if is_active {
+            row = row.bg(hsla(0.0, 0.0, 1.0, 0.10));
+        }
+
+        row
     }
 
     fn render_commit_button(&self, cx: &mut Context<Self>) -> impl IntoElement {

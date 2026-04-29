@@ -59,8 +59,12 @@
 4. Scroll the file explorer and repeatedly expand/collapse directories with already-loaded children
 5. Expected: scrolling and toggles stay responsive, without long UI stalls or accidental file opens from loading rows
 6. Tap a file row nested at least four levels deep
-7. Expected: the drawer starts closing immediately without stuttering while the file loads, the selected row highlight spans the full file explorer width, and file explorer rows use the same height as Git panel file rows
-8. Expected: before syntax highlighting appears, code text uses a subtly dim foreground; when highlighting applies, text rows do not jump, reorder, or visibly reload
+7. Expected: the drawer starts closing immediately without stuttering while the file loads, and file explorer rows use the same height as Git panel file rows
+8. Reopen the drawer while the file remains the main workspace view
+9. Expected: only the file row for the active main workspace view is highlighted, and the highlight spans the full file explorer width
+10. Open a git diff or terminal as the main workspace view, then reopen the file explorer
+11. Expected: the file row highlight clears because the active main workspace view is no longer that file
+12. Expected: before syntax highlighting appears, code text uses a subtly dim foreground; when highlighting applies, text rows do not jump, reorder, or visibly reload
 
 ## 1c. Docs Tree Display Mode
 
@@ -72,17 +76,21 @@
 6. Expected: the same directory remains collapsed until manually expanded
 7. Tap a markdown row
 8. Expected: the drawer closes and the main workspace renders the selected markdown file
-9. If `Load more docs` appears, tap it
-10. Expected: another page is merged into the same tree without duplicating existing markdown rows
-11. Scroll and collapse directories in a large docs tree
-12. Expected: scrolling and toggles stay responsive without rendering the full tree at once
-13. Tap the refresh icon in the docs tree footer
-14. Expected: a native alert says Zedra will scan Markdown files and large workspaces may slow briefly
-15. Tap `Refresh`
-16. Expected: the refresh icon rotates while the current tree stays visible, then the tree is replaced after the refresh finishes
-17. Expected: files inside dot-prefixed, gitignored, and common generated/dependency directories are not shown
-18. Connect to an older host that does not support docs-tree RPCs
-19. Expected: the docs tree shows an unsupported-host message and the refresh icon no longer stays in the building state
+9. Reopen the drawer and return to docs-tree mode
+10. Expected: only the active markdown file row is highlighted
+11. Open a git diff or terminal as the main workspace view, then return to docs-tree mode
+12. Expected: the docs-tree file highlight clears because the active main workspace view is no longer that markdown file
+13. If `Load more docs` appears, tap it
+14. Expected: another page is merged into the same tree without duplicating existing markdown rows
+15. Scroll and collapse directories in a large docs tree
+16. Expected: scrolling and toggles stay responsive without rendering the full tree at once
+17. Tap the refresh icon in the docs tree footer
+18. Expected: a native alert says Zedra will scan Markdown files and large workspaces may slow briefly
+19. Tap `Refresh`
+20. Expected: the refresh icon rotates while the current tree stays visible, then the tree is replaced after the refresh finishes
+21. Expected: files inside dot-prefixed, gitignored, and common generated/dependency directories are not shown
+22. Connect to an older host that does not support docs-tree RPCs
+23. Expected: the docs tree shows an unsupported-host message and the refresh icon no longer stays in the building state
 
 ## 2. QR Already Consumed
 
@@ -339,15 +347,19 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:
 2. Open the workspace drawer and switch to the Git Diff tab
 3. Tap a file entry in the git panel
 4. Expected: the drawer closes and the git diff view opens for the tapped file
-5. Expected: added and removed lines are indicated by full-width background color only; the diff text does not render a leading `+` or `-`
-6. Expected: added and removed backgrounds stay continuous across rows without thin gaps, including after horizontal scrolling long lines
-7. Expected: the workspace header subtitle shows the git filename plus added and removed totals, and long filenames truncate instead of overflowing
-8. Tap the untracked file entry
-9. Expected: the diff view shows the untracked file content as added lines
-10. Long-press a file entry
-11. Expected: the file action sheet opens for that entry instead of doing nothing
-12. Tap the dimmed backdrop outside the action sheet
-13. Expected: the native action sheet dismisses without staging or unstaging the file
+5. Reopen the drawer and return to the Git Diff tab
+6. Expected: the file entry for the currently opened diff is highlighted
+7. Open a normal file or terminal as the main workspace view, then return to the Git Diff tab
+8. Expected: the git diff highlight clears because the active main workspace view is no longer a git diff
+9. Expected: added and removed lines are indicated by full-width background color only; the diff text does not render a leading `+` or `-`
+10. Expected: added and removed backgrounds stay continuous across rows without thin gaps, including after horizontal scrolling long lines
+11. Expected: the workspace header subtitle shows the git filename plus added and removed totals, and long filenames truncate instead of overflowing
+12. Tap the untracked file entry
+13. Expected: the diff view shows the untracked file content as added lines
+14. Long-press a file entry
+15. Expected: the file action sheet opens for that entry instead of doing nothing
+16. Tap the dimmed backdrop outside the action sheet
+17. Expected: the native action sheet dismisses without staging or unstaging the file
 
 ## 15. Markdown List Item Wrap In Preview
 
