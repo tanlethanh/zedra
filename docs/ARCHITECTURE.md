@@ -119,7 +119,7 @@ connect bootstrap does not require a separate `SyncSession` round trip.
 
 ### Auto-Reconnect
 
-On connection drop: exponential backoff (1s→30s, max 10 attempts). Reuses stored credentials. Terminal output buffers survive reconnect.
+On connection drop: exponential backoff (1s, 2s, 4s, max 3 attempts). Reuses stored credentials. Terminal output buffers survive reconnect.
 
 ### Session → UI Bridge
 

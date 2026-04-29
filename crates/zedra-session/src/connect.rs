@@ -869,16 +869,8 @@ impl Connector {
         for attempt in 1..=max_attempts {
             let delay_secs = std::cmp::min(1u64 << (attempt - 1), 30);
             warn!("Proceed reconnect ({}), delay {}s", attempt, delay_secs);
-
-            self.emit(ConnectEvent::ReconnectAttempt {
-                attempt,
-                reason: reason.clone(),
-                next_retry_secs: delay_secs,
-            });
-
-            if delay_secs > 0 {
-                tokio::time::sleep(Duration::from_secs(delay_secs)).await;
-            }
+            self.wait_reconnect_delay(attempt, &reason, delay_secs)
+                .await;
 
             match self
                 .connect(
@@ -925,6 +917,23 @@ impl Connector {
             error: err.clone(),
         });
         Err(err)
+    }
+
+    async fn wait_reconnect_delay(&self, attempt: u32, reason: &ReconnectReason, delay_secs: u64) {
+        for next_retry_secs in (1..=delay_secs).rev() {
+            self.emit(ConnectEvent::ReconnectAttempt {
+                attempt,
+                reason: reason.clone(),
+                next_retry_secs,
+            });
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+
+        self.emit(ConnectEvent::ReconnectAttempt {
+            attempt,
+            reason: reason.clone(),
+            next_retry_secs: 0,
+        });
     }
 }
 

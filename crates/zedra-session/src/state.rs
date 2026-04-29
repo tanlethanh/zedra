@@ -749,6 +749,36 @@ mod tests {
     }
 
     #[test]
+    fn reconnect_attempt_updates_retry_countdown() {
+        let mut state = SessionState::new();
+
+        state.apply_event(ConnectEvent::ReconnectAttempt {
+            attempt: 2,
+            reason: ReconnectReason::ConnectionLost,
+            next_retry_secs: 3,
+        });
+        state.apply_event(ConnectEvent::ReconnectAttempt {
+            attempt: 2,
+            reason: ReconnectReason::ConnectionLost,
+            next_retry_secs: 2,
+        });
+        state.apply_event(ConnectEvent::ReconnectAttempt {
+            attempt: 2,
+            reason: ReconnectReason::ConnectionLost,
+            next_retry_secs: 0,
+        });
+
+        assert_eq!(
+            state.phase,
+            ConnectPhase::Reconnecting {
+                attempt: 2,
+                reason: ReconnectReason::ConnectionLost,
+                next_retry_secs: 0,
+            }
+        );
+    }
+
+    #[test]
     fn connection_closed_during_bootstrap_becomes_failed() {
         for phase_event in [
             ConnectEvent::BindingEndpoint,

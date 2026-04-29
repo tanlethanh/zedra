@@ -131,8 +131,8 @@
 
 1. Connect via QR and create at least three terminals
 2. Take the host machine offline (disable network interface)
-3. Expected: badge shows "Reconnecting... (N)" counting up to 10
-4. After 10 attempts: badge shows "Disconnected" / home screen shows "Unreachable"
+3. Expected: badge shows `Reconnecting (N) · Ns` with a per-second countdown, up to 3 attempts
+4. After 3 attempts: connect view shows "Host unreachable. Check network and host."
 5. Bring host network back up, tap "Retry"
 6. Expected: reconnects successfully
 7. Expected: the workspace drawer Terminals tab preserves the pre-reconnect terminal order

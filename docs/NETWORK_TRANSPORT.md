@@ -250,12 +250,12 @@ records (see Section 8).
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ Reconnecting (attempt N / 10)                                   │
+│ Reconnecting (attempt N / 3)                                    │
 │  • Fresh pkarr resolve on each attempt (no cached addr)        │
 │  • On connect: Connect(session_token) fast path, or             │
 │    Connect → Challenge → AuthProve fallback                     │
-│  • Backoff: 1s, 2s, 4s, 8s, 16s, 30s, 30s, 30s, 30s, 30s     │
-│  • After 10 failed attempts → Host Unreachable                 │
+│  • Backoff: 1s, 2s, 4s with per-second countdown updates       │
+│  • After 3 failed attempts → Host Unreachable                  │
 └──────────────────────────────┬──────────────────────────────────┘
                                │
                                ▼

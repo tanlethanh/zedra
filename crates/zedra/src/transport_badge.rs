@@ -111,6 +111,21 @@ mod tests {
     }
 
     #[test]
+    fn reconnecting_badge_includes_retry_countdown() {
+        let (label, color) = transport_badge(
+            &ConnectPhase::Reconnecting {
+                attempt: 2,
+                reason: zedra_session::ReconnectReason::ConnectionLost,
+                next_retry_secs: 3,
+            },
+            None,
+        );
+
+        assert_eq!(label, "Reconnecting (2) \u{00b7} 3s");
+        assert_eq!(color, theme::ACCENT_RED);
+    }
+
+    #[test]
     fn failed_badge_uses_friendly_error_message() {
         let cases = [
             (
