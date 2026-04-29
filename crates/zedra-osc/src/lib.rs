@@ -241,10 +241,8 @@ fn parse_osc_into(buf: &[u8], out: &mut Vec<OscEvent>) {
 /// OSC 9 — either a simple notification (`9;<body>`) or a ConEmu progress
 /// report (`9;4;<state>[;<value>]`).
 fn parse_osc_9(body: &[u8], out: &mut Vec<OscEvent>) {
-    // Progress form: `4;<state>[;<value>]`. Strip the leading `4` and an
-    // optional `;`, then delegate.
-    if let Some(rest) = body.strip_prefix(b"4") {
-        let rest = rest.strip_prefix(b";").unwrap_or(rest);
+    // Progress form: `4;<state>[;<value>]`.
+    if let Some(rest) = body.strip_prefix(b"4;") {
         parse_osc_9_4(rest, out);
         return;
     }
@@ -648,6 +646,16 @@ mod tests {
             &ev[0],
             OscEvent::Notification { title: None, body, source: NotificationSource::Osc9 }
                 if body == "done"
+        ));
+    }
+
+    #[test]
+    fn parses_osc_9_numeric_notification_without_progress_prefix() {
+        let ev = feed_all(b"\x1b]9;404 build failed\x07");
+        assert!(matches!(
+            &ev[0],
+            OscEvent::Notification { title: None, body, source: NotificationSource::Osc9 }
+                if body == "404 build failed"
         ));
     }
 
