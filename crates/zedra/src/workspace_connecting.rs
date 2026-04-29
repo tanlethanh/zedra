@@ -31,6 +31,7 @@ impl Render for WorkspaceConnecting {
         div()
             .id("connecting-view")
             .size_full()
+            .relative()
             .bg(rgb(theme::BG_PRIMARY))
             .flex()
             .flex_col()
@@ -57,7 +58,32 @@ impl Render for WorkspaceConnecting {
                         d.child(render_detail(&state.phase, &state.snapshot))
                     }),
             )
+            .child(render_close_button(cx))
     }
+}
+
+fn render_close_button(cx: &mut Context<WorkspaceConnecting>) -> Stateful<Div> {
+    div()
+        .id("connecting-close-button")
+        .absolute()
+        .top(px((theme::HEADER_BUTTON_SIZE - theme::ICON_SM) / 2.0))
+        .right(px((theme::HEADER_BUTTON_SIZE - theme::ICON_SM) / 2.0))
+        .w(px(theme::ICON_SM))
+        .h(px(theme::ICON_SM))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .hit_slop(px(20.0))
+        .on_press(cx.listener(|_this, _event, window, cx| {
+            window.dispatch_action(workspace_action::HideConnecting.boxed_clone(), cx);
+        }))
+        .child(
+            svg()
+                .path("icons/x.svg")
+                .size(px(16.0))
+                .text_color(rgb(theme::TEXT_MUTED)),
+        )
 }
 
 fn render_details_toggle(expanded: bool, cx: &mut Context<WorkspaceConnecting>) -> Stateful<Div> {

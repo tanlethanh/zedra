@@ -38,9 +38,14 @@
 4. Expected: app connects, session panel shows "Connected", endpoint shown
 5. Open the workspace drawer immediately after connect
 6. Switch to the Session tab and confirm the `Connection` section has a right chevron indicator and wraps long status text, then tap it
-7. Expected: the drawer closes and the connecting view opens for the active session
-8. Expected: file explorer root entries and git status are already loaded without waiting for the first drawer open to trigger them
-9. Navigate to terminal — verify PTY works (shell prompt, keystrokes echo)
+7. Expected: the drawer closes and the connecting view opens for the active session with a top-right close button
+8. Tap the top-right close button
+9. Expected: the connecting view closes and the previous workspace content is visible
+10. Expected: closing the connecting view does not fire haptic feedback
+11. Reopen the connecting view, then open a file, git diff, or terminal from the workspace drawer
+12. Expected: the connecting view closes and the selected workspace content is visible
+13. Expected: file explorer root entries and git status are already loaded without waiting for the first drawer open to trigger them
+14. Navigate to terminal — verify PTY works (shell prompt, keystrokes echo)
 
 ## 1a. Host Info Subscription
 

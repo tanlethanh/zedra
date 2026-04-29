@@ -24,7 +24,7 @@ use crate::ui::{DrawerHost, DrawerSide};
 use crate::workspace_action::{self, GoHome, OpenQuickAction, RequestDisconnect};
 use crate::workspace_action::{
     AddSelectionToChat, CloseDrawer, CloseTerminal, CreateNewTerminal, GitCommit,
-    GitShowItemActions, GitStage, GitUnstage, OpenFile, OpenGitDiff, OpenTerminal,
+    GitShowItemActions, GitStage, GitUnstage, HideConnecting, OpenFile, OpenGitDiff, OpenTerminal,
     RestartConnection, ShowConnecting, ToggleDrawer,
 };
 use crate::workspace_connecting::WorkspaceConnecting;
@@ -657,6 +657,17 @@ impl Workspace {
         self.content.update(cx, |c, cx| c.show_connecting_view(cx));
     }
 
+    fn handle_hide_connecting(
+        &mut self,
+        _action: &HideConnecting,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!("handle HideConnecting from workspace");
+        window.hide_soft_keyboard();
+        self.content.update(cx, |c, cx| c.hide_connecting_view(cx));
+    }
+
     fn handle_restart_connection(
         &mut self,
         _action: &RestartConnection,
@@ -691,6 +702,7 @@ impl Workspace {
         self.content.update(cx, move |c, cx| {
             c.set_file_subtitle(content_path.clone(), cx);
             c.set_main_view(editor.into(), cx);
+            c.hide_connecting_view(cx);
         });
     }
 
@@ -785,6 +797,7 @@ impl Workspace {
         let gitdiff = self.gitdiff.clone();
         self.content.update(cx, move |c, cx| {
             c.set_main_view(gitdiff.into(), cx);
+            c.hide_connecting_view(cx);
         });
     }
 
@@ -1035,6 +1048,7 @@ impl Workspace {
         self.content.update(cx, |c, cx| {
             c.set_terminal_subtitle(subtitle_id, cx);
             c.set_main_view(terminal_entity.into(), cx);
+            c.hide_connecting_view(cx);
         });
     }
 
@@ -1323,6 +1337,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_toggle_drawer))
             .on_action(cx.listener(Self::handle_close_drawer))
             .on_action(cx.listener(Self::handle_show_connecting))
+            .on_action(cx.listener(Self::handle_hide_connecting))
             .on_action(cx.listener(Self::handle_restart_connection))
             .on_action(cx.listener(Self::handle_open_file))
             .on_action(cx.listener(Self::handle_add_selection_to_chat))

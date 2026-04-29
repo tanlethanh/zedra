@@ -59,6 +59,10 @@ pub struct ShowConnecting;
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
+pub struct HideConnecting;
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
 pub struct RestartConnection;
 
 #[derive(Clone, PartialEq, Action)]
