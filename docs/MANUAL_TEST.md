@@ -37,8 +37,10 @@
 3. Tap "Scan QR" — scan the terminal QR code
 4. Expected: app connects, session panel shows "Connected", endpoint shown
 5. Open the workspace drawer immediately after connect
-6. Expected: file explorer root entries and git status are already loaded without waiting for the first drawer open to trigger them
-7. Navigate to terminal — verify PTY works (shell prompt, keystrokes echo)
+6. Switch to the Session tab and confirm the `Connection` section has a right chevron indicator and wraps long status text, then tap it
+7. Expected: the drawer closes and the connecting view opens for the active session
+8. Expected: file explorer root entries and git status are already loaded without waiting for the first drawer open to trigger them
+9. Navigate to terminal — verify PTY works (shell prompt, keystrokes echo)
 
 ## 1a. Host Info Subscription
 

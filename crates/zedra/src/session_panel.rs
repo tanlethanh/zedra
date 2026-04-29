@@ -90,14 +90,47 @@ impl Render for SessionPanel {
         let (badge_label, badge_color) = transport_badge(&phase, snap.transport.as_ref());
         info = info.child(
             div()
+                .id("session-connection-section")
+                .w_full()
+                .min_w_0()
                 .py(px(4.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(theme::SPACING_MD))
+                .cursor_pointer()
+                .on_press(cx.listener(|_this, _event, window, cx| {
+                    window.dispatch_action(workspace_action::ShowConnecting.boxed_clone(), cx);
+                }))
                 .child(
                     div()
-                        .text_color(rgb(theme::TEXT_MUTED))
-                        .text_size(px(theme::FONT_DETAIL))
-                        .child("Connection"),
+                        .w_full()
+                        .min_w_0()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .text_color(rgb(theme::TEXT_MUTED))
+                                .text_size(px(theme::FONT_DETAIL))
+                                .child("Connection"),
+                        )
+                        .child(
+                            render_transport_badge(badge_label, badge_color)
+                                .w_full()
+                                .min_w_0()
+                                .whitespace_normal(),
+                        ),
                 )
-                .child(render_transport_badge(badge_label, badge_color)),
+                .child(
+                    div().flex_shrink_0().pl(px(8.0)).child(
+                        svg()
+                            .path("icons/chevron-right.svg")
+                            .size(px(theme::ICON_SM))
+                            .text_color(rgb(theme::TEXT_MUTED)),
+                    ),
+                ),
         );
 
         // --- Transport details ---
