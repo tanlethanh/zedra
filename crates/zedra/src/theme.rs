@@ -59,6 +59,7 @@ pub const ICON_LOGO: f32 = 20.0;
 pub const ICON_LG: f32 = 24.0;
 pub const ICON_MD: f32 = 18.0;
 pub const ICON_SM: f32 = 16.0;
+pub const ICON_XS: f32 = 14.0;
 pub const ICON_FILE: f32 = 12.0; // File tree icons
 pub const ICON_FILE_DIR: f32 = 14.0; // Directory icons (slightly larger than file)
 pub const ICON_STATUS: f32 = 6.0; // Status dots (connected/disconnected)

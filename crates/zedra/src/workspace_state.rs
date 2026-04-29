@@ -35,6 +35,9 @@ pub struct WorkspaceState {
     pub workdir: String,
     pub homedir: String,
     pub hostname: String,
+    // Workspace-relative docs tree directories hidden by the user.
+    #[serde(default)]
+    pub docs_tree_collapsed_dirs: Vec<String>,
     pub created_at: u64,
     pub updated_at: u64,
 
@@ -73,6 +76,7 @@ impl PartialEq for WorkspaceState {
             && self.workdir == other.workdir
             && self.homedir == other.homedir
             && self.hostname == other.hostname
+            && self.docs_tree_collapsed_dirs == other.docs_tree_collapsed_dirs
             && self.created_at == other.created_at
             && self.updated_at == other.updated_at
     }
@@ -204,6 +208,30 @@ impl WorkspaceState {
     pub fn update_host_info(&mut self, host_info: HostInfoSnapshot, cx: &mut Context<Self>) {
         self.host_info = Some(host_info);
         cx.emit(WorkspaceStateEvent::HostInfoChanged);
+    }
+
+    pub fn set_docs_tree_dir_collapsed(
+        &mut self,
+        path: String,
+        collapsed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if collapsed {
+            if self.docs_tree_collapsed_dirs.iter().any(|p| p == &path) {
+                return;
+            }
+            self.docs_tree_collapsed_dirs.push(path);
+            self.docs_tree_collapsed_dirs.sort();
+        } else {
+            let before = self.docs_tree_collapsed_dirs.len();
+            self.docs_tree_collapsed_dirs.retain(|p| p != &path);
+            if self.docs_tree_collapsed_dirs.len() == before {
+                return;
+            }
+        }
+
+        cx.emit(WorkspaceStateEvent::StateChanged);
+        cx.notify();
     }
 
     /// Load all persisted workspaces from the store.
@@ -446,6 +474,24 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].endpoint_addr, "endpoint-a");
         assert_eq!(loaded[0].project_name, "Project A");
+    }
+
+    #[test]
+    fn upsert_persists_docs_tree_collapsed_dirs() {
+        let _guard = set_test_data_directory("upsert-persists-docs-tree-collapsed-dirs");
+
+        WorkspaceState::upsert(WorkspaceState {
+            endpoint_addr: "endpoint-a".into(),
+            docs_tree_collapsed_dirs: vec!["crates/zedra".into(), "vendor/zed/docs".into()],
+            ..Default::default()
+        })
+        .unwrap();
+
+        let loaded = WorkspaceState::load().unwrap();
+        assert_eq!(
+            loaded[0].docs_tree_collapsed_dirs,
+            vec!["crates/zedra", "vendor/zed/docs"]
+        );
     }
 
     #[test]

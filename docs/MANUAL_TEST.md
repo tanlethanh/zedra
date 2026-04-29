@@ -62,6 +62,28 @@
 7. Expected: the drawer starts closing immediately without stuttering while the file loads, the selected row highlight spans the full file explorer width, and file explorer rows use the same height as Git panel file rows
 8. Expected: before syntax highlighting appears, code text uses a subtly dim foreground; when highlighting applies, text rows do not jump, reorder, or visibly reload
 
+## 1c. Docs Tree Display Mode
+
+1. Start host daemon in a repository with markdown files under both root and nested paths, including a `.git` directory
+2. Connect from the app and open the workspace drawer
+3. In the File Explorer tab, tap the top-right docs-tree display mode toggle
+4. Expected: the docs tree builds from the host and shows markdown files with compact nested paths like `vendor/zed/docs/`
+5. Collapse a nested docs directory, leave and reopen the workspace, then return to docs-tree mode
+6. Expected: the same directory remains collapsed until manually expanded
+7. Tap a markdown row
+8. Expected: the drawer closes and the main workspace renders the selected markdown file
+9. If `Load more docs` appears, tap it
+10. Expected: another page is merged into the same tree without duplicating existing markdown rows
+11. Scroll and collapse directories in a large docs tree
+12. Expected: scrolling and toggles stay responsive without rendering the full tree at once
+13. Tap the refresh icon in the docs tree footer
+14. Expected: a native alert says Zedra will scan Markdown files and large workspaces may slow briefly
+15. Tap `Refresh`
+16. Expected: the refresh icon rotates while the current tree stays visible, then the tree is replaced after the refresh finishes
+17. Expected: files inside dot-prefixed, gitignored, and common generated/dependency directories are not shown
+18. Connect to an older host that does not support docs-tree RPCs
+19. Expected: the docs tree shows an unsupported-host message and the refresh icon no longer stays in the building state
+
 ## 2. QR Already Consumed
 
 1. Start host: `zedra start --workdir .`
