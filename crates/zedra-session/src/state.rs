@@ -114,6 +114,8 @@ impl ConnectPhase {
 pub enum ConnectError {
     EndpointBindFailed(String),
     QuicConnectFailed(String),
+    AlpnMismatch,
+    ConnectionClosed,
     HandshakeConsumed,
     InvalidHandshake,
     StaleTimestamp,
@@ -136,6 +138,7 @@ impl ConnectError {
         matches!(
             self,
             Self::HandshakeConsumed
+                | Self::AlpnMismatch
                 | Self::InvalidHandshake
                 | Self::StaleTimestamp
                 | Self::SlotNotFound
@@ -151,19 +154,21 @@ impl ConnectError {
         match self {
             Self::EndpointBindFailed(e) => format!("Failed to create network endpoint: {e}"),
             Self::QuicConnectFailed(e) => format!("Connection failed: {e}"),
-            Self::HandshakeConsumed => "This QR has already been used by another device.".into(),
+            Self::AlpnMismatch => "Protocol mismatch, Update App or CLI".into(),
+            Self::ConnectionClosed => "Connection closed. Tap refresh to reconnect.".into(),
+            Self::HandshakeConsumed => "The QR code was used. Refresh it and scan again.".into(),
             Self::InvalidHandshake => "QR verification failed (HMAC mismatch).".into(),
             Self::StaleTimestamp => "Clock skew detected. Check device clock.".into(),
             Self::SlotNotFound => "QR code expired. Generate a new one on the host.".into(),
             Self::Unauthorized => "Device not authorized. Re-scan the QR code.".into(),
             Self::NotInSessionAcl => "Not authorized for this session. Re-scan QR.".into(),
-            Self::SessionOccupied => "Another client is attached to this session.".into(),
+            Self::SessionOccupied => "Host occupied. Disconnect other device and retry.".into(),
             Self::SessionNotFound => "Session not found. Host may have restarted.".into(),
             Self::InvalidSignature => "Signature verification failed.".into(),
             Self::HostInvalidPubkey => "Host public key invalid.".into(),
             Self::HostSignatureInvalid => "Host identity check failed (possible MITM).".into(),
             Self::SessionInfoFailed(e) => format!("Failed to fetch session info: {e}"),
-            Self::HostUnreachable => "Host unreachable after repeated attempts.".into(),
+            Self::HostUnreachable => "Host unreachable. Check network and host.".into(),
             Self::RequestError(e) => format!("RPC request failed: {e}"),
             Self::Other(e) => e.clone(),
         }
@@ -173,6 +178,8 @@ impl ConnectError {
         match self {
             Self::EndpointBindFailed(_) => "endpoint_bind_failed",
             Self::QuicConnectFailed(_) => "quic_connect_failed",
+            Self::AlpnMismatch => "alpn_mismatch",
+            Self::ConnectionClosed => "connection_closed",
             Self::HandshakeConsumed => "handshake_consumed",
             Self::InvalidHandshake => "invalid_handshake",
             Self::StaleTimestamp => "stale_timestamp",
@@ -188,20 +195,6 @@ impl ConnectError {
             Self::HostUnreachable => "host_unreachable",
             Self::RequestError(_) => "request_error",
             Self::Other(_) => "other",
-        }
-    }
-
-    pub fn action_hint(&self) -> Option<&'static str> {
-        match self {
-            Self::HandshakeConsumed
-            | Self::SlotNotFound
-            | Self::Unauthorized
-            | Self::NotInSessionAcl => Some("Run `zedra qr` on the host to generate a new QR."),
-            Self::SessionOccupied => Some("Run `zedra detach` on the host to release."),
-            Self::SessionNotFound | Self::HostUnreachable => {
-                Some("Run `zedra-host listen` to restart the daemon.")
-            }
-            _ => None,
         }
     }
 }
@@ -509,15 +502,22 @@ impl SessionState {
                 self.phase = ConnectPhase::Connected;
                 self.reconnect_attempt = None;
             }
-            ConnectEvent::ReconnectExhausted { .. } => {
-                self.phase = ConnectPhase::Failed(ConnectError::HostUnreachable);
+            ConnectEvent::ReconnectExhausted { error, .. } => {
+                self.phase = ConnectPhase::Failed(error);
             }
             ConnectEvent::Failed { error } => {
                 snap.failed_at_step = self.phase.step_index();
                 self.phase = ConnectPhase::Failed(error);
             }
             ConnectEvent::ConnectionClosed => {
-                self.phase = ConnectPhase::Disconnected;
+                // Transport closes are failed connection state; manual disconnect
+                // is handled by WorkspaceState::mark_disconnected().
+                if !matches!(
+                    self.phase,
+                    ConnectPhase::Failed(_) | ConnectPhase::Reconnecting { .. }
+                ) {
+                    self.phase = ConnectPhase::Failed(ConnectError::ConnectionClosed);
+                }
             }
             ConnectEvent::ConnectionIdle => {
                 let is_idle = matches!(self.phase, ConnectPhase::Idle { .. });
@@ -659,6 +659,207 @@ mod tests {
 
         state.apply_event(ConnectEvent::Connected { total_ms: 10 });
         assert!(matches!(state.phase, ConnectPhase::Connected));
+    }
+
+    #[test]
+    fn connection_closed_does_not_hide_failed_reason() {
+        for error in [
+            ConnectError::AlpnMismatch,
+            ConnectError::HandshakeConsumed,
+            ConnectError::SessionOccupied,
+            ConnectError::HostUnreachable,
+        ] {
+            let mut state = SessionState::new();
+
+            state.apply_event(ConnectEvent::Failed {
+                error: error.clone(),
+            });
+            state.apply_event(ConnectEvent::ConnectionClosed);
+
+            assert_eq!(state.phase, ConnectPhase::Failed(error));
+        }
+    }
+
+    #[test]
+    fn connection_closed_after_connected_becomes_failed() {
+        for initial_event in [
+            ConnectEvent::Connected { total_ms: 10 },
+            ConnectEvent::ReconnectSuccess {
+                attempt: 2,
+                elapsed_ms: 20,
+            },
+        ] {
+            let mut state = SessionState::new();
+
+            state.apply_event(initial_event);
+            state.apply_event(ConnectEvent::ConnectionClosed);
+
+            assert_eq!(
+                state.phase,
+                ConnectPhase::Failed(ConnectError::ConnectionClosed)
+            );
+        }
+    }
+
+    #[test]
+    fn connection_closed_after_idle_becomes_failed() {
+        let mut state = SessionState::new();
+
+        state.apply_event(ConnectEvent::Connected { total_ms: 10 });
+        state.apply_event(ConnectEvent::ConnectionIdle);
+        state.apply_event(ConnectEvent::ConnectionClosed);
+
+        assert_eq!(
+            state.phase,
+            ConnectPhase::Failed(ConnectError::ConnectionClosed)
+        );
+    }
+
+    #[test]
+    fn connection_closed_before_progress_becomes_failed() {
+        let mut state = SessionState::new();
+
+        state.apply_event(ConnectEvent::ConnectionClosed);
+
+        assert_eq!(
+            state.phase,
+            ConnectPhase::Failed(ConnectError::ConnectionClosed)
+        );
+    }
+
+    #[test]
+    fn connection_closed_while_reconnecting_keeps_reconnecting_status() {
+        let mut state = SessionState::new();
+
+        state.apply_event(ConnectEvent::ReconnectAttempt {
+            attempt: 3,
+            reason: ReconnectReason::ConnectionLost,
+            next_retry_secs: 5,
+        });
+        state.apply_event(ConnectEvent::ConnectionClosed);
+
+        assert_eq!(
+            state.phase,
+            ConnectPhase::Reconnecting {
+                attempt: 3,
+                reason: ReconnectReason::ConnectionLost,
+                next_retry_secs: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn connection_closed_during_bootstrap_becomes_failed() {
+        for phase_event in [
+            ConnectEvent::BindingEndpoint,
+            ConnectEvent::HolePunchStarted,
+            ConnectEvent::Registering {
+                session_id: "session-1".into(),
+            },
+            ConnectEvent::Authenticating,
+            ConnectEvent::Proving,
+            ConnectEvent::Syncing,
+        ] {
+            let mut state = SessionState::new();
+
+            state.apply_event(phase_event);
+            state.apply_event(ConnectEvent::ConnectionClosed);
+
+            assert_eq!(
+                state.phase,
+                ConnectPhase::Failed(ConnectError::ConnectionClosed)
+            );
+        }
+    }
+
+    #[test]
+    fn later_failed_event_overrides_generic_connection_closed_failure() {
+        let mut state = SessionState::new();
+
+        state.apply_event(ConnectEvent::Authenticating);
+        state.apply_event(ConnectEvent::ConnectionClosed);
+        state.apply_event(ConnectEvent::Failed {
+            error: ConnectError::SessionOccupied,
+        });
+
+        assert_eq!(
+            state.phase,
+            ConnectPhase::Failed(ConnectError::SessionOccupied)
+        );
+    }
+
+    #[test]
+    fn reconnect_exhausted_uses_final_error() {
+        for error in [
+            ConnectError::AlpnMismatch,
+            ConnectError::SessionOccupied,
+            ConnectError::HostUnreachable,
+        ] {
+            let mut state = SessionState::new();
+
+            state.apply_event(ConnectEvent::ReconnectExhausted {
+                attempts: 1,
+                elapsed_ms: 0,
+                error: error.clone(),
+            });
+
+            assert_eq!(state.phase, ConnectPhase::Failed(error));
+        }
+    }
+
+    #[test]
+    fn primary_connection_errors_have_friendly_status_metadata() {
+        let cases = [
+            (
+                ConnectError::AlpnMismatch,
+                "alpn_mismatch",
+                true,
+                "Protocol mismatch, Update App or CLI",
+            ),
+            (
+                ConnectError::ConnectionClosed,
+                "connection_closed",
+                false,
+                "Connection closed. Tap refresh to reconnect.",
+            ),
+            (
+                ConnectError::HandshakeConsumed,
+                "handshake_consumed",
+                true,
+                "The QR code was used. Refresh it and scan again.",
+            ),
+            (
+                ConnectError::SessionOccupied,
+                "session_occupied",
+                true,
+                "Host occupied. Disconnect other device and retry.",
+            ),
+            (
+                ConnectError::HostUnreachable,
+                "host_unreachable",
+                false,
+                "Host unreachable. Check network and host.",
+            ),
+        ];
+
+        for (error, label, is_fatal, message) in cases {
+            assert_eq!(error.label(), label);
+            assert_eq!(error.is_fatal(), is_fatal);
+            assert_eq!(error.user_message(), message);
+            assert_eq!(error.to_string(), message);
+        }
+    }
+
+    #[test]
+    fn failed_event_records_step_for_status_details() {
+        let mut state = SessionState::new();
+
+        state.apply_event(ConnectEvent::HolePunchStarted);
+        state.apply_event(ConnectEvent::Failed {
+            error: ConnectError::AlpnMismatch,
+        });
+
+        assert_eq!(state.snapshot.failed_at_step, Some(0));
     }
 
     #[test]

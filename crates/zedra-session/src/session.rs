@@ -284,6 +284,7 @@ impl Session {
                         reconnect_reason = Some(crate::ReconnectReason::ConnectionLost);
                     }
                     Err(e) => {
+                        connector.abort();
                         error!("connect failed: {}", e);
                         break;
                     }

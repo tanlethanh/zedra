@@ -38,7 +38,7 @@ pub(crate) fn transport_badge(
             };
             (label, color)
         }
-        ConnectPhase::Disconnected => ("Disconnected".into(), theme::ACCENT_RED),
+        ConnectPhase::Disconnected => ("Tap refresh to reconnect.".into(), theme::ACCENT_RED),
         ConnectPhase::Reconnecting {
             attempt,
             next_retry_secs,
@@ -93,5 +93,53 @@ pub fn format_bytes(bytes: u64) -> String {
         format!("{:.1} KB", bytes as f64 / 1024.0)
     } else {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::theme;
+    use crate::transport_badge::transport_badge;
+    use zedra_session::{ConnectError, ConnectPhase};
+
+    #[test]
+    fn disconnected_badge_uses_manual_reconnect_hint() {
+        let (label, color) = transport_badge(&ConnectPhase::Disconnected, None);
+
+        assert_eq!(label, "Tap refresh to reconnect.");
+        assert_eq!(color, theme::ACCENT_RED);
+    }
+
+    #[test]
+    fn failed_badge_uses_friendly_error_message() {
+        let cases = [
+            (
+                ConnectError::AlpnMismatch,
+                "Protocol mismatch, Update App or CLI",
+            ),
+            (
+                ConnectError::ConnectionClosed,
+                "Connection closed. Tap refresh to reconnect.",
+            ),
+            (
+                ConnectError::HandshakeConsumed,
+                "The QR code was used. Refresh it and scan again.",
+            ),
+            (
+                ConnectError::SessionOccupied,
+                "Host occupied. Disconnect other device and retry.",
+            ),
+            (
+                ConnectError::HostUnreachable,
+                "Host unreachable. Check network and host.",
+            ),
+        ];
+
+        for (error, message) in cases {
+            let (label, color) = transport_badge(&ConnectPhase::Failed(error), None);
+
+            assert_eq!(label, message);
+            assert_eq!(color, theme::ACCENT_RED);
+        }
     }
 }

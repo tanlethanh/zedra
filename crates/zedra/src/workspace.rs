@@ -174,6 +174,10 @@ fn sync_refresh_mode_for_event(
     }
 }
 
+fn should_apply_connect_event(_event: &ConnectEvent, user_disconnect: bool) -> bool {
+    !user_disconnect
+}
+
 fn terminal_id_in_sync(id: &str, terminal_ids: &[String]) -> bool {
     terminal_ids.iter().any(|synced_id| synced_id == id)
 }
@@ -383,6 +387,13 @@ impl Workspace {
                     }
 
                     let sync_refresh_mode = match workspace.update(cx, |ws, cx| {
+                        if !should_apply_connect_event(
+                            &event,
+                            ws.session_handle().user_disconnect(),
+                        ) {
+                            return None;
+                        }
+
                         let sync_refresh_mode =
                             sync_refresh_mode_for_event(&event, &mut ws.seen_reconnect);
                         ws.session_state.update(cx, |state, cx| {
@@ -1481,6 +1492,22 @@ mod tests {
         let mode = sync_refresh_mode_for_event(&sync_complete_event(), &mut seen_reconnect);
 
         assert_eq!(mode, Some(SyncRefreshMode::Reconnect));
+    }
+
+    #[::core::prelude::v1::test]
+    fn user_disconnect_ignores_late_connection_closed_event() {
+        assert!(!should_apply_connect_event(
+            &ConnectEvent::ConnectionClosed,
+            true
+        ));
+        assert!(should_apply_connect_event(
+            &ConnectEvent::ConnectionClosed,
+            false
+        ));
+        assert!(!should_apply_connect_event(
+            &ConnectEvent::Connected { total_ms: 10 },
+            true
+        ));
     }
 
     #[::core::prelude::v1::test]

@@ -489,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn disconnect_clears_runtime_state_without_touching_saved_fields() {
+    fn manual_disconnect_sets_disconnected_phase_and_clears_runtime_state() {
         let mut state = WorkspaceState {
             endpoint_addr: "endpoint".into(),
             session_id: "session".into(),

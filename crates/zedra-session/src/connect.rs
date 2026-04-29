@@ -7,7 +7,11 @@ use futures::future::join_all;
 use iroh::{
     Endpoint, EndpointAddr, NetReport, PublicKey, RelayConfig, RelayMap, RelayMode,
     address_lookup::PkarrResolver,
-    endpoint::{Connection, PathInfo, QuicTransportConfig},
+    endpoint::{
+        AuthenticationError as IrohAuthenticationError, ConnectError as IrohConnectError,
+        ConnectingError as IrohConnectingError, Connection, ConnectionError as IrohConnectionError,
+        PathInfo, QuicTransportConfig, TransportErrorCode,
+    },
 };
 use iroh_relay::RelayQuicConfig;
 use tokio::{sync::mpsc, task::JoinHandle, time::Instant};
@@ -44,6 +48,7 @@ pub type ConnectedResult = (
 );
 
 const IDLE_STALE_INTERVAL_MULTIPLIER: u32 = 2;
+const TLS_ALERT_NO_APPLICATION_PROTOCOL: u8 = 0x78;
 
 /// Tracks the last confirmed transport receive progress for UI idle state.
 ///
@@ -293,7 +298,7 @@ pub enum ConnectEvent {
     ReconnectExhausted {
         attempts: u32,
         elapsed_ms: u64,
-        fatal_error: Option<&'static str>,
+        error: ConnectError,
     },
 
     ConnectionClosed,
@@ -329,7 +334,7 @@ impl Connector {
 
         // Phase: Auth (Register if ticket, then Connect/Prove)
         let t_auth = Instant::now();
-        let (sync, outcome, is_first_pairing) = self
+        let (sync, outcome, is_first_pairing) = match self
             .proceed_bootstrap_session(
                 &client,
                 ticket,
@@ -338,7 +343,16 @@ impl Connector {
                 session_id,
                 session_token,
             )
-            .await?;
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                self.emit(ConnectEvent::Failed {
+                    error: error.clone(),
+                });
+                return Err(error);
+            }
+        };
         let auth_ms = t_auth.elapsed().as_millis() as u64;
         self.emit(ConnectEvent::AuthComplete {
             auth_ms,
@@ -415,7 +429,7 @@ impl Connector {
             .connect(remote_addr, &self.config.alpn)
             .await
             .map_err(|e| {
-                let err = ConnectError::QuicConnectFailed(e.to_string());
+                let err = map_iroh_connect_error(&e);
                 self.emit(ConnectEvent::Failed { error: err.clone() });
                 err
             })?;
@@ -889,7 +903,7 @@ impl Connector {
                     self.emit(ConnectEvent::ReconnectExhausted {
                         attempts: attempt,
                         elapsed_ms: reconnect_start.elapsed().as_millis() as u64,
-                        fatal_error: Some(e.label()),
+                        error: e.clone(),
                     });
                     return Err(e);
                 }
@@ -908,10 +922,49 @@ impl Connector {
         self.emit(ConnectEvent::ReconnectExhausted {
             attempts: max_attempts,
             elapsed_ms: reconnect_start.elapsed().as_millis() as u64,
-            fatal_error: None,
+            error: err.clone(),
         });
         Err(err)
     }
+}
+
+fn map_iroh_connect_error(error: &IrohConnectError) -> ConnectError {
+    if is_alpn_mismatch(error) {
+        ConnectError::AlpnMismatch
+    } else {
+        ConnectError::QuicConnectFailed(error.to_string())
+    }
+}
+
+fn is_alpn_mismatch(error: &IrohConnectError) -> bool {
+    match error {
+        IrohConnectError::Connecting { source, .. } => is_alpn_mismatch_connecting(source),
+        IrohConnectError::Connection { source, .. } => is_alpn_mismatch_connection(source),
+        _ => false,
+    }
+}
+
+fn is_alpn_mismatch_connecting(error: &IrohConnectingError) -> bool {
+    match error {
+        IrohConnectingError::ConnectionError { source, .. } => is_alpn_mismatch_connection(source),
+        IrohConnectingError::HandshakeFailure {
+            source: IrohAuthenticationError::NoAlpn { .. },
+            ..
+        } => true,
+        _ => false,
+    }
+}
+
+fn is_alpn_mismatch_connection(error: &IrohConnectionError) -> bool {
+    matches!(
+        error,
+        IrohConnectionError::ConnectionClosed(close)
+            if is_no_application_protocol_error_code(close.error_code)
+    )
+}
+
+fn is_no_application_protocol_error_code(error_code: TransportErrorCode) -> bool {
+    error_code == TransportErrorCode::crypto(TLS_ALERT_NO_APPLICATION_PROTOCOL)
 }
 
 #[cfg(test)]
@@ -930,6 +983,16 @@ mod tests {
 
         assert!(detector.observe(11, start + Duration::from_secs(5)));
         assert!(!detector.is_idle(start + Duration::from_secs(7), threshold));
+    }
+
+    #[test]
+    fn detects_no_application_protocol_tls_alert() {
+        assert!(is_no_application_protocol_error_code(
+            TransportErrorCode::crypto(TLS_ALERT_NO_APPLICATION_PROTOCOL)
+        ));
+        assert!(!is_no_application_protocol_error_code(
+            TransportErrorCode::crypto(0x2f)
+        ));
     }
 
     #[test]
