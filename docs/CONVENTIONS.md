@@ -156,6 +156,7 @@ Views read Entity<WorkspaceState> in render()
 - **Command queue**: bounded (`crossbeam::bounded(512)`). Use `try_send()`, drop-with-warn on full. Never block JNI thread.
 - **JNI safety**: all `#[no_mangle] extern "C"` JNI entry points must wrap body in `jni_call("name", || { ... })`.
 
-## Alert Lifecycle
+## Native Presentation Callback Lifecycle
 
-Call `platform_bridge::clear_pending_alerts()` on app background to release captured closures.
+Call `platform_bridge::clear_pending_alerts()` on app background to release
+captured closures for alerts, selection sheets, and native notifications.

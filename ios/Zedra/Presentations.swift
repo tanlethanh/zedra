@@ -40,6 +40,12 @@ private func zedra_ios_sheet_content_is_at_top() -> Bool
 @_silgen_name("zedra_ios_native_floating_button_pressed")
 private func zedra_ios_native_floating_button_pressed(_ callbackID: UInt32)
 
+@_silgen_name("zedra_ios_native_notification_action")
+private func zedra_ios_native_notification_action(_ callbackID: UInt32)
+
+@_silgen_name("zedra_ios_native_notification_dismiss")
+private func zedra_ios_native_notification_dismiss(_ callbackID: UInt32)
+
 fileprivate enum AlertActionStyle: Int32 {
     case `default` = 0
     case cancel = 1
@@ -76,6 +82,26 @@ fileprivate enum CustomSheetDetent: Int32 {
             return .medium()
         case .large:
             return .large()
+        }
+    }
+}
+
+fileprivate enum NativeNotificationKind: Int32 {
+    case info = 0
+    case success = 1
+    case warning = 2
+    case error = 3
+
+    var defaultSystemImageName: String {
+        switch self {
+        case .info:
+            return "info.circle"
+        case .success:
+            return "checkmark.circle.fill"
+        case .warning:
+            return "exclamationmark.triangle.fill"
+        case .error:
+            return "xmark.octagon.fill"
         }
     }
 }
@@ -215,6 +241,11 @@ enum NativePresentationBridge {
     }
 
     static func actionImage(named imageName: String) -> UIImage? {
+        let image = UIImage(named: imageName) ?? UIImage(systemName: imageName)
+        return image?.withRenderingMode(.alwaysTemplate)
+    }
+
+    static func notificationImage(named imageName: String) -> UIImage? {
         let image = UIImage(named: imageName) ?? UIImage(systemName: imageName)
         return image?.withRenderingMode(.alwaysTemplate)
     }
@@ -663,6 +694,539 @@ private final class NativeDictationPreviewController {
             }
         }
     }
+}
+
+private struct NativeNotificationConfiguration {
+    var callbackID: UInt32
+    var title: String
+    var message: String?
+    var imageName: String?
+    var kind: NativeNotificationKind
+    var duration: TimeInterval
+    var autoClose: Bool
+}
+
+private final class NativeNotificationBannerController {
+    static let shared = NativeNotificationBannerController()
+
+    private final class Banner: NSObject {
+        private static let enterDuration: TimeInterval = 0.48
+        private static let enterFadeDuration: TimeInterval = 0.14
+        private static let exitDuration: TimeInterval = 0.24
+        private static let exitFadeDuration: TimeInterval = 0.1
+        private static let enterInitialScale: CGFloat = 0.01
+        private static let exitScale: CGFloat = 0.01
+        private static let contentInsets = UIEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
+        private static let iconSize: CGFloat = 24
+        private static let textGap: CGFloat = 10
+
+        let callbackID: UInt32
+        let effectView: UIVisualEffectView
+        private let iconView: UIImageView
+        private let titleLabel: UILabel
+        private let messageLabel: UILabel
+        private weak var owner: NativeNotificationBannerController?
+        private weak var window: UIWindow?
+        private var isVisible = false
+        private var animationGeneration: UInt64 = 0
+
+        init(callbackID: UInt32, owner: NativeNotificationBannerController) {
+            self.callbackID = callbackID
+            effectView = UIVisualEffectView(effect: nil)
+            iconView = UIImageView()
+            titleLabel = UILabel()
+            messageLabel = UILabel()
+
+            super.init()
+
+            self.owner = owner
+            configureViewHierarchy()
+            configureGestures()
+        }
+
+        func prepare(in window: UIWindow, configuration: NativeNotificationConfiguration) {
+            if self.window !== window {
+                effectView.removeFromSuperview()
+                window.addSubview(effectView)
+                self.window = window
+            } else if effectView.superview == nil {
+                window.addSubview(effectView)
+            }
+
+            apply(configuration: configuration)
+            effectView.isHidden = false
+            effectView.isUserInteractionEnabled = true
+            window.bringSubviewToFront(effectView)
+        }
+
+        func preferredFrame(in window: UIWindow, top: CGFloat) -> CGRect {
+            Self.frame(in: window, top: top, titleLabel: titleLabel, messageLabel: messageLabel)
+        }
+
+        func setStackFrame(_ frame: CGRect, depth: Int, isExpanded: Bool, animated: Bool) {
+            let resolvedFrame = frame.integral
+            let clampedDepth = min(max(depth, 0), 3)
+            let targetAlpha: CGFloat
+            if isExpanded {
+                targetAlpha = 1
+            } else {
+                switch clampedDepth {
+                case 0:
+                    targetAlpha = 1
+                case 1:
+                    targetAlpha = 0.84
+                case 2:
+                    targetAlpha = 0.64
+                default:
+                    targetAlpha = 0
+                }
+            }
+
+            let applyFrame = {
+                let contentVisible = isExpanded || clampedDepth == 0
+                self.effectView.frame = resolvedFrame
+                self.effectView.alpha = targetAlpha
+                self.effectView.contentView.alpha = contentVisible ? 1 : 0
+                self.effectView.isUserInteractionEnabled = contentVisible
+                self.effectView.accessibilityElementsHidden = !contentVisible
+                self.effectView.layer.cornerRadius = min(24, resolvedFrame.height / 2)
+                self.effectView.layer.zPosition = CGFloat(100 - clampedDepth)
+                if #available(iOS 13.0, *) {
+                    self.effectView.layer.cornerCurve = .continuous
+                }
+                self.layoutContent()
+            }
+
+            if animated && isVisible {
+                UIView.animate(
+                    withDuration: 0.2,
+                    delay: 0,
+                    options: [.beginFromCurrentState, .allowUserInteraction, .curveEaseInOut],
+                    animations: applyFrame
+                )
+            } else {
+                applyFrame()
+            }
+        }
+
+        func materializeIfNeeded() {
+            guard !isVisible else { return }
+            materialize()
+        }
+
+        func dematerialize(completion: @escaping () -> Void) {
+            guard effectView.superview != nil else {
+                completion()
+                return
+            }
+
+            animationGeneration &+= 1
+            let generation = animationGeneration
+            isVisible = false
+            effectView.isUserInteractionEnabled = false
+            effectView.layer.removeAllAnimations()
+            effectView.contentView.layer.removeAllAnimations()
+
+            UIView.animate(
+                withDuration: Self.exitFadeDuration,
+                delay: 0,
+                options: [.beginFromCurrentState, .curveEaseOut],
+                animations: {
+                    self.effectView.effect = nil
+                    self.effectView.alpha = 0
+                }
+            )
+
+            UIView.animate(
+                withDuration: Self.exitDuration,
+                delay: 0,
+                options: [.beginFromCurrentState, .curveEaseInOut],
+                animations: {
+                    self.effectView.transform = Self.offscreenTransform(
+                        for: self.effectView,
+                        scale: Self.exitScale
+                    )
+                },
+                completion: { _ in
+                    guard self.animationGeneration == generation else { return }
+                    self.effectView.removeFromSuperview()
+                    self.effectView.transform = .identity
+                    self.effectView.alpha = 1
+                    self.effectView.effect = nil
+                    completion()
+                }
+            )
+        }
+
+        private func configureViewHierarchy() {
+            effectView.clipsToBounds = true
+            effectView.alpha = 0
+            effectView.layer.borderWidth = 1 / UIScreen.main.scale
+            effectView.layer.borderColor = UIColor(white: 1.0, alpha: 0.14).cgColor
+            effectView.accessibilityIdentifier = "zedra-native-notification"
+
+            iconView.contentMode = .scaleAspectFit
+
+            titleLabel.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
+            titleLabel.textColor = Self.primaryTextColor
+            titleLabel.lineBreakMode = .byTruncatingTail
+            titleLabel.numberOfLines = 1
+
+            messageLabel.font = UIFont.systemFont(ofSize: 12.5, weight: .regular)
+            messageLabel.textColor = Self.secondaryTextColor
+            messageLabel.lineBreakMode = .byTruncatingTail
+            messageLabel.numberOfLines = 2
+
+            effectView.contentView.addSubview(iconView)
+            effectView.contentView.addSubview(titleLabel)
+            effectView.contentView.addSubview(messageLabel)
+        }
+
+        private func configureGestures() {
+            let tapGesture = UITapGestureRecognizer(target: self, action: #selector(activateFromTap))
+            effectView.addGestureRecognizer(tapGesture)
+
+            let swipeGesture = UISwipeGestureRecognizer(target: self, action: #selector(dismissFromSwipe))
+            swipeGesture.direction = .up
+            effectView.addGestureRecognizer(swipeGesture)
+
+            let expandGesture = UISwipeGestureRecognizer(target: self, action: #selector(expandFromSwipe))
+            expandGesture.direction = .down
+            effectView.addGestureRecognizer(expandGesture)
+        }
+
+        private func apply(configuration: NativeNotificationConfiguration) {
+            let imageName = configuration.imageName?.isEmpty == false
+                ? configuration.imageName!
+                : configuration.kind.defaultSystemImageName
+            iconView.image = NativePresentationBridge.notificationImage(named: imageName)
+                ?? NativePresentationBridge.notificationImage(
+                    named: configuration.kind.defaultSystemImageName
+                )
+            iconView.tintColor = Self.primaryTextColor
+            titleLabel.text = configuration.title.isEmpty ? "Zedra" : configuration.title
+            let message = configuration.message?.trimmingCharacters(in: .whitespacesAndNewlines)
+            messageLabel.text = message
+            messageLabel.isHidden = message?.isEmpty ?? true
+            effectView.accessibilityLabel = titleLabel.text
+            effectView.accessibilityValue = message
+        }
+
+        private func layoutContent() {
+            let bounds = effectView.bounds
+            let content = bounds.inset(by: Self.contentInsets)
+            let iconFrame = CGRect(
+                x: content.minX,
+                y: bounds.midY - (Self.iconSize / 2),
+                width: Self.iconSize,
+                height: Self.iconSize
+            ).integral
+            iconView.frame = iconFrame
+
+            let textX = iconFrame.maxX + Self.textGap
+            let textWidth = max(1, content.maxX - textX)
+            let hasMessage = !messageLabel.isHidden
+            let titleHeight = ceil(
+                titleLabel.sizeThatFits(CGSize(width: textWidth, height: 24)).height
+            )
+            let messageHeight = hasMessage
+                ? ceil(messageLabel.sizeThatFits(CGSize(width: textWidth, height: 42)).height)
+                : 0
+            let totalTextHeight = titleHeight + (hasMessage ? 3 + messageHeight : 0)
+            var y = bounds.midY - (totalTextHeight / 2)
+
+            titleLabel.frame = CGRect(
+                x: textX,
+                y: y,
+                width: textWidth,
+                height: titleHeight
+            ).integral
+            y = titleLabel.frame.maxY + (hasMessage ? 3 : 0)
+            messageLabel.frame = CGRect(
+                x: textX,
+                y: y,
+                width: textWidth,
+                height: messageHeight
+            ).integral
+        }
+
+        private func materialize() {
+            animationGeneration &+= 1
+            isVisible = true
+            effectView.layer.removeAllAnimations()
+            effectView.contentView.layer.removeAllAnimations()
+
+            effectView.effect = nil
+            effectView.alpha = 0
+            effectView.contentView.alpha = 1
+            effectView.transform = Self.offscreenTransform(
+                for: effectView,
+                scale: Self.enterInitialScale
+            )
+
+            UIView.animate(
+                withDuration: Self.enterFadeDuration,
+                delay: 0,
+                options: [.beginFromCurrentState, .allowUserInteraction, .curveEaseOut],
+                animations: {
+                    self.effectView.effect = Self.bannerEffect()
+                    self.effectView.alpha = 1
+                    self.effectView.contentView.alpha = 1
+                }
+            )
+
+            UIView.animate(
+                withDuration: Self.enterDuration,
+                delay: 0,
+                usingSpringWithDamping: 0.76,
+                initialSpringVelocity: 0.24,
+                options: [.beginFromCurrentState, .allowUserInteraction],
+                animations: {
+                    self.effectView.transform = .identity
+                }
+            )
+        }
+
+        @objc
+        private func activateFromTap() {
+            owner?.activate(callbackID: callbackID)
+        }
+
+        @objc
+        private func dismissFromSwipe() {
+            owner?.dismiss(callbackID: callbackID, notifyRust: true)
+        }
+
+        @objc
+        private func expandFromSwipe() {
+            owner?.expandStack()
+        }
+
+        private static func frame(
+            in window: UIWindow,
+            top: CGFloat,
+            titleLabel: UILabel,
+            messageLabel: UILabel
+        ) -> CGRect {
+            let horizontalMargin = min(18, max(12, window.bounds.width * 0.04))
+            let width = max(1, min(window.bounds.width - (horizontalMargin * 2), 430))
+            let textWidth = max(
+                1,
+                width - contentInsets.left - contentInsets.right - iconSize - textGap
+            )
+            let titleHeight = ceil(
+                titleLabel.sizeThatFits(CGSize(width: textWidth, height: 24)).height
+            )
+            let hasMessage = !messageLabel.isHidden
+            let messageHeight = hasMessage
+                ? ceil(messageLabel.sizeThatFits(CGSize(width: textWidth, height: 42)).height)
+                : 0
+            let contentHeight = contentInsets.top
+                + titleHeight
+                + (hasMessage ? 3 + messageHeight : 0)
+                + contentInsets.bottom
+            let height = max(58, min(104, ceil(contentHeight)))
+            let x = window.bounds.midX - (width / 2)
+            return CGRect(x: x, y: top, width: width, height: height)
+        }
+
+        private static func offscreenTransform(for view: UIView, scale: CGFloat) -> CGAffineTransform {
+            CGAffineTransform(
+                a: scale,
+                b: 0,
+                c: 0,
+                d: scale,
+                tx: 0,
+                ty: -(view.frame.maxY + 18)
+            )
+        }
+
+        private static var primaryTextColor: UIColor {
+            UIColor { traits in
+                switch traits.userInterfaceStyle {
+                case .dark:
+                    return UIColor(white: 1.0, alpha: 0.94)
+                default:
+                    return UIColor(white: 0.0, alpha: 0.86)
+                }
+            }
+        }
+
+        private static var secondaryTextColor: UIColor {
+            UIColor { traits in
+                switch traits.userInterfaceStyle {
+                case .dark:
+                    return UIColor(white: 1.0, alpha: 0.72)
+                default:
+                    return UIColor(white: 0.0, alpha: 0.56)
+                }
+            }
+        }
+
+        private static var glassTintColor: UIColor {
+            UIColor { traits in
+                switch traits.userInterfaceStyle {
+                case .dark:
+                    return UIColor(white: 0.08, alpha: 0.42)
+                default:
+                    return UIColor(white: 1.0, alpha: 0.34)
+                }
+            }
+        }
+
+        private static func bannerEffect() -> UIVisualEffect {
+            if #available(iOS 26.0, *) {
+                let effect = UIGlassEffect(style: .regular)
+                effect.isInteractive = true
+                effect.tintColor = Self.glassTintColor
+                return effect
+            }
+
+            return UIBlurEffect(style: .systemChromeMaterial)
+        }
+    }
+
+    private static let collapsedStackYOffset: CGFloat = 9
+    private static let collapsedStackWidthInset: CGFloat = 10
+    private static let expandedStackGap: CGFloat = 8
+    private static let maxVisibleBubbles = 3
+
+    private var banners: [UInt32: Banner] = [:]
+    private var order: [UInt32] = []
+    private var dismissWorkItems: [UInt32: DispatchWorkItem] = [:]
+    private var isExpanded = false
+
+    func present(configuration: NativeNotificationConfiguration) {
+        DispatchQueue.main.async {
+            let window = NativePresentationBridge.activeWindow()
+            let banner = self.banners[configuration.callbackID] ?? {
+                let banner = Banner(callbackID: configuration.callbackID, owner: self)
+                self.banners[configuration.callbackID] = banner
+                self.order.append(configuration.callbackID)
+                return banner
+            }()
+
+            banner.prepare(in: window, configuration: configuration)
+            self.relayout(in: window, animated: true)
+            banner.materializeIfNeeded()
+            self.scheduleDismissIfNeeded(for: configuration)
+        }
+    }
+
+    fileprivate func activate(callbackID: UInt32) {
+        zedra_ios_native_notification_action(callbackID)
+        dismiss(callbackID: callbackID, notifyRust: false)
+    }
+
+    fileprivate func dismiss(callbackID: UInt32, notifyRust: Bool) {
+        dismissWorkItems[callbackID]?.cancel()
+        dismissWorkItems.removeValue(forKey: callbackID)
+        guard let banner = banners.removeValue(forKey: callbackID) else { return }
+        order.removeAll { $0 == callbackID }
+        if order.count <= 1 {
+            isExpanded = false
+        }
+
+        if notifyRust {
+            zedra_ios_native_notification_dismiss(callbackID)
+        }
+
+        banner.dematerialize {}
+        relayout(in: NativePresentationBridge.activeWindow(), animated: true)
+    }
+
+    fileprivate func expandStack() {
+        guard !isExpanded, order.count > 1 else { return }
+
+        isExpanded = true
+        relayout(in: NativePresentationBridge.activeWindow(), animated: true)
+    }
+
+    private func scheduleDismissIfNeeded(for configuration: NativeNotificationConfiguration) {
+        let callbackID = configuration.callbackID
+        dismissWorkItems[callbackID]?.cancel()
+        dismissWorkItems.removeValue(forKey: callbackID)
+
+        guard configuration.autoClose else { return }
+
+        let resolvedDuration: TimeInterval
+        if configuration.duration.isFinite && configuration.duration > 0 {
+            resolvedDuration = min(max(configuration.duration, 1.2), 12)
+        } else {
+            resolvedDuration = 3.2
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.dismiss(callbackID: callbackID, notifyRust: true)
+        }
+        dismissWorkItems[callbackID] = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + resolvedDuration, execute: workItem)
+    }
+
+    private func relayout(in window: UIWindow, animated: Bool) {
+        let top = max(8, window.safeAreaInsets.top + 8)
+
+        if isExpanded {
+            relayoutExpanded(order, in: window, top: top, animated: animated)
+        } else {
+            relayoutCollapsed(Array(order.reversed()), in: window, top: top, animated: animated)
+        }
+    }
+
+    private func relayoutCollapsed(
+        _ topToBottom: [UInt32],
+        in window: UIWindow,
+        top: CGFloat,
+        animated: Bool
+    ) {
+        let visibleBackDepth = min(max(topToBottom.count - 1, 0), Self.maxVisibleBubbles - 1)
+        let frontTop = top + (CGFloat(visibleBackDepth) * Self.collapsedStackYOffset)
+        let stackFrame = topToBottom
+            .first
+            .flatMap { banners[$0]?.preferredFrame(in: window, top: frontTop) }
+
+        for (depth, callbackID) in topToBottom.enumerated().reversed() {
+            guard let banner = banners[callbackID], let stackFrame else { continue }
+            let visibleDepth = min(depth, Self.maxVisibleBubbles)
+            let horizontalInset = CGFloat(visibleDepth) * Self.collapsedStackWidthInset
+            let yOffset = -(CGFloat(visibleDepth) * Self.collapsedStackYOffset)
+            let frame = stackFrame
+                .insetBy(dx: horizontalInset, dy: 0)
+                .offsetBy(dx: 0, dy: yOffset)
+
+            banner.setStackFrame(frame, depth: visibleDepth, isExpanded: false, animated: animated)
+            window.bringSubviewToFront(banner.effectView)
+        }
+    }
+
+    private func relayoutExpanded(
+        _ topToBottom: [UInt32],
+        in window: UIWindow,
+        top: CGFloat,
+        animated: Bool
+    ) {
+        var y = top
+        var frames: [(depth: Int, callbackID: UInt32, frame: CGRect)] = []
+
+        for (depth, callbackID) in topToBottom.enumerated() {
+            guard let banner = banners[callbackID] else { continue }
+            let frame = banner.preferredFrame(in: window, top: y)
+            frames.append((depth, callbackID, frame))
+            y = frame.maxY + Self.expandedStackGap
+        }
+
+        for item in frames.reversed() {
+            guard let banner = banners[item.callbackID] else { continue }
+            banner.setStackFrame(
+                item.frame,
+                depth: item.depth,
+                isExpanded: true,
+                animated: animated
+            )
+            window.bringSubviewToFront(banner.effectView)
+        }
+    }
+
 }
 
 private enum PresentationCoordinator {
@@ -1173,4 +1737,31 @@ func ios_update_native_dictation_preview(
 @_cdecl("ios_hide_native_dictation_preview")
 func ios_hide_native_dictation_preview(_ previewID: UInt32) {
     NativeDictationPreviewController.shared.hide(previewID: previewID)
+}
+
+@_cdecl("ios_present_native_notification")
+func ios_present_native_notification(
+    _ callbackID: UInt32,
+    _ title: UnsafePointer<CChar>?,
+    _ message: UnsafePointer<CChar>?,
+    _ imageName: UnsafePointer<CChar>?,
+    _ kind: Int32,
+    _ durationSecs: Float,
+    _ autoClose: Bool
+) {
+    let messageText = NativePresentationBridge.string(message)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    let imageText = NativePresentationBridge.string(imageName)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    NativeNotificationBannerController.shared.present(
+        configuration: NativeNotificationConfiguration(
+            callbackID: callbackID,
+            title: NativePresentationBridge.string(title) ?? "Zedra",
+            message: messageText?.isEmpty == true ? nil : messageText,
+            imageName: imageText?.isEmpty == true ? nil : imageText,
+            kind: NativeNotificationKind(rawValue: kind) ?? .info,
+            duration: TimeInterval(durationSecs),
+            autoClose: autoClose
+        )
+    )
 }

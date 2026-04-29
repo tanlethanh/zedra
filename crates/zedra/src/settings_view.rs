@@ -3,6 +3,7 @@ use gpui::*;
 use crate::fonts;
 use crate::platform_bridge::{
     self, AlertButton, CustomSheetDetent, CustomSheetOptions, HapticFeedback,
+    NativeNotificationKind, NativeNotificationOptions,
 };
 use crate::sheet_demo_state::SheetDemoState;
 use crate::theme;
@@ -81,6 +82,30 @@ impl SettingsView {
                 modal_in_presentation: false,
             },
             self.sheet_view.clone(),
+        );
+    }
+
+    fn show_test_native_notification(&self) {
+        platform_bridge::show_native_notification(
+            NativeNotificationOptions::new("Terminal created")
+                .message("Background mock notification for the bubble stack.")
+                .system_image("terminal")
+                .duration_secs(3.8),
+        );
+        platform_bridge::show_native_notification_with_action(
+            NativeNotificationOptions::new("Agent completed")
+                .message("Developer mock notification from Settings.")
+                .image("AgentCodex")
+                .kind(NativeNotificationKind::Success)
+                .duration_secs(3.4),
+            || {
+                platform_bridge::show_native_notification(
+                    NativeNotificationOptions::new("Notification tapped")
+                        .message("Callback action fired from the native banner.")
+                        .system_image("hand.tap")
+                        .duration_secs(2.4),
+                );
+            },
         );
     }
 }
@@ -203,6 +228,22 @@ impl Render for SettingsView {
                                 )
                                 .on_press(cx.listener(|this, _event, _window, _cx| {
                                     this.show_test_selection();
+                                })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(px(520.0))
+                            .mx_auto()
+                            .child(
+                                action_row(
+                                    "settings-test-native-notification",
+                                    "Native Notification",
+                                    "In-app glass banner presentation",
+                                )
+                                .on_press(cx.listener(|this, _event, _window, _cx| {
+                                    this.show_test_native_notification();
                                 })),
                             ),
                     )

@@ -102,6 +102,77 @@ pub struct NativeDictationPreviewOptions {
 
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum NativeNotificationKind {
+    #[default]
+    Info = 0,
+    Success = 1,
+    Warning = 2,
+    Error = 3,
+}
+
+impl NativeNotificationKind {
+    pub fn as_i32(self) -> i32 {
+        self as i32
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct NativeNotificationOptions {
+    pub title: String,
+    pub message: Option<String>,
+    pub image_name: Option<String>,
+    pub kind: NativeNotificationKind,
+    pub duration_secs: f32,
+    pub auto_close: bool,
+}
+
+impl NativeNotificationOptions {
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            message: None,
+            image_name: None,
+            kind: NativeNotificationKind::Info,
+            duration_secs: 3.2,
+            auto_close: true,
+        }
+    }
+
+    pub fn message(mut self, message: impl Into<String>) -> Self {
+        self.message = Some(message.into());
+        self
+    }
+
+    /// Use either an iOS asset-catalog image name or an SF Symbol name.
+    pub fn image(mut self, image_name: impl Into<String>) -> Self {
+        self.image_name = Some(image_name.into());
+        self
+    }
+
+    /// Alias for callers that want to document SF Symbol intent.
+    pub fn system_image(mut self, image_name: impl Into<String>) -> Self {
+        self.image_name = Some(image_name.into());
+        self
+    }
+
+    pub fn kind(mut self, kind: NativeNotificationKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    pub fn duration_secs(mut self, duration_secs: f32) -> Self {
+        self.duration_secs = duration_secs;
+        self
+    }
+
+    pub fn auto_close(mut self, auto_close: bool) -> Self {
+        self.auto_close = auto_close;
+        self
+    }
+}
+
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum NativeFloatingButtonIconWeight {
     Unspecified = 0,
     UltraLight = 1,
@@ -130,6 +201,9 @@ static SELECTION_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(Option<us
     OnceLock::new();
 static NEXT_NATIVE_FLOATING_BUTTON_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_NATIVE_DICTATION_PREVIEW_ID: AtomicU32 = AtomicU32::new(1);
+static NEXT_NATIVE_NOTIFICATION_ID: AtomicU32 = AtomicU32::new(1);
+static NATIVE_NOTIFICATION_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce() + Send>>>> =
+    OnceLock::new();
 thread_local! {
     static PENDING_CUSTOM_SHEET_VIEW: std::cell::RefCell<Option<AnyView>> = const { std::cell::RefCell::new(None) };
     static NATIVE_FLOATING_BUTTON_CALLBACKS: RefCell<HashMap<u32, Box<dyn FnMut(&mut App)>>> = RefCell::new(HashMap::new());
@@ -141,6 +215,10 @@ fn alert_callbacks() -> &'static Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>
 
 fn selection_callbacks() -> &'static Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>) + Send>>> {
     SELECTION_CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn native_notification_callbacks() -> &'static Mutex<HashMap<u32, Box<dyn FnOnce() + Send>>> {
+    NATIVE_NOTIFICATION_CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Present a native alert dialog with the given title, message, and buttons.
@@ -241,6 +319,23 @@ pub(crate) fn hide_native_dictation_preview(id: u32) {
     bridge().hide_native_dictation_preview(id);
 }
 
+pub fn show_native_notification(options: NativeNotificationOptions) {
+    let id = NEXT_NATIVE_NOTIFICATION_ID.fetch_add(1, Ordering::Relaxed);
+    bridge().present_native_notification(id, &options);
+}
+
+pub fn show_native_notification_with_action(
+    options: NativeNotificationOptions,
+    on_action: impl FnOnce() + Send + 'static,
+) {
+    let id = NEXT_NATIVE_NOTIFICATION_ID.fetch_add(1, Ordering::Relaxed);
+    native_notification_callbacks()
+        .lock()
+        .unwrap()
+        .insert(id, Box::new(on_action));
+    bridge().present_native_notification(id, &options);
+}
+
 /// Called from platform code after the user taps a button.
 /// Dispatches the stored callback and removes it from the registry.
 pub fn dispatch_alert_result(callback_id: u32, button_index: usize) {
@@ -283,7 +378,24 @@ pub fn dispatch_native_floating_button_press(callback_id: u32, cx: &mut App) {
     });
 }
 
-/// Discard all pending alert callbacks without invoking them.
+pub fn dispatch_native_notification_action(callback_id: u32) {
+    let cb = native_notification_callbacks()
+        .lock()
+        .unwrap()
+        .remove(&callback_id);
+    if let Some(cb) = cb {
+        cb();
+    }
+}
+
+pub fn dispatch_native_notification_dismiss(callback_id: u32) {
+    native_notification_callbacks()
+        .lock()
+        .unwrap()
+        .remove(&callback_id);
+}
+
+/// Discard all pending native presentation callbacks without invoking them.
 ///
 /// Call this when the app enters the background or is paused, so closures
 /// captured in the callbacks (e.g. `PendingSlot` clones) are released and
@@ -305,6 +417,16 @@ pub fn clear_pending_alerts() {
         if count > 0 {
             tracing::debug!(
                 "clear_pending_alerts: dropped {} unacknowledged selection sheet(s)",
+                count
+            );
+        }
+    }
+    if let Ok(mut map) = native_notification_callbacks().lock() {
+        let count = map.len();
+        map.clear();
+        if count > 0 {
+            tracing::debug!(
+                "clear_pending_alerts: dropped {} unacknowledged native notification(s)",
                 count
             );
         }
@@ -400,6 +522,8 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn update_native_dictation_preview(&self, _id: u32, _options: &NativeDictationPreviewOptions) {}
     /// Hide a native dictation preview overlay.
     fn hide_native_dictation_preview(&self, _id: u32) {}
+    /// Display a native in-app notification banner.
+    fn present_native_notification(&self, _id: u32, _options: &NativeNotificationOptions) {}
 }
 
 static BRIDGE: OnceLock<Box<dyn PlatformBridge>> = OnceLock::new();

@@ -14,6 +14,22 @@
 4. Expected: no hover background remains stuck after tap, drag, or scroll interactions
 5. Expected: active, selected, destructive, and disabled states remain readable without hover styling
 
+## 0c. Developer Native Notification
+
+1. Run a Debug build and open Settings
+2. Tap `Native Notification` in the Developer section
+3. Expected: two compact in-app notification bubbles slide down near the top safe area, with the newest expanded in front and the older one peeking above it as a smaller glass bubble
+4. Expected: the front bubble uses the app asset icon `AgentCodex` tinted like the notification title; the upper peek bubble uses an SF Symbol fallback icon
+5. Expected: each new bubble fades in faster than it scales, then continues sliding down and settling into place with a subtle spring
+6. Tap the front `Agent completed` bubble
+7. Expected: it fades out faster than it scales, then finishes scaling back toward zero while sliding upward; a callback notification appears
+8. Tap `Native Notification` again, then swipe the front bubble downward
+9. Expected: all pending notification items expand into full bubbles, with the oldest at the top and the newest at the bottom
+10. Swipe any expanded bubble upward
+11. Expected: only that bubble dismisses, and the remaining bubbles move up smoothly
+12. Tap `Native Notification` repeatedly
+13. Expected: multiple notifications collect into the same bubble stack and all auto-close after their configured durations by default
+
 ## 1. Normal QR Scan → Connect
 
 1. Start host daemon: `zedra start --workdir .`
