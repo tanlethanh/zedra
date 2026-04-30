@@ -141,9 +141,28 @@ fn escape_osc633(raw: &str) -> String {
     escaped
 }
 
+fn initial_host_meta(opts: &SpawnOptions) -> HostTermMeta {
+    let mut meta = HostTermMeta::default();
+    // Launch commands can run before a prompt emits OSC 7; seed cwd from the spawn request.
+    meta.cwd = opts
+        .workdir
+        .as_ref()
+        .map(|path| path.to_string_lossy().into_owned());
+    if let Some(command) = opts
+        .launch_cmd
+        .as_ref()
+        .filter(|command| !command.is_empty())
+    {
+        meta.current_command = Some(command.clone());
+        meta.shell_state = HostShellState::Running;
+    }
+    meta
+}
+
 #[cfg(test)]
 mod terminal_meta_preamble_tests {
     use super::*;
+    use std::path::PathBuf;
     use zedra_osc::{OscEvent, OscScanner};
 
     #[test]
@@ -189,6 +208,27 @@ mod terminal_meta_preamble_tests {
             events.as_slice(),
             [OscEvent::CommandEnd { exit_code: 17 }]
         ));
+    }
+
+    #[test]
+    fn initial_host_meta_uses_spawn_workdir_for_cwd() {
+        let opts = SpawnOptions {
+            workdir: Some(PathBuf::from("/repo/project")),
+            launch_cmd: Some("claude --resume session".to_owned()),
+        };
+
+        assert_eq!(
+            initial_host_meta(&opts).cwd.as_deref(),
+            Some("/repo/project")
+        );
+        assert_eq!(
+            initial_host_meta(&opts).current_command.as_deref(),
+            Some("claude --resume session")
+        );
+        assert_eq!(
+            initial_host_meta(&opts).shell_state,
+            HostShellState::Running
+        );
     }
 }
 
@@ -978,6 +1018,7 @@ pub async fn create_terminal(
         );
     }
 
+    let initial_meta = initial_host_meta(&opts);
     let shell = ShellSession::spawn(cols, rows, opts)?;
     let (pty_reader, pty_writer, master, child) = shell.take_reader();
     let id = session.next_terminal_id().await;
@@ -994,7 +1035,7 @@ pub async fn create_terminal(
         gen: 0,
         sender: None,
     }));
-    let host_meta = Arc::new(std::sync::Mutex::new(HostTermMeta::default()));
+    let host_meta = Arc::new(std::sync::Mutex::new(initial_meta));
     let backlog = Arc::new(std::sync::Mutex::new(TermBacklog::new()));
     // Wrap the writer so TermAttach can hold a direct Arc clone and write
     // without locking session.terminals on every keystroke (Fix 3).

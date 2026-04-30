@@ -210,6 +210,30 @@ fn active_terminal_is_stale_after_sync(
     active_terminal_id.is_some_and(|id| !terminal_id_in_sync(id, terminal_ids))
 }
 
+fn seed_host_created_terminal_meta(
+    terminal_state: &mut TerminalState,
+    terminal_id: &str,
+    workspace_workdir: &str,
+    launch_cmd: Option<&str>,
+) -> bool {
+    let mut changed = false;
+
+    if !workspace_workdir.is_empty() {
+        // Host-created launch terminals may appear before PTY metadata reaches the card.
+        terminal_state.set_cwd(terminal_id, workspace_workdir.to_owned());
+        changed = true;
+    }
+
+    if let Some(command) = launch_cmd.filter(|command| !command.is_empty()) {
+        // launch_cmd can start before shell OSC identity is emitted.
+        terminal_state.set_current_command(terminal_id, command.to_owned());
+        terminal_state.set_shell_running(terminal_id);
+        changed = true;
+    }
+
+    changed
+}
+
 fn terminal_ids_after_close(closed_id: &str, terminal_ids: &[String]) -> Vec<String> {
     terminal_ids
         .iter()
@@ -303,12 +327,23 @@ impl Workspace {
         let host_event_listener = cx.spawn(async move |workspace, cx| {
             loop {
                 match host_event_rx.recv().await {
-                    Ok(HostEvent::TerminalCreated { .. }) => {
+                    Ok(HostEvent::TerminalCreated { id, launch_cmd }) => {
                         let should_break = workspace
                             .update(cx, |ws, cx| {
                                 let session_state = ws.session_state.read(cx).clone();
                                 ws.workspace_state.update(cx, |this, cx| {
                                     this.sync_from_session(ws.session_handle(), &session_state, cx);
+                                });
+                                let workdir = ws.workspace_state.read(cx).workdir.clone();
+                                ws.terminal_state.update(cx, |state, cx| {
+                                    if seed_host_created_terminal_meta(
+                                        state,
+                                        &id,
+                                        &workdir,
+                                        launch_cmd.as_deref(),
+                                    ) {
+                                        cx.notify();
+                                    }
                                 });
                             })
                             .is_err();
@@ -1530,6 +1565,57 @@ mod tests {
                 path: "src/main.rs".into(),
             },
         ));
+    }
+
+    #[::core::prelude::v1::test]
+    fn host_created_terminal_seeds_cwd_from_workspace() {
+        let mut terminal_state = TerminalState::new();
+
+        assert!(seed_host_created_terminal_meta(
+            &mut terminal_state,
+            "terminal-1",
+            "/repo/project",
+            None,
+        ));
+
+        assert_eq!(
+            terminal_state.meta("terminal-1").cwd.as_deref(),
+            Some("/repo/project")
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn host_created_terminal_ignores_empty_workspace_cwd() {
+        let mut terminal_state = TerminalState::new();
+
+        assert!(!seed_host_created_terminal_meta(
+            &mut terminal_state,
+            "terminal-1",
+            "",
+            None,
+        ));
+        assert_eq!(terminal_state.meta("terminal-1").cwd, None);
+    }
+
+    #[::core::prelude::v1::test]
+    fn host_created_terminal_seeds_agent_icon_from_launch_command() {
+        let mut terminal_state = TerminalState::new();
+
+        assert!(seed_host_created_terminal_meta(
+            &mut terminal_state,
+            "terminal-1",
+            "/repo/project",
+            Some("claude --resume session"),
+        ));
+
+        let meta = terminal_state.meta("terminal-1");
+        assert_eq!(meta.agent_icon, Some("icons/claude.svg"));
+        assert_eq!(meta.agent_kind, Some(agent::Kind::Claude));
+        assert_eq!(meta.shell_state, crate::terminal_state::ShellState::Running);
+        assert_eq!(
+            meta.current_command.as_deref(),
+            Some("claude --resume session")
+        );
     }
 
     #[::core::prelude::v1::test]

@@ -596,11 +596,13 @@ printf '\033]8;;file:///tmp/zedra-code-selection.rs:1:1\033\\/tmp/zedra-code-sel
 20. Expected: the session disconnects only after confirmation
 21. Expected: the home workspace card immediately shows the disconnected/reconnect state instead of the old connected state
 
-## 18. Workspace Header Terminal Title + Agent Icon
+## 18. Workspace Header Terminal Title + Terminal Agent Icon
 
 Zedra currently uses OSC 1 icon-name updates as the primary active-agent signal.
 Shells should emit the command name as OSC 1 when an AI CLI starts, then a
 non-agent prompt/path icon name when the shell returns to prompt.
+Launch-command terminals seed identity from the known command until shell OSC
+metadata arrives.
 
 1. Open a workspace, open a terminal.
 2. Type `claude` (or another supported AI CLI such as `opencode`, `codex`,
@@ -611,19 +613,24 @@ non-agent prompt/path icon name when the shell returns to prompt.
 
 Expected:
 - Header subtitle (below project name) updates from cwd to the terminal title.
-- Agent icon appears in the header and terminal card matching the running CLI,
-  based on OSC 1 icon-name updates rather than terminal title text.
+- Header subtitle does not show an agent icon.
+- Agent icon appears in the terminal card matching the running CLI, based on OSC
+  1 icon-name updates rather than terminal title text.
 - If the agent changes the terminal title while running, the icon remains
-  stable.
-- After the agent exits and shell returns to prompt, icon disappears;
+  stable in the terminal card.
+- After the agent exits and shell returns to prompt, terminal card icon disappears;
   subtitle shows the last title (or falls back to cwd), even if the title still
   mentions the agent.
 - Switching to a different terminal in the drawer updates header to the
-  active terminal's title + icon.
+  active terminal's title and updates the terminal card icon.
 - Relaunch the client app while an AI CLI command is still running in the
-  remote terminal. Expected: after reconnect/reattach, the terminal card and
-  workspace header restore the agent icon from host-persisted OSC 1 metadata
-  without waiting for a new command to start or a new OSC 1 event to arrive.
+  remote terminal. Expected: after reconnect/reattach, the terminal card
+  restores the agent icon from host-persisted OSC 1 metadata without waiting for
+  a new command to start or a new OSC 1 event to arrive.
+- Start a Claude resume terminal through `/zedra-start` or another
+  `launch_cmd` path such as `claude --resume <session_id>`. Expected: while
+  Claude is running, the terminal card shows the Claude icon even before a shell
+  prompt emits fresh OSC metadata.
 
 ## 19. Xcode Rust Build Target
 
