@@ -160,6 +160,28 @@ pub enum Event {
         /// Relay hostname the connection upgraded from.
         from_relay: String,
     },
+    /// Periodic selected-path latency sample.
+    ConnectionLatencySample {
+        /// "app" or "host".
+        source: &'static str,
+        /// "relay", "p2p", or "unknown".
+        connection_type: &'static str,
+        /// "LAN", "WAN", "Tailscale", "relay", or "unknown".
+        network_type: &'static str,
+        rtt_ms: u64,
+        /// Known relay id ("sg1", "vn1", "us1", "eu1"), "custom", or "none".
+        relay: &'static str,
+        /// Region for the selected relay, or "none" / "custom" / "unknown".
+        relay_region: &'static str,
+        /// Approximate client region inferred from the preferred relay, never from IP geolocation.
+        nearest_relay_region: &'static str,
+        /// Number of paths iroh currently reports.
+        path_count: usize,
+        /// Configured sampling interval, not a session average.
+        interval_secs: u64,
+        /// "initial", "periodic", or "path_changed".
+        sample_reason: &'static str,
+    },
 
     // ── Terminal (client-side) ─────────────────────────────────────────────
     /// A new terminal was created (PTY spawned on server).
@@ -339,6 +361,7 @@ impl Event {
             Self::ReconnectSuccess { .. } => "reconnect_success",
             Self::ReconnectExhausted { .. } => "reconnect_exhausted",
             Self::PathUpgraded { .. } => "path_upgraded",
+            Self::ConnectionLatencySample { .. } => "connection_latency_sample",
             Self::TerminalOpened { .. } => "terminal_opened",
             Self::TerminalClosed { .. } => "terminal_closed",
             Self::DaemonStart { .. } => "daemon_start",
@@ -499,6 +522,29 @@ impl Event {
                 ("rtt_ms", rtt_ms.to_string()),
                 ("from_relay", from_relay.clone()),
             ],
+            Self::ConnectionLatencySample {
+                source,
+                connection_type,
+                network_type,
+                rtt_ms,
+                relay,
+                relay_region,
+                nearest_relay_region,
+                path_count,
+                interval_secs,
+                sample_reason,
+            } => vec![
+                ("source", source.to_string()),
+                ("connection_type", connection_type.to_string()),
+                ("network_type", network_type.to_string()),
+                ("rtt_ms", rtt_ms.to_string()),
+                ("relay", relay.to_string()),
+                ("relay_region", relay_region.to_string()),
+                ("nearest_relay_region", nearest_relay_region.to_string()),
+                ("path_count", path_count.to_string()),
+                ("interval_secs", interval_secs.to_string()),
+                ("sample_reason", sample_reason.to_string()),
+            ],
             Self::TerminalOpened {
                 source,
                 terminal_count,
@@ -648,6 +694,71 @@ fn bool_str(v: bool) -> String {
     if v { "1" } else { "0" }.to_string()
 }
 
+pub fn relay_id_label(relay: &str) -> &'static str {
+    let host = relay_host(relay);
+    if host.is_empty() || host == "none" {
+        "none"
+    } else if host.starts_with("sg1.") || host == "sg1" {
+        "sg1"
+    } else if host.starts_with("vn1.") || host == "vn1" {
+        "vn1"
+    } else if host.starts_with("us1.") || host == "us1" {
+        "us1"
+    } else if host.starts_with("eu1.") || host == "eu1" {
+        "eu1"
+    } else {
+        "custom"
+    }
+}
+
+pub fn relay_region_label(relay: &str) -> &'static str {
+    match relay_id_label(relay) {
+        "sg1" => "ap-southeast-1",
+        "vn1" => "vietnam",
+        "us1" => "us-east-1",
+        "eu1" => "eu-central-1",
+        "custom" => "custom",
+        "none" => "none",
+        _ => "unknown",
+    }
+}
+
+pub fn ip_network_type(ip: std::net::IpAddr) -> &'static str {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            if v4.is_loopback() {
+                "LAN"
+            } else if o[0] == 100 && o[1] >= 64 && o[1] <= 127 {
+                "Tailscale"
+            } else if o[0] == 10
+                || (o[0] == 172 && o[1] >= 16 && o[1] <= 31)
+                || (o[0] == 192 && o[1] == 168)
+            {
+                "LAN"
+            } else {
+                "WAN"
+            }
+        }
+        std::net::IpAddr::V6(v6) => {
+            let s = v6.segments();
+            if v6.is_loopback() || s[0] == 0xfe80 || s[0] & 0xfe00 == 0xfc00 {
+                "LAN"
+            } else {
+                "WAN"
+            }
+        }
+    }
+}
+
+fn relay_host(relay: &str) -> &str {
+    let without_scheme = relay
+        .strip_prefix("https://")
+        .or_else(|| relay.strip_prefix("http://"))
+        .unwrap_or(relay);
+    without_scheme.split('/').next().unwrap_or(without_scheme)
+}
+
 // ---------------------------------------------------------------------------
 // Backend trait
 // ---------------------------------------------------------------------------
@@ -764,7 +875,8 @@ pub fn set_custom_key(key: &str, value: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::Event;
+    use super::{Event, ip_network_type, relay_id_label, relay_region_label};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     #[test]
     fn screen_view_serializes_firebase_screen_params() {
@@ -783,5 +895,67 @@ mod tests {
                 ("screen_class", "WorkspaceEditor".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn connection_latency_sample_serializes_periodic_path_context() {
+        let params = Event::ConnectionLatencySample {
+            source: "app",
+            connection_type: "p2p",
+            network_type: "Tailscale",
+            rtt_ms: 42,
+            relay: "none",
+            relay_region: "none",
+            nearest_relay_region: "ap-southeast-1",
+            path_count: 2,
+            interval_secs: 60,
+            sample_reason: "periodic",
+        }
+        .to_params();
+
+        assert_eq!(
+            params,
+            vec![
+                ("source", "app".to_string()),
+                ("connection_type", "p2p".to_string()),
+                ("network_type", "Tailscale".to_string()),
+                ("rtt_ms", "42".to_string()),
+                ("relay", "none".to_string()),
+                ("relay_region", "none".to_string()),
+                ("nearest_relay_region", "ap-southeast-1".to_string()),
+                ("path_count", "2".to_string()),
+                ("interval_secs", "60".to_string()),
+                ("sample_reason", "periodic".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn relay_labels_are_sanitized_to_known_ids_and_regions() {
+        assert_eq!(relay_id_label("https://sg1.relay.zedra.dev"), "sg1");
+        assert_eq!(
+            relay_region_label("https://sg1.relay.zedra.dev"),
+            "ap-southeast-1"
+        );
+        assert_eq!(relay_id_label("custom-relay.example.com"), "custom");
+        assert_eq!(relay_region_label("custom-relay.example.com"), "custom");
+        assert_eq!(relay_id_label("none"), "none");
+    }
+
+    #[test]
+    fn ip_network_type_does_not_return_ip_values() {
+        assert_eq!(
+            ip_network_type(IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1))),
+            "Tailscale"
+        );
+        assert_eq!(
+            ip_network_type(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10))),
+            "LAN"
+        );
+        assert_eq!(
+            ip_network_type(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))),
+            "WAN"
+        );
+        assert_eq!(ip_network_type(IpAddr::V6(Ipv6Addr::LOCALHOST)), "LAN");
     }
 }

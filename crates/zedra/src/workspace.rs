@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result as AnyhowResult, anyhow};
 use gpui::{prelude::FluentBuilder as _, *};
@@ -67,6 +67,7 @@ pub struct Workspace {
     /// Becomes true once a ReconnectStarted event is seen; gates initial auto-open/create.
     seen_reconnect: bool,
     active_reconnect_reason: Option<ReconnectReason>,
+    latency_sampler: LatencySampler,
     /// Listens for connect events and syncs them into SessionState/WorkspaceState.
     _connect_listener: Option<Task<()>>,
     /// Listens for host events/actions from the remote host.
@@ -158,6 +159,47 @@ impl agent::AppCtx for WorkspaceAgentApp {
 enum SyncRefreshMode {
     InitialConnect,
     Reconnect,
+}
+
+const LATENCY_SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LatencySampleKey {
+    connection_type: &'static str,
+    network_type: &'static str,
+    relay: &'static str,
+    relay_region: &'static str,
+    nearest_relay_region: &'static str,
+}
+
+#[derive(Default)]
+struct LatencySampler {
+    last_sample_at: Option<Instant>,
+    last_key: Option<LatencySampleKey>,
+}
+
+impl LatencySampler {
+    fn next_reason(&mut self, key: LatencySampleKey, now: Instant) -> Option<&'static str> {
+        let reason = match (&self.last_sample_at, &self.last_key) {
+            (None, _) => "initial",
+            (_, Some(previous_key)) if previous_key != &key => "path_changed",
+            (Some(last_sample_at), _)
+                if now.duration_since(*last_sample_at) >= LATENCY_SAMPLE_INTERVAL =>
+            {
+                "periodic"
+            }
+            _ => return None,
+        };
+
+        self.last_sample_at = Some(now);
+        self.last_key = Some(key);
+        Some(reason)
+    }
+
+    fn reset(&mut self) {
+        self.last_sample_at = None;
+        self.last_key = None;
+    }
 }
 
 fn sync_refresh_mode_for_event(
@@ -284,12 +326,97 @@ fn path_relay_label(path: &iroh::endpoint::PathInfo) -> Option<String> {
     }
 }
 
+fn latency_network_type(snap: &ConnectSnapshot) -> &'static str {
+    let Some(transport) = &snap.transport else {
+        return "unknown";
+    };
+    if !transport.is_direct {
+        return "relay";
+    }
+
+    match transport
+        .network_hint
+        .as_ref()
+        .map(|network| network.label())
+    {
+        Some("Internet") => "WAN",
+        Some(label) => label,
+        None => "unknown",
+    }
+}
+
+fn latency_relay_label(snap: &ConnectSnapshot) -> &'static str {
+    let relay = snap
+        .transport
+        .as_ref()
+        .and_then(|transport| transport.relay_url.as_deref())
+        .or(snap.relay_url.as_deref())
+        .unwrap_or("none");
+    zedra_telemetry::relay_id_label(relay)
+}
+
+fn latency_relay_region(snap: &ConnectSnapshot) -> &'static str {
+    let relay = snap
+        .transport
+        .as_ref()
+        .and_then(|transport| transport.relay_url.as_deref())
+        .or(snap.relay_url.as_deref())
+        .unwrap_or("none");
+    zedra_telemetry::relay_region_label(relay)
+}
+
+fn latency_nearest_relay_region(snap: &ConnectSnapshot) -> &'static str {
+    snap.preferred_relay_url
+        .as_deref()
+        .map(zedra_telemetry::relay_region_label)
+        .unwrap_or_else(|| latency_relay_region(snap))
+}
+
+fn record_latency_sample(state: &SessionState, sampler: &mut LatencySampler) {
+    if !matches!(
+        state.phase,
+        ConnectPhase::Connected | ConnectPhase::Idle { .. }
+    ) {
+        return;
+    }
+
+    let Some(transport) = &state.snapshot.transport else {
+        return;
+    };
+
+    let connection_type = if transport.is_direct { "p2p" } else { "relay" };
+    let key = LatencySampleKey {
+        connection_type,
+        network_type: latency_network_type(&state.snapshot),
+        relay: latency_relay_label(&state.snapshot),
+        relay_region: latency_relay_region(&state.snapshot),
+        nearest_relay_region: latency_nearest_relay_region(&state.snapshot),
+    };
+    let Some(sample_reason) = sampler.next_reason(key.clone(), Instant::now()) else {
+        return;
+    };
+
+    zedra_telemetry::send(zedra_telemetry::Event::ConnectionLatencySample {
+        source: "app",
+        connection_type: key.connection_type,
+        network_type: key.network_type,
+        rtt_ms: transport.rtt_ms,
+        relay: key.relay,
+        relay_region: key.relay_region,
+        nearest_relay_region: key.nearest_relay_region,
+        path_count: transport.num_paths,
+        interval_secs: LATENCY_SAMPLE_INTERVAL.as_secs(),
+        sample_reason,
+    });
+}
+
 fn record_connect_telemetry(
     event: &ConnectEvent,
     state: &SessionState,
     previous_phase: &ConnectPhase,
     is_reconnect_context: bool,
     reconnect_reason: Option<&ReconnectReason>,
+    latency_sampler: &mut LatencySampler,
 ) {
     let snap = &state.snapshot;
     match event {
@@ -327,6 +454,7 @@ fn record_connect_telemetry(
                 has_ipv6: snap.has_ipv6,
                 relay_connected: snap.relay_connected,
             });
+            latency_sampler.reset();
         }
         ConnectEvent::TerminalsReattached { count, resume_ms } => {
             zedra_telemetry::send(zedra_telemetry::Event::SessionResumed {
@@ -338,6 +466,7 @@ fn record_connect_telemetry(
             zedra_telemetry::send(zedra_telemetry::Event::ReconnectStarted {
                 reason: reconnect_reason_label(reason),
             });
+            latency_sampler.reset();
         }
         ConnectEvent::ReconnectSuccess {
             attempt,
@@ -395,6 +524,8 @@ fn record_connect_telemetry(
                     .unwrap_or_else(|| relay_label(snap)),
             });
         }
+        ConnectEvent::PathReport { .. } => record_latency_sample(state, latency_sampler),
+        ConnectEvent::Failed { .. } | ConnectEvent::ConnectionClosed => latency_sampler.reset(),
         _ => {}
     }
 }
@@ -624,6 +755,7 @@ impl Workspace {
             connection_request: None,
             seen_reconnect: false,
             active_reconnect_reason: None,
+            latency_sampler: LatencySampler::default(),
             _connect_listener: None,
             _host_event_listener: Some(host_event_listener),
             _host_info_listener: Some(host_info_listener),
@@ -672,21 +804,25 @@ impl Workspace {
                         }
                         let is_reconnect_context = ws.seen_reconnect;
                         let reconnect_reason = ws.active_reconnect_reason.clone();
-                        ws.session_state.update(cx, |state, cx| {
-                            let previous_phase = state.phase();
-                            state.apply_event(event.clone());
-                            record_connect_telemetry(
-                                &event,
-                                state,
-                                &previous_phase,
-                                is_reconnect_context,
-                                reconnect_reason.as_ref(),
-                            );
-                            cx.notify();
-                            ws.workspace_state.update(cx, |this, cx| {
-                                this.sync_from_session(ws.session_handle(), state, cx);
+                        let (previous_phase, telemetry_state) =
+                            ws.session_state.update(cx, |state, cx| {
+                                let previous_phase = state.phase();
+                                state.apply_event(event.clone());
+                                let telemetry_state = state.clone();
+                                cx.notify();
+                                ws.workspace_state.update(cx, |this, cx| {
+                                    this.sync_from_session(ws.session_handle(), state, cx);
+                                });
+                                (previous_phase, telemetry_state)
                             });
-                        });
+                        record_connect_telemetry(
+                            &event,
+                            &telemetry_state,
+                            &previous_phase,
+                            is_reconnect_context,
+                            reconnect_reason.as_ref(),
+                            &mut ws.latency_sampler,
+                        );
                         if matches!(
                             event,
                             ConnectEvent::ReconnectSuccess { .. }
@@ -795,6 +931,7 @@ impl Workspace {
         self.connection_request = Some(request.clone());
         self.seen_reconnect = false;
         self.active_reconnect_reason = None;
+        self.latency_sampler.reset();
         self.start_connection(request);
 
         self.content.update(cx, |c, cx| c.show_connecting_view(cx));
@@ -826,6 +963,7 @@ impl Workspace {
         info!("restart connection requested");
         self.seen_reconnect = false;
         self.active_reconnect_reason = None;
+        self.latency_sampler.reset();
         self.start_connection(request);
         self.content.update(cx, |c, cx| c.show_connecting_view(cx));
         self.record_current_view(cx);
@@ -869,6 +1007,7 @@ impl Workspace {
     /// Programmatically disconnect this workspace.
     pub fn disconnect(&mut self, cx: &mut Context<Self>) {
         self.session.disconnect();
+        self.latency_sampler.reset();
         self.workspace_state.update(cx, |state, cx| {
             state.mark_disconnected(cx);
         });
@@ -879,6 +1018,7 @@ impl Workspace {
     pub fn prepare_for_saved_removal(&mut self) {
         self.persist_workspace_state = false;
         self.session.disconnect();
+        self.latency_sampler.reset();
     }
 
     pub fn open_terminal_from_quick_action(&mut self, id: String, cx: &mut Context<Self>) {

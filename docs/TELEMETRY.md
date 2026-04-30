@@ -66,6 +66,7 @@ Emitted by `zedra` (app crate) and `zedra-session`.
 | `reconnect_success` | `attempt`, `elapsed_ms`, `reason`, `binding_ms`, `hole_punch_ms`, `auth_ms`, `fetch_ms`, `path`, `network`, `rtt_ms`, `relay`, `alpn`, `has_ipv4`, `has_ipv6` | `handle.rs` |
 | `reconnect_exhausted` | `attempts`, `elapsed_ms`, `reason`, `fatal_error` (optional) | `handle.rs` |
 | `path_upgraded` | `network`, `rtt_ms`, `from_relay` | `handle.rs` — path watcher |
+| `connection_latency_sample` | `source`, `connection_type`, `network_type`, `rtt_ms`, `relay`, `relay_region`, `nearest_relay_region`, `path_count`, `interval_secs`, `sample_reason` | `workspace.rs` — selected-path latency sample |
 | `terminal_opened` | `source`, `terminal_count` | `workspace_view.rs` |
 | `terminal_closed` | `remaining` | `workspace_view.rs` |
 
@@ -83,9 +84,19 @@ Emitted by `zedra-host` via the same `zedra_telemetry::send()` mechanism.
 | `session_end` | `duration_ms`, `terminal_count`, `path_type` | `rpc_daemon.rs` — client disconnect |
 | `terminal_open` | `has_launch_cmd` | `rpc_daemon.rs` — PTY spawned |
 | `bandwidth_sample` | `bytes_sent`, `bytes_recv`, `interval_secs` | `rpc_daemon.rs` — every 60s |
+| `connection_latency_sample` | `source`, `connection_type`, `network_type`, `rtt_ms`, `relay`, `relay_region`, `nearest_relay_region`, `path_count`, `interval_secs`, `sample_reason` | `rpc_daemon.rs` — every 60s while connected |
 
 Host events also carry `host_version`, `os`, and `arch` — injected automatically
 by `Ga4::build_payload()` before the GA4 HTTP POST.
+
+`connection_latency_sample` is a point-in-time selected-path sample, not a
+session average. The app emits an initial sample after connection, another when
+the selected path type changes, and then periodic samples on the configured
+interval. The host emits the same event every 60 seconds from the active RPC
+connection. Relay values are sanitized to known relay IDs (`sg1`, `vn1`, `us1`,
+`eu1`) or `custom`; no arbitrary relay hostname, IP address, or geolocation is
+sent. `nearest_relay_region` is inferred from the preferred relay reported by
+iroh, not from user IP lookup.
 
 ---
 

@@ -254,6 +254,43 @@ fn initial_path_type(conn: &iroh::endpoint::Connection) -> &'static str {
     result
 }
 
+fn connection_latency_sample(
+    path: &iroh::endpoint::PathInfo,
+    path_count: usize,
+    interval_secs: u64,
+) -> Event {
+    let (connection_type, network_type, relay, relay_region, nearest_relay_region) =
+        match path.remote_addr() {
+            iroh::TransportAddr::Ip(addr) => (
+                "p2p",
+                zedra_telemetry::ip_network_type(addr.ip()),
+                "none",
+                "none",
+                "unknown",
+            ),
+            iroh::TransportAddr::Relay(url) => {
+                let relay = url.host_str().unwrap_or(url.as_str());
+                let relay_id = zedra_telemetry::relay_id_label(relay);
+                let relay_region = zedra_telemetry::relay_region_label(relay);
+                ("relay", "relay", relay_id, relay_region, relay_region)
+            }
+            _ => ("unknown", "unknown", "none", "unknown", "unknown"),
+        };
+
+    Event::ConnectionLatencySample {
+        source: "host",
+        connection_type,
+        network_type,
+        rtt_ms: path.stats().rtt.as_millis() as u64,
+        relay,
+        relay_region,
+        nearest_relay_region,
+        path_count,
+        interval_secs,
+        sample_reason: "periodic",
+    }
+}
+
 /// Resolve `user_path` relative to `workdir`, then verify the canonical path
 /// stays inside `workdir`. Rejects absolute paths, `..` escapes, and symlinks
 /// that point outside the jail.
@@ -530,6 +567,7 @@ pub async fn handle_connection(
             let mut paths = conn_for_bw.paths(); // hold watcher for the lifetime of the task
             let mut prev_tx: u64 = 0;
             let mut prev_rx: u64 = 0;
+            const SAMPLE_INTERVAL_SECS: u64 = 60;
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
@@ -537,12 +575,18 @@ pub async fn handle_connection(
                         let mut cur_tx = 0u64;
                         let mut cur_rx = 0u64;
                         let mut bw_found = false;
+                        let mut latency_sample = None;
                         for p in path_list.iter() {
                             if p.is_selected() {
                                 let s = p.stats();
                                 cur_tx = s.udp_tx.bytes;
                                 cur_rx = s.udp_rx.bytes;
                                 bw_found = true;
+                                latency_sample = Some(connection_latency_sample(
+                                    p,
+                                    path_list.len(),
+                                    SAMPLE_INTERVAL_SECS,
+                                ));
                                 break;
                             }
                         }
@@ -555,8 +599,11 @@ pub async fn handle_connection(
                             zedra_telemetry::send(Event::BandwidthSample {
                                 bytes_sent: delta_tx,
                                 bytes_recv: delta_rx,
-                                interval_secs: 60,
+                                interval_secs: SAMPLE_INTERVAL_SECS,
                             });
+                        }
+                        if let Some(sample) = latency_sample {
+                            zedra_telemetry::send(sample);
                         }
                     }
                     _ = conn_for_bw.closed() => break,
