@@ -9,7 +9,7 @@
 // response (no QR needed).
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -26,9 +26,16 @@ use zedra_telemetry::Event;
 mod setup;
 
 #[derive(Parser)]
-#[command(name = "zedra", about = "Desktop companion daemon for Zedra")]
+#[command(
+    name = "zedra",
+    about = "Zedra CLI - Desktop daemon",
+    before_help = "\x1b[1mZedra CLI - Desktop daemon\x1b[0m",
+    help_template = "{before-help}{usage-heading} {usage}\n\n{all-args}",
+    disable_help_subcommand = true,
+    override_usage = "zedra <COMMAND> [OPTIONS]"
+)]
 struct Cli {
-    /// Show tracing logs (default: only user-facing output)
+    /// Show tracing logs
     #[arg(long, global = true)]
     verbose: bool,
 
@@ -38,7 +45,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the daemon (iroh transport)
+    /// Start the Zedra daemon for this workspace
     Start {
         /// Working directory to serve
         #[arg(short, long, default_value = ".")]
@@ -74,7 +81,7 @@ enum Commands {
         #[arg(long)]
         relay_only: bool,
     },
-    /// Connect to a running daemon and measure end-to-end RTT
+    /// Connect to a daemon and measure connection RTT
     Client {
         /// Working directory of the running daemon (must match `zedra start --workdir`)
         #[arg(short, long, default_value = ".")]
@@ -88,7 +95,7 @@ enum Commands {
         #[arg(long)]
         relay_only: bool,
     },
-    /// Stop a running daemon and release its workspace lock
+    /// Stop the daemon for this workspace
     Stop {
         /// Working directory of the daemon to stop
         #[arg(short, long, default_value = ".")]
@@ -99,14 +106,14 @@ enum Commands {
         grace: u64,
     },
 
-    /// Show status of the running daemon (reads api-addr/api-token automatically)
+    /// Show daemon status, sessions, and terminals
     Status {
         /// Working directory of the running daemon
         #[arg(short, long, default_value = ".")]
         workdir: String,
     },
 
-    /// Request a fresh one-time pairing QR from the running daemon
+    /// Create a fresh one-time pairing QR
     Qr {
         /// Working directory of the running daemon
         #[arg(short, long, default_value = ".")]
@@ -117,14 +124,14 @@ enum Commands {
         json: bool,
     },
 
-    /// List active zedra instances across all workdirs
+    /// List active Zedra daemons across workspaces
     List {
         /// Also show stale workspace locks whose process is gone
         #[arg(long, alias = "show-stale")]
         stale: bool,
     },
 
-    /// Show recent daemon logs for a workspace
+    /// Show recent daemon logs
     Logs {
         /// Working directory of the running daemon
         #[arg(short, long, default_value = ".")]
@@ -135,7 +142,7 @@ enum Commands {
         lines: usize,
     },
 
-    /// Open a new terminal on the connected phone (reads api-addr/api-token automatically)
+    /// Open a terminal on the connected phone
     Terminal {
         /// Working directory of the running daemon
         #[arg(short, long, default_value = ".")]
@@ -146,7 +153,7 @@ enum Commands {
         launch_cmd: Option<String>,
     },
 
-    /// Set up Zedra skills or plugins for an AI coding agent
+    /// Install Zedra skills or plugins for an AI coding agent
     Setup {
         /// Skip interactive confirmation prompts
         #[arg(short, long)]
@@ -156,7 +163,7 @@ enum Commands {
         agent: setup::SetupAgent,
     },
 
-    /// Update zedra to the latest version
+    /// Update the Zedra CLI
     Update {
         /// Install a specific version (e.g. v0.2.0)
         #[arg(long)]
@@ -165,6 +172,13 @@ enum Commands {
         /// Skip confirmation prompt
         #[arg(long, short)]
         yes: bool,
+    },
+
+    /// Print help for zedra or a command
+    Help {
+        /// Command to show help for
+        #[arg(value_name = "COMMAND")]
+        command: Vec<String>,
     },
 }
 
@@ -989,6 +1003,10 @@ async fn main() -> Result<()> {
             }
         }
 
+        Commands::Help { command } => {
+            print_command_help(&command)?;
+        }
+
         Commands::Stop { workdir, grace } => {
             let workdir = std::path::PathBuf::from(&workdir)
                 .canonicalize()
@@ -1028,6 +1046,26 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_command_help(command_path: &[String]) -> Result<()> {
+    let mut command = Cli::command();
+    let target = find_command_help_mut(&mut command, command_path)
+        .ok_or_else(|| anyhow::anyhow!("unknown command: {}", command_path.join(" ")))?;
+    target.print_help()?;
+    println!();
+    Ok(())
+}
+
+fn find_command_help_mut<'a>(
+    command: &'a mut clap::Command,
+    command_path: &[String],
+) -> Option<&'a mut clap::Command> {
+    let Some((name, rest)) = command_path.split_first() else {
+        return Some(command);
+    };
+    let subcommand = command.find_subcommand_mut(name)?;
+    find_command_help_mut(subcommand, rest)
 }
 
 fn classify_update_error(e: &anyhow::Error) -> &'static str {
