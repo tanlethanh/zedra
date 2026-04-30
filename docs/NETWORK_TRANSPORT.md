@@ -117,7 +117,7 @@ Host → client: AuthProveResult::Ok(SyncSessionResult { session_token, ... })
 | Code | Meaning |
 |------|---------|
 | `Ok` | Registered. Proceed to `Connect`. |
-| `HandshakeConsumed` | Slot already used. Ask host to restart to get a new QR. |
+| `HandshakeConsumed` | Slot already used. Ask host to run `zedra qr --workdir <workdir>` to get a new QR. |
 | `InvalidHandshake` | HMAC failed. Wrong key or tampered packet. |
 | `StaleTimestamp` | Clock skew > 60s or replay attempt. |
 | `SlotNotFound` | No slot for this session. QR expired (> 10 min) or wrong session. |

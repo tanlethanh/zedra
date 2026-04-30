@@ -19,6 +19,20 @@ Note: Zedra attempts to establish a direct connection between your computers, bu
 curl -fsSL zedra.dev/install.sh | sh
 # Start Zedra in working directory
 zedra start
+
+# On an SSH server, keep Zedra alive after disconnecting
+zedra start --detach
+```
+
+Detached mode prints a one-time pairing QR immediately, then keeps the daemon
+running after your SSH session disconnects. Startup logs are written under the
+workspace config directory. From the served workspace, use `zedra status`,
+`zedra logs`, and `zedra stop`. From another directory, add `--workdir <path>`.
+
+To refresh a consumed or expired QR without restarting the daemon:
+
+```bash
+zedra qr
 ```
 
 **Claude Code**
