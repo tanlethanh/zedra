@@ -83,11 +83,11 @@ New GCP accounts also receive **$300 credit valid for 90 days** — covers ~3,75
 
 ## Architecture
 
-- **Instance**: ARM64 (AWS t4g / GCP t2a) — Ubuntu 24.04, aarch64
+- **Instance**: ARM64 (AWS t4g / GCP t2a) or x64 — Ubuntu 24.04
 - **Runtime**: Docker Compose (`zedra-relay` + `zedra-monitor`) from locally-built images
 - **Ports**: 80 (HTTP/ACME), 443 (HTTPS/WebSocket relay), 7842/udp (QUIC addr discovery)
 - **TLS**: Let's Encrypt via iroh-relay built-in ACME, certs in Docker volume `zedra-relay-certs`
-- **Image build**: Multi-stage (Rust builder → Debian slim), built natively on Apple Silicon (arm64 = arm64, no cross-compilation), streamed to server via `docker save | gzip | ssh`
+- **Image build**: Multi-stage (Rust builder → Debian slim), target platform detected from the host, arch-suffixed images streamed to server via `docker save | gzip | ssh`
 
 ## Directory Structure
 
@@ -131,7 +131,7 @@ Host zedra-relay-eu1
 
 **Secrets (local):** copy `deploy/relay/.env.example` to `deploy/relay/.env` and set at least `DISCORD_WEBHOOK`. The root `.gitignore` ignores `.env` everywhere.
 
-> **How `.env` works:** `deploy.sh` merges your local `deploy/relay/.env` with injected `INSTANCE=<name>` (from `--instance`), uploads to `/opt/zedra/deploy/relay/.env.local`, then copies to `.env` for Compose. `INSTANCE=` / `INSTANCES=` lines in your local file are ignored. The relay uses `INSTANCE` for hostname (`${INSTANCE}.relay.zedra.dev`). The **Docker** `relay-monitor` sidecar uses **`INSTANCE` only**. **Multi-host SSH checks from your laptop** use **`packages/relay-check`** (`INSTANCES=sg1,us1,eu1 bun monitor.ts` or `bun cli.ts`).
+> **How `.env` works:** `deploy.sh` merges your local `deploy/relay/.env` with injected `INSTANCE=<name>` and arch-specific `RELAY_IMAGE` / `MONITOR_IMAGE`, uploads to `/opt/zedra/deploy/relay/.env.local`, then copies to `.env` for Compose. `INSTANCE=` / `INSTANCES=` / image lines in your local file are ignored. The relay uses `INSTANCE` for hostname (`${INSTANCE}.relay.zedra.dev`). The **Docker** `relay-monitor` sidecar uses **`INSTANCE` only**. **Multi-host SSH checks from your laptop** use **`packages/relay-check`** (`INSTANCES=sg1,us1,eu1 bun monitor.ts` or `bun cli.ts`).
 
 ### Deploy one instance
 
@@ -139,10 +139,11 @@ Host zedra-relay-eu1
 ./deploy/relay/deploy.sh --instance ap1
 ```
 
-### Deploy all instances in parallel
+### Deploy multiple instances
 
 ```bash
 ./deploy/relay/deploy.sh --instance sg1,us1,eu1
+./deploy/relay/deploy.sh --instance sg1,us1,eu1,vn1
 ```
 
 ### Redeploy a single service
@@ -158,14 +159,37 @@ Use `--service relay` or `--service monitor` to rebuild and restart only one con
 ```
 
 When `--service` is set:
-- Only the relevant Docker image is built and streamed to the host
+- Only the relevant Docker image is built for each detected platform and streamed to matching hosts
 - `docker compose up -d --no-deps <service>` restarts that container only — the other keeps running
+
+### Build without deploying
+
+Use `--skip-deploy` to detect target platforms, build the arch-suffixed images, and print the plan without uploading images or restarting Compose.
+
+```bash
+./deploy/relay/deploy.sh --instance ap1,us1,eu1,vn1 --skip-deploy
+./deploy/relay/deploy.sh --instance vn1 --service monitor --skip-deploy
+```
 
 ### How deploy.sh works
 
-1. Builds `zedra-relay:latest` and/or `zedra-monitor:latest` locally (native arm64 on Apple Silicon — no `--platform` flag needed; skips images not relevant to `--service`)
-2. `docker save | gzip | ssh <host> docker load` — streams image(s) to the server without a registry
-3. Uploads `docker-compose.yml`, merges local `deploy/relay/.env` with injected `INSTANCE` to `.env.local` and `.env` on the host, runs `docker compose up -d` (or `--no-deps <service>` when targeting a single service)
+1. Detects each target host platform with `uname -s` / `uname -m`
+2. Groups instances by Docker platform, such as `linux/arm64` or `linux/amd64`
+3. Builds arch-suffixed images locally once per platform, such as `zedra-relay:arm64` or `zedra-monitor:amd64`, with Docker `--platform` (skips images not relevant to `--service`)
+4. `docker save | gzip | ssh <host> docker load` — streams each platform image to matching hosts without a registry
+5. Uploads `docker-compose.yml`, merges local `deploy/relay/.env` with injected `INSTANCE`, `RELAY_IMAGE`, and `MONITOR_IMAGE` to `.env.local` and `.env` on the host, runs `docker compose up -d` (or `--no-deps <service>` when targeting a single service)
+
+When `--skip-deploy` is set, steps 4 and 5 are skipped.
+
+### CPU architecture
+
+The deploy script supports mixed ARM/x64 remote batches. It builds and deploys one platform group at a time and uses arch-suffixed image tags so local images for different architectures can coexist. `--instance local` is only supported by itself.
+
+```bash
+./deploy/relay/deploy.sh --instance ap1,us1,eu1
+./deploy/relay/deploy.sh --instance vn1
+./deploy/relay/deploy.sh --instance ap1,us1,eu1,vn1
+```
 
 ---
 
@@ -494,9 +518,9 @@ Run through this before and after every first-time deployment or infrastructure 
 
 - `generate_204` returns HTTP 204 on all instances:
   ```bash
-  curl -I https://ap1.relay.zedra.dev/generate_204
-  curl -I https://us1.relay.zedra.dev/generate_204
-  curl -I https://eu1.relay.zedra.dev/generate_204
+  curl -I http://ap1.relay.zedra.dev/generate_204
+  curl -I http://us1.relay.zedra.dev/generate_204
+  curl -I http://eu1.relay.zedra.dev/generate_204
   ```
 - TLS certificate issued (first deploy only — ACME may take up to 60s):
   ```bash
@@ -541,9 +565,9 @@ Run through this before and after every first-time deployment or infrastructure 
 ## Verify
 
 ```bash
-curl https://ap1.relay.zedra.dev/generate_204   # 204
-curl https://us1.relay.zedra.dev/generate_204   # 204
-curl https://eu1.relay.zedra.dev/generate_204   # 204
+curl http://ap1.relay.zedra.dev/generate_204   # 204
+curl http://us1.relay.zedra.dev/generate_204   # 204
+curl http://eu1.relay.zedra.dev/generate_204   # 204
 ```
 
 ## Logs

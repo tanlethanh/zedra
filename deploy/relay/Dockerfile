@@ -1,6 +1,6 @@
 FROM rust:1.89-slim-bookworm AS builder
 
-RUN apt-get update && apt-get install -y pkg-config libssl-dev git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y pkg-config libssl-dev git clang lld && rm -rf /var/lib/apt/lists/*
 
 # Build from iroh main which includes the TCP_NODELAY fix (PR #3995, commit 82e0695).
 # The fix will ship as v0.98 on crates.io. Once published, switch to:

@@ -1,6 +1,6 @@
 services:
   relay:
-    image: zedra-relay:latest
+    image: ${RELAY_IMAGE:-zedra-relay:latest}
     container_name: zedra-relay
     restart: unless-stopped
     init: true                  # tini as PID 1: proper SIGTERM propagation + zombie reaping
@@ -38,7 +38,7 @@ services:
         max-file: "5"
 
   monitor:
-    image: zedra-monitor:latest
+    image: ${MONITOR_IMAGE:-zedra-monitor:latest}
     restart: unless-stopped
     init: true
     depends_on:
