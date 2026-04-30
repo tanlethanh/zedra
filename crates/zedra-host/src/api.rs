@@ -23,6 +23,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 
+use crate::metrics;
 use crate::pty::SpawnOptions;
 use crate::qr;
 use crate::rpc_daemon::{create_terminal, DaemonState};
@@ -185,6 +186,9 @@ async fn create_pairing_qr_handler(
             s.registry
                 .add_pairing_slot(&session.id, ticket.handshake_secret)
                 .await;
+            if let Err(e) = metrics::record_qr_created(&s.daemon_state.workdir) {
+                tracing::warn!("Failed to record QR metrics: {}", e);
+            }
             (StatusCode::OK, Json(serde_json::json!(info))).into_response()
         }
         Err(e) => (
@@ -260,6 +264,12 @@ async fn create_terminal_handler(
 
     match create_terminal(&session, req.cols, req.rows, opts).await {
         Ok(id) => {
+            let terminal_count = session.terminals.lock().await.len();
+            if let Err(e) =
+                metrics::record_terminal_created(&s.daemon_state.workdir, terminal_count)
+            {
+                tracing::warn!("Failed to record terminal metrics: {}", e);
+            }
             // Push TerminalCreated event to the subscribed client (if any).
             session
                 .push_event(HostEvent::TerminalCreated {

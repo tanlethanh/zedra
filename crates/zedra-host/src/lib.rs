@@ -9,6 +9,7 @@ pub mod git;
 pub mod host_info;
 pub mod identity;
 pub mod iroh_listener;
+pub mod metrics;
 pub mod net_monitor;
 pub mod pty;
 pub mod qr;
