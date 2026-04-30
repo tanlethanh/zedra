@@ -9,6 +9,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - For normal feature work, prefer the smallest diff that fits the current design.
 - If the current structure is blocking quality, propose the refactor and wait for approval before doing broader cleanup.
 - Keep code concise, readable, and modular. Prefer clarifying code over adding comments.
+- When fixing an edge case or an important regression-prone path, add a minimal code comment at the relevant block explaining the invariant or reason for the guard.
 - Surface blockers quickly with a recommendation. Keep progress updates short and include reasoning or tradeoffs.
 
 ## Debugging Workflow
