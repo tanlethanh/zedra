@@ -10,7 +10,6 @@ const CLAUDE_MARKETPLACE: &str = "zedra";
 const CLAUDE_PLUGIN: &str = "zedra@zedra";
 const PLUGIN_GIT_URL: &str = "https://github.com/tanlethanh/zedra-plugin.git";
 const PLUGIN_RAW_BASE: &str = "https://raw.githubusercontent.com/tanlethanh/zedra-plugin/main";
-const CODEX_TERMINAL_TITLE_CONFIG: &str = r#"terminal_title = ["thread-title", "project-name"]"#;
 const SKILL_NAMES: &[&str] = &[
     "zedra-start",
     "zedra-status",
@@ -25,7 +24,7 @@ pub enum SetupAgent {
         #[command(flatten)]
         action: SetupActionArgs,
     },
-    /// Manage Codex skills and terminal title config
+    /// Manage Codex skills
     Codex {
         #[command(flatten)]
         action: SetupActionArgs,
@@ -137,17 +136,16 @@ fn setup_claude_remove() -> Result<()> {
     Ok(())
 }
 
-async fn setup_codex(action: SetupAction, assume_yes: bool) -> Result<()> {
+async fn setup_codex(action: SetupAction, _assume_yes: bool) -> Result<()> {
     match action {
-        SetupAction::Install => setup_codex_install(assume_yes).await,
+        SetupAction::Install => setup_codex_install().await,
         SetupAction::Remove => setup_codex_remove(),
     }
 }
 
-async fn setup_codex_install(assume_yes: bool) -> Result<()> {
+async fn setup_codex_install() -> Result<()> {
     let skills_dir = codex_skills_dir()?;
     install_skills_from_raw("Codex", &skills_dir, "Installing").await?;
-    configure_codex_terminal_title(assume_yes)?;
 
     println!();
     println!("Codex setup complete.");
@@ -159,7 +157,6 @@ async fn setup_codex_install(assume_yes: bool) -> Result<()> {
 fn setup_codex_remove() -> Result<()> {
     let skills_dir = codex_skills_dir()?;
     remove_installed_skills("Codex", &skills_dir)?;
-    remove_codex_terminal_title_config()?;
 
     println!();
     println!("Codex setup removed.");
@@ -449,93 +446,6 @@ fn remove_skill_path(path: &Path) -> Result<bool> {
     }
 }
 
-fn configure_codex_terminal_title(assume_yes: bool) -> Result<()> {
-    let config_file = codex_config_file()?;
-    let current = fs::read_to_string(&config_file).unwrap_or_default();
-
-    if codex_terminal_title_configured(&current) {
-        println!();
-        println!("Codex terminal title already configured:");
-        println!("  {}", config_file.display());
-        return Ok(());
-    }
-
-    println!();
-    println!("Zedra can update Codex so terminal titles include the Codex thread title.");
-    println!("  File: {}", config_file.display());
-    println!("  Set:  [tui] {CODEX_TERMINAL_TITLE_CONFIG}");
-
-    if !confirm_codex_config_update(assume_yes)? {
-        println!("Skipped Codex terminal title config.");
-        return Ok(());
-    }
-
-    if let Some(parent) = config_file.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    if config_file.exists() {
-        let backup = backup_path(&config_file);
-        fs::copy(&config_file, &backup)?;
-        println!("Backup written to: {}", backup.display());
-    }
-
-    fs::write(&config_file, update_codex_terminal_title_config(&current))?;
-    println!("Updated Codex terminal title config.");
-    Ok(())
-}
-
-fn remove_codex_terminal_title_config() -> Result<()> {
-    let config_file = codex_config_file()?;
-    let current = match fs::read_to_string(&config_file) {
-        Ok(contents) => contents,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            println!("Codex config not found; nothing to update.");
-            return Ok(());
-        }
-        Err(err) => return Err(err).with_context(|| format!("read {}", config_file.display())),
-    };
-
-    let Some(updated) = remove_codex_terminal_title_config_value(&current) else {
-        println!("Codex terminal title config was not changed.");
-        return Ok(());
-    };
-
-    let backup = backup_path(&config_file);
-    fs::copy(&config_file, &backup)?;
-    println!("Backup written to: {}", backup.display());
-
-    fs::write(&config_file, updated)?;
-    println!("Removed Zedra-managed Codex terminal title config.");
-    Ok(())
-}
-
-fn confirm_codex_config_update(assume_yes: bool) -> Result<bool> {
-    if assume_yes {
-        return Ok(true);
-    }
-
-    let stdin = std::io::stdin();
-    if !stdin.is_terminal() {
-        return Ok(false);
-    }
-
-    eprint!("Update Codex config now? [Y/n] ");
-    std::io::stderr().flush()?;
-
-    let mut input = String::new();
-    stdin.read_line(&mut input)?;
-    let input = input.trim();
-    Ok(!(input.eq_ignore_ascii_case("n") || input.eq_ignore_ascii_case("no")))
-}
-
-fn codex_config_file() -> Result<PathBuf> {
-    if let Some(codex_home) = std::env::var_os("CODEX_HOME") {
-        return Ok(PathBuf::from(codex_home).join("config.toml"));
-    }
-
-    Ok(home_dir()?.join(".codex").join("config.toml"))
-}
-
 fn codex_skills_dir() -> Result<PathBuf> {
     Ok(home_dir()?.join(".agents").join("skills"))
 }
@@ -553,125 +463,6 @@ fn home_dir() -> Result<PathBuf> {
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
         .ok_or_else(|| anyhow!("HOME is not set"))
-}
-
-fn backup_path(path: &Path) -> PathBuf {
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("config.toml");
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default();
-    path.with_file_name(format!("{file_name}.zedra.bak.{timestamp}"))
-}
-
-fn codex_terminal_title_configured(contents: &str) -> bool {
-    let mut in_tui = false;
-    for line in contents.lines() {
-        let trimmed = line.trim();
-        if is_table_header(trimmed) {
-            in_tui = trimmed == "[tui]";
-            continue;
-        }
-        if in_tui && is_zedra_terminal_title_config(trimmed) {
-            return true;
-        }
-    }
-    false
-}
-
-fn update_codex_terminal_title_config(contents: &str) -> String {
-    let mut out = Vec::new();
-    let mut in_tui = false;
-    let mut saw_tui = false;
-    let mut wrote_title = false;
-
-    for line in contents.lines() {
-        let trimmed = line.trim();
-        if is_table_header(trimmed) {
-            if in_tui && !wrote_title {
-                out.push(CODEX_TERMINAL_TITLE_CONFIG.to_string());
-                wrote_title = true;
-            }
-
-            in_tui = trimmed == "[tui]";
-            saw_tui |= in_tui;
-            out.push(line.to_string());
-            continue;
-        }
-
-        if in_tui && trimmed.starts_with("terminal_title") {
-            if !wrote_title {
-                out.push(CODEX_TERMINAL_TITLE_CONFIG.to_string());
-                wrote_title = true;
-            }
-            continue;
-        }
-
-        out.push(line.to_string());
-    }
-
-    if in_tui && !wrote_title {
-        out.push(CODEX_TERMINAL_TITLE_CONFIG.to_string());
-    }
-
-    if !saw_tui {
-        if !out.is_empty() && out.last().is_some_and(|line| !line.is_empty()) {
-            out.push(String::new());
-        }
-        out.push("[tui]".to_string());
-        out.push(CODEX_TERMINAL_TITLE_CONFIG.to_string());
-    }
-
-    let mut updated = out.join("\n");
-    updated.push('\n');
-    updated
-}
-
-fn remove_codex_terminal_title_config_value(contents: &str) -> Option<String> {
-    let mut out = Vec::new();
-    let mut in_tui = false;
-    let mut removed = false;
-
-    for line in contents.lines() {
-        let trimmed = line.trim();
-        if is_table_header(trimmed) {
-            in_tui = trimmed == "[tui]";
-            out.push(line.to_string());
-            continue;
-        }
-
-        if in_tui && trimmed.starts_with("terminal_title") {
-            if is_zedra_terminal_title_config(trimmed) {
-                removed = true;
-                continue;
-            }
-        }
-
-        out.push(line.to_string());
-    }
-
-    if !removed {
-        return None;
-    }
-
-    let mut updated = out.join("\n");
-    updated.push('\n');
-    Some(updated)
-}
-
-fn is_table_header(trimmed: &str) -> bool {
-    trimmed.starts_with('[') && trimmed.ends_with(']')
-}
-
-fn is_zedra_terminal_title_config(trimmed: &str) -> bool {
-    compact_toml_line(trimmed) == r#"terminal_title=["thread-title","project-name"]"#
-}
-
-fn compact_toml_line(line: &str) -> String {
-    line.chars().filter(|ch| !ch.is_whitespace()).collect()
 }
 
 fn require_command(program: &str) -> Result<()> {
@@ -774,61 +565,6 @@ fn shell_command_line(program: &str, args: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn update_codex_config_adds_tui_table() {
-        let updated = update_codex_terminal_title_config("model = \"gpt-5.5\"\n");
-        assert_eq!(
-            updated,
-            "model = \"gpt-5.5\"\n\n[tui]\nterminal_title = [\"thread-title\", \"project-name\"]\n"
-        );
-    }
-
-    #[test]
-    fn update_codex_config_replaces_existing_title() {
-        let updated = update_codex_terminal_title_config(
-            "[tui]\nterminal_title = [\"activity\"]\nfoo = true\n",
-        );
-        assert_eq!(
-            updated,
-            "[tui]\nterminal_title = [\"thread-title\", \"project-name\"]\nfoo = true\n"
-        );
-    }
-
-    #[test]
-    fn update_codex_config_appends_to_existing_tui_table() {
-        let updated =
-            update_codex_terminal_title_config("[tui]\nfoo = true\n[features]\nbar = true\n");
-        assert_eq!(
-            updated,
-            "[tui]\nfoo = true\nterminal_title = [\"thread-title\", \"project-name\"]\n[features]\nbar = true\n"
-        );
-    }
-
-    #[test]
-    fn detects_configured_title_with_flexible_spacing() {
-        assert!(codex_terminal_title_configured(
-            "[tui]\nterminal_title=[\"thread-title\",\"project-name\"]\n"
-        ));
-    }
-
-    #[test]
-    fn remove_codex_config_only_removes_zedra_title() {
-        let updated = remove_codex_terminal_title_config_value(
-            "[tui]\nfoo = true\nterminal_title = [\"thread-title\", \"project-name\"]\n[features]\nbar = true\n",
-        );
-        assert_eq!(
-            updated.as_deref(),
-            Some("[tui]\nfoo = true\n[features]\nbar = true\n")
-        );
-    }
-
-    #[test]
-    fn remove_codex_config_preserves_non_zedra_title() {
-        let updated =
-            remove_codex_terminal_title_config_value("[tui]\nterminal_title = [\"activity\"]\n");
-        assert_eq!(updated, None);
-    }
 
     #[test]
     fn setup_action_from_remove_flag() {
