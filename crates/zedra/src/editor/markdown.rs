@@ -34,6 +34,7 @@ pub struct MarkdownView {
     document: MarkdownDocument,
     list_state: ListState,
     track_sheet_scroll_boundary: bool,
+    focus_handle: Option<FocusHandle>,
 }
 
 impl MarkdownView {
@@ -49,6 +50,7 @@ impl MarkdownView {
             document,
             list_state,
             track_sheet_scroll_boundary: false,
+            focus_handle: None,
         }
     }
 
@@ -247,6 +249,11 @@ impl Render for MarkdownView {
             platform_bridge::home_indicator_inset(),
             MARKDOWN_BOTTOM_INSET_MIN,
         );
+        let focus_handle = self
+            .focus_handle
+            .get_or_insert_with(|| _cx.focus_handle())
+            .clone();
+        let press_focus_handle = focus_handle.clone();
         // Keep each top-level markdown block as one variable-height list row.
         // Eagerly collecting every block here makes scrolling large READMEs
         // rebuild the whole document on every frame.
@@ -276,6 +283,14 @@ impl Render for MarkdownView {
             .id("markdown-preview-scroll")
             .size_full()
             .min_h_0()
+            // Empty markdown taps should move focus and dismiss read-only selection.
+            .track_focus(&focus_handle)
+            .on_press(move |event, window, cx| {
+                if event.completed() && window.active_read_only_selection().is_some() {
+                    window.blur();
+                    press_focus_handle.focus(window, cx);
+                }
+            })
             .child(
                 selection_area(markdown_list)
                     .id(MARKDOWN_SELECTION_AREA_ID)

@@ -504,10 +504,12 @@ printf '/tmp/zedra-markdown-selection.md:1\n'
 8. Expected: the selection can extend across markdown blocks; visible list markers and code lines participate in the selected range instead of acting like dead zones
 9. With the selection still active, scroll the markdown preview vertically
 10. Expected: the native selection highlight and handles move with the selected text instead of staying fixed to the viewport
-11. Tap `Copy`
-12. Expected: the selection menu dismisses cleanly and the preview remains responsive to scrolling and link taps afterward
-13. Tap `Open Zedra`
-14. Expected: `https://zedra.dev` opens externally
+11. With the selection still active, tap empty space below the short markdown content inside the main view
+12. Expected: the native selection handles dismiss and the markdown preview remains focused for normal scrolling
+13. Repeat the selection, then tap `Copy`
+14. Expected: the selection menu dismisses cleanly and the preview remains responsive to scrolling and link taps afterward
+15. Tap `Open Zedra`
+16. Expected: `https://zedra.dev` opens externally
 
 ## 16a. iOS Native Selection In Code Preview
 
