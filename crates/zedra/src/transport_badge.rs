@@ -1,4 +1,6 @@
 /// Transport badge: connection type indicator (P2P / Relay / Reconnecting).
+use std::time::Duration;
+
 use gpui::*;
 use zedra_session::{ConnectPhase, TransportSnapshot};
 
@@ -77,6 +79,69 @@ pub(crate) fn phase_indicator_color(phase: &ConnectPhase) -> u32 {
     }
 }
 
+fn phase_indicator_blinks(phase: &ConnectPhase) -> bool {
+    phase_indicator_color(phase) == theme::ACCENT_YELLOW
+}
+
+const STATUS_PULSE_MS: u64 = 1800;
+const STATUS_PULSE_MIN_OPACITY: f32 = 0.35;
+
+#[derive(Clone, IntoElement)]
+pub(crate) struct ConnectionStatusIndicator {
+    id: ElementId,
+    color: u32,
+    size: f32,
+    blink: bool,
+}
+
+impl ConnectionStatusIndicator {
+    pub(crate) fn from_phase(id: impl Into<ElementId>, phase: Option<&ConnectPhase>) -> Self {
+        let color = phase
+            .map(phase_indicator_color)
+            .unwrap_or(theme::ACCENT_DIM);
+        let blink = phase.map(phase_indicator_blinks).unwrap_or(false);
+
+        Self {
+            id: id.into(),
+            color,
+            size: theme::ICON_STATUS,
+            blink,
+        }
+    }
+
+    pub(crate) fn size(mut self, size: f32) -> Self {
+        self.size = size;
+        self
+    }
+}
+
+impl RenderOnce for ConnectionStatusIndicator {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let dot = div()
+            .w(px(self.size))
+            .h(px(self.size))
+            .rounded(px(self.size / 2.0))
+            .flex_shrink_0()
+            .bg(rgb(self.color));
+
+        if self.blink {
+            dot.with_animation(
+                self.id,
+                Animation::new(Duration::from_millis(STATUS_PULSE_MS)).repeat(),
+                |dot, delta| {
+                    let wave = 0.5 - 0.5 * (delta * std::f32::consts::TAU).cos();
+                    let opacity =
+                        STATUS_PULSE_MIN_OPACITY + wave * (1.0 - STATUS_PULSE_MIN_OPACITY);
+                    dot.opacity(opacity)
+                },
+            )
+            .into_any_element()
+        } else {
+            dot.into_any_element()
+        }
+    }
+}
+
 /// Render an inline transport badge element (dot + label).
 pub(crate) fn render_transport_badge(label: String, color: u32) -> Div {
     div()
@@ -98,8 +163,12 @@ pub fn format_bytes(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use crate::theme;
-    use crate::transport_badge::transport_badge;
+    use crate::transport_badge::{
+        ConnectionStatusIndicator, phase_indicator_color, transport_badge,
+    };
     use zedra_session::{ConnectError, ConnectPhase};
 
     #[test]
@@ -123,6 +192,32 @@ mod tests {
 
         assert_eq!(label, "Reconnecting (2) \u{00b7} 3s");
         assert_eq!(color, theme::ACCENT_RED);
+    }
+
+    #[test]
+    fn warning_status_indicator_blinks() {
+        let idle = ConnectPhase::Idle {
+            idle_since: Instant::now(),
+        };
+        let reconnecting = ConnectPhase::Reconnecting {
+            attempt: 1,
+            reason: zedra_session::ReconnectReason::ConnectionLost,
+            next_retry_secs: 2,
+        };
+        let connected = ConnectPhase::Connected;
+        let failed = ConnectPhase::Failed(ConnectError::HostUnreachable);
+
+        for phase in [&idle, &reconnecting] {
+            let indicator = ConnectionStatusIndicator::from_phase("test-dot", Some(phase));
+            assert_eq!(phase_indicator_color(phase), theme::ACCENT_YELLOW);
+            assert!(indicator.blink);
+        }
+
+        for phase in [&connected, &failed] {
+            let indicator = ConnectionStatusIndicator::from_phase("test-dot", Some(phase));
+            assert_ne!(phase_indicator_color(phase), theme::ACCENT_YELLOW);
+            assert!(!indicator.blink);
+        }
     }
 
     #[test]

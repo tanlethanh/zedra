@@ -10,7 +10,7 @@ use crate::fonts;
 use crate::pending::{PendingSlot, spawn_periodic_task};
 use crate::platform_bridge::{self, AlertButton, HapticFeedback};
 use crate::theme;
-use crate::transport_badge::phase_indicator_color;
+use crate::transport_badge::{ConnectionStatusIndicator, phase_indicator_color};
 use crate::workspaces::Workspaces;
 
 const WEBSITE_URL: &str = "https://www.zedra.dev";
@@ -221,11 +221,12 @@ impl Render for HomeView {
             for (item_idx, state) in states.iter().enumerate() {
                 let state = state.read(cx);
 
-                let status_color = match state.connect_phase.clone() {
-                    Some(p) => phase_indicator_color(&p),
+                let connect_phase = state.connect_phase.clone();
+                let status_color = match connect_phase.as_ref() {
+                    Some(p) => phase_indicator_color(p),
                     None => theme::ACCENT_DIM,
                 };
-                let status_label = match state.connect_phase.clone() {
+                let status_label = match connect_phase.as_ref() {
                     Some(ConnectPhase::Connected) => "Connected",
                     Some(p) if p.is_connecting() => "Connecting\u{2026}",
                     Some(ConnectPhase::Reconnecting { .. }) => "Reconnecting\u{2026}",
@@ -251,6 +252,7 @@ impl Render for HomeView {
                     item_idx,
                     project_name,
                     subtitle,
+                    connect_phase,
                     status_label,
                     status_color,
                     cx,
@@ -715,6 +717,7 @@ fn workspace_card(
     index: usize,
     project_name: String,
     subtitle: String,
+    connect_phase: Option<ConnectPhase>,
     status_label: &'static str,
     status_color: u32,
     cx: &mut Context<HomeView>,
@@ -741,13 +744,10 @@ fn workspace_card(
                 .flex_row()
                 .items_center()
                 .gap(px(6.0))
-                .child(
-                    div()
-                        .w(px(theme::ICON_STATUS))
-                        .h(px(theme::ICON_STATUS))
-                        .rounded(px(3.0))
-                        .bg(rgb(status_color)),
-                )
+                .child(ConnectionStatusIndicator::from_phase(
+                    ("home-connect-status", index),
+                    connect_phase.as_ref(),
+                ))
                 .child(
                     div()
                         .flex_1()

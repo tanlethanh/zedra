@@ -20,7 +20,7 @@ use crate::telemetry::view_telemetry;
 use crate::terminal_card::strip_ps1_prefix;
 use crate::terminal_state::TerminalState;
 use crate::theme;
-use crate::transport_badge::phase_indicator_color;
+use crate::transport_badge::ConnectionStatusIndicator;
 use crate::ui::{DrawerEvent, DrawerHost, DrawerSide};
 use crate::workspace_action::{self, GoHome, OpenQuickAction, RequestDisconnect};
 use crate::workspace_action::{
@@ -2115,10 +2115,7 @@ impl Render for WorkspaceContent {
         let workspace_state = self.workspace_state.read(cx);
         let title = workspace_state.project_name.to_string();
         let default_subtitle = workspace_state.strip_path.to_string();
-        let net_dot_color = match workspace_state.connect_phase.clone() {
-            Some(phase) => phase_indicator_color(&phase),
-            None => theme::ACCENT_DIM,
-        };
+        let connect_phase = workspace_state.connect_phase.clone();
         let mainview_measure = canvas(
             |bounds, _, _| bounds,
             move |_bounds, measured_bounds, _window, cx| {
@@ -2194,12 +2191,11 @@ impl Render for WorkspaceContent {
                                             .gap(px(5.0))
                                             .max_w_full()
                                             .child(
-                                                div()
-                                                    .w(px(6.0))
-                                                    .h(px(6.0))
-                                                    .rounded(px(3.0))
-                                                    .flex_shrink_0()
-                                                    .bg(rgb(net_dot_color)),
+                                                ConnectionStatusIndicator::from_phase(
+                                                    "workspace-connect-status",
+                                                    connect_phase.as_ref(),
+                                                )
+                                                .size(6.0),
                                             )
                                             .child(
                                                 div()

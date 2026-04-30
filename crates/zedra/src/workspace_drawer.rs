@@ -15,10 +15,10 @@ use crate::telemetry::view_telemetry::{self, ViewDescriptor};
 use crate::terminal_panel::TerminalPanel;
 use crate::terminal_state::TerminalState;
 use crate::theme;
-use crate::transport_badge::phase_indicator_color;
+use crate::transport_badge::ConnectionStatusIndicator;
 use crate::transport_badge::transport_badge;
 use crate::workspace_action;
-use crate::workspace_state::WorkspaceState;
+use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DrawerTab {
@@ -61,6 +61,7 @@ pub struct WorkspaceDrawer {
     session_state: Entity<SessionState>,
     #[allow(dead_code)]
     session_handle: SessionHandle,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl WorkspaceDrawer {
@@ -73,6 +74,11 @@ impl WorkspaceDrawer {
         session: Session,
         session_handle: SessionHandle,
     ) -> Self {
+        let workspace_state_subscription = cx.subscribe(
+            &workspace_state,
+            |_drawer, _workspace_state, _event: &WorkspaceStateEvent, cx| cx.notify(),
+        );
+
         let file_explorer = cx.new(|cx| {
             FileExplorer::new(
                 workspace_state.clone(),
@@ -117,6 +123,7 @@ impl WorkspaceDrawer {
             workspace_state,
             session_state,
             session_handle,
+            _subscriptions: vec![workspace_state_subscription],
         }
     }
 
@@ -324,13 +331,7 @@ impl Render for WorkspaceDrawer {
         };
 
         let (title, subtitle) = self.title_by_tab(self.current_tab, cx);
-        let status_color = self
-            .workspace_state
-            .read(cx)
-            .connect_phase
-            .as_ref()
-            .map(phase_indicator_color)
-            .unwrap_or(theme::ACCENT_DIM);
+        let connect_phase = self.workspace_state.read(cx).connect_phase.clone();
 
         let top_inset = platform_bridge::status_bar_inset();
         let bottom_inset = platform_bridge::home_indicator_inset().max(10.0);
@@ -409,11 +410,11 @@ impl Render for WorkspaceDrawer {
                             .items_center()
                             .justify_center()
                             .child(
-                                div()
-                                    .w(px(6.0))
-                                    .h(px(6.0))
-                                    .rounded(px(3.0))
-                                    .bg(rgb(status_color)),
+                                ConnectionStatusIndicator::from_phase(
+                                    "drawer-connect-status",
+                                    connect_phase.as_ref(),
+                                )
+                                .size(6.0),
                             ),
                     ),
             )

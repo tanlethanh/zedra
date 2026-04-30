@@ -165,7 +165,7 @@
 
 1. Connect via QR and wait for the session badge to show "Connected"
 2. Disable the host network interface or disconnect the client from the network without closing the app
-3. Expected within about 4 seconds: session badge changes to "Idle Ns" while the session is still present
+3. Expected within about 4 seconds: session badge changes to "Idle Ns" while the session is still present; workspace status dots turn yellow and blink
 4. Keep waiting
 5. Expected later: normal reconnect flow still takes over (`Idle` -> `Reconnecting` -> `Disconnected` or `Connected`, depending on recovery)
 6. Restore network before reconnect exhausts
