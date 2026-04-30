@@ -11,6 +11,7 @@ use crate::git_panel::GitPanel;
 use crate::platform_bridge;
 use crate::platform_bridge::HapticFeedback;
 use crate::session_panel::SessionPanel;
+use crate::telemetry::view_telemetry::{self, ViewDescriptor};
 use crate::terminal_panel::TerminalPanel;
 use crate::terminal_state::TerminalState;
 use crate::theme;
@@ -31,6 +32,18 @@ pub enum DrawerTab {
 enum FileDisplayMode {
     Explorer,
     DocsTree,
+}
+
+fn drawer_view_descriptor(tab: DrawerTab, file_display_mode: FileDisplayMode) -> ViewDescriptor {
+    match tab {
+        DrawerTab::FileExplorer => match file_display_mode {
+            FileDisplayMode::Explorer => view_telemetry::DRAWER_FILES,
+            FileDisplayMode::DocsTree => view_telemetry::DRAWER_DOCUMENTS,
+        },
+        DrawerTab::GitDiff => view_telemetry::DRAWER_GIT_DIFF,
+        DrawerTab::Terminals => view_telemetry::DRAWER_TERMINALS,
+        DrawerTab::Session => view_telemetry::DRAWER_SESSION,
+    }
 }
 
 pub struct WorkspaceDrawer {
@@ -108,17 +121,30 @@ impl WorkspaceDrawer {
     }
 
     pub fn set_current_tab(&mut self, tab: DrawerTab, cx: &mut Context<Self>) {
+        if self.current_tab == tab {
+            return;
+        }
         self.current_tab = tab;
+        self.record_current_view();
         cx.notify();
     }
 
     fn set_file_display_mode(&mut self, mode: FileDisplayMode, cx: &mut Context<Self>) {
+        if self.file_display_mode == mode {
+            if mode == FileDisplayMode::DocsTree {
+                self.docs_tree.update(cx, |docs_tree, cx| {
+                    docs_tree.ensure_built(cx);
+                });
+            }
+            return;
+        }
         self.file_display_mode = mode;
         if mode == FileDisplayMode::DocsTree {
             self.docs_tree.update(cx, |docs_tree, cx| {
                 docs_tree.ensure_built(cx);
             });
         }
+        self.record_current_view();
         cx.notify();
     }
 
@@ -158,6 +184,14 @@ impl WorkspaceDrawer {
         };
 
         (title, subtitle)
+    }
+
+    pub fn current_view_descriptor(&self) -> ViewDescriptor {
+        drawer_view_descriptor(self.current_tab, self.file_display_mode)
+    }
+
+    pub fn record_current_view(&self) {
+        view_telemetry::record(self.current_view_descriptor());
     }
 
     pub fn tab_icon(&self, tab: DrawerTab) -> &'static str {
@@ -413,5 +447,35 @@ impl Render for WorkspaceDrawer {
                     .child(self.nav_icon(DrawerTab::Terminals, cx))
                     .child(self.nav_icon(DrawerTab::Session, cx)),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DrawerTab, FileDisplayMode, drawer_view_descriptor};
+    use crate::telemetry::view_telemetry;
+
+    #[test]
+    fn drawer_tabs_map_to_logical_view_telemetry() {
+        assert_eq!(
+            drawer_view_descriptor(DrawerTab::FileExplorer, FileDisplayMode::Explorer),
+            view_telemetry::DRAWER_FILES
+        );
+        assert_eq!(
+            drawer_view_descriptor(DrawerTab::FileExplorer, FileDisplayMode::DocsTree),
+            view_telemetry::DRAWER_DOCUMENTS
+        );
+        assert_eq!(
+            drawer_view_descriptor(DrawerTab::GitDiff, FileDisplayMode::Explorer),
+            view_telemetry::DRAWER_GIT_DIFF
+        );
+        assert_eq!(
+            drawer_view_descriptor(DrawerTab::Terminals, FileDisplayMode::Explorer),
+            view_telemetry::DRAWER_TERMINALS
+        );
+        assert_eq!(
+            drawer_view_descriptor(DrawerTab::Session, FileDisplayMode::Explorer),
+            view_telemetry::DRAWER_SESSION
+        );
     }
 }

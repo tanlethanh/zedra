@@ -55,7 +55,7 @@ Emitted by `zedra` (app crate) and `zedra-session`.
 | Event | Context fields | Emitted from |
 |-------|---------------|-------------|
 | `app_open` | `saved_workspaces`, `app_version`, `platform`, `arch` | `app.rs` — cold start |
-| `screen_view` | `screen` | `app.rs` — navigation |
+| `screen_view` | `screen`, `screen_name`, `screen_class` | `app.rs`, `workspace.rs`, `workspace_drawer.rs`, `workspace_terminal.rs`, `settings_view.rs` — GPUI logical views |
 | `qr_scan_initiated` | — | `app.rs` — Scan QR tapped |
 | `connect_success` | `total_ms`, `binding_ms`, `hole_punch_ms`, `auth_ms`, `fetch_ms`, `path`, `network`, `rtt_ms`, `relay`, `relay_latency_ms`, `alpn`, `has_ipv4`, `has_ipv6`, `symmetric_nat`, `is_first_pairing` | `handle.rs` — connect() |
 | `connect_failed` | `phase`, `error`, `elapsed_ms`, `relay`, `alpn`, `has_ipv4`, `has_ipv6`, `relay_connected` | `handle.rs` — set_failed() |
@@ -126,6 +126,11 @@ Firebase is integrated via CocoaPods. Key files:
 | `ios/Zedra/NativeBridge.swift` | Swift C-export bridge: `zedra_firebase_initialize`, `zedra_log_event`, `zedra_record_error`, `zedra_record_panic` |
 | `crates/zedra/src/ios/telemetry.rs` | Rust FFI declarations calling into `NativeBridge.swift` |
 | `crates/zedra/src/telemetry.rs` | `FirebaseBackend` — registers with `zedra_telemetry` |
+
+Manual GPUI logical screen views are emitted as Firebase `screen_view` events
+with `screen_name` and `screen_class`. Native automatic screen reporting remains
+enabled, so UIKit rows such as alerts, QR scanner, and custom sheet controllers
+can still appear beside logical Zedra rows in Firebase reports.
 
 **Build**: `pod install` in `ios/`, then build via `.xcworkspace`.
 

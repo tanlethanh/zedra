@@ -16,11 +16,12 @@ use crate::editor::git_sidebar::GitFileSection;
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
 use crate::placeholder::render_placeholder;
 use crate::platform_bridge::{self, AlertButton, HapticFeedback, status_bar_inset};
+use crate::telemetry::view_telemetry;
 use crate::terminal_card::strip_ps1_prefix;
 use crate::terminal_state::TerminalState;
 use crate::theme;
 use crate::transport_badge::phase_indicator_color;
-use crate::ui::{DrawerHost, DrawerSide};
+use crate::ui::{DrawerEvent, DrawerHost, DrawerSide};
 use crate::workspace_action::{self, GoHome, OpenQuickAction, RequestDisconnect};
 use crate::workspace_action::{
     AddSelectionToChat, CloseDrawer, CloseTerminal, CreateNewTerminal, GitCommit,
@@ -297,6 +298,16 @@ impl Workspace {
             )
         });
 
+        let drawer_host_subscription = cx.subscribe(
+            &drawer_host,
+            |workspace, _drawer_host, event: &DrawerEvent, cx| {
+                if matches!(event, DrawerEvent::Opened) {
+                    workspace.drawer.update(cx, |drawer, _cx| {
+                        drawer.record_current_view();
+                    });
+                }
+            },
+        );
         let workspace_state_subscription = cx.subscribe(
             &workspace_state,
             |workspace, workspace_state, event: &WorkspaceStateEvent, _cx| {
@@ -414,7 +425,11 @@ impl Workspace {
             _host_info_listener: Some(host_info_listener),
             pending_platform_action,
             _pending_platform_action_task: pending_platform_action_task,
-            _subscriptions: vec![workspace_state_subscription, gitdiff_subscription],
+            _subscriptions: vec![
+                drawer_host_subscription,
+                workspace_state_subscription,
+                gitdiff_subscription,
+            ],
         }
     }
 
@@ -522,6 +537,9 @@ impl Workspace {
                                 this.emit_sync_complete(cx);
                             });
                             ws.content.update(cx, |c, cx| c.hide_connecting_view(cx));
+                            if !should_initialize {
+                                ws.record_current_view(cx);
+                            }
                             should_initialize
                         }) {
                             Ok(should_initialize) => should_initialize,
@@ -582,6 +600,7 @@ impl Workspace {
         info!("restart connection requested");
         self.start_connection(request);
         self.content.update(cx, |c, cx| c.show_connecting_view(cx));
+        self.record_current_view(cx);
     }
 
     pub fn session_handle(&self) -> &SessionHandle {
@@ -595,6 +614,19 @@ impl Workspace {
     /// Read current workspace state (cheap Arc clone).
     pub fn workspace_state(&self, cx: &App) -> WorkspaceState {
         self.workspace_state.read(cx).clone()
+    }
+
+    pub fn record_current_view(&self, cx: &mut Context<Self>) {
+        if self.content.read(cx).is_showing_connecting() {
+            view_telemetry::record(view_telemetry::WORKSPACE_CONNECTING);
+            return;
+        }
+
+        if let Some(screen) =
+            view_telemetry::workspace_main_view(&self.workspace_state.read(cx).active_main_view)
+        {
+            view_telemetry::record(screen);
+        }
     }
 
     /// Used to link between Workspace and WorkspaceState
@@ -726,6 +758,7 @@ impl Workspace {
         self.drawer_host
             .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
         self.content.update(cx, |c, cx| c.show_connecting_view(cx));
+        self.record_current_view(cx);
     }
 
     fn handle_hide_connecting(
@@ -737,6 +770,7 @@ impl Workspace {
         info!("handle HideConnecting from workspace");
         window.hide_soft_keyboard();
         self.content.update(cx, |c, cx| c.hide_connecting_view(cx));
+        self.record_current_view(cx);
     }
 
     fn handle_restart_connection(
@@ -775,6 +809,7 @@ impl Workspace {
             c.set_main_view(editor.into(), cx);
             c.hide_connecting_view(cx);
         });
+        view_telemetry::record(view_telemetry::workspace_file(&path));
     }
 
     fn handle_add_selection_to_chat(
@@ -870,6 +905,7 @@ impl Workspace {
             c.set_main_view(gitdiff.into(), cx);
             c.hide_connecting_view(cx);
         });
+        view_telemetry::record(view_telemetry::WORKSPACE_GIT_DIFF);
     }
 
     fn handle_git_stage(
@@ -1121,6 +1157,7 @@ impl Workspace {
             c.set_main_view(terminal_entity.into(), cx);
             c.hide_connecting_view(cx);
         });
+        view_telemetry::record(view_telemetry::WORKSPACE_TERMINAL);
     }
 
     fn close_terminal_by_id(&mut self, id: String, cx: &mut Context<Self>) {
@@ -1170,11 +1207,13 @@ impl Workspace {
                 self.content.update(cx, |content, cx| {
                     content.set_no_active_terminal_view(cx);
                 });
+                view_telemetry::record(view_telemetry::WORKSPACE_NO_ACTIVE_TERMINAL);
             }
         } else if was_active_main_terminal {
             self.content.update(cx, |content, cx| {
                 content.set_no_active_terminal_view(cx);
             });
+            view_telemetry::record(view_telemetry::WORKSPACE_NO_ACTIVE_TERMINAL);
         }
 
         let handle = self.session.handle().clone();
@@ -2004,6 +2043,10 @@ impl WorkspaceContent {
     pub fn hide_connecting_view(&mut self, cx: &mut Context<Self>) {
         self.show_connecting = false;
         cx.notify();
+    }
+
+    pub fn is_showing_connecting(&self) -> bool {
+        self.show_connecting
     }
 
     fn render_subtitle(&self, default_subtitle: &str, cx: &mut Context<Self>) -> AnyElement {

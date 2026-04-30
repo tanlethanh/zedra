@@ -15,6 +15,7 @@ use crate::button::{
 use crate::platform_bridge::{
     self, CustomSheetDetent, CustomSheetOptions, NativeDictationPreviewOptions,
 };
+use crate::telemetry::view_telemetry;
 use crate::terminal_preview_view::TerminalPreviewView;
 use crate::terminal_state::TerminalState;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
@@ -237,10 +238,11 @@ impl WorkspaceTerminal {
                     TerminalHyperlinkTarget::Url { url } => {
                         platform_bridge::bridge().open_url(url);
                     }
-                    TerminalHyperlinkTarget::File { .. } => {
+                    TerminalHyperlinkTarget::File { path, .. } => {
                         this.preview.update(cx, |preview, cx| {
                             preview.open_hyperlink(hyperlink.clone(), cx);
                         });
+                        view_telemetry::record(view_telemetry::custom_sheet_file(path));
                         platform_bridge::show_custom_sheet(
                             CustomSheetOptions {
                                 detents: vec![CustomSheetDetent::Large],

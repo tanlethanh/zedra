@@ -9,6 +9,7 @@ use crate::home_view::{HomeEvent, HomeView};
 use crate::platform_bridge;
 use crate::quick_action_panel::{QuickActionEvent, QuickActionPanel};
 use crate::settings_view::{SettingsEvent, SettingsView};
+use crate::telemetry::view_telemetry::{self, ViewDescriptor};
 use crate::ui::{DrawerHost, DrawerSide};
 use crate::workspaces::{Workspaces, WorkspacesEvent};
 
@@ -17,6 +18,14 @@ enum AppScreen {
     Home,
     Settings,
     Workspace,
+}
+
+fn app_view_descriptor(screen: AppScreen) -> Option<ViewDescriptor> {
+    match screen {
+        AppScreen::Home => Some(view_telemetry::HOME),
+        AppScreen::Settings => Some(view_telemetry::SETTINGS),
+        AppScreen::Workspace => None,
+    }
 }
 
 pub struct ZedraApp {
@@ -85,6 +94,7 @@ impl ZedraApp {
             quick_action_drawer,
             _subscriptions: subscriptions,
         };
+        app.record_current_view(cx);
 
         // Start background tasks (deeplink + deferred ticket checks)
         app.start_background_tasks(window, cx);
@@ -238,7 +248,11 @@ impl ZedraApp {
     ) {
         match event {
             WorkspacesEvent::Connected { .. } => {
+                let screen_changed = self.screen != AppScreen::Workspace;
                 self.set_screen(AppScreen::Workspace, cx);
+                if !screen_changed {
+                    self.record_current_view(cx);
+                }
             }
             WorkspacesEvent::Disconnected { .. } => {
                 zedra_telemetry::send(Event::Disconnect);
@@ -257,6 +271,7 @@ impl ZedraApp {
             }
             WorkspacesEvent::OpenQuickAction => {
                 self.quick_action_drawer.update(cx, |h, cx| h.open(cx));
+                view_telemetry::record(view_telemetry::QUICK_ACTIONS);
             }
         }
     }
@@ -283,18 +298,14 @@ impl ZedraApp {
     }
 
     fn set_screen(&mut self, screen: AppScreen, cx: &mut Context<Self>) {
-        if self.screen != screen {
+        let screen_changed = self.screen != screen;
+        if screen_changed {
             self.screen = screen;
-            let screen_name = match screen {
-                AppScreen::Home => "home",
-                AppScreen::Settings => "settings",
-                AppScreen::Workspace => "workspace",
-            };
-            zedra_telemetry::send(Event::ScreenView {
-                screen: screen_name,
-            });
             self.update_drawer_content(cx);
             cx.notify();
+        }
+        if screen_changed {
+            self.record_current_view(cx);
         }
     }
 
@@ -311,6 +322,18 @@ impl ZedraApp {
         };
         self.quick_action_drawer
             .update(cx, |h, _| h.set_content(screen_view));
+    }
+
+    fn record_current_view(&self, cx: &mut Context<Self>) {
+        if let Some(screen) = app_view_descriptor(self.screen) {
+            view_telemetry::record(screen);
+            return;
+        }
+
+        let active_workspace = self.workspaces.read(cx).active().cloned();
+        if let Some(workspace) = active_workspace {
+            workspace.update(cx, |workspace, cx| workspace.record_current_view(cx));
+        }
     }
 }
 
@@ -338,7 +361,8 @@ pub fn open_zedra_window(app: &mut App, window_options: WindowOptions) -> Result
 
 #[cfg(test)]
 mod tests {
-    use super::should_process_pending_ticket;
+    use super::{AppScreen, app_view_descriptor, should_process_pending_ticket};
+    use crate::telemetry::view_telemetry;
 
     #[test]
     fn pending_ticket_processing_requires_ticket_and_active_window() {
@@ -346,5 +370,18 @@ mod tests {
         assert!(!should_process_pending_ticket(false, true));
         assert!(!should_process_pending_ticket(true, false));
         assert!(!should_process_pending_ticket(false, false));
+    }
+
+    #[test]
+    fn app_screen_mapping_uses_logical_gpui_views() {
+        assert_eq!(
+            app_view_descriptor(AppScreen::Home),
+            Some(view_telemetry::HOME)
+        );
+        assert_eq!(
+            app_view_descriptor(AppScreen::Settings),
+            Some(view_telemetry::SETTINGS)
+        );
+        assert_eq!(app_view_descriptor(AppScreen::Workspace), None);
     }
 }

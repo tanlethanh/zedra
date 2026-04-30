@@ -6,6 +6,7 @@ use crate::platform_bridge::{
     NativeNotificationKind, NativeNotificationOptions,
 };
 use crate::sheet_demo_state::SheetDemoState;
+use crate::telemetry::view_telemetry;
 use crate::theme;
 
 #[derive(Clone, Debug)]
@@ -83,6 +84,7 @@ impl SettingsView {
             },
             self.sheet_view.clone(),
         );
+        view_telemetry::record(view_telemetry::CUSTOM_SHEET_DEMO);
     }
 
     fn show_test_native_notification(&self) {

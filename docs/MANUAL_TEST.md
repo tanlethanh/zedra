@@ -30,6 +30,16 @@
 12. Tap `Native Notification` repeatedly
 13. Expected: multiple notifications collect into the same bubble stack and all auto-close after their configured durations by default
 
+## 0d. Firebase GPUI Screen Views
+
+1. Run an iOS build with Firebase Analytics enabled and open Firebase DebugView or a build with `debug-telemetry`
+2. Open Home, Settings, Quick Actions, then connect to a workspace
+3. Open the workspace drawer and switch through Files, Documents, Git Diff, Terminals, and Session
+4. Open a non-markdown file, a markdown file, a git diff, and a terminal as the main workspace view
+5. Tap terminal file links for both a source file and a markdown file so the native custom sheet opens
+6. Expected: manual `screen_view` events include `screen_name` and `screen_class` for `Home`, `Settings`, `Quick Actions`, `Workspace Connecting`, `Workspace Editor`, `Workspace Markdown`, `Workspace Git Diff`, `Workspace Terminal`, each drawer tab, `Custom Sheet Editor`, and `Custom Sheet Markdown`
+7. Expected: native automatic rows such as `UIViewController`, `CustomSheetViewController`, `UIAlertController`, and `ZedraQRScannerVC` are still present because native Firebase screen reporting remains enabled
+
 ## 1. Normal QR Scan → Connect
 
 1. Start host daemon: `zedra start --workdir .`

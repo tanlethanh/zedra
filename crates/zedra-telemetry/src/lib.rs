@@ -48,6 +48,10 @@ pub enum Event {
     ScreenView {
         /// e.g. "home", "workspace"
         screen: &'static str,
+        /// Firebase screen title, shown as Page title in GA/Firebase reports.
+        screen_name: &'static str,
+        /// Logical GPUI view class, shown as screen class in GA/Firebase reports.
+        screen_class: &'static str,
     },
 
     // ── QR / pairing ──────────────────────────────────────────────────────
@@ -368,7 +372,15 @@ impl Event {
                 ("platform", platform.to_string()),
                 ("arch", arch.to_string()),
             ],
-            Self::ScreenView { screen } => vec![("screen", screen.to_string())],
+            Self::ScreenView {
+                screen,
+                screen_name,
+                screen_class,
+            } => vec![
+                ("screen", screen.to_string()),
+                ("screen_name", screen_name.to_string()),
+                ("screen_class", screen_class.to_string()),
+            ],
             Self::QrScanInitiated | Self::Disconnect | Self::ClientPaired => vec![],
             Self::WorkspaceSelected { source } => vec![("source", source.to_string())],
             Self::ConnectSuccess {
@@ -747,5 +759,29 @@ pub fn set_user_id(id: &str) {
 pub fn set_custom_key(key: &str, value: &str) {
     if let Some(b) = BACKEND.get() {
         b.set_custom_key(key, value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Event;
+
+    #[test]
+    fn screen_view_serializes_firebase_screen_params() {
+        let params = Event::ScreenView {
+            screen: "workspace_markdown",
+            screen_name: "Workspace Markdown",
+            screen_class: "WorkspaceEditor",
+        }
+        .to_params();
+
+        assert_eq!(
+            params,
+            vec![
+                ("screen", "workspace_markdown".to_string()),
+                ("screen_name", "Workspace Markdown".to_string()),
+                ("screen_class", "WorkspaceEditor".to_string()),
+            ]
+        );
     }
 }
