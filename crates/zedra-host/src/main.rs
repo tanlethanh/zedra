@@ -110,7 +110,7 @@ enum Commands {
         #[arg(short, long, default_value = ".")]
         workdir: String,
 
-        /// Command to inject into the terminal on startup (e.g. "claude --resume <id>")
+        /// Command to run in the terminal on startup (e.g. "claude --resume <id>")
         #[arg(long)]
         launch_cmd: Option<String>,
     },

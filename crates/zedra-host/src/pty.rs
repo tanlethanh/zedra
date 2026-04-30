@@ -18,10 +18,13 @@ pub struct ShellSession {
 pub struct SpawnOptions {
     /// Working directory for the shell. Defaults to the process cwd if `None`.
     pub workdir: Option<std::path::PathBuf>,
-    /// Shell command to inject into the PTY immediately after the shell starts.
-    /// The command is written as `<cmd>\n` so the shell executes it on startup.
+    /// Shell command to run when the PTY starts.
     /// Example: `"claude --resume"` to drop straight into a Claude session.
     pub launch_cmd: Option<String>,
+}
+
+fn launch_script(launch_cmd: &str) -> String {
+    format!("{launch_cmd}\nexec \"$SHELL\" -l")
 }
 
 impl ShellSession {
@@ -44,7 +47,14 @@ impl ShellSession {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
 
         let mut cmd = CommandBuilder::new(&shell);
-        cmd.arg("-l"); // Login shell
+        if let Some(launch_cmd) = &opts.launch_cmd {
+            // Avoid typing into the PTY before the shell has drawn its prompt.
+            cmd.arg("-l");
+            cmd.arg("-c");
+            cmd.arg(launch_script(launch_cmd));
+        } else {
+            cmd.arg("-l"); // Login shell
+        }
 
         // Start in the session working directory if provided.
         if let Some(dir) = &opts.workdir {
@@ -70,6 +80,7 @@ impl ShellSession {
                 cmd.env(key, val);
             }
         }
+        cmd.env("SHELL", &shell);
         // Always set a known-good TERM; override any inherited value.
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
@@ -85,20 +96,10 @@ impl ShellSession {
             .master
             .try_clone_reader()
             .map_err(|e| anyhow::anyhow!("Failed to clone PTY reader: {}", e))?;
-        let mut writer = pair
+        let writer = pair
             .master
             .take_writer()
             .map_err(|e| anyhow::anyhow!("Failed to take PTY writer: {}", e))?;
-
-        // Inject the launch command. The bytes sit in the kernel PTY buffer and
-        // are processed once the shell finishes sourcing its init files.
-        if let Some(cmd) = &opts.launch_cmd {
-            let mut line = cmd.as_bytes().to_vec();
-            line.push(b'\n');
-            writer
-                .write_all(&line)
-                .map_err(|e| anyhow::anyhow!("Failed to inject launch command: {}", e))?;
-        }
 
         Ok(Self {
             master: pair.master,
@@ -124,6 +125,36 @@ impl ShellSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_script_runs_command_before_interactive_shell() {
+        assert_eq!(
+            launch_script("echo ready"),
+            "echo ready\nexec \"$SHELL\" -l"
+        );
+    }
+
+    #[test]
+    fn launch_command_runs_without_typed_echo() {
+        let session = ShellSession::spawn(
+            80,
+            24,
+            SpawnOptions {
+                workdir: None,
+                launch_cmd: Some("printf 'ZEDRA_LAUNCH_OK\\n'; exit".to_string()),
+            },
+        )
+        .unwrap();
+        let (mut reader, _writer, _master, _child) = session.take_reader();
+        let mut output = String::new();
+        reader.read_to_string(&mut output).unwrap();
+
+        assert!(output.contains("ZEDRA_LAUNCH_OK"));
+        assert!(
+            !output.contains("printf 'ZEDRA_LAUNCH_OK"),
+            "launch command was echoed into PTY output: {output:?}"
+        );
+    }
 
     #[test]
     fn test_spawn_shell() {

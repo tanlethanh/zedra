@@ -154,7 +154,7 @@ async fn status(State(s): State<ApiState>, headers: HeaderMap) -> impl IntoRespo
 pub struct CreateTerminalReq {
     /// Session to create the terminal in. Omit to use the first active session.
     pub session_id: Option<String>,
-    /// Command injected on startup (e.g. "claude --resume").
+    /// Command run on startup (e.g. "claude --resume").
     pub launch_cmd: Option<String>,
     #[serde(default = "default_cols")]
     pub cols: u16,

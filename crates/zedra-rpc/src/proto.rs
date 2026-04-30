@@ -640,7 +640,7 @@ pub enum HostEvent {
     /// The client should open and display this terminal.
     TerminalCreated {
         id: String,
-        /// The launch command injected into the terminal, if any.
+        /// The launch command run in the terminal, if any.
         launch_cmd: Option<String>,
     },
     /// Host-side git working tree state changed and the client should refresh.
@@ -700,7 +700,7 @@ pub enum HostBatteryState {
 pub struct TermCreateReq {
     pub cols: u16,
     pub rows: u16,
-    /// Optional shell command to run immediately after the shell starts.
+    /// Optional shell command to run when the terminal starts.
     /// If `None`, the host's default launch command (if any) is used.
     /// Example: `"claude --resume"` to drop straight into a Claude session.
     pub launch_cmd: Option<String>,
