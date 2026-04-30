@@ -839,18 +839,25 @@ async fn handle_register(
                 &msg.client_pubkey[..4],
                 slot.session_id,
             );
-            eprintln!("New device registered to session {}.", slot.session_id);
+            utils::eprintln_success(format!(
+                "New device registered to session {}.",
+                slot.session_id
+            ));
             zedra_telemetry::send(Event::ClientPaired);
             RegisterResult::Ok
         }
         ConsumeSlotResult::Consumed => {
             tracing::warn!("Register: slot for {} already consumed", msg.session_id);
-            utils::eprintln_warn("QR already used. Press 'r' to generate a new QR.");
+            utils::eprintln_warn(
+                "QR already used. Run `zedra qr` from the workspace, or add `--workdir <path>` from another directory.",
+            );
             RegisterResult::HandshakeConsumed
         }
         ConsumeSlotResult::NotFound => {
             tracing::warn!("Register: no slot found for session {}", msg.session_id);
-            utils::eprintln_warn("QR invalid or expired. Press 'r' to generate a new QR.");
+            utils::eprintln_warn(
+                "QR invalid or expired. Run `zedra qr` from the workspace, or add `--workdir <path>` from another directory.",
+            );
             RegisterResult::SlotNotFound
         }
     }

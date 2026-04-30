@@ -1,9 +1,10 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Subcommand};
 use std::fs;
-use std::io::{IsTerminal, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use zedra_host::utils;
 
 const PLUGIN_REPO: &str = "tanlethanh/zedra-plugin";
 const CLAUDE_MARKETPLACE: &str = "zedra";
@@ -298,43 +299,23 @@ fn remove_remaining_skill_files(skills_dir: &Path) -> Result<usize> {
 }
 
 fn print_suggested_command(command: &str) {
-    println!("  {}", highlighted_command(command));
+    utils::println_command(command);
 }
 
 fn print_step_label(label: &str) {
-    println!("> {label}");
+    utils::println_step(label);
 }
 
 fn print_detail(detail: &str) {
-    println!("{detail}");
+    utils::println_note(detail);
 }
 
 fn print_success_detail(detail: &str) {
-    println!("{}", success_line(detail));
+    utils::println_success(detail);
 }
 
 fn print_error_detail(detail: &str) {
-    println!("{}", error_line(detail));
-}
-
-fn highlighted_command(command: &str) -> String {
-    color_text(command, "1;36")
-}
-
-fn success_line(line: &str) -> String {
-    color_text(line, "1;32")
-}
-
-fn error_line(line: &str) -> String {
-    color_text(line, "1;31")
-}
-
-fn color_text(text: &str, color: &str) -> String {
-    if std::io::stdout().is_terminal() {
-        format!("\x1b[{color}m{text}\x1b[0m")
-    } else {
-        text.to_string()
-    }
+    utils::println_error(detail);
 }
 
 async fn install_skills_from_raw(agent_name: &str, skills_dir: &Path, verb: &str) -> Result<()> {
@@ -499,10 +480,10 @@ fn run_command_step_status(
     print_step_label(label);
 
     let command = shell_command_line(program, args);
-    let terminal = std::io::stdout().is_terminal();
+    let terminal = utils::stdout_is_terminal();
 
     if terminal {
-        print!("{}", highlighted_command(&command));
+        print!("{}", utils::command_text(&command));
         std::io::stdout().flush()?;
     }
 
@@ -535,7 +516,7 @@ fn print_command_error_output(output: &Output) {
     print_command_stream("stdout", &output.stdout);
     print_command_stream("stderr", &output.stderr);
     if output.stdout.is_empty() && output.stderr.is_empty() {
-        eprintln!("status: {}", output.status);
+        utils::eprintln_error(format!("status: {}", output.status));
     }
 }
 
