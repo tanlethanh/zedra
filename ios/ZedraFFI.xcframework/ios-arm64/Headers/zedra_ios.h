@@ -20,6 +20,8 @@
 
 #define TEXT_MUTED 5263440
 
+#define BORDER_HIGHLIGHT 13290186
+
 #define BORDER_DEFAULT 2894892
 
 #define BORDER_ACTIVE 5263440
@@ -37,6 +39,8 @@
 #define ACCENT_DIM 5263440
 
 #define DRAWER_PADDING 12.0
+
+#define SPACING_XS 4.0
 
 #define SPACING_SM 8.0
 
@@ -89,6 +93,8 @@
 #define ICON_MD 18.0
 
 #define ICON_SM 16.0
+
+#define ICON_XS 14.0
 
 #define ICON_FILE 12.0
 
