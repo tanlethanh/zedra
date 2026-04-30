@@ -186,6 +186,16 @@ impl TerminalView {
         self.terminal.read(cx).size().into_remote_size()
     }
 
+    /// Reattach may not produce a paint mismatch, so sync the host PTY once.
+    pub fn sync_remote_size_after_attach(&mut self, cx: &mut Context<Self>) {
+        let remote_size = self.terminal.read(cx).size().into_remote_size();
+        self.last_remote_size = Some(remote_size);
+        cx.emit(TerminalEvent::RequestResize {
+            cols: remote_size.0,
+            rows: remote_size.1,
+        });
+    }
+
     /// This is called by TerminalElement when the actual bounds of the terminal
     /// do not match the expected bounds.
     pub(crate) fn reconcile_bounds_fallback(
@@ -622,6 +632,33 @@ mod tests {
                 target => panic!("expected file hyperlink, got {target:?}"),
             },
             event => panic!("expected hyperlink event, got {event:?}"),
+        }
+        cx.quit();
+    }
+
+    #[test]
+    fn sync_remote_size_after_attach_forces_resize_event() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+
+        let root = window.root(&mut cx).unwrap();
+        let mut events = cx.events(&root);
+        let expected_size = window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                let size = terminal_view.terminal.read(cx).size();
+                let expected_size = (size.columns as u16, size.rows as u16);
+                terminal_view.last_remote_size = Some(expected_size);
+                terminal_view.sync_remote_size_after_attach(cx);
+                expected_size
+            })
+            .unwrap();
+
+        match events.next().now_or_never().flatten() {
+            Some(TerminalEvent::RequestResize { cols, rows }) => {
+                assert_eq!((cols, rows), expected_size);
+            }
+            event => panic!("expected forced resize event, got {event:?}"),
         }
         cx.quit();
     }

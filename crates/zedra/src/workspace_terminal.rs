@@ -385,6 +385,7 @@ impl WorkspaceTerminal {
             Ok((input_tx, output_rx)) => {
                 terminal_view.update(cx, |terminal_view, cx| {
                     terminal_view.attach_channel(input_tx, output_rx, cx);
+                    terminal_view.sync_remote_size_after_attach(cx);
                     info!("attached channel to terminal");
                 });
             }

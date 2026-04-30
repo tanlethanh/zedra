@@ -118,6 +118,18 @@
    terminals from the host without creating a replacement terminal
 6. Expected: terminal cards appear in the same order they had before force-close
 
+## 3b. Terminal Reattach Resize
+
+1. Connect on Device A, open a terminal, and run:
+   ```sh
+   sh -c 'show(){ set -- $(stty size); printf "WINCH %sx%s\n" "$2" "$1"; }; trap show WINCH; show; while sleep 1; do :; done'
+   ```
+2. Disconnect or force-close Device A while the process keeps running
+3. Reattach from Device B with a different screen ratio, or relaunch after changing simulator/device orientation
+4. Expected: the terminal reattaches and prints a new `WINCH <cols>x<rows>` matching the current device viewport
+5. Repeat with a non-alt AI CLI session such as `claude`, `codex`, or a `/zedra-start` resumed session
+6. Expected: resumed output uses the current device width without stale wrapping or dumped resize artifacts
+
 ## 4. Reconnect After Host Restart
 
 1. Connect via QR, note session ID
