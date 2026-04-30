@@ -17,8 +17,8 @@ use std::sync::Arc;
 use zedra_host::client as zedra_client;
 use zedra_host::ga4::Ga4;
 use zedra_host::{
-    api, identity, iroh_listener, net_monitor, qr, rpc_daemon, session_registry, version_check,
-    workspace_lock,
+    api, identity, iroh_listener, net_monitor, qr, rpc_daemon, session_registry, utils,
+    version_check, workspace_lock,
 };
 use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
@@ -292,9 +292,7 @@ async fn main() -> Result<()> {
                     debug_telemetry,
                 );
                 if debug_telemetry {
-                    eprintln!(
-                        "[telemetry] telemetry debug mode (GA4 validation endpoint, not recorded)"
-                    );
+                    eprintln!("[telemetry] debug mode (GA4 validation endpoint, not recorded)");
                 }
                 g
             });
@@ -384,11 +382,12 @@ async fn main() -> Result<()> {
             tokio::spawn(async {
                 match version_check::check_latest_version().await {
                     Ok(Some(ref latest)) => {
-                        eprintln!(
-                            "[update]   new version available: {} (current: v{}). Run `zedra update`.",
+                        let update_msg = format!(
+                            "New version available: {} (current: v{}). Run `zedra update`.",
                             latest,
                             env!("CARGO_PKG_VERSION")
                         );
+                        utils::eprintln_warn(update_msg);
                         zedra_telemetry::send(Event::UpdateChecked {
                             update_available: true,
                             latest_version: latest.clone(),
@@ -876,7 +875,7 @@ async fn generate_pairing_qr(
         qr::print_pairing_json(&info);
     } else {
         qr::generate_pairing_qr(&ticket, endpoint, relay_urls)?;
-        eprintln!("Note: this pairing QR is one-time use.");
+        utils::eprintln_warn("Note: this pairing QR is one-time use.");
     }
     Ok(())
 }

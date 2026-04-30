@@ -11,6 +11,7 @@ use std::sync::{
     Arc,
 };
 
+#[allow(unused)]
 fn ts() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let s = SystemTime::now()
@@ -48,6 +49,7 @@ impl ReportSnapshot {
 }
 
 /// Classify likely network type from the public IP address heuristics.
+#[allow(unused)]
 fn classify_network(addrs: &BTreeSet<SocketAddr>, relay_only: bool) -> &'static str {
     if relay_only {
         return "relay-only";
@@ -148,17 +150,6 @@ fn spawn_addr_watcher(endpoint: &iroh::Endpoint, recovery_in_flight: Arc<AtomicB
                 );
             }
 
-            // User-facing: one-line summary of the change
-            let relay_only = new_addrs.is_empty();
-            let net_type = classify_network(&new_addrs, relay_only);
-            eprintln!(
-                "[{}] network:  changed — {} ({} relay, {} direct)",
-                ts(),
-                net_type,
-                new_relays.len(),
-                new_addrs.len(),
-            );
-
             // DNS/pkarr re-registration check
             tracing::info!(
                 "net_monitor: pkarr re-registering, relays={:?} addrs={:?}",
@@ -172,15 +163,8 @@ fn spawn_addr_watcher(endpoint: &iroh::Endpoint, recovery_in_flight: Arc<AtomicB
                 let relay_count = current.relay_urls().count();
                 let addr_count = current.ip_addrs().count();
                 if relay_count == 0 && addr_count == 0 {
-                    eprintln!("[{}] network:  WARNING — no addresses after re-registration, may be offline", ts());
                     tracing::warn!("net_monitor: endpoint has no addresses 5s after change");
                 } else {
-                    eprintln!(
-                        "[{}] network:  binding OK ({} relay, {} direct)",
-                        ts(),
-                        relay_count,
-                        addr_count,
-                    );
                     tracing::info!(
                         "net_monitor: re-registration OK, relays={} addrs={}",
                         relay_count,
@@ -281,7 +265,7 @@ fn spawn_report_watcher(endpoint: &iroh::Endpoint, recovery_in_flight: Arc<Atomi
                     Some(true) => " (symmetric NAT)",
                     _ => "",
                 };
-                eprintln!("[{}] network:  changed — {}{}", ts(), addr_str, nat_hint);
+                tracing::info!("net_monitor: public IP changed to {addr_str}{nat_hint}",);
             }
 
             prev.global_v4 = new_v4;

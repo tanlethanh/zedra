@@ -13,6 +13,7 @@ use zedra_telemetry::Event;
 
 use crate::identity::SharedIdentity;
 
+#[allow(unused)]
 fn ts() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let s = SystemTime::now()
@@ -158,7 +159,6 @@ pub async fn run_accept_loop(
                 conn.remote_id().fmt_short(),
                 String::from_utf8_lossy(conn.alpn()),
             );
-            eprintln!("[{}] inbound:  {}", ts(), conn.remote_id().fmt_short());
 
             if let Err(e) = rpc_daemon::handle_connection(conn, registry, state).await {
                 tracing::warn!("irpc connection error: {}", e);

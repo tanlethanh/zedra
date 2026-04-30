@@ -3,6 +3,7 @@
 //! Resolves the latest release from GitHub and optionally downloads + replaces
 //! the running binary.
 
+use crate::utils;
 use anyhow::{bail, Context, Result};
 const REPO: &str = "tanlethanh/zedra";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -68,7 +69,7 @@ pub async fn self_update(tag: &str) -> Result<String> {
     if checksum_verified {
         eprintln!("  Checksum verified.");
     } else {
-        eprintln!("  Warning: checksum verification skipped (unavailable).");
+        utils::eprintln_warn("  Warning: checksum verification skipped (unavailable).");
     }
 
     eprintln!("  Extracting...");

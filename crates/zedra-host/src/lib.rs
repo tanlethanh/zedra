@@ -15,5 +15,6 @@ pub mod qr;
 pub mod rpc_daemon;
 pub mod session_registry;
 pub mod telemetry;
+pub mod utils;
 pub mod version_check;
 pub mod workspace_lock;

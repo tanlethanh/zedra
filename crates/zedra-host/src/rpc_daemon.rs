@@ -19,6 +19,7 @@ use crate::session_registry::{
     AttachResult, ConsumeSlotResult, HostShellState, HostTermMeta, OutputSenderSlot, ServerSession,
     SessionRegistry, TermBacklog, TermSession, MAX_WATCHED_PATHS_PER_SESSION,
 };
+use crate::utils;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -71,6 +72,7 @@ async fn build_sync_result(
     }
 }
 
+#[allow(unused)]
 fn ts() -> String {
     let s = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -232,6 +234,7 @@ mod terminal_meta_preamble_tests {
     }
 }
 
+#[allow(unused)]
 fn short_key(key: &[u8; 32]) -> String {
     key[..4].iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -386,7 +389,7 @@ async fn run_observer(session: Arc<ServerSession>, workdir: PathBuf, my_gen: u64
             {
                 Ok(v) => v,
                 Err(e) => {
-                    tracing::error!("fs_dir_fingerprint error for path {}: {}", path, e);
+                    tracing::warn!("fs_dir_fingerprint error for path {}: {}", path, e);
                     None
                 }
             };
@@ -514,12 +517,6 @@ pub async fn handle_connection(
         &client_pubkey[..4],
         session.id,
     );
-    eprintln!(
-        "[{}] connected: {} → session {}",
-        ts(),
-        short_key(&client_pubkey),
-        &session.id[..8.min(session.id.len())]
-    );
 
     let session_start = std::time::Instant::now();
 
@@ -615,12 +612,7 @@ pub async fn handle_connection(
         "Connection closed: session={} (session stays alive in registry)",
         session.id,
     );
-    eprintln!(
-        "[{}] disconn:   {} (session {})",
-        ts(),
-        short_key(&client_pubkey),
-        &session.id[..8.min(session.id.len())]
-    );
+
     Ok(())
 }
 
@@ -833,6 +825,7 @@ async fn handle_register(
                     "Register: invalid HMAC from {:?}...",
                     &msg.client_pubkey[..4]
                 );
+                utils::eprintln_warn("Invalid HMAC. Try again.");
                 return RegisterResult::InvalidHandshake;
             }
 
@@ -846,26 +839,18 @@ async fn handle_register(
                 &msg.client_pubkey[..4],
                 slot.session_id,
             );
-            eprintln!(
-                "[{}] paired:    {} → session {}",
-                ts(),
-                short_key(&msg.client_pubkey),
-                &slot.session_id[..8.min(slot.session_id.len())]
-            );
+            eprintln!("New device registered to session {}.", slot.session_id);
             zedra_telemetry::send(Event::ClientPaired);
             RegisterResult::Ok
         }
         ConsumeSlotResult::Consumed => {
             tracing::warn!("Register: slot for {} already consumed", msg.session_id);
-            eprintln!(
-                "[{}] pairing:   QR already used (session {}). Press 'r' in the host terminal to generate a new QR.",
-                ts(),
-                &msg.session_id[..8.min(msg.session_id.len())]
-            );
+            utils::eprintln_warn("QR already used. Press 'r' to generate a new QR.");
             RegisterResult::HandshakeConsumed
         }
         ConsumeSlotResult::NotFound => {
             tracing::warn!("Register: no slot found for session {}", msg.session_id);
+            utils::eprintln_warn("QR invalid or expired. Press 'r' to generate a new QR.");
             RegisterResult::SlotNotFound
         }
     }
@@ -1434,7 +1419,7 @@ async fn dispatch(
                         .await;
                 }
                 Err(e) => {
-                    tracing::error!("FsList: list failed for {:?}: {}", path, e);
+                    tracing::warn!("FsList: list failed for {:?}: {}", path, e);
                     let _ = msg
                         .tx
                         .send(FsListResult {
@@ -1489,7 +1474,7 @@ async fn dispatch(
                         .await;
                 }
                 Err(e) => {
-                    tracing::error!("FsRead: read failed for {:?}: {}", path, e);
+                    tracing::warn!("FsRead: read failed for {:?}: {}", path, e);
                     let _ = msg
                         .tx
                         .send(FsReadResult {
@@ -1548,7 +1533,7 @@ async fn dispatch(
                         .await;
                 }
                 Err(e) => {
-                    tracing::error!("FsStat: stat failed for {:?}: {}", path, e);
+                    tracing::warn!("FsStat: stat failed for {:?}: {}", path, e);
                     let _ = msg
                         .tx
                         .send(FsStatResult {
@@ -1649,7 +1634,7 @@ async fn dispatch(
                         let _ = msg.tx.send(result).await;
                     }
                     Err(error) => {
-                        tracing::error!("FsDocsTree: scan failed for {:?}: {}", path, error);
+                        tracing::warn!("FsDocsTree: scan failed for {:?}: {}", path, error);
                         let _ = msg
                             .tx
                             .send(FsDocsTreeResult {
@@ -1886,15 +1871,39 @@ async fn dispatch(
             }
 
             // Replay backlog
-            let backlog = session.backlog_after(&term_id, last_seq).await;
+            let Some(backlog_replay) = session.backlog_replay_after(&term_id, last_seq).await
+            else {
+                tracing::warn!(
+                    "TermAttach: terminal {} vanished before backlog replay",
+                    term_id
+                );
+                return Ok(());
+            };
+            if let Some(oldest_seq) = backlog_replay.oldest_seq {
+                let first_missing_seq = last_seq.saturating_add(1);
+                if first_missing_seq < oldest_seq {
+                    tracing::warn!(
+                        "TermAttach: backlog gap detected id={} last_seq={} first_missing_seq={} oldest_retained_seq={} newest_retained_seq={} retained_entries={} retained_bytes={} replay_entries={} session={}",
+                        term_id,
+                        last_seq,
+                        first_missing_seq,
+                        oldest_seq,
+                        backlog_replay.newest_seq,
+                        backlog_replay.retained_entries,
+                        backlog_replay.retained_bytes,
+                        backlog_replay.entries.len(),
+                        session.id,
+                    );
+                }
+            }
             tracing::info!(
                 "TermAttach: id={} last_seq={} backlog_entries={} session={}",
                 term_id,
                 last_seq,
-                backlog.len(),
+                backlog_replay.entries.len(),
                 session.id,
             );
-            for entry in backlog {
+            for entry in backlog_replay.entries {
                 if irpc_tx
                     .send(TermOutput {
                         data: entry.data,
@@ -2310,7 +2319,7 @@ fn run_lsp_check(path: &std::path::Path) -> Vec<DiagnosticEntry> {
             }
         }
         Err(e) => {
-            tracing::error!("LspDiagnostics: command {} failed: {}", cmd, e);
+            tracing::warn!("LspDiagnostics: command {} failed: {}", cmd, e);
             vec![]
         }
     }
