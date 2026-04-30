@@ -233,6 +233,14 @@ pub struct TermBacklog {
     pub next_seq: u64,
 }
 
+pub struct TermBacklogReplay {
+    pub entries: Vec<BacklogEntry>,
+    pub oldest_seq: Option<u64>,
+    pub newest_seq: u64,
+    pub retained_entries: usize,
+    pub retained_bytes: usize,
+}
+
 impl TermBacklog {
     pub fn new() -> Self {
         Self {
@@ -264,6 +272,16 @@ impl TermBacklog {
             .filter(|e| e.seq > after_seq)
             .cloned()
             .collect()
+    }
+
+    pub fn replay_after(&self, after_seq: u64) -> TermBacklogReplay {
+        TermBacklogReplay {
+            entries: self.after(after_seq),
+            oldest_seq: self.entries.front().map(|entry| entry.seq),
+            newest_seq: self.next_seq.saturating_sub(1),
+            retained_entries: self.entries.len(),
+            retained_bytes: self.entries.iter().map(|entry| entry.data.len()).sum(),
+        }
     }
 }
 
@@ -1215,6 +1233,18 @@ impl ServerSession {
         }
     }
 
+    /// Get replay entries plus retained backlog window details for diagnostics.
+    pub async fn backlog_replay_after(
+        &self,
+        terminal_id: &str,
+        after_seq: u64,
+    ) -> Option<TermBacklogReplay> {
+        let terms = self.terminals.lock().await;
+        terms
+            .get(terminal_id)
+            .map(|term| term.backlog.lock().unwrap().replay_after(after_seq))
+    }
+
     /// Clear all terminal output senders (e.g. when connection drops).
     pub async fn clear_output_senders(&self) {
         let terms = self.terminals.lock().await;
@@ -1573,6 +1603,26 @@ mod tests {
         assert_eq!(b.entries.len(), 1000);
         // seq starts at 1, so after 1050 pushes the oldest retained is seq 51
         assert_eq!(b.entries.front().unwrap().seq, 51);
+    }
+
+    #[test]
+    fn term_backlog_replay_reports_retained_window() {
+        let mut b = TermBacklog::new();
+
+        for data in ["one", "two-two", "three"] {
+            b.push("term-1".to_string(), data.as_bytes().to_vec());
+        }
+
+        let replay = b.replay_after(1);
+
+        assert_eq!(replay.entries.len(), 2);
+        assert_eq!(replay.oldest_seq, Some(1));
+        assert_eq!(replay.newest_seq, 3);
+        assert_eq!(replay.retained_entries, 3);
+        assert_eq!(
+            replay.retained_bytes,
+            "one".len() + "two-two".len() + "three".len()
+        );
     }
 
     #[tokio::test]
