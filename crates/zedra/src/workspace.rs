@@ -8,7 +8,10 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::*;
 use zedra_rpc::ZedraPairingTicket;
 use zedra_rpc::proto::{HostEvent, SyncSessionResult};
-use zedra_session::{ConnectEvent, Session, SessionHandle, SessionState, signer::ClientSigner};
+use zedra_session::{
+    ConnectEvent, ConnectPhase, ConnectSnapshot, ReconnectReason, Session, SessionHandle,
+    SessionState, signer::ClientSigner,
+};
 
 use crate::active_terminal;
 use crate::agent;
@@ -63,6 +66,7 @@ pub struct Workspace {
     connection_request: Option<ConnectionRequest>,
     /// Becomes true once a ReconnectStarted event is seen; gates initial auto-open/create.
     seen_reconnect: bool,
+    active_reconnect_reason: Option<ReconnectReason>,
     /// Listens for connect events and syncs them into SessionState/WorkspaceState.
     _connect_listener: Option<Task<()>>,
     /// Listens for host events/actions from the remote host.
@@ -194,6 +198,205 @@ fn should_initialize_terminals_after_sync(
 
 fn should_apply_connect_event(_event: &ConnectEvent, user_disconnect: bool) -> bool {
     !user_disconnect
+}
+
+fn reconnect_reason_label(reason: &ReconnectReason) -> &'static str {
+    match reason {
+        ReconnectReason::ConnectionLost => "connection_lost",
+        ReconnectReason::AppForegrounded => "app_foregrounded",
+    }
+}
+
+fn path_label(snap: &ConnectSnapshot) -> &'static str {
+    if snap
+        .transport
+        .as_ref()
+        .map(|transport| transport.is_direct)
+        .unwrap_or(false)
+    {
+        "direct"
+    } else if snap.transport.is_some() || snap.relay_connected {
+        "relay"
+    } else {
+        "unknown"
+    }
+}
+
+fn network_label(snap: &ConnectSnapshot) -> &'static str {
+    snap.transport
+        .as_ref()
+        .and_then(|transport| transport.network_hint.as_ref())
+        .map(|network| network.label())
+        .unwrap_or("unknown")
+}
+
+fn relay_label(snap: &ConnectSnapshot) -> String {
+    snap.transport
+        .as_ref()
+        .and_then(|transport| transport.relay_url.clone())
+        .or_else(|| snap.relay_url.clone())
+        .unwrap_or_else(|| {
+            if snap.relay_connected {
+                "custom".to_string()
+            } else {
+                "none".to_string()
+            }
+        })
+}
+
+fn classify_ip_network(ip: std::net::IpAddr) -> &'static str {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            if octets[0] == 100 && octets[1] >= 64 && octets[1] <= 127 {
+                "Tailscale"
+            } else if octets[0] == 10
+                || (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31)
+                || (octets[0] == 192 && octets[1] == 168)
+            {
+                "LAN"
+            } else {
+                "Internet"
+            }
+        }
+        std::net::IpAddr::V6(v6) => {
+            let segments = v6.segments();
+            if segments[0] == 0xfe80 || segments[0] & 0xfe00 == 0xfc00 {
+                "LAN"
+            } else {
+                "Internet"
+            }
+        }
+    }
+}
+
+fn path_network_label(path: &iroh::endpoint::PathInfo) -> &'static str {
+    match path.remote_addr() {
+        iroh::TransportAddr::Ip(addr) => classify_ip_network(addr.ip()),
+        _ => "unknown",
+    }
+}
+
+fn path_relay_label(path: &iroh::endpoint::PathInfo) -> Option<String> {
+    match path.remote_addr() {
+        iroh::TransportAddr::Relay(url) => Some(url.host_str().unwrap_or(url.as_str()).to_string()),
+        _ => None,
+    }
+}
+
+fn record_connect_telemetry(
+    event: &ConnectEvent,
+    state: &SessionState,
+    previous_phase: &ConnectPhase,
+    is_reconnect_context: bool,
+    reconnect_reason: Option<&ReconnectReason>,
+) {
+    let snap = &state.snapshot;
+    match event {
+        ConnectEvent::Connected { total_ms } if !is_reconnect_context => {
+            zedra_telemetry::send(zedra_telemetry::Event::ConnectSuccess {
+                total_ms: *total_ms,
+                binding_ms: snap.binding_ms.unwrap_or(0),
+                hole_punch_ms: snap.hole_punch_ms.unwrap_or(0),
+                auth_ms: snap.auth_ms.unwrap_or(0),
+                fetch_ms: snap.sync_ms.unwrap_or(0),
+                path: path_label(snap),
+                network: network_label(snap),
+                rtt_ms: snap
+                    .transport
+                    .as_ref()
+                    .map(|transport| transport.rtt_ms)
+                    .unwrap_or(0),
+                relay: relay_label(snap),
+                relay_latency_ms: snap.relay_latency_ms.unwrap_or(0),
+                alpn: snap.alpn.clone().unwrap_or_default(),
+                has_ipv4: snap.has_ipv4,
+                has_ipv6: snap.has_ipv6,
+                symmetric_nat: snap.mapping_varies.unwrap_or(false),
+                is_first_pairing: snap.is_first_pairing,
+            });
+        }
+        ConnectEvent::Failed { error } if !is_reconnect_context => {
+            zedra_telemetry::send(zedra_telemetry::Event::ConnectFailed {
+                phase: previous_phase.label(),
+                error: error.label(),
+                elapsed_ms: state.elapsed_ms(),
+                relay: relay_label(snap),
+                alpn: snap.alpn.clone().unwrap_or_default(),
+                has_ipv4: snap.has_ipv4,
+                has_ipv6: snap.has_ipv6,
+                relay_connected: snap.relay_connected,
+            });
+        }
+        ConnectEvent::TerminalsReattached { count, resume_ms } => {
+            zedra_telemetry::send(zedra_telemetry::Event::SessionResumed {
+                terminal_count: *count,
+                resume_ms: *resume_ms,
+            });
+        }
+        ConnectEvent::ReconnectStarted { reason } => {
+            zedra_telemetry::send(zedra_telemetry::Event::ReconnectStarted {
+                reason: reconnect_reason_label(reason),
+            });
+        }
+        ConnectEvent::ReconnectSuccess {
+            attempt,
+            elapsed_ms,
+        } => {
+            let reason = reconnect_reason
+                .map(reconnect_reason_label)
+                .unwrap_or("connection_lost");
+            zedra_telemetry::send(zedra_telemetry::Event::ReconnectSuccess {
+                attempt: *attempt,
+                elapsed_ms: *elapsed_ms,
+                reason,
+                binding_ms: snap.binding_ms.unwrap_or(0),
+                hole_punch_ms: snap.hole_punch_ms.unwrap_or(0),
+                auth_ms: snap.auth_ms.unwrap_or(0),
+                fetch_ms: snap.sync_ms.unwrap_or(0),
+                path: path_label(snap),
+                network: network_label(snap),
+                rtt_ms: snap
+                    .transport
+                    .as_ref()
+                    .map(|transport| transport.rtt_ms)
+                    .unwrap_or(0),
+                relay: relay_label(snap),
+                alpn: snap.alpn.clone().unwrap_or_default(),
+                has_ipv4: snap.has_ipv4,
+                has_ipv6: snap.has_ipv6,
+            });
+        }
+        ConnectEvent::ReconnectExhausted {
+            attempts,
+            elapsed_ms,
+            error,
+        } => {
+            let reason = reconnect_reason
+                .map(reconnect_reason_label)
+                .unwrap_or("connection_lost");
+            zedra_telemetry::send(zedra_telemetry::Event::ReconnectExhausted {
+                attempts: *attempts,
+                elapsed_ms: *elapsed_ms,
+                reason,
+                fatal_error: error.is_fatal().then_some(error.label()),
+            });
+        }
+        ConnectEvent::PathUpgraded {
+            prev_path,
+            new_path,
+        } => {
+            zedra_telemetry::send(zedra_telemetry::Event::PathUpgraded {
+                network: path_network_label(new_path),
+                rtt_ms: new_path.stats().rtt.as_millis() as u64,
+                from_relay: prev_path
+                    .as_ref()
+                    .and_then(path_relay_label)
+                    .unwrap_or_else(|| relay_label(snap)),
+            });
+        }
+        _ => {}
+    }
 }
 
 fn terminal_id_in_sync(id: &str, terminal_ids: &[String]) -> bool {
@@ -420,6 +623,7 @@ impl Workspace {
             persist_workspace_state: true,
             connection_request: None,
             seen_reconnect: false,
+            active_reconnect_reason: None,
             _connect_listener: None,
             _host_event_listener: Some(host_event_listener),
             _host_info_listener: Some(host_info_listener),
@@ -463,13 +667,33 @@ impl Workspace {
 
                         let sync_refresh_mode =
                             sync_refresh_mode_for_event(&event, &mut ws.seen_reconnect);
+                        if let ConnectEvent::ReconnectStarted { reason } = &event {
+                            ws.active_reconnect_reason = Some(reason.clone());
+                        }
+                        let is_reconnect_context = ws.seen_reconnect;
+                        let reconnect_reason = ws.active_reconnect_reason.clone();
                         ws.session_state.update(cx, |state, cx| {
+                            let previous_phase = state.phase();
                             state.apply_event(event.clone());
+                            record_connect_telemetry(
+                                &event,
+                                state,
+                                &previous_phase,
+                                is_reconnect_context,
+                                reconnect_reason.as_ref(),
+                            );
                             cx.notify();
                             ws.workspace_state.update(cx, |this, cx| {
                                 this.sync_from_session(ws.session_handle(), state, cx);
                             });
                         });
+                        if matches!(
+                            event,
+                            ConnectEvent::ReconnectSuccess { .. }
+                                | ConnectEvent::ReconnectExhausted { .. }
+                        ) {
+                            ws.active_reconnect_reason = None;
+                        }
                         if let ConnectEvent::SyncComplete { sync, .. } = &event {
                             ws.seed_terminal_meta_from_sync(sync, cx);
                         }
@@ -569,6 +793,8 @@ impl Workspace {
             session_id,
         };
         self.connection_request = Some(request.clone());
+        self.seen_reconnect = false;
+        self.active_reconnect_reason = None;
         self.start_connection(request);
 
         self.content.update(cx, |c, cx| c.show_connecting_view(cx));
@@ -598,6 +824,8 @@ impl Workspace {
         }
 
         info!("restart connection requested");
+        self.seen_reconnect = false;
+        self.active_reconnect_reason = None;
         self.start_connection(request);
         self.content.update(cx, |c, cx| c.show_connecting_view(cx));
         self.record_current_view(cx);
@@ -1052,6 +1280,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.create_new_terminal("user_action", window, cx);
+    }
+
+    fn create_new_terminal(
+        &mut self,
+        telemetry_source: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         info!("handle CreateNewTerminal from workspace");
         self.drawer_host
             .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
@@ -1092,6 +1329,11 @@ impl Workspace {
                 });
 
                 ws.activate_terminal(terminal_id, workspace_terminal.into(), cx);
+                let terminal_count = ws.workspace_state.read(cx).terminal_ids.len();
+                zedra_telemetry::send(zedra_telemetry::Event::TerminalOpened {
+                    source: telemetry_source,
+                    terminal_count,
+                });
             });
         })
         .detach();
@@ -1215,6 +1457,9 @@ impl Workspace {
             });
             view_telemetry::record(view_telemetry::WORKSPACE_NO_ACTIVE_TERMINAL);
         }
+
+        let remaining = self.workspace_state.read(cx).terminal_ids.len();
+        zedra_telemetry::send(zedra_telemetry::Event::TerminalClosed { remaining });
 
         let handle = self.session.handle().clone();
         cx.spawn(async move |_workspace, _cx| {
@@ -1431,7 +1676,7 @@ impl Workspace {
             self.handle_open_terminal(&OpenTerminal { id: first_id }, window, cx);
         } else {
             info!("no terminals on connect, creating new terminal");
-            self.handle_create_new_terminal(&CreateNewTerminal, window, cx);
+            self.create_new_terminal("new_session", window, cx);
         }
     }
 }

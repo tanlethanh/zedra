@@ -366,6 +366,12 @@ impl Connector {
             .process_sync(&client, &sync, existing_terminals)
             .await?;
         let sync_ms = t_sync.elapsed().as_millis() as u64;
+        if !terminals.is_empty() {
+            self.emit(ConnectEvent::TerminalsReattached {
+                count: terminals.len(),
+                resume_ms: sync_ms,
+            });
+        }
 
         self.emit(ConnectEvent::SyncComplete {
             sync: sync.clone(),
