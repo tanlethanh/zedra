@@ -376,6 +376,33 @@ fn start_detached(_options: DetachedStartOptions) -> Result<DetachedStartResult>
     anyhow::bail!("`zedra start --detach` is only supported on Unix platforms.");
 }
 
+fn telemetry_disabled(no_telemetry: bool) -> bool {
+    no_telemetry
+        || std::env::var("ZEDRA_TELEMETRY")
+            .map(|v| v == "0" || v.eq_ignore_ascii_case("false"))
+            .unwrap_or(false)
+}
+
+fn new_ga4(
+    telemetry_id_fallback_dir: &Path,
+    no_telemetry: bool,
+    debug_telemetry: bool,
+) -> Arc<Ga4> {
+    Arc::new(if telemetry_disabled(no_telemetry) {
+        Ga4::disabled()
+    } else {
+        let ga4 = Ga4::new(
+            &identity::telemetry_id_path()
+                .unwrap_or_else(|_| telemetry_id_fallback_dir.join(".zedra-telemetry-id")),
+            debug_telemetry,
+        );
+        if debug_telemetry {
+            eprintln!("[telemetry] debug mode (GA4 validation endpoint, not recorded)");
+        }
+        ga4
+    })
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -510,23 +537,7 @@ async fn main() -> Result<()> {
             let endpoint_id = host_identity.endpoint_id();
 
             // Initialize telemetry. Disabled by --no-telemetry flag or ZEDRA_TELEMETRY=0.
-            let telemetry_disabled = no_telemetry
-                || std::env::var("ZEDRA_TELEMETRY")
-                    .map(|v| v == "0" || v.eq_ignore_ascii_case("false"))
-                    .unwrap_or(false);
-            let ga4 = Arc::new(if telemetry_disabled {
-                Ga4::disabled()
-            } else {
-                let g = Ga4::new(
-                    &identity::telemetry_id_path()
-                        .unwrap_or_else(|_| workdir.join(".zedra-telemetry-id")),
-                    debug_telemetry,
-                );
-                if debug_telemetry {
-                    eprintln!("[telemetry] debug mode (GA4 validation endpoint, not recorded)");
-                }
-                g
-            });
+            let ga4 = new_ga4(&workdir, no_telemetry, debug_telemetry);
             let is_first_run = ga4.is_first_run;
 
             // Register host GA4 backend as the global telemetry provider.
@@ -967,6 +978,8 @@ async fn main() -> Result<()> {
         }
 
         Commands::Update { version, yes } => {
+            let telemetry_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let ga4 = new_ga4(&telemetry_dir, false, false);
             let current = env!("CARGO_PKG_VERSION");
             utils::eprintln_heading("Zedra Update");
             eprintln!();
@@ -1023,13 +1036,17 @@ async fn main() -> Result<()> {
             match version_check::self_update(&target_tag).await {
                 Ok(tag) => {
                     let elapsed_ms = update_start.elapsed().as_millis() as u64;
-                    zedra_telemetry::send(Event::SelfUpdate {
-                        success: true,
-                        target_version: tag.clone(),
-                        from_version: env!("CARGO_PKG_VERSION"),
-                        error: "",
-                        elapsed_ms,
-                    });
+                    zedra_host::telemetry::send_now(
+                        &ga4,
+                        Event::SelfUpdate {
+                            success: true,
+                            target_version: tag.clone(),
+                            from_version: env!("CARGO_PKG_VERSION"),
+                            error: "",
+                            elapsed_ms,
+                        },
+                    )
+                    .await;
                     eprintln!();
                     utils::eprintln_success(format!("Updated to {tag}."));
                     if !alive.is_empty() {
@@ -1042,13 +1059,17 @@ async fn main() -> Result<()> {
                 Err(e) => {
                     let elapsed_ms = update_start.elapsed().as_millis() as u64;
                     let error_label = classify_update_error(&e);
-                    zedra_telemetry::send(Event::SelfUpdate {
-                        success: false,
-                        target_version: target_tag.clone(),
-                        from_version: env!("CARGO_PKG_VERSION"),
-                        error: error_label,
-                        elapsed_ms,
-                    });
+                    zedra_host::telemetry::send_now(
+                        &ga4,
+                        Event::SelfUpdate {
+                            success: false,
+                            target_version: target_tag.clone(),
+                            from_version: env!("CARGO_PKG_VERSION"),
+                            error: error_label,
+                            elapsed_ms,
+                        },
+                    )
+                    .await;
                     utils::eprintln_error(format!("Update failed: {e}"));
                     std::process::exit(1);
                 }

@@ -254,6 +254,7 @@ pub struct ConnectSnapshot {
     pub local_node_id: Option<String>,
     pub remote_node_id: Option<String>,
     pub relay_url: Option<String>,
+    pub preferred_relay_url: Option<String>,
     pub alpn: Option<String>,
     pub relay_connected: bool,
     pub direct_addrs: Vec<String>,
@@ -367,6 +368,8 @@ impl SessionState {
                 snap.has_ipv4 = net_report.udp_v4;
                 snap.has_ipv6 = net_report.udp_v6;
                 snap.mapping_varies = net_report.mapping_varies_by_dest();
+                snap.preferred_relay_url =
+                    net_report.preferred_relay.as_ref().map(ToString::to_string);
                 snap.relay_latency_ms = net_report
                     .relay_latency
                     .iter()

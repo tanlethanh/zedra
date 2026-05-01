@@ -14,6 +14,25 @@
 4. Expected: no hover background remains stuck after tap, drag, or scroll interactions
 5. Expected: active, selected, destructive, and disabled states remain readable without hover styling
 
+## 0a. Home Install Guide Tabs
+
+1. Open the app with no saved workspaces visible on the Home screen
+2. Switch between the `curl`, `claude`, `codex`, `opencode`, and `gemini` guide tabs
+3. Expected: each tab shows the same install commands as the landing page
+4. Tap a command line in each tab
+5. Expected: the tapped command line is copied to the system clipboard without navigating away from Home
+6. Long-press and drag across guide text
+7. Expected: native text selection handles appear, command and comment lines are selectable, and `Copy` copies the selected text
+8. Expected: switching tabs or scrolling the guide does not leave stale selection handles on screen
+
+## 0b. Home Settings Button
+
+1. Run a Debug build and open the Home screen
+2. Tap the top-right settings icon
+3. Expected: a light haptic feedback fires and the Settings screen opens
+4. Run a Release build and open the Home screen
+5. Expected: the settings icon is not visible and the developer Settings screen is not reachable from Home
+
 ## 0c. Developer Native Notification
 
 1. Run a Debug build and open Settings
@@ -114,8 +133,14 @@
 1. Start host: `zedra start --workdir .`
 2. Device A scans QR → connects successfully
 3. Device B scans the **same** QR
-4. Expected: Device B sees "Handshake already used" error (not a crash)
-5. To pair Device B: restart host (or run `zedra qr` if/when implemented)
+4. Expected: Device B sees "The QR code was used. Refresh it and scan again." (not a crash)
+5. To pair Device B: refresh the QR code and scan again
+
+## 2a. Protocol Version Mismatch
+
+1. Run an app build and CLI/host build that use different `ZEDRA_ALPN` versions
+2. Scan the host QR from the app
+3. Expected: connect view shows "Protocol mismatch, Update App or CLI"
 
 ## 3. Continue Session from Saved Workspace
 
@@ -127,6 +152,15 @@
 5. Expected: the workspace drawer Terminals tab shows the active remote
    terminals from the host without creating a replacement terminal
 6. Expected: terminal cards appear in the same order they had before force-close
+
+## 3a. Remove Saved Workspace From Home
+
+1. Connect via QR so a workspace card appears on Home
+2. Return to Home and long-press the workspace card
+3. Tap `Delete` in the native confirmation alert
+4. Expected: the workspace card disappears from Home immediately
+5. Force-close and relaunch the app
+6. Expected: the deleted workspace card does not reappear
 
 ## 3b. Terminal Reattach Resize
 
@@ -193,7 +227,7 @@
 1. Pair Device A via QR → connected to session S
 2. Start a new `zedra start` for the same workdir on the host (same session)
 3. Pair Device B via the new QR → should attach to session S
-4. Expected: Device B blocked with "Session occupied" (Device A is active)
+4. Expected: Device B blocked with "Host occupied. Disconnect other device and retry."
 5. Disconnect Device A → Device B can now attach
 
 ## 7. `zedra client` RTT Test
@@ -272,6 +306,8 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:
 6. Expected: the icon rotates once, light haptic feedback fires, the current connection attempt restarts, and the overlay remains visible
 7. Rotate or resize while the overlay is visible
 8. Expected: the title, restart icon, badge, and details remain in a bounded centered column instead of stretching edge to edge
+9. Tap `View Details`, then `Hide Details`
+10. Expected: the subtitle stays horizontally centered and does not jump when details expand or collapse
 
 ## 11. Terminal Keyboard Tap Toggle On iOS
 
@@ -313,10 +349,12 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:
 4. Expected: a compact native glass/material preview appears above the keyboard and updates with the live dictated text
 5. Stop dictation
 6. Expected: the preview hides, and the dictated text stays inserted in the PTY once, without being removed, without a stuck marked-text underline, and without duplicate characters
-7. Repeat with a dictated phrase that includes a newline or return command
-8. Expected: newline input is routed as terminal enter rather than leaving literal marked text behind
-9. Start dictation again, then cancel or force recognition failure by stopping before speech is recognized
-10. Expected: the preview hides, the terminal remains focused, no stale dictation text is committed, and normal keyboard typing still reaches the PTY
+7. Repeat with a longer phrase and stop immediately after the last words
+8. Expected: the final committed PTY text includes the last words, with no `UIDictationController` hypothesis-cancel log
+9. Repeat with a dictated phrase that includes a newline or return command
+10. Expected: newline input is routed as terminal enter rather than leaving literal marked text behind
+11. Start dictation again, then cancel or force recognition failure by stopping before speech is recognized
+12. Expected: the preview hides, the terminal remains focused, no stale dictation text is committed, and normal keyboard typing still reaches the PTY
 
 ## 11c. Native Keyboard Suggestions On iOS
 
@@ -326,8 +364,8 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:
 4. Expected: iOS native inline predictions or suggestion candidates appear when supported by the OS and keyboard settings
 5. Accept a suggestion
 6. Expected: the accepted text is inserted into the PTY once, without enabling a native caret, edit menu, or terminal text-selection handles
-7. Resume or reconnect to an existing terminal with text already at the prompt, then press software-keyboard backspace repeatedly
-8. Expected: each backspace is routed to the PTY and can delete the existing prompt text rather than stopping after the synthetic prediction context is empty
+7. Resume or reconnect to an existing terminal with text already at the prompt, then press and long-press software-keyboard backspace
+8. Expected: each repeated backspace is routed to the PTY and can continuously delete existing prompt text rather than stopping after the synthetic prediction context is empty
 9. Dictate a short fragment, stop dictation so it commits, then press backspace
 10. Expected: the dictated characters can be deleted from the PTY one character at a time
 11. Type command-like text with lowercase letters, straight quotes, hyphens, or double spaces
@@ -335,8 +373,31 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:
 13. Open the workspace Git sidebar and focus the Commit message input
 14. Type prose and accept an available native suggestion
 15. Expected: the suggestion inserts into the commit message, while smart punctuation and autocapitalization remain disabled
-16. Switch the software keyboard to Vietnamese Telex and type `lee` and `chaf` in the terminal
-17. Expected: the PTY receives `lê` and `chà`, without duplicate base consonants such as `llê` or `chhà`
+16. Switch the software keyboard to Vietnamese Telex and type `lee`, `chaf`, `toois`, `vois`, `ddungs`, and `uw ` in the terminal
+17. Expected: the PTY receives `lê`, `chà`, `tối`, `với`, `đúng`, and `ư `, without duplicate base consonants such as `llê` or `chhà`, without placing the tone on the final vowel as `tôí`, without duplicating a replayed composed cluster as `vơới`, without dropping preserved prefixes such as `đ`, and without dropping the standalone composed character before the space
+18. Switch to a Japanese keyboard, type a short marked composition, and accept a candidate
+19. Expected: the marked text commits once to the PTY, the candidate UI anchors near the terminal input area, and there is no repeated `variant selector cell index number could not be found` warning
+
+## 11d. iOS Native Text Input Regression Matrix
+
+1. Terminal, normal IME marked text: switch to Japanese, type a multi-character composition, move between candidates, then accept one candidate
+2. Expected: preedit text is visible only as native marked text, the accepted candidate is inserted once, and cancelling composition restores the previously committed terminal input
+3. Terminal, Vietnamese Telex: type `lee`, `chaf`, `toois`, `vois`, `ddungs`, and `uw ` without pausing between keys
+4. Expected: output is `lê`, `chà`, `tối`, `với`, `đúng`, and `ư ` immediately when the keyboard commits each rewrite, with no duplicate replayed consonants, dropped prefixes, or composed clusters
+5. Terminal, native suggestion: type `teh`, accept the keyboard suggestion `the`, then type `hel` and accept `hello`
+6. Expected: replacements are sent as minimal PTY diffs, with no extra backspaces, no duplicate prefix, and no stuck native marked range
+7. Terminal, dictation: dictate a phrase, stop immediately after the final word, then wait for any late final transcript update
+8. Expected: the preview hides on recording stop, the late hypothesis stays in the dictation store, final text includes the last words, and there is no `UIDictationController` hypothesis-cancel log
+9. Terminal, native dictation stream: dictate `hello, how's it going` and watch the first `insertText` word plus following `replaceRange` rewrites
+10. Expected: the first word moves directly into dictation preview without streaming to the PTY first, and finalization commits once without a hypothesis-cancel log
+11. Cross-flow: after a dictation commit, press backspace repeatedly, then type `hel` and accept `hello`
+12. Expected: dictation cleanup does not delete already-committed terminal text, repeated backspace continues through the PTY, and the following suggestion starts from a fresh keyboard context
+13. Cross-flow: start a Japanese marked composition, cancel it, then accept a native suggestion in the same terminal focus session
+14. Expected: cancelled marked text does not poison the following suggestion replacement or leave stale candidate UI
+15. Commit message input: type Japanese marked text, accept a candidate, then accept a native suggestion
+16. Expected: normal input uses the same native IME protocol correctly, with marked text committed once and suggestions replacing only the requested range
+17. Commit message input, dictation: tap the microphone, dictate a short phrase, then stop dictation
+18. Expected: the dictated phrase remains in the input after UIKit commits, the final cleanup delete does not clear the field, and any late `insertDictationResult` does not duplicate the phrase
 
 ## 12. Quick Action Terminal Navigation
 
@@ -607,6 +668,8 @@ printf '\033]8;;file:///tmp/zedra-code-selection.rs:1:1\033\\/tmp/zedra-code-sel
 19. Tap `Cancel`, then retry and tap `Disconnect`
 20. Expected: the session disconnects only after confirmation
 21. Expected: the home workspace card immediately shows the disconnected/reconnect state instead of the old connected state
+22. Tap the disconnected workspace card
+23. Expected: the connect view title is `Disconnected` and the subtitle is `Tap refresh to reconnect.`
 
 ## 18. Workspace Header Terminal Title + Terminal Agent Icon
 

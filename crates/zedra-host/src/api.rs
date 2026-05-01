@@ -30,6 +30,7 @@ use crate::rpc_daemon::{create_terminal, DaemonState};
 use crate::session_registry::SessionRegistry;
 use zedra_rpc::proto::HostEvent;
 use zedra_rpc::ZedraPairingTicket;
+use zedra_telemetry::Event;
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -270,6 +271,13 @@ async fn create_terminal_handler(
             {
                 tracing::warn!("Failed to record terminal metrics: {}", e);
             }
+            zedra_telemetry::send(Event::HostTerminalOpen {
+                has_launch_cmd: launch_cmd
+                    .as_ref()
+                    .map(|command| !command.is_empty())
+                    .unwrap_or(false),
+            });
+
             // Push TerminalCreated event to the subscribed client (if any).
             session
                 .push_event(HostEvent::TerminalCreated {
