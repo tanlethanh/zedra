@@ -42,13 +42,13 @@ pub fn parse(url: &str) -> Result<DeeplinkAction> {
     }
 }
 
-/// Enqueue a parsed deeplink action for consumption on the next render frame.
+/// Enqueue a parsed deeplink action for consumption on the next app tick.
 /// The app's tick function checks for pending deeplinks periodically.
 pub fn enqueue(action: DeeplinkAction) {
     PENDING_DEEPLINK.set(action);
 }
 
-/// Take the pending deeplink action (called from `ZedraApp::render`).
+/// Take the pending deeplink action (called from `ZedraApp::tick`).
 pub fn take_pending() -> Option<DeeplinkAction> {
     PENDING_DEEPLINK.take()
 }

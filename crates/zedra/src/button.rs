@@ -6,7 +6,7 @@ use crate::theme;
 
 const DEFAULT_NATIVE_FLOATING_BUTTON_ICON_SIZE: f32 = 16.0;
 
-/// An outlined button — bordered, centered text, hover highlight.
+/// An outlined button - bordered, centered text.
 pub fn outline_button(id: impl Into<ElementId>, label: &str) -> Stateful<Div> {
     div()
         .id(id)
@@ -19,7 +19,6 @@ pub fn outline_button(id: impl Into<ElementId>, label: &str) -> Stateful<Div> {
         .border_1()
         .border_color(rgb(theme::BORDER_DEFAULT))
         .cursor_pointer()
-        .hover(|s| s.bg(theme::hover_bg()))
         .text_color(rgb(theme::TEXT_PRIMARY))
         .text_size(px(theme::FONT_BODY))
         .font_weight(FontWeight::MEDIUM)

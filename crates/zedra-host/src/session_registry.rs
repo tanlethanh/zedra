@@ -7,17 +7,22 @@
 // authorized client public keys. One active client per session at a time.
 // Pairing slots (one-use handshake keys) are used for first registration.
 
+use crate::docs_tree::{
+    snapshot_page_result, DocsTreeCacheEntry, DocsTreeSnapshot, DOCS_TREE_CACHE_TTL,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use zedra_osc::{OscEvent, OscScanner};
-use zedra_rpc::proto::{BacklogEntry, HostEvent, TermOutput, TerminalSyncEntry};
+use zedra_rpc::proto::{
+    BacklogEntry, FsDocsTreeError, FsDocsTreeResult, HostEvent, TermOutput, TerminalSyncEntry,
+};
 
 // ---------------------------------------------------------------------------
 // Pairing slot
@@ -79,6 +84,10 @@ pub struct ServerSession {
     pub fs_watched_paths: Mutex<HashSet<String>>,
     /// Token bucket for FsWatch/FsUnwatch RPC rate limiting.
     pub fs_watch_rpc_limiter: Mutex<TokenBucket>,
+    /// One bounded docs-tree snapshot per session, replaced by manual rebuild.
+    pub docs_tree_cache: Mutex<Option<DocsTreeCacheEntry>>,
+    /// Prevents repeated rebuild requests from starting overlapping filesystem scans.
+    pub docs_tree_scan_in_flight: AtomicBool,
     // ── RPC usage counters (lifetime totals, never reset) ──────────────────
     /// Total FsRead calls served.
     pub rpc_fs_reads: AtomicU64,
@@ -224,6 +233,14 @@ pub struct TermBacklog {
     pub next_seq: u64,
 }
 
+pub struct TermBacklogReplay {
+    pub entries: Vec<BacklogEntry>,
+    pub oldest_seq: Option<u64>,
+    pub newest_seq: u64,
+    pub retained_entries: usize,
+    pub retained_bytes: usize,
+}
+
 impl TermBacklog {
     pub fn new() -> Self {
         Self {
@@ -255,6 +272,16 @@ impl TermBacklog {
             .filter(|e| e.seq > after_seq)
             .cloned()
             .collect()
+    }
+
+    pub fn replay_after(&self, after_seq: u64) -> TermBacklogReplay {
+        TermBacklogReplay {
+            entries: self.after(after_seq),
+            oldest_seq: self.entries.front().map(|entry| entry.seq),
+            newest_seq: self.next_seq.saturating_sub(1),
+            retained_entries: self.entries.len(),
+            retained_bytes: self.entries.iter().map(|entry| entry.data.len()).sum(),
+        }
     }
 }
 
@@ -947,6 +974,8 @@ impl ServerSession {
                 FS_WATCH_RPC_RATE_PER_SEC,
                 FS_WATCH_RPC_BURST,
             )),
+            docs_tree_cache: Mutex::new(None),
+            docs_tree_scan_in_flight: AtomicBool::new(false),
             rpc_fs_reads: AtomicU64::new(0),
             rpc_fs_writes: AtomicU64::new(0),
             rpc_git_ops: AtomicU64::new(0),
@@ -1141,6 +1170,49 @@ impl ServerSession {
         self.fs_watched_paths.lock().await.remove(path)
     }
 
+    pub fn try_begin_docs_tree_scan(&self) -> bool {
+        self.docs_tree_scan_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    pub fn finish_docs_tree_scan(&self) {
+        self.docs_tree_scan_in_flight
+            .store(false, Ordering::Release);
+    }
+
+    pub async fn store_docs_tree_snapshot(&self, root_key: String, snapshot: DocsTreeSnapshot) {
+        // The cache is a single manual rebuild snapshot, not a persistent index.
+        *self.docs_tree_cache.lock().await = Some(DocsTreeCacheEntry { root_key, snapshot });
+    }
+
+    pub async fn docs_tree_page(
+        &self,
+        root_key: &str,
+        snapshot_id: Option<&str>,
+        offset: u32,
+        limit: u32,
+    ) -> std::result::Result<FsDocsTreeResult, FsDocsTreeError> {
+        let mut cache = self.docs_tree_cache.lock().await;
+        let Some(entry) = cache.as_ref() else {
+            return Err(FsDocsTreeError::CacheMiss);
+        };
+
+        if entry.snapshot.created_at.elapsed() > DOCS_TREE_CACHE_TTL {
+            *cache = None;
+            return Err(FsDocsTreeError::CacheMiss);
+        }
+        if entry.root_key != root_key {
+            return Err(FsDocsTreeError::CacheMiss);
+        }
+        if snapshot_id != Some(entry.snapshot.id.as_str()) {
+            return Err(FsDocsTreeError::StaleSnapshot);
+        }
+
+        // Page from the cached snapshot without cloning the full markdown list.
+        Ok(snapshot_page_result(&entry.snapshot, offset, limit))
+    }
+
     /// Whether a client is currently attached.
     pub async fn is_occupied(&self) -> bool {
         self.active_client.lock().await.is_some()
@@ -1159,6 +1231,18 @@ impl ServerSession {
             Some(term) => term.backlog.lock().unwrap().after(after_seq),
             None => vec![],
         }
+    }
+
+    /// Get replay entries plus retained backlog window details for diagnostics.
+    pub async fn backlog_replay_after(
+        &self,
+        terminal_id: &str,
+        after_seq: u64,
+    ) -> Option<TermBacklogReplay> {
+        let terms = self.terminals.lock().await;
+        terms
+            .get(terminal_id)
+            .map(|term| term.backlog.lock().unwrap().replay_after(after_seq))
     }
 
     /// Clear all terminal output senders (e.g. when connection drops).
@@ -1191,6 +1275,17 @@ mod tests {
         registry.create_named("test", PathBuf::from("/tmp")).await
     }
 
+    fn docs_snapshot(id: &str) -> DocsTreeSnapshot {
+        DocsTreeSnapshot {
+            id: id.to_string(),
+            root_name: "tmp".to_string(),
+            root_path: "/tmp".to_string(),
+            docs: Vec::new(),
+            truncated: false,
+            created_at: Instant::now(),
+        }
+    }
+
     #[test]
     fn terminal_order_keeps_existing_order_and_appends_missing_by_creation_time() {
         let mut order = vec![
@@ -1211,6 +1306,57 @@ mod tests {
 
         assert_eq!(ordered, vec!["term-b", "term-a", "term-c", "term-d"]);
         assert_eq!(order, ordered);
+    }
+
+    #[tokio::test]
+    async fn fs_docs_tree_cache_returns_matching_snapshot_page() {
+        let registry = SessionRegistry::new();
+        let session = create_session(&registry).await;
+        session
+            .store_docs_tree_snapshot("/tmp".to_string(), docs_snapshot("snapshot-a"))
+            .await;
+
+        let result = session
+            .docs_tree_page("/tmp", Some("snapshot-a"), 0, 50)
+            .await
+            .unwrap();
+
+        assert_eq!(result.snapshot_id.as_deref(), Some("snapshot-a"));
+        assert!(result.root.is_some());
+    }
+
+    #[tokio::test]
+    async fn fs_docs_tree_cache_rejects_stale_or_missing_snapshot() {
+        let registry = SessionRegistry::new();
+        let session = create_session(&registry).await;
+        session
+            .store_docs_tree_snapshot("/tmp".to_string(), docs_snapshot("snapshot-a"))
+            .await;
+
+        assert_eq!(
+            session
+                .docs_tree_page("/tmp", Some("snapshot-b"), 0, 50)
+                .await
+                .unwrap_err(),
+            FsDocsTreeError::StaleSnapshot
+        );
+        assert_eq!(
+            session
+                .docs_tree_page("/other", Some("snapshot-a"), 0, 50)
+                .await
+                .unwrap_err(),
+            FsDocsTreeError::CacheMiss
+        );
+    }
+
+    #[test]
+    fn fs_docs_tree_scan_guard_allows_one_rebuild_at_a_time() {
+        let session = ServerSession::new("test".to_string(), None, None);
+
+        assert!(session.try_begin_docs_tree_scan());
+        assert!(!session.try_begin_docs_tree_scan());
+        session.finish_docs_tree_scan();
+        assert!(session.try_begin_docs_tree_scan());
     }
 
     #[test]
@@ -1457,6 +1603,26 @@ mod tests {
         assert_eq!(b.entries.len(), 1000);
         // seq starts at 1, so after 1050 pushes the oldest retained is seq 51
         assert_eq!(b.entries.front().unwrap().seq, 51);
+    }
+
+    #[test]
+    fn term_backlog_replay_reports_retained_window() {
+        let mut b = TermBacklog::new();
+
+        for data in ["one", "two-two", "three"] {
+            b.push("term-1".to_string(), data.as_bytes().to_vec());
+        }
+
+        let replay = b.replay_after(1);
+
+        assert_eq!(replay.entries.len(), 2);
+        assert_eq!(replay.oldest_seq, Some(1));
+        assert_eq!(replay.newest_seq, 3);
+        assert_eq!(replay.retained_entries, 3);
+        assert_eq!(
+            replay.retained_bytes,
+            "one".len() + "two-two".len() + "three".len()
+        );
     }
 
     #[tokio::test]

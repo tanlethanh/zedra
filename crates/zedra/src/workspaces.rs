@@ -131,6 +131,10 @@ impl Workspaces {
         cx.notify();
     }
 
+    pub fn has_pending_ticket() -> bool {
+        PENDING_TICKET.has_pending()
+    }
+
     /// Process any pending ticket. Call this when window is available.
     pub fn process_pending_ticket(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ticket) = PENDING_TICKET.take() {
@@ -240,16 +244,8 @@ impl Workspaces {
                 WorkspaceEvent::Disconnected => {
                     let index = this.entries.iter().position(|e| *e == ws_entity);
                     if let Some(index) = index {
-                        // Just remove the workspace entry, keep the state
-                        this.entries.remove(index);
-                        this.active_index = if this.entries.is_empty() {
-                            None
-                        } else {
-                            Some(0)
-                        };
-
-                        info!("Workspace disconnected; {} remaining", this.entries.len());
-                        cx.emit(WorkspacesEvent::Disconnected { index });
+                        // Just remove the workspace entry, keep the state.
+                        this.remove_entry(index, cx);
                     }
                 }
             },
@@ -273,6 +269,21 @@ impl Workspaces {
         }
     }
 
+    pub fn remove_by_endpoint_addr(&mut self, endpoint_addr: &str, cx: &mut Context<Self>) {
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|s| s.read(cx).endpoint_addr(cx) == endpoint_addr)
+        {
+            if let Some(entry) = self.entries.get(index) {
+                entry.update(cx, |ws, _cx| ws.prepare_for_saved_removal());
+            }
+            self.remove_entry(index, cx);
+        }
+
+        self.remove_saved(endpoint_addr, cx);
+    }
+
     pub fn remove_saved(&mut self, endpoint_addr: &str, cx: &mut Context<Self>) {
         WorkspaceState::remove_by_endpoint_add(endpoint_addr)
             .map_err(|e| error!("Failed to remove workspace state: {e}"))
@@ -285,6 +296,18 @@ impl Workspaces {
             self.states.remove(index);
         }
         cx.notify();
+    }
+
+    fn remove_entry(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.entries.remove(index);
+        self.active_index = if self.entries.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
+
+        info!("Workspace disconnected; {} remaining", self.entries.len());
+        cx.emit(WorkspacesEvent::Disconnected { index });
     }
 
     fn emit_states_changed(&mut self, cx: &mut Context<Self>) {

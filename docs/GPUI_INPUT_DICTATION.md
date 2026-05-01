@@ -60,15 +60,23 @@ hypothesis. Clearing it too early can make `UIDictationController` cancel with
 
 When UIKit removes the dictation placeholder with `willInsertResult=false`, the
 streamed marked text is treated as final and committed. Some stop paths can then
-send a late final insert. The recent streamed-commit guard ignores that late
-insert so the terminal does not receive duplicate transcript text.
+send a late final insert. The streamed-commit guard ignores that late insert so
+the terminal does not receive duplicate transcript text.
 
 Normal multi-character `insertText` must not be treated as dictation by length
-alone. Dictation buffering requires an explicit native signal:
+alone. Dictation buffering requires a native or platform-flow signal:
 
 - `UITextInputContext.isDictationInputExpected`
+- `UITextInputMode.primaryLanguage == "dictation"`
 - a recent wide context query that marks a pending dictation insert
 - an already active insert-text dictation stream
+- an `insertText` transaction that was not preceded by
+  `shouldChangeTextInRange`
+
+The bridge must not infer dictation from phrase shape alone. Vietnamese Telex,
+Japanese IME, suggestions, and dictation all share `insertText` and
+`replaceRange`, so routing has to come from native state or an already active
+dictation lifecycle.
 
 ## Preview Overlay
 

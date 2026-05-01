@@ -3,6 +3,7 @@
 //! Resolves the latest release from GitHub and optionally downloads + replaces
 //! the running binary.
 
+use crate::utils;
 use anyhow::{bail, Context, Result};
 const REPO: &str = "tanlethanh/zedra";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -32,7 +33,7 @@ pub async fn self_update(tag: &str) -> Result<String> {
 
     let tmp_dir = tempfile::tempdir().context("failed to create temp dir")?;
 
-    eprintln!("  Downloading {archive_url}...");
+    utils::eprintln_step(format!("Downloading {archive_url}"));
     let client = reqwest::Client::new();
     let archive_bytes = client
         .get(&archive_url)
@@ -66,12 +67,12 @@ pub async fn self_update(tag: &str) -> Result<String> {
         false
     };
     if checksum_verified {
-        eprintln!("  Checksum verified.");
+        utils::eprintln_success("Checksum verified.");
     } else {
-        eprintln!("  Warning: checksum verification skipped (unavailable).");
+        utils::eprintln_warn("Checksum verification skipped (unavailable).");
     }
 
-    eprintln!("  Extracting...");
+    utils::eprintln_step("Extracting");
     let archive_file = std::fs::File::open(&archive_path)?;
     let decoder = flate2::read::GzDecoder::new(archive_file);
     let mut archive = tar::Archive::new(decoder);

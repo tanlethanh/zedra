@@ -6,7 +6,7 @@ use crate::platform_bridge::{self, HapticFeedback};
 use crate::terminal_card::{TerminalCardProps, render_terminal_card};
 use crate::terminal_state::TerminalState;
 use crate::theme;
-use crate::transport_badge::phase_indicator_color;
+use crate::transport_badge::ConnectionStatusIndicator;
 use crate::workspaces::Workspaces;
 
 #[derive(Clone, Debug)]
@@ -179,10 +179,7 @@ impl Render for QuickActionPanel {
             let state = workspace_entity.read(cx).workspace_state(cx);
             let terminal_state: Entity<TerminalState> = workspace_entity.read(cx).terminal_state();
 
-            let status_color = match state.connect_phase.clone() {
-                Some(p) => phase_indicator_color(&p),
-                None => theme::ACCENT_DIM,
-            };
+            let connect_phase = state.connect_phase.clone();
             let subtitle = match (state.hostname.is_empty(), state.strip_path.is_empty()) {
                 (false, false) => format!("{}:{}", state.hostname, state.strip_path),
                 (false, true) => state.hostname.to_string(),
@@ -215,13 +212,10 @@ impl Render for QuickActionPanel {
                                     .flex_row()
                                     .items_center()
                                     .gap(px(6.0))
-                                    .child(
-                                        div()
-                                            .w(px(theme::ICON_STATUS))
-                                            .h(px(theme::ICON_STATUS))
-                                            .rounded(px(3.0))
-                                            .bg(rgb(status_color)),
-                                    )
+                                    .child(ConnectionStatusIndicator::from_phase(
+                                        ("quick-action-connect-status", index),
+                                        connect_phase.as_ref(),
+                                    ))
                                     .child(
                                         div()
                                             .flex_1()

@@ -7,6 +7,7 @@
 //
 // Endpoints:
 //   GET  /api/status              — daemon health, active sessions, and terminals
+//   POST /api/qr                  — create and return a fresh one-time pairing QR
 //   POST /api/terminal            — create a terminal in the active session
 //
 // Auth: every request must carry  Authorization: Bearer <token>
@@ -23,9 +24,12 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 
 use crate::pty::SpawnOptions;
+use crate::qr;
 use crate::rpc_daemon::{create_terminal, DaemonState};
 use crate::session_registry::SessionRegistry;
 use zedra_rpc::proto::HostEvent;
+use zedra_rpc::ZedraPairingTicket;
+use zedra_telemetry::Event;
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -35,6 +39,8 @@ use zedra_rpc::proto::HostEvent;
 pub struct ApiState {
     pub registry: Arc<SessionRegistry>,
     pub daemon_state: Arc<DaemonState>,
+    pub endpoint: iroh::Endpoint,
+    pub relay_urls: Vec<String>,
     pub token: String,
 }
 
@@ -150,11 +156,51 @@ async fn status(State(s): State<ApiState>, headers: HeaderMap) -> impl IntoRespo
     .into_response()
 }
 
+async fn create_pairing_qr_handler(
+    State(s): State<ApiState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !verify_token(&headers, &s.token) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        )
+            .into_response();
+    }
+
+    let Some(session) = s.registry.first_session().await else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "no session available"})),
+        )
+            .into_response();
+    };
+
+    let ticket = ZedraPairingTicket {
+        endpoint_id: s.daemon_state.identity.endpoint_id(),
+        handshake_secret: rand::random(),
+        session_id: session.id.clone(),
+    };
+    match qr::build_pairing_info(&ticket, &s.endpoint, &s.relay_urls) {
+        Ok(info) => {
+            s.registry
+                .add_pairing_slot(&session.id, ticket.handshake_secret)
+                .await;
+            (StatusCode::OK, Json(serde_json::json!(info))).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateTerminalReq {
     /// Session to create the terminal in. Omit to use the first active session.
     pub session_id: Option<String>,
-    /// Command injected on startup (e.g. "claude --resume").
+    /// Command run on startup (e.g. "claude --resume").
     pub launch_cmd: Option<String>,
     #[serde(default = "default_cols")]
     pub cols: u16,
@@ -215,6 +261,12 @@ async fn create_terminal_handler(
 
     match create_terminal(&session, req.cols, req.rows, opts).await {
         Ok(id) => {
+            zedra_telemetry::send(Event::HostTerminalOpen {
+                has_launch_cmd: launch_cmd
+                    .as_ref()
+                    .map(|command| !command.is_empty())
+                    .unwrap_or(false),
+            });
             // Push TerminalCreated event to the subscribed client (if any).
             session
                 .push_event(HostEvent::TerminalCreated {
@@ -248,6 +300,7 @@ async fn create_terminal_handler(
 pub async fn start(state: ApiState) -> anyhow::Result<std::net::SocketAddr> {
     let app = Router::new()
         .route("/api/status", get(status))
+        .route("/api/qr", post(create_pairing_qr_handler))
         .route("/api/terminal", post(create_terminal_handler))
         .with_state(state);
 
@@ -259,4 +312,70 @@ pub async fn start(state: ApiState) -> anyhow::Result<std::net::SocketAddr> {
         }
     });
     Ok(addr)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::HostIdentity;
+    use crate::session_registry::ConsumeSlotResult;
+
+    #[tokio::test]
+    async fn qr_endpoint_requires_token_and_creates_pairing_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = Arc::new(HostIdentity::load_or_generate_for_workdir(dir.path()).unwrap());
+        let registry = Arc::new(SessionRegistry::new());
+        let session = registry
+            .create_named("test", dir.path().to_path_buf())
+            .await;
+        let daemon_state = Arc::new(DaemonState::new(dir.path().to_path_buf(), identity.clone()));
+        let endpoint = iroh::Endpoint::builder()
+            .relay_mode(iroh::RelayMode::Disabled)
+            .secret_key(iroh::SecretKey::from(rand::random::<[u8; 32]>()))
+            .bind()
+            .await
+            .unwrap();
+        let addr = start(ApiState {
+            registry: registry.clone(),
+            daemon_state,
+            endpoint: endpoint.clone(),
+            relay_urls: vec!["https://test.relay.zedra.dev".to_string()],
+            token: "test-token".to_string(),
+        })
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/api/qr");
+        let unauthorized = client.post(&url).send().await.unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let info: qr::StartupInfo = client
+            .post(&url)
+            .bearer_auth("test-token")
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let ticket = ZedraPairingTicket::from_pairing_url(&info.pairing_url).unwrap();
+        assert_eq!(ticket.session_id, session.id);
+        assert_eq!(ticket.endpoint_id, identity.endpoint_id());
+
+        match registry.consume_pairing_slot(&session.id).await {
+            ConsumeSlotResult::Active(slot) => {
+                assert_eq!(slot.handshake_secret, ticket.handshake_secret);
+            }
+            _ => panic!("expected active pairing slot"),
+        }
+        assert!(matches!(
+            registry.consume_pairing_slot(&session.id).await,
+            ConsumeSlotResult::Consumed
+        ));
+
+        endpoint.close().await;
+    }
 }

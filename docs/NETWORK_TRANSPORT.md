@@ -56,7 +56,7 @@ Error correction level L (7% recovery).
 
 ## 2. Connection Lifecycle
 
-ALPN: `zedra/rpc/3`. All messages are postcard-serialized irpc requests.
+ALPN: `zedra/rpc/2`. All messages are postcard-serialized irpc requests.
 
 ### First pairing (after QR scan)
 
@@ -69,30 +69,45 @@ Client → host: Register { client_pubkey, timestamp, hmac }
   On success: slot consumed, client_pubkey added to authorized_clients + session ACL.
 Host → client: RegisterResult::Ok
 
-Client → host: Authenticate { client_pubkey }
+Client → host: Connect { client_pubkey, session_id, session_token: None }
 Host: generates 32-byte nonce, signs it with iroh SecretKey
-Host → client: AuthChallengeResult { nonce, host_signature }
+Host → client: ConnectResult::Challenge { nonce, host_signature }
   Client MUST verify host_signature using the stored endpoint_id.
 
 Client: signs nonce with application Ed25519 key
 Client → host: AuthProve { nonce, client_signature, session_id }
   Host: verifies client_signature against stored pubkey, attaches session.
-Host → client: AuthProveResult::Ok
+Host → client: AuthProveResult::Ok(SyncSessionResult { session_token, ... })
 
 → RPC calls may proceed
 ```
 
 ### Reconnect (subsequent connections)
 
+Fast path when the client still has the in-memory `session_token` from the last
+successful attach:
+
 ```
 iroh QUIC + TLS 1.3 established
 
-Client → host: Authenticate { client_pubkey }
-Host → client: AuthChallengeResult { nonce, host_signature }
+Client → host: Connect { client_pubkey, session_id, session_token: Some(token) }
+Host: validates and consumes token, attaches session, issues a fresh token.
+Host → client: ConnectResult::Ok(SyncSessionResult { session_token, ... })
+
+→ RPC calls may proceed
+```
+
+PKI fallback when no valid session token is available:
+
+```
+iroh QUIC + TLS 1.3 established
+
+Client → host: Connect { client_pubkey, session_id, session_token: None }
+Host → client: ConnectResult::Challenge { nonce, host_signature }
   Client verifies host_signature.
 
 Client → host: AuthProve { nonce, client_signature, session_id }
-Host → client: AuthProveResult::Ok
+Host → client: AuthProveResult::Ok(SyncSessionResult { session_token, ... })
 
 → RPC calls may proceed
 ```
@@ -101,8 +116,8 @@ Host → client: AuthProveResult::Ok
 
 | Code | Meaning |
 |------|---------|
-| `Ok` | Registered. Proceed to Authenticate. |
-| `HandshakeConsumed` | Slot already used. Ask host to restart to get a new QR. |
+| `Ok` | Registered. Proceed to `Connect`. |
+| `HandshakeConsumed` | Slot already used. Ask host to run `zedra qr --workdir <workdir>` to get a new QR. |
 | `InvalidHandshake` | HMAC failed. Wrong key or tampered packet. |
 | `StaleTimestamp` | Clock skew > 60s or replay attempt. |
 | `SlotNotFound` | No slot for this session. QR expired (> 10 min) or wrong session. |
@@ -111,7 +126,7 @@ Host → client: AuthProveResult::Ok
 
 | Code | Meaning |
 |------|---------|
-| `Ok` | Authenticated and attached. |
+| `Ok` | Authenticated and attached; carries `SyncSessionResult` bootstrap data and a fresh `session_token`. |
 | `InvalidSignature` | Nonce mismatch or bad client signature. |
 | `NotInSessionAcl` | Client not authorized for this session. |
 | `SessionOccupied` | Another client is already attached. |
@@ -235,11 +250,12 @@ records (see Section 8).
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ Reconnecting (attempt N / 10)                                   │
+│ Reconnecting (attempt N / 3)                                    │
 │  • Fresh pkarr resolve on each attempt (no cached addr)        │
-│  • On connect: full Authenticate → AuthProve → Connected        │
-│  • Backoff: 1s, 2s, 4s, 8s, 16s, 30s, 30s, 30s, 30s, 30s     │
-│  • After 10 failed attempts → Host Unreachable                 │
+│  • On connect: Connect(session_token) fast path, or             │
+│    Connect → Challenge → AuthProve fallback                     │
+│  • Backoff: 1s, 2s, 4s with per-second countdown updates       │
+│  • After 3 failed attempts → Host Unreachable                  │
 └──────────────────────────────┬──────────────────────────────────┘
                                │
                                ▼
@@ -286,7 +302,7 @@ and auto-transitions to Reconnecting after 2s (the daemon may restart).
 | Auth secret quality | 256-bit CSPRNG (one-use handshake key) |
 | Auth secret origin | Host-generated |
 | Client identity | Persistent Ed25519 pubkey per device (`ClientSigner`) |
-| Reconnect auth | Challenge-response (Ed25519, pubkey verified) |
+| Reconnect auth | `session_token` fast path; `Connect` challenge-response fallback (Ed25519, pubkey verified) |
 | Host identity verified by client | Yes (challenge signed by host iroh key) |
 | Session access control | Per-session ACL (two-level model) |
 | Exclusive session ownership | Yes (one active client per session) |

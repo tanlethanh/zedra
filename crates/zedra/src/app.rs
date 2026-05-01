@@ -9,6 +9,7 @@ use crate::home_view::{HomeEvent, HomeView};
 use crate::platform_bridge;
 use crate::quick_action_panel::{QuickActionEvent, QuickActionPanel};
 use crate::settings_view::{SettingsEvent, SettingsView};
+use crate::telemetry::view_telemetry::{self, ViewDescriptor};
 use crate::ui::{DrawerHost, DrawerSide};
 use crate::workspaces::{Workspaces, WorkspacesEvent};
 
@@ -17,6 +18,14 @@ enum AppScreen {
     Home,
     Settings,
     Workspace,
+}
+
+fn app_view_descriptor(screen: AppScreen) -> Option<ViewDescriptor> {
+    match screen {
+        AppScreen::Home => Some(view_telemetry::HOME),
+        AppScreen::Settings => Some(view_telemetry::SETTINGS),
+        AppScreen::Workspace => None,
+    }
 }
 
 pub struct ZedraApp {
@@ -85,23 +94,24 @@ impl ZedraApp {
             quick_action_drawer,
             _subscriptions: subscriptions,
         };
+        app.record_current_view(cx);
 
-        // Start background tasks (deeplink + state sync)
-        app.start_background_tasks(cx);
+        // Start background tasks (deeplink + deferred ticket checks)
+        app.start_background_tasks(window, cx);
 
         app
     }
 
-    fn start_background_tasks(&self, cx: &mut Context<Self>) {
-        // Periodic state sync + deeplink check (every 100ms for responsiveness)
-        cx.spawn(async move |this, cx| {
+    fn start_background_tasks(&self, window: &mut Window, cx: &mut Context<Self>) {
+        // Periodic deeplink + deferred ticket check (every 100ms for responsiveness)
+        cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(100))
                     .await;
                 let should_continue = this
-                    .update(cx, |this, cx| {
-                        this.tick(cx);
+                    .update_in(cx, |this, window, cx| {
+                        this.tick(window, cx);
                     })
                     .is_ok();
                 if !should_continue {
@@ -112,18 +122,19 @@ impl ZedraApp {
         .detach();
     }
 
-    /// Called periodically to check deeplinks.
-    fn tick(&mut self, cx: &mut Context<Self>) {
+    /// Called periodically to check deeplinks and deferred window-bound work.
+    fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(action) = deeplink::take_pending() {
             self.handle_deeplink_deferred(action, cx);
         }
+        self.process_pending_ticket_if_ready(window, cx);
     }
 
     fn handle_deeplink_deferred(&mut self, action: DeeplinkAction, cx: &mut Context<Self>) {
         match action {
             DeeplinkAction::Connect(ticket) => {
                 tracing::info!("Deeplink: connect action (deferred)");
-                // Store ticket for processing when window is available
+                // Store ticket for processing when a window-aware tick or activation is available.
                 self.workspaces.update(cx, |ws, cx| {
                     ws.connect_ticket_deferred(ticket, cx);
                 });
@@ -237,7 +248,11 @@ impl ZedraApp {
     ) {
         match event {
             WorkspacesEvent::Connected { .. } => {
+                let screen_changed = self.screen != AppScreen::Workspace;
                 self.set_screen(AppScreen::Workspace, cx);
+                if !screen_changed {
+                    self.record_current_view(cx);
+                }
             }
             WorkspacesEvent::Disconnected { .. } => {
                 zedra_telemetry::send(Event::Disconnect);
@@ -256,6 +271,7 @@ impl ZedraApp {
             }
             WorkspacesEvent::OpenQuickAction => {
                 self.quick_action_drawer.update(cx, |h, cx| h.open(cx));
+                view_telemetry::record(view_telemetry::QUICK_ACTIONS);
             }
         }
     }
@@ -267,24 +283,29 @@ impl ZedraApp {
                 self.workspaces.read(cx).len()
             );
             // Process any pending ticket (from deeplinks)
+            self.process_pending_ticket_if_ready(window, cx);
+        }
+    }
+
+    fn process_pending_ticket_if_ready(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if should_process_pending_ticket(
+            Workspaces::has_pending_ticket(),
+            window.is_window_active(),
+        ) {
             self.workspaces
                 .update(cx, |ws, cx| ws.process_pending_ticket(window, cx));
         }
     }
 
     fn set_screen(&mut self, screen: AppScreen, cx: &mut Context<Self>) {
-        if self.screen != screen {
+        let screen_changed = self.screen != screen;
+        if screen_changed {
             self.screen = screen;
-            let screen_name = match screen {
-                AppScreen::Home => "home",
-                AppScreen::Settings => "settings",
-                AppScreen::Workspace => "workspace",
-            };
-            zedra_telemetry::send(Event::ScreenView {
-                screen: screen_name,
-            });
             self.update_drawer_content(cx);
             cx.notify();
+        }
+        if screen_changed {
+            self.record_current_view(cx);
         }
     }
 
@@ -302,19 +323,31 @@ impl ZedraApp {
         self.quick_action_drawer
             .update(cx, |h, _| h.set_content(screen_view));
     }
+
+    fn record_current_view(&self, cx: &mut Context<Self>) {
+        if let Some(screen) = app_view_descriptor(self.screen) {
+            view_telemetry::record(screen);
+            return;
+        }
+
+        let active_workspace = self.workspaces.read(cx).active().cloned();
+        if let Some(workspace) = active_workspace {
+            workspace.update(cx, |workspace, cx| workspace.record_current_view(cx));
+        }
+    }
 }
 
 impl Render for ZedraApp {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Process any pending connection ticket (idempotent)
-        self.workspaces
-            .update(cx, |ws, cx| ws.process_pending_ticket(window, cx));
-
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
             .font_family(fonts::MONO_FONT_FAMILY)
             .child(self.quick_action_drawer.clone())
     }
+}
+
+fn should_process_pending_ticket(has_pending_ticket: bool, window_active: bool) -> bool {
+    has_pending_ticket && window_active
 }
 
 pub fn open_zedra_window(app: &mut App, window_options: WindowOptions) -> Result<AnyWindowHandle> {
@@ -324,4 +357,31 @@ pub fn open_zedra_window(app: &mut App, window_options: WindowOptions) -> Result
         view
     })
     .map(|h| h.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppScreen, app_view_descriptor, should_process_pending_ticket};
+    use crate::telemetry::view_telemetry;
+
+    #[test]
+    fn pending_ticket_processing_requires_ticket_and_active_window() {
+        assert!(should_process_pending_ticket(true, true));
+        assert!(!should_process_pending_ticket(false, true));
+        assert!(!should_process_pending_ticket(true, false));
+        assert!(!should_process_pending_ticket(false, false));
+    }
+
+    #[test]
+    fn app_screen_mapping_uses_logical_gpui_views() {
+        assert_eq!(
+            app_view_descriptor(AppScreen::Home),
+            Some(view_telemetry::HOME)
+        );
+        assert_eq!(
+            app_view_descriptor(AppScreen::Settings),
+            Some(view_telemetry::SETTINGS)
+        );
+        assert_eq!(app_view_descriptor(AppScreen::Workspace), None);
+    }
 }

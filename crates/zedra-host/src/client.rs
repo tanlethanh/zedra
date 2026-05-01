@@ -5,6 +5,7 @@
 // It authenticates with a persistent CLI client key that the host
 // pre-authorizes at startup, then runs a continuous ping loop to measure RTT.
 
+use crate::utils;
 use anyhow::{Context, Result};
 use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
@@ -111,17 +112,18 @@ pub async fn run(workdir: &Path, count: u32, relay_only: bool) -> Result<()> {
     // Read connection info written by the running host.
     let info = read_host_info(&config_dir)?;
     let relay_urls: Vec<&str> = info.relay_urls.iter().map(|s| s.as_str()).collect();
-    eprintln!(
-        "Connecting to host endpoint: {}...",
-        &info.endpoint_id[..16]
-    );
-    for u in &relay_urls {
-        eprintln!("  Relay: {}", u);
-    }
-    eprintln!("  Session: {}", info.session_id);
+    let endpoint = &info.endpoint_id[..16.min(info.endpoint_id.len())];
+    utils::eprintln_heading("Zedra Client");
+    eprintln!();
+    let mut details = vec![
+        ("Endpoint", format!("{endpoint}...")),
+        ("Relays", relay_urls.join(", ")),
+        ("Session", info.session_id.clone()),
+    ];
     if relay_only {
-        eprintln!("  Mode: relay-only (P2P disabled)");
+        details.push(("Mode", "relay-only (P2P disabled)".to_string()));
     }
+    utils::eprintln_key_values(&details);
 
     // Load persistent CLI client key.
     let cli_key = load_or_generate_cli_key(&config_dir)?;
@@ -180,7 +182,7 @@ pub async fn run(workdir: &Path, count: u32, relay_only: bool) -> Result<()> {
         .await
         .context("failed to connect to host")?;
 
-    eprintln!("Connected. Path: {:?}", {
+    let selected_path = {
         use iroh::Watcher;
         conn.paths()
             .get()
@@ -188,7 +190,8 @@ pub async fn run(workdir: &Path, count: u32, relay_only: bool) -> Result<()> {
             .find(|p| p.is_selected())
             .map(|p| format!("{:?}", p.remote_addr()))
             .unwrap_or_else(|| "unknown".into())
-    });
+    };
+    utils::eprintln_success(format!("Connected. Path: {selected_path}"));
 
     // Create irpc client.
     let remote = irpc_iroh::IrohRemoteConnection::new(conn.clone());
@@ -205,7 +208,7 @@ pub async fn run(workdir: &Path, count: u32, relay_only: bool) -> Result<()> {
         .context("Connect RPC failed")?
     {
         ConnectResult::Ok(_) => {
-            eprintln!("Authenticated via session token.");
+            utils::eprintln_success("Authenticated via session token.");
             return Ok(());
         }
         ConnectResult::Challenge {
@@ -239,7 +242,11 @@ pub async fn run(workdir: &Path, count: u32, relay_only: bool) -> Result<()> {
         other => anyhow::bail!("AuthProve rejected: {:?}", other),
     }
 
-    eprintln!("Authenticated. Running ping loop (Ctrl-C to stop)...\n");
+    utils::eprintln_success("Authenticated.");
+    eprintln!();
+    utils::eprintln_heading("Ping");
+    utils::eprintln_note("Running ping loop (Ctrl-C to stop)...");
+    eprintln!();
     eprintln!("{:<6} {:>10}  {:<4}  path", "seq", "rtt", "type");
     eprintln!("{}", "-".repeat(55));
 
@@ -298,7 +305,7 @@ pub async fn run(workdir: &Path, count: u32, relay_only: bool) -> Result<()> {
                 }
             }
             Err(e) => {
-                eprintln!("[{}] RPC error: {}", seq, e);
+                utils::eprintln_error(format!("[{}] RPC error: {}", seq, e));
                 break;
             }
         }
@@ -310,27 +317,34 @@ pub async fn run(workdir: &Path, count: u32, relay_only: bool) -> Result<()> {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 
-    eprintln!("\n--- ping statistics ---");
+    eprintln!();
+    utils::eprintln_heading("Ping Statistics");
     if relay_count > 0 {
-        eprintln!(
-            "relay (RLY): {} pings  min={}ms avg={}ms max={}ms",
-            relay_count,
-            relay_min,
-            relay_total_rtt / relay_count as u64,
-            relay_max,
-        );
+        utils::eprintln_key_values(&[(
+            "Relay",
+            format!(
+                "{} pings  min={}ms avg={}ms max={}ms",
+                relay_count,
+                relay_min,
+                relay_total_rtt / relay_count as u64,
+                relay_max
+            ),
+        )]);
     }
     if direct_count > 0 {
-        eprintln!(
-            "direct (P2P): {} pings  min={}ms avg={}ms max={}ms",
-            direct_count,
-            direct_min,
-            direct_total_rtt / direct_count as u64,
-            direct_max,
-        );
+        utils::eprintln_key_values(&[(
+            "Direct",
+            format!(
+                "{} pings  min={}ms avg={}ms max={}ms",
+                direct_count,
+                direct_min,
+                direct_total_rtt / direct_count as u64,
+                direct_max
+            ),
+        )]);
     }
     if relay_count == 0 && direct_count == 0 {
-        eprintln!("no pings completed");
+        utils::eprintln_note("No pings completed.");
     }
 
     endpoint.close().await;

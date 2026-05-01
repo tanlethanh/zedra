@@ -87,6 +87,8 @@ MODE="${1:-sim}"
 BUILD_FLAGS=""
 XCODE_CONFIGURATION="Debug"
 BUNDLE_ID="$BUNDLE_ID_DEBUG"
+REQUESTED_RELEASE=false
+REQUESTED_DEBUG=false
 FORCED_DEVICE_ID=""
 SELECT_DEVICE=false
 LAUNCH_URL=""
@@ -102,11 +104,13 @@ while [ $i -lt ${#args[@]} ]; do
             ;;
         --debug)
             BUILD_FLAGS="$BUILD_FLAGS --debug"
+            REQUESTED_DEBUG=true
             ;;
         --release)
             BUILD_FLAGS="$BUILD_FLAGS --release"
             XCODE_CONFIGURATION="Release"
             BUNDLE_ID="$BUNDLE_ID_RELEASE"
+            REQUESTED_RELEASE=true
             ;;
         --device-id)
             i=$((i + 1))
@@ -125,6 +129,11 @@ while [ $i -lt ${#args[@]} ]; do
     esac
     i=$((i + 1))
 done
+
+if [ "$REQUESTED_RELEASE" = true ] && [ "$REQUESTED_DEBUG" = true ]; then
+    echo "Error: --debug cannot be combined with --release for iOS builds." >&2
+    exit 1
+fi
 
 case "$MODE" in
     sim)

@@ -14,24 +14,12 @@ impl TerminalInputHandler {
         Self { entity, bounds }
     }
 
-    fn offset_from_utf16(text: &str, offset: usize) -> usize {
-        let mut utf16_count = 0;
-        for (utf8_index, ch) in text.char_indices() {
-            if utf16_count >= offset {
-                return utf8_index;
-            }
-            utf16_count += ch.len_utf16();
-        }
-        text.len()
-    }
-
-    fn range_from_utf16(text: &str, range_utf16: &Range<usize>) -> Range<usize> {
-        Self::offset_from_utf16(text, range_utf16.start)
-            ..Self::offset_from_utf16(text, range_utf16.end)
-    }
-
     fn accepts_text_input_policy() -> bool {
         true
+    }
+
+    fn text_input_traits_policy() -> PlatformTextInputTraits {
+        PlatformTextInputTraits::keyboard_suggestions()
     }
 
     fn send_text_to_terminal(term: &mut Terminal, text: &str) {
@@ -48,6 +36,7 @@ impl TerminalInputHandler {
                     key: "enter".to_string(),
                     key_char: None,
                 });
+                term.clear_text_input_context();
             } else {
                 plain_text.push(ch);
             }
@@ -57,6 +46,51 @@ impl TerminalInputHandler {
             term.handle_ime_text(&plain_text);
         }
     }
+
+    fn send_backspaces_to_terminal(term: &mut Terminal, count: usize) {
+        for _ in 0..count {
+            term.handle_keystroke(&Keystroke {
+                modifiers: Modifiers::default(),
+                key: "backspace".to_string(),
+                key_char: None,
+            });
+        }
+    }
+
+    fn text_resets_keyboard_context(text: &str) -> bool {
+        text.chars()
+            .any(|ch| ch == '\n' || ch == '\r' || ch.is_whitespace() || ch.is_ascii_punctuation())
+    }
+
+    fn send_keyboard_context_edit_to_terminal(
+        term: &mut Terminal,
+        backspaces: usize,
+        text_to_insert: &str,
+    ) {
+        Self::send_backspaces_to_terminal(term, backspaces);
+        Self::send_text_to_terminal(term, text_to_insert);
+    }
+
+    fn apply_keyboard_context_edit(
+        term: &mut Terminal,
+        replacement_range: Option<Range<usize>>,
+        text: &str,
+    ) {
+        let reset_context = Self::text_resets_keyboard_context(text);
+        let edit = term.replace_keyboard_input_context_range(replacement_range, text);
+        Self::send_keyboard_context_edit_to_terminal(term, edit.backspaces, &edit.text_to_insert);
+        if reset_context {
+            term.clear_text_input_context();
+        }
+    }
+
+    fn commit_marked_text(term: &mut Terminal, text: &str) {
+        let edit = term.commit_marked_text_to_keyboard_context(text);
+        Self::send_keyboard_context_edit_to_terminal(term, edit.backspaces, &edit.text_to_insert);
+        if Self::text_resets_keyboard_context(text) {
+            term.clear_text_input_context();
+        }
+    }
 }
 
 impl InputHandler for TerminalInputHandler {
@@ -64,25 +98,36 @@ impl InputHandler for TerminalInputHandler {
         &mut self,
         _ignore_disabled_input: bool,
         _window: &mut Window,
-        cx: &mut App,
+        _cx: &mut App,
     ) -> Option<UTF16Selection> {
-        let selection = match self.entity.read_with(cx, |term, _| {
-            // UIKit's deleteBackward path expects the caret to sit within the
-            // document it sees via text_for_range/endOfDocument. When the terminal
-            // has no active marked text, we still expose a one-code-unit placeholder
-            // document so backspace can target that synthetic position.
-            term.text_input_selection_range()
-        }) {
-            Ok(selection) => selection,
-            Err(_) => {
-                let pos = " ".encode_utf16().count();
-                pos..pos
-            }
-        };
-        Some(UTF16Selection {
-            range: selection,
-            reversed: false,
-        })
+        self.entity
+            .read_with(_cx, |term, _| {
+                let uses_text_input_document = term.is_dictation_active()
+                    || term.has_uncommitted_marked_text()
+                    || term.has_committed_dictation_pending_cleanup();
+                let range = if uses_text_input_document {
+                    term.text_input_selection_range()
+                } else {
+                    term.keyboard_input_context_selection_range()
+                };
+                Some(UTF16Selection {
+                    range,
+                    reversed: false,
+                })
+            })
+            .ok()
+            .flatten()
+    }
+
+    fn set_selected_text_range(
+        &mut self,
+        _range: Range<usize>,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) {
+        // Critical: terminal input is a PTY diff stream, not a native editable
+        // text field. UIKit's transient Telex selections must not become
+        // multi-character terminal deletes.
     }
 
     fn marked_text_range(&mut self, _window: &mut Window, cx: &mut App) -> Option<Range<usize>> {
@@ -97,19 +142,23 @@ impl InputHandler for TerminalInputHandler {
         range_utf16: Range<usize>,
         adjusted_range: &mut Option<Range<usize>>,
         _window: &mut Window,
-        cx: &mut App,
+        _cx: &mut App,
     ) -> Option<String> {
-        let doc = self
-            .entity
-            .read_with(cx, |term, _| term.text_input_document().to_string())
-            .unwrap_or_else(|_| " ".to_string());
-        let utf16_len = doc.encode_utf16().count();
-        let start = range_utf16.start.min(utf16_len);
-        let end = range_utf16.end.min(utf16_len);
-        *adjusted_range = Some(start..end);
-        let range = Self::range_from_utf16(&doc, &(start..end));
-        let result = doc[range].to_string();
-        Some(result)
+        self.entity
+            .read_with(_cx, |term, _| {
+                let uses_text_input_document = term.is_dictation_active()
+                    || term.has_uncommitted_marked_text()
+                    || term.has_committed_dictation_pending_cleanup();
+                let (range, text) = if uses_text_input_document {
+                    term.text_input_document_text_for_range(range_utf16.clone())
+                } else {
+                    term.keyboard_input_context_text_for_range(range_utf16.clone())
+                };
+                *adjusted_range = Some(range.clone());
+                Some(text)
+            })
+            .ok()
+            .flatten()
     }
 
     fn replace_text_in_range(
@@ -119,38 +168,147 @@ impl InputHandler for TerminalInputHandler {
         _window: &mut Window,
         cx: &mut App,
     ) {
-        let entity = self.entity.clone();
         let text = text.to_string();
+        let entity = self.entity.clone();
         let _ = entity.update(cx, move |term, cx| {
-            if replacement_range.is_some() && text.is_empty() {
-                // UIKit sends a delete (empty replacement) to clear the current selection.
-                if term.is_dictation_active() {
-                    if let Some(range) = replacement_range.clone() {
-                        term.replace_marked_text_in_range(Some(range), String::new(), None);
-                    }
+            if term.is_dictation_active() {
+                term.replace_marked_text_in_range(replacement_range, text, None);
+                cx.notify();
+                return;
+            }
+
+            if text.is_empty() {
+                if term.consume_committed_dictation_cleanup_delete(replacement_range.clone()) {
                     cx.notify();
-                    return;
-                }
-                if term.marked_text().is_some() {
+                } else if term.has_committed_dictation_pending_cleanup() {
+                    // Critical: UIKit cleanup deletes are synthetic after a
+                    // dictation commit. Stale ranges must not become PTY
+                    // backspaces after a late final transcript reconciliation.
+                    cx.notify();
+                } else if term.has_uncommitted_marked_text() {
                     term.clear_marked_state();
                     cx.notify();
-                    return;
-                }
-                term.handle_keystroke(&Keystroke {
-                    modifiers: Modifiers::default(),
-                    key: "backspace".to_string(),
-                    key_char: None,
-                });
-            } else if !text.is_empty() {
-                if term.is_dictation_active() {
-                    term.replace_marked_text_in_range(replacement_range.clone(), text, None);
+                } else if let Some(replacement_range) = replacement_range {
+                    let context_was_empty = term.keyboard_input_context_is_empty();
+                    let replaced_anchor = context_was_empty && !replacement_range.is_empty();
+                    let edit = term
+                        .replace_keyboard_input_context_range(Some(replacement_range.clone()), "");
+                    let backspaces = if replaced_anchor
+                        && edit.backspaces == 0
+                        && edit.text_to_insert.is_empty()
+                    {
+                        1
+                    } else {
+                        edit.backspaces
+                    };
+                    Self::send_keyboard_context_edit_to_terminal(
+                        term,
+                        backspaces,
+                        &edit.text_to_insert,
+                    );
                     cx.notify();
-                    return;
                 }
-
-                term.clear_marked_state();
-                Self::send_text_to_terminal(term, &text);
+                return;
             }
+
+            if term.has_committed_dictation_pending_cleanup() {
+                if let Some(edit) = term.reconcile_committed_dictation_text(&text) {
+                    Self::send_keyboard_context_edit_to_terminal(
+                        term,
+                        edit.backspaces,
+                        &edit.text_to_insert,
+                    );
+                    cx.notify();
+                }
+                return;
+            }
+
+            if term.has_uncommitted_marked_text() {
+                // IME commit arrives through insertText after setMarkedText; the
+                // preedit was not sent to the PTY, so commit it from the shadow
+                // text store rather than treating it as ordinary appended input.
+                Self::commit_marked_text(term, &text);
+                cx.notify();
+                return;
+            }
+            Self::apply_keyboard_context_edit(term, replacement_range, &text);
+            cx.notify();
+        });
+    }
+
+    fn replace_text_in_range_from_context(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut App,
+    ) {
+        let text = text.to_string();
+        let entity = self.entity.clone();
+        let _ = entity.update(cx, move |term, cx| {
+            if term.is_dictation_active() {
+                term.replace_marked_text_in_range(replacement_range, text, None);
+                cx.notify();
+                return;
+            }
+
+            if text.is_empty() {
+                if term.consume_committed_dictation_cleanup_delete(replacement_range.clone()) {
+                    cx.notify();
+                } else if term.has_committed_dictation_pending_cleanup() {
+                    cx.notify();
+                } else if term.has_uncommitted_marked_text() {
+                    term.clear_marked_state();
+                    cx.notify();
+                } else {
+                    Self::apply_keyboard_context_edit(term, replacement_range, &text);
+                    cx.notify();
+                }
+                return;
+            }
+
+            if term.has_committed_dictation_pending_cleanup() {
+                if let Some(edit) = term.reconcile_committed_dictation_text(&text) {
+                    Self::send_keyboard_context_edit_to_terminal(
+                        term,
+                        edit.backspaces,
+                        &edit.text_to_insert,
+                    );
+                    cx.notify();
+                }
+                return;
+            }
+
+            if term.has_uncommitted_marked_text() {
+                Self::commit_marked_text(term, &text);
+                cx.notify();
+                return;
+            }
+
+            Self::apply_keyboard_context_edit(term, replacement_range, &text);
+            cx.notify();
+        });
+    }
+
+    fn delete_backward(&mut self, _window: &mut Window, cx: &mut App) {
+        let entity = self.entity.clone();
+        let _ = entity.update(cx, |term, cx| {
+            if term.is_dictation_active() || term.has_uncommitted_marked_text() {
+                term.clear_marked_state();
+                cx.notify();
+                return;
+            }
+
+            if let Some(edit) = term.delete_keyboard_input_context_backward() {
+                Self::send_keyboard_context_edit_to_terminal(
+                    term,
+                    edit.backspaces,
+                    &edit.text_to_insert,
+                );
+            } else {
+                Self::send_backspaces_to_terminal(term, 1);
+            }
+            cx.notify();
         });
     }
 
@@ -201,9 +359,18 @@ impl InputHandler for TerminalInputHandler {
     fn dictation_ended(&mut self, _window: &mut Window, cx: &mut App) {
         let entity = self.entity.clone();
         let _ = entity.update(cx, |term, cx| {
-            if let Some(text) = term.finish_dictation() {
+            let text = term.finish_dictation();
+            if let Some(text) = text {
                 Self::send_text_to_terminal(term, &text);
             };
+            cx.notify();
+        });
+    }
+
+    fn dictation_recording_ended(&mut self, _window: &mut Window, cx: &mut App) {
+        let entity = self.entity.clone();
+        let _ = entity.update(cx, |term, cx| {
+            term.dictation_recording_ended();
             cx.notify();
         });
     }
@@ -224,11 +391,9 @@ impl InputHandler for TerminalInputHandler {
             // UITextInput clients. Preserve the marked range until a real
             // commit or deletion clears it so UIDictationController can still
             // find its previous hypothesis.
-            if term.is_dictation_active() {
-                return;
+            if term.unmark_text() {
+                cx.notify();
             }
-            term.clear_marked_state();
-            cx.notify();
         });
     }
 
@@ -253,14 +418,40 @@ impl InputHandler for TerminalInputHandler {
     fn accepts_text_input(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
         Self::accepts_text_input_policy()
     }
+
+    fn text_input_traits(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> PlatformTextInputTraits {
+        Self::text_input_traits_policy()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::TerminalInputHandler;
+    use gpui::{PlatformTextAutocapitalization, PlatformTextInputTrait, PlatformTextInputTraits};
 
     #[test]
     fn terminal_accepts_text_input() {
         assert!(TerminalInputHandler::accepts_text_input_policy());
+    }
+
+    #[test]
+    fn terminal_requests_native_keyboard_suggestions_without_smart_punctuation() {
+        let traits = TerminalInputHandler::text_input_traits_policy();
+
+        assert_eq!(traits, PlatformTextInputTraits::keyboard_suggestions());
+        assert_eq!(
+            traits.autocapitalization,
+            PlatformTextAutocapitalization::None
+        );
+        assert_eq!(traits.inline_prediction, PlatformTextInputTrait::Enabled);
+        assert_eq!(traits.autocorrection, PlatformTextInputTrait::Enabled);
+        assert_eq!(traits.spell_checking, PlatformTextInputTrait::Disabled);
+        assert_eq!(traits.smart_quotes, PlatformTextInputTrait::Disabled);
+        assert_eq!(traits.smart_dashes, PlatformTextInputTrait::Disabled);
+        assert_eq!(traits.smart_insert_delete, PlatformTextInputTrait::Disabled);
     }
 }

@@ -1,21 +1,24 @@
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use zedra_session::Session;
 use zedra_session::SessionHandle;
 use zedra_session::SessionState;
 
+use crate::docs_tree::DocsTree;
 use crate::file_explorer::FileExplorer;
 use crate::git_panel::GitPanel;
 use crate::platform_bridge;
 use crate::platform_bridge::HapticFeedback;
 use crate::session_panel::SessionPanel;
+use crate::telemetry::view_telemetry::{self, ViewDescriptor};
 use crate::terminal_panel::TerminalPanel;
 use crate::terminal_state::TerminalState;
 use crate::theme;
-use crate::transport_badge::phase_indicator_color;
+use crate::transport_badge::ConnectionStatusIndicator;
 use crate::transport_badge::transport_badge;
 use crate::workspace_action;
-use crate::workspace_state::WorkspaceState;
+use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DrawerTab {
@@ -25,10 +28,30 @@ pub enum DrawerTab {
     Session,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FileDisplayMode {
+    Explorer,
+    DocsTree,
+}
+
+fn drawer_view_descriptor(tab: DrawerTab, file_display_mode: FileDisplayMode) -> ViewDescriptor {
+    match tab {
+        DrawerTab::FileExplorer => match file_display_mode {
+            FileDisplayMode::Explorer => view_telemetry::DRAWER_FILES,
+            FileDisplayMode::DocsTree => view_telemetry::DRAWER_DOCUMENTS,
+        },
+        DrawerTab::GitDiff => view_telemetry::DRAWER_GIT_DIFF,
+        DrawerTab::Terminals => view_telemetry::DRAWER_TERMINALS,
+        DrawerTab::Session => view_telemetry::DRAWER_SESSION,
+    }
+}
+
 pub struct WorkspaceDrawer {
     current_tab: DrawerTab,
+    file_display_mode: FileDisplayMode,
     focus_handle: FocusHandle,
     file_explorer: Entity<FileExplorer>,
+    docs_tree: Entity<DocsTree>,
     git_panel: Entity<GitPanel>,
     terminal_panel: Entity<TerminalPanel>,
     session_panel: Entity<SessionPanel>,
@@ -38,6 +61,7 @@ pub struct WorkspaceDrawer {
     session_state: Entity<SessionState>,
     #[allow(dead_code)]
     session_handle: SessionHandle,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl WorkspaceDrawer {
@@ -50,6 +74,11 @@ impl WorkspaceDrawer {
         session: Session,
         session_handle: SessionHandle,
     ) -> Self {
+        let workspace_state_subscription = cx.subscribe(
+            &workspace_state,
+            |_drawer, _workspace_state, _event: &WorkspaceStateEvent, cx| cx.notify(),
+        );
+
         let file_explorer = cx.new(|cx| {
             FileExplorer::new(
                 workspace_state.clone(),
@@ -59,6 +88,8 @@ impl WorkspaceDrawer {
                 cx,
             )
         });
+        let docs_tree =
+            cx.new(|cx| DocsTree::new(workspace_state.clone(), session_handle.clone(), cx));
         let git_panel = cx.new(|cx| {
             GitPanel::new(
                 workspace_state.clone(),
@@ -82,19 +113,45 @@ impl WorkspaceDrawer {
 
         Self {
             current_tab: DrawerTab::FileExplorer,
+            file_display_mode: FileDisplayMode::Explorer,
             focus_handle: cx.focus_handle(),
             file_explorer,
+            docs_tree,
             git_panel,
             terminal_panel,
             session_panel,
             workspace_state,
             session_state,
             session_handle,
+            _subscriptions: vec![workspace_state_subscription],
         }
     }
 
     pub fn set_current_tab(&mut self, tab: DrawerTab, cx: &mut Context<Self>) {
+        if self.current_tab == tab {
+            return;
+        }
         self.current_tab = tab;
+        self.record_current_view();
+        cx.notify();
+    }
+
+    fn set_file_display_mode(&mut self, mode: FileDisplayMode, cx: &mut Context<Self>) {
+        if self.file_display_mode == mode {
+            if mode == FileDisplayMode::DocsTree {
+                self.docs_tree.update(cx, |docs_tree, cx| {
+                    docs_tree.ensure_built(cx);
+                });
+            }
+            return;
+        }
+        self.file_display_mode = mode;
+        if mode == FileDisplayMode::DocsTree {
+            self.docs_tree.update(cx, |docs_tree, cx| {
+                docs_tree.ensure_built(cx);
+            });
+        }
+        self.record_current_view();
         cx.notify();
     }
 
@@ -102,6 +159,8 @@ impl WorkspaceDrawer {
         let file_explorer = self
             .file_explorer
             .update(cx, |file_explorer, cx| file_explorer.refresh_after_sync(cx));
+        self.docs_tree
+            .update(cx, |docs_tree, cx| docs_tree.refresh_after_sync(cx));
         let git_panel = self
             .git_panel
             .update(cx, |git_panel, cx| git_panel.refresh_after_sync(cx));
@@ -116,7 +175,10 @@ impl WorkspaceDrawer {
         let title = workspace_state.project_name.to_string();
 
         let subtitle = match tab {
-            DrawerTab::FileExplorer => workspace_state.strip_path.to_string(),
+            DrawerTab::FileExplorer => match self.file_display_mode {
+                FileDisplayMode::Explorer => workspace_state.strip_path.to_string(),
+                FileDisplayMode::DocsTree => "documents".to_string(),
+            },
             DrawerTab::GitDiff => self.git_panel.read(cx).branch().to_string(),
             DrawerTab::Terminals => "terminals".to_string(),
             DrawerTab::Session => {
@@ -129,6 +191,14 @@ impl WorkspaceDrawer {
         };
 
         (title, subtitle)
+    }
+
+    pub fn current_view_descriptor(&self) -> ViewDescriptor {
+        drawer_view_descriptor(self.current_tab, self.file_display_mode)
+    }
+
+    pub fn record_current_view(&self) {
+        view_telemetry::record(self.current_view_descriptor());
     }
 
     pub fn tab_icon(&self, tab: DrawerTab) -> &'static str {
@@ -167,7 +237,6 @@ impl WorkspaceDrawer {
             .rounded(px(6.0))
             .cursor_pointer()
             .hit_slop(px(10.0))
-            .hover(|s| s.bg(theme::hover_bg()))
             .on_press(cx.listener(move |this, _event, _window, cx| {
                 platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
                 this.set_current_tab(tab, cx);
@@ -178,6 +247,66 @@ impl WorkspaceDrawer {
                     .size(px(theme::ICON_MD))
                     .text_color(color),
             )
+    }
+
+    fn file_mode_icon(&self, mode: FileDisplayMode) -> &'static str {
+        match mode {
+            FileDisplayMode::Explorer => "icons/list-tree.svg",
+            FileDisplayMode::DocsTree => "icons/file-text.svg",
+        }
+    }
+
+    fn file_mode_button(&self, mode: FileDisplayMode, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_active = self.file_display_mode == mode;
+        let color = if is_active {
+            rgb(theme::TEXT_SECONDARY)
+        } else {
+            rgb(theme::TEXT_MUTED)
+        };
+
+        div()
+            .id(match mode {
+                FileDisplayMode::Explorer => "file-display-mode-explorer",
+                FileDisplayMode::DocsTree => "file-display-mode-docs-tree",
+            })
+            .w(px(32.0))
+            .h(px(32.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hit_slop(px(8.0))
+            .on_pointer_down(|_, _, cx| cx.stop_propagation())
+            .on_press(cx.listener(move |this, _event, _window, cx| {
+                this.set_file_display_mode(mode, cx);
+                cx.stop_propagation();
+            }))
+            .child(
+                svg()
+                    .path(self.file_mode_icon(mode))
+                    .size(px(theme::ICON_XS))
+                    .text_color(color),
+            )
+    }
+
+    fn render_file_mode_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("file-display-mode-toggle")
+            .absolute()
+            .top(px(0.0))
+            .right(px(0.0))
+            .pb_1()
+            .bg(rgb(theme::BG_SURFACE))
+            .occlude()
+            .on_pointer_down(|_, _, cx| cx.stop_propagation())
+            .rounded_bl(px(8.0))
+            .border_b_1()
+            .border_l_1()
+            .border_color(rgb(theme::BORDER_SUBTLE))
+            .flex()
+            .flex_col()
+            .child(self.file_mode_button(FileDisplayMode::Explorer, cx))
+            .child(self.file_mode_button(FileDisplayMode::DocsTree, cx))
     }
 }
 
@@ -192,20 +321,17 @@ impl Render for WorkspaceDrawer {
         let viewport_h = window.viewport_size().height;
 
         let tab_content: AnyElement = match self.current_tab {
-            DrawerTab::FileExplorer => self.file_explorer.clone().into_any_element(),
+            DrawerTab::FileExplorer => match self.file_display_mode {
+                FileDisplayMode::Explorer => self.file_explorer.clone().into_any_element(),
+                FileDisplayMode::DocsTree => self.docs_tree.clone().into_any_element(),
+            },
             DrawerTab::GitDiff => self.git_panel.clone().into_any_element(),
             DrawerTab::Terminals => self.terminal_panel.clone().into_any_element(),
             DrawerTab::Session => self.session_panel.clone().into_any_element(),
         };
 
         let (title, subtitle) = self.title_by_tab(self.current_tab, cx);
-        let status_color = self
-            .workspace_state
-            .read(cx)
-            .connect_phase
-            .as_ref()
-            .map(phase_indicator_color)
-            .unwrap_or(theme::ACCENT_DIM);
+        let connect_phase = self.workspace_state.read(cx).connect_phase.clone();
 
         let top_inset = platform_bridge::status_bar_inset();
         let bottom_inset = platform_bridge::home_indicator_inset().max(10.0);
@@ -284,11 +410,11 @@ impl Render for WorkspaceDrawer {
                             .items_center()
                             .justify_center()
                             .child(
-                                div()
-                                    .w(px(6.0))
-                                    .h(px(6.0))
-                                    .rounded(px(3.0))
-                                    .bg(rgb(status_color)),
+                                ConnectionStatusIndicator::from_phase(
+                                    "drawer-connect-status",
+                                    connect_phase.as_ref(),
+                                )
+                                .size(6.0),
                             ),
                     ),
             )
@@ -300,7 +426,11 @@ impl Render for WorkspaceDrawer {
                     .w_full()
                     .h_full()
                     .overflow_y_scroll()
-                    .child(tab_content),
+                    .relative()
+                    .child(tab_content)
+                    .when(self.current_tab == DrawerTab::FileExplorer, |el| {
+                        el.child(self.render_file_mode_toggle(cx))
+                    }),
             )
             // Footer nav bar
             .child(
@@ -318,5 +448,35 @@ impl Render for WorkspaceDrawer {
                     .child(self.nav_icon(DrawerTab::Terminals, cx))
                     .child(self.nav_icon(DrawerTab::Session, cx)),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DrawerTab, FileDisplayMode, drawer_view_descriptor};
+    use crate::telemetry::view_telemetry;
+
+    #[test]
+    fn drawer_tabs_map_to_logical_view_telemetry() {
+        assert_eq!(
+            drawer_view_descriptor(DrawerTab::FileExplorer, FileDisplayMode::Explorer),
+            view_telemetry::DRAWER_FILES
+        );
+        assert_eq!(
+            drawer_view_descriptor(DrawerTab::FileExplorer, FileDisplayMode::DocsTree),
+            view_telemetry::DRAWER_DOCUMENTS
+        );
+        assert_eq!(
+            drawer_view_descriptor(DrawerTab::GitDiff, FileDisplayMode::Explorer),
+            view_telemetry::DRAWER_GIT_DIFF
+        );
+        assert_eq!(
+            drawer_view_descriptor(DrawerTab::Terminals, FileDisplayMode::Explorer),
+            view_telemetry::DRAWER_TERMINALS
+        );
+        assert_eq!(
+            drawer_view_descriptor(DrawerTab::Session, FileDisplayMode::Explorer),
+            view_telemetry::DRAWER_SESSION
+        );
     }
 }

@@ -10,6 +10,21 @@ Status: proposed
 
 ---
 
+## Current Zedra App Convention
+
+While Zedra only supports mobile app surfaces, product UI should not add
+hover-gated behavior or hover visual refinements. Touch controls need to remain
+legible and actionable through pressed, selected, active, disabled, text, icon,
+border, and hit-slop states.
+
+This convention is separate from GPUI's long-term pointer and gesture model.
+Vendor GPUI and desktop reference code may keep hover APIs; Zedra app code
+should avoid `.hover(...)`, `visible_on_hover`, `hoverable_tooltip`, and
+hover-only affordances until a pointer-capable platform is intentionally
+supported.
+
+---
+
 ## 1. Problem Statement
 
 GPUI's current public interaction model is desktop-first:

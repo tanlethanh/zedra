@@ -198,6 +198,31 @@ impl DrawerHost {
         }
     }
 
+    fn set_pending_gesture(
+        &mut self,
+        pointer_id: PointerId,
+        start: Point<Pixels>,
+        origin: DragOrigin,
+    ) {
+        if self.is_snap_animating() {
+            return;
+        }
+
+        // A new primary pointer down means the previous touch stream ended from
+        // the platform's point of view, even if GPUI missed its release/cancel.
+        self.gesture_state = GestureState::Pending {
+            pointer_id,
+            start,
+            origin,
+        };
+    }
+
+    fn clear_gesture_for_snap(&mut self) {
+        if !matches!(self.gesture_state, GestureState::Idle) {
+            self.gesture_state = GestureState::Idle;
+        }
+    }
+
     /// Dispatches a pointer move to the active gesture, if any.
     fn handle_pointer_move(
         &mut self,
@@ -347,6 +372,7 @@ impl DrawerHost {
         if self.is_snap_animating() {
             return;
         }
+        self.clear_gesture_for_snap();
         let current_offset = self.drawer_offset;
         let duration_ms = Self::snap_duration_ms(current_offset, target);
 
@@ -473,16 +499,11 @@ impl Render for DrawerHost {
                         .occlude()
                         .id("drawer-panel")
                         .on_pointer_down(cx.listener(|this, event: &PointerDownEvent, _, _cx| {
-                            if this.is_snap_animating() {
-                                return;
-                            }
-                            if matches!(this.gesture_state, GestureState::Idle) {
-                                this.gesture_state = GestureState::Pending {
-                                    pointer_id: event.pointer_id,
-                                    start: event.position,
-                                    origin: DragOrigin::Panel,
-                                };
-                            }
+                            this.set_pending_gesture(
+                                event.pointer_id,
+                                event.position,
+                                DragOrigin::Panel,
+                            );
                         }))
                 )
                 .child(drawer);
@@ -572,16 +593,11 @@ impl Render for DrawerHost {
                     .when(side == DrawerSide::Left, |el| el.left_0())
                     .when(side == DrawerSide::Right, |el| el.right_0())
                     .on_pointer_down(cx.listener(|this, event: &PointerDownEvent, _, _cx| {
-                        if this.is_snap_animating() {
-                            return;
-                        }
-                        if matches!(this.gesture_state, GestureState::Idle) {
-                            this.gesture_state = GestureState::Pending {
-                                pointer_id: event.pointer_id,
-                                start: event.position,
-                                origin: DragOrigin::Edge,
-                            };
-                        }
+                        this.set_pending_gesture(
+                            event.pointer_id,
+                            event.position,
+                            DragOrigin::Edge,
+                        );
                     })),
             )
     }
@@ -589,7 +605,7 @@ impl Render for DrawerHost {
 
 #[cfg(test)]
 mod tests {
-    use super::{DrawerHost, DrawerSide};
+    use super::{DragOrigin, DrawerHost, DrawerSide, DrawerState, GestureState};
     use gpui::{
         AppContext as _, Empty, Modifiers, PlatformInput, PointerButton, PointerDownEvent,
         PointerKind, PointerMoveEvent, TestAppContext, point, px,
@@ -716,6 +732,74 @@ mod tests {
             assert!(!result.default_prevented);
         })
         .unwrap();
+
+        cx.quit();
+    }
+
+    #[test]
+    fn snap_clears_stale_pending_gesture() {
+        let mut cx = TestAppContext::single();
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |_, cx| {
+                let content = cx.new(|_| Empty);
+                let drawer = cx.new(|_| Empty);
+                cx.new(|cx| DrawerHost::new(content.into(), drawer.into(), DrawerSide::Left, cx))
+            })
+            .unwrap()
+        });
+
+        window
+            .update(&mut cx, |drawer_host, window, cx| {
+                let width = f32::from(drawer_host.drawer_width);
+                drawer_host.drawer_offset = width;
+                drawer_host.drawer_state = DrawerState::Opened;
+                drawer_host.set_pending_gesture(1, point(px(255.0), px(212.0)), DragOrigin::Panel);
+
+                assert!(matches!(
+                    drawer_host.gesture_state,
+                    GestureState::Pending { .. }
+                ));
+
+                drawer_host.close_with_window(window, cx);
+
+                assert_eq!(drawer_host.gesture_state, GestureState::Idle);
+                assert_eq!(drawer_host.drawer_state, DrawerState::Closing);
+            })
+            .unwrap();
+
+        cx.quit();
+    }
+
+    #[test]
+    fn new_pointer_down_replaces_stale_pending_gesture() {
+        let mut cx = TestAppContext::single();
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |_, cx| {
+                let content = cx.new(|_| Empty);
+                let drawer = cx.new(|_| Empty);
+                cx.new(|cx| DrawerHost::new(content.into(), drawer.into(), DrawerSide::Left, cx))
+            })
+            .unwrap()
+        });
+
+        window
+            .update(&mut cx, |drawer_host, _window, _cx| {
+                drawer_host.set_pending_gesture(1, point(px(255.0), px(212.0)), DragOrigin::Panel);
+                drawer_host.set_pending_gesture(2, point(px(4.0), px(436.0)), DragOrigin::Edge);
+
+                let GestureState::Pending {
+                    pointer_id,
+                    start,
+                    origin,
+                } = drawer_host.gesture_state
+                else {
+                    panic!("expected pending replacement");
+                };
+                assert_eq!(pointer_id, 2);
+                assert_eq!(start, point(px(4.0), px(436.0)));
+                assert_eq!(origin, DragOrigin::Edge);
+            })
+            .unwrap();
 
         cx.quit();
     }

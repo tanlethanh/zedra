@@ -6,6 +6,10 @@
 //   PKI reconnect:  Connect(None) → Challenge → AuthProve → Ok(SyncSessionResult) → (RPC calls)
 //   Health:         Ping (every 2s, foreground only, 5 misses = client reconnects)
 
+use crate::docs_tree::{
+    build_snapshot, docs_tree_cache_key, docs_tree_limit, snapshot_page_result,
+    validate_docs_tree_offset,
+};
 use crate::fs::{Filesystem, LocalFs};
 use crate::git::GitRepo;
 use crate::host_info;
@@ -15,6 +19,7 @@ use crate::session_registry::{
     AttachResult, ConsumeSlotResult, HostShellState, HostTermMeta, OutputSenderSlot, ServerSession,
     SessionRegistry, TermBacklog, TermSession, MAX_WATCHED_PATHS_PER_SESSION,
 };
+use crate::utils;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -67,6 +72,7 @@ async fn build_sync_result(
     }
 }
 
+#[allow(unused)]
 fn ts() -> String {
     let s = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -137,9 +143,28 @@ fn escape_osc633(raw: &str) -> String {
     escaped
 }
 
+fn initial_host_meta(opts: &SpawnOptions) -> HostTermMeta {
+    let mut meta = HostTermMeta::default();
+    // Launch commands can run before a prompt emits OSC 7; seed cwd from the spawn request.
+    meta.cwd = opts
+        .workdir
+        .as_ref()
+        .map(|path| path.to_string_lossy().into_owned());
+    if let Some(command) = opts
+        .launch_cmd
+        .as_ref()
+        .filter(|command| !command.is_empty())
+    {
+        meta.current_command = Some(command.clone());
+        meta.shell_state = HostShellState::Running;
+    }
+    meta
+}
+
 #[cfg(test)]
 mod terminal_meta_preamble_tests {
     use super::*;
+    use std::path::PathBuf;
     use zedra_osc::{OscEvent, OscScanner};
 
     #[test]
@@ -186,8 +211,30 @@ mod terminal_meta_preamble_tests {
             [OscEvent::CommandEnd { exit_code: 17 }]
         ));
     }
+
+    #[test]
+    fn initial_host_meta_uses_spawn_workdir_for_cwd() {
+        let opts = SpawnOptions {
+            workdir: Some(PathBuf::from("/repo/project")),
+            launch_cmd: Some("claude --resume session".to_owned()),
+        };
+
+        assert_eq!(
+            initial_host_meta(&opts).cwd.as_deref(),
+            Some("/repo/project")
+        );
+        assert_eq!(
+            initial_host_meta(&opts).current_command.as_deref(),
+            Some("claude --resume session")
+        );
+        assert_eq!(
+            initial_host_meta(&opts).shell_state,
+            HostShellState::Running
+        );
+    }
 }
 
+#[allow(unused)]
 fn short_key(key: &[u8; 32]) -> String {
     key[..4].iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -205,6 +252,43 @@ fn initial_path_type(conn: &iroh::endpoint::Connection) -> &'static str {
         .unwrap_or("unknown");
     drop(path_list);
     result
+}
+
+fn connection_latency_sample(
+    path: &iroh::endpoint::PathInfo,
+    path_count: usize,
+    interval_secs: u64,
+) -> Event {
+    let (connection_type, network_type, relay, relay_region, nearest_relay_region) =
+        match path.remote_addr() {
+            iroh::TransportAddr::Ip(addr) => (
+                "p2p",
+                zedra_telemetry::ip_network_type(addr.ip()),
+                "none",
+                "none",
+                "unknown",
+            ),
+            iroh::TransportAddr::Relay(url) => {
+                let relay = url.host_str().unwrap_or(url.as_str());
+                let relay_id = zedra_telemetry::relay_id_label(relay);
+                let relay_region = zedra_telemetry::relay_region_label(relay);
+                ("relay", "relay", relay_id, relay_region, relay_region)
+            }
+            _ => ("unknown", "unknown", "none", "unknown", "unknown"),
+        };
+
+    Event::ConnectionLatencySample {
+        source: "host",
+        connection_type,
+        network_type,
+        rtt_ms: path.stats().rtt.as_millis() as u64,
+        relay,
+        relay_region,
+        nearest_relay_region,
+        path_count,
+        interval_secs,
+        sample_reason: "periodic",
+    }
 }
 
 /// Resolve `user_path` relative to `workdir`, then verify the canonical path
@@ -342,7 +426,7 @@ async fn run_observer(session: Arc<ServerSession>, workdir: PathBuf, my_gen: u64
             {
                 Ok(v) => v,
                 Err(e) => {
-                    tracing::error!("fs_dir_fingerprint error for path {}: {}", path, e);
+                    tracing::warn!("fs_dir_fingerprint error for path {}: {}", path, e);
                     None
                 }
             };
@@ -470,12 +554,6 @@ pub async fn handle_connection(
         &client_pubkey[..4],
         session.id,
     );
-    eprintln!(
-        "[{}] connected: {} → session {}",
-        ts(),
-        short_key(&client_pubkey),
-        &session.id[..8.min(session.id.len())]
-    );
 
     let session_start = std::time::Instant::now();
 
@@ -489,6 +567,7 @@ pub async fn handle_connection(
             let mut paths = conn_for_bw.paths(); // hold watcher for the lifetime of the task
             let mut prev_tx: u64 = 0;
             let mut prev_rx: u64 = 0;
+            const SAMPLE_INTERVAL_SECS: u64 = 60;
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
@@ -496,12 +575,18 @@ pub async fn handle_connection(
                         let mut cur_tx = 0u64;
                         let mut cur_rx = 0u64;
                         let mut bw_found = false;
+                        let mut latency_sample = None;
                         for p in path_list.iter() {
                             if p.is_selected() {
                                 let s = p.stats();
                                 cur_tx = s.udp_tx.bytes;
                                 cur_rx = s.udp_rx.bytes;
                                 bw_found = true;
+                                latency_sample = Some(connection_latency_sample(
+                                    p,
+                                    path_list.len(),
+                                    SAMPLE_INTERVAL_SECS,
+                                ));
                                 break;
                             }
                         }
@@ -514,8 +599,11 @@ pub async fn handle_connection(
                             zedra_telemetry::send(Event::BandwidthSample {
                                 bytes_sent: delta_tx,
                                 bytes_recv: delta_rx,
-                                interval_secs: 60,
+                                interval_secs: SAMPLE_INTERVAL_SECS,
                             });
+                        }
+                        if let Some(sample) = latency_sample {
+                            zedra_telemetry::send(sample);
                         }
                     }
                     _ = conn_for_bw.closed() => break,
@@ -571,12 +659,7 @@ pub async fn handle_connection(
         "Connection closed: session={} (session stays alive in registry)",
         session.id,
     );
-    eprintln!(
-        "[{}] disconn:   {} (session {})",
-        ts(),
-        short_key(&client_pubkey),
-        &session.id[..8.min(session.id.len())]
-    );
+
     Ok(())
 }
 
@@ -725,9 +808,8 @@ async fn handle_connect(
 
     // Check global authorization before issuing a challenge.
     if !is_new_client && !registry.is_globally_authorized(&pubkey).await {
-        // Drop tx to signal error; don't send a challenge to unknown clients.
         *failure_reason = "not_authorized";
-        drop(msg.tx);
+        let _ = msg.tx.send(ConnectResult::Unauthorized).await;
         anyhow::bail!("client not globally authorized");
     }
 
@@ -790,6 +872,7 @@ async fn handle_register(
                     "Register: invalid HMAC from {:?}...",
                     &msg.client_pubkey[..4]
                 );
+                utils::eprintln_warn("Invalid HMAC. Try again.");
                 return RegisterResult::InvalidHandshake;
             }
 
@@ -803,26 +886,25 @@ async fn handle_register(
                 &msg.client_pubkey[..4],
                 slot.session_id,
             );
-            eprintln!(
-                "[{}] paired:    {} → session {}",
-                ts(),
-                short_key(&msg.client_pubkey),
-                &slot.session_id[..8.min(slot.session_id.len())]
-            );
+            utils::eprintln_success(format!(
+                "New device registered to session {}.",
+                slot.session_id
+            ));
             zedra_telemetry::send(Event::ClientPaired);
             RegisterResult::Ok
         }
         ConsumeSlotResult::Consumed => {
             tracing::warn!("Register: slot for {} already consumed", msg.session_id);
-            eprintln!(
-                "[{}] pairing:   QR already used (session {}). Press 'r' in the host terminal to generate a new QR.",
-                ts(),
-                &msg.session_id[..8.min(msg.session_id.len())]
+            utils::eprintln_warn(
+                "QR already used. Run `zedra qr` from the workspace, or add `--workdir <path>` from another directory.",
             );
             RegisterResult::HandshakeConsumed
         }
         ConsumeSlotResult::NotFound => {
             tracing::warn!("Register: no slot found for session {}", msg.session_id);
+            utils::eprintln_warn(
+                "QR invalid or expired. Run `zedra qr` from the workspace, or add `--workdir <path>` from another directory.",
+            );
             RegisterResult::SlotNotFound
         }
     }
@@ -975,6 +1057,7 @@ pub async fn create_terminal(
         );
     }
 
+    let initial_meta = initial_host_meta(&opts);
     let shell = ShellSession::spawn(cols, rows, opts)?;
     let (pty_reader, pty_writer, master, child) = shell.take_reader();
     let id = session.next_terminal_id().await;
@@ -991,7 +1074,7 @@ pub async fn create_terminal(
         gen: 0,
         sender: None,
     }));
-    let host_meta = Arc::new(std::sync::Mutex::new(HostTermMeta::default()));
+    let host_meta = Arc::new(std::sync::Mutex::new(initial_meta));
     let backlog = Arc::new(std::sync::Mutex::new(TermBacklog::new()));
     // Wrap the writer so TermAttach can hold a direct Arc clone and write
     // without locking session.terminals on every keystroke (Fix 3).
@@ -1081,6 +1164,180 @@ pub async fn create_terminal(
 // RPC dispatch
 // ---------------------------------------------------------------------------
 
+fn git_status_result(workdir: PathBuf) -> GitStatusResult {
+    match GitRepo::open(&workdir) {
+        Ok(repo) => {
+            let branch = repo.branch().unwrap_or_default();
+            let entries = repo
+                .status()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|e| GitStatusEntry {
+                    path: e.path,
+                    staged_status: e
+                        .staged_status
+                        .map(|status| format!("{:?}", status).to_lowercase()),
+                    unstaged_status: e
+                        .unstaged_status
+                        .map(|status| format!("{:?}", status).to_lowercase()),
+                })
+                .collect();
+            GitStatusResult {
+                branch,
+                entries,
+                error: None,
+            }
+        }
+        Err(e) => {
+            tracing::warn!("GitStatus: failed to open repo at {:?}: {}", workdir, e);
+            GitStatusResult {
+                branch: String::new(),
+                entries: vec![],
+                error: Some(e.to_string()),
+            }
+        }
+    }
+}
+
+fn git_diff_result(workdir: PathBuf, path: Option<String>, staged: bool) -> GitDiffResult {
+    match GitRepo::open(&workdir) {
+        Ok(repo) => match repo.diff(path.as_deref(), staged) {
+            Ok(diff) => GitDiffResult { diff, error: None },
+            Err(e) => {
+                tracing::warn!("GitDiff: failed to diff {:?}: {}", path, e);
+                GitDiffResult {
+                    diff: String::new(),
+                    error: Some(e.to_string()),
+                }
+            }
+        },
+        Err(e) => {
+            tracing::warn!("GitDiff: failed to open repo at {:?}: {}", workdir, e);
+            GitDiffResult {
+                diff: String::new(),
+                error: Some(e.to_string()),
+            }
+        }
+    }
+}
+
+fn git_log_result(workdir: PathBuf, limit: Option<usize>) -> GitLogResult {
+    match GitRepo::open(&workdir) {
+        Ok(repo) => {
+            let entries = repo
+                .log(limit.unwrap_or(20).min(500))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|e| GitLogEntry {
+                    id: e.id,
+                    message: e.message,
+                    author: e.author,
+                    timestamp: e.timestamp,
+                })
+                .collect();
+            GitLogResult {
+                entries,
+                error: None,
+            }
+        }
+        Err(e) => {
+            tracing::warn!("GitLog: failed to open repo at {:?}: {}", workdir, e);
+            GitLogResult {
+                entries: vec![],
+                error: Some(e.to_string()),
+            }
+        }
+    }
+}
+
+fn git_commit_result(
+    workdir: PathBuf,
+    message: String,
+    paths: Vec<String>,
+) -> (GitCommitResult, bool) {
+    match GitRepo::open(&workdir) {
+        Ok(repo) => match repo.commit(&message, &paths) {
+            Ok(hash) => (GitCommitResult { hash, error: None }, true),
+            Err(e) => {
+                tracing::warn!("GitCommit: commit failed: {}", e);
+                (
+                    GitCommitResult {
+                        hash: String::new(),
+                        error: Some(e.to_string()),
+                    },
+                    false,
+                )
+            }
+        },
+        Err(e) => {
+            tracing::warn!("GitCommit: failed to open repo at {:?}: {}", workdir, e);
+            (
+                GitCommitResult {
+                    hash: String::new(),
+                    error: Some(e.to_string()),
+                },
+                false,
+            )
+        }
+    }
+}
+
+fn git_stage_result(workdir: PathBuf, paths: Vec<String>) -> GitStageResult {
+    let error = GitRepo::open(&workdir)
+        .and_then(|repo| repo.stage(&paths))
+        .err()
+        .map(|e| {
+            tracing::warn!("GitStage failed: {}", e);
+            e.to_string()
+        });
+    GitStageResult { error }
+}
+
+fn git_unstage_result(workdir: PathBuf, paths: Vec<String>) -> GitUnstageResult {
+    let error = GitRepo::open(&workdir)
+        .and_then(|repo| repo.unstage(&paths))
+        .err()
+        .map(|e| {
+            tracing::warn!("GitUnstage failed: {}", e);
+            e.to_string()
+        });
+    GitUnstageResult { error }
+}
+
+fn git_branches_result(workdir: PathBuf) -> GitBranchesResult {
+    match GitRepo::open(&workdir) {
+        Ok(repo) => {
+            let branches = repo
+                .branches()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|b| GitBranchEntry {
+                    name: b.name,
+                    is_head: b.is_head,
+                })
+                .collect();
+            GitBranchesResult {
+                branches,
+                error: None,
+            }
+        }
+        Err(e) => {
+            tracing::warn!("GitBranches: failed to open repo at {:?}: {}", workdir, e);
+            GitBranchesResult {
+                branches: vec![],
+                error: Some(e.to_string()),
+            }
+        }
+    }
+}
+
+fn git_checkout_result(workdir: PathBuf, branch: String) -> GitCheckoutResult {
+    let ok = GitRepo::open(&workdir)
+        .and_then(|repo| repo.checkout(&branch))
+        .is_ok();
+    GitCheckoutResult { ok }
+}
+
 async fn dispatch(
     msg: ZedraMessage,
     session: Arc<ServerSession>,
@@ -1149,41 +1406,21 @@ async fn dispatch(
         }
 
         ZedraMessage::SwitchSession(msg) => {
-            // Verify the client is authorized in the target session's ACL,
-            // not just globally. This prevents a client from switching to a
-            // session it was never paired with.
-            match registry.get_by_name(&msg.session_name).await {
-                Some(target) if target.acl.lock().await.contains(&client_pubkey) => {
-                    target.touch().await;
-                    let workdir = target
-                        .workdir
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().into_owned());
-                    let _ = msg
-                        .tx
-                        .send(SessionSwitchResult {
-                            session_id: target.id.clone(),
-                            workdir,
-                            error: None,
-                        })
-                        .await;
-                }
-                _ => {
-                    let session_name = msg.session_name.clone();
-                    tracing::warn!(
-                        "SwitchSession: session {:?} not found or unauthorized",
-                        session_name
-                    );
-                    let _ = msg
-                        .tx
-                        .send(SessionSwitchResult {
-                            session_id: String::new(),
-                            workdir: None,
-                            error: Some(format!("session '{}' not found", session_name)),
-                        })
-                        .await;
-                }
-            }
+            tracing::warn!(
+                "SwitchSession: session switching is unsupported for {:?}",
+                msg.session_name
+            );
+            let _ = msg
+                .tx
+                .send(SessionSwitchResult {
+                    session_id: String::new(),
+                    workdir: None,
+                    error: Some(
+                        "session switching is unsupported; reconnect to the target session"
+                            .to_string(),
+                    ),
+                })
+                .await;
         }
 
         // -- Filesystem --
@@ -1236,7 +1473,7 @@ async fn dispatch(
                         .await;
                 }
                 Err(e) => {
-                    tracing::error!("FsList: list failed for {:?}: {}", path, e);
+                    tracing::warn!("FsList: list failed for {:?}: {}", path, e);
                     let _ = msg
                         .tx
                         .send(FsListResult {
@@ -1291,7 +1528,7 @@ async fn dispatch(
                         .await;
                 }
                 Err(e) => {
-                    tracing::error!("FsRead: read failed for {:?}: {}", path, e);
+                    tracing::warn!("FsRead: read failed for {:?}: {}", path, e);
                     let _ = msg
                         .tx
                         .send(FsReadResult {
@@ -1350,7 +1587,7 @@ async fn dispatch(
                         .await;
                 }
                 Err(e) => {
-                    tracing::error!("FsStat: stat failed for {:?}: {}", path, e);
+                    tracing::warn!("FsStat: stat failed for {:?}: {}", path, e);
                     let _ = msg
                         .tx
                         .send(FsStatResult {
@@ -1359,6 +1596,132 @@ async fn dispatch(
                             size: 0,
                             modified: None,
                             error: Some(e.to_string()),
+                        })
+                        .await;
+                }
+            }
+        }
+
+        ZedraMessage::FsDocsTree(msg) => {
+            if let Err(error) = validate_docs_tree_offset(msg.offset) {
+                let _ = msg
+                    .tx
+                    .send(FsDocsTreeResult {
+                        root: None,
+                        snapshot_id: None,
+                        next_offset: 0,
+                        has_more: false,
+                        truncated: false,
+                        error: Some(error),
+                    })
+                    .await;
+                return Ok(());
+            }
+
+            let path = match resolve_path(&state.workdir, &msg.path) {
+                Ok(path) => path,
+                Err(error) => {
+                    tracing::warn!("FsDocsTree: rejected path {:?}: {}", msg.path, error);
+                    let _ = msg
+                        .tx
+                        .send(FsDocsTreeResult {
+                            root: None,
+                            snapshot_id: None,
+                            next_offset: 0,
+                            has_more: false,
+                            truncated: false,
+                            error: Some(FsDocsTreeError::InvalidPath),
+                        })
+                        .await;
+                    return Ok(());
+                }
+            };
+
+            if !path.is_dir() {
+                let _ = msg
+                    .tx
+                    .send(FsDocsTreeResult {
+                        root: None,
+                        snapshot_id: None,
+                        next_offset: 0,
+                        has_more: false,
+                        truncated: false,
+                        error: Some(FsDocsTreeError::InvalidRequest(
+                            "docs tree path must be a directory".to_string(),
+                        )),
+                    })
+                    .await;
+                return Ok(());
+            }
+
+            let root_key = docs_tree_cache_key(&path);
+            let limit = docs_tree_limit(msg.limit);
+
+            if msg.rebuild {
+                if !session.try_begin_docs_tree_scan() {
+                    let _ = msg
+                        .tx
+                        .send(FsDocsTreeResult {
+                            root: None,
+                            snapshot_id: None,
+                            next_offset: 0,
+                            has_more: false,
+                            truncated: false,
+                            error: Some(FsDocsTreeError::Busy),
+                        })
+                        .await;
+                    return Ok(());
+                }
+
+                let scan_path = path.clone();
+                let scan_result = tokio::task::spawn_blocking(move || build_snapshot(scan_path))
+                    .await
+                    .map_err(|error| anyhow::anyhow!("docs tree scan task failed: {error}"))
+                    .and_then(|result| result);
+                session.finish_docs_tree_scan();
+
+                match scan_result {
+                    Ok(snapshot) => {
+                        // Manual rebuild replaces the snapshot and always restarts paging.
+                        let result = snapshot_page_result(&snapshot, 0, limit);
+                        session.store_docs_tree_snapshot(root_key, snapshot).await;
+                        let _ = msg.tx.send(result).await;
+                    }
+                    Err(error) => {
+                        tracing::warn!("FsDocsTree: scan failed for {:?}: {}", path, error);
+                        let _ = msg
+                            .tx
+                            .send(FsDocsTreeResult {
+                                root: None,
+                                snapshot_id: None,
+                                next_offset: 0,
+                                has_more: false,
+                                truncated: false,
+                                error: Some(FsDocsTreeError::ScanFailed(error.to_string())),
+                            })
+                            .await;
+                    }
+                }
+                return Ok(());
+            }
+
+            match session
+                .docs_tree_page(&root_key, msg.snapshot_id.as_deref(), msg.offset, limit)
+                .await
+            {
+                Ok(result) => {
+                    let _ = msg.tx.send(result).await;
+                }
+                Err(error) => {
+                    let _ = msg
+                        .tx
+                        .send(FsDocsTreeResult {
+                            root: None,
+                            snapshot_id: None,
+                            next_offset: 0,
+                            has_more: false,
+                            truncated: false,
+                            error: Some(error),
                         })
                         .await;
                 }
@@ -1562,15 +1925,39 @@ async fn dispatch(
             }
 
             // Replay backlog
-            let backlog = session.backlog_after(&term_id, last_seq).await;
+            let Some(backlog_replay) = session.backlog_replay_after(&term_id, last_seq).await
+            else {
+                tracing::warn!(
+                    "TermAttach: terminal {} vanished before backlog replay",
+                    term_id
+                );
+                return Ok(());
+            };
+            if let Some(oldest_seq) = backlog_replay.oldest_seq {
+                let first_missing_seq = last_seq.saturating_add(1);
+                if first_missing_seq < oldest_seq {
+                    tracing::warn!(
+                        "TermAttach: backlog gap detected id={} last_seq={} first_missing_seq={} oldest_retained_seq={} newest_retained_seq={} retained_entries={} retained_bytes={} replay_entries={} session={}",
+                        term_id,
+                        last_seq,
+                        first_missing_seq,
+                        oldest_seq,
+                        backlog_replay.newest_seq,
+                        backlog_replay.retained_entries,
+                        backlog_replay.retained_bytes,
+                        backlog_replay.entries.len(),
+                        session.id,
+                    );
+                }
+            }
             tracing::info!(
                 "TermAttach: id={} last_seq={} backlog_entries={} session={}",
                 term_id,
                 last_seq,
-                backlog.len(),
+                backlog_replay.entries.len(),
                 session.id,
             );
-            for entry in backlog {
+            for entry in backlog_replay.entries {
                 if irpc_tx
                     .send(TermOutput {
                         data: entry.data,
@@ -1730,232 +2117,115 @@ async fn dispatch(
         // -- Git --
         ZedraMessage::GitStatus(msg) => {
             session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
-            match GitRepo::open(&state.workdir) {
-                Ok(repo) => {
-                    let branch = repo.branch().unwrap_or_default();
-                    let entries = repo
-                        .status()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|e| GitStatusEntry {
-                            path: e.path,
-                            staged_status: e
-                                .staged_status
-                                .map(|status| format!("{:?}", status).to_lowercase()),
-                            unstaged_status: e
-                                .unstaged_status
-                                .map(|status| format!("{:?}", status).to_lowercase()),
-                        })
-                        .collect();
-                    let _ = msg
-                        .tx
-                        .send(GitStatusResult {
-                            branch,
-                            entries,
-                            error: None,
-                        })
-                        .await;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "GitStatus: failed to open repo at {:?}: {}",
-                        state.workdir,
-                        e
-                    );
-                    let _ = msg
-                        .tx
-                        .send(GitStatusResult {
-                            branch: String::new(),
-                            entries: vec![],
-                            error: Some(e.to_string()),
-                        })
-                        .await;
-                }
-            }
+            let workdir = state.workdir.clone();
+            let result = tokio::task::spawn_blocking(move || git_status_result(workdir))
+                .await
+                .unwrap_or_else(|e| GitStatusResult {
+                    branch: String::new(),
+                    entries: vec![],
+                    error: Some(format!("git status worker failed: {e}")),
+                });
+            let _ = msg.tx.send(result).await;
         }
 
         ZedraMessage::GitDiff(msg) => {
             session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
-            match GitRepo::open(&state.workdir) {
-                Ok(repo) => match repo.diff(msg.path.as_deref(), msg.staged) {
-                    Ok(diff) => {
-                        let _ = msg.tx.send(GitDiffResult { diff, error: None }).await;
-                    }
-                    Err(e) => {
-                        tracing::warn!("GitDiff: failed to diff {:?}: {}", msg.path, e);
-                        let _ = msg
-                            .tx
-                            .send(GitDiffResult {
-                                diff: String::new(),
-                                error: Some(e.to_string()),
-                            })
-                            .await;
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!("GitDiff: failed to open repo at {:?}: {}", state.workdir, e);
-                    let _ = msg
-                        .tx
-                        .send(GitDiffResult {
-                            diff: String::new(),
-                            error: Some(e.to_string()),
-                        })
-                        .await;
-                }
-            }
+            let workdir = state.workdir.clone();
+            let path = msg.path.clone();
+            let staged = msg.staged;
+            let result =
+                tokio::task::spawn_blocking(move || git_diff_result(workdir, path, staged))
+                    .await
+                    .unwrap_or_else(|e| GitDiffResult {
+                        diff: String::new(),
+                        error: Some(format!("git diff worker failed: {e}")),
+                    });
+            let _ = msg.tx.send(result).await;
         }
 
         ZedraMessage::GitLog(msg) => {
             session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
-            match GitRepo::open(&state.workdir) {
-                Ok(repo) => {
-                    let entries = repo
-                        .log(msg.limit.unwrap_or(20).min(500))
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|e| GitLogEntry {
-                            id: e.id,
-                            message: e.message,
-                            author: e.author,
-                            timestamp: e.timestamp,
-                        })
-                        .collect();
-                    let _ = msg
-                        .tx
-                        .send(GitLogResult {
-                            entries,
-                            error: None,
-                        })
-                        .await;
-                }
-                Err(e) => {
-                    tracing::warn!("GitLog: failed to open repo at {:?}: {}", state.workdir, e);
-                    let _ = msg
-                        .tx
-                        .send(GitLogResult {
-                            entries: vec![],
-                            error: Some(e.to_string()),
-                        })
-                        .await;
-                }
-            }
+            let workdir = state.workdir.clone();
+            let limit = msg.limit;
+            let result = tokio::task::spawn_blocking(move || git_log_result(workdir, limit))
+                .await
+                .unwrap_or_else(|e| GitLogResult {
+                    entries: vec![],
+                    error: Some(format!("git log worker failed: {e}")),
+                });
+            let _ = msg.tx.send(result).await;
         }
 
         ZedraMessage::GitCommit(msg) => {
             let files_staged = msg.paths.len();
-            match GitRepo::open(&state.workdir) {
-                Ok(repo) => match repo.commit(&msg.message, &msg.paths) {
-                    Ok(hash) => {
-                        session.rpc_git_commits.fetch_add(1, Ordering::Relaxed);
-                        zedra_telemetry::send(Event::GitCommitMade {
-                            files_staged,
-                            success: true,
-                        });
-                        let _ = msg.tx.send(GitCommitResult { hash, error: None }).await;
-                    }
-                    Err(e) => {
-                        tracing::warn!("GitCommit: commit failed: {}", e);
-                        zedra_telemetry::send(Event::GitCommitMade {
-                            files_staged,
-                            success: false,
-                        });
-                        let _ = msg
-                            .tx
-                            .send(GitCommitResult {
+            let workdir = state.workdir.clone();
+            let message = msg.message.clone();
+            let paths = msg.paths.clone();
+            let (result, success) =
+                tokio::task::spawn_blocking(move || git_commit_result(workdir, message, paths))
+                    .await
+                    .unwrap_or_else(|e| {
+                        (
+                            GitCommitResult {
                                 hash: String::new(),
-                                error: Some(e.to_string()),
-                            })
-                            .await;
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!(
-                        "GitCommit: failed to open repo at {:?}: {}",
-                        state.workdir,
-                        e
-                    );
-                    zedra_telemetry::send(Event::GitCommitMade {
-                        files_staged,
-                        success: false,
+                                error: Some(format!("git commit worker failed: {e}")),
+                            },
+                            false,
+                        )
                     });
-                    let _ = msg
-                        .tx
-                        .send(GitCommitResult {
-                            hash: String::new(),
-                            error: Some(e.to_string()),
-                        })
-                        .await;
-                }
+            if success {
+                session.rpc_git_commits.fetch_add(1, Ordering::Relaxed);
             }
+            zedra_telemetry::send(Event::GitCommitMade {
+                files_staged,
+                success,
+            });
+            let _ = msg.tx.send(result).await;
         }
 
         ZedraMessage::GitStage(msg) => {
             session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
-            let result = GitRepo::open(&state.workdir)
-                .and_then(|repo| repo.stage(&msg.paths))
-                .err()
-                .map(|e| {
-                    tracing::warn!("GitStage failed: {}", e);
-                    e.to_string()
+            let workdir = state.workdir.clone();
+            let paths = msg.paths.clone();
+            let result = tokio::task::spawn_blocking(move || git_stage_result(workdir, paths))
+                .await
+                .unwrap_or_else(|e| GitStageResult {
+                    error: Some(format!("git stage worker failed: {e}")),
                 });
-            let _ = msg.tx.send(GitStageResult { error: result }).await;
+            let _ = msg.tx.send(result).await;
         }
 
         ZedraMessage::GitUnstage(msg) => {
             session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
-            let result = GitRepo::open(&state.workdir)
-                .and_then(|repo| repo.unstage(&msg.paths))
-                .err()
-                .map(|e| {
-                    tracing::warn!("GitUnstage failed: {}", e);
-                    e.to_string()
+            let workdir = state.workdir.clone();
+            let paths = msg.paths.clone();
+            let result = tokio::task::spawn_blocking(move || git_unstage_result(workdir, paths))
+                .await
+                .unwrap_or_else(|e| GitUnstageResult {
+                    error: Some(format!("git unstage worker failed: {e}")),
                 });
-            let _ = msg.tx.send(GitUnstageResult { error: result }).await;
+            let _ = msg.tx.send(result).await;
         }
 
         ZedraMessage::GitBranches(msg) => {
             session.rpc_git_ops.fetch_add(1, Ordering::Relaxed);
-            match GitRepo::open(&state.workdir) {
-                Ok(repo) => {
-                    let branches = repo
-                        .branches()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|b| GitBranchEntry {
-                            name: b.name,
-                            is_head: b.is_head,
-                        })
-                        .collect();
-                    let _ = msg
-                        .tx
-                        .send(GitBranchesResult {
-                            branches,
-                            error: None,
-                        })
-                        .await;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "GitBranches: failed to open repo at {:?}: {}",
-                        state.workdir,
-                        e
-                    );
-                    let _ = msg
-                        .tx
-                        .send(GitBranchesResult {
-                            branches: vec![],
-                            error: Some(e.to_string()),
-                        })
-                        .await;
-                }
-            }
+            let workdir = state.workdir.clone();
+            let result = tokio::task::spawn_blocking(move || git_branches_result(workdir))
+                .await
+                .unwrap_or_else(|e| GitBranchesResult {
+                    branches: vec![],
+                    error: Some(format!("git branches worker failed: {e}")),
+                });
+            let _ = msg.tx.send(result).await;
         }
 
         ZedraMessage::GitCheckout(msg) => {
-            let ok = GitRepo::open(&state.workdir)
-                .and_then(|repo| repo.checkout(&msg.branch))
-                .is_ok();
-            let _ = msg.tx.send(GitCheckoutResult { ok }).await;
+            let workdir = state.workdir.clone();
+            let branch = msg.branch.clone();
+            let result = tokio::task::spawn_blocking(move || git_checkout_result(workdir, branch))
+                .await
+                .unwrap_or(GitCheckoutResult { ok: false });
+            let _ = msg.tx.send(result).await;
         }
 
         // -- AI --
@@ -1965,12 +2235,24 @@ async fn dispatch(
             // that might appear earlier in $PATH.
             let claude_bin =
                 std::env::var("ZEDRA_CLAUDE_BIN").unwrap_or_else(|_| "claude".to_string());
-            let prompt_bytes = msg.prompt.len();
+            let prompt = msg.prompt.clone();
+            let prompt_bytes = prompt.len();
             let ai_start = std::time::Instant::now();
-            let output = std::process::Command::new(&claude_bin)
-                .args(["--print", &msg.prompt])
-                .current_dir(&state.workdir)
-                .output();
+            let workdir = state.workdir.clone();
+            let prompt_for_command = prompt.clone();
+            let output = tokio::task::spawn_blocking(move || {
+                std::process::Command::new(&claude_bin)
+                    .args(["--print", prompt_for_command.as_str()])
+                    .current_dir(workdir)
+                    .output()
+            })
+            .await
+            .unwrap_or_else(|e| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("AI prompt worker failed: {e}"),
+                ))
+            });
             let duration_ms = ai_start.elapsed().as_millis() as u64;
 
             let (text, done, success) = match output {
@@ -1984,7 +2266,7 @@ async fn dispatch(
                 Err(e) => (
                     format!(
                         "Claude Code not found on host. Install with: npm i -g @anthropic-ai/claude-code\n\nPrompt was: {}\n\nError: {}",
-                        msg.prompt,
+                        prompt,
                         e
                     ),
                     true,
@@ -2091,7 +2373,7 @@ fn run_lsp_check(path: &std::path::Path) -> Vec<DiagnosticEntry> {
             }
         }
         Err(e) => {
-            tracing::error!("LspDiagnostics: command {} failed: {}", cmd, e);
+            tracing::warn!("LspDiagnostics: command {} failed: {}", cmd, e);
             vec![]
         }
     }

@@ -215,10 +215,10 @@ impl GitRepo {
     /// Checkout a branch.
     ///
     /// Branch names are validated against a safe character set before use,
-    /// and `--` is inserted to prevent flag injection.
+    /// including rejecting leading `-` to prevent flag injection.
     pub fn checkout(&self, branch: &str) -> Result<()> {
         anyhow::ensure!(is_safe_ref(branch), "invalid branch name: {:?}", branch);
-        self.git(&["checkout", "--", branch])?;
+        self.git(&["checkout", branch])?;
         Ok(())
     }
 

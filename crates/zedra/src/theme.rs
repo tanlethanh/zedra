@@ -12,6 +12,7 @@ pub const TEXT_SECONDARY: u32 = 0xcacaca;
 pub const TEXT_MUTED: u32 = 0x505050;
 
 // Border colors
+pub const BORDER_HIGHLIGHT: u32 = 0xcacaca;
 pub const BORDER_DEFAULT: u32 = 0x2c2c2c;
 pub const BORDER_ACTIVE: u32 = 0x505050;
 pub const BORDER_SUBTLE: u32 = 0x1a1a1a;
@@ -25,6 +26,7 @@ pub const ACCENT_DIM: u32 = 0x505050;
 
 // Spacing
 pub const DRAWER_PADDING: f32 = 12.0; // Horizontal padding for drawer tab content
+pub const SPACING_XS: f32 = 4.0;
 pub const SPACING_SM: f32 = 8.0;
 pub const SPACING_MD: f32 = 12.0;
 pub const SPACING_LG: f32 = 16.0;
@@ -37,6 +39,7 @@ pub const CONNECT_DETAIL_WIDTH: f32 = 300.0;
 pub const HEADER_BUTTON_SIZE: f32 = 42.0;
 pub const DRAWER_ICON_ZONE: f32 = 38.0;
 pub const TERMINAL_LINE_HEIGHT: f32 = 16.0;
+pub const PANEL_ITEM_HEIGHT: f32 = 28.0;
 
 // Drawer gesture thresholds
 pub const DRAWER_EDGE_ZONE: f32 = 56.0;
@@ -58,6 +61,7 @@ pub const ICON_LOGO: f32 = 20.0;
 pub const ICON_LG: f32 = 24.0;
 pub const ICON_MD: f32 = 18.0;
 pub const ICON_SM: f32 = 16.0;
+pub const ICON_XS: f32 = 14.0;
 pub const ICON_FILE: f32 = 12.0; // File tree icons
 pub const ICON_FILE_DIR: f32 = 14.0; // Directory icons (slightly larger than file)
 pub const ICON_STATUS: f32 = 6.0; // Status dots (connected/disconnected)
@@ -77,11 +81,6 @@ pub fn line_number_color() -> Hsla {
 // Backdrop overlay
 pub fn backdrop_color() -> Hsla {
     gpui::hsla(0.0, 0.0, 0.075, 0.6)
-}
-
-// Hover highlight (white at 5% opacity)
-pub fn hover_bg() -> Hsla {
-    gpui::hsla(0.0, 0.0, 1.0, 0.05)
 }
 
 // Transport badge background

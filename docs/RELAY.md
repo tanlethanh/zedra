@@ -10,6 +10,7 @@ See `deploy/relay/README.md` for deployment, cost estimates, and operations.
 | Instance | Region | Hostname |
 |----------|--------|----------|
 | **sg1** | ap-southeast-1 (Singapore) | `sg1.relay.zedra.dev` |
+| **vn1** | Vietnam | `vn1.relay.zedra.dev` |
 | **us1** | us-east-1 (N. Virginia) | `us1.relay.zedra.dev` |
 | **eu1** | eu-central-1 (Frankfurt) | `eu1.relay.zedra.dev` |
 

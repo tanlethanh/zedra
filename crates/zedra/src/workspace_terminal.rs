@@ -15,6 +15,7 @@ use crate::button::{
 use crate::platform_bridge::{
     self, CustomSheetDetent, CustomSheetOptions, NativeDictationPreviewOptions,
 };
+use crate::telemetry::view_telemetry;
 use crate::terminal_preview_view::TerminalPreviewView;
 use crate::terminal_state::TerminalState;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
@@ -237,10 +238,11 @@ impl WorkspaceTerminal {
                     TerminalHyperlinkTarget::Url { url } => {
                         platform_bridge::bridge().open_url(url);
                     }
-                    TerminalHyperlinkTarget::File { .. } => {
+                    TerminalHyperlinkTarget::File { path, .. } => {
                         this.preview.update(cx, |preview, cx| {
                             preview.open_hyperlink(hyperlink.clone(), cx);
                         });
+                        view_telemetry::record(view_telemetry::custom_sheet_file(path));
                         platform_bridge::show_custom_sheet(
                             CustomSheetOptions {
                                 detents: vec![CustomSheetDetent::Large],
@@ -350,6 +352,10 @@ impl WorkspaceTerminal {
         self.refresh_scroll_to_bottom_button(cx, true);
     }
 
+    pub fn input_sender(&self, cx: &App) -> Option<tokio::sync::mpsc::Sender<Vec<u8>>> {
+        self.terminal_view.read(cx).input_sender(cx)
+    }
+
     pub fn set_terminal_id(&mut self, terminal_id: String, cx: &mut Context<Self>) {
         self.terminal_id = terminal_id.clone();
         self.deactivate(cx);
@@ -381,6 +387,7 @@ impl WorkspaceTerminal {
             Ok((input_tx, output_rx)) => {
                 terminal_view.update(cx, |terminal_view, cx| {
                     terminal_view.attach_channel(input_tx, output_rx, cx);
+                    terminal_view.sync_remote_size_after_attach(cx);
                     info!("attached channel to terminal");
                 });
             }

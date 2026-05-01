@@ -55,7 +55,7 @@ Emitted by `zedra` (app crate) and `zedra-session`.
 | Event | Context fields | Emitted from |
 |-------|---------------|-------------|
 | `app_open` | `saved_workspaces`, `app_version`, `platform`, `arch` | `app.rs` — cold start |
-| `screen_view` | `screen` | `app.rs` — navigation |
+| `screen_view` | `screen`, `screen_name`, `screen_class` | `app.rs`, `workspace.rs`, `workspace_drawer.rs`, `workspace_terminal.rs`, `settings_view.rs` — GPUI logical views |
 | `qr_scan_initiated` | — | `app.rs` — Scan QR tapped |
 | `connect_success` | `total_ms`, `binding_ms`, `hole_punch_ms`, `auth_ms`, `fetch_ms`, `path`, `network`, `rtt_ms`, `relay`, `relay_latency_ms`, `alpn`, `has_ipv4`, `has_ipv6`, `symmetric_nat`, `is_first_pairing` | `handle.rs` — connect() |
 | `connect_failed` | `phase`, `error`, `elapsed_ms`, `relay`, `alpn`, `has_ipv4`, `has_ipv6`, `relay_connected` | `handle.rs` — set_failed() |
@@ -66,6 +66,7 @@ Emitted by `zedra` (app crate) and `zedra-session`.
 | `reconnect_success` | `attempt`, `elapsed_ms`, `reason`, `binding_ms`, `hole_punch_ms`, `auth_ms`, `fetch_ms`, `path`, `network`, `rtt_ms`, `relay`, `alpn`, `has_ipv4`, `has_ipv6` | `handle.rs` |
 | `reconnect_exhausted` | `attempts`, `elapsed_ms`, `reason`, `fatal_error` (optional) | `handle.rs` |
 | `path_upgraded` | `network`, `rtt_ms`, `from_relay` | `handle.rs` — path watcher |
+| `connection_latency_sample` | `source`, `connection_type`, `network_type`, `rtt_ms`, `relay`, `relay_region`, `nearest_relay_region`, `path_count`, `interval_secs`, `sample_reason` | `workspace.rs` — selected-path latency sample |
 | `terminal_opened` | `source`, `terminal_count` | `workspace_view.rs` |
 | `terminal_closed` | `remaining` | `workspace_view.rs` |
 
@@ -83,9 +84,19 @@ Emitted by `zedra-host` via the same `zedra_telemetry::send()` mechanism.
 | `session_end` | `duration_ms`, `terminal_count`, `path_type` | `rpc_daemon.rs` — client disconnect |
 | `terminal_open` | `has_launch_cmd` | `rpc_daemon.rs` — PTY spawned |
 | `bandwidth_sample` | `bytes_sent`, `bytes_recv`, `interval_secs` | `rpc_daemon.rs` — every 60s |
+| `connection_latency_sample` | `source`, `connection_type`, `network_type`, `rtt_ms`, `relay`, `relay_region`, `nearest_relay_region`, `path_count`, `interval_secs`, `sample_reason` | `rpc_daemon.rs` — every 60s while connected |
 
 Host events also carry `host_version`, `os`, and `arch` — injected automatically
 by `Ga4::build_payload()` before the GA4 HTTP POST.
+
+`connection_latency_sample` is a point-in-time selected-path sample, not a
+session average. The app emits an initial sample after connection, another when
+the selected path type changes, and then periodic samples on the configured
+interval. The host emits the same event every 60 seconds from the active RPC
+connection. Relay values are sanitized to known relay IDs (`sg1`, `vn1`, `us1`,
+`eu1`) or `custom`; no arbitrary relay hostname, IP address, or geolocation is
+sent. `nearest_relay_region` is inferred from the preferred relay reported by
+iroh, not from user IP lookup.
 
 ---
 
@@ -126,6 +137,11 @@ Firebase is integrated via CocoaPods. Key files:
 | `ios/Zedra/NativeBridge.swift` | Swift C-export bridge: `zedra_firebase_initialize`, `zedra_log_event`, `zedra_record_error`, `zedra_record_panic` |
 | `crates/zedra/src/ios/telemetry.rs` | Rust FFI declarations calling into `NativeBridge.swift` |
 | `crates/zedra/src/telemetry.rs` | `FirebaseBackend` — registers with `zedra_telemetry` |
+
+Manual GPUI logical screen views are emitted as Firebase `screen_view` events
+with `screen_name` and `screen_class`. Native automatic screen reporting remains
+enabled, so UIKit rows such as alerts, QR scanner, and custom sheet controllers
+can still appear beside logical Zedra rows in Firebase reports.
 
 **Build**: `pod install` in `ios/`, then build via `.xcworkspace`.
 

@@ -7,11 +7,14 @@
 use anyhow::Result;
 use qrcode::render::unicode;
 use qrcode::{EcLevel, QrCode};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 use zedra_rpc::ZedraPairingTicket;
 
+use crate::utils;
+
 /// Machine-readable startup output for `--json` mode.
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StartupInfo {
     pub status: String,
     pub host: String,
@@ -77,24 +80,43 @@ pub fn generate_pairing_qr(
 }
 
 /// Print pairing info in human-readable format.
-fn print_pairing_info(info: &StartupInfo) {
+pub fn print_pairing_info(info: &StartupInfo) {
     println!();
-    println!("  Zedra Host Pairing");
-    println!("  ==================");
+    utils::println_heading("Zedra Daemon Pairing");
     println!();
-    println!("  Scan this QR code with the Zedra app to pair this device.");
-    println!("  Host: {}", info.host);
-    println!(
-        "  Endpoint: {}",
-        &info.endpoint_id[..16.min(info.endpoint_id.len())]
-    );
-    let regions: Vec<&str> = info.relay_urls.iter().map(|u| relay_region(u)).collect();
-    println!("  Relays: {}", regions.join(", "));
-    println!("  Direct addrs: {}", info.direct_addrs.len());
+    println!("Scan this QR code with the Zedra app to pair this device.");
+    println!();
+    utils::print_key_values(&pairing_metadata_rows(info));
     println!();
     println!("{}", info.qr_code);
     println!("{}", info.pairing_url);
     println!();
+}
+
+pub fn print_started_pairing_info(info: &StartupInfo, workdir: &Path) {
+    println!("{}", render_started_pairing_info(info, workdir));
+    println!();
+}
+
+fn render_started_pairing_info(info: &StartupInfo, workdir: &Path) -> String {
+    let mut rows = pairing_metadata_rows(info);
+    rows.push(("Workdir", workdir.display().to_string()));
+
+    format!(
+        "{}\n\n{}\n\nScan this QR code with the Zedra app to pair this device.\n\n{}\n{}",
+        utils::heading_text("Zedra Daemon Started"),
+        utils::render_key_values(&rows),
+        info.qr_code,
+        info.pairing_url
+    )
+}
+
+fn pairing_metadata_rows(info: &StartupInfo) -> Vec<(&'static str, String)> {
+    let regions: Vec<&str> = info.relay_urls.iter().map(|u| relay_region(u)).collect();
+    vec![
+        ("Relays", regions.join(", ")),
+        ("Direct Addrs", info.direct_addrs.len().to_string()),
+    ]
 }
 
 /// Print pairing info as a single JSON line to stdout.
@@ -146,5 +168,51 @@ mod tests {
     fn test_gethostname_returns_nonempty() {
         let name = gethostname();
         assert!(!name.is_empty());
+    }
+
+    #[test]
+    fn pairing_metadata_keeps_only_connection_summary() {
+        let info = StartupInfo {
+            status: "ready".to_string(),
+            host: "host".to_string(),
+            endpoint_id: "endpoint".to_string(),
+            relay_urls: vec![
+                "https://sg1.relay.zedra.dev".to_string(),
+                "https://vn1.relay.zedra.dev".to_string(),
+            ],
+            direct_addrs: vec!["192.0.2.1:1234".to_string()],
+            pairing_url: "zedra://connect?ticket=test".to_string(),
+            qr_code: "qr".to_string(),
+        };
+
+        let labels = pairing_metadata_rows(&info)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, vec!["Relays", "Direct Addrs"]);
+    }
+
+    #[test]
+    fn started_pairing_info_merges_daemon_and_qr_summary() {
+        let info = StartupInfo {
+            status: "ready".to_string(),
+            host: "host".to_string(),
+            endpoint_id: "endpoint".to_string(),
+            relay_urls: vec!["https://sg1.relay.zedra.dev".to_string()],
+            direct_addrs: vec!["192.0.2.1:1234".to_string()],
+            pairing_url: "zedra://connect?ticket=test".to_string(),
+            qr_code: "qr".to_string(),
+        };
+
+        let output = render_started_pairing_info(&info, Path::new("/repo"));
+
+        assert!(output.starts_with("Zedra Daemon Started\n\n  Relays        sg1"));
+        assert!(output.contains("  Direct Addrs  1"));
+        assert!(output.contains("  Workdir       /repo"));
+        assert!(output.contains("Scan this QR code with the Zedra app to pair this device."));
+        assert!(!output.contains("Zedra Daemon Pairing"));
+        assert!(!output.contains("Host"));
+        assert!(!output.contains("Endpoint"));
     }
 }

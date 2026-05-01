@@ -22,6 +22,7 @@ struct SessionHandleInner {
     terminals: Mutex<Vec<RemoteTerminal>>,
     user_disconnect: AtomicBool,
     observer_rpc_supported: AtomicBool,
+    docs_tree_rpc_supported: AtomicBool,
 }
 
 impl Default for SessionHandle {
@@ -43,6 +44,7 @@ impl SessionHandle {
             terminals: Mutex::new(Vec::new()),
             user_disconnect: AtomicBool::new(false),
             observer_rpc_supported: AtomicBool::new(true),
+            docs_tree_rpc_supported: AtomicBool::new(true),
         }))
     }
 
@@ -262,6 +264,38 @@ impl SessionHandle {
         Ok(result)
     }
 
+    pub async fn fs_docs_tree(
+        &self,
+        path: &str,
+        offset: u32,
+        limit: u32,
+        rebuild: bool,
+        snapshot_id: Option<String>,
+    ) -> Result<FsDocsTreeResult> {
+        if !self.0.docs_tree_rpc_supported.load(Ordering::Acquire) {
+            return Ok(FsDocsTreeResult::unsupported());
+        }
+        match self
+            .client()?
+            .rpc(FsDocsTreeReq {
+                path: path.to_string(),
+                offset,
+                limit,
+                rebuild,
+                snapshot_id,
+            })
+            .await
+        {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                if self.downgrade_docs_tree_rpc(&error.to_string()) {
+                    return Ok(FsDocsTreeResult::unsupported());
+                }
+                Err(anyhow::anyhow!(error.to_string()))
+            }
+        }
+    }
+
     pub async fn fs_watch(&self, path: &str) -> Result<FsWatchResult> {
         if !self.0.observer_rpc_supported.load(Ordering::Acquire) {
             return Ok(FsWatchResult::Unsupported);
@@ -319,6 +353,21 @@ impl SessionHandle {
         incompatible
     }
 
+    fn downgrade_docs_tree_rpc(&self, err: &str) -> bool {
+        let msg = err.to_lowercase();
+        let incompatible = msg.contains("unknown variant")
+            || msg.contains("deserialize")
+            || msg.contains("decode")
+            || msg.contains("invalid type");
+        if incompatible {
+            self.0
+                .docs_tree_rpc_supported
+                .store(false, Ordering::Release);
+            tracing::warn!("docs tree RPC unsupported, disabling: {}", err);
+        }
+        incompatible
+    }
+
     // ─── RPC: git ────────────────────────────────────────────────────────────
 
     pub async fn git_status(&self) -> Result<GitStatusResult> {
@@ -360,13 +409,13 @@ impl SessionHandle {
     }
 
     pub async fn git_checkout(&self, branch: &str) -> Result<()> {
-        let _: GitCheckoutResult = self
+        let result: GitCheckoutResult = self
             .client()?
             .rpc(GitCheckoutReq {
                 branch: branch.to_string(),
             })
             .await?;
-        Ok(())
+        git_checkout_result(result, branch)
     }
 
     pub async fn git_commit(&self, message: &str, paths: &[String]) -> Result<String> {
@@ -489,6 +538,14 @@ impl SessionHandle {
     }
 }
 
+fn git_checkout_result(result: GitCheckoutResult, branch: &str) -> Result<()> {
+    if result.ok {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("git checkout failed for branch '{branch}'"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -558,5 +615,13 @@ mod tests {
         assert!(!handle.reorder_terminals(&["term-a".to_string()]));
         assert!(!handle.reorder_terminals(&["term-a".to_string(), "missing".to_string()]));
         assert_eq!(handle.terminal_ids(), vec!["term-a", "term-b"]);
+    }
+
+    #[test]
+    fn git_checkout_result_rejects_failed_host_result() {
+        assert!(git_checkout_result(GitCheckoutResult { ok: true }, "main").is_ok());
+
+        let err = git_checkout_result(GitCheckoutResult { ok: false }, "missing").unwrap_err();
+        assert!(err.to_string().contains("missing"));
     }
 }

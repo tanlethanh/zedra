@@ -20,6 +20,8 @@
 
 #define TEXT_MUTED 5263440
 
+#define BORDER_HIGHLIGHT 13290186
+
 #define BORDER_DEFAULT 2894892
 
 #define BORDER_ACTIVE 5263440
@@ -37,6 +39,8 @@
 #define ACCENT_DIM 5263440
 
 #define DRAWER_PADDING 12.0
+
+#define SPACING_XS 4.0
 
 #define SPACING_SM 8.0
 
@@ -57,6 +61,8 @@
 #define DRAWER_ICON_ZONE 38.0
 
 #define TERMINAL_LINE_HEIGHT 16.0
+
+#define PANEL_ITEM_HEIGHT 28.0
 
 #define DRAWER_EDGE_ZONE 56.0
 
@@ -88,6 +94,8 @@
 
 #define ICON_SM 16.0
 
+#define ICON_XS 14.0
+
 #define ICON_FILE 12.0
 
 #define ICON_FILE_DIR 14.0
@@ -104,7 +112,7 @@
 
 #define EDITOR_GUTTER_WIDTH 36.0
 
-typedef struct Caps Caps;
+typedef struct AgentCaps AgentCaps;
 
 
 
@@ -216,7 +224,8 @@ extern void ios_present_selection(uint32_t callback_id,
                                   const char *message,
                                   int32_t button_count,
                                   const char *const *labels,
-                                  const int32_t *styles);
+                                  const int32_t *styles,
+                                  const char *const *image_names);
 
 /**
  * Present a configurable native custom sheet with a GPUI canvas host.
@@ -274,6 +283,17 @@ extern void ios_update_native_dictation_preview(uint32_t preview_id,
 extern void ios_hide_native_dictation_preview(uint32_t preview_id);
 
 /**
+ * Present a native in-app notification banner.
+ */
+extern void ios_present_native_notification(uint32_t callback_id,
+                                            const char *title,
+                                            const char *message,
+                                            const char *image_name,
+                                            int32_t kind,
+                                            float duration_secs,
+                                            bool auto_close);
+
+/**
  * Called from the native alert handler after the user taps a button.
  *
  * `callback_id` matches the value passed to `ios_present_alert`.
@@ -300,11 +320,15 @@ void zedra_ios_selection_dismiss(uint32_t callback_id);
 /**
  * Called from the native app delegate when the app enters the background.
  *
- * Drops any unacknowledged alert callbacks so closures captured in them
- * (e.g. `PendingSlot` clones) are released and do not accumulate.
+ * Drops any unacknowledged native presentation callbacks so captured closures
+ * are released and do not accumulate.
  * Wire this to the iOS app delegate's `applicationDidEnterBackground`.
  */
 void zedra_ios_app_did_enter_background(void);
+
+void zedra_ios_native_notification_action(uint32_t callback_id);
+
+void zedra_ios_native_notification_dismiss(uint32_t callback_id);
 
 /**
  * Called from the native keyboard accessory bar when a shortcut key button is tapped.

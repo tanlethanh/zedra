@@ -59,27 +59,35 @@ Type-safe RPC via irpc with postcard binary serialization over QUIC.
 ### Auth Flow
 
 ```
-First pairing:   Register → Connect → Challenge → AuthProve → SyncSession → RPC
-Token resume:    Connect(session_token) → SyncSession → RPC
-PKI reconnect:   Connect → Challenge → AuthProve → SyncSession → RPC
+First pairing:   Register → Connect(None) → Challenge → AuthProve → Ok(SyncSessionResult) → RPC
+Token resume:    Connect(session_token) → Ok(SyncSessionResult) → RPC
+PKI reconnect:   Connect(None) → Challenge → AuthProve → Ok(SyncSessionResult) → RPC
 ```
 
 - **Register**: HMAC-SHA256(handshake_key, pubkey||timestamp) proves QR possession
 - **AuthProve**: client signs challenge nonce with Ed25519 key
-- **Connect**: optionally includes session_token for fast resume
+- **Connect**: universal connection initiator; optionally includes `session_token` for fast resume
+- **Authenticate**: deprecated/reserved append-only enum variant; not used by current clients
 
 ### RPC Methods
 
 | Category   | Methods |
 |------------|---------|
-| Auth       | `Register`, `Authenticate`, `AuthProve`, `Connect`, `SyncSession` |
-| Session    | `SessionInfo`, `SessionList`, `SessionSwitch`, `Ping` |
-| Filesystem | `FsList`, `FsRead`, `FsWrite`, `FsStat`, `FsRemove`, `FsMkdir`, `FsWatch` |
-| Terminal   | `TermCreate`, `TermAttach` (bidi stream), `TermResize`, `TermClose`, `TermList` |
+| Auth/bootstrap | `Register`, `Connect`, `AuthProve`, `SyncSession` |
+| Health     | `Ping` |
+| Session    | `GetSessionInfo`, `ListSessions`, `SubscribeHostInfo` |
+| Filesystem | `FsList`, `FsRead`, `FsWrite`, `FsStat`, `FsDocsTree`, `FsWatch`, `FsUnwatch` |
+| Terminal   | `TermCreate`, `TermAttach` (bidi stream), `TermResize`, `TermClose`, `TermList`, `TermReorder` |
 | Git        | `GitStatus`, `GitDiff`, `GitLog`, `GitCommit`, `GitStage`, `GitUnstage`, `GitBranches`, `GitCheckout` |
 | AI         | `AiPrompt` |
 | LSP        | `LspDiagnostics`, `LspHover` |
 | Events     | `Subscribe` (server-streaming: `HostEvent`) |
+| Reserved   | `Authenticate` (deprecated auth challenge request), `SwitchSession` (does not switch the active dispatch session) |
+
+`SwitchSession` remains in the append-only protocol surface, but it is not a
+supported active workspace-switching mechanism. The current host handler returns
+an explicit unsupported error because the authenticated dispatch worker remains
+bound to the original session.
 
 ## Host Daemon (`zedra-host`)
 
@@ -100,14 +108,18 @@ Sessions persist independently of connections. PTYs keep running during disconne
 
 1. Create iroh Endpoint with persistent client identity
 2. `endpoint.connect(addr, ZEDRA_ALPN)`
-3. PKI auth (Register or AuthProve)
-4. `SyncSession` — get workspace info
-5. `TermAttach` bidi stream per terminal (replay missed output via `last_seq`)
-6. Spawn path watcher (tracks direct vs relay, RTT)
+3. `Register` only on first pairing
+4. `Connect(session_token)` fast path, or `Connect(None) → Challenge → AuthProve` PKI fallback
+5. Read the piggybacked `SyncSessionResult` from `ConnectResult::Ok` or `AuthProveResult::Ok`
+6. `TermAttach` bidi stream per terminal (replay missed output via `last_seq`)
+7. Spawn path watcher (tracks direct vs relay, RTT)
+
+`SyncSession` remains available as a mid-session state refresh, but current
+connect bootstrap does not require a separate `SyncSession` round trip.
 
 ### Auto-Reconnect
 
-On connection drop: exponential backoff (1s→30s, max 10 attempts). Reuses stored credentials. Terminal output buffers survive reconnect.
+On connection drop: exponential backoff (1s, 2s, 4s, max 3 attempts). Reuses stored credentials. Terminal output buffers survive reconnect.
 
 ### Session → UI Bridge
 

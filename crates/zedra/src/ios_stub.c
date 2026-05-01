@@ -29,6 +29,14 @@ __attribute__((weak)) void ios_update_native_dictation_preview(
     const char *text,
     float bottom_offset_pts) {}
 __attribute__((weak)) void ios_hide_native_dictation_preview(unsigned int preview_id) {}
+__attribute__((weak)) void ios_present_native_notification(
+    unsigned int callback_id,
+    const char *title,
+    const char *message,
+    const char *image_name,
+    int kind,
+    float duration_secs,
+    _Bool auto_close) {}
 __attribute__((weak)) const char *ios_get_documents_directory(void) { return 0; }
 __attribute__((weak)) const char *ios_get_app_version(void) { return 0; }
 __attribute__((weak)) const char *ios_get_app_build_number(void) { return 0; }
@@ -45,7 +53,8 @@ __attribute__((weak)) void ios_present_selection(
     const char *message,
     int button_count,
     const char **labels,
-    const int *styles) {}
+    const int *styles,
+    const char **image_names) {}
 __attribute__((weak)) void ios_present_custom_sheet(
     int detent_count,
     const int *detents,

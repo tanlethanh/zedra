@@ -105,6 +105,15 @@ Choose the executor based on which thread/context owns the work:
 
 For redraw, invalidation, `deferred(...)`, and `AnyView::cached(...)` behavior, see `docs/GPUI_RENDERING_MODEL.md`.
 
+## GPUI Mobile Interaction
+
+Zedra product UI is mobile-only today. Do not add hover-dependent behavior or visual states to app surfaces.
+
+- Avoid `.hover(...)`, `visible_on_hover`, `hoverable_tooltip`, and hover-only reveals in `crates/zedra`.
+- Use pressed, selected, active, disabled, text, icon, border, and hit-slop states for touch UI instead.
+- Keep `.cursor_pointer()` only as a pointer cursor hint; it is not a substitute for a touch-readable state.
+- Vendor GPUI and desktop reference code may keep hover APIs. App code should use them only when a pointer-capable platform is intentionally supported.
+
 ## GPUI Scroll Containers
 
 `overflow_scroll()` and `overflow_y_scroll()` require the `Div` to have a stable `.id(...)`.
@@ -147,6 +156,7 @@ Views read Entity<WorkspaceState> in render()
 - **Command queue**: bounded (`crossbeam::bounded(512)`). Use `try_send()`, drop-with-warn on full. Never block JNI thread.
 - **JNI safety**: all `#[no_mangle] extern "C"` JNI entry points must wrap body in `jni_call("name", || { ... })`.
 
-## Alert Lifecycle
+## Native Presentation Callback Lifecycle
 
-Call `platform_bridge::clear_pending_alerts()` on app background to release captured closures.
+Call `platform_bridge::clear_pending_alerts()` on app background to release
+captured closures for alerts, selection sheets, and native notifications.

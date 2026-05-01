@@ -5,7 +5,8 @@ use crate::active_terminal;
 use crate::deeplink;
 use crate::platform_bridge::{
     self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback,
-    NativeDictationPreviewOptions, NativeFloatingButtonOptions, PlatformBridge,
+    NativeDictationPreviewOptions, NativeFloatingButtonOptions, NativeNotificationOptions,
+    PlatformBridge,
 };
 
 /// Screen scale factor (e.g. 3.0 for @3x), stored as f32 bits.
@@ -87,6 +88,7 @@ unsafe extern "C" {
         button_count: i32,
         labels: *const *const std::ffi::c_char,
         styles: *const i32,
+        image_names: *const *const std::ffi::c_char,
     );
     /// Present a configurable native custom sheet with a GPUI canvas host.
     fn ios_present_custom_sheet(
@@ -128,6 +130,16 @@ unsafe extern "C" {
     );
     /// Hide a native dictation preview overlay.
     fn ios_hide_native_dictation_preview(preview_id: u32);
+    /// Present a native in-app notification banner.
+    fn ios_present_native_notification(
+        callback_id: u32,
+        title: *const std::ffi::c_char,
+        message: *const std::ffi::c_char,
+        image_name: *const std::ffi::c_char,
+        kind: i32,
+        duration_secs: f32,
+        auto_close: bool,
+    );
 }
 
 impl PlatformBridge for IosBridge {
@@ -259,6 +271,15 @@ impl PlatformBridge for IosBridge {
                 AlertButtonStyle::Destructive => 2,
             })
             .collect();
+        let c_image_names: Vec<CString> = buttons
+            .iter()
+            .map(|b| {
+                CString::new(b.image_name.as_deref().unwrap_or(""))
+                    .unwrap_or_else(|_| CString::new("").unwrap())
+            })
+            .collect();
+        let image_name_ptrs: Vec<*const std::ffi::c_char> =
+            c_image_names.iter().map(|s| s.as_ptr()).collect();
         unsafe {
             ios_present_selection(
                 id,
@@ -267,6 +288,7 @@ impl PlatformBridge for IosBridge {
                 buttons.len() as i32,
                 label_ptrs.as_ptr(),
                 styles.as_ptr(),
+                image_name_ptrs.as_ptr(),
             );
         }
     }
@@ -333,6 +355,28 @@ impl PlatformBridge for IosBridge {
     fn hide_native_dictation_preview(&self, id: u32) {
         unsafe { ios_hide_native_dictation_preview(id) };
     }
+
+    fn present_native_notification(&self, id: u32, options: &NativeNotificationOptions) {
+        use std::ffi::CString;
+
+        let title =
+            CString::new(options.title.as_str()).unwrap_or_else(|_| CString::new("").unwrap());
+        let message = CString::new(options.message.as_deref().unwrap_or(""))
+            .unwrap_or_else(|_| CString::new("").unwrap());
+        let image_name = CString::new(options.image_name.as_deref().unwrap_or(""))
+            .unwrap_or_else(|_| CString::new("").unwrap());
+        unsafe {
+            ios_present_native_notification(
+                id,
+                title.as_ptr(),
+                message.as_ptr(),
+                image_name.as_ptr(),
+                options.kind.as_i32(),
+                options.duration_secs,
+                options.auto_close,
+            );
+        }
+    }
 }
 
 /// Called from the native alert handler after the user taps a button.
@@ -369,12 +413,22 @@ pub extern "C" fn zedra_ios_selection_dismiss(callback_id: u32) {
 
 /// Called from the native app delegate when the app enters the background.
 ///
-/// Drops any unacknowledged alert callbacks so closures captured in them
-/// (e.g. `PendingSlot` clones) are released and do not accumulate.
+/// Drops any unacknowledged native presentation callbacks so captured closures
+/// are released and do not accumulate.
 /// Wire this to the iOS app delegate's `applicationDidEnterBackground`.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_app_did_enter_background() {
     platform_bridge::clear_pending_alerts();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_native_notification_action(callback_id: u32) {
+    platform_bridge::dispatch_native_notification_action(callback_id);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_native_notification_dismiss(callback_id: u32) {
+    platform_bridge::dispatch_native_notification_dismiss(callback_id);
 }
 
 /// Called from the native keyboard accessory bar when a shortcut key button is tapped.

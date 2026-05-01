@@ -89,7 +89,11 @@ impl GitPanel {
                 this.handle_commit(event.message.clone(), event.paths.clone(), cx);
             },
         ));
-        Self {
+        subscriptions.push(cx.observe(&workspace_state, |this, _, cx| {
+            this.sync_active_diff_from_workspace_state(cx);
+        }));
+
+        let mut panel = Self {
             workspace_state,
             session_state,
             session_handle,
@@ -97,7 +101,9 @@ impl GitPanel {
             branch: String::new(),
             tasks: vec![host_event_task],
             _subscriptions: subscriptions,
-        }
+        };
+        panel.sync_active_diff_from_workspace_state(cx);
+        panel
     }
 
     pub fn branch(&self) -> &str {
@@ -156,6 +162,25 @@ impl GitPanel {
             }
         });
         self.tasks.push(task);
+    }
+
+    fn sync_active_diff_from_workspace_state(&mut self, cx: &mut Context<Self>) {
+        let active_diff = self
+            .workspace_state
+            .read(cx)
+            .active_main_view
+            .git_diff()
+            .map(|(path, section)| (path.to_string(), section));
+
+        self.content.update(cx, |sidebar, cx| {
+            if let Some((path, section)) = active_diff
+                .and_then(|(path, section)| section_from_u8(section).map(|section| (path, section)))
+            {
+                sidebar.set_active_diff(path, section, cx);
+            } else {
+                sidebar.clear_active_diff(cx);
+            }
+        });
     }
 }
 
@@ -220,5 +245,14 @@ fn section_to_u8(section: GitFileSection) -> u8 {
         GitFileSection::Staged => 0,
         GitFileSection::Unstaged => 1,
         GitFileSection::Untracked => 2,
+    }
+}
+
+fn section_from_u8(value: u8) -> Option<GitFileSection> {
+    match value {
+        0 => Some(GitFileSection::Staged),
+        1 => Some(GitFileSection::Unstaged),
+        2 => Some(GitFileSection::Untracked),
+        _ => None,
     }
 }

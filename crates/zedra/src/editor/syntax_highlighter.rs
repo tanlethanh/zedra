@@ -208,6 +208,10 @@ impl Highlighter {
         self.language
     }
 
+    pub fn is_waiting_for_syntax(&self) -> bool {
+        self.query.is_some() && self.tree.is_none()
+    }
+
     /// Parse the full source text, storing the resulting tree for queries.
     pub fn parse(&mut self, source: &str) {
         if let Some(ref mut parser) = self.parser {
@@ -351,9 +355,14 @@ mod tests {
 
     #[test]
     fn highlight_js_and_cpp_produce_captures() {
+        let plain_text = Highlighter::new(Language::PlainText);
+        assert!(!plain_text.is_waiting_for_syntax());
+
         let js_src = "function greet(name) { return 'Hello ' + name; }";
         let mut js_hl = Highlighter::new(Language::JavaScript);
+        assert!(js_hl.is_waiting_for_syntax());
         js_hl.parse(js_src);
+        assert!(!js_hl.is_waiting_for_syntax());
         let js_caps: Vec<_> = js_hl.highlights(js_src, 0..js_src.len());
         println!("JS captures ({}):", js_caps.len());
         for (range, name) in &js_caps {

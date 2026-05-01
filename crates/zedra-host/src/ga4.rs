@@ -131,6 +131,17 @@ impl Ga4 {
             inner.send(name, params).await;
         });
     }
+
+    /// Send an event and wait for the HTTP request to finish.
+    ///
+    /// Short-lived CLI commands use this so completion telemetry is not dropped
+    /// when the Tokio runtime shuts down immediately after the command exits.
+    pub(crate) async fn track_raw_now(&self, name: &'static str, params: Value) {
+        let Some(inner) = self.inner.clone() else {
+            return;
+        };
+        inner.send(name, params).await;
+    }
 }
 
 impl Inner {

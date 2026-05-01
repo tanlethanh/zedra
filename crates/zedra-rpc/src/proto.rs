@@ -158,6 +158,11 @@ pub enum ZedraProto {
     /// Kept at enum tail because protocol variants are append-only.
     #[rpc(tx = oneshot::Sender<TermReorderResult>)]
     TermReorder(TermReorderReq),
+
+    /// Build or page through the host-side markdown docs tree.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<FsDocsTreeResult>)]
+    FsDocsTree(FsDocsTreeReq),
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +173,14 @@ pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/2";
 
 /// Default page size for `FsList` requests (host uses this when `limit == 0`).
 pub const FS_LIST_DEFAULT_LIMIT: u32 = 50;
+/// Default page size for host-built docs tree requests.
+pub const FS_DOCS_TREE_DEFAULT_LIMIT: u32 = 200;
+/// Maximum page size for host-built docs tree requests.
+pub const FS_DOCS_TREE_MAX_LIMIT: u32 = 1000;
+/// Maximum page offset accepted for host-built docs tree requests.
+pub const FS_DOCS_TREE_MAX_OFFSET: u32 = 5_000;
+/// Maximum filesystem entries visited while rebuilding one docs tree snapshot.
+pub const FS_DOCS_TREE_MAX_VISITED_ENTRIES: u32 = 10_000;
 
 // ---------------------------------------------------------------------------
 // Serde helper for [u8; 64] (serde supports arrays only up to size 32 by default)
@@ -548,6 +561,70 @@ pub enum FsUnwatchResult {
     Unsupported,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FsDocsTreeReq {
+    /// Relative docs root path, usually "." for the workspace root.
+    pub path: String,
+    /// Zero-based offset into the cached markdown-file list.
+    pub offset: u32,
+    /// Requested page size. Host clamps to `FS_DOCS_TREE_MAX_LIMIT`.
+    pub limit: u32,
+    /// When true, host scans the filesystem and replaces the cached snapshot.
+    pub rebuild: bool,
+    /// Snapshot id returned by a previous rebuild/page request.
+    pub snapshot_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FsDocsTreeResult {
+    /// Recursive page tree rooted at the requested docs root.
+    pub root: Option<FsDocNode>,
+    /// Snapshot id that must be echoed for subsequent non-rebuild pages.
+    pub snapshot_id: Option<String>,
+    /// Offset to request for the next page.
+    pub next_offset: u32,
+    /// Whether another page is available within host-enforced bounds.
+    pub has_more: bool,
+    /// True when host caps prevented proving the full docs tree was scanned.
+    pub truncated: bool,
+    /// Typed failure. All other fields are zero-valued when set.
+    pub error: Option<FsDocsTreeError>,
+}
+
+impl FsDocsTreeResult {
+    pub fn unsupported() -> Self {
+        Self {
+            root: None,
+            snapshot_id: None,
+            next_offset: 0,
+            has_more: false,
+            truncated: false,
+            error: Some(FsDocsTreeError::Unsupported),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FsDocNode {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub children: Vec<FsDocNode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum FsDocsTreeError {
+    InvalidPath,
+    InvalidRequest(String),
+    CacheMiss,
+    StaleSnapshot,
+    Busy,
+    ScanFailed(String),
+    /// Client-local fallback when connected host does not support this RPC yet.
+    Unsupported,
+}
+
 // ---------------------------------------------------------------------------
 // Subscribe / HostEvent types
 // ---------------------------------------------------------------------------
@@ -563,7 +640,7 @@ pub enum HostEvent {
     /// The client should open and display this terminal.
     TerminalCreated {
         id: String,
-        /// The launch command injected into the terminal, if any.
+        /// The launch command run in the terminal, if any.
         launch_cmd: Option<String>,
     },
     /// Host-side git working tree state changed and the client should refresh.
@@ -623,7 +700,7 @@ pub enum HostBatteryState {
 pub struct TermCreateReq {
     pub cols: u16,
     pub rows: u16,
-    /// Optional shell command to run immediately after the shell starts.
+    /// Optional shell command to run when the terminal starts.
     /// If `None`, the host's default launch command (if any) is used.
     /// Example: `"claude --resume"` to drop straight into a Claude session.
     pub launch_cmd: Option<String>,

@@ -1,35 +1,41 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use anyhow::{Result as AnyhowResult, anyhow};
 use gpui::{prelude::FluentBuilder as _, *};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use tracing::*;
 use zedra_rpc::ZedraPairingTicket;
 use zedra_rpc::proto::{HostEvent, SyncSessionResult};
-use zedra_session::{ConnectEvent, Session, SessionHandle, SessionState, signer::ClientSigner};
+use zedra_session::{
+    ConnectEvent, ConnectPhase, ConnectSnapshot, ReconnectReason, Session, SessionHandle,
+    SessionState, signer::ClientSigner,
+};
 
 use crate::active_terminal;
+use crate::agent;
 use crate::editor::git_sidebar::GitFileSection;
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
 use crate::placeholder::render_placeholder;
 use crate::platform_bridge::{self, AlertButton, HapticFeedback, status_bar_inset};
+use crate::telemetry::view_telemetry;
 use crate::terminal_card::strip_ps1_prefix;
 use crate::terminal_state::TerminalState;
 use crate::theme;
-use crate::transport_badge::phase_indicator_color;
-use crate::ui::{DrawerHost, DrawerSide};
+use crate::transport_badge::ConnectionStatusIndicator;
+use crate::ui::{DrawerEvent, DrawerHost, DrawerSide};
 use crate::workspace_action::{self, GoHome, OpenQuickAction, RequestDisconnect};
 use crate::workspace_action::{
-    CloseDrawer, CloseTerminal, CreateNewTerminal, GitCommit, GitShowItemActions, GitStage,
-    GitUnstage, OpenFile, OpenGitDiff, OpenTerminal, RestartConnection, ShowConnecting,
-    ToggleDrawer,
+    AddSelectionToChat, CloseDrawer, CloseTerminal, CreateNewTerminal, GitCommit,
+    GitShowItemActions, GitStage, GitUnstage, HideConnecting, OpenFile, OpenGitDiff, OpenTerminal,
+    RestartConnection, ShowConnecting, ToggleDrawer,
 };
 use crate::workspace_connecting::WorkspaceConnecting;
 use crate::workspace_drawer::WorkspaceDrawer;
 use crate::workspace_editor::WorkspaceEditor;
 use crate::workspace_gitdiff::{GitdiffHeaderChanged, WorkspaceGitdiff};
-use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
+use crate::workspace_state::{WorkspaceMainView, WorkspaceState, WorkspaceStateEvent};
 use crate::workspace_terminal::{TERMINAL_PENDING_ID, WorkspaceTerminal};
 use zedra_terminal::view::TerminalView;
 
@@ -56,24 +62,35 @@ pub struct Workspace {
     editor: Entity<WorkspaceEditor>,
     gitdiff: Entity<WorkspaceGitdiff>,
     terminals: Vec<Entity<WorkspaceTerminal>>,
+    persist_workspace_state: bool,
     connection_request: Option<ConnectionRequest>,
     /// Becomes true once a ReconnectStarted event is seen; gates initial auto-open/create.
     seen_reconnect: bool,
+    active_reconnect_reason: Option<ReconnectReason>,
+    latency_sampler: LatencySampler,
     /// Listens for connect events and syncs them into SessionState/WorkspaceState.
     _connect_listener: Option<Task<()>>,
     /// Listens for host events/actions from the remote host.
     _host_event_listener: Option<Task<()>>,
     /// Listens for periodic host resource snapshots.
     _host_info_listener: Option<Task<()>>,
-    pending_confirmation: SharedPendingSlot<PendingWorkspaceConfirmation>,
-    _pending_confirmation_task: Task<()>,
+    pending_platform_action: SharedPendingSlot<PendingWorkspaceAction>,
+    _pending_platform_action_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
-enum PendingWorkspaceConfirmation {
+enum PendingWorkspaceAction {
     DisconnectSession,
-    DeleteTerminal { id: String },
+    DeleteTerminal {
+        id: String,
+    },
+    AddSelectionToChat {
+        target: AddToChatTarget,
+        input: agent::AddToChat,
+    },
 }
+
+const ADD_TO_CHAT_SEND_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
 struct ConnectionRequest {
@@ -83,10 +100,106 @@ struct ConnectionRequest {
     session_id: Option<String>,
 }
 
+#[derive(Clone)]
+struct AddToChatTarget {
+    terminal_id: String,
+    kind: agent::Kind,
+    title: Option<String>,
+    cwd: Option<String>,
+    input_tx: mpsc::Sender<Vec<u8>>,
+}
+
+struct AgentTerminalTermCtx {
+    tid: String,
+    cwd: Option<PathBuf>,
+    input_tx: mpsc::Sender<Vec<u8>>,
+}
+
+impl agent::TermCtx for AgentTerminalTermCtx {
+    fn tid(&self) -> &str {
+        &self.tid
+    }
+
+    fn cwd(&self) -> Option<&Path> {
+        self.cwd.as_deref()
+    }
+
+    fn write(&mut self, bytes: Vec<u8>) -> AnyhowResult<()> {
+        self.input_tx
+            .try_send(bytes)
+            .map_err(|error| anyhow!("failed to send input to {}: {}", self.tid, error))
+    }
+
+    fn selection(&self) -> Option<&str> {
+        None
+    }
+}
+
+struct WorkspaceAgentApp;
+
+impl agent::AppCtx for WorkspaceAgentApp {
+    fn diff(&mut self, _diff: agent::Diff) -> AnyhowResult<()> {
+        Ok(())
+    }
+
+    fn open(&mut self, _loc: agent::Loc) -> AnyhowResult<()> {
+        Ok(())
+    }
+
+    fn pick(&mut self, _pick: agent::Pick) -> AnyhowResult<Option<String>> {
+        Ok(None)
+    }
+
+    fn status(&mut self, _status: agent::Status) -> AnyhowResult<()> {
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SyncRefreshMode {
     InitialConnect,
     Reconnect,
+}
+
+const LATENCY_SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LatencySampleKey {
+    connection_type: &'static str,
+    network_type: &'static str,
+    relay: &'static str,
+    relay_region: &'static str,
+    nearest_relay_region: &'static str,
+}
+
+#[derive(Default)]
+struct LatencySampler {
+    last_sample_at: Option<Instant>,
+    last_key: Option<LatencySampleKey>,
+}
+
+impl LatencySampler {
+    fn next_reason(&mut self, key: LatencySampleKey, now: Instant) -> Option<&'static str> {
+        let reason = match (&self.last_sample_at, &self.last_key) {
+            (None, _) => "initial",
+            (_, Some(previous_key)) if previous_key != &key => "path_changed",
+            (Some(last_sample_at), _)
+                if now.duration_since(*last_sample_at) >= LATENCY_SAMPLE_INTERVAL =>
+            {
+                "periodic"
+            }
+            _ => return None,
+        };
+
+        self.last_sample_at = Some(now);
+        self.last_key = Some(key);
+        Some(reason)
+    }
+
+    fn reset(&mut self) {
+        self.last_sample_at = None;
+        self.last_key = None;
+    }
 }
 
 fn sync_refresh_mode_for_event(
@@ -108,6 +221,315 @@ fn sync_refresh_mode_for_event(
     }
 }
 
+fn should_initialize_terminals_after_sync(
+    mode: SyncRefreshMode,
+    terminal_ids: &[String],
+    active_main_view: &WorkspaceMainView,
+) -> bool {
+    match mode {
+        SyncRefreshMode::InitialConnect => true,
+        SyncRefreshMode::Reconnect => {
+            let recovered_without_terminals = terminal_ids.is_empty()
+                && !matches!(active_main_view, WorkspaceMainView::NoActiveTerminal);
+            let main_view_was_reset = matches!(active_main_view, WorkspaceMainView::Default);
+
+            recovered_without_terminals || main_view_was_reset
+        }
+    }
+}
+
+fn should_apply_connect_event(_event: &ConnectEvent, user_disconnect: bool) -> bool {
+    !user_disconnect
+}
+
+fn reconnect_reason_label(reason: &ReconnectReason) -> &'static str {
+    match reason {
+        ReconnectReason::ConnectionLost => "connection_lost",
+        ReconnectReason::AppForegrounded => "app_foregrounded",
+    }
+}
+
+fn path_label(snap: &ConnectSnapshot) -> &'static str {
+    if snap
+        .transport
+        .as_ref()
+        .map(|transport| transport.is_direct)
+        .unwrap_or(false)
+    {
+        "direct"
+    } else if snap.transport.is_some() || snap.relay_connected {
+        "relay"
+    } else {
+        "unknown"
+    }
+}
+
+fn network_label(snap: &ConnectSnapshot) -> &'static str {
+    snap.transport
+        .as_ref()
+        .and_then(|transport| transport.network_hint.as_ref())
+        .map(|network| network.label())
+        .unwrap_or("unknown")
+}
+
+fn relay_label(snap: &ConnectSnapshot) -> String {
+    snap.transport
+        .as_ref()
+        .and_then(|transport| transport.relay_url.clone())
+        .or_else(|| snap.relay_url.clone())
+        .unwrap_or_else(|| {
+            if snap.relay_connected {
+                "custom".to_string()
+            } else {
+                "none".to_string()
+            }
+        })
+}
+
+fn classify_ip_network(ip: std::net::IpAddr) -> &'static str {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            if octets[0] == 100 && octets[1] >= 64 && octets[1] <= 127 {
+                "Tailscale"
+            } else if octets[0] == 10
+                || (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31)
+                || (octets[0] == 192 && octets[1] == 168)
+            {
+                "LAN"
+            } else {
+                "Internet"
+            }
+        }
+        std::net::IpAddr::V6(v6) => {
+            let segments = v6.segments();
+            if segments[0] == 0xfe80 || segments[0] & 0xfe00 == 0xfc00 {
+                "LAN"
+            } else {
+                "Internet"
+            }
+        }
+    }
+}
+
+fn path_network_label(path: &iroh::endpoint::PathInfo) -> &'static str {
+    match path.remote_addr() {
+        iroh::TransportAddr::Ip(addr) => classify_ip_network(addr.ip()),
+        _ => "unknown",
+    }
+}
+
+fn path_relay_label(path: &iroh::endpoint::PathInfo) -> Option<String> {
+    match path.remote_addr() {
+        iroh::TransportAddr::Relay(url) => Some(url.host_str().unwrap_or(url.as_str()).to_string()),
+        _ => None,
+    }
+}
+
+fn latency_network_type(snap: &ConnectSnapshot) -> &'static str {
+    let Some(transport) = &snap.transport else {
+        return "unknown";
+    };
+    if !transport.is_direct {
+        return "relay";
+    }
+
+    match transport
+        .network_hint
+        .as_ref()
+        .map(|network| network.label())
+    {
+        Some("Internet") => "WAN",
+        Some(label) => label,
+        None => "unknown",
+    }
+}
+
+fn latency_relay_label(snap: &ConnectSnapshot) -> &'static str {
+    let relay = snap
+        .transport
+        .as_ref()
+        .and_then(|transport| transport.relay_url.as_deref())
+        .or(snap.relay_url.as_deref())
+        .unwrap_or("none");
+    zedra_telemetry::relay_id_label(relay)
+}
+
+fn latency_relay_region(snap: &ConnectSnapshot) -> &'static str {
+    let relay = snap
+        .transport
+        .as_ref()
+        .and_then(|transport| transport.relay_url.as_deref())
+        .or(snap.relay_url.as_deref())
+        .unwrap_or("none");
+    zedra_telemetry::relay_region_label(relay)
+}
+
+fn latency_nearest_relay_region(snap: &ConnectSnapshot) -> &'static str {
+    snap.preferred_relay_url
+        .as_deref()
+        .map(zedra_telemetry::relay_region_label)
+        .unwrap_or_else(|| latency_relay_region(snap))
+}
+
+fn record_latency_sample(state: &SessionState, sampler: &mut LatencySampler) {
+    if !matches!(
+        state.phase,
+        ConnectPhase::Connected | ConnectPhase::Idle { .. }
+    ) {
+        return;
+    }
+
+    let Some(transport) = &state.snapshot.transport else {
+        return;
+    };
+
+    let connection_type = if transport.is_direct { "p2p" } else { "relay" };
+    let key = LatencySampleKey {
+        connection_type,
+        network_type: latency_network_type(&state.snapshot),
+        relay: latency_relay_label(&state.snapshot),
+        relay_region: latency_relay_region(&state.snapshot),
+        nearest_relay_region: latency_nearest_relay_region(&state.snapshot),
+    };
+    let Some(sample_reason) = sampler.next_reason(key.clone(), Instant::now()) else {
+        return;
+    };
+
+    zedra_telemetry::send(zedra_telemetry::Event::ConnectionLatencySample {
+        source: "app",
+        connection_type: key.connection_type,
+        network_type: key.network_type,
+        rtt_ms: transport.rtt_ms,
+        relay: key.relay,
+        relay_region: key.relay_region,
+        nearest_relay_region: key.nearest_relay_region,
+        path_count: transport.num_paths,
+        interval_secs: LATENCY_SAMPLE_INTERVAL.as_secs(),
+        sample_reason,
+    });
+}
+
+fn record_connect_telemetry(
+    event: &ConnectEvent,
+    state: &SessionState,
+    previous_phase: &ConnectPhase,
+    is_reconnect_context: bool,
+    reconnect_reason: Option<&ReconnectReason>,
+    latency_sampler: &mut LatencySampler,
+) {
+    let snap = &state.snapshot;
+    match event {
+        ConnectEvent::Connected { total_ms } if !is_reconnect_context => {
+            zedra_telemetry::send(zedra_telemetry::Event::ConnectSuccess {
+                total_ms: *total_ms,
+                binding_ms: snap.binding_ms.unwrap_or(0),
+                hole_punch_ms: snap.hole_punch_ms.unwrap_or(0),
+                auth_ms: snap.auth_ms.unwrap_or(0),
+                fetch_ms: snap.sync_ms.unwrap_or(0),
+                path: path_label(snap),
+                network: network_label(snap),
+                rtt_ms: snap
+                    .transport
+                    .as_ref()
+                    .map(|transport| transport.rtt_ms)
+                    .unwrap_or(0),
+                relay: relay_label(snap),
+                relay_latency_ms: snap.relay_latency_ms.unwrap_or(0),
+                alpn: snap.alpn.clone().unwrap_or_default(),
+                has_ipv4: snap.has_ipv4,
+                has_ipv6: snap.has_ipv6,
+                symmetric_nat: snap.mapping_varies.unwrap_or(false),
+                is_first_pairing: snap.is_first_pairing,
+            });
+        }
+        ConnectEvent::Failed { error } if !is_reconnect_context => {
+            zedra_telemetry::send(zedra_telemetry::Event::ConnectFailed {
+                phase: previous_phase.label(),
+                error: error.label(),
+                elapsed_ms: state.elapsed_ms(),
+                relay: relay_label(snap),
+                alpn: snap.alpn.clone().unwrap_or_default(),
+                has_ipv4: snap.has_ipv4,
+                has_ipv6: snap.has_ipv6,
+                relay_connected: snap.relay_connected,
+            });
+            latency_sampler.reset();
+        }
+        ConnectEvent::TerminalsReattached { count, resume_ms } => {
+            zedra_telemetry::send(zedra_telemetry::Event::SessionResumed {
+                terminal_count: *count,
+                resume_ms: *resume_ms,
+            });
+        }
+        ConnectEvent::ReconnectStarted { reason } => {
+            zedra_telemetry::send(zedra_telemetry::Event::ReconnectStarted {
+                reason: reconnect_reason_label(reason),
+            });
+            latency_sampler.reset();
+        }
+        ConnectEvent::ReconnectSuccess {
+            attempt,
+            elapsed_ms,
+        } => {
+            let reason = reconnect_reason
+                .map(reconnect_reason_label)
+                .unwrap_or("connection_lost");
+            zedra_telemetry::send(zedra_telemetry::Event::ReconnectSuccess {
+                attempt: *attempt,
+                elapsed_ms: *elapsed_ms,
+                reason,
+                binding_ms: snap.binding_ms.unwrap_or(0),
+                hole_punch_ms: snap.hole_punch_ms.unwrap_or(0),
+                auth_ms: snap.auth_ms.unwrap_or(0),
+                fetch_ms: snap.sync_ms.unwrap_or(0),
+                path: path_label(snap),
+                network: network_label(snap),
+                rtt_ms: snap
+                    .transport
+                    .as_ref()
+                    .map(|transport| transport.rtt_ms)
+                    .unwrap_or(0),
+                relay: relay_label(snap),
+                alpn: snap.alpn.clone().unwrap_or_default(),
+                has_ipv4: snap.has_ipv4,
+                has_ipv6: snap.has_ipv6,
+            });
+        }
+        ConnectEvent::ReconnectExhausted {
+            attempts,
+            elapsed_ms,
+            error,
+        } => {
+            let reason = reconnect_reason
+                .map(reconnect_reason_label)
+                .unwrap_or("connection_lost");
+            zedra_telemetry::send(zedra_telemetry::Event::ReconnectExhausted {
+                attempts: *attempts,
+                elapsed_ms: *elapsed_ms,
+                reason,
+                fatal_error: error.is_fatal().then_some(error.label()),
+            });
+        }
+        ConnectEvent::PathUpgraded {
+            prev_path,
+            new_path,
+        } => {
+            zedra_telemetry::send(zedra_telemetry::Event::PathUpgraded {
+                network: path_network_label(new_path),
+                rtt_ms: new_path.stats().rtt.as_millis() as u64,
+                from_relay: prev_path
+                    .as_ref()
+                    .and_then(path_relay_label)
+                    .unwrap_or_else(|| relay_label(snap)),
+            });
+        }
+        ConnectEvent::PathReport { .. } => record_latency_sample(state, latency_sampler),
+        ConnectEvent::Failed { .. } | ConnectEvent::ConnectionClosed => latency_sampler.reset(),
+        _ => {}
+    }
+}
+
 fn terminal_id_in_sync(id: &str, terminal_ids: &[String]) -> bool {
     terminal_ids.iter().any(|synced_id| synced_id == id)
 }
@@ -121,6 +543,30 @@ fn active_terminal_is_stale_after_sync(
     terminal_ids: &[String],
 ) -> bool {
     active_terminal_id.is_some_and(|id| !terminal_id_in_sync(id, terminal_ids))
+}
+
+fn seed_host_created_terminal_meta(
+    terminal_state: &mut TerminalState,
+    terminal_id: &str,
+    workspace_workdir: &str,
+    launch_cmd: Option<&str>,
+) -> bool {
+    let mut changed = false;
+
+    if !workspace_workdir.is_empty() {
+        // Host-created launch terminals may appear before PTY metadata reaches the card.
+        terminal_state.set_cwd(terminal_id, workspace_workdir.to_owned());
+        changed = true;
+    }
+
+    if let Some(command) = launch_cmd.filter(|command| !command.is_empty()) {
+        // launch_cmd can start before shell OSC identity is emitted.
+        terminal_state.set_current_command(terminal_id, command.to_owned());
+        terminal_state.set_shell_running(terminal_id);
+        changed = true;
+    }
+
+    changed
 }
 
 fn terminal_ids_after_close(closed_id: &str, terminal_ids: &[String]) -> Vec<String> {
@@ -186,10 +632,22 @@ impl Workspace {
             )
         });
 
+        let drawer_host_subscription = cx.subscribe(
+            &drawer_host,
+            |workspace, _drawer_host, event: &DrawerEvent, cx| {
+                if matches!(event, DrawerEvent::Opened) {
+                    workspace.drawer.update(cx, |drawer, _cx| {
+                        drawer.record_current_view();
+                    });
+                }
+            },
+        );
         let workspace_state_subscription = cx.subscribe(
             &workspace_state,
-            |_workspace, workspace_state, event: &WorkspaceStateEvent, _cx| {
-                if matches!(event, WorkspaceStateEvent::StateChanged) {
+            |workspace, workspace_state, event: &WorkspaceStateEvent, _cx| {
+                if workspace.persist_workspace_state
+                    && matches!(event, WorkspaceStateEvent::StateChanged)
+                {
                     WorkspaceState::upsert(workspace_state.read(_cx).clone())
                         .map_err(|e| warn!("failed to upsert workspace state: {}", e))
                         .ok();
@@ -214,12 +672,23 @@ impl Workspace {
         let host_event_listener = cx.spawn(async move |workspace, cx| {
             loop {
                 match host_event_rx.recv().await {
-                    Ok(HostEvent::TerminalCreated { .. }) => {
+                    Ok(HostEvent::TerminalCreated { id, launch_cmd }) => {
                         let should_break = workspace
                             .update(cx, |ws, cx| {
                                 let session_state = ws.session_state.read(cx).clone();
                                 ws.workspace_state.update(cx, |this, cx| {
                                     this.sync_from_session(ws.session_handle(), &session_state, cx);
+                                });
+                                let workdir = ws.workspace_state.read(cx).workdir.clone();
+                                ws.terminal_state.update(cx, |state, cx| {
+                                    if seed_host_created_terminal_meta(
+                                        state,
+                                        &id,
+                                        &workdir,
+                                        launch_cmd.as_deref(),
+                                    ) {
+                                        cx.notify();
+                                    }
                                 });
                             })
                             .is_err();
@@ -261,12 +730,12 @@ impl Workspace {
             }
         });
 
-        let pending_confirmation = shared_pending_slot();
-        let confirmation_slot = pending_confirmation.clone();
-        let pending_confirmation_task =
+        let pending_platform_action = shared_pending_slot();
+        let platform_action_slot = pending_platform_action.clone();
+        let pending_platform_action_task =
             spawn_periodic_task(cx, Duration::from_millis(50), move |this, cx| {
-                if let Some(confirmation) = confirmation_slot.take() {
-                    this.process_pending_confirmation(confirmation, cx);
+                if let Some(action) = platform_action_slot.take() {
+                    this.process_pending_platform_action(action, cx);
                 }
             });
 
@@ -282,14 +751,21 @@ impl Workspace {
             gitdiff,
             // Terminals will be created after connection is established
             terminals: vec![],
+            persist_workspace_state: true,
             connection_request: None,
             seen_reconnect: false,
+            active_reconnect_reason: None,
+            latency_sampler: LatencySampler::default(),
             _connect_listener: None,
             _host_event_listener: Some(host_event_listener),
             _host_info_listener: Some(host_info_listener),
-            pending_confirmation,
-            _pending_confirmation_task: pending_confirmation_task,
-            _subscriptions: vec![workspace_state_subscription, gitdiff_subscription],
+            pending_platform_action,
+            _pending_platform_action_task: pending_platform_action_task,
+            _subscriptions: vec![
+                drawer_host_subscription,
+                workspace_state_subscription,
+                gitdiff_subscription,
+            ],
         }
     }
 
@@ -314,15 +790,46 @@ impl Workspace {
                     }
 
                     let sync_refresh_mode = match workspace.update(cx, |ws, cx| {
+                        if !should_apply_connect_event(
+                            &event,
+                            ws.session_handle().user_disconnect(),
+                        ) {
+                            return None;
+                        }
+
                         let sync_refresh_mode =
                             sync_refresh_mode_for_event(&event, &mut ws.seen_reconnect);
-                        ws.session_state.update(cx, |state, cx| {
-                            state.apply_event(event.clone());
-                            cx.notify();
-                            ws.workspace_state.update(cx, |this, cx| {
-                                this.sync_from_session(ws.session_handle(), state, cx);
+                        if let ConnectEvent::ReconnectStarted { reason } = &event {
+                            ws.active_reconnect_reason = Some(reason.clone());
+                        }
+                        let is_reconnect_context = ws.seen_reconnect;
+                        let reconnect_reason = ws.active_reconnect_reason.clone();
+                        let (previous_phase, telemetry_state) =
+                            ws.session_state.update(cx, |state, cx| {
+                                let previous_phase = state.phase();
+                                state.apply_event(event.clone());
+                                let telemetry_state = state.clone();
+                                cx.notify();
+                                ws.workspace_state.update(cx, |this, cx| {
+                                    this.sync_from_session(ws.session_handle(), state, cx);
+                                });
+                                (previous_phase, telemetry_state)
                             });
-                        });
+                        record_connect_telemetry(
+                            &event,
+                            &telemetry_state,
+                            &previous_phase,
+                            is_reconnect_context,
+                            reconnect_reason.as_ref(),
+                            &mut ws.latency_sampler,
+                        );
+                        if matches!(
+                            event,
+                            ConnectEvent::ReconnectSuccess { .. }
+                                | ConnectEvent::ReconnectExhausted { .. }
+                        ) {
+                            ws.active_reconnect_reason = None;
+                        }
                         if let ConnectEvent::SyncComplete { sync, .. } = &event {
                             ws.seed_terminal_meta_from_sync(sync, cx);
                         }
@@ -378,11 +885,22 @@ impl Workspace {
                                 });
                             });
                             ws.reconcile_terminals_after_sync(cx);
+                            let should_initialize = {
+                                let state = ws.workspace_state.read(cx);
+                                should_initialize_terminals_after_sync(
+                                    sync_refresh_mode,
+                                    &state.terminal_ids,
+                                    &state.active_main_view,
+                                )
+                            };
                             ws.workspace_state.update(cx, |this, cx| {
                                 this.emit_sync_complete(cx);
                             });
                             ws.content.update(cx, |c, cx| c.hide_connecting_view(cx));
-                            is_initial_connect
+                            if !should_initialize {
+                                ws.record_current_view(cx);
+                            }
+                            should_initialize
                         }) {
                             Ok(should_initialize) => should_initialize,
                             Err(_) => break,
@@ -411,6 +929,9 @@ impl Workspace {
             session_id,
         };
         self.connection_request = Some(request.clone());
+        self.seen_reconnect = false;
+        self.active_reconnect_reason = None;
+        self.latency_sampler.reset();
         self.start_connection(request);
 
         self.content.update(cx, |c, cx| c.show_connecting_view(cx));
@@ -440,8 +961,12 @@ impl Workspace {
         }
 
         info!("restart connection requested");
+        self.seen_reconnect = false;
+        self.active_reconnect_reason = None;
+        self.latency_sampler.reset();
         self.start_connection(request);
         self.content.update(cx, |c, cx| c.show_connecting_view(cx));
+        self.record_current_view(cx);
     }
 
     pub fn session_handle(&self) -> &SessionHandle {
@@ -457,6 +982,19 @@ impl Workspace {
         self.workspace_state.read(cx).clone()
     }
 
+    pub fn record_current_view(&self, cx: &mut Context<Self>) {
+        if self.content.read(cx).is_showing_connecting() {
+            view_telemetry::record(view_telemetry::WORKSPACE_CONNECTING);
+            return;
+        }
+
+        if let Some(screen) =
+            view_telemetry::workspace_main_view(&self.workspace_state.read(cx).active_main_view)
+        {
+            view_telemetry::record(screen);
+        }
+    }
+
     /// Used to link between Workspace and WorkspaceState
     pub fn endpoint_addr(&self, cx: &App) -> String {
         self.workspace_state.read(cx).endpoint_addr.clone()
@@ -469,6 +1007,7 @@ impl Workspace {
     /// Programmatically disconnect this workspace.
     pub fn disconnect(&mut self, cx: &mut Context<Self>) {
         self.session.disconnect();
+        self.latency_sampler.reset();
         self.workspace_state.update(cx, |state, cx| {
             state.mark_disconnected(cx);
         });
@@ -476,13 +1015,22 @@ impl Workspace {
         cx.notify();
     }
 
-    pub fn open_terminal_from_quick_action(&mut self, id: String, cx: &mut Context<Self>) {
-        self.drawer_host.update(cx, |host, cx| host.close(cx));
+    pub fn prepare_for_saved_removal(&mut self) {
+        self.persist_workspace_state = false;
+        self.session.disconnect();
+        self.latency_sampler.reset();
+    }
 
+    pub fn open_terminal_from_quick_action(&mut self, id: String, cx: &mut Context<Self>) {
+        self.activate_existing_terminal(id, cx);
+    }
+
+    fn activate_existing_terminal(&mut self, id: String, cx: &mut Context<Self>) {
+        self.drawer_host.update(cx, |host, cx| host.close(cx));
         if let Some(terminal_entity) = self.terminal_by_id(&id, cx) {
             self.activate_terminal(id, terminal_entity, cx);
         } else {
-            warn!("quick action requested uninitialized terminal {}", id);
+            warn!("requested uninitialized terminal {}", id);
         }
     }
 
@@ -524,7 +1072,7 @@ impl Workspace {
         info!("handle RequestDisconnect from workspace");
         window.hide_soft_keyboard();
 
-        let pending_confirmation = self.pending_confirmation.clone();
+        let pending_platform_action = self.pending_platform_action.clone();
         platform_bridge::show_alert(
             "",
             "Disconnect this session?",
@@ -534,7 +1082,7 @@ impl Workspace {
             ],
             move |button_index| {
                 if button_index == 0 {
-                    pending_confirmation.set(PendingWorkspaceConfirmation::DisconnectSession);
+                    pending_platform_action.set(PendingWorkspaceAction::DisconnectSession);
                 }
             },
         );
@@ -578,6 +1126,19 @@ impl Workspace {
         self.drawer_host
             .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
         self.content.update(cx, |c, cx| c.show_connecting_view(cx));
+        self.record_current_view(cx);
+    }
+
+    fn handle_hide_connecting(
+        &mut self,
+        _action: &HideConnecting,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!("handle HideConnecting from workspace");
+        window.hide_soft_keyboard();
+        self.content.update(cx, |c, cx| c.hide_connecting_view(cx));
+        self.record_current_view(cx);
     }
 
     fn handle_restart_connection(
@@ -593,18 +1154,93 @@ impl Workspace {
 
     fn handle_open_file(&mut self, action: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
         info!("handle OpenFile from workspace");
+        window.clear_read_only_selection_cache();
         self.drawer_host
             .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
 
+        let path = action.path.clone();
+        self.open_file_in_editor(path, cx);
+    }
+
+    fn open_file_in_editor(&mut self, path: String, cx: &mut Context<Self>) {
+        self.workspace_state.update(cx, |state, cx| {
+            state.set_active_main_view(WorkspaceMainView::File { path: path.clone() }, cx);
+        });
         self.editor.update(cx, |e, cx| {
-            e.open_file(action.path.clone(), cx);
+            e.open_file(path.clone(), cx);
         });
 
         let editor = self.editor.clone();
+        let content_path = path.clone();
         self.content.update(cx, move |c, cx| {
-            c.set_file_subtitle(action.path.clone(), cx);
+            c.set_file_subtitle(content_path.clone(), cx);
             c.set_main_view(editor.into(), cx);
+            c.hide_connecting_view(cx);
         });
+        view_telemetry::record(view_telemetry::workspace_file(&path));
+    }
+
+    fn handle_add_selection_to_chat(
+        &mut self,
+        _action: &AddSelectionToChat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(selection) = self
+            .editor
+            .read(cx)
+            .selected_agent_context_range(window, cx)
+        else {
+            warn!("agent: add selection to chat missing selection");
+            return;
+        };
+
+        let workdir = self.workspace_state.read(cx).workdir.clone();
+        let input = agent::AddToChat {
+            rel: PathBuf::from(workspace_relative_path(&selection.path, &workdir)),
+            file: PathBuf::from(&selection.path),
+            start: selection.start,
+            end: selection.end,
+            text: selection.text,
+        };
+
+        let targets = self.add_to_chat_targets(cx);
+        if targets.is_empty() {
+            window.clear_read_only_selection_cache();
+            platform_bridge::show_selection(
+                "Add to Chat",
+                "No AI agent detected",
+                vec![AlertButton::cancel("OK")],
+                |_| {},
+            );
+            return;
+        }
+
+        let buttons = targets
+            .iter()
+            .enumerate()
+            .map(|(index, target)| add_to_chat_target_button(index, target))
+            .chain(std::iter::once(AlertButton::cancel("Cancel")))
+            .collect();
+        let pending_platform_action = self.pending_platform_action.clone();
+
+        platform_bridge::show_selection(
+            "Add to Chat",
+            "Choose an AI-agent terminal.",
+            buttons,
+            move |selection| {
+                let Some(index) = selection else {
+                    return;
+                };
+                let Some(target) = targets.get(index).cloned() else {
+                    return;
+                };
+
+                pending_platform_action
+                    .set(PendingWorkspaceAction::AddSelectionToChat { target, input });
+            },
+        );
+        window.clear_read_only_selection_cache();
     }
 
     fn handle_open_git_diff(
@@ -618,6 +1254,16 @@ impl Workspace {
             .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
 
         let section = section_from_u8(action.section);
+        let active_section = section_to_u8(section);
+        self.workspace_state.update(cx, |state, cx| {
+            state.set_active_main_view(
+                WorkspaceMainView::GitDiff {
+                    path: action.path.clone(),
+                    section: active_section,
+                },
+                cx,
+            );
+        });
         self.gitdiff.update(cx, |g, cx| {
             g.open_diff(action.path.clone(), section, cx);
         });
@@ -625,7 +1271,9 @@ impl Workspace {
         let gitdiff = self.gitdiff.clone();
         self.content.update(cx, move |c, cx| {
             c.set_main_view(gitdiff.into(), cx);
+            c.hide_connecting_view(cx);
         });
+        view_telemetry::record(view_telemetry::WORKSPACE_GIT_DIFF);
     }
 
     fn handle_git_stage(
@@ -772,6 +1420,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.create_new_terminal("user_action", window, cx);
+    }
+
+    fn create_new_terminal(
+        &mut self,
+        telemetry_source: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         info!("handle CreateNewTerminal from workspace");
         self.drawer_host
             .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
@@ -812,6 +1469,11 @@ impl Workspace {
                 });
 
                 ws.activate_terminal(terminal_id, workspace_terminal.into(), cx);
+                let terminal_count = ws.workspace_state.read(cx).terminal_ids.len();
+                zedra_telemetry::send(zedra_telemetry::Event::TerminalOpened {
+                    source: telemetry_source,
+                    terminal_count,
+                });
             });
         })
         .detach();
@@ -868,21 +1530,30 @@ impl Workspace {
         let subtitle_id = id.clone();
         self.workspace_state.update(cx, |state, cx| {
             state.active_terminal_id = Some(id.clone());
+            state.set_active_main_view(WorkspaceMainView::Terminal { id: id.clone() }, cx);
             cx.emit(WorkspaceStateEvent::TerminalOpened { id });
             cx.notify();
         });
         self.content.update(cx, |c, cx| {
             c.set_terminal_subtitle(subtitle_id, cx);
             c.set_main_view(terminal_entity.into(), cx);
+            c.hide_connecting_view(cx);
         });
+        view_telemetry::record(view_telemetry::WORKSPACE_TERMINAL);
     }
 
     fn close_terminal_by_id(&mut self, id: String, cx: &mut Context<Self>) {
         let terminal_ids_before_close = self.workspace_state.read(cx).terminal_ids.clone();
         let active_terminal_id = self.workspace_state.read(cx).active_terminal_id.clone();
         let was_active_terminal = active_terminal_id.as_deref() == Some(id.as_str());
-        let remaining_terminal_ids = terminal_ids_after_close(&id, &terminal_ids_before_close);
-        let replacement_terminal_id = was_active_terminal
+        let active_main_terminal_id = self
+            .workspace_state
+            .read(cx)
+            .active_main_view
+            .terminal_id()
+            .map(ToOwned::to_owned);
+        let was_active_main_terminal = active_main_terminal_id.as_deref() == Some(id.as_str());
+        let replacement_terminal_id = was_active_main_terminal
             .then(|| replacement_terminal_id_after_close(&id, &terminal_ids_before_close))
             .flatten();
 
@@ -901,6 +1572,9 @@ impl Workspace {
                 state.active_terminal_id = None;
                 active_terminal::clear_active_input();
             }
+            if was_active_main_terminal {
+                state.set_active_main_view(WorkspaceMainView::NoActiveTerminal, cx);
+            }
             cx.notify();
         });
 
@@ -915,12 +1589,17 @@ impl Workspace {
                 self.content.update(cx, |content, cx| {
                     content.set_no_active_terminal_view(cx);
                 });
+                view_telemetry::record(view_telemetry::WORKSPACE_NO_ACTIVE_TERMINAL);
             }
-        } else if was_active_terminal || remaining_terminal_ids.is_empty() {
+        } else if was_active_main_terminal {
             self.content.update(cx, |content, cx| {
                 content.set_no_active_terminal_view(cx);
             });
+            view_telemetry::record(view_telemetry::WORKSPACE_NO_ACTIVE_TERMINAL);
         }
+
+        let remaining = self.workspace_state.read(cx).terminal_ids.len();
+        zedra_telemetry::send(zedra_telemetry::Event::TerminalClosed { remaining });
 
         let handle = self.session.handle().clone();
         cx.spawn(async move |_workspace, _cx| {
@@ -941,13 +1620,29 @@ impl Workspace {
         let active_terminal_id = self.workspace_state.read(cx).active_terminal_id.clone();
         let active_terminal_is_stale =
             active_terminal_is_stale_after_sync(active_terminal_id.as_deref(), &terminal_ids);
+        let active_main_terminal_id = self
+            .workspace_state
+            .read(cx)
+            .active_main_view
+            .terminal_id()
+            .map(ToOwned::to_owned);
+        let active_main_terminal_is_stale =
+            active_terminal_is_stale_after_sync(active_main_terminal_id.as_deref(), &terminal_ids);
 
-        if active_terminal_is_stale {
-            active_terminal::clear_active_input();
+        if active_terminal_is_stale || active_main_terminal_is_stale {
             self.workspace_state.update(cx, |state, cx| {
-                state.active_terminal_id = None;
+                if active_terminal_is_stale {
+                    state.active_terminal_id = None;
+                    active_terminal::clear_active_input();
+                }
+                if active_main_terminal_is_stale {
+                    state.set_active_main_view(WorkspaceMainView::Default, cx);
+                }
                 cx.notify();
             });
+        }
+
+        if active_main_terminal_is_stale {
             let editor = self.editor.clone();
             self.content.update(cx, |content, cx| {
                 content.clear_subtitle(cx);
@@ -975,21 +1670,49 @@ impl Workspace {
         });
     }
 
-    fn process_pending_confirmation(
+    fn process_pending_platform_action(
         &mut self,
-        confirmation: PendingWorkspaceConfirmation,
+        action: PendingWorkspaceAction,
         cx: &mut Context<Self>,
     ) {
-        match confirmation {
-            PendingWorkspaceConfirmation::DisconnectSession => self.disconnect(cx),
-            PendingWorkspaceConfirmation::DeleteTerminal { id } => {
-                self.close_terminal_by_id(id, cx)
+        match action {
+            PendingWorkspaceAction::DisconnectSession => self.disconnect(cx),
+            PendingWorkspaceAction::DeleteTerminal { id } => self.close_terminal_by_id(id, cx),
+            PendingWorkspaceAction::AddSelectionToChat { target, input } => {
+                self.activate_existing_terminal(target.terminal_id.clone(), cx);
+                self.schedule_add_to_chat_after_activation(target, input, cx);
             }
         }
     }
 
+    fn schedule_add_to_chat_after_activation(
+        &self,
+        target: AddToChatTarget,
+        input: agent::AddToChat,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |_workspace, cx| {
+            // Let the terminal activation paint before the selected text is pasted.
+            cx.background_executor().timer(ADD_TO_CHAT_SEND_DELAY).await;
+
+            let kind = target.kind;
+            let mut adapter = agent::make_adapter(kind);
+            let mut term = AgentTerminalTermCtx {
+                tid: target.terminal_id,
+                cwd: target.cwd.map(PathBuf::from),
+                input_tx: target.input_tx,
+            };
+            let mut app = WorkspaceAgentApp;
+
+            if let Err(error) = adapter.add_to_chat(input, &mut term, &mut app) {
+                warn!(?kind, error = %error, "agent: add selection to chat failed");
+            }
+        })
+        .detach();
+    }
+
     fn request_terminal_delete_confirmation(&self, terminal_id: String) {
-        let pending_confirmation = self.pending_confirmation.clone();
+        let pending_platform_action = self.pending_platform_action.clone();
         platform_bridge::show_alert(
             "",
             "Delete this terminal?",
@@ -999,7 +1722,7 @@ impl Workspace {
             ],
             move |button_index| {
                 if button_index == 0 {
-                    pending_confirmation.set(PendingWorkspaceConfirmation::DeleteTerminal {
+                    pending_platform_action.set(PendingWorkspaceAction::DeleteTerminal {
                         id: terminal_id.clone(),
                     });
                 }
@@ -1041,6 +1764,34 @@ impl Workspace {
             .cloned()
     }
 
+    fn add_to_chat_targets(&self, cx: &mut Context<Self>) -> Vec<AddToChatTarget> {
+        self.workspace_state
+            .read(cx)
+            .terminal_ids
+            .clone()
+            .into_iter()
+            .filter(|terminal_id| terminal_id != TERMINAL_PENDING_ID)
+            .filter_map(|terminal_id| {
+                let meta = self.terminal_state.read(cx).meta(&terminal_id);
+                let kind = meta.agent_kind?;
+                if kind == agent::Kind::Shell || !agent::make_adapter(kind).caps().add_to_chat {
+                    return None;
+                }
+
+                let terminal = self.terminal_by_id(&terminal_id, cx)?;
+                let input_tx = terminal.read(cx).input_sender(cx)?;
+
+                Some(AddToChatTarget {
+                    terminal_id,
+                    kind,
+                    title: meta.plain_title,
+                    cwd: meta.cwd,
+                    input_tx,
+                })
+            })
+            .collect()
+    }
+
     fn mainview_viewport(&self, window: &mut Window, cx: &App) -> Size<Pixels> {
         self.content
             .read(cx)
@@ -1065,7 +1816,7 @@ impl Workspace {
             self.handle_open_terminal(&OpenTerminal { id: first_id }, window, cx);
         } else {
             info!("no terminals on connect, creating new terminal");
-            self.handle_create_new_terminal(&CreateNewTerminal, window, cx);
+            self.create_new_terminal("new_session", window, cx);
         }
     }
 }
@@ -1081,8 +1832,10 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_toggle_drawer))
             .on_action(cx.listener(Self::handle_close_drawer))
             .on_action(cx.listener(Self::handle_show_connecting))
+            .on_action(cx.listener(Self::handle_hide_connecting))
             .on_action(cx.listener(Self::handle_restart_connection))
             .on_action(cx.listener(Self::handle_open_file))
+            .on_action(cx.listener(Self::handle_add_selection_to_chat))
             .on_action(cx.listener(Self::handle_open_git_diff))
             .on_action(cx.listener(Self::handle_git_stage))
             .on_action(cx.listener(Self::handle_git_unstage))
@@ -1144,6 +1897,33 @@ fn workspace_relative_path(path: &str, workdir: &str) -> String {
     }
 }
 
+fn add_to_chat_target_button(index: usize, target: &AddToChatTarget) -> AlertButton {
+    let title = add_to_chat_target_title(index, target.title.as_deref(), target.cwd.as_deref());
+    let presentation = agent::make_adapter(target.kind).target_presentation(&title);
+    let button = AlertButton::default(presentation.label);
+    if let Some(image_name) = presentation.image_name {
+        button.image(image_name)
+    } else {
+        button
+    }
+}
+
+fn add_to_chat_target_title(index: usize, title: Option<&str>, cwd: Option<&str>) -> String {
+    title
+        .map(strip_ps1_prefix)
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            cwd.and_then(|cwd| {
+                cwd.rsplit('/')
+                    .find(|part| !part.is_empty())
+                    .map(ToOwned::to_owned)
+            })
+        })
+        .unwrap_or_else(|| format!("Terminal {}", index + 1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1196,6 +1976,200 @@ mod tests {
         let mode = sync_refresh_mode_for_event(&sync_complete_event(), &mut seen_reconnect);
 
         assert_eq!(mode, Some(SyncRefreshMode::Reconnect));
+    }
+
+    #[::core::prelude::v1::test]
+    fn initial_sync_bootstraps_terminals() {
+        let terminal_ids = vec!["terminal-1".to_string()];
+
+        assert!(should_initialize_terminals_after_sync(
+            SyncRefreshMode::InitialConnect,
+            &terminal_ids,
+            &WorkspaceMainView::File {
+                path: "src/main.rs".into(),
+            },
+        ));
+    }
+
+    #[::core::prelude::v1::test]
+    fn host_created_terminal_seeds_cwd_from_workspace() {
+        let mut terminal_state = TerminalState::new();
+
+        assert!(seed_host_created_terminal_meta(
+            &mut terminal_state,
+            "terminal-1",
+            "/repo/project",
+            None,
+        ));
+
+        assert_eq!(
+            terminal_state.meta("terminal-1").cwd.as_deref(),
+            Some("/repo/project")
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn host_created_terminal_ignores_empty_workspace_cwd() {
+        let mut terminal_state = TerminalState::new();
+
+        assert!(!seed_host_created_terminal_meta(
+            &mut terminal_state,
+            "terminal-1",
+            "",
+            None,
+        ));
+        assert_eq!(terminal_state.meta("terminal-1").cwd, None);
+    }
+
+    #[::core::prelude::v1::test]
+    fn host_created_terminal_seeds_agent_icon_from_launch_command() {
+        let mut terminal_state = TerminalState::new();
+
+        assert!(seed_host_created_terminal_meta(
+            &mut terminal_state,
+            "terminal-1",
+            "/repo/project",
+            Some("claude --resume session"),
+        ));
+
+        let meta = terminal_state.meta("terminal-1");
+        assert_eq!(meta.agent_icon, Some("icons/claude.svg"));
+        assert_eq!(meta.agent_kind, Some(agent::Kind::Claude));
+        assert_eq!(meta.shell_state, crate::terminal_state::ShellState::Running);
+        assert_eq!(
+            meta.current_command.as_deref(),
+            Some("claude --resume session")
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn reconnect_sync_bootstraps_after_host_restart_with_no_terminals() {
+        assert!(should_initialize_terminals_after_sync(
+            SyncRefreshMode::Reconnect,
+            &[],
+            &WorkspaceMainView::File {
+                path: "src/main.rs".into(),
+            },
+        ));
+    }
+
+    #[::core::prelude::v1::test]
+    fn reconnect_sync_bootstraps_when_main_view_was_reset() {
+        let terminal_ids = vec!["terminal-1".to_string()];
+
+        assert!(should_initialize_terminals_after_sync(
+            SyncRefreshMode::Reconnect,
+            &terminal_ids,
+            &WorkspaceMainView::Default,
+        ));
+    }
+
+    #[::core::prelude::v1::test]
+    fn reconnect_sync_preserves_file_view_when_host_has_terminals() {
+        let terminal_ids = vec!["terminal-1".to_string()];
+
+        assert!(!should_initialize_terminals_after_sync(
+            SyncRefreshMode::Reconnect,
+            &terminal_ids,
+            &WorkspaceMainView::File {
+                path: "src/main.rs".into(),
+            },
+        ));
+    }
+
+    #[::core::prelude::v1::test]
+    fn reconnect_sync_preserves_no_active_terminal_empty_state() {
+        assert!(!should_initialize_terminals_after_sync(
+            SyncRefreshMode::Reconnect,
+            &[],
+            &WorkspaceMainView::NoActiveTerminal,
+        ));
+    }
+
+    #[::core::prelude::v1::test]
+    fn user_disconnect_ignores_late_connection_closed_event() {
+        assert!(!should_apply_connect_event(
+            &ConnectEvent::ConnectionClosed,
+            true
+        ));
+        assert!(should_apply_connect_event(
+            &ConnectEvent::ConnectionClosed,
+            false
+        ));
+        assert!(!should_apply_connect_event(
+            &ConnectEvent::Connected { total_ms: 10 },
+            true
+        ));
+    }
+
+    #[::core::prelude::v1::test]
+    fn add_to_chat_target_title_prefers_stripped_terminal_title() {
+        assert_eq!(
+            add_to_chat_target_title(
+                0,
+                Some("thomas@mac:~/projects/zedra"),
+                Some("/tmp/fallback"),
+            ),
+            "~/projects/zedra"
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn add_to_chat_target_title_falls_back_to_cwd_leaf() {
+        assert_eq!(
+            add_to_chat_target_title(1, Some(""), Some("/Users/thomasle/projects/zedra")),
+            "zedra"
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn add_to_chat_target_title_ignores_blank_cwd_segments() {
+        assert_eq!(
+            add_to_chat_target_title(1, None, Some("/Users/thomasle/projects/zedra/")),
+            "zedra"
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn add_to_chat_target_title_falls_back_to_terminal_number() {
+        assert_eq!(
+            add_to_chat_target_title(2, Some("   "), Some("/")),
+            "Terminal 3"
+        );
+        assert_eq!(add_to_chat_target_title(3, None, None), "Terminal 4");
+    }
+
+    #[::core::prelude::v1::test]
+    fn add_to_chat_target_button_uses_adapter_label_without_terminal_prefix() {
+        let (input_tx, _input_rx) = mpsc::channel(1);
+        let target = AddToChatTarget {
+            terminal_id: "terminal-1".into(),
+            kind: agent::Kind::OpenCode,
+            title: Some("opencode: /repo".into()),
+            cwd: Some("/repo".into()),
+            input_tx,
+        };
+
+        let button = add_to_chat_target_button(2, &target);
+
+        assert_eq!(button.label, "opencode: /repo");
+    }
+
+    #[::core::prelude::v1::test]
+    fn add_to_chat_target_button_uses_adapter_native_icon() {
+        let (input_tx, _input_rx) = mpsc::channel(1);
+        let target = AddToChatTarget {
+            terminal_id: "terminal-1".into(),
+            kind: agent::Kind::Codex,
+            title: Some("codex".into()),
+            cwd: None,
+            input_tx,
+        };
+
+        let button = add_to_chat_target_button(0, &target);
+
+        assert_eq!(button.label, "codex");
+        assert_eq!(button.image_name.as_deref(), Some("AgentCodex"));
     }
 
     #[::core::prelude::v1::test]
@@ -1321,6 +2295,59 @@ enum WorkspaceSubtitle {
     },
 }
 
+fn render_subtitle(text: impl IntoElement) -> AnyElement {
+    div()
+        .w_full()
+        .min_w_0()
+        .truncate()
+        .text_center()
+        .text_color(rgb(theme::TEXT_SECONDARY))
+        .text_size(px(theme::FONT_BODY))
+        .font_weight(FontWeight::MEDIUM)
+        .child(text)
+        .into_any_element()
+}
+
+fn render_gitdiff_subtitle(filename: SharedString, added: usize, removed: usize) -> AnyElement {
+    div()
+        .w_full()
+        .min_w_0()
+        .px_2()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_center()
+        .gap(px(6.0))
+        .text_size(px(theme::FONT_BODY))
+        .font_weight(FontWeight::MEDIUM)
+        .child(
+            div()
+                .min_w_0()
+                .flex_shrink()
+                .truncate()
+                .text_center()
+                .text_color(rgb(theme::TEXT_SECONDARY))
+                .child(filename),
+        )
+        .when(added > 0, |this| {
+            this.child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(rgb(0x6fc17a))
+                    .child(format!("+{}", added)),
+            )
+        })
+        .when(removed > 0, |this| {
+            this.child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(rgb(0xd57a7a))
+                    .child(format!("-{}", removed)),
+            )
+        })
+        .into_any_element()
+}
+
 impl WorkspaceContent {
     pub fn new(
         workspace_state: Entity<WorkspaceState>,
@@ -1403,6 +2430,33 @@ impl WorkspaceContent {
         cx.notify();
     }
 
+    pub fn is_showing_connecting(&self) -> bool {
+        self.show_connecting
+    }
+
+    fn render_subtitle(&self, default_subtitle: &str, cx: &mut Context<Self>) -> AnyElement {
+        match &self.subtitle {
+            WorkspaceSubtitle::Default => render_subtitle(default_subtitle.to_owned()),
+            WorkspaceSubtitle::File { path } => render_subtitle(path.clone()),
+            WorkspaceSubtitle::Terminal { id } => {
+                let meta = self.terminal_state.read(cx).meta(id);
+                let subtitle = meta
+                    .title
+                    .as_deref()
+                    .map(strip_ps1_prefix)
+                    .filter(|title| !title.is_empty())
+                    .unwrap_or(default_subtitle)
+                    .to_owned();
+                render_subtitle(subtitle)
+            }
+            WorkspaceSubtitle::GitDiff {
+                filename,
+                added,
+                removed,
+            } => render_gitdiff_subtitle(filename.clone(), *added, *removed),
+        }
+    }
+
     pub fn mainview_viewport(&self) -> Option<Size<Pixels>> {
         self.mainview_bounds.as_ref().map(|bounds| bounds.size)
     }
@@ -1446,10 +2500,7 @@ impl Render for WorkspaceContent {
         let workspace_state = self.workspace_state.read(cx);
         let title = workspace_state.project_name.to_string();
         let default_subtitle = workspace_state.strip_path.to_string();
-        let net_dot_color = match workspace_state.connect_phase.clone() {
-            Some(phase) => phase_indicator_color(&phase),
-            None => theme::ACCENT_DIM,
-        };
+        let connect_phase = workspace_state.connect_phase.clone();
         let mainview_measure = canvas(
             |bounds, _, _| bounds,
             move |_bounds, measured_bounds, _window, cx| {
@@ -1525,12 +2576,11 @@ impl Render for WorkspaceContent {
                                             .gap(px(5.0))
                                             .max_w_full()
                                             .child(
-                                                div()
-                                                    .w(px(6.0))
-                                                    .h(px(6.0))
-                                                    .rounded(px(3.0))
-                                                    .flex_shrink_0()
-                                                    .bg(rgb(net_dot_color)),
+                                                ConnectionStatusIndicator::from_phase(
+                                                    "workspace-connect-status",
+                                                    connect_phase.as_ref(),
+                                                )
+                                                .size(6.0),
                                             )
                                             .child(
                                                 div()
@@ -1542,111 +2592,7 @@ impl Render for WorkspaceContent {
                                             ),
                                     ),
                             )
-                            .child(match &self.subtitle {
-                                WorkspaceSubtitle::Default => div()
-                                    .w_full()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_center()
-                                    .text_color(rgb(theme::TEXT_SECONDARY))
-                                    .text_size(px(theme::FONT_BODY))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(default_subtitle)
-                                    .into_any_element(),
-                                WorkspaceSubtitle::File { path } => div()
-                                    .w_full()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_center()
-                                    .text_color(rgb(theme::TEXT_SECONDARY))
-                                    .text_size(px(theme::FONT_BODY))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(path.clone())
-                                    .into_any_element(),
-                                WorkspaceSubtitle::Terminal { id } => {
-                                    let meta = self.terminal_state.read(cx).meta(id);
-                                    let subtitle = if let Some(title) = meta.title.as_deref() {
-                                        let stripped = strip_ps1_prefix(title);
-                                        if stripped.is_empty() {
-                                            default_subtitle.clone()
-                                        } else {
-                                            stripped.to_owned()
-                                        }
-                                    } else {
-                                        default_subtitle.clone()
-                                    };
-                                    let agent_icon_path = meta.agent_icon;
-
-                                    div()
-                                        .w_full()
-                                        .min_w_0()
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .justify_center()
-                                        .gap(px(6.0))
-                                        .when_some(agent_icon_path, |d, path| {
-                                            d.child(
-                                                svg()
-                                                    .path(path)
-                                                    .size(px(12.0))
-                                                    .flex_shrink_0()
-                                                    .text_color(rgb(theme::TEXT_SECONDARY)),
-                                            )
-                                        })
-                                        .child(
-                                            div()
-                                                .min_w_0()
-                                                .truncate()
-                                                .text_color(rgb(theme::TEXT_SECONDARY))
-                                                .text_size(px(theme::FONT_BODY))
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .child(subtitle),
-                                        )
-                                        .into_any_element()
-                                }
-                                WorkspaceSubtitle::GitDiff {
-                                    filename,
-                                    added,
-                                    removed,
-                                } => div()
-                                    .w_full()
-                                    .min_w_0()
-                                    .px_2()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .justify_center()
-                                    .gap(px(6.0))
-                                    .text_size(px(theme::FONT_BODY))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .flex_shrink()
-                                            .truncate()
-                                            .text_center()
-                                            .text_color(rgb(theme::TEXT_SECONDARY))
-                                            .child(filename.clone()),
-                                    )
-                                    .when(*added > 0, |this| {
-                                        this.child(
-                                            div()
-                                                .flex_shrink_0()
-                                                .text_color(rgb(0x6fc17a))
-                                                .child(format!("+{}", added)),
-                                        )
-                                    })
-                                    .when(*removed > 0, |this| {
-                                        this.child(
-                                            div()
-                                                .flex_shrink_0()
-                                                .text_color(rgb(0xd57a7a))
-                                                .child(format!("-{}", removed)),
-                                        )
-                                    })
-                                    .into_any_element(),
-                            }),
+                            .child(self.render_subtitle(&default_subtitle, cx)),
                     )
                     .child(
                         div()

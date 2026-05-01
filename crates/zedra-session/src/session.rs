@@ -14,6 +14,8 @@ use crate::{
     ConnectEvent, Connector, SessionHandle, SessionState, session_runtime, signer::ClientSigner,
 };
 
+const AUTO_RECONNECT_MAX_ATTEMPTS: u32 = 3;
+
 #[derive(Clone)]
 pub struct Session {
     handle: SessionHandle,
@@ -128,7 +130,7 @@ impl Session {
 
                 let existing_terminals = handle.terminals().clone();
                 let result = if let Some(reason) = reconnect_reason.take() {
-                    let max_attempts = 10;
+                    let max_attempts = AUTO_RECONNECT_MAX_ATTEMPTS;
                     info!("reconnect to {addr:?}, session: {session_id:?} reason {reason:?} max_attempts {max_attempts}",);
                     tokio::select! {
                         _ = abort_signal.cancelled() => {
@@ -284,6 +286,7 @@ impl Session {
                         reconnect_reason = Some(crate::ReconnectReason::ConnectionLost);
                     }
                     Err(e) => {
+                        connector.abort();
                         error!("connect failed: {}", e);
                         break;
                     }

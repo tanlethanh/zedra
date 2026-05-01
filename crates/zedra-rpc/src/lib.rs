@@ -16,6 +16,7 @@ pub use pairing::{
 /// If the preferred relay goes down, iroh fails over to the next best.
 pub const ZEDRA_RELAY_URLS: &[&str] = &[
     "https://sg1.relay.zedra.dev", // Singapore (ap-southeast-1)
+    "https://vn1.relay.zedra.dev", // Vietnam
     "https://us1.relay.zedra.dev", // N. Virginia (us-east-1)
     "https://eu1.relay.zedra.dev", // Frankfurt (eu-central-1)
 ];

@@ -10,6 +10,7 @@ pub mod pending;
 // Components
 pub mod agent;
 pub mod button;
+pub mod docs_tree;
 pub mod editor;
 pub mod fonts;
 pub mod placeholder;
