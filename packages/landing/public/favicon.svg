@@ -1,10 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="18 20 322 402" fill="none">
-  <path d="M18.3179 221.467L256.976 20.945L163.07 154.216L338.989 154.216L95.8202 420.758L211.868 221.467L18.3179 221.467Z" fill="#343434"/>
-  <path d="M83.5193 208.633L230.794 57.4409L171.954 169.12H271.329L120.967 378.111L197.026 208.633H83.5193Z" fill="#C3C3C3"/>
-  <style>
-    @media (prefers-color-scheme: dark) {
-      path:nth-child(1) { fill: #333333; }
-      path:nth-child(2) { fill: white; }
-    }
-  </style>
+<svg width="490" height="490" viewBox="0 0 490 490" fill="none" xmlns="http://www.w3.org/2000/svg">
+<rect width="490" height="490" rx="245" fill="black"/>
+<path d="M85.4276 247.463L322.07 41.705L260.84 172.441L410.328 172.441L189.749 450.494L253.669 247.463L85.4276 247.463Z" fill="#333333"/>
+<path d="M152.456 230.136L302.212 70.3898L236.018 189.644H344.916L211.195 399.161L277.389 230.136H152.456Z" fill="white"/>
 </svg>
