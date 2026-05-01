@@ -1,6 +1,6 @@
 # Zedra
 
-An experimental remote editor on mobile with GPU rendering powered by Zed's GPUI, P2P tunnel over QUIC/UDP by Iroh. Zedra focusses on providing mobile-first experience for developers to read code, view changes, run any AI agents on their terminals over a secure, P2P tunnel.
+An experimental remote code editor on mobile with GPU-accelerated rendering powered by Zed's GPUI, P2P tunnel over QUIC/UDP by Iroh. Zedra focuses on providing mobile-first experience for developers to read code, view changes, and run AI agents over a secure, P2P tunnel.
 
 ![Zedra](https://raw.githubusercontent.com/tanlethanh/zedra/main/packages/landing/public/OG.png)
 
@@ -11,41 +11,31 @@ An experimental remote editor on mobile with GPU rendering powered by Zed's GPUI
 
 ## Desktop daemon
 
-Note: Zedra attempts to establish a direct connection between your computers, but sometimes it may be blocked by network conditions, specifically `Symmetric NAT` or `CGNAT` (commonly seen in home networks). In such cases, the connection still needs a relay fallback path. For now, it works best on LANs and the regions supported by relay servers. If you encounter noticeable high latency, please reach out to me. For those curious about this topic, I recommend reading [How NAT traversal works](https://tailscale.com/blog/how-nat-traversal-works)
+Note: Zedra uses direct P2P connections when possible, but may fallback to relays if blocked by `Symmetric NAT` or `CGNAT` (common in home networks). Works best on LANs and supported relay regions. For high latency issues, please reach out. Learn more: [How NAT traversal works](https://tailscale.com/blog/how-nat-traversal-works)
 
 **Manual**
-```bash
+```shell
 # Install Zedra CLI
 curl -fsSL zedra.dev/install.sh | sh
 # Start Zedra in working directory
 zedra start
-
-# On an SSH server, keep Zedra alive after disconnecting
+# Or start in background 
 zedra start --detach
 ```
 
-Detached mode prints a one-time pairing QR immediately, then keeps the daemon
-running after your SSH session disconnects. Startup logs are written under the
-workspace config directory. From the served workspace, use `zedra status`,
-`zedra logs`, and `zedra stop`. From another directory, add `--workdir <path>`.
-
-To refresh a consumed or expired QR without restarting the daemon:
-
-```bash
-zedra qr
-```
-
 **Claude Code**
-```bash
+```shell
+# Config Zedra skills for Claude
 zedra setup claude
-# In Claude Code, reload plugins and start Zedra
+# In Claude, reload plugins and start Zedra
 /reload-plugins
 /zedra-start
 ```
 
 **Codex**
 
-```bash
+```shell
+# Config Zedra skills for Codex
 zedra setup codex
 # In Codex, reload skills and start Zedra
 $zedra-start
@@ -57,7 +47,7 @@ Scan the QR code with the Zedra app. That's it.
 
 1. `zedra start` runs a lightweight daemon on your desktop
 2. Phone and desktop discover each other automatically — direct P2P, relay fallback
-3. All traffic is encrypted end-to-end with TLS 1.3. Pairing requires physical QR scan — no credentials leave your device
+3. All traffic is encrypted end-to-end with TLS 1.3. No credentials leave your device
 
 
 ## Status
