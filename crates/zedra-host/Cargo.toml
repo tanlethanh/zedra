@@ -18,7 +18,14 @@ tokio = { version = "1", features = ["full"] }
 
 # Local REST API
 axum = "0.7"
-reqwest = { version = "0.12", features = ["blocking", "json"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "blocking",
+    "charset",
+    "http2",
+    "json",
+    "rustls-tls",
+    "system-proxy",
+] }
 
 # PTY spawning
 portable-pty = "0.8"
