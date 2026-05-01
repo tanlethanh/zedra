@@ -14,6 +14,7 @@ use crate::fs::{Filesystem, LocalFs};
 use crate::git::GitRepo;
 use crate::host_info;
 use crate::identity::SharedIdentity;
+use crate::metrics;
 use crate::pty::{ShellSession, SpawnOptions};
 use crate::session_registry::{
     AttachResult, ConsumeSlotResult, HostShellState, HostTermMeta, OutputSenderSlot, ServerSession,
@@ -554,6 +555,18 @@ pub async fn handle_connection(
         &client_pubkey[..4],
         session.id,
     );
+    let metrics_connection_open = match metrics::record_connection_opened(&state.workdir) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("Failed to record connection metrics: {}", e);
+            false
+        }
+    };
+    if is_new_client {
+        if let Err(e) = metrics::record_pairing_completed(&state.workdir) {
+            tracing::warn!("Failed to record pairing metrics: {}", e);
+        }
+    }
 
     let session_start = std::time::Instant::now();
 
@@ -654,6 +667,11 @@ pub async fn handle_connection(
     });
 
     registry.detach_client(&session.id, client_pubkey).await;
+    if metrics_connection_open {
+        if let Err(e) = metrics::record_connection_closed(&state.workdir) {
+            tracing::warn!("Failed to record connection metrics: {}", e);
+        }
+    }
 
     tracing::info!(
         "Connection closed: session={} (session stays alive in registry)",
@@ -962,41 +980,49 @@ async fn finish_auth(
 
     // Attach to the requested session, with fallback for stale session IDs
     // (e.g. after a daemon restart the client's stored session_id is gone).
-    let (attach_result, resolved_session_id) =
-        match registry.attach_client(&session_id, client_pubkey).await {
-            AttachResult::SessionNotFound => {
-                // Client is globally authorized but their session was lost.
-                // Try to find another session they have ACL for, or create one.
-                let fallback =
-                    if let Some(s) = registry.find_session_for_client(&client_pubkey).await {
-                        tracing::info!(
-                            "finish_auth: session {} gone, falling back to session {}",
-                            session_id,
-                            s.id,
-                        );
-                        s
-                    } else {
-                        // No existing session — create a fresh default one.
-                        let workdir = &state.workdir;
-                        let name = workdir
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("default");
-                        let s = registry.create_named(name, workdir.to_path_buf()).await;
-                        registry.add_client_to_session(&s.id, client_pubkey).await;
-                        tracing::info!(
-                            "finish_auth: session {} gone, created new session {} ({})",
-                            session_id,
-                            s.id,
-                            name,
-                        );
-                        s
-                    };
-                let new_id = fallback.id.clone();
-                (registry.attach_client(&new_id, client_pubkey).await, new_id)
-            }
-            other => (other, session_id.clone()),
-        };
+    let (attach_result, resolved_session_id) = match registry
+        .attach_client(&session_id, client_pubkey)
+        .await
+    {
+        AttachResult::SessionNotFound => {
+            // Client is globally authorized but their session was lost.
+            // Try to find another session they have ACL for, or create one.
+            let fallback = if let Some(s) = registry.find_session_for_client(&client_pubkey).await {
+                tracing::info!(
+                    "finish_auth: session {} gone, falling back to session {}",
+                    session_id,
+                    s.id,
+                );
+                s
+            } else {
+                // No existing session — create a fresh default one.
+                let workdir = &state.workdir;
+                let name = workdir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("default");
+                let session_was_existing = registry.get_by_name(name).await.is_some();
+                let s = registry.create_named(name, workdir.to_path_buf()).await;
+                if !session_was_existing {
+                    let session_count = registry.session_count().await;
+                    if let Err(e) = metrics::record_session_created(workdir, session_count) {
+                        tracing::warn!("Failed to record session metrics: {}", e);
+                    }
+                }
+                registry.add_client_to_session(&s.id, client_pubkey).await;
+                tracing::info!(
+                    "finish_auth: session {} gone, created new session {} ({})",
+                    session_id,
+                    s.id,
+                    name,
+                );
+                s
+            };
+            let new_id = fallback.id.clone();
+            (registry.attach_client(&new_id, client_pubkey).await, new_id)
+        }
+        other => (other, session_id.clone()),
+    };
 
     match attach_result {
         AttachResult::Ok => {
@@ -1803,6 +1829,11 @@ async fn dispatch(
             {
                 Ok(id) => {
                     zedra_telemetry::send(Event::HostTerminalOpen { has_launch_cmd });
+                    let terminal_count = session.terminals.lock().await.len();
+                    if let Err(e) = metrics::record_terminal_created(&state.workdir, terminal_count)
+                    {
+                        tracing::warn!("Failed to record terminal metrics: {}", e);
+                    }
                     let _ = msg.tx.send(TermCreateResult { id, error: None }).await;
                 }
                 Err(e) => {

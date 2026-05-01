@@ -17,7 +17,7 @@ use std::sync::Arc;
 use zedra_host::client as zedra_client;
 use zedra_host::ga4::Ga4;
 use zedra_host::{
-    api, identity, iroh_listener, net_monitor, qr, rpc_daemon, session_registry, utils,
+    api, identity, iroh_listener, metrics, net_monitor, qr, rpc_daemon, session_registry, utils,
     version_check, workspace_lock,
 };
 use zedra_rpc::ZedraPairingTicket;
@@ -109,6 +109,13 @@ enum Commands {
     /// Show daemon status, sessions, and terminals
     Status {
         /// Working directory of the running daemon
+        #[arg(short, long, default_value = ".")]
+        workdir: String,
+    },
+
+    /// Show local usage metrics for a workspace
+    Metrics {
+        /// Working directory to inspect
         #[arg(short, long, default_value = ".")]
         workdir: String,
     },
@@ -323,6 +330,7 @@ fn start_detached(options: DetachedStartOptions) -> Result<DetachedStartResult> 
     command
         .args(detached_start_child_args(&options))
         .current_dir(&options.workdir)
+        .env("ZEDRA_DETACHED", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
@@ -481,6 +489,14 @@ async fn main() -> Result<()> {
 
             let _lock = workspace_lock::acquire(&workdir)?;
             tracing::info!("Acquired workspace lock for {}", workdir.display());
+            let start_mode = if std::env::var_os("ZEDRA_DETACHED").is_some() {
+                metrics::DaemonStartMode::Detached
+            } else {
+                metrics::DaemonStartMode::Foreground
+            };
+            if let Err(e) = metrics::record_daemon_start(&workdir, start_mode) {
+                tracing::warn!("Failed to record daemon start metrics: {}", e);
+            }
 
             let host_identity = match identity::HostIdentity::load_or_generate_for_workdir(&workdir)
             {
@@ -501,8 +517,17 @@ async fn main() -> Result<()> {
                 .and_then(|n| n.to_str())
                 .unwrap_or("default")
                 .to_string();
+            let session_was_existing = registry.get_by_name(&session_name).await.is_some();
             let session = registry.create_named(&session_name, workdir.clone()).await;
             let session_id = session.id.clone();
+            let session_count = registry.session_count().await;
+            if !session_was_existing {
+                if let Err(e) = metrics::record_session_created(&workdir, session_count) {
+                    tracing::warn!("Failed to record session metrics: {}", e);
+                }
+            } else if let Err(e) = metrics::record_daemon_heartbeat(&workdir, session_count, 0) {
+                tracing::warn!("Failed to record session metrics: {}", e);
+            }
             tracing::info!(
                 "Created session '{}' (id={}) for {}",
                 session_name,
@@ -640,6 +665,7 @@ async fn main() -> Result<()> {
                 &endpoint_relay_urls,
                 json,
                 Some(&workdir),
+                Some(&workdir),
             )
             .await
             {
@@ -654,6 +680,7 @@ async fn main() -> Result<()> {
                 let registry = registry.clone();
                 let session_id = session_id.clone();
                 let relay_urls_for_listener = endpoint_relay_urls.clone();
+                let qr_workdir = workdir.clone();
                 tokio::spawn(async move {
                     if let Err(e) = run_qr_key_listener(
                         registry,
@@ -661,6 +688,7 @@ async fn main() -> Result<()> {
                         endpoint_id,
                         endpoint,
                         relay_urls_for_listener,
+                        qr_workdir,
                     )
                     .await
                     {
@@ -715,6 +743,7 @@ async fn main() -> Result<()> {
             {
                 let registry = registry.clone();
                 let started_at = state.started_at;
+                let metrics_workdir = workdir.clone();
                 tokio::spawn(async move {
                     let mut interval =
                         tokio::time::interval(std::time::Duration::from_secs(10 * 60));
@@ -725,6 +754,13 @@ async fn main() -> Result<()> {
                         let sessions = registry.list_sessions().await;
                         let session_count = sessions.len();
                         let terminal_count: usize = sessions.iter().map(|s| s.terminal_count).sum();
+                        if let Err(e) = metrics::record_daemon_heartbeat(
+                            &metrics_workdir,
+                            session_count,
+                            terminal_count,
+                        ) {
+                            tracing::warn!("Failed to record daemon heartbeat metrics: {}", e);
+                        }
                         zedra_telemetry::send(Event::DaemonHeartbeat {
                             uptime_secs,
                             session_count,
@@ -773,6 +809,22 @@ async fn main() -> Result<()> {
                     std::process::exit(1);
                 }
             }
+        }
+
+        Commands::Metrics { workdir } => {
+            let workdir = std::path::PathBuf::from(workdir)
+                .canonicalize()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let snapshot = metrics::snapshot(&workdir)?;
+            let http = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(2))
+                .build()
+                .unwrap_or_default();
+            let status = fetch_instance_status(&http, &workdir).await;
+            println!(
+                "{}",
+                render_metrics_output(&workdir, &snapshot, status.as_ref())
+            );
         }
 
         Commands::Qr { workdir, json } => {
@@ -1200,6 +1252,152 @@ fn render_status_output(status: &serde_json::Value) -> String {
     sections.join("\n")
 }
 
+fn render_metrics_output(
+    workdir: &Path,
+    snapshot: &metrics::MetricsSnapshot,
+    status: Option<&serde_json::Value>,
+) -> String {
+    let metrics = &snapshot.metrics;
+    let daemon_running = status.is_some();
+    let daemon = status
+        .and_then(|status| status["uptime_secs"].as_u64())
+        .map(|uptime| format!("running ({})", utils::format_duration(uptime)))
+        .unwrap_or_else(|| "not running".to_string());
+    let current_sessions = status
+        .and_then(|status| status["sessions"].as_array())
+        .map(|sessions| sessions.len() as u64);
+    let current_terminals = status
+        .and_then(|status| status["terminals"].as_array())
+        .map(|terminals| terminals.len() as u64);
+    let active_connections = if daemon_running {
+        metrics.active_connection_count
+    } else {
+        0
+    };
+    let active_secs = display_active_secs(snapshot, daemon_running);
+
+    let mut rows = vec![
+        ("Workdir", workdir.display().to_string()),
+        ("Daemon", daemon),
+        ("Active Time", utils::format_duration(active_secs)),
+        ("Active Now", format_count(active_connections, "connection")),
+        ("Connections", metrics.successful_connections.to_string()),
+        ("Pairings", metrics.new_pairings.to_string()),
+        ("QR Codes", metrics.qr_codes_created.to_string()),
+        (
+            "Sessions",
+            render_current_and_total(
+                current_sessions,
+                metrics.sessions_created,
+                metrics.max_sessions_seen,
+                "created",
+            ),
+        ),
+        (
+            "Terminals",
+            render_current_and_total(
+                current_terminals,
+                metrics.terminals_created,
+                metrics.max_terminals_seen,
+                "created",
+            ),
+        ),
+        (
+            "Starts",
+            format!(
+                "{} total ({} detached)",
+                metrics.daemon_starts, metrics.detached_starts
+            ),
+        ),
+        (
+            "Last Start",
+            format_since_unix_secs(
+                metrics.last_started_at_unix_secs,
+                snapshot.generated_at_unix_secs,
+            ),
+        ),
+        (
+            "Last Connect",
+            format_since_unix_secs(
+                metrics.last_connected_at_unix_secs,
+                snapshot.generated_at_unix_secs,
+            ),
+        ),
+    ];
+
+    if metrics.new_pairings > 0 {
+        rows.push((
+            "Last Pairing",
+            format_since_unix_secs(
+                metrics.last_pairing_at_unix_secs,
+                snapshot.generated_at_unix_secs,
+            ),
+        ));
+    }
+
+    format!(
+        "{}\n\n{}",
+        utils::heading_text("Zedra Metrics"),
+        utils::render_key_values(&rows)
+    )
+}
+
+fn display_active_secs(snapshot: &metrics::MetricsSnapshot, daemon_running: bool) -> u64 {
+    if daemon_running {
+        return snapshot.active_secs;
+    }
+
+    let metrics = &snapshot.metrics;
+    let stale_active_secs = if metrics.active_connection_count > 0 {
+        metrics
+            .active_started_at_unix_secs
+            .zip(metrics.last_seen_at_unix_secs)
+            .map(|(started, seen)| seen.saturating_sub(started))
+            .unwrap_or_default()
+    } else {
+        0
+    };
+    metrics.total_active_secs.saturating_add(stale_active_secs)
+}
+
+fn render_current_and_total(
+    current: Option<u64>,
+    total: u64,
+    max_seen: u64,
+    total_label: &str,
+) -> String {
+    match current {
+        Some(current) if total > 0 => format!("{current} current / {total} {total_label}"),
+        Some(current) if max_seen > 0 => format!("{current} current / {max_seen} max"),
+        Some(current) => format!("{current} current"),
+        None if total > 0 && max_seen > 0 => format!("{total} {total_label} / {max_seen} max"),
+        None if total > 0 => format!("{total} {total_label}"),
+        None if max_seen > 0 => format!("{max_seen} max"),
+        None => format!("0 {total_label}"),
+    }
+}
+
+fn format_count(count: u64, singular: &str) -> String {
+    if count == 1 {
+        format!("1 {singular}")
+    } else {
+        format!("{count} {singular}s")
+    }
+}
+
+fn format_since_unix_secs(timestamp: Option<u64>, now: u64) -> String {
+    match timestamp {
+        Some(timestamp) if timestamp <= now => {
+            format!(
+                "{} ago",
+                utils::format_duration(now.saturating_sub(timestamp))
+            )
+        }
+        Some(_) => "just now".to_string(),
+        None => "-".to_string(),
+    }
+}
+
 fn session_status_row(session: &serde_json::Value) -> Vec<String> {
     let id = session["id"]
         .as_str()
@@ -1443,21 +1641,26 @@ async fn generate_pairing_qr(
     relay_urls: &[String],
     json: bool,
     started_workdir: Option<&Path>,
+    metrics_workdir: Option<&Path>,
 ) -> Result<()> {
     let ticket = ZedraPairingTicket {
         endpoint_id,
         handshake_secret: rand::random(),
         session_id: session_id.to_string(),
     };
+    let info = qr::build_pairing_info(&ticket, endpoint, relay_urls)?;
     registry
         .add_pairing_slot(session_id, ticket.handshake_secret)
         .await;
+    if let Some(workdir) = metrics_workdir {
+        if let Err(e) = metrics::record_qr_created(workdir) {
+            tracing::warn!("Failed to record QR metrics: {}", e);
+        }
+    }
 
     if json {
-        let info = qr::build_pairing_info(&ticket, endpoint, relay_urls)?;
         qr::print_pairing_json(&info);
     } else {
-        let info = qr::build_pairing_info(&ticket, endpoint, relay_urls)?;
         if let Some(workdir) = started_workdir {
             qr::print_started_pairing_info(&info, workdir);
         } else {
@@ -1475,6 +1678,7 @@ async fn run_qr_key_listener(
     endpoint_id: iroh::PublicKey,
     endpoint: iroh::Endpoint,
     relay_urls: Vec<String>,
+    workdir: PathBuf,
 ) -> Result<()> {
     use std::io::Read;
     use std::os::fd::AsRawFd;
@@ -1503,7 +1707,7 @@ async fn run_qr_key_listener(
                     break;
                 };
                 if matches!(key, b'r' | b'R') {
-                    if let Err(e) = generate_pairing_qr(&registry, &session_id, endpoint_id, &endpoint, &relay_urls, false, None).await {
+                    if let Err(e) = generate_pairing_qr(&registry, &session_id, endpoint_id, &endpoint, &relay_urls, false, None, Some(&workdir)).await {
                         tracing::warn!("Failed to regenerate QR code: {}", e);
                     } else {
                         utils::eprintln_success("Regenerated pairing QR. Press 'r' again to refresh.");
@@ -1702,6 +1906,69 @@ mod tests {
         assert!(output.contains("connected"));
         assert!(output.contains("Terminals"));
         assert!(output.contains("zsh"));
+    }
+
+    #[test]
+    fn metrics_output_includes_local_and_live_counts() {
+        let snapshot = metrics::MetricsSnapshot {
+            metrics: metrics::WorkspaceMetrics {
+                daemon_starts: 3,
+                detached_starts: 2,
+                successful_connections: 9,
+                new_pairings: 1,
+                qr_codes_created: 4,
+                sessions_created: 1,
+                terminals_created: 7,
+                active_connection_count: 1,
+                last_started_at_unix_secs: Some(90),
+                last_connected_at_unix_secs: Some(95),
+                ..metrics::WorkspaceMetrics::default()
+            },
+            generated_at_unix_secs: 100,
+            active_secs: 3605,
+        };
+        let status = serde_json::json!({
+            "uptime_secs": 120,
+            "sessions": [{ "id": "session" }],
+            "terminals": [{ "id": "terminal" }, { "id": "terminal-2" }]
+        });
+
+        let output = render_metrics_output(Path::new("/repo"), &snapshot, Some(&status));
+
+        assert!(output.contains("Zedra Metrics"));
+        assert!(output.contains("  Workdir       /repo"));
+        assert!(output.contains("  Daemon        running (2m0s)"));
+        assert!(output.contains("  Active Time   1h0m"));
+        assert!(output.contains("  Active Now    1 connection"));
+        assert!(output.contains("  Connections   9"));
+        assert!(output.contains("  Pairings      1"));
+        assert!(output.contains("  QR Codes      4"));
+        assert!(output.contains("  Sessions      1 current / 1 created"));
+        assert!(output.contains("  Terminals     2 current / 7 created"));
+        assert!(output.contains("  Starts        3 total (2 detached)"));
+        assert!(output.contains("  Last Start    10s ago"));
+        assert!(output.contains("  Last Connect  5s ago"));
+    }
+
+    #[test]
+    fn metrics_output_caps_stale_active_time_when_daemon_is_not_running() {
+        let snapshot = metrics::MetricsSnapshot {
+            metrics: metrics::WorkspaceMetrics {
+                total_active_secs: 10,
+                active_connection_count: 1,
+                active_started_at_unix_secs: Some(100),
+                last_seen_at_unix_secs: Some(130),
+                ..metrics::WorkspaceMetrics::default()
+            },
+            generated_at_unix_secs: 500,
+            active_secs: 410,
+        };
+
+        let output = render_metrics_output(Path::new("/repo"), &snapshot, None);
+
+        assert!(output.contains("  Daemon        not running"));
+        assert!(output.contains("  Active Time   40s"));
+        assert!(output.contains("  Active Now    0 connections"));
     }
 
     #[test]
