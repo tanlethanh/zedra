@@ -322,7 +322,7 @@ fn render_discovery_rows(snap: &ConnectSnapshot) -> Div {
 
 fn render_detail(phase: &ConnectPhase, snap: &ConnectSnapshot) -> Div {
     let mut col = div()
-        .w_full()
+        .w(px(theme::CONNECT_DETAIL_WIDTH))
         .min_w_0()
         .flex()
         .flex_col()
