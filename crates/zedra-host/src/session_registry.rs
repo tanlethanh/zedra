@@ -223,6 +223,9 @@ impl HostTermMeta {
     }
 }
 
+// Backlog entries are PTY read chunks, not bytes or rendered terminal rows.
+const TERM_BACKLOG_ENTRY_LIMIT: usize = 50_000;
+
 /// Per-terminal output backlog for replay on TermAttach reconnect.
 ///
 /// Lives inside `TermSession` (one per terminal) so PTY readers never contend
@@ -259,7 +262,7 @@ impl TermBacklog {
             terminal_id,
             data,
         });
-        while self.entries.len() > 1000 {
+        while self.entries.len() > TERM_BACKLOG_ENTRY_LIMIT {
             self.entries.pop_front();
         }
         seq
@@ -1596,12 +1599,12 @@ mod tests {
     fn term_backlog_cap() {
         let mut b = TermBacklog::new();
 
-        for i in 0..1050 {
+        for i in 0..(TERM_BACKLOG_ENTRY_LIMIT + 50) {
             b.push("term-1".to_string(), format!("msg{}", i).into_bytes());
         }
 
-        assert_eq!(b.entries.len(), 1000);
-        // seq starts at 1, so after 1050 pushes the oldest retained is seq 51
+        assert_eq!(b.entries.len(), TERM_BACKLOG_ENTRY_LIMIT);
+        // seq starts at 1, so after cap + 50 pushes the oldest retained is seq 51.
         assert_eq!(b.entries.front().unwrap().seq, 51);
     }
 

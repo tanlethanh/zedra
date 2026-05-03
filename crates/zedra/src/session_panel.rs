@@ -38,8 +38,12 @@ impl SessionPanel {
 impl Render for SessionPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let session_state = self.session_state.read(cx);
+        let workspace_state = self.workspace_state.read(cx);
 
-        let phase = session_state.phase();
+        let phase = workspace_state
+            .connect_phase
+            .clone()
+            .unwrap_or_else(|| session_state.phase());
         let is_empty = phase.is_init();
         if is_empty {
             return div()
@@ -53,7 +57,7 @@ impl Render for SessionPanel {
         }
 
         let snap = session_state.snapshot();
-        let host_info = self.workspace_state.read(cx).host_info.clone();
+        let host_info = workspace_state.host_info.clone();
 
         let mut info = div().px(px(theme::DRAWER_PADDING)).flex().flex_col();
 

@@ -399,7 +399,7 @@ impl Render for EditorView {
                     .flex_1(),
                 )
                 .id(CODE_EDITOR_SELECTION_AREA_ID)
-                .action("Add to Chat", AddSelectionToChat),
+                .action_with_image("Add to Chat", "Zedra", AddSelectionToChat),
             )
     }
 }

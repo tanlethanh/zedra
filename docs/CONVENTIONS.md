@@ -1,5 +1,26 @@
 # Code Conventions
 
+## Rust Style
+
+Prioritize correctness and clarity. Treat speed and cleverness as secondary
+unless performance is the stated problem.
+
+- Prefer adding behavior to existing files unless the change introduces a real new logical component.
+- Avoid creating `mod.rs` module paths. Prefer `src/name.rs`.
+- Use full words for variable names. Avoid terse abbreviations like `q` for `queue`.
+- Keep comments focused on non-obvious reasons, invariants, lifecycle constraints, or regression guards. Do not add comments that only summarize nearby code.
+- Use variable shadowing to scope clones for async moves, so borrowed references do not live longer than necessary.
+
+## Error Handling
+
+Avoid panic-prone shortcuts in normal code paths.
+
+- Prefer `?`, explicit `match`, or `if let Err(err)` over `unwrap()` and `expect()`.
+- Be careful with indexing. Prefer checked access when out-of-bounds input is possible.
+- Do not silently discard fallible results with `let _ = ...` when the error affects behavior or observability.
+- When an error is intentionally ignored, make the reason visible with explicit handling such as `.log_err()` where available, a `tracing` warning, or a short comment for expected shutdown paths.
+- Async operations that can fail should propagate errors to the layer that can show useful feedback to the user.
+
 ## Imports
 
 Use glob imports for common framework crates:
@@ -58,6 +79,12 @@ Keep the description concise and describe the user-visible or maintainer-visible
 
 Keep each commit scoped to the current feature or fix. This repo often has multiple active edits in the same worktree, so do not stage or commit unrelated files or hunks.
 
+Commits made by Codex must include:
+
+```text
+Co-authored-by: Codex <codex@openai.com>
+```
+
 `vendor/zed` is a separate git submodule and follows the convention documented in `vendor/zed/.rules`:
 
 - Clear, capitalized, imperative subject with no trailing punctuation.
@@ -71,6 +98,28 @@ Before committing:
 - Inspect `git diff --cached --stat`, `git diff --cached --name-only`, and the staged hunks.
 - If a file contains both related and unrelated edits, stage only the related hunks or apply an exact patch to the index.
 - Run `git diff --cached --check` before the commit.
+
+## Documentation Style
+
+Write docs for developers who are scanning while trying to do a task.
+
+- Start with the goal or action, not background.
+- Put the common path first and edge cases later.
+- Use short, direct sentences in present tense.
+- Address the reader as `you` in user-facing docs.
+- Avoid promotional phrasing, superlatives, filler words, and hedging such as "simply", "just", "easily", "powerful", or "seamless".
+- State limitations directly and pair them with a workaround or next step when useful.
+- Use `sh` fences for terminal command blocks and backticks for inline commands, paths, settings, and keybindings.
+- Show complete working examples, not fragments.
+
+## Repo Guidance Hygiene
+
+Keep `AGENTS.md` and crate-level guidance files high-signal.
+
+- Add a new rule only when it is non-obvious, repeatedly encountered, and specific enough to act on.
+- Put crate-specific rules in that crate's `AGENTS.md`.
+- Avoid architectural descriptions that go stale quickly. Prefer traps to avoid over maps to follow.
+- Do not add drive-by rules from a one-off observation. Capture the suggested rule for review, then add it in a focused docs change once the pattern is validated.
 
 ## Platform Bridge
 
@@ -100,6 +149,29 @@ Choose the executor based on which thread/context owns the work:
 - `tokio::spawn(...)` only when the current function is already guaranteed to run inside the session Tokio runtime and the task is not part of a reusable API that may also be called from GPUI.
 
 **Rule of thumb**: library/session-layer code should not assume the caller has entered a Tokio runtime. If it needs to spawn Tokio tasks internally, prefer `session_runtime()` over bare `tokio::spawn()`.
+
+## GPUI Entities And Tasks
+
+- Use the `window, cx` parameter order when both are present.
+- Put callback parameters after `cx` in function signatures that accept callbacks.
+- Inside `Entity<T>::read_with`, `update`, or `update_in` closures, use the inner `cx` passed to the closure, not an outer context captured from the caller.
+- Avoid updating an entity while it is already being updated. Reentrant entity updates panic.
+- Prefer `WeakEntity<T>` for long-running async work or mutually-referential entity graphs so dropped entities do not stay alive accidentally.
+- Use `cx.listener(...)` for element handlers that need to mutate the current entity.
+- Use `cx.emit(...)` and `cx.subscribe(...)` for entity events, and store returned `Subscription`s on the subscribing entity.
+- Call `cx.notify()` after state changes that affect rendering.
+- `cx.spawn(...)` and `cx.background_spawn(...)` return a `Task`. Dropping the handle cancels the work, so await it, detach it, or store it according to the intended lifetime.
+- Use `Task::ready(value)` when a task only needs to provide an already-available value.
+
+## GPUI Tests
+
+In GPUI tests that rely on `run_until_parked()`, use GPUI executor timers instead of `smol::Timer::after(...)`.
+
+```rust
+cx.background_executor().timer(duration).await;
+```
+
+This keeps timeout and delay work scheduled on GPUI's dispatcher, so the test harness can drive it.
 
 ## GPUI Rendering
 

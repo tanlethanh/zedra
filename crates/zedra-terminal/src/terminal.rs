@@ -2,15 +2,19 @@ use std::borrow::Cow;
 use std::cmp::min;
 use std::ops::{Index, Range};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc as std_mpsc;
 use tracing::{error, info};
 
 use alacritty_terminal::event::{Event as AlacTermEvent, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::Config;
-use alacritty_terminal::term::cell::Cell;
+use alacritty_terminal::term::cell::{Cell, Flags as CellFlags};
+use alacritty_terminal::term::color::COUNT as ALACRITTY_COLOR_COUNT;
 use alacritty_terminal::term::{Term, TermMode};
-use alacritty_terminal::vte::ansi::{CursorShape, Processor};
+use alacritty_terminal::vte::ansi::{
+    Color as AlacColor, CursorShape, NamedColor, Processor, Rgb as AlacRgb,
+};
 use gpui::{Context, Keystroke, Pixels, ScrollDelta, ScrollWheelEvent, Task, px};
 use tokio::sync::{broadcast, mpsc};
 use zedra_osc::{OscEvent, OscScanner};
@@ -56,27 +60,83 @@ pub enum TerminalHyperlinkTarget {
     },
 }
 
-/// Event listener that captures alacritty title events, queuing them as TerminalEvents.
+const DEFAULT_TERMINAL_BACKGROUND: u32 = 0x0e0c0c;
+const DEFAULT_TERMINAL_FOREGROUND: u32 = 0xabb2bf;
+const DEFAULT_TERMINAL_CURSOR: u32 = 0x528bff;
+const DEFAULT_TERMINAL_ANSI_COLORS: [u32; 16] = [
+    0x282c34, 0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xabb2bf, 0x5c6370,
+    0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xffffff,
+];
+
+fn default_color_for_index(index: usize) -> AlacRgb {
+    match index {
+        0..=15 => rgb_from_hex(DEFAULT_TERMINAL_ANSI_COLORS[index]),
+        16..=231 => {
+            let color = index - 16;
+            AlacRgb {
+                r: xterm_cube_component(color / 36),
+                g: xterm_cube_component((color / 6) % 6),
+                b: xterm_cube_component(color % 6),
+            }
+        }
+        232..=255 => {
+            let value = ((index - 232) * 10 + 8) as u8;
+            AlacRgb {
+                r: value,
+                g: value,
+                b: value,
+            }
+        }
+        256 => rgb_from_hex(DEFAULT_TERMINAL_FOREGROUND),
+        257 => rgb_from_hex(DEFAULT_TERMINAL_BACKGROUND),
+        258 => rgb_from_hex(DEFAULT_TERMINAL_CURSOR),
+        259..=266 => dim_rgb(rgb_from_hex(DEFAULT_TERMINAL_ANSI_COLORS[index - 259])),
+        267 => rgb_from_hex(DEFAULT_TERMINAL_FOREGROUND),
+        268 => dim_rgb(rgb_from_hex(DEFAULT_TERMINAL_FOREGROUND)),
+        _ => rgb_from_hex(DEFAULT_TERMINAL_FOREGROUND),
+    }
+}
+
+fn rgb_from_hex(hex: u32) -> AlacRgb {
+    AlacRgb {
+        r: ((hex >> 16) & 0xff) as u8,
+        g: ((hex >> 8) & 0xff) as u8,
+        b: (hex & 0xff) as u8,
+    }
+}
+
+fn dim_rgb(color: AlacRgb) -> AlacRgb {
+    AlacRgb {
+        r: color.r / 2,
+        g: color.g / 2,
+        b: color.b / 2,
+    }
+}
+
+fn xterm_cube_component(value: usize) -> u8 {
+    if value == 0 {
+        0
+    } else {
+        (value * 40 + 55) as u8
+    }
+}
+
+/// Event listener that queues alacritty events for Terminal to process after VTE parsing.
 #[derive(Clone)]
 pub struct ZedraListener {
-    event_tx: broadcast::Sender<TerminalEvent>,
+    alacritty_event_tx: std_mpsc::Sender<AlacTermEvent>,
 }
 
 impl ZedraListener {
-    fn new(event_tx: broadcast::Sender<TerminalEvent>) -> Self {
-        Self { event_tx }
+    fn new(alacritty_event_tx: std_mpsc::Sender<AlacTermEvent>) -> Self {
+        Self { alacritty_event_tx }
     }
 }
 
 impl EventListener for ZedraListener {
     fn send_event(&self, event: AlacTermEvent) {
-        let terminal_event = match event {
-            AlacTermEvent::Title(t) => TerminalEvent::TitleChanged(Some(t)),
-            AlacTermEvent::ResetTitle => TerminalEvent::TitleChanged(None),
-            _ => return,
-        };
-        if let Err(e) = self.event_tx.send(terminal_event) {
-            error!("failed to send terminal event: {:?}", e);
+        if let Err(e) = self.alacritty_event_tx.send(event) {
+            error!("failed to queue alacritty terminal event: {:?}", e);
         }
     }
 }
@@ -153,13 +213,6 @@ impl Dimensions for SimpleDimensions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingContextReplay {
-    pub text: String,
-    pub range: Range<usize>,
-    pub observed: bool,
-}
-
 #[derive(Default)]
 pub struct IMEState {
     /// Synthetic document exposed to native text input APIs.
@@ -180,9 +233,6 @@ pub struct IMEState {
     /// True after a dictation hypothesis has been committed while keeping the
     /// synthetic text store available for UIKit's trailing dictation queries.
     pub committed_dictation_pending_cleanup: bool,
-    /// Last retained character that UIKit may replay while rewriting a native
-    /// keyboard composition.
-    pub pending_context_replay: Option<PendingContextReplay>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,6 +254,7 @@ pub struct Terminal {
     ime_state: Option<IMEState>,
     scanner: OscScanner,
     event_tx: broadcast::Sender<TerminalEvent>,
+    alacritty_event_rx: std_mpsc::Receiver<AlacTermEvent>,
     input_tx: Option<mpsc::Sender<Vec<u8>>>,
     output_task: Option<Task<()>>,
 }
@@ -214,7 +265,8 @@ impl Terminal {
     /// Create a new terminal with the given grid dimensions
     pub fn new(columns: usize, rows: usize, cell_width: Pixels, line_height: Pixels) -> Self {
         let (event_tx, _) = broadcast::channel(100);
-        let listener = ZedraListener::new(event_tx.clone());
+        let (alacritty_event_tx, alacritty_event_rx) = std_mpsc::channel();
+        let listener = ZedraListener::new(alacritty_event_tx);
         let config = Config::default();
         let term_size = SimpleDimensions {
             columns,
@@ -235,6 +287,7 @@ impl Terminal {
             ime_state: None,
             scanner: OscScanner::new(),
             event_tx,
+            alacritty_event_rx,
             input_tx: None,
             output_task: None,
         }
@@ -294,12 +347,60 @@ impl Terminal {
         let was_alt = self.mode.contains(TermMode::ALT_SCREEN);
         let previous_display_offset = self.display_offset();
         self.processor.advance(&mut self.term, bytes);
+        self.drain_alacritty_events();
         self.mode = *self.term.mode();
         let is_alt = self.mode.contains(TermMode::ALT_SCREEN);
         if is_alt != was_alt {
             let _ = self.event_tx.send(TerminalEvent::AltScreenChanged(is_alt));
         }
         self.emit_scrollback_position_if_changed(previous_display_offset);
+    }
+
+    fn drain_alacritty_events(&mut self) {
+        while let Ok(event) = self.alacritty_event_rx.try_recv() {
+            self.handle_alacritty_event(event);
+        }
+    }
+
+    fn handle_alacritty_event(&mut self, event: AlacTermEvent) {
+        match event {
+            AlacTermEvent::Title(t) => {
+                self.send_terminal_event(TerminalEvent::TitleChanged(Some(t)));
+            }
+            AlacTermEvent::ResetTitle => {
+                self.send_terminal_event(TerminalEvent::TitleChanged(None));
+            }
+            AlacTermEvent::PtyWrite(text) => {
+                self.send_bytes_sync(text.into_bytes());
+            }
+            AlacTermEvent::TextAreaSizeRequest(format) => {
+                let window_size = alacritty_terminal::event::WindowSize {
+                    num_lines: self.size.rows as u16,
+                    num_cols: self.size.columns as u16,
+                    cell_width: (self.size.cell_width / px(1.0)) as u16,
+                    cell_height: (self.size.line_height / px(1.0)) as u16,
+                };
+                self.send_bytes_sync(format(window_size).into_bytes());
+            }
+            AlacTermEvent::ColorRequest(index, format) => {
+                // Apps like Codex query OSC 10/11 at startup; answer through the PTY so
+                // terminal-derived styles do not silently disable themselves.
+                let color = if index < ALACRITTY_COLOR_COUNT {
+                    self.term.colors()[index]
+                } else {
+                    None
+                }
+                .unwrap_or_else(|| default_color_for_index(index));
+                self.send_bytes_sync(format(color).into_bytes());
+            }
+            _ => {}
+        }
+    }
+
+    fn send_terminal_event(&self, event: TerminalEvent) {
+        if let Err(e) = self.event_tx.send(event) {
+            error!("failed to send terminal event: {:?}", e);
+        }
     }
 
     /// Feed bytes from PTY output buffer into the OSC scanner
@@ -499,7 +600,7 @@ impl Terminal {
             });
     }
 
-    fn emit_dictation_preview_changed(&self, text: Option<String>) {
+    pub fn emit_dictation_preview_changed(&self, text: Option<String>) {
         let _ = self
             .event_tx
             .send(TerminalEvent::DictationPreviewChanged(text));
@@ -556,117 +657,6 @@ impl Terminal {
         let adjusted_range = Self::clamp_utf16_range(document, range);
         let byte_range = Self::byte_range_from_utf16(document, &adjusted_range);
         (adjusted_range, document[byte_range].to_string())
-    }
-
-    fn char_before_utf16_offset(document: &str, offset: usize) -> Option<String> {
-        let byte_offset = Self::byte_offset_from_utf16(document, offset);
-        document[..byte_offset]
-            .chars()
-            .next_back()
-            .map(|ch| ch.to_string())
-    }
-
-    fn pending_context_replay_for_document(
-        document: &str,
-        selection_start: usize,
-    ) -> Option<PendingContextReplay> {
-        let text = Self::char_before_utf16_offset(document, selection_start)?;
-        let replay_len = Self::utf16_len(&text);
-        let start = selection_start.checked_sub(replay_len)?;
-        Some(PendingContextReplay {
-            text,
-            range: start..selection_start,
-            observed: false,
-        })
-    }
-
-    fn utf16_range_text_equals(document: &str, range: &Range<usize>, expected: &str) -> bool {
-        let adjusted_range = Self::clamp_utf16_range(document, range.clone());
-        if adjusted_range != *range {
-            return false;
-        }
-        let byte_range = Self::byte_range_from_utf16(document, range);
-        &document[byte_range] == expected
-    }
-
-    fn vietnamese_latin_base(ch: char) -> Option<char> {
-        let base = match ch {
-            'a' | 'A' | 'à' | 'À' | 'á' | 'Á' | 'ả' | 'Ả' | 'ã' | 'Ã' | 'ạ' | 'Ạ' | 'â' | 'Â'
-            | 'ầ' | 'Ầ' | 'ấ' | 'Ấ' | 'ẩ' | 'Ẩ' | 'ẫ' | 'Ẫ' | 'ậ' | 'Ậ' | 'ă' | 'Ă' | 'ằ' | 'Ằ'
-            | 'ắ' | 'Ắ' | 'ẳ' | 'Ẳ' | 'ẵ' | 'Ẵ' | 'ặ' | 'Ặ' => 'a',
-            'e' | 'E' | 'è' | 'È' | 'é' | 'É' | 'ẻ' | 'Ẻ' | 'ẽ' | 'Ẽ' | 'ẹ' | 'Ẹ' | 'ê' | 'Ê'
-            | 'ề' | 'Ề' | 'ế' | 'Ế' | 'ể' | 'Ể' | 'ễ' | 'Ễ' | 'ệ' | 'Ệ' => 'e',
-            'i' | 'I' | 'ì' | 'Ì' | 'í' | 'Í' | 'ỉ' | 'Ỉ' | 'ĩ' | 'Ĩ' | 'ị' | 'Ị' => {
-                'i'
-            }
-            'o' | 'O' | 'ò' | 'Ò' | 'ó' | 'Ó' | 'ỏ' | 'Ỏ' | 'õ' | 'Õ' | 'ọ' | 'Ọ' | 'ô' | 'Ô'
-            | 'ồ' | 'Ồ' | 'ố' | 'Ố' | 'ổ' | 'Ổ' | 'ỗ' | 'Ỗ' | 'ộ' | 'Ộ' | 'ơ' | 'Ơ' | 'ờ' | 'Ờ'
-            | 'ớ' | 'Ớ' | 'ở' | 'Ở' | 'ỡ' | 'Ỡ' | 'ợ' | 'Ợ' => 'o',
-            'u' | 'U' | 'ù' | 'Ù' | 'ú' | 'Ú' | 'ủ' | 'Ủ' | 'ũ' | 'Ũ' | 'ụ' | 'Ụ' | 'ư' | 'Ư'
-            | 'ừ' | 'Ừ' | 'ứ' | 'Ứ' | 'ử' | 'Ử' | 'ữ' | 'Ữ' | 'ự' | 'Ự' => 'u',
-            'y' | 'Y' | 'ỳ' | 'Ỳ' | 'ý' | 'Ý' | 'ỷ' | 'Ỷ' | 'ỹ' | 'Ỹ' | 'ỵ' | 'Ỵ' => {
-                'y'
-            }
-            'd' | 'D' | 'đ' | 'Đ' => 'd',
-            _ => return None,
-        };
-        Some(base)
-    }
-
-    fn same_vietnamese_latin_base(a: char, b: char) -> bool {
-        Self::vietnamese_latin_base(a).is_some_and(|a_base| {
-            Self::vietnamese_latin_base(b).is_some_and(|b_base| a_base == b_base)
-        })
-    }
-
-    fn should_replace_observed_context_replay(replay_text: &str, text: &str) -> bool {
-        if text.is_empty() {
-            return false;
-        }
-
-        if text.starts_with(replay_text) {
-            return true;
-        }
-
-        // Telex can replay a committed character, then send the corrected
-        // multi-codepoint cluster without a replacement range.
-        let replay_is_non_ascii = replay_text.chars().any(|ch| !ch.is_ascii());
-        let mut replay_chars = replay_text.chars();
-        let Some(replay_char) = replay_chars.next() else {
-            return false;
-        };
-        if replay_chars.next().is_some() {
-            return false;
-        }
-        let Some(first_text_char) = text.chars().next() else {
-            return false;
-        };
-
-        // Critical: only replace a replayed non-ASCII character when the new
-        // cluster is a corrected form of that same Latin base. Otherwise a
-        // preserved prefix such as `đ` before `úng` would be deleted.
-        replay_is_non_ascii && Self::same_vietnamese_latin_base(replay_char, first_text_char)
-    }
-
-    fn observed_context_replay_replacement_range(
-        state: &IMEState,
-        text: &str,
-    ) -> Option<Range<usize>> {
-        let pending = state.pending_context_replay.as_ref()?;
-        if !pending.observed || !Self::should_replace_observed_context_replay(&pending.text, text) {
-            return None;
-        }
-
-        let selection = state.selected_range.as_ref()?;
-        if !selection.is_empty() || selection.start != pending.range.end {
-            return None;
-        }
-
-        if !Self::utf16_range_text_equals(&state.document_text, &pending.range, &pending.text) {
-            return None;
-        }
-
-        Some(pending.range.clone())
     }
 
     pub fn text_input_document_text_for_range(
@@ -733,52 +723,15 @@ impl Terminal {
         }
     }
 
-    pub fn keyboard_input_context_pending_replay(&self) -> Option<PendingContextReplay> {
-        self.ime_state
-            .as_ref()
-            .and_then(|state| state.pending_context_replay.clone())
-    }
-
     pub fn replace_keyboard_input_context_range(
         &mut self,
         replacement_range: Option<Range<usize>>,
         text: &str,
     ) -> KeyboardInputContextEdit {
         let state = self.ime_state_mut();
-        if replacement_range.is_none()
-            && state
-                .pending_context_replay
-                .as_mut()
-                .is_some_and(|pending| {
-                    let matches = pending.text == text;
-                    if matches {
-                        pending.observed = true;
-                    }
-                    matches
-                })
-        {
-            let selection_range = state.selected_range.clone().unwrap_or_else(|| {
-                let len = Self::utf16_len(&state.document_text);
-                len..len
-            });
-            return KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: String::new(),
-                document_text: state.document_text.clone(),
-                selection_range,
-            };
-        }
-
-        let pending_replay_replacement_range = if replacement_range.is_none() {
-            Self::observed_context_replay_replacement_range(state, text)
-        } else {
-            None
-        };
-        state.pending_context_replay = None;
         let committed_before = state.committed_text.clone();
         let document_len = Self::utf16_len(&state.document_text);
         let replacement_range = replacement_range
-            .or(pending_replay_replacement_range)
             .or_else(|| state.selected_range.clone())
             .unwrap_or(document_len..document_len);
         let (document_text, inserted_range) =
@@ -794,12 +747,6 @@ impl Terminal {
         let (backspaces, text_to_insert) =
             Self::diff_keyboard_input_context(&committed_before, &state.document_text);
         state.committed_text = state.document_text.clone();
-        if text.is_empty() && backspaces > 0 && text_to_insert.is_empty() {
-            state.pending_context_replay = Self::pending_context_replay_for_document(
-                &state.document_text,
-                selection_range.start,
-            );
-        }
         KeyboardInputContextEdit {
             backspaces,
             text_to_insert,
@@ -840,14 +787,6 @@ impl Terminal {
         let (backspaces, text_to_insert) =
             Self::diff_keyboard_input_context(&committed_before, &state.document_text);
         state.committed_text = state.document_text.clone();
-        if backspaces > 0 && text_to_insert.is_empty() {
-            state.pending_context_replay = Self::pending_context_replay_for_document(
-                &state.document_text,
-                inserted_range.start,
-            );
-        } else {
-            state.pending_context_replay = None;
-        }
         Some(KeyboardInputContextEdit {
             backspaces,
             text_to_insert,
@@ -877,7 +816,6 @@ impl Terminal {
         state.selected_range = Some(selection_range.clone());
         state.dictation_preview_visible = false;
         state.committed_dictation_pending_cleanup = false;
-        state.pending_context_replay = None;
 
         // Marked IME preedit lives only in the native text store. Diff against
         // committed_text so committing Japanese/Vietnamese candidates does not
@@ -945,7 +883,6 @@ impl Terminal {
             state.selected_range = None;
             state.dictation_preview_visible = false;
             state.committed_dictation_pending_cleanup = false;
-            state.pending_context_replay = None;
             if !state.dictation_active {
                 if restore_committed_text {
                     state.document_text = state.committed_text.clone();
@@ -969,7 +906,6 @@ impl Terminal {
             state.selected_range = None;
             state.dictation_preview_visible = false;
             state.committed_dictation_pending_cleanup = false;
-            state.pending_context_replay = None;
         }
     }
 
@@ -1044,7 +980,6 @@ impl Terminal {
         state.marked_range = None;
         state.selected_range = None;
         state.committed_dictation_pending_cleanup = false;
-        state.pending_context_replay = None;
         true
     }
 
@@ -1070,7 +1005,6 @@ impl Terminal {
         let selection_range = inserted_range.end..inserted_range.end;
         state.selected_range = Some(selection_range.clone());
         state.committed_dictation_pending_cleanup = true;
-        state.pending_context_replay = None;
 
         let (backspaces, text_to_insert) =
             Self::diff_keyboard_input_context(&committed_text, &state.marked_text);
@@ -1106,7 +1040,6 @@ impl Terminal {
             state.document_text = document_text;
             state.marked_text = text.clone();
             state.committed_dictation_pending_cleanup = false;
-            state.pending_context_replay = None;
             state.marked_range = if text.is_empty() && !state.dictation_active {
                 None
             } else {
@@ -1124,11 +1057,29 @@ impl Terminal {
             (state.dictation_active, state.dictation_preview_visible)
         };
 
-        if dictation_active && preview_visible {
+        let _ = (dictation_active, preview_visible);
+        dictation_active
+    }
+
+    /// Update the live dictation hypothesis in the text store and emit a preview
+    /// event if the preview is currently visible. Only call this from the
+    /// dictation-specific path — IME composition must use `replace_marked_text_in_range`
+    /// directly so it never accidentally triggers the preview overlay.
+    pub fn update_dictation_hypothesis(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+        text: String,
+        selected_range: Option<Range<usize>>,
+    ) {
+        self.replace_marked_text_in_range(replacement_range, text.clone(), selected_range);
+        let (active, visible) = self
+            .ime_state
+            .as_ref()
+            .map(|s| (s.dictation_active, s.dictation_preview_visible))
+            .unwrap_or((false, false));
+        if active && visible {
             self.emit_dictation_preview_changed(Some(text));
         }
-
-        dictation_active
     }
 
     /// Begin a dictation session with a stable marked range in the text store.
@@ -1143,13 +1094,11 @@ impl Terminal {
                 state.selected_range = None;
                 state.dictation_preview_visible = false;
                 state.committed_dictation_pending_cleanup = false;
-                state.pending_context_replay = None;
             }
             let already_active = state.dictation_active;
             let mut emit_empty_preview = false;
             state.dictation_active = true;
             state.committed_dictation_pending_cleanup = false;
-            state.pending_context_replay = None;
             if !already_active {
                 state.dictation_preview_visible = true;
                 if state.document_text.is_empty() {
@@ -1234,7 +1183,6 @@ impl Terminal {
             should_hide_preview = state.dictation_preview_visible;
             state.dictation_preview_visible = false;
             state.committed_dictation_pending_cleanup = false;
-            state.pending_context_replay = None;
             state.committed_text.clear();
         }
         self.clear_marked_state();
@@ -1414,12 +1362,13 @@ impl Terminal {
 
             logical_line.extend(row_cells);
 
-            // Hard-wrap-with-indent join: only when tail looks cut mid-path.
-            // Loosening this (e.g., "ends in path-char") glues legit text like
-            // "Referenced file" onto the next line's path.
+            // Hard-wrap-with-indent join: only for same-token continuations.
+            // Blank next rows or TUI marker prefixes start a new logical line.
             let _ = last_visible;
-            let cut_off_tail =
-                !is_wrapped && line_idx < bottom && tail_looks_like_cut_off_path(&logical_line);
+            let cut_off_tail = !is_wrapped
+                && line_idx < bottom
+                && tail_looks_like_cut_off_path(&logical_line)
+                && self.next_line_allows_hard_newline_continuation(line_idx + 1, cols);
             let join_with_next = is_wrapped || cut_off_tail;
 
             if !join_with_next {
@@ -1439,6 +1388,32 @@ impl Terminal {
         }
 
         links
+    }
+
+    fn next_line_allows_hard_newline_continuation(&self, line_idx: i32, cols: usize) -> bool {
+        let row = &self.term.grid()[Line(line_idx)];
+
+        for col in 0..cols {
+            let cell = &row[Column(col)];
+            let flags = cell.flags;
+            if flags.contains(CellFlags::LEADING_WIDE_CHAR_SPACER)
+                || flags.contains(CellFlags::WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+
+            let ch = match cell.c {
+                '\0' => ' ',
+                c => c,
+            };
+            if ch.is_whitespace() {
+                continue;
+            }
+
+            return is_hard_newline_continuation_start(ch);
+        }
+
+        false
     }
 
     fn hyperlink_from_osc8(
@@ -1492,7 +1467,7 @@ impl Terminal {
             }
 
             let ch = match cell.c {
-                '\t' => ' ',
+                '\0' | '\t' => ' ',
                 c => c,
             };
             text.push(ch);
@@ -1797,9 +1772,9 @@ fn encode_mouse_position(position: usize) -> [u8; 2] {
 // Plain-text link detection
 // ---------------------------------------------------------------------------
 
-// Conservative-by-design: paths need `/` AND a known extension; bare filenames
-// (`README`, `package.json`) deliberately rejected. Loosening invites false
-// positives. URL detection separately requires `http(s)://`.
+// Conservative-by-design: ordinary paths need `/` AND a known extension.
+// Bare filenames are only accepted in clear file-list/status contexts.
+// URL detection separately requires `http(s)://`.
 const FILE_EXTENSIONS: &[&str] = &[
     "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "swift", "kt", "java", "c", "cc",
     "cpp", "cxx", "h", "hh", "hpp", "hxx", "cs", "rb", "lua", "php", "zig", "dart", "ex", "exs",
@@ -1831,6 +1806,7 @@ fn detect_links_in_chars(cells: &[(Point, char)], links: &mut Vec<DetectedLink>)
     let chars: Vec<char> = cells.iter().map(|(_, c)| *c).collect();
     detect_urls_in_chars(&chars, cells, links);
     detect_file_paths_in_chars(&chars, cells, links);
+    detect_contextual_file_list_paths_in_chars(&chars, cells, links);
 }
 
 fn detect_urls_in_chars(chars: &[char], cells: &[(Point, char)], links: &mut Vec<DetectedLink>) {
@@ -1898,7 +1874,7 @@ fn detect_file_paths_in_chars(
         while end < len && is_path_char(chars[end]) {
             end += 1;
         }
-        // Strip ONLY trailing sentence punctuation `.,;!?`. Leading `.` is
+        // Strip ONLY trailing sentence/label punctuation `.,;!?:`. Leading `.` is
         // valid path syntax (`./foo.rs`, `../bar.rs`, `.hidden/file.rs`) and
         // must be preserved.
         while end > start && is_path_trailing_punct(chars[end - 1]) {
@@ -1956,8 +1932,126 @@ fn detect_file_paths_in_chars(
     }
 }
 
+fn detect_contextual_file_list_paths_in_chars(
+    chars: &[char],
+    cells: &[(Point, char)],
+    links: &mut Vec<DetectedLink>,
+) {
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        while i < len && !is_path_char(chars[i]) {
+            i += 1;
+        }
+        let start = i;
+        while i < len && is_path_char(chars[i]) {
+            i += 1;
+        }
+        let mut end = i;
+        while end > start && is_path_trailing_punct(chars[end - 1]) {
+            end -= 1;
+        }
+
+        if start >= end {
+            continue;
+        }
+
+        let segment: String = chars[start..end].iter().collect();
+        if segment.contains("://")
+            || link_span_overlaps_existing(cells[start].0, cells[end - 1].0, links)
+        {
+            continue;
+        }
+
+        let is_bare_file = !segment.contains('/') && token_has_known_file_extension(&segment);
+        let is_explicit_directory = segment.ends_with('/')
+            && segment
+                .trim_end_matches('/')
+                .contains(|c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+        if !(is_bare_file || is_explicit_directory) {
+            continue;
+        }
+
+        if !token_has_file_list_context(start, cells, chars, links) {
+            continue;
+        }
+
+        links.push(DetectedLink {
+            start: cells[start].0,
+            end: cells[end - 1].0,
+            text: segment,
+            kind: DetectedLinkKind::FilePath,
+        });
+    }
+}
+
+fn token_has_file_list_context(
+    start: usize,
+    cells: &[(Point, char)],
+    chars: &[char],
+    links: &[DetectedLink],
+) -> bool {
+    let line = cells[start].0.line;
+    links.iter().any(|link| {
+        link.kind == DetectedLinkKind::FilePath && link.start.line <= line && link.end.line >= line
+    }) || line_prefix_has_status_marker(start, cells, chars)
+}
+
+fn line_prefix_has_status_marker(start: usize, cells: &[(Point, char)], chars: &[char]) -> bool {
+    let line = cells[start].0.line;
+    let mut line_start = start;
+    while line_start > 0 && cells[line_start - 1].0.line == line {
+        line_start -= 1;
+    }
+
+    let prefix: String = chars[line_start..start].iter().collect();
+    let Some(marker) = prefix.split_whitespace().last() else {
+        return false;
+    };
+
+    matches!(
+        marker,
+        "M" | "A"
+            | "D"
+            | "R"
+            | "C"
+            | "U"
+            | "T"
+            | "??"
+            | "!!"
+            | "AM"
+            | "MM"
+            | "AD"
+            | "RM"
+            | "UU"
+            | "UD"
+            | "DU"
+            | "AA"
+            | "DD"
+    )
+}
+
+fn link_span_overlaps_existing(start: Point, end: Point, links: &[DetectedLink]) -> bool {
+    links
+        .iter()
+        .any(|link| point_in_link(start, link) || point_in_link(end, link))
+}
+
+fn token_has_known_file_extension(token: &str) -> bool {
+    let ext = std::path::Path::new(token)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    FILE_EXTENSIONS.contains(&ext)
+}
+
 fn is_path_char(c: char) -> bool {
     !c.is_whitespace() && !is_surrounding_punct(c)
+}
+
+fn is_hard_newline_continuation_start(c: char) -> bool {
+    !matches!(c, '+' | '-' | '/' | '*' | '>')
 }
 
 fn chars_at_match(chars: &[char], start: usize, pattern: &str) -> bool {
@@ -2042,7 +2136,7 @@ fn tail_looks_like_cut_off_path(cells: &[(Point, char)]) -> bool {
 }
 
 fn is_path_trailing_punct(c: char) -> bool {
-    matches!(c, '.' | ',' | ';' | '!' | '?')
+    matches!(c, '.' | ',' | ';' | '!' | '?' | ':')
 }
 
 fn split_file_position_chars(token: &str) -> (&str, Option<u32>, Option<u32>) {
@@ -2075,14 +2169,35 @@ fn split_file_position_chars(token: &str) -> (&str, Option<u32>, Option<u32>) {
     (token, None, None)
 }
 
+/// Returns true if a cell contains no visible content.
+/// Checks attributes (background color, text flags) not just char value, so it
+/// works correctly with upstream alacritty where empty cells also use c=' '.
+pub fn is_blank(cell: &IndexedCell) -> bool {
+    if !matches!(cell.cell.c, '\0' | ' ' | '\t') {
+        return false;
+    }
+    if !matches!(cell.cell.bg, AlacColor::Named(NamedColor::Background)) {
+        return false;
+    }
+    if cell
+        .cell
+        .flags
+        .intersects(CellFlags::ALL_UNDERLINES | CellFlags::INVERSE | CellFlags::STRIKEOUT)
+    {
+        return false;
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
     use alacritty_terminal::index::{Column, Line, Point};
     use gpui::px;
+    use tokio::sync::mpsc;
 
-    use super::{Terminal, TerminalHyperlink, TerminalHyperlinkTarget};
+    use super::{Terminal, TerminalEvent, TerminalHyperlink, TerminalHyperlinkTarget};
 
     fn terminal_with_output(output: &[u8]) -> Terminal {
         let mut terminal = Terminal::new(160, 8, px(10.0), px(20.0));
@@ -2104,6 +2219,12 @@ mod tests {
         Point::new(Line(0), Column(hovered_column))
     }
 
+    fn point_for_substring_on_line(line_idx: i32, line: &str, needle: &str) -> Point {
+        let start = line.find(needle).expect("substring should exist");
+        let hovered_column = start + needle.len().saturating_sub(1) / 2;
+        Point::new(Line(line_idx), Column(hovered_column))
+    }
+
     fn file_target(
         hyperlink: TerminalHyperlink,
     ) -> (String, String, String, Option<u32>, Option<u32>) {
@@ -2123,6 +2244,57 @@ mod tests {
             TerminalHyperlinkTarget::Url { url } => (hyperlink.label, url),
             other => panic!("expected url hyperlink, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn emits_title_events_from_alacritty_event_queue() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let mut events = terminal.subscribe_events();
+
+        terminal.advance_bytes(b"\x1b]0;zedra\x1b\\");
+
+        match events.try_recv().unwrap() {
+            TerminalEvent::TitleChanged(Some(title)) => assert_eq!(title, "zedra"),
+            event => panic!("expected title event, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn forwards_alacritty_pty_write_events() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let (input_tx, mut input_rx) = mpsc::channel(4);
+        terminal.input_tx = Some(input_tx);
+
+        terminal.advance_bytes(b"\x1b[c");
+
+        let response = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
+        assert_eq!(response, "\x1b[?6c");
+    }
+
+    #[test]
+    fn responds_to_osc_default_color_queries() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let (input_tx, mut input_rx) = mpsc::channel(4);
+        terminal.input_tx = Some(input_tx);
+
+        terminal.advance_bytes(b"\x1b]10;?\x07\x1b]11;?\x1b\\");
+
+        let foreground = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
+        let background = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
+        assert_eq!(foreground, "\x1b]10;rgb:abab/b2b2/bfbf\x07");
+        assert_eq!(background, "\x1b]11;rgb:0e0e/0c0c/0c0c\x1b\\");
+    }
+
+    #[test]
+    fn responds_to_osc_color_queries_with_current_color_table() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let (input_tx, mut input_rx) = mpsc::channel(4);
+        terminal.input_tx = Some(input_tx);
+
+        terminal.advance_bytes(b"\x1b]11;#112233\x1b\\\x1b]11;?\x1b\\");
+
+        let background = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
+        assert_eq!(background, "\x1b]11;rgb:1111/2222/3333\x1b\\");
     }
 
     #[test]
@@ -2354,7 +2526,7 @@ mod tests {
             event => panic!("expected dictation preview start event, got {event:?}"),
         }
 
-        terminal.set_marked_text("echo hello".to_string());
+        terminal.update_dictation_hypothesis(None, "echo hello".to_string(), None);
         match events.try_recv().expect("expected dictation update event") {
             super::TerminalEvent::DictationPreviewChanged(Some(text)) => {
                 assert_eq!(text, "echo hello");
@@ -2383,7 +2555,7 @@ mod tests {
             event => panic!("expected empty dictation preview, got {event:?}"),
         }
 
-        terminal.replace_marked_text_in_range(None, "Hey".to_string(), None);
+        terminal.update_dictation_hypothesis(None, "Hey".to_string(), None);
         assert_eq!(terminal.text_input_document(), " Hey");
         assert_eq!(terminal.marked_text_range(), Some(1..4));
         assert_eq!(terminal.text_input_selection_range(), 4..4);
@@ -2392,7 +2564,7 @@ mod tests {
             event => panic!("expected first dictation hypothesis, got {event:?}"),
         }
 
-        terminal.replace_marked_text_in_range(None, "Hey, how's it".to_string(), None);
+        terminal.update_dictation_hypothesis(None, "Hey, how's it".to_string(), None);
         assert_eq!(terminal.text_input_document(), " Hey, how's it");
         assert_eq!(terminal.marked_text_range(), Some(1..14));
         assert_eq!(terminal.text_input_selection_range(), 14..14);
@@ -2431,7 +2603,7 @@ mod tests {
             event => panic!("expected empty dictation preview, got {event:?}"),
         }
 
-        terminal.replace_marked_text_in_range(None, "Hey".to_string(), None);
+        terminal.update_dictation_hypothesis(None, "Hey".to_string(), None);
         match events.try_recv().expect("expected hypothesis preview") {
             super::TerminalEvent::DictationPreviewChanged(Some(text)) => assert_eq!(text, "Hey"),
             event => panic!("expected dictation preview, got {event:?}"),
@@ -2470,7 +2642,7 @@ mod tests {
 
         terminal.begin_dictation();
         events.try_recv().expect("expected empty preview");
-        terminal.replace_marked_text_in_range(Some(1..1), "Hello".to_string(), None);
+        terminal.update_dictation_hypothesis(Some(1..1), "Hello".to_string(), None);
         events.try_recv().expect("expected first hypothesis");
         terminal.dictation_recording_ended();
         events
@@ -2605,8 +2777,12 @@ mod tests {
         );
     }
 
+    // Without the old Telex-replay workaround, the IME context echo is treated
+    // as a plain append. Telex SHOULD use text(in:) to verify context and skip
+    // the echo, or provide a replacement_range. If it doesn't, the PTY receives
+    // an extra 'h' before the correction. This test documents the raw behaviour.
     #[test]
-    fn keyboard_context_suppresses_telex_replayed_prefix_after_delete() {
+    fn keyboard_context_telex_replay_is_a_plain_append_without_workaround() {
         let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
 
         terminal.replace_keyboard_input_context_range(None, "c");
@@ -2622,13 +2798,14 @@ mod tests {
             })
         );
 
+        // Telex context echo — sent as plain append; PTY will see 'h'.
         assert_eq!(
             terminal.replace_keyboard_input_context_range(None, "h"),
             super::KeyboardInputContextEdit {
                 backspaces: 0,
-                text_to_insert: String::new(),
-                document_text: "ch".to_string(),
-                selection_range: 2..2,
+                text_to_insert: "h".to_string(),
+                document_text: "chh".to_string(),
+                selection_range: 3..3,
             }
         );
         assert_eq!(
@@ -2636,195 +2813,7 @@ mod tests {
             super::KeyboardInputContextEdit {
                 backspaces: 0,
                 text_to_insert: "à".to_string(),
-                document_text: "chà".to_string(),
-                selection_range: 3..3,
-            }
-        );
-    }
-
-    #[test]
-    fn keyboard_context_replaces_observed_non_ascii_replay_cluster() {
-        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
-
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "v"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: "v".to_string(),
-                document_text: "v".to_string(),
-                selection_range: 1..1,
-            }
-        );
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "o"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: "o".to_string(),
-                document_text: "vo".to_string(),
-                selection_range: 2..2,
-            }
-        );
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "i"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: "i".to_string(),
-                document_text: "voi".to_string(),
-                selection_range: 3..3,
-            }
-        );
-        assert_eq!(
-            terminal.delete_keyboard_input_context_backward(),
-            Some(super::KeyboardInputContextEdit {
-                backspaces: 1,
-                text_to_insert: String::new(),
-                document_text: "vo".to_string(),
-                selection_range: 2..2,
-            })
-        );
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "o"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: String::new(),
-                document_text: "vo".to_string(),
-                selection_range: 2..2,
-            }
-        );
-        assert_eq!(
-            terminal.delete_keyboard_input_context_backward(),
-            Some(super::KeyboardInputContextEdit {
-                backspaces: 1,
-                text_to_insert: String::new(),
-                document_text: "v".to_string(),
-                selection_range: 1..1,
-            })
-        );
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "v"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: String::new(),
-                document_text: "v".to_string(),
-                selection_range: 1..1,
-            }
-        );
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "ơi"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: "ơi".to_string(),
-                document_text: "vơi".to_string(),
-                selection_range: 3..3,
-            }
-        );
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "s"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: "s".to_string(),
-                document_text: "vơis".to_string(),
-                selection_range: 4..4,
-            }
-        );
-        assert_eq!(
-            terminal.delete_keyboard_input_context_backward(),
-            Some(super::KeyboardInputContextEdit {
-                backspaces: 1,
-                text_to_insert: String::new(),
-                document_text: "vơi".to_string(),
-                selection_range: 3..3,
-            })
-        );
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "i"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: String::new(),
-                document_text: "vơi".to_string(),
-                selection_range: 3..3,
-            }
-        );
-        assert_eq!(
-            terminal.delete_keyboard_input_context_backward(),
-            Some(super::KeyboardInputContextEdit {
-                backspaces: 1,
-                text_to_insert: String::new(),
-                document_text: "vơ".to_string(),
-                selection_range: 2..2,
-            })
-        );
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "ơ"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: String::new(),
-                document_text: "vơ".to_string(),
-                selection_range: 2..2,
-            }
-        );
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "ới "),
-            super::KeyboardInputContextEdit {
-                backspaces: 1,
-                text_to_insert: "ới ".to_string(),
-                document_text: "với ".to_string(),
-                selection_range: 4..4,
-            }
-        );
-    }
-
-    #[test]
-    fn keyboard_context_replay_replacement_policy_keeps_ascii_suffix_appends() {
-        assert!(!Terminal::should_replace_observed_context_replay("h", "à"));
-        assert!(Terminal::should_replace_observed_context_replay("h", "hà"));
-        assert!(Terminal::should_replace_observed_context_replay("ơ", "ới "));
-        assert!(Terminal::should_replace_observed_context_replay("ư", "ứ"));
-        assert!(!Terminal::should_replace_observed_context_replay(
-            "đ", "úng"
-        ));
-    }
-
-    #[test]
-    fn keyboard_context_keeps_replayed_non_ascii_prefix_before_suffix_cluster() {
-        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
-
-        terminal.replace_keyboard_input_context_range(None, "d");
-        terminal.delete_keyboard_input_context_backward();
-        terminal.replace_keyboard_input_context_range(None, "đ");
-        terminal.replace_keyboard_input_context_range(None, "u");
-        terminal.replace_keyboard_input_context_range(None, "n");
-        terminal.replace_keyboard_input_context_range(None, "g");
-
-        assert_eq!(
-            terminal.delete_keyboard_input_context_backward(),
-            Some(super::KeyboardInputContextEdit {
-                backspaces: 1,
-                text_to_insert: String::new(),
-                document_text: "đun".to_string(),
-                selection_range: 3..3,
-            })
-        );
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "n"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: String::new(),
-                document_text: "đun".to_string(),
-                selection_range: 3..3,
-            }
-        );
-        terminal.delete_keyboard_input_context_backward();
-        terminal.replace_keyboard_input_context_range(None, "u");
-        terminal.delete_keyboard_input_context_backward();
-        terminal.replace_keyboard_input_context_range(None, "đ");
-
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "úng"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: "úng".to_string(),
-                document_text: "đúng".to_string(),
+                document_text: "chhà".to_string(),
                 selection_range: 4..4,
             }
         );
@@ -3118,6 +3107,108 @@ mod tests {
     }
 
     #[test]
+    fn detects_contextual_file_list_paths() {
+        let line = "   README.md, package.json, AGENTS.md, docs/CONVENTIONS.md, and worktrees/";
+        let terminal = terminal_with_output(
+            b"   README.md, package.json, AGENTS.md, docs/CONVENTIONS.md, and worktrees/\r\n",
+        );
+
+        let readme = terminal
+            .hyperlink_at_point(point_for_substring(line, "README.md"), Some("/repo"))
+            .expect("expected root README in path list");
+        let (_label, path, relative_path, line_num, col_num) = file_target(readme);
+        assert_eq!(Path::new(&path), Path::new("/repo/README.md"));
+        assert_eq!(Path::new(&relative_path), Path::new("README.md"));
+        assert_eq!(line_num, None);
+        assert_eq!(col_num, None);
+
+        let package = terminal
+            .hyperlink_at_point(point_for_substring(line, "package.json"), Some("/repo"))
+            .expect("expected root package.json in path list");
+        let (_label, path, relative_path, line_num, col_num) = file_target(package);
+        assert_eq!(Path::new(&path), Path::new("/repo/package.json"));
+        assert_eq!(Path::new(&relative_path), Path::new("package.json"));
+        assert_eq!(line_num, None);
+        assert_eq!(col_num, None);
+
+        let agents = terminal
+            .hyperlink_at_point(point_for_substring(line, "AGENTS.md"), Some("/repo"))
+            .expect("expected bare file in path list");
+        let (_label, path, relative_path, line_num, col_num) = file_target(agents);
+        assert_eq!(Path::new(&path), Path::new("/repo/AGENTS.md"));
+        assert_eq!(Path::new(&relative_path), Path::new("AGENTS.md"));
+        assert_eq!(line_num, None);
+        assert_eq!(col_num, None);
+
+        let conventions = terminal
+            .hyperlink_at_point(
+                point_for_substring(line, "docs/CONVENTIONS.md"),
+                Some("/repo"),
+            )
+            .expect("expected slash file in path list");
+        let (_label, path, relative_path, line_num, col_num) = file_target(conventions);
+        assert_eq!(Path::new(&path), Path::new("/repo/docs/CONVENTIONS.md"));
+        assert_eq!(Path::new(&relative_path), Path::new("docs/CONVENTIONS.md"));
+        assert_eq!(line_num, None);
+        assert_eq!(col_num, None);
+
+        let worktrees = terminal
+            .hyperlink_at_point(point_for_substring(line, "worktrees/"), Some("/repo"))
+            .expect("expected explicit directory in path list");
+        let (_label, path, relative_path, line_num, col_num) = file_target(worktrees);
+        assert_eq!(Path::new(&path), Path::new("/repo/worktrees"));
+        assert_eq!(Path::new(&relative_path), Path::new("worktrees"));
+        assert_eq!(line_num, None);
+        assert_eq!(col_num, None);
+    }
+
+    #[test]
+    fn detects_contextual_git_status_paths() {
+        let first = "-> M AGENTS.md";
+        let second = "     M docs/CONVENTIONS.md";
+        let third = "     ?? worktrees/";
+        let terminal = terminal_with_output(
+            b"-> M AGENTS.md\r\n     M docs/CONVENTIONS.md\r\n     ?? worktrees/\r\n",
+        );
+
+        let agents = terminal
+            .hyperlink_at_point(
+                point_for_substring_on_line(0, first, "AGENTS.md"),
+                Some("/repo"),
+            )
+            .expect("expected bare git-status file");
+        let (_label, path, relative_path, line_num, col_num) = file_target(agents);
+        assert_eq!(Path::new(&path), Path::new("/repo/AGENTS.md"));
+        assert_eq!(Path::new(&relative_path), Path::new("AGENTS.md"));
+        assert_eq!(line_num, None);
+        assert_eq!(col_num, None);
+
+        let conventions = terminal
+            .hyperlink_at_point(
+                point_for_substring_on_line(1, second, "docs/CONVENTIONS.md"),
+                Some("/repo"),
+            )
+            .expect("expected slash git-status file");
+        let (_label, path, relative_path, line_num, col_num) = file_target(conventions);
+        assert_eq!(Path::new(&path), Path::new("/repo/docs/CONVENTIONS.md"));
+        assert_eq!(Path::new(&relative_path), Path::new("docs/CONVENTIONS.md"));
+        assert_eq!(line_num, None);
+        assert_eq!(col_num, None);
+
+        let worktrees = terminal
+            .hyperlink_at_point(
+                point_for_substring_on_line(2, third, "worktrees/"),
+                Some("/repo"),
+            )
+            .expect("expected explicit git-status directory");
+        let (_label, path, relative_path, line_num, col_num) = file_target(worktrees);
+        assert_eq!(Path::new(&path), Path::new("/repo/worktrees"));
+        assert_eq!(Path::new(&relative_path), Path::new("worktrees"));
+        assert_eq!(line_num, None);
+        assert_eq!(col_num, None);
+    }
+
+    #[test]
     fn detects_plain_url_links_from_grid_point() {
         let line = "Visit https://zedra.dev now";
         let terminal = terminal_with_output(b"Visit https://zedra.dev now\r\n");
@@ -3319,6 +3410,59 @@ mod tests {
     }
 
     #[test]
+    fn hyperlink_detection_rejects_tui_marker_continuation_prefixes() {
+        for ch in ['+', '-', '/', '*', '>'] {
+            assert!(!super::is_hard_newline_continuation_start(ch));
+        }
+
+        for ch in ['a', 'Z', '0', '.', '_'] {
+            assert!(super::is_hard_newline_continuation_start(ch));
+        }
+    }
+
+    #[test]
+    fn hyperlink_detection_does_not_join_git_url_with_branch_marker() {
+        let terminal = terminal_with_output(
+            b"From https://github.com/tanlethanh/zedra\r\n       * branch main -> FETCH_HEAD\r\n",
+        );
+
+        let links = terminal.detect_plain_links();
+        assert_eq!(links.len(), 1, "expected one URL link, got {:?}", links);
+        assert_eq!(links[0].kind, super::DetectedLinkKind::Url);
+        assert_eq!(links[0].text, "https://github.com/tanlethanh/zedra");
+        assert_eq!(links[0].start.line, Line(0));
+        assert_eq!(links[0].end.line, Line(0));
+    }
+
+    #[test]
+    fn hyperlink_detection_does_not_join_url_across_blank_line() {
+        let terminal = terminal_with_output(
+            b" - PR: https://github.com/tanlethanh/zedra/pull/58\r\n\r\n What changed:\r\n - ...\r\n",
+        );
+
+        let links = terminal.detect_plain_links();
+        assert_eq!(links.len(), 1, "expected one URL link, got {:?}", links);
+        assert_eq!(links[0].kind, super::DetectedLinkKind::Url);
+        assert_eq!(links[0].text, "https://github.com/tanlethanh/zedra/pull/58");
+        assert_eq!(links[0].start.line, Line(0));
+        assert_eq!(links[0].end.line, Line(0));
+    }
+
+    #[test]
+    fn hyperlink_detection_hard_joins_url_with_plain_continuation_line() {
+        let terminal = terminal_with_output(
+            b"Open https://github.com/tanlethanh/zedra/pull/\r\n        58 now\r\n",
+        );
+
+        let links = terminal.detect_plain_links();
+        assert_eq!(links.len(), 1, "expected one URL link, got {:?}", links);
+        assert_eq!(links[0].kind, super::DetectedLinkKind::Url);
+        assert_eq!(links[0].text, "https://github.com/tanlethanh/zedra/pull/58");
+        assert_eq!(links[0].start.line, Line(0));
+        assert_eq!(links[0].end.line, Line(1));
+    }
+
+    #[test]
     fn detects_file_path_wrapped_across_two_lines() {
         // 20-col terminal forces wrap. "Edit crates/zedra-host/src/main.rs:42:5 now"
         // "Edit " = 5, path with line:col = 38 chars → wraps after col 19.
@@ -3512,6 +3656,39 @@ mod tests {
         );
         // Span must cross physical lines.
         assert!(links[0].end.line > links[0].start.line);
+    }
+
+    #[test]
+    fn detects_path_split_by_hard_newline_before_label_colon() {
+        let terminal =
+            terminal_with_output(b"crates/zedra/src/\r\nhome_view.rs: the settings panel\r\n");
+
+        let links = terminal.detect_plain_links();
+        assert_eq!(
+            links.len(),
+            1,
+            "expected one joined path link, got {:?}",
+            links
+        );
+        assert_eq!(links[0].kind, super::DetectedLinkKind::FilePath);
+        assert_eq!(links[0].text, "crates/zedra/src/home_view.rs");
+        assert_eq!(links[0].start.line, Line(0));
+        assert_eq!(links[0].end.line, Line(1));
+
+        let hyperlink = terminal
+            .hyperlink_at_point(Point::new(Line(1), Column(4)), Some("/repo"))
+            .expect("expected hard-wrapped file hyperlink before label colon");
+        let (_label, path, relative_path, line, column) = file_target(hyperlink);
+        assert_eq!(
+            Path::new(&path),
+            Path::new("/repo/crates/zedra/src/home_view.rs")
+        );
+        assert_eq!(
+            Path::new(&relative_path),
+            Path::new("crates/zedra/src/home_view.rs")
+        );
+        assert_eq!(line, None);
+        assert_eq!(column, None);
     }
 
     #[test]

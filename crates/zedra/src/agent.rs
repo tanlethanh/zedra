@@ -368,7 +368,7 @@ impl AgentAdapter for ClaudeAdapter {
         term: &mut dyn TermCtx,
         _app: &mut dyn AppCtx,
     ) -> Result<()> {
-        term.paste(&Self::mention(&input))
+        term.paste(&format!("{} ", Self::mention(&input)))
     }
 
     fn ask(&mut self, input: Ask, term: &mut dyn TermCtx, _app: &mut dyn AppCtx) -> Result<()> {
@@ -836,7 +836,7 @@ mod tests {
             .add_to_chat(add_to_chat_input(), &mut term, &mut app)
             .unwrap();
 
-        assert_eq!(take_paste_payload(&mut term), "@src/main.rs#L10-L12");
+        assert_eq!(take_paste_payload(&mut term), "@src/main.rs#L10-L12 ");
     }
 
     #[test]
@@ -849,7 +849,7 @@ mod tests {
             .add_to_chat(single_line_add_to_chat_input(), &mut term, &mut app)
             .unwrap();
 
-        assert_eq!(take_paste_payload(&mut term), "@src/lib.rs#L7");
+        assert_eq!(take_paste_payload(&mut term), "@src/lib.rs#L7 ");
     }
 
     #[test]
@@ -941,7 +941,7 @@ mod tests {
 
             let payload = take_paste_payload(&mut term);
             if *kind == Kind::Claude {
-                assert_eq!(payload, "@src/main.rs#L10-L12", "{kind:?}");
+                assert_eq!(payload, "@src/main.rs#L10-L12 ", "{kind:?}");
             } else {
                 assert_eq!(
                     payload, "src/main.rs:L10-L12\n\n```text\nfn main() {}\n```",

@@ -324,6 +324,12 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:
 11. Expected: the terminal stays focused and the software keyboard reopens
 12. With the keyboard visible, drag vertically in terminal content to scroll scrollback or a terminal app that handles touch scroll
 13. Expected: the terminal scrolls without dismissing the keyboard or clearing terminal focus
+14. In a fresh non-alt terminal with the keyboard visible, run a slow stream such as `for i in $(seq 1 20); do echo "line $i"; sleep .2; done`
+15. Expected: early output continues from the top without being pushed upward into an empty lower gap; once the occupied rows reach the keyboard edge, the terminal lifts gradually and never more than the keyboard height
+16. With retained scrollback, clear the terminal using `printf '\033[2J\033[Htop\n'`
+17. Expected: the cleared content stays top-aligned instead of inheriting a full keyboard lift from old scrollback; TUI-authored blank layout rows still count as occupied space
+18. With the keyboard still visible and enough scrollback to reach history top, drag upward until scrolling stops, then keep dragging slightly
+19. Expected: the oldest scrollback rows can be revealed and are not clipped above the terminal viewport
 
 ## 11a. Terminal Scroll To Bottom Native Button On iOS
 
@@ -398,6 +404,16 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:
 16. Expected: normal input uses the same native IME protocol correctly, with marked text committed once and suggestions replacing only the requested range
 17. Commit message input, dictation: tap the microphone, dictate a short phrase, then stop dictation
 18. Expected: the dictated phrase remains in the input after UIKit commits, the final cleanup delete does not clear the field, and any late `insertDictationResult` does not duplicate the phrase
+
+## 11e. Terminal Keyboard Accessory Arrow Repeat On iOS
+
+1. Connect to a session on iPhone or iOS simulator and open the terminal view
+2. Tap each arrow button in the keyboard accessory once
+3. Expected: each tap sends exactly one corresponding arrow keystroke
+4. Press and hold each arrow button, then release it
+5. Expected: the corresponding arrow input repeats continuously while held and stops immediately on release
+6. Start holding an arrow button, then dismiss the keyboard or background the app
+7. Expected: repeat stops and does not resume when the keyboard or app returns
 
 ## 12. Quick Action Terminal Navigation
 
@@ -622,16 +638,17 @@ printf '\033]8;;file:///tmp/zedra-code-selection.rs:1:1\033\\/tmp/zedra-code-sel
 2. Open a source file from the workspace drawer so the main workspace code editor is visible
 3. Long-press inside a code line and drag the selection handles across multiple lines
 4. Tap `Add to Chat` in the native selection menu next to `Copy`
-5. Expected: a native selection sheet lists detected supported AI-agent terminals by terminal title without a `Terminal N` prefix; emoji and spinner glyphs are omitted from the picker labels, and iOS shows the bundled agent SVG icon in both light and dark appearance
-6. Pick the Claude terminal
-7. Expected: the main view switches to the selected terminal first, then the selected range is pasted into Claude as an `@file#Lx-Ly` mention after a short delay; it is not submitted automatically
-8. Repeat for Codex, opencode, Gemini, or another detected non-shell agent
-9. Expected: the main view switches to the selected terminal first, then the selected range is pasted as fenced context with the source range after a short delay; it is not submitted automatically
-10. Open a markdown file and select text in a paragraph or code block
-11. Drag the markdown selection handles to extend and shrink the selected range before opening the menu
-12. Tap `Add to Chat`, pick an agent terminal, and verify the selected source lines are pasted into that terminal
-13. Exit all supported AI-agent CLIs, select editor text, and tap `Add to Chat`
-14. Expected: the native selection sheet shows `No AI agent detected` and no text is inserted
+5. Expected: `Add to Chat` shows the Zedra icon in the selection menu
+6. Expected: a native selection sheet lists detected supported AI-agent terminals by terminal title without a `Terminal N` prefix; emoji and spinner glyphs are omitted from the picker labels, and iOS shows the bundled agent SVG icon in both light and dark appearance
+7. Pick the Claude terminal
+8. Expected: the main view switches to the selected terminal first, then the selected range is pasted into Claude as an `@file#Lx-Ly` mention after a short delay; it is not submitted automatically
+9. Repeat for Codex, opencode, Gemini, or another detected non-shell agent
+10. Expected: the main view switches to the selected terminal first, then the selected range is pasted as fenced context with the source range after a short delay; it is not submitted automatically
+11. Open a markdown file and select text in a paragraph or code block
+12. Drag the markdown selection handles to extend and shrink the selected range before opening the menu
+13. Tap `Add to Chat`, pick an agent terminal, and verify the selected source lines are pasted into that terminal
+14. Exit all supported AI-agent CLIs, select editor text, and tap `Add to Chat`
+15. Expected: the native selection sheet shows `No AI agent detected` and no text is inserted
 
 ## 16c. Workspace Markdown File Rendering
 
@@ -666,7 +683,7 @@ printf '\033]8;;file:///tmp/zedra-code-selection.rs:1:1\033\\/tmp/zedra-code-sel
 17. Tap outside the alert
 18. Expected: the alert dismisses and the session remains connected
 19. Tap `Cancel`, then retry and tap `Disconnect`
-20. Expected: the session disconnects only after confirmation
+20. Expected: the session disconnects only after confirmation and the app returns to Home
 21. Expected: the home workspace card immediately shows the disconnected/reconnect state instead of the old connected state
 22. Tap the disconnected workspace card
 23. Expected: the connect view title is `Disconnected` and the subtitle is `Tap refresh to reconnect.`

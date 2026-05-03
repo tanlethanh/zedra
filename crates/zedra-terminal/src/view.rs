@@ -5,13 +5,14 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use alacritty_terminal::term::TermMode;
 use gpui::*;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tracing::*;
 use zedra_osc::OscEvent;
 
 use crate::element::TerminalElement;
-use crate::terminal::{Terminal, TerminalEvent};
+use crate::terminal::{Terminal, TerminalContent, TerminalEvent};
 
 const FALLBACK_CELL_WIDTH: f32 = 9.0;
 const TERMINAL_LINE_HEIGHT: f32 = 16.0;
@@ -44,19 +45,71 @@ impl IntoRemoteSize for crate::terminal::TerminalSize {
     }
 }
 
+/// Scans viewport cells to find the last non-blank row, then computes how many
+/// pixels to shift the grid upward so that content stays visible above the keyboard.
+/// Returns 0.0 when the keyboard is hidden, when the user is in scrollback, or when
+/// all content fits above the keyboard edge.
+pub fn keyboard_content_offset_px(
+    content: &TerminalContent,
+    bounds_height: Pixels,
+    line_height: Pixels,
+    keyboard_inset: Pixels,
+) -> f32 {
+    if content.mode.contains(TermMode::ALT_SCREEN)
+        || keyboard_inset <= px(0.0)
+        || content.display_offset != 0
+    {
+        return 0.0;
+    }
+
+    let line_height_f = (line_height / px(1.0)) as f32;
+    let keyboard_f = (keyboard_inset / px(1.0)) as f32;
+    if line_height_f <= 0.0 || keyboard_f <= 0.0 {
+        return 0.0;
+    }
+
+    let display_offset = content.display_offset as i32;
+    let grid_rows = content.grid_rows as i32;
+    let last_nonblank_row = content
+        .cells
+        .iter()
+        .filter_map(|cell| {
+            if crate::terminal::is_blank(cell) {
+                return None;
+            }
+            let line = cell.point.line.0 + display_offset;
+            (line >= 0 && line < grid_rows).then_some(line as usize)
+        })
+        .max();
+
+    let Some(bottom_row) = last_nonblank_row else {
+        return 0.0;
+    };
+
+    // Two buffer rows give visual breathing room and absorb cases where the last
+    // row is a plain-space line (indistinguishable from empty via is_blank).
+    let content_bottom = (bottom_row as f32 + 1.0 + 2.0) * line_height_f;
+    let visible_height = ((bounds_height - keyboard_inset).max(px(0.0)) / px(1.0)) as f32;
+    (content_bottom - visible_height).clamp(0.0, keyboard_f)
+}
+
 pub struct TerminalView {
     terminal_id: String,
     terminal: Entity<Terminal>,
     focus_handle: FocusHandle,
     scroll_offset_px: f32,
+    keyboard_top_reveal_px: f32,
     last_remote_size: Option<(u16, u16)>,
     /// Top-left origin of the painted terminal grid within the window.
     /// Used to turn touch scroll positions into terminal cell coordinates.
     grid_origin: Option<Point<Pixels>>,
     workdir: Option<String>,
     /// Keyboard height in logical pixels. Updated by WorkspaceTerminal via deferred sync.
-    /// Used to offset non-alt-screen content so the cursor stays visible above the keyboard.
+    /// Used to suppress PTY resize (SIGWINCH) while the keyboard masks the bottom rows.
     pub keyboard_inset: Pixels,
+    /// Pre-computed upward shift in pixels. Set by WorkspaceTerminal on keyboard appear;
+    /// reset to zero on keyboard dismiss. Applied by TerminalElement during paint.
+    pub keyboard_content_offset: Pixels,
     suppress_touch_scroll_until: Option<Instant>,
     /// Cached from terminal mode; updated each render so parent views can read without
     /// creating a GPUI dependency on the inner terminal entity.
@@ -86,18 +139,29 @@ impl TerminalView {
         // Subscribe to terminal events via tokio broadcast channel and emit them to the app
         let mut event_rx = terminal.read(cx).subscribe_events();
         let event_task = cx.spawn(async move |this, cx| {
-            while let Ok(event) = event_rx.recv().await {
-                if let Err(e) = this.update(cx, |this, cx| {
-                    if let TerminalEvent::AltScreenChanged(is_alt) = &event {
-                        this.is_alt_screen = *is_alt;
+            loop {
+                match event_rx.recv().await {
+                    Ok(event) => {
+                        if let Err(e) = this.update(cx, |this, cx| {
+                            if let TerminalEvent::AltScreenChanged(is_alt) = &event {
+                                this.is_alt_screen = *is_alt;
+                            }
+                            if let TerminalEvent::OscEvent(OscEvent::Cwd(cwd)) = &event {
+                                this.workdir = Some(cwd.clone());
+                            }
+                            cx.emit(event);
+                            cx.notify();
+                        }) {
+                            error!("failed to emit terminal event: {:?}", e);
+                        }
                     }
-                    if let TerminalEvent::OscEvent(OscEvent::Cwd(cwd)) = &event {
-                        this.workdir = Some(cwd.clone());
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(
+                            skipped,
+                            "terminal event relay lagged; continuing with retained events"
+                        );
                     }
-                    cx.emit(event);
-                    cx.notify();
-                }) {
-                    error!("failed to emit terminal event: {:?}", e);
+                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
         });
@@ -107,10 +171,12 @@ impl TerminalView {
             terminal_id,
             focus_handle: cx.focus_handle(),
             scroll_offset_px: 0.0,
+            keyboard_top_reveal_px: 0.0,
             last_remote_size: None,
             grid_origin: None,
             workdir: None,
             keyboard_inset: px(0.0),
+            keyboard_content_offset: px(0.0),
             suppress_touch_scroll_until: None,
             is_alt_screen: false,
             _event_task: event_task,
@@ -120,6 +186,32 @@ impl TerminalView {
 
     pub fn set_terminal_id(&mut self, terminal_id: String) {
         self.terminal_id = terminal_id;
+    }
+
+    /// Computes the upward pixel shift needed to keep active bottom content visible above
+    /// the keyboard. Returns `None` while the user is in scrollback because the renderable
+    /// cells then describe the scrollback viewport, not the live bottom viewport.
+    pub fn compute_keyboard_content_offset(
+        &self,
+        keyboard_inset: Pixels,
+        cx: &App,
+    ) -> Option<Pixels> {
+        let terminal = self.terminal.read(cx);
+        let content = terminal.content();
+        if content.mode.contains(TermMode::ALT_SCREEN) {
+            return Some(px(0.0));
+        }
+        if content.display_offset != 0 {
+            return None;
+        }
+        let size = terminal.size();
+        let bounds_height = size.line_height * content.grid_rows;
+        Some(px(keyboard_content_offset_px(
+            &content,
+            bounds_height,
+            size.line_height,
+            keyboard_inset,
+        )))
     }
 
     pub fn compute_grid_size(window: &mut Window, viewport: Size<Pixels>) -> TerminalGridSize {
@@ -256,6 +348,7 @@ impl TerminalView {
         self.terminal.update(cx, |terminal, _| {
             terminal.scroll(lines);
         });
+        self.reset_keyboard_top_reveal_if_not_at_top(cx);
         self.emit_scrollback_position_if_changed(previous_display_offset, cx);
         cx.notify();
     }
@@ -263,6 +356,7 @@ impl TerminalView {
     pub fn scroll_to_bottom(&mut self, cx: &mut Context<Self>) {
         let previous_display_offset = self.display_offset(cx);
         self.scroll_offset_px = 0.0;
+        self.keyboard_top_reveal_px = 0.0;
         self.suppress_touch_scroll_until =
             Some(Instant::now() + TOUCH_SCROLL_SUPPRESSION_AFTER_SCROLL_TO_BOTTOM);
         self.terminal.update(cx, |terminal, _| {
@@ -270,6 +364,62 @@ impl TerminalView {
         });
         self.emit_scrollback_position_if_changed(previous_display_offset, cx);
         cx.notify();
+    }
+
+    fn keyboard_top_reveal_limit_px(&self) -> f32 {
+        if self.keyboard_content_offset <= px(0.0) || self.is_alt_screen {
+            return 0.0;
+        }
+
+        ((self.keyboard_content_offset / px(1.0)) as f32).max(0.0)
+    }
+
+    fn effective_keyboard_top_reveal_px(
+        &self,
+        content: &TerminalContent,
+        history_size: usize,
+    ) -> f32 {
+        if content.display_offset == 0
+            || content.display_offset < history_size
+            || content.mode.contains(TermMode::ALT_SCREEN)
+        {
+            return 0.0;
+        }
+
+        self.keyboard_top_reveal_px
+            .clamp(0.0, self.keyboard_top_reveal_limit_px())
+    }
+
+    fn add_keyboard_top_reveal_px(&mut self, delta_px: f32) {
+        let limit = self.keyboard_top_reveal_limit_px();
+        if delta_px <= 0.0 || limit <= 0.0 {
+            return;
+        }
+
+        self.keyboard_top_reveal_px =
+            (self.keyboard_top_reveal_px.min(limit) + delta_px).min(limit);
+    }
+
+    fn consume_keyboard_top_reveal_px(&mut self, delta_px: f32) -> f32 {
+        let limit = self.keyboard_top_reveal_limit_px();
+        if delta_px <= 0.0 || limit <= 0.0 {
+            self.keyboard_top_reveal_px = 0.0;
+            return delta_px.max(0.0);
+        }
+
+        self.keyboard_top_reveal_px = self.keyboard_top_reveal_px.min(limit);
+        let consumed = self.keyboard_top_reveal_px.min(delta_px);
+        self.keyboard_top_reveal_px -= consumed;
+        delta_px - consumed
+    }
+
+    fn reset_keyboard_top_reveal_if_not_at_top(&mut self, cx: &App) {
+        let terminal = self.terminal.read(cx);
+        let display_offset = terminal.display_offset();
+        let history_size = terminal.history_size();
+        if display_offset == 0 || display_offset < history_size {
+            self.keyboard_top_reveal_px = 0.0;
+        }
     }
 
     fn emit_scrollback_position_if_changed(
@@ -377,7 +527,10 @@ impl Render for TerminalView {
         let terminal = self.terminal.read(cx);
         let content = terminal.content();
         let size = terminal.size();
+        let history_size = terminal.history_size();
         let focus_handle = self.focus_handle.clone();
+        let visual_scroll_offset_px =
+            self.scroll_offset_px + self.effective_keyboard_top_reveal_px(&content, history_size);
 
         div()
             .id("terminal-view")
@@ -401,12 +554,36 @@ impl Render for TerminalView {
                     ScrollDelta::Lines(l) => {
                         // Line-based scroll (e.g. mouse wheel): commit immediately
                         this.scroll_offset_px = 0.0;
-                        let lines = l.y as i32;
+                        let mut lines = l.y as i32;
+                        if lines < 0 {
+                            let step_px =
+                                (this.terminal.read(cx).size().line_height / px(1.0)) as f32;
+                            let remaining_px =
+                                this.consume_keyboard_top_reveal_px((-lines) as f32 * step_px);
+                            lines = if remaining_px > 0.0 {
+                                -((remaining_px / step_px).ceil() as i32)
+                            } else {
+                                0
+                            };
+                        }
                         if lines != 0 {
                             let grid_origin = this.grid_origin;
-                            this.terminal.update(cx, |terminal, _| {
-                                terminal.commit_scroll_lines(lines, event, grid_origin);
+                            let moved = this.terminal.update(cx, |terminal, _| {
+                                terminal.commit_scroll_lines(lines, event, grid_origin)
                             });
+                            let (display_offset, history_size, step_px) = {
+                                let terminal = this.terminal.read(cx);
+                                (
+                                    terminal.display_offset(),
+                                    terminal.history_size(),
+                                    (terminal.size().line_height / px(1.0)) as f32,
+                                )
+                            };
+                            if lines > 0 && !moved && display_offset > 0 {
+                                this.add_keyboard_top_reveal_px(lines as f32 * step_px);
+                            } else if display_offset == 0 || display_offset < history_size {
+                                this.keyboard_top_reveal_px = 0.0;
+                            }
                         }
                     }
                     ScrollDelta::Pixels(pixels) => {
@@ -428,7 +605,10 @@ impl Render for TerminalView {
                             this.scroll_offset_px = 0.0;
                         } else {
                             let step_px = this.terminal.read(cx).scroll_step_px(event);
-                            let py: f32 = (pixels.y / px(1.0)) as f32;
+                            let mut py: f32 = (pixels.y / px(1.0)) as f32;
+                            if py < 0.0 {
+                                py = -this.consume_keyboard_top_reveal_px(-py);
+                            }
                             this.scroll_offset_px += py;
 
                             // Remote terminal scroll should emit small, repeated wheel
@@ -439,8 +619,8 @@ impl Render for TerminalView {
                                     terminal.commit_scroll_lines(1, event, grid_origin)
                                 });
                                 if !moved {
-                                    // Hit top of scrollback — clamp offset
-                                    this.scroll_offset_px = 0.0;
+                                    // Keep the keyboard lift scrollable at the top boundary so
+                                    // the oldest rows can be revealed instead of clipped.
                                     break;
                                 }
                                 this.scroll_offset_px -= step_px;
@@ -471,7 +651,10 @@ impl Render for TerminalView {
                                 if offset == 0 && this.scroll_offset_px < 0.0 {
                                     this.scroll_offset_px = 0.0; // at bottom
                                 }
-                                if offset >= history && this.scroll_offset_px > 0.0 {
+                                if offset == 0 || offset < history {
+                                    this.keyboard_top_reveal_px = 0.0;
+                                } else if offset >= history && this.scroll_offset_px > 0.0 {
+                                    this.add_keyboard_top_reveal_px(this.scroll_offset_px);
                                     this.scroll_offset_px = 0.0; // at top
                                 }
                             }
@@ -485,8 +668,9 @@ impl Render for TerminalView {
             .child(TerminalElement::new(
                 content,
                 size,
-                self.scroll_offset_px,
+                visual_scroll_offset_px,
                 self.keyboard_inset,
+                self.keyboard_content_offset,
                 cx.weak_entity(),
                 self.terminal.downgrade(),
                 self.focus_handle.clone(),
@@ -497,10 +681,11 @@ impl Render for TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::TerminalView;
+    use super::{TerminalView, keyboard_content_offset_px};
     use std::path::Path;
 
-    use crate::terminal::{TerminalEvent, TerminalHyperlinkTarget};
+    use crate::terminal::{Terminal, TerminalContent, TerminalEvent, TerminalHyperlinkTarget};
+    use alacritty_terminal::term::TermMode;
     use futures::{FutureExt as _, StreamExt as _};
     use gpui::{
         Modifiers, Pixels, Point, PointerButton, PointerDownEvent, PointerKind, PointerUpEvent,
@@ -562,10 +747,19 @@ mod tests {
         cx: &mut TestAppContext,
         touch_phase: TouchPhase,
     ) {
+        scroll_terminal_touch_delta(window, cx, px(16.0), touch_phase);
+    }
+
+    fn scroll_terminal_touch_delta(
+        window: WindowHandle<TerminalView>,
+        cx: &mut TestAppContext,
+        delta_y: Pixels,
+        touch_phase: TouchPhase,
+    ) {
         let mut window_cx = VisualTestContext::from_window(*window, cx);
         window_cx.simulate_event(gpui::ScrollWheelEvent {
             position: point(px(12.0), px(28.0)),
-            delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(16.0))),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.0), delta_y)),
             modifiers: Modifiers::default(),
             touch_phase,
         });
@@ -660,6 +854,38 @@ mod tests {
             }
             event => panic!("expected forced resize event, got {event:?}"),
         }
+        cx.quit();
+    }
+
+    #[test]
+    fn terminal_event_relay_survives_broadcast_lag() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+
+        let root = window.root(&mut cx).unwrap();
+        let mut events = cx.events(&root);
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                terminal_view.terminal.update(cx, |terminal, _| {
+                    for i in 0..120 {
+                        terminal.emit_dictation_preview_changed(Some(i.to_string()));
+                    }
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let mut saw_latest_preview = false;
+        while let Some(event) = events.next().now_or_never().flatten() {
+            if let TerminalEvent::DictationPreviewChanged(Some(text)) = event
+                && text == "119"
+            {
+                saw_latest_preview = true;
+                break;
+            }
+        }
+        assert!(saw_latest_preview);
         cx.quit();
     }
 
@@ -829,6 +1055,115 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_content_offset_update_is_skipped_while_in_scrollback() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                terminal_view.terminal.update(cx, |terminal, _| {
+                    for line in 0..30 {
+                        terminal.advance_bytes(format!("line {line}\r\n").as_bytes());
+                    }
+                });
+                assert_eq!(
+                    terminal_view.compute_keyboard_content_offset(px(80.0), cx),
+                    Some(px(80.0))
+                );
+
+                terminal_view.terminal.update(cx, |terminal, _| {
+                    terminal.scroll(3);
+                });
+                assert!(terminal_view.display_offset(cx) > 0);
+                assert_eq!(
+                    terminal_view.compute_keyboard_content_offset(px(80.0), cx),
+                    None
+                );
+            })
+            .unwrap();
+        cx.quit();
+    }
+
+    #[test]
+    fn keyboard_top_reveal_exposes_oldest_rows_at_scrollback_top() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                terminal_view.terminal.update(cx, |terminal, _| {
+                    for line in 0..40 {
+                        terminal.advance_bytes(format!("line {line}\r\n").as_bytes());
+                    }
+                    terminal.scroll(10_000);
+                });
+                let terminal = terminal_view.terminal.read(cx);
+                assert_eq!(terminal.display_offset(), terminal.history_size());
+                terminal_view.keyboard_content_offset = px(80.0);
+            })
+            .unwrap();
+
+        for _ in 0..5 {
+            scroll_terminal_touch_delta(window, &mut cx, px(16.0), TouchPhase::Moved);
+            cx.run_until_parked();
+        }
+
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                let terminal = terminal_view.terminal.read(cx);
+                assert_eq!(terminal.display_offset(), terminal.history_size());
+                assert_eq!(terminal_view.keyboard_top_reveal_px, 80.0);
+            })
+            .unwrap();
+        cx.quit();
+    }
+
+    #[test]
+    fn keyboard_top_reveal_is_consumed_before_scrolling_down() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+
+        let top_offset = window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                terminal_view.terminal.update(cx, |terminal, _| {
+                    for line in 0..40 {
+                        terminal.advance_bytes(format!("line {line}\r\n").as_bytes());
+                    }
+                    terminal.scroll(10_000);
+                });
+                terminal_view.keyboard_content_offset = px(80.0);
+                terminal_view.keyboard_top_reveal_px = 80.0;
+                terminal_view.terminal.read(cx).display_offset()
+            })
+            .unwrap();
+
+        for _ in 0..5 {
+            scroll_terminal_touch_delta(window, &mut cx, px(-16.0), TouchPhase::Moved);
+            cx.run_until_parked();
+        }
+
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                assert_eq!(terminal_view.keyboard_top_reveal_px, 0.0);
+                assert_eq!(terminal_view.terminal.read(cx).display_offset(), top_offset);
+            })
+            .unwrap();
+
+        scroll_terminal_touch_delta(window, &mut cx, px(-16.0), TouchPhase::Moved);
+        cx.run_until_parked();
+
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                assert!(terminal_view.terminal.read(cx).display_offset() < top_offset);
+            })
+            .unwrap();
+        cx.quit();
+    }
+
+    #[test]
     fn fresh_touch_scroll_cancels_scroll_to_bottom_suppression() {
         let mut cx = TestAppContext::single();
         let window = open_terminal_window(&mut cx);
@@ -852,5 +1187,70 @@ mod tests {
             })
             .unwrap();
         cx.quit();
+    }
+
+    fn content_for_keyboard_offset(output: &[u8]) -> TerminalContent {
+        let mut terminal = Terminal::new(20, 10, px(10.0), px(20.0));
+        terminal.advance_bytes(output);
+        terminal.content()
+    }
+
+    fn keyboard_offset_for_content(content: &TerminalContent) -> f32 {
+        keyboard_content_offset_px(content, px(200.0), px(20.0), px(80.0))
+    }
+
+    #[test]
+    fn keyboard_offset_stays_zero_while_content_is_above_keyboard_edge() {
+        let content = content_for_keyboard_offset(b"one\r\ntwo\r\nthree\r\n");
+        assert_eq!(keyboard_offset_for_content(&content), 0.0);
+    }
+
+    #[test]
+    fn keyboard_offset_lifts_to_show_last_nonblank_row_with_buffer() {
+        // 7 lines + trailing \r\n → last non-blank row is 6 ("seven").
+        // content_bottom = (6+1+2)*20 = 180px, visible = 120px, lift = 60px.
+        let content =
+            content_for_keyboard_offset(b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven\r\n");
+        assert_eq!(keyboard_offset_for_content(&content), 60.0);
+    }
+
+    #[test]
+    fn keyboard_offset_uses_full_keyboard_inset_when_content_fills_grid() {
+        // 10 lines without trailing newline → last non-blank row is 9.
+        // content_bottom = (9+1+2)*20 = 240px, visible = 120px, lift = 80px (capped).
+        let content = content_for_keyboard_offset(
+            b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven\r\neight\r\nnine\r\nten",
+        );
+        assert_eq!(keyboard_offset_for_content(&content), 80.0);
+    }
+
+    #[test]
+    fn keyboard_offset_lifts_for_visible_character_at_bottom() {
+        // ESC[10;1H moves cursor to row 9, write a non-blank character → last non-blank = 9.
+        let content = content_for_keyboard_offset(b"\x1b[10;1Ha");
+        assert_eq!(keyboard_offset_for_content(&content), 80.0);
+    }
+
+    #[test]
+    fn keyboard_offset_ignores_retained_scrollback_after_clear() {
+        let mut terminal = Terminal::new(20, 10, px(10.0), px(20.0));
+        terminal.advance_bytes(
+            b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven\r\neight\r\nnine\r\nten\r\n\x1b[2J\x1b[Htop\r\n",
+        );
+        assert!(terminal.history_size() > 0);
+        assert_eq!(keyboard_offset_for_content(&terminal.content()), 0.0);
+    }
+
+    #[test]
+    fn keyboard_offset_ignores_manual_scrollback_and_alt_screen() {
+        let mut content =
+            content_for_keyboard_offset(b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven\r\n");
+
+        content.display_offset = 1;
+        assert_eq!(keyboard_offset_for_content(&content), 0.0);
+
+        content.display_offset = 0;
+        content.mode = TermMode::ALT_SCREEN;
+        assert_eq!(keyboard_offset_for_content(&content), 0.0);
     }
 }

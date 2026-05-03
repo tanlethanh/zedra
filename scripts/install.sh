@@ -6,7 +6,6 @@ set -eu
 
 REPO="tanlethanh/zedra"
 BINARY="zedra"
-DEFAULT_PREFIX="${HOME}/.local/bin"
 
 # --- Argument parsing ---
 
@@ -22,7 +21,7 @@ while [ $# -gt 0 ]; do
             echo ""
             echo "Options:"
             echo "  --version VERSION  Install a specific version (e.g. v0.1.0)"
-            echo "  --prefix DIR       Install directory (default: ~/.local/bin)"
+            echo "  --prefix DIR       Install directory (default: auto-detected)"
             echo "                     Can also be set via ZEDRA_PREFIX env var"
             exit 0
             ;;
@@ -30,7 +29,31 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-PREFIX="${PREFIX:-${ZEDRA_PREFIX:-${DEFAULT_PREFIX}}}"
+# --- Default prefix detection ---
+#
+# macOS and Linux root: /usr/local/bin (already in PATH, no sudo needed).
+# Linux non-root: first writable directory in $PATH, else ~/.local/bin.
+
+detect_prefix() {
+    os="$(uname -s)"
+
+    if [ "$os" = "Darwin" ] || [ "$(id -u)" = "0" ]; then
+        echo "/usr/local/bin"
+        return
+    fi
+
+    # Check well-known user bin dirs in preference order.
+    # Pick the first one already in PATH (no warning needed); else fall back to ~/.local/bin.
+    for dir in "${HOME}/.local/bin" "${HOME}/bin"; do
+        case ":${PATH}:" in
+            *":${dir}:"*) echo "$dir"; return ;;
+        esac
+    done
+
+    echo "${HOME}/.local/bin"
+}
+
+PREFIX="${PREFIX:-${ZEDRA_PREFIX:-$(detect_prefix)}}"
 
 # --- Platform detection ---
 
@@ -126,6 +149,16 @@ verify_checksum() {
     echo "  Checksum verified."
 }
 
+# --- Stale binary cleanup ---
+
+cleanup_stale() {
+    target="$1"
+    existing="$(command -v "${BINARY}" 2>/dev/null)" || return 0
+    [ "$existing" = "$target" ] && return 0
+    echo "  Removing previous installation at ${existing}..."
+    rm -f "$existing"
+}
+
 # --- Main ---
 
 main() {
@@ -153,6 +186,8 @@ main() {
 
     echo "  Extracting..."
     tar xzf "${tmpdir}/${archive_name}" -C "$tmpdir"
+
+    cleanup_stale "${PREFIX}/${BINARY}"
 
     echo "  Installing to ${PREFIX}..."
     mkdir -p "$PREFIX"

@@ -288,24 +288,6 @@ struct TokenCell {
     has_hyperlink: bool,
 }
 
-/// Check if a cell is blank (following Zed's is_blank function)
-fn is_blank(cell: &IndexedCell) -> bool {
-    if cell.cell.c != ' ' {
-        return false;
-    }
-    if !matches!(cell.cell.bg, AlacColor::Named(NamedColor::Background)) {
-        return false;
-    }
-    if cell
-        .cell
-        .flags
-        .intersects(CellFlags::ALL_UNDERLINES | CellFlags::INVERSE | CellFlags::STRIKEOUT)
-    {
-        return false;
-    }
-    true
-}
-
 pub struct TerminalElementLayout {
     content: TerminalContent,
     font: Font,
@@ -319,6 +301,7 @@ pub struct TerminalElement {
     size: TerminalSize,
     scroll_offset_px: f32,
     keyboard_inset: Pixels,
+    keyboard_content_offset: Pixels,
     view: WeakEntity<TerminalView>,
     terminal: WeakEntity<Terminal>,
     focus_handle: FocusHandle,
@@ -331,6 +314,7 @@ impl TerminalElement {
         size: TerminalSize,
         scroll_offset_px: f32,
         keyboard_inset: Pixels,
+        keyboard_content_offset: Pixels,
         view: WeakEntity<TerminalView>,
         terminal: WeakEntity<Terminal>,
         focus_handle: FocusHandle,
@@ -341,6 +325,7 @@ impl TerminalElement {
             size,
             scroll_offset_px,
             keyboard_inset,
+            keyboard_content_offset,
             view,
             terminal,
             focus_handle,
@@ -434,7 +419,11 @@ impl TerminalElement {
                     continue;
                 }
 
-                let c = cell.cell.c;
+                let c = if cell.cell.c == '\0' {
+                    ' '
+                } else {
+                    cell.cell.c
+                };
 
                 // Try to batch with existing run
                 if let Some(ref mut batch) = current_batch {
@@ -519,7 +508,7 @@ impl TerminalElement {
             }
 
             let ch = match cell.cell.c {
-                '\t' => ' ',
+                '\0' | '\t' => ' ',
                 c => c,
             };
 
@@ -624,7 +613,7 @@ impl TerminalElement {
 
             // Skip whitespace cells so wrap-indent gaps in continuation lines
             // don't get an underline drawn beneath empty cells.
-            let is_blank_cell = matches!(cell.cell.c, ' ' | '\0' | '\t');
+            let is_blank_cell = matches!(cell.cell.c, '\0' | ' ' | '\t');
             let in_link = !is_blank_cell
                 && detected_links
                     .iter()
@@ -772,37 +761,13 @@ impl Element for TerminalElement {
         let x_offset = ((bounds.size.width - grid_width) * 0.5).max(px(0.0));
         let grid_origin = point(bounds.origin.x + x_offset, bounds.origin.y);
         // Apply smooth scroll offset: shifts grid vertically for sub-line scrolling.
-        // For non-alt mode with keyboard visible, also shift up to keep the cursor above
-        // the keyboard. Offset is purely cursor-based: shift only as much as needed to
-        // bring the cursor bottom into the visible area. When cursor is already above the
-        // keyboard (e.g. Claude output top-aligned) the offset is zero.
-        // For non-alt mode with keyboard visible: if the cursor sits below the visible
-        // area (i.e. behind the keyboard), shift the entire terminal up by the full
-        // keyboard inset so the cursor is clear of the keyboard. No shift when cursor
-        // is already above the keyboard — avoids moving top-aligned content (e.g. a fresh
-        // Claude session) unnecessarily.
         let is_alt = layout
             .content
             .mode
             .contains(alacritty_terminal::term::TermMode::ALT_SCREEN);
-        let keyboard_cursor_offset_px =
-            if !is_alt && self.keyboard_inset > px(0.0) && layout.content.display_offset == 0 {
-                let line_height_f = (line_height / px(1.0)) as f32;
-                let keyboard_f = (self.keyboard_inset / px(1.0)) as f32;
-                let visible_height = (bounds.size.height / px(1.0)) as f32 - keyboard_f;
-                let cursor_line = layout.content.cursor.point.line.0.max(0) as f32;
-                let cursor_bottom = (cursor_line + 1.0) * line_height_f;
-                if cursor_bottom > visible_height {
-                    keyboard_f
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            };
         let origin = point(
             grid_origin.x,
-            grid_origin.y + px(self.scroll_offset_px) - px(keyboard_cursor_offset_px),
+            grid_origin.y + px(self.scroll_offset_px) - self.keyboard_content_offset,
         );
 
         let theme = TerminalTheme::one_dark();
@@ -932,6 +897,19 @@ mod tests {
         assert_eq!(underlines.len(), 1);
         assert_eq!(underlines[0].col, 7);
         assert_eq!(underlines[0].num_cells, 16);
+    }
+
+    #[test]
+    fn underlines_contextual_file_list_paths() {
+        let underlines = underline_spans(b"   AGENTS.md, docs/CONVENTIONS.md, and worktrees/\r\n");
+
+        assert_eq!(underlines.len(), 3);
+        assert_eq!(underlines[0].col, 3);
+        assert_eq!(underlines[0].num_cells, 9);
+        assert_eq!(underlines[1].col, 14);
+        assert_eq!(underlines[1].num_cells, 19);
+        assert_eq!(underlines[2].col, 39);
+        assert_eq!(underlines[2].num_cells, 10);
     }
 
     #[test]

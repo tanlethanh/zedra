@@ -21,7 +21,7 @@ use crate::terminal_state::TerminalState;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
 
 pub const TERMINAL_PENDING_ID: &str = "___PENDING___";
-const SCROLL_TO_BOTTOM_BUTTON_THRESHOLD_LINES: usize = 50;
+const SCROLL_TO_BOTTOM_BUTTON_THRESHOLD_LINES: usize = 10;
 const SCROLL_TO_BOTTOM_BUTTON_DISMISS_DELAY: Duration = Duration::from_millis(160);
 
 pub struct WorkspaceTerminal {
@@ -36,8 +36,8 @@ pub struct WorkspaceTerminal {
     /// Updated via AltScreenChanged event — never read via terminal_view.read(cx) in render
     /// to avoid creating a GPUI dependency that causes re-render cascades.
     is_alt_screen: bool,
-    /// Last keyboard inset pushed to TerminalView. Compared against current platform value
-    /// without reading terminal_view in render, breaking the GPUI observer dependency.
+    /// Last keyboard inset pushed to TerminalView. Avoids re-pushing identical values and
+    /// tracks the previous value for keyboard-appear detection.
     last_synced_keyboard_inset: Pixels,
     scroll_to_bottom_button_id: NativeFloatingButtonId,
     dictation_preview_id: u32,
@@ -306,6 +306,27 @@ impl WorkspaceTerminal {
                 }
             });
 
+        // Reactive hook: recomputes keyboard content offset while the keyboard is visible.
+        // Do not overwrite the cached lift during scrollback: the renderable grid then
+        // represents historical rows, not the active bottom viewport used for blank-row checks.
+        let keyboard_offset_hook = cx.observe(&terminal_view, |this, tv, cx| {
+            if this.last_synced_keyboard_inset == px(0.0) {
+                return;
+            }
+            let Some(new_offset) = tv
+                .read(cx)
+                .compute_keyboard_content_offset(this.last_synced_keyboard_inset, cx)
+            else {
+                return;
+            };
+            let _ = tv.update(cx, |tv, cx| {
+                if tv.keyboard_content_offset != new_offset {
+                    tv.keyboard_content_offset = new_offset;
+                    cx.notify();
+                }
+            });
+        });
+
         if terminal_id != TERMINAL_PENDING_ID {
             Self::attach_channel_to_terminal_view(
                 session_handle.clone(),
@@ -329,7 +350,7 @@ impl WorkspaceTerminal {
             scroll_to_bottom_button_visible: false,
             scroll_to_bottom_button_hide_pending: false,
             scroll_to_bottom_button_hide_generation: 0,
-            _subscriptions: vec![attach_sub, terminal_events_sub],
+            _subscriptions: vec![attach_sub, terminal_events_sub, keyboard_offset_hook],
         }
     }
 
@@ -435,21 +456,36 @@ impl Render for WorkspaceTerminal {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let keyboard_inset = Self::keyboard_inset();
 
-        // Sync keyboard_inset to TerminalView for cursor-visibility offset in non-alt mode.
-        // Uses self.last_synced_keyboard_inset (not terminal_view.read(cx)) to avoid creating
-        // a GPUI render dependency on TerminalView, which would cause re-render cascades that
-        // make the keyboard dismiss and reopen on every PTY output frame.
+        // Keyboard just appeared while user is in scrollback — scroll to bottom.
+        if self.last_synced_keyboard_inset == px(0.0) && keyboard_inset > px(0.0) {
+            let tv = self.terminal_view.clone();
+            window.defer(cx, move |_, cx| {
+                let _ = tv.update(cx, |tv, cx| {
+                    if tv.display_offset(cx) > 0 {
+                        tv.scroll_to_bottom(cx);
+                    }
+                });
+            });
+        }
+
+        // Sync keyboard inset to TerminalView. Deferred to avoid a render dependency that
+        // would cause re-render cascades on every PTY output frame.
         if self.last_synced_keyboard_inset != keyboard_inset {
             self.last_synced_keyboard_inset = keyboard_inset;
             let tv = self.terminal_view.clone();
             window.defer(cx, move |_, cx| {
-                tv.update(cx, |tv, cx| {
+                let _ = tv.update(cx, |tv, cx| {
                     tv.keyboard_inset = keyboard_inset;
+                    if keyboard_inset == px(0.0) {
+                        tv.keyboard_content_offset = px(0.0);
+                    }
                     cx.notify();
                 });
             });
         }
-        let bottom_offset = Self::scroll_button_bottom_offset();
+
+        let keyboard_inset_f = (keyboard_inset / px(1.0)) as f32;
+        let bottom_offset = platform_bridge::home_indicator_inset().max(keyboard_inset_f);
         let this = cx.weak_entity();
 
         div()
@@ -458,7 +494,7 @@ impl Render for WorkspaceTerminal {
             .size_full()
             // Alt-screen TUIs (vim, OpenCode) need the container to shrink so reconcile fires
             // and SIGWINCH is sent. Non-alt apps (Claude, Codex) keep their grid fixed; the
-            // element shifts content up so cursor stays visible above the keyboard instead.
+            // element shifts occupied content above the keyboard instead.
             .when(self.is_alt_screen && keyboard_inset > px(0.0), |div| {
                 div.pb(keyboard_inset)
             })
