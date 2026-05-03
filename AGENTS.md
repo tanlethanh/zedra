@@ -10,6 +10,8 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - If the current structure is blocking quality, propose the refactor and wait for approval before doing broader cleanup.
 - Keep code concise, readable, and modular. Prefer clarifying code over adding comments.
 - When fixing an edge case or an important regression-prone path, add a minimal code comment at the relevant block explaining the invariant or reason for the guard.
+- Prioritize correctness and clarity over cleverness or speed unless performance is the explicit problem.
+- Avoid panic-prone shortcuts such as unchecked indexing or `unwrap()` in normal code paths. Propagate or handle errors instead of discarding fallible results.
 - Surface blockers quickly with a recommendation. Keep progress updates short and include reasoning or tradeoffs.
 
 ## Debugging Workflow
@@ -26,12 +28,20 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - Use `platform_bridge::bridge()` for platform integration. Do not call platform APIs directly from UI code.
 - Use `tracing` for logging. Never add `log::` calls.
 - Read `docs/DESIGN.md` before creating or redesigning UI.
+- GPUI tasks are cancelled when their `Task` handle is dropped. Await, detach, or store tasks according to the intended lifetime.
+- Inside GPUI entity `update`, `read_with`, and related closures, use the inner `cx` passed to the closure and avoid reentrant updates of the same entity.
 
 ## Protocol And Telemetry
 
 - `docs/PROTOCOL_SPECS.md` is canonical. Any protocol change must update `zedra-rpc/src/proto.rs`, the relevant host and client handlers, and `docs/PROTOCOL_SPECS.md` in the same change.
 - `crates/zedra-telemetry/src/lib.rs` defines the canonical telemetry `Event` enum.
 - Telemetry must not include personal data. Use opaque IDs, durations, counts, enum labels, and booleans only.
+
+## Documentation
+
+- Write docs in a practical, direct style: start with the goal, put common actions first, and avoid promotional or apologetic wording.
+- Use complete working examples. Use `sh` fences for terminal command blocks and backticks for inline commands, paths, settings, and keybindings.
+- Keep repo guidance high-signal. New rules should be non-obvious, repeatedly encountered, and specific enough to act on; crate-specific rules belong in that crate's `AGENTS.md`.
 
 ## Validation
 
@@ -50,6 +60,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - Use commit subjects in the form `feat|fix|chore|docs: <description>`.
 - When the change is scoped to a platform, feature, or crate, use `type(scope): <description>`, such as `feat(ios): ...`, `fix(host): ...`, or `chore(rpc): ...`.
 - Commits must include only changes related to the current feature or fix. Never stage or commit unrelated work, even when the worktree has multiple concurrent edits.
+- Commits made by Codex must include `Co-authored-by: Codex <codex@openai.com>`.
 - `vendor/zed` is a separate submodule with its own git style: clear, capitalized, imperative subjects, no conventional prefixes, optional crate scope such as `git_ui: Add history view`, and no trailing punctuation.
 
 ## Platform Scope
@@ -69,7 +80,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 
 ## Docs Map
 
-- `docs/CONVENTIONS.md` — imports, logging, git commit subjects, async runtime choice, `WorkspaceState`, platform bridge, scroll container rules
+- `docs/CONVENTIONS.md` — imports, Rust style, error handling, GPUI lifecycle, logging, git commit subjects, docs style, async runtime choice, `WorkspaceState`, platform bridge, scroll container rules
 - `docs/ARCHITECTURE.md` — crate boundaries, session flow, auth, RPC, transport
 - `docs/DESIGN.md` — product UI tone and component direction
 - `docs/IOS_WORKFLOW.md` — iOS build pipeline, FFI workflow, pitfalls
