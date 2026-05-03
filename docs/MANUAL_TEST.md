@@ -738,8 +738,11 @@ Expected:
 10. Archive the app with the Release configuration
 11. Expected: the archive uses the production bundle id `dev.zedra.app`, generates a dSYM, and has Xcode Release strip/validation settings enabled
 
-## 20. iOS Portrait Orientation Lock
+## 20. iOS Orientation Support
 
 1. Launch the app on an iPhone or iOS simulator in portrait orientation
 2. Rotate the device or simulator to landscape left and landscape right
 3. Expected: Zedra remains in upright portrait orientation and does not relayout into a landscape window
+4. Archive the Release build and inspect the generated `Info.plist`
+5. Expected: the base `UISupportedInterfaceOrientations` key contains `UIInterfaceOrientationPortrait`
+6. Expected: the iPad-specific `UISupportedInterfaceOrientations~ipad` key contains portrait, portrait upside down, landscape left, and landscape right
