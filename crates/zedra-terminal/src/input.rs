@@ -342,7 +342,7 @@ impl InputHandler for TerminalInputHandler {
         let entity = self.entity.clone();
         let _ = entity.update(cx, move |term, cx| {
             if term.is_dictation_active() {
-                term.replace_marked_text_in_range(None, text, None);
+                term.update_dictation_hypothesis(None, text, None);
             } else if term.has_committed_dictation_pending_cleanup() {
                 // Critical: after committing a streamed dictation hypothesis,
                 // UIKit can still deliver a final dictation insertion while it

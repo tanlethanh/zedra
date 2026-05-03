@@ -153,13 +153,6 @@ impl Dimensions for SimpleDimensions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingContextReplay {
-    pub text: String,
-    pub range: Range<usize>,
-    pub observed: bool,
-}
-
 #[derive(Default)]
 pub struct IMEState {
     /// Synthetic document exposed to native text input APIs.
@@ -180,9 +173,6 @@ pub struct IMEState {
     /// True after a dictation hypothesis has been committed while keeping the
     /// synthetic text store available for UIKit's trailing dictation queries.
     pub committed_dictation_pending_cleanup: bool,
-    /// Last retained character that UIKit may replay while rewriting a native
-    /// keyboard composition.
-    pub pending_context_replay: Option<PendingContextReplay>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -499,7 +489,7 @@ impl Terminal {
             });
     }
 
-    fn emit_dictation_preview_changed(&self, text: Option<String>) {
+    pub fn emit_dictation_preview_changed(&self, text: Option<String>) {
         let _ = self
             .event_tx
             .send(TerminalEvent::DictationPreviewChanged(text));
@@ -556,117 +546,6 @@ impl Terminal {
         let adjusted_range = Self::clamp_utf16_range(document, range);
         let byte_range = Self::byte_range_from_utf16(document, &adjusted_range);
         (adjusted_range, document[byte_range].to_string())
-    }
-
-    fn char_before_utf16_offset(document: &str, offset: usize) -> Option<String> {
-        let byte_offset = Self::byte_offset_from_utf16(document, offset);
-        document[..byte_offset]
-            .chars()
-            .next_back()
-            .map(|ch| ch.to_string())
-    }
-
-    fn pending_context_replay_for_document(
-        document: &str,
-        selection_start: usize,
-    ) -> Option<PendingContextReplay> {
-        let text = Self::char_before_utf16_offset(document, selection_start)?;
-        let replay_len = Self::utf16_len(&text);
-        let start = selection_start.checked_sub(replay_len)?;
-        Some(PendingContextReplay {
-            text,
-            range: start..selection_start,
-            observed: false,
-        })
-    }
-
-    fn utf16_range_text_equals(document: &str, range: &Range<usize>, expected: &str) -> bool {
-        let adjusted_range = Self::clamp_utf16_range(document, range.clone());
-        if adjusted_range != *range {
-            return false;
-        }
-        let byte_range = Self::byte_range_from_utf16(document, range);
-        &document[byte_range] == expected
-    }
-
-    fn vietnamese_latin_base(ch: char) -> Option<char> {
-        let base = match ch {
-            'a' | 'A' | 'à' | 'À' | 'á' | 'Á' | 'ả' | 'Ả' | 'ã' | 'Ã' | 'ạ' | 'Ạ' | 'â' | 'Â'
-            | 'ầ' | 'Ầ' | 'ấ' | 'Ấ' | 'ẩ' | 'Ẩ' | 'ẫ' | 'Ẫ' | 'ậ' | 'Ậ' | 'ă' | 'Ă' | 'ằ' | 'Ằ'
-            | 'ắ' | 'Ắ' | 'ẳ' | 'Ẳ' | 'ẵ' | 'Ẵ' | 'ặ' | 'Ặ' => 'a',
-            'e' | 'E' | 'è' | 'È' | 'é' | 'É' | 'ẻ' | 'Ẻ' | 'ẽ' | 'Ẽ' | 'ẹ' | 'Ẹ' | 'ê' | 'Ê'
-            | 'ề' | 'Ề' | 'ế' | 'Ế' | 'ể' | 'Ể' | 'ễ' | 'Ễ' | 'ệ' | 'Ệ' => 'e',
-            'i' | 'I' | 'ì' | 'Ì' | 'í' | 'Í' | 'ỉ' | 'Ỉ' | 'ĩ' | 'Ĩ' | 'ị' | 'Ị' => {
-                'i'
-            }
-            'o' | 'O' | 'ò' | 'Ò' | 'ó' | 'Ó' | 'ỏ' | 'Ỏ' | 'õ' | 'Õ' | 'ọ' | 'Ọ' | 'ô' | 'Ô'
-            | 'ồ' | 'Ồ' | 'ố' | 'Ố' | 'ổ' | 'Ổ' | 'ỗ' | 'Ỗ' | 'ộ' | 'Ộ' | 'ơ' | 'Ơ' | 'ờ' | 'Ờ'
-            | 'ớ' | 'Ớ' | 'ở' | 'Ở' | 'ỡ' | 'Ỡ' | 'ợ' | 'Ợ' => 'o',
-            'u' | 'U' | 'ù' | 'Ù' | 'ú' | 'Ú' | 'ủ' | 'Ủ' | 'ũ' | 'Ũ' | 'ụ' | 'Ụ' | 'ư' | 'Ư'
-            | 'ừ' | 'Ừ' | 'ứ' | 'Ứ' | 'ử' | 'Ử' | 'ữ' | 'Ữ' | 'ự' | 'Ự' => 'u',
-            'y' | 'Y' | 'ỳ' | 'Ỳ' | 'ý' | 'Ý' | 'ỷ' | 'Ỷ' | 'ỹ' | 'Ỹ' | 'ỵ' | 'Ỵ' => {
-                'y'
-            }
-            'd' | 'D' | 'đ' | 'Đ' => 'd',
-            _ => return None,
-        };
-        Some(base)
-    }
-
-    fn same_vietnamese_latin_base(a: char, b: char) -> bool {
-        Self::vietnamese_latin_base(a).is_some_and(|a_base| {
-            Self::vietnamese_latin_base(b).is_some_and(|b_base| a_base == b_base)
-        })
-    }
-
-    fn should_replace_observed_context_replay(replay_text: &str, text: &str) -> bool {
-        if text.is_empty() {
-            return false;
-        }
-
-        if text.starts_with(replay_text) {
-            return true;
-        }
-
-        // Telex can replay a committed character, then send the corrected
-        // multi-codepoint cluster without a replacement range.
-        let replay_is_non_ascii = replay_text.chars().any(|ch| !ch.is_ascii());
-        let mut replay_chars = replay_text.chars();
-        let Some(replay_char) = replay_chars.next() else {
-            return false;
-        };
-        if replay_chars.next().is_some() {
-            return false;
-        }
-        let Some(first_text_char) = text.chars().next() else {
-            return false;
-        };
-
-        // Critical: only replace a replayed non-ASCII character when the new
-        // cluster is a corrected form of that same Latin base. Otherwise a
-        // preserved prefix such as `đ` before `úng` would be deleted.
-        replay_is_non_ascii && Self::same_vietnamese_latin_base(replay_char, first_text_char)
-    }
-
-    fn observed_context_replay_replacement_range(
-        state: &IMEState,
-        text: &str,
-    ) -> Option<Range<usize>> {
-        let pending = state.pending_context_replay.as_ref()?;
-        if !pending.observed || !Self::should_replace_observed_context_replay(&pending.text, text) {
-            return None;
-        }
-
-        let selection = state.selected_range.as_ref()?;
-        if !selection.is_empty() || selection.start != pending.range.end {
-            return None;
-        }
-
-        if !Self::utf16_range_text_equals(&state.document_text, &pending.range, &pending.text) {
-            return None;
-        }
-
-        Some(pending.range.clone())
     }
 
     pub fn text_input_document_text_for_range(
@@ -733,52 +612,15 @@ impl Terminal {
         }
     }
 
-    pub fn keyboard_input_context_pending_replay(&self) -> Option<PendingContextReplay> {
-        self.ime_state
-            .as_ref()
-            .and_then(|state| state.pending_context_replay.clone())
-    }
-
     pub fn replace_keyboard_input_context_range(
         &mut self,
         replacement_range: Option<Range<usize>>,
         text: &str,
     ) -> KeyboardInputContextEdit {
         let state = self.ime_state_mut();
-        if replacement_range.is_none()
-            && state
-                .pending_context_replay
-                .as_mut()
-                .is_some_and(|pending| {
-                    let matches = pending.text == text;
-                    if matches {
-                        pending.observed = true;
-                    }
-                    matches
-                })
-        {
-            let selection_range = state.selected_range.clone().unwrap_or_else(|| {
-                let len = Self::utf16_len(&state.document_text);
-                len..len
-            });
-            return KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: String::new(),
-                document_text: state.document_text.clone(),
-                selection_range,
-            };
-        }
-
-        let pending_replay_replacement_range = if replacement_range.is_none() {
-            Self::observed_context_replay_replacement_range(state, text)
-        } else {
-            None
-        };
-        state.pending_context_replay = None;
         let committed_before = state.committed_text.clone();
         let document_len = Self::utf16_len(&state.document_text);
         let replacement_range = replacement_range
-            .or(pending_replay_replacement_range)
             .or_else(|| state.selected_range.clone())
             .unwrap_or(document_len..document_len);
         let (document_text, inserted_range) =
@@ -794,12 +636,6 @@ impl Terminal {
         let (backspaces, text_to_insert) =
             Self::diff_keyboard_input_context(&committed_before, &state.document_text);
         state.committed_text = state.document_text.clone();
-        if text.is_empty() && backspaces > 0 && text_to_insert.is_empty() {
-            state.pending_context_replay = Self::pending_context_replay_for_document(
-                &state.document_text,
-                selection_range.start,
-            );
-        }
         KeyboardInputContextEdit {
             backspaces,
             text_to_insert,
@@ -840,14 +676,6 @@ impl Terminal {
         let (backspaces, text_to_insert) =
             Self::diff_keyboard_input_context(&committed_before, &state.document_text);
         state.committed_text = state.document_text.clone();
-        if backspaces > 0 && text_to_insert.is_empty() {
-            state.pending_context_replay = Self::pending_context_replay_for_document(
-                &state.document_text,
-                inserted_range.start,
-            );
-        } else {
-            state.pending_context_replay = None;
-        }
         Some(KeyboardInputContextEdit {
             backspaces,
             text_to_insert,
@@ -877,7 +705,6 @@ impl Terminal {
         state.selected_range = Some(selection_range.clone());
         state.dictation_preview_visible = false;
         state.committed_dictation_pending_cleanup = false;
-        state.pending_context_replay = None;
 
         // Marked IME preedit lives only in the native text store. Diff against
         // committed_text so committing Japanese/Vietnamese candidates does not
@@ -945,7 +772,6 @@ impl Terminal {
             state.selected_range = None;
             state.dictation_preview_visible = false;
             state.committed_dictation_pending_cleanup = false;
-            state.pending_context_replay = None;
             if !state.dictation_active {
                 if restore_committed_text {
                     state.document_text = state.committed_text.clone();
@@ -969,7 +795,6 @@ impl Terminal {
             state.selected_range = None;
             state.dictation_preview_visible = false;
             state.committed_dictation_pending_cleanup = false;
-            state.pending_context_replay = None;
         }
     }
 
@@ -1044,7 +869,6 @@ impl Terminal {
         state.marked_range = None;
         state.selected_range = None;
         state.committed_dictation_pending_cleanup = false;
-        state.pending_context_replay = None;
         true
     }
 
@@ -1070,7 +894,6 @@ impl Terminal {
         let selection_range = inserted_range.end..inserted_range.end;
         state.selected_range = Some(selection_range.clone());
         state.committed_dictation_pending_cleanup = true;
-        state.pending_context_replay = None;
 
         let (backspaces, text_to_insert) =
             Self::diff_keyboard_input_context(&committed_text, &state.marked_text);
@@ -1106,7 +929,6 @@ impl Terminal {
             state.document_text = document_text;
             state.marked_text = text.clone();
             state.committed_dictation_pending_cleanup = false;
-            state.pending_context_replay = None;
             state.marked_range = if text.is_empty() && !state.dictation_active {
                 None
             } else {
@@ -1124,11 +946,29 @@ impl Terminal {
             (state.dictation_active, state.dictation_preview_visible)
         };
 
-        if dictation_active && preview_visible {
+        let _ = (dictation_active, preview_visible);
+        dictation_active
+    }
+
+    /// Update the live dictation hypothesis in the text store and emit a preview
+    /// event if the preview is currently visible. Only call this from the
+    /// dictation-specific path — IME composition must use `replace_marked_text_in_range`
+    /// directly so it never accidentally triggers the preview overlay.
+    pub fn update_dictation_hypothesis(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+        text: String,
+        selected_range: Option<Range<usize>>,
+    ) {
+        self.replace_marked_text_in_range(replacement_range, text.clone(), selected_range);
+        let (active, visible) = self
+            .ime_state
+            .as_ref()
+            .map(|s| (s.dictation_active, s.dictation_preview_visible))
+            .unwrap_or((false, false));
+        if active && visible {
             self.emit_dictation_preview_changed(Some(text));
         }
-
-        dictation_active
     }
 
     /// Begin a dictation session with a stable marked range in the text store.
@@ -1143,13 +983,11 @@ impl Terminal {
                 state.selected_range = None;
                 state.dictation_preview_visible = false;
                 state.committed_dictation_pending_cleanup = false;
-                state.pending_context_replay = None;
             }
             let already_active = state.dictation_active;
             let mut emit_empty_preview = false;
             state.dictation_active = true;
             state.committed_dictation_pending_cleanup = false;
-            state.pending_context_replay = None;
             if !already_active {
                 state.dictation_preview_visible = true;
                 if state.document_text.is_empty() {
@@ -1234,7 +1072,6 @@ impl Terminal {
             should_hide_preview = state.dictation_preview_visible;
             state.dictation_preview_visible = false;
             state.committed_dictation_pending_cleanup = false;
-            state.pending_context_replay = None;
             state.committed_text.clear();
         }
         self.clear_marked_state();
@@ -1492,7 +1329,7 @@ impl Terminal {
             }
 
             let ch = match cell.c {
-                '\t' => ' ',
+                '\0' | '\t' => ' ',
                 c => c,
             };
             text.push(ch);
@@ -2354,7 +2191,7 @@ mod tests {
             event => panic!("expected dictation preview start event, got {event:?}"),
         }
 
-        terminal.set_marked_text("echo hello".to_string());
+        terminal.update_dictation_hypothesis(None, "echo hello".to_string(), None);
         match events.try_recv().expect("expected dictation update event") {
             super::TerminalEvent::DictationPreviewChanged(Some(text)) => {
                 assert_eq!(text, "echo hello");
@@ -2383,7 +2220,7 @@ mod tests {
             event => panic!("expected empty dictation preview, got {event:?}"),
         }
 
-        terminal.replace_marked_text_in_range(None, "Hey".to_string(), None);
+        terminal.update_dictation_hypothesis(None, "Hey".to_string(), None);
         assert_eq!(terminal.text_input_document(), " Hey");
         assert_eq!(terminal.marked_text_range(), Some(1..4));
         assert_eq!(terminal.text_input_selection_range(), 4..4);
@@ -2392,7 +2229,7 @@ mod tests {
             event => panic!("expected first dictation hypothesis, got {event:?}"),
         }
 
-        terminal.replace_marked_text_in_range(None, "Hey, how's it".to_string(), None);
+        terminal.update_dictation_hypothesis(None, "Hey, how's it".to_string(), None);
         assert_eq!(terminal.text_input_document(), " Hey, how's it");
         assert_eq!(terminal.marked_text_range(), Some(1..14));
         assert_eq!(terminal.text_input_selection_range(), 14..14);
@@ -2431,7 +2268,7 @@ mod tests {
             event => panic!("expected empty dictation preview, got {event:?}"),
         }
 
-        terminal.replace_marked_text_in_range(None, "Hey".to_string(), None);
+        terminal.update_dictation_hypothesis(None, "Hey".to_string(), None);
         match events.try_recv().expect("expected hypothesis preview") {
             super::TerminalEvent::DictationPreviewChanged(Some(text)) => assert_eq!(text, "Hey"),
             event => panic!("expected dictation preview, got {event:?}"),
@@ -2470,7 +2307,7 @@ mod tests {
 
         terminal.begin_dictation();
         events.try_recv().expect("expected empty preview");
-        terminal.replace_marked_text_in_range(Some(1..1), "Hello".to_string(), None);
+        terminal.update_dictation_hypothesis(Some(1..1), "Hello".to_string(), None);
         events.try_recv().expect("expected first hypothesis");
         terminal.dictation_recording_ended();
         events
@@ -2605,8 +2442,12 @@ mod tests {
         );
     }
 
+    // Without the old Telex-replay workaround, the IME context echo is treated
+    // as a plain append. Telex SHOULD use text(in:) to verify context and skip
+    // the echo, or provide a replacement_range. If it doesn't, the PTY receives
+    // an extra 'h' before the correction. This test documents the raw behaviour.
     #[test]
-    fn keyboard_context_suppresses_telex_replayed_prefix_after_delete() {
+    fn keyboard_context_telex_replay_is_a_plain_append_without_workaround() {
         let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
 
         terminal.replace_keyboard_input_context_range(None, "c");
@@ -2622,13 +2463,14 @@ mod tests {
             })
         );
 
+        // Telex context echo — sent as plain append; PTY will see 'h'.
         assert_eq!(
             terminal.replace_keyboard_input_context_range(None, "h"),
             super::KeyboardInputContextEdit {
                 backspaces: 0,
-                text_to_insert: String::new(),
-                document_text: "ch".to_string(),
-                selection_range: 2..2,
+                text_to_insert: "h".to_string(),
+                document_text: "chh".to_string(),
+                selection_range: 3..3,
             }
         );
         assert_eq!(
@@ -2636,195 +2478,7 @@ mod tests {
             super::KeyboardInputContextEdit {
                 backspaces: 0,
                 text_to_insert: "à".to_string(),
-                document_text: "chà".to_string(),
-                selection_range: 3..3,
-            }
-        );
-    }
-
-    #[test]
-    fn keyboard_context_replaces_observed_non_ascii_replay_cluster() {
-        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
-
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "v"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: "v".to_string(),
-                document_text: "v".to_string(),
-                selection_range: 1..1,
-            }
-        );
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "o"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: "o".to_string(),
-                document_text: "vo".to_string(),
-                selection_range: 2..2,
-            }
-        );
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "i"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: "i".to_string(),
-                document_text: "voi".to_string(),
-                selection_range: 3..3,
-            }
-        );
-        assert_eq!(
-            terminal.delete_keyboard_input_context_backward(),
-            Some(super::KeyboardInputContextEdit {
-                backspaces: 1,
-                text_to_insert: String::new(),
-                document_text: "vo".to_string(),
-                selection_range: 2..2,
-            })
-        );
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "o"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: String::new(),
-                document_text: "vo".to_string(),
-                selection_range: 2..2,
-            }
-        );
-        assert_eq!(
-            terminal.delete_keyboard_input_context_backward(),
-            Some(super::KeyboardInputContextEdit {
-                backspaces: 1,
-                text_to_insert: String::new(),
-                document_text: "v".to_string(),
-                selection_range: 1..1,
-            })
-        );
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "v"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: String::new(),
-                document_text: "v".to_string(),
-                selection_range: 1..1,
-            }
-        );
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "ơi"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: "ơi".to_string(),
-                document_text: "vơi".to_string(),
-                selection_range: 3..3,
-            }
-        );
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "s"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: "s".to_string(),
-                document_text: "vơis".to_string(),
-                selection_range: 4..4,
-            }
-        );
-        assert_eq!(
-            terminal.delete_keyboard_input_context_backward(),
-            Some(super::KeyboardInputContextEdit {
-                backspaces: 1,
-                text_to_insert: String::new(),
-                document_text: "vơi".to_string(),
-                selection_range: 3..3,
-            })
-        );
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "i"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: String::new(),
-                document_text: "vơi".to_string(),
-                selection_range: 3..3,
-            }
-        );
-        assert_eq!(
-            terminal.delete_keyboard_input_context_backward(),
-            Some(super::KeyboardInputContextEdit {
-                backspaces: 1,
-                text_to_insert: String::new(),
-                document_text: "vơ".to_string(),
-                selection_range: 2..2,
-            })
-        );
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "ơ"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: String::new(),
-                document_text: "vơ".to_string(),
-                selection_range: 2..2,
-            }
-        );
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "ới "),
-            super::KeyboardInputContextEdit {
-                backspaces: 1,
-                text_to_insert: "ới ".to_string(),
-                document_text: "với ".to_string(),
-                selection_range: 4..4,
-            }
-        );
-    }
-
-    #[test]
-    fn keyboard_context_replay_replacement_policy_keeps_ascii_suffix_appends() {
-        assert!(!Terminal::should_replace_observed_context_replay("h", "à"));
-        assert!(Terminal::should_replace_observed_context_replay("h", "hà"));
-        assert!(Terminal::should_replace_observed_context_replay("ơ", "ới "));
-        assert!(Terminal::should_replace_observed_context_replay("ư", "ứ"));
-        assert!(!Terminal::should_replace_observed_context_replay(
-            "đ", "úng"
-        ));
-    }
-
-    #[test]
-    fn keyboard_context_keeps_replayed_non_ascii_prefix_before_suffix_cluster() {
-        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
-
-        terminal.replace_keyboard_input_context_range(None, "d");
-        terminal.delete_keyboard_input_context_backward();
-        terminal.replace_keyboard_input_context_range(None, "đ");
-        terminal.replace_keyboard_input_context_range(None, "u");
-        terminal.replace_keyboard_input_context_range(None, "n");
-        terminal.replace_keyboard_input_context_range(None, "g");
-
-        assert_eq!(
-            terminal.delete_keyboard_input_context_backward(),
-            Some(super::KeyboardInputContextEdit {
-                backspaces: 1,
-                text_to_insert: String::new(),
-                document_text: "đun".to_string(),
-                selection_range: 3..3,
-            })
-        );
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "n"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: String::new(),
-                document_text: "đun".to_string(),
-                selection_range: 3..3,
-            }
-        );
-        terminal.delete_keyboard_input_context_backward();
-        terminal.replace_keyboard_input_context_range(None, "u");
-        terminal.delete_keyboard_input_context_backward();
-        terminal.replace_keyboard_input_context_range(None, "đ");
-
-        assert_eq!(
-            terminal.replace_keyboard_input_context_range(None, "úng"),
-            super::KeyboardInputContextEdit {
-                backspaces: 0,
-                text_to_insert: "úng".to_string(),
-                document_text: "đúng".to_string(),
+                document_text: "chhà".to_string(),
                 selection_range: 4..4,
             }
         );
