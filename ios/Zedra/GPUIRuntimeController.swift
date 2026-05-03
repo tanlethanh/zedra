@@ -82,16 +82,19 @@ final class GPUIRuntimeController: NSObject {
     }
 
     func applicationWillResignActive() {
+        keyboardAccessoryController.stopRepeating()
         gpui_ios_will_resign_active(gpuiApp)
     }
 
     func applicationDidEnterBackground() {
+        keyboardAccessoryController.stopRepeating()
         gpui_ios_did_enter_background(gpuiApp)
         zedra_ios_app_did_enter_background()
         stopDisplayLink()
     }
 
     func applicationWillTerminate() {
+        keyboardAccessoryController.stopRepeating()
         stopDisplayLink()
         gpui_ios_will_terminate(gpuiApp)
     }
@@ -132,6 +135,7 @@ final class GPUIRuntimeController: NSObject {
 
     @objc
     func keyboardWillHide(_ notification: Notification) {
+        keyboardAccessoryController.stopRepeating()
         zedra_ios_set_keyboard_height(0)
         gpui_ios_set_software_keyboard_visible(false)
     }
@@ -142,21 +146,7 @@ final class GPUIRuntimeController: NSObject {
         pushWindowSize()
     }
 
-    @objc
-    func keyboardShortcutTapped(_ sender: UIButton) {
-        let idx = sender.tag
-        let key: String?
-        switch idx {
-        case 0: key = "escape"
-        case 1: key = "tab"
-        case 2: key = "left"
-        case 3: key = "down"
-        case 4: key = "up"
-        case 5: key = "right"
-        case 6: key = "enter"
-        default: key = nil
-        }
-        guard let key else { return }
+    private func sendKeyboardAccessoryKey(_ key: String) {
         key.withCString { zedra_ios_send_key_input($0) }
     }
 
@@ -180,10 +170,10 @@ final class GPUIRuntimeController: NSObject {
     private func setupKeyboardAccessoryView() {
         let width = UIScreen.main.bounds.width
         let bar = keyboardAccessoryController.makeAccessoryView(
-            width: width,
-            target: self,
-            action: #selector(keyboardShortcutTapped(_:))
-        )
+            width: width
+        ) { [weak self] key in
+            self?.sendKeyboardAccessoryKey(key)
+        }
         gpui_ios_set_keyboard_accessory_view(Unmanaged.passUnretained(bar).toOpaque())
     }
 
