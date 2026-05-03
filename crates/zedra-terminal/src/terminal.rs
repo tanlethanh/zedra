@@ -1772,9 +1772,9 @@ fn encode_mouse_position(position: usize) -> [u8; 2] {
 // Plain-text link detection
 // ---------------------------------------------------------------------------
 
-// Conservative-by-design: paths need `/` AND a known extension; bare filenames
-// (`README`, `package.json`) deliberately rejected. Loosening invites false
-// positives. URL detection separately requires `http(s)://`.
+// Conservative-by-design: ordinary paths need `/` AND a known extension.
+// Bare filenames are only accepted in clear file-list/status contexts.
+// URL detection separately requires `http(s)://`.
 const FILE_EXTENSIONS: &[&str] = &[
     "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "swift", "kt", "java", "c", "cc",
     "cpp", "cxx", "h", "hh", "hpp", "hxx", "cs", "rb", "lua", "php", "zig", "dart", "ex", "exs",
@@ -1806,6 +1806,7 @@ fn detect_links_in_chars(cells: &[(Point, char)], links: &mut Vec<DetectedLink>)
     let chars: Vec<char> = cells.iter().map(|(_, c)| *c).collect();
     detect_urls_in_chars(&chars, cells, links);
     detect_file_paths_in_chars(&chars, cells, links);
+    detect_contextual_file_list_paths_in_chars(&chars, cells, links);
 }
 
 fn detect_urls_in_chars(chars: &[char], cells: &[(Point, char)], links: &mut Vec<DetectedLink>) {
@@ -1873,7 +1874,7 @@ fn detect_file_paths_in_chars(
         while end < len && is_path_char(chars[end]) {
             end += 1;
         }
-        // Strip ONLY trailing sentence punctuation `.,;!?`. Leading `.` is
+        // Strip ONLY trailing sentence/label punctuation `.,;!?:`. Leading `.` is
         // valid path syntax (`./foo.rs`, `../bar.rs`, `.hidden/file.rs`) and
         // must be preserved.
         while end > start && is_path_trailing_punct(chars[end - 1]) {
@@ -1929,6 +1930,120 @@ fn detect_file_paths_in_chars(
 
         i = next_i;
     }
+}
+
+fn detect_contextual_file_list_paths_in_chars(
+    chars: &[char],
+    cells: &[(Point, char)],
+    links: &mut Vec<DetectedLink>,
+) {
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        while i < len && !is_path_char(chars[i]) {
+            i += 1;
+        }
+        let start = i;
+        while i < len && is_path_char(chars[i]) {
+            i += 1;
+        }
+        let mut end = i;
+        while end > start && is_path_trailing_punct(chars[end - 1]) {
+            end -= 1;
+        }
+
+        if start >= end {
+            continue;
+        }
+
+        let segment: String = chars[start..end].iter().collect();
+        if segment.contains("://")
+            || link_span_overlaps_existing(cells[start].0, cells[end - 1].0, links)
+        {
+            continue;
+        }
+
+        let is_bare_file = !segment.contains('/') && token_has_known_file_extension(&segment);
+        let is_explicit_directory = segment.ends_with('/')
+            && segment
+                .trim_end_matches('/')
+                .contains(|c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+        if !(is_bare_file || is_explicit_directory) {
+            continue;
+        }
+
+        if !token_has_file_list_context(start, cells, chars, links) {
+            continue;
+        }
+
+        links.push(DetectedLink {
+            start: cells[start].0,
+            end: cells[end - 1].0,
+            text: segment,
+            kind: DetectedLinkKind::FilePath,
+        });
+    }
+}
+
+fn token_has_file_list_context(
+    start: usize,
+    cells: &[(Point, char)],
+    chars: &[char],
+    links: &[DetectedLink],
+) -> bool {
+    let line = cells[start].0.line;
+    links.iter().any(|link| {
+        link.kind == DetectedLinkKind::FilePath && link.start.line <= line && link.end.line >= line
+    }) || line_prefix_has_status_marker(start, cells, chars)
+}
+
+fn line_prefix_has_status_marker(start: usize, cells: &[(Point, char)], chars: &[char]) -> bool {
+    let line = cells[start].0.line;
+    let mut line_start = start;
+    while line_start > 0 && cells[line_start - 1].0.line == line {
+        line_start -= 1;
+    }
+
+    let prefix: String = chars[line_start..start].iter().collect();
+    let Some(marker) = prefix.split_whitespace().last() else {
+        return false;
+    };
+
+    matches!(
+        marker,
+        "M" | "A"
+            | "D"
+            | "R"
+            | "C"
+            | "U"
+            | "T"
+            | "??"
+            | "!!"
+            | "AM"
+            | "MM"
+            | "AD"
+            | "RM"
+            | "UU"
+            | "UD"
+            | "DU"
+            | "AA"
+            | "DD"
+    )
+}
+
+fn link_span_overlaps_existing(start: Point, end: Point, links: &[DetectedLink]) -> bool {
+    links
+        .iter()
+        .any(|link| point_in_link(start, link) || point_in_link(end, link))
+}
+
+fn token_has_known_file_extension(token: &str) -> bool {
+    let ext = std::path::Path::new(token)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    FILE_EXTENSIONS.contains(&ext)
 }
 
 fn is_path_char(c: char) -> bool {
@@ -2021,7 +2136,7 @@ fn tail_looks_like_cut_off_path(cells: &[(Point, char)]) -> bool {
 }
 
 fn is_path_trailing_punct(c: char) -> bool {
-    matches!(c, '.' | ',' | ';' | '!' | '?')
+    matches!(c, '.' | ',' | ';' | '!' | '?' | ':')
 }
 
 fn split_file_position_chars(token: &str) -> (&str, Option<u32>, Option<u32>) {
@@ -2102,6 +2217,12 @@ mod tests {
         let start = line.find(needle).expect("substring should exist");
         let hovered_column = start + needle.len().saturating_sub(1) / 2;
         Point::new(Line(0), Column(hovered_column))
+    }
+
+    fn point_for_substring_on_line(line_idx: i32, line: &str, needle: &str) -> Point {
+        let start = line.find(needle).expect("substring should exist");
+        let hovered_column = start + needle.len().saturating_sub(1) / 2;
+        Point::new(Line(line_idx), Column(hovered_column))
     }
 
     fn file_target(
@@ -2986,6 +3107,108 @@ mod tests {
     }
 
     #[test]
+    fn detects_contextual_file_list_paths() {
+        let line = "   README.md, package.json, AGENTS.md, docs/CONVENTIONS.md, and worktrees/";
+        let terminal = terminal_with_output(
+            b"   README.md, package.json, AGENTS.md, docs/CONVENTIONS.md, and worktrees/\r\n",
+        );
+
+        let readme = terminal
+            .hyperlink_at_point(point_for_substring(line, "README.md"), Some("/repo"))
+            .expect("expected root README in path list");
+        let (_label, path, relative_path, line_num, col_num) = file_target(readme);
+        assert_eq!(Path::new(&path), Path::new("/repo/README.md"));
+        assert_eq!(Path::new(&relative_path), Path::new("README.md"));
+        assert_eq!(line_num, None);
+        assert_eq!(col_num, None);
+
+        let package = terminal
+            .hyperlink_at_point(point_for_substring(line, "package.json"), Some("/repo"))
+            .expect("expected root package.json in path list");
+        let (_label, path, relative_path, line_num, col_num) = file_target(package);
+        assert_eq!(Path::new(&path), Path::new("/repo/package.json"));
+        assert_eq!(Path::new(&relative_path), Path::new("package.json"));
+        assert_eq!(line_num, None);
+        assert_eq!(col_num, None);
+
+        let agents = terminal
+            .hyperlink_at_point(point_for_substring(line, "AGENTS.md"), Some("/repo"))
+            .expect("expected bare file in path list");
+        let (_label, path, relative_path, line_num, col_num) = file_target(agents);
+        assert_eq!(Path::new(&path), Path::new("/repo/AGENTS.md"));
+        assert_eq!(Path::new(&relative_path), Path::new("AGENTS.md"));
+        assert_eq!(line_num, None);
+        assert_eq!(col_num, None);
+
+        let conventions = terminal
+            .hyperlink_at_point(
+                point_for_substring(line, "docs/CONVENTIONS.md"),
+                Some("/repo"),
+            )
+            .expect("expected slash file in path list");
+        let (_label, path, relative_path, line_num, col_num) = file_target(conventions);
+        assert_eq!(Path::new(&path), Path::new("/repo/docs/CONVENTIONS.md"));
+        assert_eq!(Path::new(&relative_path), Path::new("docs/CONVENTIONS.md"));
+        assert_eq!(line_num, None);
+        assert_eq!(col_num, None);
+
+        let worktrees = terminal
+            .hyperlink_at_point(point_for_substring(line, "worktrees/"), Some("/repo"))
+            .expect("expected explicit directory in path list");
+        let (_label, path, relative_path, line_num, col_num) = file_target(worktrees);
+        assert_eq!(Path::new(&path), Path::new("/repo/worktrees"));
+        assert_eq!(Path::new(&relative_path), Path::new("worktrees"));
+        assert_eq!(line_num, None);
+        assert_eq!(col_num, None);
+    }
+
+    #[test]
+    fn detects_contextual_git_status_paths() {
+        let first = "-> M AGENTS.md";
+        let second = "     M docs/CONVENTIONS.md";
+        let third = "     ?? worktrees/";
+        let terminal = terminal_with_output(
+            b"-> M AGENTS.md\r\n     M docs/CONVENTIONS.md\r\n     ?? worktrees/\r\n",
+        );
+
+        let agents = terminal
+            .hyperlink_at_point(
+                point_for_substring_on_line(0, first, "AGENTS.md"),
+                Some("/repo"),
+            )
+            .expect("expected bare git-status file");
+        let (_label, path, relative_path, line_num, col_num) = file_target(agents);
+        assert_eq!(Path::new(&path), Path::new("/repo/AGENTS.md"));
+        assert_eq!(Path::new(&relative_path), Path::new("AGENTS.md"));
+        assert_eq!(line_num, None);
+        assert_eq!(col_num, None);
+
+        let conventions = terminal
+            .hyperlink_at_point(
+                point_for_substring_on_line(1, second, "docs/CONVENTIONS.md"),
+                Some("/repo"),
+            )
+            .expect("expected slash git-status file");
+        let (_label, path, relative_path, line_num, col_num) = file_target(conventions);
+        assert_eq!(Path::new(&path), Path::new("/repo/docs/CONVENTIONS.md"));
+        assert_eq!(Path::new(&relative_path), Path::new("docs/CONVENTIONS.md"));
+        assert_eq!(line_num, None);
+        assert_eq!(col_num, None);
+
+        let worktrees = terminal
+            .hyperlink_at_point(
+                point_for_substring_on_line(2, third, "worktrees/"),
+                Some("/repo"),
+            )
+            .expect("expected explicit git-status directory");
+        let (_label, path, relative_path, line_num, col_num) = file_target(worktrees);
+        assert_eq!(Path::new(&path), Path::new("/repo/worktrees"));
+        assert_eq!(Path::new(&relative_path), Path::new("worktrees"));
+        assert_eq!(line_num, None);
+        assert_eq!(col_num, None);
+    }
+
+    #[test]
     fn detects_plain_url_links_from_grid_point() {
         let line = "Visit https://zedra.dev now";
         let terminal = terminal_with_output(b"Visit https://zedra.dev now\r\n");
@@ -3433,6 +3656,39 @@ mod tests {
         );
         // Span must cross physical lines.
         assert!(links[0].end.line > links[0].start.line);
+    }
+
+    #[test]
+    fn detects_path_split_by_hard_newline_before_label_colon() {
+        let terminal =
+            terminal_with_output(b"crates/zedra/src/\r\nhome_view.rs: the settings panel\r\n");
+
+        let links = terminal.detect_plain_links();
+        assert_eq!(
+            links.len(),
+            1,
+            "expected one joined path link, got {:?}",
+            links
+        );
+        assert_eq!(links[0].kind, super::DetectedLinkKind::FilePath);
+        assert_eq!(links[0].text, "crates/zedra/src/home_view.rs");
+        assert_eq!(links[0].start.line, Line(0));
+        assert_eq!(links[0].end.line, Line(1));
+
+        let hyperlink = terminal
+            .hyperlink_at_point(Point::new(Line(1), Column(4)), Some("/repo"))
+            .expect("expected hard-wrapped file hyperlink before label colon");
+        let (_label, path, relative_path, line, column) = file_target(hyperlink);
+        assert_eq!(
+            Path::new(&path),
+            Path::new("/repo/crates/zedra/src/home_view.rs")
+        );
+        assert_eq!(
+            Path::new(&relative_path),
+            Path::new("crates/zedra/src/home_view.rs")
+        );
+        assert_eq!(line, None);
+        assert_eq!(column, None);
     }
 
     #[test]

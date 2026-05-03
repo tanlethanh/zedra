@@ -900,6 +900,19 @@ mod tests {
     }
 
     #[test]
+    fn underlines_contextual_file_list_paths() {
+        let underlines = underline_spans(b"   AGENTS.md, docs/CONVENTIONS.md, and worktrees/\r\n");
+
+        assert_eq!(underlines.len(), 3);
+        assert_eq!(underlines[0].col, 3);
+        assert_eq!(underlines[0].num_cells, 9);
+        assert_eq!(underlines[1].col, 14);
+        assert_eq!(underlines[1].num_cells, 19);
+        assert_eq!(underlines[2].col, 39);
+        assert_eq!(underlines[2].num_cells, 10);
+    }
+
+    #[test]
     fn underlines_plain_urls() {
         // "Visit " = 6 chars, "https://zedra.dev" = 17 chars
         let underlines = underline_spans(b"Visit https://zedra.dev now\r\n");
