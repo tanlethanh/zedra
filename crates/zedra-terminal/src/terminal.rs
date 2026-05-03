@@ -873,6 +873,20 @@ impl Terminal {
         }
     }
 
+    pub fn set_text_input_selection_range(&mut self, range: Range<usize>) {
+        let state = self.ime_state_mut();
+        if state.document_text.is_empty()
+            && !state.dictation_active
+            && state.marked_range.is_none()
+            && !state.committed_dictation_pending_cleanup
+        {
+            state.selected_range = None;
+            return;
+        }
+
+        state.selected_range = Some(Self::clamp_utf16_range(&state.document_text, range));
+    }
+
     /// Clear the marked text.
     pub fn clear_marked_state(&mut self) {
         if let Some(state) = self.ime_state.as_mut() {
@@ -2820,6 +2834,61 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_context_honors_native_selection_during_vietnamese_telex_rewrite() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.replace_keyboard_input_context_range(None, "t");
+        terminal.replace_keyboard_input_context_range(None, "o");
+        assert_eq!(
+            terminal.delete_keyboard_input_context_backward(),
+            Some(super::KeyboardInputContextEdit {
+                backspaces: 1,
+                text_to_insert: String::new(),
+                document_text: "t".to_string(),
+                selection_range: 1..1,
+            })
+        );
+
+        terminal.set_text_input_selection_range(0..1);
+        assert_eq!(
+            terminal.replace_keyboard_input_context_range(None, "t"),
+            super::KeyboardInputContextEdit {
+                backspaces: 0,
+                text_to_insert: String::new(),
+                document_text: "t".to_string(),
+                selection_range: 1..1,
+            }
+        );
+        assert_eq!(
+            terminal.replace_keyboard_input_context_range(None, "ô"),
+            super::KeyboardInputContextEdit {
+                backspaces: 0,
+                text_to_insert: "ô".to_string(),
+                document_text: "tô".to_string(),
+                selection_range: 2..2,
+            }
+        );
+        assert_eq!(
+            terminal.replace_keyboard_input_context_range(None, "i"),
+            super::KeyboardInputContextEdit {
+                backspaces: 0,
+                text_to_insert: "i".to_string(),
+                document_text: "tôi".to_string(),
+                selection_range: 3..3,
+            }
+        );
+        assert_eq!(
+            terminal.replace_keyboard_input_context_range(None, " "),
+            super::KeyboardInputContextEdit {
+                backspaces: 0,
+                text_to_insert: " ".to_string(),
+                document_text: "tôi ".to_string(),
+                selection_range: 4..4,
+            }
+        );
+    }
+
+    #[test]
     fn keyboard_marked_commit_does_not_backspace_unsent_preedit() {
         let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
 
@@ -3016,7 +3085,7 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_context_explicit_replacement_overrides_observed_replay_state() {
+    fn keyboard_context_explicit_replacement_overrides_native_selection_state() {
         let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
 
         terminal.replace_keyboard_input_context_range(None, "c");
@@ -3031,6 +3100,7 @@ mod tests {
                 selection_range: 2..2,
             })
         );
+        terminal.set_text_input_selection_range(1..2);
         assert_eq!(
             terminal.replace_keyboard_input_context_range(None, "h"),
             super::KeyboardInputContextEdit {

@@ -132,15 +132,15 @@ impl InputHandler for TerminalInputHandler {
             .flatten()
     }
 
-    fn set_selected_text_range(
-        &mut self,
-        _range: Range<usize>,
-        _window: &mut Window,
-        _cx: &mut App,
-    ) {
-        // Critical: terminal input is a PTY diff stream, not a native editable
-        // text field. UIKit's transient Telex selections must not become
-        // multi-character terminal deletes.
+    fn set_selected_text_range(&mut self, range: Range<usize>, _window: &mut Window, cx: &mut App) {
+        let entity = self.entity.clone();
+        let _ = entity.update(cx, move |term, cx| {
+            // UIKit can select inside the synthetic text-input context while
+            // rewriting IME text. Keep that selection so replayed context replaces
+            // the shadow document instead of appending duplicate text to the PTY.
+            term.set_text_input_selection_range(range);
+            cx.notify();
+        });
     }
 
     fn marked_text_range(&mut self, _window: &mut Window, cx: &mut App) -> Option<Range<usize>> {
