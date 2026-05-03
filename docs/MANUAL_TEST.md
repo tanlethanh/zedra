@@ -324,6 +324,12 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:
 11. Expected: the terminal stays focused and the software keyboard reopens
 12. With the keyboard visible, drag vertically in terminal content to scroll scrollback or a terminal app that handles touch scroll
 13. Expected: the terminal scrolls without dismissing the keyboard or clearing terminal focus
+14. In a fresh non-alt terminal with the keyboard visible, run a slow stream such as `for i in $(seq 1 20); do echo "line $i"; sleep .2; done`
+15. Expected: early output continues from the top without being pushed upward into an empty lower gap; once the occupied rows reach the keyboard edge, the terminal lifts gradually and never more than the keyboard height
+16. With retained scrollback, clear the terminal using `printf '\033[2J\033[Htop\n'`
+17. Expected: the cleared content stays top-aligned instead of inheriting a full keyboard lift from old scrollback; TUI-authored blank layout rows still count as occupied space
+18. With the keyboard still visible and enough scrollback to reach history top, drag upward until scrolling stops, then keep dragging slightly
+19. Expected: the oldest scrollback rows can be revealed and are not clipped above the terminal viewport
 
 ## 11a. Terminal Scroll To Bottom Native Button On iOS
 

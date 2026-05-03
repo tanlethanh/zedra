@@ -8,9 +8,9 @@ use alacritty_terminal::event::{Event as AlacTermEvent, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::Config;
-use alacritty_terminal::term::cell::Cell;
+use alacritty_terminal::term::cell::{Cell, Flags as CellFlags};
 use alacritty_terminal::term::{Term, TermMode};
-use alacritty_terminal::vte::ansi::{CursorShape, Processor};
+use alacritty_terminal::vte::ansi::{Color as AlacColor, CursorShape, NamedColor, Processor};
 use gpui::{Context, Keystroke, Pixels, ScrollDelta, ScrollWheelEvent, Task, px};
 use tokio::sync::{broadcast, mpsc};
 use zedra_osc::{OscEvent, OscScanner};
@@ -1910,6 +1910,26 @@ fn split_file_position_chars(token: &str) -> (&str, Option<u32>, Option<u32>) {
     }
 
     (token, None, None)
+}
+
+/// Returns true if a cell contains no visible content.
+/// Checks attributes (background color, text flags) not just char value, so it
+/// works correctly with upstream alacritty where empty cells also use c=' '.
+pub fn is_blank(cell: &IndexedCell) -> bool {
+    if !matches!(cell.cell.c, '\0' | ' ' | '\t') {
+        return false;
+    }
+    if !matches!(cell.cell.bg, AlacColor::Named(NamedColor::Background)) {
+        return false;
+    }
+    if cell
+        .cell
+        .flags
+        .intersects(CellFlags::ALL_UNDERLINES | CellFlags::INVERSE | CellFlags::STRIKEOUT)
+    {
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
