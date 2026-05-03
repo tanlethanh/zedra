@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::cmp::min;
 use std::ops::{Index, Range};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc as std_mpsc;
 use tracing::{error, info};
 
 use alacritty_terminal::event::{Event as AlacTermEvent, EventListener};
@@ -9,8 +10,11 @@ use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::Config;
 use alacritty_terminal::term::cell::{Cell, Flags as CellFlags};
+use alacritty_terminal::term::color::COUNT as ALACRITTY_COLOR_COUNT;
 use alacritty_terminal::term::{Term, TermMode};
-use alacritty_terminal::vte::ansi::{Color as AlacColor, CursorShape, NamedColor, Processor};
+use alacritty_terminal::vte::ansi::{
+    Color as AlacColor, CursorShape, NamedColor, Processor, Rgb as AlacRgb,
+};
 use gpui::{Context, Keystroke, Pixels, ScrollDelta, ScrollWheelEvent, Task, px};
 use tokio::sync::{broadcast, mpsc};
 use zedra_osc::{OscEvent, OscScanner};
@@ -56,27 +60,83 @@ pub enum TerminalHyperlinkTarget {
     },
 }
 
-/// Event listener that captures alacritty title events, queuing them as TerminalEvents.
+const DEFAULT_TERMINAL_BACKGROUND: u32 = 0x0e0c0c;
+const DEFAULT_TERMINAL_FOREGROUND: u32 = 0xabb2bf;
+const DEFAULT_TERMINAL_CURSOR: u32 = 0x528bff;
+const DEFAULT_TERMINAL_ANSI_COLORS: [u32; 16] = [
+    0x282c34, 0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xabb2bf, 0x5c6370,
+    0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xffffff,
+];
+
+fn default_color_for_index(index: usize) -> AlacRgb {
+    match index {
+        0..=15 => rgb_from_hex(DEFAULT_TERMINAL_ANSI_COLORS[index]),
+        16..=231 => {
+            let color = index - 16;
+            AlacRgb {
+                r: xterm_cube_component(color / 36),
+                g: xterm_cube_component((color / 6) % 6),
+                b: xterm_cube_component(color % 6),
+            }
+        }
+        232..=255 => {
+            let value = ((index - 232) * 10 + 8) as u8;
+            AlacRgb {
+                r: value,
+                g: value,
+                b: value,
+            }
+        }
+        256 => rgb_from_hex(DEFAULT_TERMINAL_FOREGROUND),
+        257 => rgb_from_hex(DEFAULT_TERMINAL_BACKGROUND),
+        258 => rgb_from_hex(DEFAULT_TERMINAL_CURSOR),
+        259..=266 => dim_rgb(rgb_from_hex(DEFAULT_TERMINAL_ANSI_COLORS[index - 259])),
+        267 => rgb_from_hex(DEFAULT_TERMINAL_FOREGROUND),
+        268 => dim_rgb(rgb_from_hex(DEFAULT_TERMINAL_FOREGROUND)),
+        _ => rgb_from_hex(DEFAULT_TERMINAL_FOREGROUND),
+    }
+}
+
+fn rgb_from_hex(hex: u32) -> AlacRgb {
+    AlacRgb {
+        r: ((hex >> 16) & 0xff) as u8,
+        g: ((hex >> 8) & 0xff) as u8,
+        b: (hex & 0xff) as u8,
+    }
+}
+
+fn dim_rgb(color: AlacRgb) -> AlacRgb {
+    AlacRgb {
+        r: color.r / 2,
+        g: color.g / 2,
+        b: color.b / 2,
+    }
+}
+
+fn xterm_cube_component(value: usize) -> u8 {
+    if value == 0 {
+        0
+    } else {
+        (value * 40 + 55) as u8
+    }
+}
+
+/// Event listener that queues alacritty events for Terminal to process after VTE parsing.
 #[derive(Clone)]
 pub struct ZedraListener {
-    event_tx: broadcast::Sender<TerminalEvent>,
+    alacritty_event_tx: std_mpsc::Sender<AlacTermEvent>,
 }
 
 impl ZedraListener {
-    fn new(event_tx: broadcast::Sender<TerminalEvent>) -> Self {
-        Self { event_tx }
+    fn new(alacritty_event_tx: std_mpsc::Sender<AlacTermEvent>) -> Self {
+        Self { alacritty_event_tx }
     }
 }
 
 impl EventListener for ZedraListener {
     fn send_event(&self, event: AlacTermEvent) {
-        let terminal_event = match event {
-            AlacTermEvent::Title(t) => TerminalEvent::TitleChanged(Some(t)),
-            AlacTermEvent::ResetTitle => TerminalEvent::TitleChanged(None),
-            _ => return,
-        };
-        if let Err(e) = self.event_tx.send(terminal_event) {
-            error!("failed to send terminal event: {:?}", e);
+        if let Err(e) = self.alacritty_event_tx.send(event) {
+            error!("failed to queue alacritty terminal event: {:?}", e);
         }
     }
 }
@@ -194,6 +254,7 @@ pub struct Terminal {
     ime_state: Option<IMEState>,
     scanner: OscScanner,
     event_tx: broadcast::Sender<TerminalEvent>,
+    alacritty_event_rx: std_mpsc::Receiver<AlacTermEvent>,
     input_tx: Option<mpsc::Sender<Vec<u8>>>,
     output_task: Option<Task<()>>,
 }
@@ -204,7 +265,8 @@ impl Terminal {
     /// Create a new terminal with the given grid dimensions
     pub fn new(columns: usize, rows: usize, cell_width: Pixels, line_height: Pixels) -> Self {
         let (event_tx, _) = broadcast::channel(100);
-        let listener = ZedraListener::new(event_tx.clone());
+        let (alacritty_event_tx, alacritty_event_rx) = std_mpsc::channel();
+        let listener = ZedraListener::new(alacritty_event_tx);
         let config = Config::default();
         let term_size = SimpleDimensions {
             columns,
@@ -225,6 +287,7 @@ impl Terminal {
             ime_state: None,
             scanner: OscScanner::new(),
             event_tx,
+            alacritty_event_rx,
             input_tx: None,
             output_task: None,
         }
@@ -284,12 +347,60 @@ impl Terminal {
         let was_alt = self.mode.contains(TermMode::ALT_SCREEN);
         let previous_display_offset = self.display_offset();
         self.processor.advance(&mut self.term, bytes);
+        self.drain_alacritty_events();
         self.mode = *self.term.mode();
         let is_alt = self.mode.contains(TermMode::ALT_SCREEN);
         if is_alt != was_alt {
             let _ = self.event_tx.send(TerminalEvent::AltScreenChanged(is_alt));
         }
         self.emit_scrollback_position_if_changed(previous_display_offset);
+    }
+
+    fn drain_alacritty_events(&mut self) {
+        while let Ok(event) = self.alacritty_event_rx.try_recv() {
+            self.handle_alacritty_event(event);
+        }
+    }
+
+    fn handle_alacritty_event(&mut self, event: AlacTermEvent) {
+        match event {
+            AlacTermEvent::Title(t) => {
+                self.send_terminal_event(TerminalEvent::TitleChanged(Some(t)));
+            }
+            AlacTermEvent::ResetTitle => {
+                self.send_terminal_event(TerminalEvent::TitleChanged(None));
+            }
+            AlacTermEvent::PtyWrite(text) => {
+                self.send_bytes_sync(text.into_bytes());
+            }
+            AlacTermEvent::TextAreaSizeRequest(format) => {
+                let window_size = alacritty_terminal::event::WindowSize {
+                    num_lines: self.size.rows as u16,
+                    num_cols: self.size.columns as u16,
+                    cell_width: (self.size.cell_width / px(1.0)) as u16,
+                    cell_height: (self.size.line_height / px(1.0)) as u16,
+                };
+                self.send_bytes_sync(format(window_size).into_bytes());
+            }
+            AlacTermEvent::ColorRequest(index, format) => {
+                // Apps like Codex query OSC 10/11 at startup; answer through the PTY so
+                // terminal-derived styles do not silently disable themselves.
+                let color = if index < ALACRITTY_COLOR_COUNT {
+                    self.term.colors()[index]
+                } else {
+                    None
+                }
+                .unwrap_or_else(|| default_color_for_index(index));
+                self.send_bytes_sync(format(color).into_bytes());
+            }
+            _ => {}
+        }
+    }
+
+    fn send_terminal_event(&self, event: TerminalEvent) {
+        if let Err(e) = self.event_tx.send(event) {
+            error!("failed to send terminal event: {:?}", e);
+        }
     }
 
     /// Feed bytes from PTY output buffer into the OSC scanner
@@ -1969,8 +2080,9 @@ mod tests {
 
     use alacritty_terminal::index::{Column, Line, Point};
     use gpui::px;
+    use tokio::sync::mpsc;
 
-    use super::{Terminal, TerminalHyperlink, TerminalHyperlinkTarget};
+    use super::{Terminal, TerminalEvent, TerminalHyperlink, TerminalHyperlinkTarget};
 
     fn terminal_with_output(output: &[u8]) -> Terminal {
         let mut terminal = Terminal::new(160, 8, px(10.0), px(20.0));
@@ -2011,6 +2123,57 @@ mod tests {
             TerminalHyperlinkTarget::Url { url } => (hyperlink.label, url),
             other => panic!("expected url hyperlink, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn emits_title_events_from_alacritty_event_queue() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let mut events = terminal.subscribe_events();
+
+        terminal.advance_bytes(b"\x1b]0;zedra\x1b\\");
+
+        match events.try_recv().unwrap() {
+            TerminalEvent::TitleChanged(Some(title)) => assert_eq!(title, "zedra"),
+            event => panic!("expected title event, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn forwards_alacritty_pty_write_events() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let (input_tx, mut input_rx) = mpsc::channel(4);
+        terminal.input_tx = Some(input_tx);
+
+        terminal.advance_bytes(b"\x1b[c");
+
+        let response = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
+        assert_eq!(response, "\x1b[?6c");
+    }
+
+    #[test]
+    fn responds_to_osc_default_color_queries() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let (input_tx, mut input_rx) = mpsc::channel(4);
+        terminal.input_tx = Some(input_tx);
+
+        terminal.advance_bytes(b"\x1b]10;?\x07\x1b]11;?\x1b\\");
+
+        let foreground = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
+        let background = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
+        assert_eq!(foreground, "\x1b]10;rgb:abab/b2b2/bfbf\x07");
+        assert_eq!(background, "\x1b]11;rgb:0e0e/0c0c/0c0c\x1b\\");
+    }
+
+    #[test]
+    fn responds_to_osc_color_queries_with_current_color_table() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let (input_tx, mut input_rx) = mpsc::channel(4);
+        terminal.input_tx = Some(input_tx);
+
+        terminal.advance_bytes(b"\x1b]11;#112233\x1b\\\x1b]11;?\x1b\\");
+
+        let background = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
+        assert_eq!(background, "\x1b]11;rgb:1111/2222/3333\x1b\\");
     }
 
     #[test]
