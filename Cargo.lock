@@ -9997,7 +9997,7 @@ dependencies = [
 
 [[package]]
 name = "zedra"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "android_logger",
  "anyhow",
@@ -10048,7 +10048,7 @@ dependencies = [
 
 [[package]]
 name = "zedra-host"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -10086,11 +10086,11 @@ dependencies = [
 
 [[package]]
 name = "zedra-osc"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "zedra-rpc"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "base64-url",
@@ -10110,7 +10110,7 @@ dependencies = [
 
 [[package]]
 name = "zedra-session"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "ed25519-dalek 2.2.0",
@@ -10131,14 +10131,14 @@ dependencies = [
 
 [[package]]
 name = "zedra-telemetry"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "log",
 ]
 
 [[package]]
 name = "zedra-terminal"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "alacritty_terminal",
  "futures",
