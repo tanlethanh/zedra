@@ -638,16 +638,17 @@ printf '\033]8;;file:///tmp/zedra-code-selection.rs:1:1\033\\/tmp/zedra-code-sel
 2. Open a source file from the workspace drawer so the main workspace code editor is visible
 3. Long-press inside a code line and drag the selection handles across multiple lines
 4. Tap `Add to Chat` in the native selection menu next to `Copy`
-5. Expected: a native selection sheet lists detected supported AI-agent terminals by terminal title without a `Terminal N` prefix; emoji and spinner glyphs are omitted from the picker labels, and iOS shows the bundled agent SVG icon in both light and dark appearance
-6. Pick the Claude terminal
-7. Expected: the main view switches to the selected terminal first, then the selected range is pasted into Claude as an `@file#Lx-Ly` mention after a short delay; it is not submitted automatically
-8. Repeat for Codex, opencode, Gemini, or another detected non-shell agent
-9. Expected: the main view switches to the selected terminal first, then the selected range is pasted as fenced context with the source range after a short delay; it is not submitted automatically
-10. Open a markdown file and select text in a paragraph or code block
-11. Drag the markdown selection handles to extend and shrink the selected range before opening the menu
-12. Tap `Add to Chat`, pick an agent terminal, and verify the selected source lines are pasted into that terminal
-13. Exit all supported AI-agent CLIs, select editor text, and tap `Add to Chat`
-14. Expected: the native selection sheet shows `No AI agent detected` and no text is inserted
+5. Expected: `Add to Chat` shows the Zedra icon in the selection menu
+6. Expected: a native selection sheet lists detected supported AI-agent terminals by terminal title without a `Terminal N` prefix; emoji and spinner glyphs are omitted from the picker labels, and iOS shows the bundled agent SVG icon in both light and dark appearance
+7. Pick the Claude terminal
+8. Expected: the main view switches to the selected terminal first, then the selected range is pasted into Claude as an `@file#Lx-Ly` mention after a short delay; it is not submitted automatically
+9. Repeat for Codex, opencode, Gemini, or another detected non-shell agent
+10. Expected: the main view switches to the selected terminal first, then the selected range is pasted as fenced context with the source range after a short delay; it is not submitted automatically
+11. Open a markdown file and select text in a paragraph or code block
+12. Drag the markdown selection handles to extend and shrink the selected range before opening the menu
+13. Tap `Add to Chat`, pick an agent terminal, and verify the selected source lines are pasted into that terminal
+14. Exit all supported AI-agent CLIs, select editor text, and tap `Add to Chat`
+15. Expected: the native selection sheet shows `No AI agent detected` and no text is inserted
 
 ## 16c. Workspace Markdown File Rendering
 
