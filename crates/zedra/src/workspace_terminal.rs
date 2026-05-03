@@ -21,7 +21,7 @@ use crate::terminal_state::TerminalState;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
 
 pub const TERMINAL_PENDING_ID: &str = "___PENDING___";
-const SCROLL_TO_BOTTOM_BUTTON_THRESHOLD_LINES: usize = 50;
+const SCROLL_TO_BOTTOM_BUTTON_THRESHOLD_LINES: usize = 10;
 const SCROLL_TO_BOTTOM_BUTTON_DISMISS_DELAY: Duration = Duration::from_millis(160);
 
 pub struct WorkspaceTerminal {
