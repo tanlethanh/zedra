@@ -256,12 +256,9 @@ impl ZedraApp {
             }
             WorkspacesEvent::Disconnected { .. } => {
                 zedra_telemetry::send(Event::Disconnect);
-                let new_screen = if self.workspaces.read(cx).is_empty() {
-                    AppScreen::Home
-                } else {
-                    AppScreen::Workspace
-                };
-                self.set_screen(new_screen, cx);
+                // A confirmed manual disconnect should leave the workspace surface immediately;
+                // the saved Home card remains the reconnect entry point.
+                self.set_screen(screen_after_workspace_disconnect(), cx);
             }
             WorkspacesEvent::StatesChanged => {
                 cx.notify();
@@ -350,6 +347,10 @@ fn should_process_pending_ticket(has_pending_ticket: bool, window_active: bool) 
     has_pending_ticket && window_active
 }
 
+fn screen_after_workspace_disconnect() -> AppScreen {
+    AppScreen::Home
+}
+
 pub fn open_zedra_window(app: &mut App, window_options: WindowOptions) -> Result<AnyWindowHandle> {
     app.open_window(window_options, |window, cx| {
         let view = cx.new(|cx| ZedraApp::new(window, cx));
@@ -361,7 +362,10 @@ pub fn open_zedra_window(app: &mut App, window_options: WindowOptions) -> Result
 
 #[cfg(test)]
 mod tests {
-    use super::{AppScreen, app_view_descriptor, should_process_pending_ticket};
+    use super::{
+        AppScreen, app_view_descriptor, screen_after_workspace_disconnect,
+        should_process_pending_ticket,
+    };
     use crate::telemetry::view_telemetry;
 
     #[test]
@@ -383,5 +387,10 @@ mod tests {
             Some(view_telemetry::SETTINGS)
         );
         assert_eq!(app_view_descriptor(AppScreen::Workspace), None);
+    }
+
+    #[test]
+    fn manual_workspace_disconnect_returns_home() {
+        assert_eq!(screen_after_workspace_disconnect(), AppScreen::Home);
     }
 }

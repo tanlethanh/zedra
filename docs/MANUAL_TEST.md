@@ -682,7 +682,7 @@ printf '\033]8;;file:///tmp/zedra-code-selection.rs:1:1\033\\/tmp/zedra-code-sel
 17. Tap outside the alert
 18. Expected: the alert dismisses and the session remains connected
 19. Tap `Cancel`, then retry and tap `Disconnect`
-20. Expected: the session disconnects only after confirmation
+20. Expected: the session disconnects only after confirmation and the app returns to Home
 21. Expected: the home workspace card immediately shows the disconnected/reconnect state instead of the old connected state
 22. Tap the disconnected workspace card
 23. Expected: the connect view title is `Disconnected` and the subtitle is `Tap refresh to reconnect.`

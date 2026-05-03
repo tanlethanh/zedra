@@ -183,7 +183,10 @@ impl WorkspaceDrawer {
             DrawerTab::Terminals => "terminals".to_string(),
             DrawerTab::Session => {
                 let session_state = self.session_state.read(cx);
-                let phase = session_state.phase();
+                let phase = workspace_state
+                    .connect_phase
+                    .clone()
+                    .unwrap_or_else(|| session_state.phase());
                 let transport = session_state.snapshot().transport;
                 let (label, _) = transport_badge(&phase, transport.as_ref());
                 label
