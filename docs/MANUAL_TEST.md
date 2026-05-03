@@ -405,6 +405,16 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:
 17. Commit message input, dictation: tap the microphone, dictate a short phrase, then stop dictation
 18. Expected: the dictated phrase remains in the input after UIKit commits, the final cleanup delete does not clear the field, and any late `insertDictationResult` does not duplicate the phrase
 
+## 11e. Terminal Keyboard Accessory Arrow Repeat On iOS
+
+1. Connect to a session on iPhone or iOS simulator and open the terminal view
+2. Tap each arrow button in the keyboard accessory once
+3. Expected: each tap sends exactly one corresponding arrow keystroke
+4. Press and hold each arrow button, then release it
+5. Expected: the corresponding arrow input repeats continuously while held and stops immediately on release
+6. Start holding an arrow button, then dismiss the keyboard or background the app
+7. Expected: repeat stops and does not resume when the keyboard or app returns
+
 ## 12. Quick Action Terminal Navigation
 
 1. Connect to a session with at least two open terminals
