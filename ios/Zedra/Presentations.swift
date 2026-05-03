@@ -3,9 +3,6 @@ import ObjectiveC.runtime
 import UIKit
 import ZedraFFI
 
-@_silgen_name("gpui_ios_request_frame")
-private func gpui_ios_request_frame(_ windowPtr: UnsafeMutableRawPointer?)
-
 @_silgen_name("gpui_ios_request_frame_forced")
 private func gpui_ios_request_frame_forced(_ windowPtr: UnsafeMutableRawPointer?)
 

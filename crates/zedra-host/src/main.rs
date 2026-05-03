@@ -9,7 +9,7 @@
 // response (no QR needed).
 
 use anyhow::{Context, Result};
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -28,13 +28,24 @@ mod setup;
 #[derive(Parser)]
 #[command(
     name = "zedra",
+    version,
+    disable_version_flag = true,
     about = "Zedra CLI - Desktop daemon",
-    before_help = "\x1b[1mZedra CLI - Desktop daemon\x1b[0m",
+    before_help = concat!(
+        "\x1b[1mZedra CLI - Desktop daemon\x1b[0m ",
+        "\x1b[2mv",
+        env!("CARGO_PKG_VERSION"),
+        "\x1b[0m"
+    ),
     help_template = "{before-help}{usage-heading} {usage}\n\n{all-args}",
     disable_help_subcommand = true,
     override_usage = "zedra <COMMAND> [OPTIONS]"
 )]
 struct Cli {
+    /// Print version
+    #[arg(short = 'v', long = "version", action = ArgAction::Version)]
+    _version: bool,
+
     /// Show tracing logs
     #[arg(long, global = true)]
     verbose: bool,
@@ -403,9 +414,20 @@ fn new_ga4(
     })
 }
 
+fn render_cli_version() -> String {
+    format!("{}\n", env!("CARGO_PKG_VERSION"))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) if err.kind() == clap::error::ErrorKind::DisplayVersion => {
+            print!("{}", render_cli_version());
+            return Ok(());
+        }
+        Err(err) => err.exit(),
+    };
 
     let verbose = cli.verbose;
     if verbose {
@@ -1778,6 +1800,30 @@ impl Drop for RawModeGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_version_flag_prints_package_version() {
+        for flag in ["--version", "-v"] {
+            match Cli::try_parse_from(["zedra", flag]) {
+                Ok(_) => panic!("{flag} should exit through clap's version path"),
+                Err(err) => assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion),
+            }
+        }
+        assert_eq!(
+            render_cli_version(),
+            format!("{}\n", env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    #[test]
+    fn help_title_includes_version() {
+        let help = Cli::command().render_help().to_string();
+
+        assert!(help.contains(&format!(
+            "Zedra CLI - Desktop daemon v{}",
+            env!("CARGO_PKG_VERSION")
+        )));
+    }
 
     #[test]
     fn detached_start_child_args_preserve_start_options() {
