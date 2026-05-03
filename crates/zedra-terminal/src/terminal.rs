@@ -1251,12 +1251,13 @@ impl Terminal {
 
             logical_line.extend(row_cells);
 
-            // Hard-wrap-with-indent join: only when tail looks cut mid-path.
-            // Loosening this (e.g., "ends in path-char") glues legit text like
-            // "Referenced file" onto the next line's path.
+            // Hard-wrap-with-indent join: only for same-token continuations.
+            // Blank next rows or TUI marker prefixes start a new logical line.
             let _ = last_visible;
-            let cut_off_tail =
-                !is_wrapped && line_idx < bottom && tail_looks_like_cut_off_path(&logical_line);
+            let cut_off_tail = !is_wrapped
+                && line_idx < bottom
+                && tail_looks_like_cut_off_path(&logical_line)
+                && self.next_line_allows_hard_newline_continuation(line_idx + 1, cols);
             let join_with_next = is_wrapped || cut_off_tail;
 
             if !join_with_next {
@@ -1276,6 +1277,32 @@ impl Terminal {
         }
 
         links
+    }
+
+    fn next_line_allows_hard_newline_continuation(&self, line_idx: i32, cols: usize) -> bool {
+        let row = &self.term.grid()[Line(line_idx)];
+
+        for col in 0..cols {
+            let cell = &row[Column(col)];
+            let flags = cell.flags;
+            if flags.contains(CellFlags::LEADING_WIDE_CHAR_SPACER)
+                || flags.contains(CellFlags::WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+
+            let ch = match cell.c {
+                '\0' => ' ',
+                c => c,
+            };
+            if ch.is_whitespace() {
+                continue;
+            }
+
+            return is_hard_newline_continuation_start(ch);
+        }
+
+        false
     }
 
     fn hyperlink_from_osc8(
@@ -1795,6 +1822,10 @@ fn detect_file_paths_in_chars(
 
 fn is_path_char(c: char) -> bool {
     !c.is_whitespace() && !is_surrounding_punct(c)
+}
+
+fn is_hard_newline_continuation_start(c: char) -> bool {
+    !matches!(c, '+' | '-' | '/' | '*' | '>')
 }
 
 fn chars_at_match(chars: &[char], start: usize, pattern: &str) -> bool {
@@ -2990,6 +3021,59 @@ mod tests {
         assert_eq!(links[0].text, "https://example.com/very/long/path");
         // Start point should be on the first physical line at column 6.
         assert_eq!(links[0].start.column.0, 6);
+    }
+
+    #[test]
+    fn hyperlink_detection_rejects_tui_marker_continuation_prefixes() {
+        for ch in ['+', '-', '/', '*', '>'] {
+            assert!(!super::is_hard_newline_continuation_start(ch));
+        }
+
+        for ch in ['a', 'Z', '0', '.', '_'] {
+            assert!(super::is_hard_newline_continuation_start(ch));
+        }
+    }
+
+    #[test]
+    fn hyperlink_detection_does_not_join_git_url_with_branch_marker() {
+        let terminal = terminal_with_output(
+            b"From https://github.com/tanlethanh/zedra\r\n       * branch main -> FETCH_HEAD\r\n",
+        );
+
+        let links = terminal.detect_plain_links();
+        assert_eq!(links.len(), 1, "expected one URL link, got {:?}", links);
+        assert_eq!(links[0].kind, super::DetectedLinkKind::Url);
+        assert_eq!(links[0].text, "https://github.com/tanlethanh/zedra");
+        assert_eq!(links[0].start.line, Line(0));
+        assert_eq!(links[0].end.line, Line(0));
+    }
+
+    #[test]
+    fn hyperlink_detection_does_not_join_url_across_blank_line() {
+        let terminal = terminal_with_output(
+            b" - PR: https://github.com/tanlethanh/zedra/pull/58\r\n\r\n What changed:\r\n - ...\r\n",
+        );
+
+        let links = terminal.detect_plain_links();
+        assert_eq!(links.len(), 1, "expected one URL link, got {:?}", links);
+        assert_eq!(links[0].kind, super::DetectedLinkKind::Url);
+        assert_eq!(links[0].text, "https://github.com/tanlethanh/zedra/pull/58");
+        assert_eq!(links[0].start.line, Line(0));
+        assert_eq!(links[0].end.line, Line(0));
+    }
+
+    #[test]
+    fn hyperlink_detection_hard_joins_url_with_plain_continuation_line() {
+        let terminal = terminal_with_output(
+            b"Open https://github.com/tanlethanh/zedra/pull/\r\n        58 now\r\n",
+        );
+
+        let links = terminal.detect_plain_links();
+        assert_eq!(links.len(), 1, "expected one URL link, got {:?}", links);
+        assert_eq!(links[0].kind, super::DetectedLinkKind::Url);
+        assert_eq!(links[0].text, "https://github.com/tanlethanh/zedra/pull/58");
+        assert_eq!(links[0].start.line, Line(0));
+        assert_eq!(links[0].end.line, Line(1));
     }
 
     #[test]
