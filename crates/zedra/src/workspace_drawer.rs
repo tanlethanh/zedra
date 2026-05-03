@@ -226,6 +226,11 @@ impl WorkspaceDrawer {
         } else {
             rgb(theme::TEXT_MUTED)
         };
+        let fill = if is_active {
+            rgb(theme::BG_CARD)
+        } else {
+            rgb(theme::BG_PRIMARY)
+        };
 
         div()
             .id(self.tab_id(tab))
@@ -237,6 +242,7 @@ impl WorkspaceDrawer {
             .rounded(px(6.0))
             .cursor_pointer()
             .hit_slop(px(10.0))
+            .bg(fill)
             .on_press(cx.listener(move |this, _event, _window, cx| {
                 platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
                 this.set_current_tab(tab, cx);
@@ -299,7 +305,7 @@ impl WorkspaceDrawer {
             .bg(rgb(theme::BG_SURFACE))
             .occlude()
             .on_pointer_down(|_, _, cx| cx.stop_propagation())
-            .rounded_bl(px(8.0))
+            .rounded_bl(px(6.0))
             .border_b_1()
             .border_l_1()
             .border_color(rgb(theme::BORDER_SUBTLE))
