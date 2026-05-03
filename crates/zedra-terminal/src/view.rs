@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::term::TermMode;
 use gpui::*;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tracing::*;
 use zedra_osc::OscEvent;
 
@@ -139,18 +139,29 @@ impl TerminalView {
         // Subscribe to terminal events via tokio broadcast channel and emit them to the app
         let mut event_rx = terminal.read(cx).subscribe_events();
         let event_task = cx.spawn(async move |this, cx| {
-            while let Ok(event) = event_rx.recv().await {
-                if let Err(e) = this.update(cx, |this, cx| {
-                    if let TerminalEvent::AltScreenChanged(is_alt) = &event {
-                        this.is_alt_screen = *is_alt;
+            loop {
+                match event_rx.recv().await {
+                    Ok(event) => {
+                        if let Err(e) = this.update(cx, |this, cx| {
+                            if let TerminalEvent::AltScreenChanged(is_alt) = &event {
+                                this.is_alt_screen = *is_alt;
+                            }
+                            if let TerminalEvent::OscEvent(OscEvent::Cwd(cwd)) = &event {
+                                this.workdir = Some(cwd.clone());
+                            }
+                            cx.emit(event);
+                            cx.notify();
+                        }) {
+                            error!("failed to emit terminal event: {:?}", e);
+                        }
                     }
-                    if let TerminalEvent::OscEvent(OscEvent::Cwd(cwd)) = &event {
-                        this.workdir = Some(cwd.clone());
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(
+                            skipped,
+                            "terminal event relay lagged; continuing with retained events"
+                        );
                     }
-                    cx.emit(event);
-                    cx.notify();
-                }) {
-                    error!("failed to emit terminal event: {:?}", e);
+                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
         });
@@ -843,6 +854,38 @@ mod tests {
             }
             event => panic!("expected forced resize event, got {event:?}"),
         }
+        cx.quit();
+    }
+
+    #[test]
+    fn terminal_event_relay_survives_broadcast_lag() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+
+        let root = window.root(&mut cx).unwrap();
+        let mut events = cx.events(&root);
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                terminal_view.terminal.update(cx, |terminal, _| {
+                    for i in 0..120 {
+                        terminal.emit_dictation_preview_changed(Some(i.to_string()));
+                    }
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let mut saw_latest_preview = false;
+        while let Some(event) = events.next().now_or_never().flatten() {
+            if let TerminalEvent::DictationPreviewChanged(Some(text)) = event
+                && text == "119"
+            {
+                saw_latest_preview = true;
+                break;
+            }
+        }
+        assert!(saw_latest_preview);
         cx.quit();
     }
 

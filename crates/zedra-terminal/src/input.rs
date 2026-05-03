@@ -91,6 +91,19 @@ impl TerminalInputHandler {
             term.clear_text_input_context();
         }
     }
+
+    fn apply_dictation_context_rewrite(
+        term: &mut Terminal,
+        replacement_range: Option<Range<usize>>,
+        text: &str,
+    ) -> bool {
+        if !term.is_dictation_active() {
+            return false;
+        }
+
+        term.update_dictation_hypothesis(replacement_range, text.to_string(), None);
+        true
+    }
 }
 
 impl InputHandler for TerminalInputHandler {
@@ -246,8 +259,7 @@ impl InputHandler for TerminalInputHandler {
         let text = text.to_string();
         let entity = self.entity.clone();
         let _ = entity.update(cx, move |term, cx| {
-            if term.is_dictation_active() {
-                term.replace_marked_text_in_range(replacement_range, text, None);
+            if Self::apply_dictation_context_rewrite(term, replacement_range.clone(), &text) {
                 cx.notify();
                 return;
             }
@@ -431,7 +443,10 @@ impl InputHandler for TerminalInputHandler {
 #[cfg(test)]
 mod tests {
     use super::TerminalInputHandler;
-    use gpui::{PlatformTextAutocapitalization, PlatformTextInputTrait, PlatformTextInputTraits};
+    use crate::terminal::{Terminal, TerminalEvent};
+    use gpui::{
+        PlatformTextAutocapitalization, PlatformTextInputTrait, PlatformTextInputTraits, px,
+    };
 
     #[test]
     fn terminal_accepts_text_input() {
@@ -453,5 +468,27 @@ mod tests {
         assert_eq!(traits.smart_quotes, PlatformTextInputTrait::Disabled);
         assert_eq!(traits.smart_dashes, PlatformTextInputTrait::Disabled);
         assert_eq!(traits.smart_insert_delete, PlatformTextInputTrait::Disabled);
+    }
+
+    #[test]
+    fn dictation_context_rewrite_emits_preview_update() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let mut events = terminal.subscribe_events();
+
+        terminal.begin_dictation();
+        events.try_recv().expect("expected empty preview");
+
+        assert!(TerminalInputHandler::apply_dictation_context_rewrite(
+            &mut terminal,
+            Some(1..1),
+            "Hi"
+        ));
+        match events.try_recv().expect("expected context rewrite preview") {
+            TerminalEvent::DictationPreviewChanged(Some(text)) => assert_eq!(text, "Hi"),
+            event => panic!("expected dictation preview update, got {event:?}"),
+        }
+
+        assert_eq!(terminal.text_input_document(), " Hi");
+        assert_eq!(terminal.marked_text_range(), Some(1..3));
     }
 }
