@@ -39,19 +39,20 @@ mod setup;
     ),
     help_template = "{before-help}{usage-heading} {usage}\n\n{all-args}",
     disable_help_subcommand = true,
+    arg_required_else_help = true,
     override_usage = "zedra <COMMAND> [OPTIONS]"
 )]
 struct Cli {
     /// Print version
-    #[arg(short = 'v', long = "version", action = ArgAction::Version)]
-    _version: bool,
+    #[arg(short = 'v', long = "version", action = ArgAction::SetTrue)]
+    print_version: bool,
 
     /// Show tracing logs
     #[arg(long, global = true)]
     verbose: bool,
 
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -420,14 +421,19 @@ fn render_cli_version() -> String {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = match Cli::try_parse() {
-        Ok(cli) => cli,
-        Err(err) if err.kind() == clap::error::ErrorKind::DisplayVersion => {
-            print!("{}", render_cli_version());
-            return Ok(());
-        }
-        Err(err) => err.exit(),
-    };
+    let cli = Cli::parse();
+    if cli.print_version {
+        print!("{}", render_cli_version());
+        return Ok(());
+    }
+    let command = cli.command.unwrap_or_else(|| {
+        Cli::command()
+            .error(
+                clap::error::ErrorKind::MissingSubcommand,
+                "a command is required",
+            )
+            .exit()
+    });
 
     let verbose = cli.verbose;
     if verbose {
@@ -455,7 +461,7 @@ async fn main() -> Result<()> {
             .init();
     }
 
-    match cli.command {
+    match command {
         Commands::Client {
             workdir,
             count,
@@ -1805,8 +1811,8 @@ mod tests {
     fn cli_version_flag_prints_package_version() {
         for flag in ["--version", "-v"] {
             match Cli::try_parse_from(["zedra", flag]) {
-                Ok(_) => panic!("{flag} should exit through clap's version path"),
-                Err(err) => assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion),
+                Ok(cli) => assert!(cli.print_version, "{flag} should set the version flag"),
+                Err(err) => panic!("{err}"),
             }
         }
         assert_eq!(
@@ -1823,6 +1829,34 @@ mod tests {
             "Zedra CLI - Desktop daemon v{}",
             env!("CARGO_PKG_VERSION")
         )));
+    }
+
+    #[test]
+    fn no_args_prints_help() {
+        match Cli::try_parse_from(["zedra"]) {
+            Ok(_) => panic!("missing command should print top-level help"),
+            Err(err) => {
+                assert_eq!(
+                    err.kind(),
+                    clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+                );
+                assert!(err.to_string().contains("Commands:"));
+            }
+        }
+    }
+
+    #[test]
+    fn start_detach_does_not_require_version_flag() {
+        for args in [["zedra", "start", ""], ["zedra", "start", "--detach"]] {
+            let args = args.into_iter().filter(|arg| !arg.is_empty());
+            match Cli::try_parse_from(args) {
+                Ok(cli) => {
+                    assert!(!cli.print_version, "start should not set version output");
+                    assert!(matches!(cli.command, Some(Commands::Start { .. })));
+                }
+                Err(err) => panic!("{err}"),
+            }
+        }
     }
 
     #[test]
