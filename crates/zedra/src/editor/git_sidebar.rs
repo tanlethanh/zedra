@@ -386,10 +386,12 @@ impl GitSidebar {
 
         let mut row = div()
             .id(SharedString::from(path.clone()))
+            .w_full()
             .flex()
             .flex_row()
             .items_center()
             .justify_between()
+            .gap(px(6.0))
             .h(px(theme::PANEL_ITEM_HEIGHT))
             .px(px(theme::DRAWER_PADDING))
             .cursor_pointer()
@@ -414,6 +416,8 @@ impl GitSidebar {
             .child(
                 div()
                     .flex()
+                    .flex_1()
+                    .min_w_0()
                     .flex_row()
                     .items_center()
                     .gap_1()
@@ -421,22 +425,26 @@ impl GitSidebar {
                     .child(
                         div()
                             .w(px(ICON_SIZE))
+                            .flex_shrink_0()
                             .text_color(rgb(status_color))
                             .text_size(px(theme::FONT_BODY))
                             .child(status.icon()),
                     )
                     .child(
                         div()
+                            .flex_1()
+                            .min_w_0()
                             .text_size(px(theme::FONT_BODY))
                             .when(is_active, |el| el.font_weight(FontWeight::MEDIUM))
                             .text_color(rgb(filename_color))
-                            .overflow_hidden()
+                            .truncate()
                             .child(filename),
                     ),
             )
             .child(
                 div()
                     .flex()
+                    .flex_shrink_0()
                     .flex_row()
                     .items_center()
                     .gap_1()

@@ -464,12 +464,13 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:
 9. Expected: added and removed lines are indicated by full-width background color only; the diff text does not render a leading `+` or `-`
 10. Expected: added and removed backgrounds stay continuous across rows without thin gaps, including after horizontal scrolling long lines
 11. Expected: the workspace header subtitle shows the git filename plus added and removed totals, and long filenames truncate instead of overflowing
-12. Tap the untracked file entry
-13. Expected: the diff view shows the untracked file content as added lines
-14. Long-press a file entry
-15. Expected: the file action sheet opens for that entry instead of doing nothing
-16. Tap the dimmed backdrop outside the action sheet
-17. Expected: the native action sheet dismisses without staging or unstaging the file
+12. Expected: long filenames in the git panel file list truncate with an ellipsis, while status marks and change counts remain visible
+13. Tap the untracked file entry
+14. Expected: the diff view shows the untracked file content as added lines
+15. Long-press a file entry
+16. Expected: the file action sheet opens for that entry instead of doing nothing
+17. Tap the dimmed backdrop outside the action sheet
+18. Expected: the native action sheet dismisses without staging or unstaging the file
 
 ## 15. Markdown List Item Wrap In Preview
 
