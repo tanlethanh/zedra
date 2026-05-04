@@ -1424,10 +1424,56 @@ impl Terminal {
                 continue;
             }
 
-            return is_hard_newline_continuation_start(ch);
+            if is_hard_newline_continuation_start(ch) {
+                return true;
+            }
+
+            // Directory/file splits can put the separator on the indented
+            // continuation line (`crates/foo\n  /bar.rs`). Keep bare slash
+            // commands like `/model` rejected by requiring extension evidence.
+            if ch == '/' {
+                return self.slash_continuation_has_file_evidence(row, col, cols);
+            }
+
+            return false;
         }
 
         false
+    }
+
+    fn slash_continuation_has_file_evidence(
+        &self,
+        row: &alacritty_terminal::grid::Row<Cell>,
+        start_col: usize,
+        cols: usize,
+    ) -> bool {
+        let mut token = String::new();
+
+        for col in start_col..cols {
+            let cell = &row[Column(col)];
+            let flags = cell.flags;
+            if flags.contains(CellFlags::LEADING_WIDE_CHAR_SPACER)
+                || flags.contains(CellFlags::WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+
+            let ch = match cell.c {
+                '\0' => ' ',
+                c => c,
+            };
+            if !is_path_char(ch) {
+                break;
+            }
+            token.push(ch);
+        }
+
+        while token.ends_with(is_path_trailing_punct) {
+            token.pop();
+        }
+
+        let (path_part, _, _) = split_file_position_chars(&token);
+        token_has_known_file_extension(path_part)
     }
 
     fn hyperlink_from_osc8(
@@ -3759,6 +3805,50 @@ mod tests {
         );
         assert_eq!(line, None);
         assert_eq!(column, None);
+    }
+
+    #[test]
+    fn detects_path_split_by_hard_newline_before_slash_component() {
+        let terminal = terminal_with_output(b".... crates/zedra/src\r\n   /platform.rs\r\n");
+
+        let links = terminal.detect_plain_links();
+        assert_eq!(
+            links.len(),
+            1,
+            "expected one joined path link, got {:?}",
+            links
+        );
+        assert_eq!(links[0].kind, super::DetectedLinkKind::FilePath);
+        assert_eq!(links[0].text, "crates/zedra/src/platform.rs");
+        assert_eq!(links[0].start.line, Line(0));
+        assert_eq!(links[0].end.line, Line(1));
+
+        let hyperlink = terminal
+            .hyperlink_at_point(Point::new(Line(1), Column(7)), Some("/repo"))
+            .expect("expected file hyperlink on slash-start continuation");
+        let (_label, path, relative_path, line, column) = file_target(hyperlink);
+        assert_eq!(
+            Path::new(&path),
+            Path::new("/repo/crates/zedra/src/platform.rs")
+        );
+        assert_eq!(
+            Path::new(&relative_path),
+            Path::new("crates/zedra/src/platform.rs")
+        );
+        assert_eq!(line, None);
+        assert_eq!(column, None);
+    }
+
+    #[test]
+    fn does_not_join_slash_command_after_cut_off_path_tail() {
+        let terminal = terminal_with_output(b"see crates/zedra/src\r\n   /model\r\n");
+
+        let links = terminal.detect_plain_links();
+        assert!(
+            links.is_empty(),
+            "slash command should not become a file hyperlink: {:?}",
+            links
+        );
     }
 
     #[test]
