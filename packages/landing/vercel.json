@@ -2,6 +2,7 @@
   "buildCommand": "bun run build",
   "outputDirectory": "dist",
   "installCommand": "bun install",
+  "ignoreCommand": "git diff HEAD^ HEAD --quiet -- .",
   "redirects": [
     {
       "source": "/install.sh",
