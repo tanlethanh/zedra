@@ -17,8 +17,9 @@ use crate::identity::SharedIdentity;
 use crate::metrics;
 use crate::pty::{ShellSession, SpawnOptions};
 use crate::session_registry::{
-    AttachResult, ConsumeSlotResult, HostShellState, HostTermMeta, OutputSenderSlot, ServerSession,
-    SessionRegistry, TermBacklog, TermSession, MAX_WATCHED_PATHS_PER_SESSION,
+    ActiveClientConnection, AttachResult, ConsumeSlotResult, HostShellState, HostTermMeta,
+    OutputSenderSlot, ServerSession, SessionRegistry, TermBacklog, TermSession,
+    MAX_WATCHED_PATHS_PER_SESSION,
 };
 use crate::utils;
 use anyhow::Result;
@@ -515,7 +516,7 @@ pub async fn handle_connection(
     let path_type = initial_path_type(&conn);
     let mut failure_reason: &'static str = "io_error";
     let mut failure_is_new_client = false;
-    let (session, client_pubkey, is_new_client, auth_timing) = match auth_phase(
+    let (session, client_pubkey, active_connection, is_new_client, auth_timing) = match auth_phase(
         &conn,
         &registry,
         &state,
@@ -555,6 +556,7 @@ pub async fn handle_connection(
         &client_pubkey[..4],
         session.id,
     );
+    active_connection.spawn_monitor();
     let metrics_connection_open = match metrics::record_connection_opened(&state.workdir) {
         Ok(()) => true,
         Err(e) => {
@@ -633,8 +635,9 @@ pub async fn handle_connection(
                 let st = state.clone();
                 let r = registry.clone();
                 let cpk = client_pubkey;
+                let active_connection_id = active_connection.id();
                 tokio::spawn(async move {
-                    if let Err(e) = dispatch(msg, s, st, r, cpk).await {
+                    if let Err(e) = dispatch(msg, s, st, r, cpk, active_connection_id).await {
                         tracing::warn!("dispatch error: {}", e);
                     }
                 });
@@ -666,7 +669,9 @@ pub async fn handle_connection(
         ai_prompts: session.rpc_ai_prompts.load(Ordering::Relaxed),
     });
 
-    registry.detach_client(&session.id, client_pubkey).await;
+    registry
+        .detach_client(&session.id, client_pubkey, active_connection.id())
+        .await;
     if metrics_connection_open {
         if let Err(e) = metrics::record_connection_closed(&state.workdir) {
             tracing::warn!("Failed to record connection metrics: {}", e);
@@ -706,7 +711,13 @@ async fn auth_phase(
     state: &Arc<DaemonState>,
     failure_reason: &mut &'static str,
     failure_is_new_client: &mut bool,
-) -> Result<(Arc<ServerSession>, [u8; 32], bool, AuthTiming)> {
+) -> Result<(
+    Arc<ServerSession>,
+    [u8; 32],
+    ActiveClientConnection,
+    bool,
+    AuthTiming,
+)> {
     let first = irpc_iroh::read_request::<ZedraProto>(conn).await?;
 
     match first {
@@ -735,11 +746,12 @@ async fn auth_phase(
                 Some(ZedraMessage::Connect(msg)) => {
                     // is_new_client = true: came through the Register path
                     let t_connect = std::time::Instant::now();
-                    let (session, pubkey, is_new, prove_ms) =
+                    let (session, pubkey, active_connection, is_new, prove_ms) =
                         handle_connect(msg, conn, registry, state, true, failure_reason).await?;
                     Ok((
                         session,
                         pubkey,
+                        active_connection,
                         is_new,
                         AuthTiming {
                             register_ms,
@@ -757,11 +769,12 @@ async fn auth_phase(
         Some(ZedraMessage::Connect(msg)) => {
             // PKI reconnect or token resume — is_new_client = false
             let t = std::time::Instant::now();
-            let (session, pubkey, is_new, prove_ms) =
+            let (session, pubkey, active_connection, is_new, prove_ms) =
                 handle_connect(msg, conn, registry, state, false, failure_reason).await?;
             Ok((
                 session,
                 pubkey,
+                active_connection,
                 is_new,
                 AuthTiming {
                     register_ms: 0,
@@ -780,7 +793,7 @@ async fn auth_phase(
 /// Process a `Connect` message. If the client presents a valid session_token,
 /// attach immediately and return Ok with SyncSessionResult. Otherwise, issue a
 /// Challenge (nonce + host_signature) and wait for AuthProve.
-/// Returns (session, pubkey, is_new_client, prove_ms).
+/// Returns (session, pubkey, active connection, is_new_client, prove_ms).
 async fn handle_connect(
     msg: irpc::WithChannels<ConnectReq, ZedraProto>,
     conn: &iroh::endpoint::Connection,
@@ -788,7 +801,13 @@ async fn handle_connect(
     state: &Arc<DaemonState>,
     is_new_client: bool,
     failure_reason: &mut &'static str,
-) -> Result<(Arc<ServerSession>, [u8; 32], bool, u64)> {
+) -> Result<(
+    Arc<ServerSession>,
+    [u8; 32],
+    ActiveClientConnection,
+    bool,
+    u64,
+)> {
     let pubkey = msg.client_pubkey;
     let session_id = msg.session_id.clone();
 
@@ -797,13 +816,20 @@ async fn handle_connect(
         let session = registry.get(&session_id).await;
         if let Some(ref session) = session {
             if session.validate_session_token(&pubkey, &token).await {
-                match registry.attach_client(&session_id, pubkey).await {
-                    AttachResult::Ok => {
+                let active_connection = ActiveClientConnection::new(pubkey, conn.clone());
+                match registry
+                    .attach_client(&session_id, active_connection.clone())
+                    .await
+                {
+                    AttachResult::Ok { previous } => {
+                        if let Some(previous) = previous {
+                            previous.close_for_takeover();
+                        }
                         let new_token = session.issue_session_token(pubkey).await;
                         let sync = build_sync_result(session, state, new_token).await;
                         let _ = msg.tx.send(ConnectResult::Ok(sync)).await;
                         // Token fast-path: no challenge/prove round trip, prove_ms=0
-                        return Ok((session.clone(), pubkey, false, 0));
+                        return Ok((session.clone(), pubkey, active_connection, false, 0));
                     }
                     AttachResult::NotInSessionAcl => {
                         *failure_reason = "not_in_session_acl";
@@ -929,7 +955,7 @@ async fn handle_register(
 }
 
 /// Read AuthProve, verify client signature, attach to session.
-/// Returns (session, pubkey, is_new_client, prove_ms).
+/// Returns (session, pubkey, active connection, is_new_client, prove_ms).
 /// On success, sends `AuthProveResult::Ok(SyncSessionResult)` so the client
 /// has everything it needs without a separate SyncSession round trip.
 async fn finish_auth(
@@ -940,7 +966,13 @@ async fn finish_auth(
     state: &Arc<DaemonState>,
     is_new_client: bool,
     failure_reason: &mut &'static str,
-) -> Result<(Arc<ServerSession>, [u8; 32], bool, u64)> {
+) -> Result<(
+    Arc<ServerSession>,
+    [u8; 32],
+    ActiveClientConnection,
+    bool,
+    u64,
+)> {
     let prove_start = std::time::Instant::now();
     let prove_msg = irpc_iroh::read_request::<ZedraProto>(conn).await?;
 
@@ -980,8 +1012,9 @@ async fn finish_auth(
 
     // Attach to the requested session, with fallback for stale session IDs
     // (e.g. after a daemon restart the client's stored session_id is gone).
+    let active_connection = ActiveClientConnection::new(client_pubkey, conn.clone());
     let (attach_result, resolved_session_id) = match registry
-        .attach_client(&session_id, client_pubkey)
+        .attach_client(&session_id, active_connection.clone())
         .await
     {
         AttachResult::SessionNotFound => {
@@ -1019,13 +1052,21 @@ async fn finish_auth(
                 s
             };
             let new_id = fallback.id.clone();
-            (registry.attach_client(&new_id, client_pubkey).await, new_id)
+            (
+                registry
+                    .attach_client(&new_id, active_connection.clone())
+                    .await,
+                new_id,
+            )
         }
         other => (other, session_id.clone()),
     };
 
     match attach_result {
-        AttachResult::Ok => {
+        AttachResult::Ok { previous } => {
+            if let Some(previous) = previous {
+                previous.close_for_takeover();
+            }
             let Some(session) = registry.get(&resolved_session_id).await else {
                 let _ = tx.send(AuthProveResult::SessionNotFound).await;
                 anyhow::bail!("session {} vanished after attach", resolved_session_id);
@@ -1036,6 +1077,7 @@ async fn finish_auth(
             Ok((
                 session,
                 client_pubkey,
+                active_connection,
                 is_new_client,
                 prove_start.elapsed().as_millis() as u64,
             ))
@@ -1370,7 +1412,20 @@ async fn dispatch(
     state: Arc<DaemonState>,
     registry: Arc<SessionRegistry>,
     client_pubkey: [u8; 32],
+    active_connection_id: u64,
 ) -> Result<()> {
+    if !registry
+        .is_active_client(&session.id, client_pubkey, active_connection_id)
+        .await
+    {
+        tracing::debug!(
+            "ignoring request from stale client {:?}... for session {}",
+            &client_pubkey[..4],
+            session.id,
+        );
+        return Ok(());
+    }
+
     match msg {
         // -- Auth / bootstrap (should not appear in dispatch loop) --
         ZedraMessage::Register(_)
