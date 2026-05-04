@@ -3852,6 +3852,18 @@ mod tests {
     }
 
     #[test]
+    fn does_not_join_extensionless_slash_component_after_cut_off_path_tail() {
+        let terminal = terminal_with_output(b"see crates/foo\r\n   /src\r\n");
+
+        let links = terminal.detect_plain_links();
+        assert!(
+            links.is_empty(),
+            "extensionless slash component should not join without file evidence: {:?}",
+            links
+        );
+    }
+
+    #[test]
     fn hyperlink_at_point_resolves_hard_wrapped_path_on_continuation_line() {
         // Tap inside the indented continuation should resolve the full path.
         let terminal = terminal_with_output(

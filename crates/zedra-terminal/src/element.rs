@@ -916,6 +916,7 @@ mod tests {
     fn underlines_hard_newline_path_split_before_slash_component() {
         let underlines = underline_spans(b".... crates/zedra/src\r\n   /platform.rs\r\n");
 
+        // A single cross-line logical link paints one underline span per visual line.
         assert_eq!(underlines.len(), 2);
         assert_eq!(underlines[0].line, 0);
         assert_eq!(underlines[0].col, 5);
