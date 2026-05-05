@@ -1015,6 +1015,11 @@ impl Workspace {
         cx.notify();
     }
 
+    pub fn close_transport_for_lifecycle(&mut self, reason: &'static [u8]) {
+        self.session.close_transport_for_lifecycle(reason);
+        self.latency_sampler.reset();
+    }
+
     pub fn prepare_for_saved_removal(&mut self) {
         self.persist_workspace_state = false;
         self.session.disconnect();

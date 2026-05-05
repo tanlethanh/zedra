@@ -112,6 +112,23 @@ async fn register_client_for_session(
     ed25519_dalek::SigningKey,
     [u8; 32],
 )> {
+    let (client, signing_key, pubkey, _conn) =
+        register_client_for_session_with_connection(relay_url, host_endpoint, registry, session_id)
+            .await?;
+    Ok((client, signing_key, pubkey))
+}
+
+async fn register_client_for_session_with_connection(
+    relay_url: iroh::RelayUrl,
+    host_endpoint: &iroh::Endpoint,
+    registry: &Arc<SessionRegistry>,
+    session_id: &str,
+) -> anyhow::Result<(
+    irpc::Client<ZedraProto>,
+    ed25519_dalek::SigningKey,
+    [u8; 32],
+    iroh::endpoint::Connection,
+)> {
     use ed25519_dalek::SigningKey;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -127,7 +144,7 @@ async fn register_client_for_session(
     let conn = client_endpoint
         .connect(host_endpoint.addr(), proto::ZEDRA_ALPN)
         .await?;
-    let remote = irpc_iroh::IrohRemoteConnection::new(conn);
+    let remote = irpc_iroh::IrohRemoteConnection::new(conn.clone());
     let client = irpc::Client::<ZedraProto>::boxed(remote);
 
     let timestamp = SystemTime::now()
@@ -147,7 +164,7 @@ async fn register_client_for_session(
         anyhow::bail!("register failed: {:?}", reg_result);
     }
 
-    Ok((client, client_signing_key, client_pubkey))
+    Ok((client, client_signing_key, client_pubkey, conn))
 }
 
 async fn prove_registered_client(
@@ -202,12 +219,35 @@ async fn connect_client(
     [u8; 32],
     SyncSessionResult,
 )> {
+    let (client, session_id, pubkey, sync, _conn) =
+        connect_client_with_connection(relay_url, host_endpoint, registry, host_identity).await?;
+    Ok((client, session_id, pubkey, sync))
+}
+
+async fn connect_client_with_connection(
+    relay_url: iroh::RelayUrl,
+    host_endpoint: &iroh::Endpoint,
+    registry: &Arc<SessionRegistry>,
+    host_identity: &Arc<HostIdentity>,
+) -> anyhow::Result<(
+    irpc::Client<ZedraProto>,
+    String,
+    [u8; 32],
+    SyncSessionResult,
+    iroh::endpoint::Connection,
+)> {
     let session = registry
         .create_named("test", std::path::PathBuf::from("/tmp/test"))
         .await;
 
-    let (client, client_signing_key, client_pubkey) =
-        register_client_for_session(relay_url, host_endpoint, registry, &session.id).await?;
+    let (client, client_signing_key, client_pubkey, conn) =
+        register_client_for_session_with_connection(
+            relay_url,
+            host_endpoint,
+            registry,
+            &session.id,
+        )
+        .await?;
 
     let prove_result = prove_registered_client(
         &client,
@@ -223,7 +263,7 @@ async fn connect_client(
         other => anyhow::bail!("auth prove failed: {:?}", other),
     };
 
-    Ok((client, session.id.clone(), client_pubkey, sync))
+    Ok((client, session.id.clone(), client_pubkey, sync, conn))
 }
 
 // ---------------------------------------------------------------------------
@@ -372,6 +412,43 @@ async fn test_live_second_client_auth_returns_host_occupied() {
 
     let info: SessionInfoResult = client_a.rpc(SessionInfoReq {}).await.unwrap();
     assert_eq!(info.session_id.as_deref(), Some(session_id.as_str()));
+}
+
+/// A client-side close should release the host slot before the stale timer.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_second_client_auth_succeeds_after_first_client_close() {
+    let (_relay, relay_url) = spawn_test_relay().await.unwrap();
+    let (host_ep, registry, identity, _dir) = setup_host(relay_url.clone()).await.unwrap();
+
+    let (_client_a, session_id, _client_a_pubkey, _sync, conn_a) =
+        connect_client_with_connection(relay_url.clone(), &host_ep, &registry, &identity)
+            .await
+            .unwrap();
+    conn_a.close(0u32.into(), b"test client disconnect");
+
+    let session = registry.get(&session_id).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while session.is_occupied().await {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("host did not observe client close");
+
+    let (client_b, signing_key_b, pubkey_b) =
+        register_client_for_session(relay_url, &host_ep, &registry, &session_id)
+            .await
+            .unwrap();
+    let result =
+        prove_registered_client(&client_b, &signing_key_b, pubkey_b, &session_id, &identity)
+            .await
+            .unwrap();
+
+    assert!(
+        matches!(result, AuthProveResult::Ok(_)),
+        "expected client B to attach after client A close, got {:?}",
+        result
+    );
 }
 
 /// SwitchSession is kept in the protocol, but the host cannot change the

@@ -167,8 +167,9 @@ impl Session {
                 };
 
                 match result {
-                    Ok((client, sync, terminals)) => {
+                    Ok((client, sync, terminals, active_connection)) => {
                         handle.set_user_disconnect(false);
+                        handle.set_active_connection(active_connection);
                         handle.set_rpc_client(client.clone());
                         handle.set_session_id(Some(sync.session_id.clone()));
                         handle.set_session_token(Some(sync.session_token));
@@ -277,7 +278,9 @@ impl Session {
                             }
                         }
 
+                        handle.detach_terminals();
                         handle.clear_rpc_client();
+                        handle.clear_active_connection();
                         if abort_signal.is_cancelled() || handle.user_disconnect() {
                             connector.abort();
                             break;
@@ -299,6 +302,14 @@ impl Session {
     pub fn disconnect(&self) {
         self.cancel_abort_signal();
         self.handle.clear_session();
+    }
+
+    /// Close the current transport without marking the session as manually
+    /// disconnected. App lifecycle hooks use this to release host occupancy
+    /// while preserving the saved workspace for foreground reconnect.
+    pub fn close_transport_for_lifecycle(&self, reason: &'static [u8]) {
+        self.handle.detach_terminals();
+        self.handle.close_active_connection(reason);
     }
 
     fn reset_abort_signal(&self) -> CancellationToken {
@@ -324,8 +335,13 @@ impl Session {
                     "HostEvent: terminal created id={} launch_cmd={:?}",
                     id, launch_cmd,
                 );
-                let terminal = RemoteTerminal::new(id.clone());
-                handle.add_terminal(terminal.clone());
+                let terminal = if let Some(terminal) = handle.terminal(id) {
+                    terminal
+                } else {
+                    let terminal = RemoteTerminal::new(id.clone());
+                    handle.add_terminal(terminal.clone());
+                    terminal
+                };
                 if let Err(e) = terminal.attach_remote(client).await {
                     warn!(
                         "Failed to attach host-created terminal {}: {e}",

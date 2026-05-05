@@ -269,6 +269,16 @@ impl Workspaces {
         }
     }
 
+    pub fn close_transports_for_lifecycle(
+        &mut self,
+        reason: &'static [u8],
+        cx: &mut Context<Self>,
+    ) {
+        for entry in self.entries.clone() {
+            entry.update(cx, |ws, _cx| ws.close_transport_for_lifecycle(reason));
+        }
+    }
+
     pub fn remove_by_endpoint_addr(&mut self, endpoint_addr: &str, cx: &mut Context<Self>) {
         if let Some(index) = self
             .entries

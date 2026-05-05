@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::VerifyingKey;
@@ -45,6 +45,7 @@ pub type ConnectedResult = (
     irpc::Client<ZedraProto>,
     SyncSessionResult,
     Vec<RemoteTerminal>,
+    Connection,
 );
 
 const IDLE_STALE_INTERVAL_MULTIPLIER: u32 = 2;
@@ -141,6 +142,7 @@ pub struct Connector {
     config: ConnectConfig,
     abort_signal: CancellationToken,
     started_at: Option<Instant>,
+    active_connection: Arc<Mutex<Option<Connection>>>,
 }
 
 fn reconcile_synced_terminals(
@@ -188,6 +190,7 @@ impl Connector {
             config: ConnectConfig::default(),
             abort_signal: CancellationToken::new(),
             started_at: None,
+            active_connection: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -197,22 +200,42 @@ impl Connector {
             config,
             abort_signal: CancellationToken::new(),
             started_at: None,
+            active_connection: Arc::new(Mutex::new(None)),
         }
     }
 
     /// Cancel all active watcher tasks (call before starting a new connection).
     pub fn abort(&self) {
+        self.close_active_connection(b"client abort");
         self.abort_signal.cancel();
     }
 
     /// Reset for a new connection attempt.
     pub fn reset(&mut self) {
+        self.close_active_connection(b"client reconnect");
         self.abort_signal = CancellationToken::new();
         self.started_at = Some(Instant::now());
     }
 
     fn emit(&self, event: ConnectEvent) {
         let _ = self.tx.try_send(event);
+    }
+
+    fn set_active_connection(&self, conn: Connection) {
+        if let Ok(mut active) = self.active_connection.lock() {
+            if let Some(previous) = active.take() {
+                previous.close(0u32.into(), b"client reconnect");
+            }
+            *active = Some(conn);
+        }
+    }
+
+    fn close_active_connection(&self, reason: &'static [u8]) {
+        if let Ok(mut active) = self.active_connection.lock() {
+            if let Some(conn) = active.take() {
+                conn.close(0u32.into(), reason);
+            }
+        }
     }
 }
 
@@ -325,6 +348,8 @@ impl Connector {
 
         // Phase: HolePunching
         let conn = self.proceed_hole_punching(endpoint, remote_addr).await?;
+        let active_connection = conn.clone();
+        self.set_active_connection(active_connection.clone());
         self.spawn_remote_paths_watcher(conn.clone());
         self.spawn_connection_closed_watcher(conn.clone());
 
@@ -385,7 +410,7 @@ impl Connector {
             .unwrap_or(0);
         self.emit(ConnectEvent::Connected { total_ms });
 
-        Ok((client, sync, terminals))
+        Ok((client, sync, terminals, active_connection))
     }
 
     pub async fn proceed_binding_endpoint(&mut self) -> Result<Endpoint, ConnectError> {
@@ -1008,6 +1033,40 @@ mod tests {
         assert!(!is_no_application_protocol_error_code(
             TransportErrorCode::crypto(0x2f)
         ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn abort_closes_active_connection() {
+        let (tx, _rx) = mpsc::channel(8);
+        let connector = Connector::new(tx);
+        let client = Endpoint::empty_builder(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let server = Endpoint::empty_builder(RelayMode::Disabled)
+            .alpns(vec![ZEDRA_ALPN.to_vec()])
+            .bind()
+            .await
+            .unwrap();
+        let server_addr = server.addr();
+        let server_task = tokio::spawn(async move {
+            let incoming = server.accept().await.expect("incoming connection");
+            let conn = incoming.await.expect("accepted connection");
+            conn.closed().await
+        });
+
+        let conn = client.connect(server_addr, ZEDRA_ALPN).await.unwrap();
+        connector.set_active_connection(conn);
+        connector.abort();
+
+        let close_reason = tokio::time::timeout(Duration::from_secs(5), server_task)
+            .await
+            .expect("timed out waiting for remote close")
+            .unwrap();
+        assert!(
+            matches!(close_reason, IrohConnectionError::ApplicationClosed(_)),
+            "expected application close, got {close_reason:?}",
+        );
     }
 
     #[test]
