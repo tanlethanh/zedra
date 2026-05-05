@@ -6,7 +6,10 @@ use std::sync::{
 use anyhow::Result;
 use zedra_rpc::proto::*;
 
-use crate::{signer::ClientSigner, terminal::RemoteTerminal};
+use crate::{
+    register_active_connection, signer::ClientSigner, terminal::RemoteTerminal,
+    unregister_active_connection,
+};
 
 #[derive(Clone)]
 pub struct SessionHandle(Arc<SessionHandleInner>);
@@ -30,6 +33,7 @@ impl Drop for SessionHandleInner {
     fn drop(&mut self) {
         if let Ok(mut active) = self.active_connection.lock() {
             if let Some(conn) = active.take() {
+                unregister_active_connection(&conn);
                 conn.close(0u32.into(), b"client handle dropped");
             }
         }
@@ -117,21 +121,26 @@ impl SessionHandle {
     pub fn set_active_connection(&self, conn: iroh::endpoint::Connection) {
         if let Ok(mut active) = self.0.active_connection.lock() {
             if let Some(previous) = active.take() {
+                unregister_active_connection(&previous);
                 previous.close(0u32.into(), b"client reconnect");
             }
+            register_active_connection(&conn);
             *active = Some(conn);
         }
     }
 
     pub fn clear_active_connection(&self) {
         if let Ok(mut active) = self.0.active_connection.lock() {
-            *active = None;
+            if let Some(conn) = active.take() {
+                unregister_active_connection(&conn);
+            }
         }
     }
 
     pub fn close_active_connection(&self, reason: &'static [u8]) {
         if let Ok(mut active) = self.0.active_connection.lock() {
             if let Some(conn) = active.take() {
+                unregister_active_connection(&conn);
                 conn.close(0u32.into(), reason);
             }
         }
@@ -691,6 +700,42 @@ mod tests {
         let handle = SessionHandle::new();
         handle.set_active_connection(conn);
         drop(handle);
+
+        let close_reason = tokio::time::timeout(std::time::Duration::from_secs(5), server_task)
+            .await
+            .expect("timed out waiting for remote close")
+            .unwrap();
+        assert!(
+            matches!(
+                close_reason,
+                iroh::endpoint::ConnectionError::ApplicationClosed(_)
+            ),
+            "expected application close, got {close_reason:?}",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lifecycle_close_all_closes_active_connection_without_handle_borrow() {
+        let client = iroh::Endpoint::empty_builder(iroh::RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let server = iroh::Endpoint::empty_builder(iroh::RelayMode::Disabled)
+            .alpns(vec![ZEDRA_ALPN.to_vec()])
+            .bind()
+            .await
+            .unwrap();
+        let server_addr = server.addr();
+        let server_task = tokio::spawn(async move {
+            let incoming = server.accept().await.expect("incoming connection");
+            let conn = incoming.await.expect("accepted connection");
+            conn.closed().await
+        });
+
+        let conn = client.connect(server_addr, ZEDRA_ALPN).await.unwrap();
+        let handle = SessionHandle::new();
+        handle.set_active_connection(conn);
+        crate::close_all_active_connections_for_lifecycle(b"client lifecycle close");
 
         let close_reason = tokio::time::timeout(std::time::Duration::from_secs(5), server_task)
             .await
