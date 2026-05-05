@@ -415,6 +415,16 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:
 6. Start holding an arrow button, then dismiss the keyboard or background the app
 7. Expected: repeat stops and does not resume when the keyboard or app returns
 
+## 11f. Terminal Keyboard Accessory After Reconnect On iOS
+
+1. Connect to a session on iPhone or iOS simulator and open a terminal
+2. Tap the terminal so the software keyboard and accessory bar are visible
+3. Press `Tab`, `Enter`, and an arrow key in the accessory bar
+4. Expected: each key reaches the PTY
+5. Put the workspace through an idle/reconnect recovery by backgrounding the app, sleeping/waking the host, or briefly interrupting network until the badge returns to `Connected`
+6. Keep the same terminal active, show the software keyboard again, then press `Tab`, `Enter`, and an arrow key in the accessory bar
+7. Expected: each key still reaches the PTY after reconnect; the accessory bar does not keep sending to a stale terminal channel
+
 ## 12. Quick Action Terminal Navigation
 
 1. Connect to a session with at least two open terminals

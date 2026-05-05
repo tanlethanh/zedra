@@ -157,22 +157,26 @@ impl WorkspaceTerminal {
         let attach_sub = cx.subscribe(&workspace_state, |this, _ws, event, cx| match event {
             WorkspaceStateEvent::SyncComplete => {
                 info!("received SyncComplete event, attempt to attach input/output channel");
-                Self::attach_channel_to_terminal_view(
+                if Self::attach_channel_to_terminal_view(
                     this.session_handle.clone(),
                     this.terminal_id.clone(),
                     this.terminal_view.clone(),
                     cx,
-                );
+                ) {
+                    this.refresh_active_input_if_current(cx);
+                }
             }
             WorkspaceStateEvent::TerminalCreated { id } => {
                 if this.terminal_id == *id {
                     info!("received TerminalCreated event, attempt to attach input/output channel");
-                    Self::attach_channel_to_terminal_view(
+                    if Self::attach_channel_to_terminal_view(
                         this.session_handle.clone(),
                         this.terminal_id.clone(),
                         this.terminal_view.clone(),
                         cx,
-                    );
+                    ) {
+                        this.refresh_active_input_if_current(cx);
+                    }
                 }
             }
             WorkspaceStateEvent::TerminalOpened { id } => {
@@ -358,11 +362,7 @@ impl WorkspaceTerminal {
         match self.terminal_view.read(cx).input_sender(cx) {
             Some(sender) => {
                 let terminal_id = self.terminal_id.clone();
-                active_terminal::set_active_input(Box::new(move |bytes| {
-                    if let Err(e) = sender.try_send(bytes) {
-                        warn!(terminal_id, "failed to send input: {}", e);
-                    }
-                }));
+                active_terminal::set_active_input(terminal_id, sender);
             }
             None => {
                 warn!(terminal_id = %self.terminal_id, "no input sender, skipping active input registration");
@@ -375,6 +375,15 @@ impl WorkspaceTerminal {
 
     pub fn input_sender(&self, cx: &App) -> Option<tokio::sync::mpsc::Sender<Vec<u8>>> {
         self.terminal_view.read(cx).input_sender(cx)
+    }
+
+    fn refresh_active_input_if_current(&mut self, cx: &mut Context<Self>) {
+        let is_active = self.workspace_state.read(cx).active_terminal_id.as_deref()
+            == Some(self.terminal_id.as_str());
+        if is_active {
+            // Reconnect reuses the active terminal entity but replaces its channel sender.
+            self.register_as_active_input(cx);
+        }
     }
 
     pub fn set_terminal_id(&mut self, terminal_id: String, cx: &mut Context<Self>) {
@@ -399,10 +408,10 @@ impl WorkspaceTerminal {
         terminal_id: String,
         terminal_view: Entity<TerminalView>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let Some(remote_terminal) = session_handle.terminal(&terminal_id) else {
             warn!("no remote terminal found with id: {}", terminal_id);
-            return;
+            return false;
         };
         match remote_terminal.take_chanel() {
             Ok((input_tx, output_rx)) => {
@@ -411,9 +420,11 @@ impl WorkspaceTerminal {
                     terminal_view.sync_remote_size_after_attach(cx);
                     info!("attached channel to terminal");
                 });
+                true
             }
             Err(e) => {
                 warn!("failed to attach input/output channel: {}", e);
+                false
             }
         }
     }
