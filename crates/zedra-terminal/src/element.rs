@@ -913,6 +913,20 @@ mod tests {
     }
 
     #[test]
+    fn underlines_hard_newline_path_split_before_slash_component() {
+        let underlines = underline_spans(b".... crates/zedra/src\r\n   /platform.rs\r\n");
+
+        // A single cross-line logical link paints one underline span per visual line.
+        assert_eq!(underlines.len(), 2);
+        assert_eq!(underlines[0].line, 0);
+        assert_eq!(underlines[0].col, 5);
+        assert_eq!(underlines[0].num_cells, 16);
+        assert_eq!(underlines[1].line, 1);
+        assert_eq!(underlines[1].col, 3);
+        assert_eq!(underlines[1].num_cells, 12);
+    }
+
+    #[test]
     fn underlines_plain_urls() {
         // "Visit " = 6 chars, "https://zedra.dev" = 17 chars
         let underlines = underline_spans(b"Visit https://zedra.dev now\r\n");
