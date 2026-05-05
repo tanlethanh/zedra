@@ -21,7 +21,7 @@ while [ $# -gt 0 ]; do
             echo ""
             echo "Options:"
             echo "  --version VERSION  Install a specific version (e.g. v0.1.0)"
-            echo "  --prefix DIR       Install directory (default: auto-detected)"
+            echo "  --prefix DIR       Install directory (default: ~/.local/bin)"
             echo "                     Can also be set via ZEDRA_PREFIX env var"
             exit 0
             ;;
@@ -31,29 +31,14 @@ done
 
 # --- Default prefix detection ---
 #
-# macOS and Linux root: /usr/local/bin (already in PATH, no sudo needed).
-# Linux non-root: first writable directory in $PATH, else ~/.local/bin.
+# The one-line installer defaults to a user-writable location. Global install
+# directories are opt-in via --prefix or ZEDRA_PREFIX.
 
-detect_prefix() {
-    os="$(uname -s)"
-
-    if [ "$os" = "Darwin" ] || [ "$(id -u)" = "0" ]; then
-        echo "/usr/local/bin"
-        return
-    fi
-
-    # Check well-known user bin dirs in preference order.
-    # Pick the first one already in PATH (no warning needed); else fall back to ~/.local/bin.
-    for dir in "${HOME}/.local/bin" "${HOME}/bin"; do
-        case ":${PATH}:" in
-            *":${dir}:"*) echo "$dir"; return ;;
-        esac
-    done
-
+default_prefix() {
     echo "${HOME}/.local/bin"
 }
 
-PREFIX="${PREFIX:-${ZEDRA_PREFIX:-$(detect_prefix)}}"
+PREFIX="${PREFIX:-${ZEDRA_PREFIX:-$(default_prefix)}}"
 
 # --- Platform detection ---
 
@@ -149,14 +134,29 @@ verify_checksum() {
     echo "  Checksum verified."
 }
 
-# --- Stale binary cleanup ---
+# --- Installation helpers ---
+
+ensure_prefix() {
+    mkdir -p "$PREFIX" || {
+        echo "Error: could not create install directory: ${PREFIX}" >&2
+        exit 1
+    }
+
+    if [ ! -w "$PREFIX" ]; then
+        echo "Error: install directory is not writable: ${PREFIX}" >&2
+        echo "Choose a writable directory with --prefix or ZEDRA_PREFIX." >&2
+        exit 1
+    fi
+}
 
 cleanup_stale() {
     target="$1"
     existing="$(command -v "${BINARY}" 2>/dev/null)" || return 0
     [ "$existing" = "$target" ] && return 0
     echo "  Removing previous installation at ${existing}..."
-    rm -f "$existing"
+    if ! rm -f "$existing" 2>/dev/null; then
+        echo "  WARNING: could not remove ${existing}. It may still take precedence in PATH."
+    fi
 }
 
 # --- Main ---
@@ -187,12 +187,11 @@ main() {
     echo "  Extracting..."
     tar xzf "${tmpdir}/${archive_name}" -C "$tmpdir"
 
-    cleanup_stale "${PREFIX}/${BINARY}"
-
     echo "  Installing to ${PREFIX}..."
-    mkdir -p "$PREFIX"
+    ensure_prefix
     mv "${tmpdir}/${BINARY}" "${PREFIX}/${BINARY}"
     chmod +x "${PREFIX}/${BINARY}"
+    cleanup_stale "${PREFIX}/${BINARY}"
 
     echo ""
     echo "Installed ${BINARY} to ${PREFIX}/${BINARY}"
