@@ -136,6 +136,18 @@
 4. Expected: Device B sees "The QR code was used. Refresh it and scan again." (not a crash)
 5. To pair Device B: refresh the QR code and scan again
 
+### Static QR
+
+1. Start host: `zedra start --workdir .`
+2. Generate a static QR: `zedra qr --workdir . --static`
+3. Scan it from Device A and confirm the workspace connects
+4. Disconnect Device A from the host session
+5. Scan the same static QR from a second clean device
+6. Expected: Device B connects without "used" or "expired" QR errors
+7. Stop and restart the daemon
+8. Expected: the old static QR no longer works; the app says the QR expired or was replaced
+9. Restart the daemon and generate a fresh static QR if needed
+
 ## 2a. Protocol Version Mismatch
 
 1. Run an app build and CLI/host build that use different `ZEDRA_ALPN` versions

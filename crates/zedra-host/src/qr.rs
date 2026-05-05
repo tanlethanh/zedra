@@ -11,7 +11,14 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use zedra_rpc::ZedraPairingTicket;
 
+use crate::session_registry::PairingSlotMode;
 use crate::utils;
+
+pub const ONE_TIME_QR_NOTE: &str = "Note: this pairing QR is one-time use.";
+pub const STATIC_QR_WARNING: &str = concat!(
+    "Warning: static QR codes can be scanned multiple times and do not expire ",
+    "while this daemon is running. Use with caution."
+);
 
 /// Machine-readable startup output for `--json` mode.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +30,10 @@ pub struct StartupInfo {
     pub direct_addrs: Vec<String>,
     pub pairing_url: String,
     pub qr_code: String,
+    #[serde(default)]
+    pub pairing_static: bool,
+    #[serde(default)]
+    pub pairing_expires_in_secs: Option<u64>,
 }
 
 /// Build the pairing info (QR string, metadata) without printing anything.
@@ -34,6 +45,7 @@ pub fn build_pairing_info(
     ticket: &ZedraPairingTicket,
     endpoint: &iroh::Endpoint,
     configured_relay_urls: &[String],
+    mode: PairingSlotMode,
 ) -> Result<StartupInfo> {
     let hostname = gethostname();
     let endpoint_id = ticket.endpoint_id.to_string();
@@ -65,6 +77,8 @@ pub fn build_pairing_info(
         direct_addrs,
         pairing_url,
         qr_code,
+        pairing_static: mode == PairingSlotMode::Static,
+        pairing_expires_in_secs: mode.expires_in_secs(),
     })
 }
 
@@ -74,7 +88,12 @@ pub fn generate_pairing_qr(
     endpoint: &iroh::Endpoint,
     configured_relay_urls: &[String],
 ) -> Result<()> {
-    let info = build_pairing_info(ticket, endpoint, configured_relay_urls)?;
+    let info = build_pairing_info(
+        ticket,
+        endpoint,
+        configured_relay_urls,
+        PairingSlotMode::OneTime,
+    )?;
     print_pairing_info(&info);
     Ok(())
 }
@@ -183,6 +202,8 @@ mod tests {
             direct_addrs: vec!["192.0.2.1:1234".to_string()],
             pairing_url: "zedra://connect?ticket=test".to_string(),
             qr_code: "qr".to_string(),
+            pairing_static: false,
+            pairing_expires_in_secs: Some(600),
         };
 
         let labels = pairing_metadata_rows(&info)
@@ -203,6 +224,8 @@ mod tests {
             direct_addrs: vec!["192.0.2.1:1234".to_string()],
             pairing_url: "zedra://connect?ticket=test".to_string(),
             qr_code: "qr".to_string(),
+            pairing_static: false,
+            pairing_expires_in_secs: Some(600),
         };
 
         let output = render_started_pairing_info(&info, Path::new("/repo"));

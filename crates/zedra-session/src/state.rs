@@ -159,7 +159,9 @@ impl ConnectError {
             Self::HandshakeConsumed => "The QR code was used. Refresh it and scan again.".into(),
             Self::InvalidHandshake => "QR verification failed (HMAC mismatch).".into(),
             Self::StaleTimestamp => "Clock skew detected. Check device clock.".into(),
-            Self::SlotNotFound => "QR code expired. Generate a new one on the host.".into(),
+            Self::SlotNotFound => {
+                "QR code expired or was replaced. Generate a new one on the host.".into()
+            }
             Self::Unauthorized => "Device not authorized. Re-scan the QR code.".into(),
             Self::NotInSessionAcl => "Not authorized for this session. Re-scan QR.".into(),
             Self::SessionOccupied => "Host occupied. Disconnect other device and retry.".into(),

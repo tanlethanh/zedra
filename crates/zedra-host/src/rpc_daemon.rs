@@ -18,7 +18,7 @@ use crate::metrics;
 use crate::pty::{ShellSession, SpawnOptions};
 use crate::session_registry::{
     ActiveClientConnection, AttachResult, ConsumeSlotResult, HostShellState, HostTermMeta,
-    OutputSenderSlot, ServerSession, SessionRegistry, TermBacklog, TermSession,
+    OutputSenderSlot, PairingSlotMode, ServerSession, SessionRegistry, TermBacklog, TermSession,
     MAX_WATCHED_PATHS_PER_SESSION,
 };
 use crate::utils;
@@ -912,6 +912,21 @@ async fn handle_register(
                 msg.timestamp,
                 &msg.hmac,
             ) {
+                if slot.mode == PairingSlotMode::Static
+                    && registry
+                        .matches_superseded_pairing_hmac(
+                            &msg.session_id,
+                            &msg.client_pubkey,
+                            msg.timestamp,
+                            &msg.hmac,
+                        )
+                        .await
+                {
+                    tracing::warn!("Register: superseded QR for session {}", msg.session_id);
+                    utils::eprintln_warn("QR expired or replaced. Generate a new one.");
+                    return RegisterResult::SlotNotFound;
+                }
+
                 tracing::warn!(
                     "Register: invalid HMAC from {:?}...",
                     &msg.client_pubkey[..4]
@@ -947,7 +962,7 @@ async fn handle_register(
         ConsumeSlotResult::NotFound => {
             tracing::warn!("Register: no slot found for session {}", msg.session_id);
             utils::eprintln_warn(
-                "QR invalid or expired. Run `zedra qr` from the workspace, or add `--workdir <path>` from another directory.",
+                "QR invalid, expired, or replaced. Run `zedra qr` from the workspace, or add `--workdir <path>` from another directory.",
             );
             RegisterResult::SlotNotFound
         }

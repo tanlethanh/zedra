@@ -4,9 +4,9 @@
 // terminal, filesystem, git, and AI operations over typed irpc.
 //
 // Auth model (Phase 1): Public-key based. Clients scan a QR that contains
-// a one-use handshake key + session_id. After first pairing their pubkey
-// is added to the session ACL. Subsequent connections use Ed25519 challenge/
-// response (no QR needed).
+// a handshake key + session_id. After first pairing their pubkey is added to
+// the session ACL. Subsequent connections use Ed25519 challenge/response
+// (no QR needed).
 
 use anyhow::{Context, Result};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
@@ -92,6 +92,11 @@ enum Commands {
         /// the host is behind a firewall that blocks direct UDP.
         #[arg(long)]
         relay_only: bool,
+
+        /// Generate a static QR that can be scanned repeatedly while this daemon runs.
+        /// Intended only for testing and store review.
+        #[arg(long = "static-qr")]
+        static_qr: bool,
     },
     /// Connect to a daemon and measure connection RTT
     Client {
@@ -132,7 +137,7 @@ enum Commands {
         workdir: String,
     },
 
-    /// Create a fresh one-time pairing QR
+    /// Create a fresh pairing QR
     Qr {
         /// Working directory of the running daemon
         #[arg(short, long, default_value = ".")]
@@ -141,6 +146,11 @@ enum Commands {
         /// Output pairing info as a single JSON line
         #[arg(long)]
         json: bool,
+
+        /// Create a static QR that can be scanned repeatedly while this daemon runs.
+        /// Intended only for testing and store review.
+        #[arg(long = "static")]
+        static_qr: bool,
     },
 
     /// List active Zedra daemons across workspaces
@@ -264,6 +274,7 @@ struct DetachedStartOptions {
     no_telemetry: bool,
     debug_telemetry: bool,
     relay_only: bool,
+    static_qr: bool,
 }
 
 struct DetachedStartResult {
@@ -292,6 +303,9 @@ fn detached_start_child_args(options: &DetachedStartOptions) -> Vec<String> {
     }
     if options.relay_only {
         args.push("--relay-only".to_string());
+    }
+    if options.static_qr {
+        args.push("--static-qr".to_string());
     }
     args
 }
@@ -481,10 +495,16 @@ async fn main() -> Result<()> {
             no_telemetry,
             debug_telemetry,
             relay_only,
+            static_qr,
         } => {
             let workdir = std::path::PathBuf::from(workdir)
                 .canonicalize()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let pairing_mode = if static_qr {
+                session_registry::PairingSlotMode::Static
+            } else {
+                session_registry::PairingSlotMode::OneTime
+            };
             if detach {
                 let detached = start_detached(DetachedStartOptions {
                     workdir,
@@ -493,11 +513,14 @@ async fn main() -> Result<()> {
                     no_telemetry,
                     debug_telemetry,
                     relay_only,
+                    static_qr,
                 })?;
-                match wait_for_detached_pairing_qr(&detached.workdir, detached.pid).await {
+                match wait_for_detached_pairing_qr(&detached.workdir, detached.pid, pairing_mode)
+                    .await
+                {
                     Ok(info) => {
                         qr::print_started_pairing_info(&info, &detached.workdir);
-                        utils::println_warn("Note: this pairing QR is one-time use.");
+                        print_pairing_notice_stdout(&info);
                     }
                     Err(e) => {
                         utils::eprintln_warn(format!(
@@ -694,6 +717,7 @@ async fn main() -> Result<()> {
                 json,
                 Some(&workdir),
                 Some(&workdir),
+                pairing_mode,
             )
             .await
             {
@@ -717,6 +741,7 @@ async fn main() -> Result<()> {
                         endpoint,
                         relay_urls_for_listener,
                         qr_workdir,
+                        pairing_mode,
                     )
                     .await
                     {
@@ -855,16 +880,28 @@ async fn main() -> Result<()> {
             );
         }
 
-        Commands::Qr { workdir, json } => {
+        Commands::Qr {
+            workdir,
+            json,
+            static_qr,
+        } => {
             let workdir = std::path::PathBuf::from(workdir)
                 .canonicalize()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let info = request_pairing_qr(&workdir).await?;
+            let pairing_mode = if static_qr {
+                session_registry::PairingSlotMode::Static
+            } else {
+                session_registry::PairingSlotMode::OneTime
+            };
+            let info = request_pairing_qr(&workdir, pairing_mode).await?;
             if json {
+                if info.pairing_static {
+                    utils::eprintln_warn(qr::STATIC_QR_WARNING);
+                }
                 qr::print_pairing_json(&info);
             } else {
                 qr::print_pairing_info(&info);
-                utils::println_warn("Note: this pairing QR is one-time use.");
+                print_pairing_notice_stdout(&info);
             }
         }
 
@@ -1216,7 +1253,7 @@ fn render_detached_followup_commands() -> String {
     format!(
         "Commands\n{}\n\nFrom another directory, add `--workdir <path>`.",
         utils::render_shell_command_list(&[
-            ("zedra qr", "Create a fresh one-time pairing QR."),
+            ("zedra qr", "Create a fresh pairing QR."),
             ("zedra status", "Check current daemon status."),
             ("zedra stop", "Stop the daemon.")
         ])
@@ -1516,7 +1553,18 @@ fn non_empty_str(value: &serde_json::Value) -> Option<&str> {
     value.as_str().filter(|value| !value.is_empty())
 }
 
-async fn request_pairing_qr(workdir: &Path) -> Result<qr::StartupInfo> {
+fn print_pairing_notice_stdout(info: &qr::StartupInfo) {
+    if info.pairing_static {
+        utils::println_warn(qr::STATIC_QR_WARNING);
+    } else {
+        utils::println_warn(qr::ONE_TIME_QR_NOTE);
+    }
+}
+
+async fn request_pairing_qr(
+    workdir: &Path,
+    mode: session_registry::PairingSlotMode,
+) -> Result<qr::StartupInfo> {
     let config_dir = identity::workspace_config_dir(workdir)?;
     let addr = std::fs::read_to_string(config_dir.join("api-addr")).unwrap_or_default();
     let token = std::fs::read_to_string(config_dir.join("api-token")).unwrap_or_default();
@@ -1524,7 +1572,11 @@ async fn request_pairing_qr(workdir: &Path) -> Result<qr::StartupInfo> {
         anyhow::bail!("No running daemon found for: {}", workdir.display());
     }
 
-    let url = format!("http://{}/api/qr", addr.trim());
+    let path = match mode {
+        session_registry::PairingSlotMode::OneTime => "/api/qr",
+        session_registry::PairingSlotMode::Static => "/api/qr/static",
+    };
+    let url = format!("http://{}{}", addr.trim(), path);
     let resp = reqwest::Client::new()
         .post(&url)
         .bearer_auth(token.trim())
@@ -1533,9 +1585,15 @@ async fn request_pairing_qr(workdir: &Path) -> Result<qr::StartupInfo> {
     let status = resp.status();
     if !status.is_success() {
         if status == reqwest::StatusCode::NOT_FOUND {
-            anyhow::bail!(
-                "Running daemon does not support `zedra qr`; restart it with the updated zedra binary."
-            );
+            if mode == session_registry::PairingSlotMode::Static {
+                anyhow::bail!(
+                    "Running daemon does not support `zedra qr --static`; restart it with the updated zedra binary."
+                );
+            } else {
+                anyhow::bail!(
+                    "Running daemon does not support `zedra qr`; restart it with the updated zedra binary."
+                );
+            }
         }
         let body = resp.text().await.unwrap_or_default();
         anyhow::bail!("Failed to request pairing QR: HTTP {} {}", status, body);
@@ -1544,7 +1602,11 @@ async fn request_pairing_qr(workdir: &Path) -> Result<qr::StartupInfo> {
     resp.json::<qr::StartupInfo>().await.map_err(Into::into)
 }
 
-async fn wait_for_detached_pairing_qr(workdir: &Path, pid: u32) -> Result<qr::StartupInfo> {
+async fn wait_for_detached_pairing_qr(
+    workdir: &Path,
+    pid: u32,
+    mode: session_registry::PairingSlotMode,
+) -> Result<qr::StartupInfo> {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
 
     loop {
@@ -1552,7 +1614,7 @@ async fn wait_for_detached_pairing_qr(workdir: &Path, pid: u32) -> Result<qr::St
             anyhow::bail!("detached daemon exited before its pairing QR was ready");
         }
 
-        let err = match request_pairing_qr(workdir).await {
+        let err = match request_pairing_qr(workdir, mode).await {
             Ok(info) => return Ok(info),
             Err(err) => err,
         };
@@ -1676,15 +1738,16 @@ async fn generate_pairing_qr(
     json: bool,
     started_workdir: Option<&Path>,
     metrics_workdir: Option<&Path>,
+    mode: session_registry::PairingSlotMode,
 ) -> Result<()> {
     let ticket = ZedraPairingTicket {
         endpoint_id,
         handshake_secret: rand::random(),
         session_id: session_id.to_string(),
     };
-    let info = qr::build_pairing_info(&ticket, endpoint, relay_urls)?;
+    let info = qr::build_pairing_info(&ticket, endpoint, relay_urls, mode)?;
     registry
-        .add_pairing_slot(session_id, ticket.handshake_secret)
+        .add_pairing_slot_with_mode(session_id, ticket.handshake_secret, mode)
         .await;
     if let Some(workdir) = metrics_workdir {
         if let Err(e) = metrics::record_qr_created(workdir) {
@@ -1693,6 +1756,9 @@ async fn generate_pairing_qr(
     }
 
     if json {
+        if info.pairing_static {
+            utils::eprintln_warn(qr::STATIC_QR_WARNING);
+        }
         qr::print_pairing_json(&info);
     } else {
         if let Some(workdir) = started_workdir {
@@ -1700,7 +1766,7 @@ async fn generate_pairing_qr(
         } else {
             qr::print_pairing_info(&info);
         }
-        utils::println_warn("Note: this pairing QR is one-time use.");
+        print_pairing_notice_stdout(&info);
     }
     Ok(())
 }
@@ -1713,6 +1779,7 @@ async fn run_qr_key_listener(
     endpoint: iroh::Endpoint,
     relay_urls: Vec<String>,
     workdir: PathBuf,
+    mode: session_registry::PairingSlotMode,
 ) -> Result<()> {
     use std::io::Read;
     use std::os::fd::AsRawFd;
@@ -1741,7 +1808,7 @@ async fn run_qr_key_listener(
                     break;
                 };
                 if matches!(key, b'r' | b'R') {
-                    if let Err(e) = generate_pairing_qr(&registry, &session_id, endpoint_id, &endpoint, &relay_urls, false, None, Some(&workdir)).await {
+                    if let Err(e) = generate_pairing_qr(&registry, &session_id, endpoint_id, &endpoint, &relay_urls, false, None, Some(&workdir), mode).await {
                         tracing::warn!("Failed to regenerate QR code: {}", e);
                     } else {
                         utils::eprintln_success("Regenerated pairing QR. Press 'r' again to refresh.");
@@ -1875,6 +1942,25 @@ mod tests {
     }
 
     #[test]
+    fn static_qr_flags_parse() {
+        match Cli::try_parse_from(["zedra", "start", "--static-qr"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Start { static_qr, .. }) => assert!(static_qr),
+            other => panic!("expected start command, got {:?}", other.map(|_| "other")),
+        }
+
+        match Cli::try_parse_from(["zedra", "qr", "--static"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Qr { static_qr, .. }) => assert!(static_qr),
+            other => panic!("expected qr command, got {:?}", other.map(|_| "other")),
+        }
+    }
+
+    #[test]
     fn detached_start_child_args_preserve_start_options() {
         let args = detached_start_child_args(&DetachedStartOptions {
             workdir: PathBuf::from("project"),
@@ -1886,6 +1972,7 @@ mod tests {
             no_telemetry: true,
             debug_telemetry: true,
             relay_only: true,
+            static_qr: true,
         });
 
         assert_eq!(
@@ -1902,6 +1989,7 @@ mod tests {
                 "--no-telemetry",
                 "--debug-telemetry",
                 "--relay-only",
+                "--static-qr",
             ]
         );
     }
@@ -1946,7 +2034,7 @@ mod tests {
         let output = render_detached_followup_commands();
 
         assert!(output.contains("Commands"));
-        assert!(output.contains("  $ zedra qr      Create a fresh one-time pairing QR."));
+        assert!(output.contains("  $ zedra qr      Create a fresh pairing QR."));
         assert!(output.contains("  $ zedra status  Check current daemon status."));
         assert!(output.contains("  $ zedra stop    Stop the daemon."));
         assert!(!output.contains("zedra logs"));

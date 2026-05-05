@@ -11,7 +11,7 @@ use ed25519_dalek::Signer;
 use zedra_host::identity::HostIdentity;
 use zedra_host::iroh_listener;
 use zedra_host::rpc_daemon::DaemonState;
-use zedra_host::session_registry::SessionRegistry;
+use zedra_host::session_registry::{PairingSlotMode, SessionRegistry};
 use zedra_rpc::proto::{self, *};
 use zedra_rpc::{decode_endpoint_addr, encode_endpoint_addr};
 
@@ -165,6 +165,62 @@ async fn register_client_for_session_with_connection(
     }
 
     Ok((client, client_signing_key, client_pubkey, conn))
+}
+
+async fn register_client_with_handshake_key(
+    relay_url: iroh::RelayUrl,
+    host_endpoint: &iroh::Endpoint,
+    session_id: &str,
+    handshake_key: [u8; 16],
+) -> anyhow::Result<[u8; 32]> {
+    let (client_pubkey, result) = register_client_with_handshake_key_result(
+        relay_url,
+        host_endpoint,
+        session_id,
+        handshake_key,
+    )
+    .await?;
+    if !matches!(result, RegisterResult::Ok) {
+        anyhow::bail!("register failed: {:?}", result);
+    }
+
+    Ok(client_pubkey)
+}
+
+async fn register_client_with_handshake_key_result(
+    relay_url: iroh::RelayUrl,
+    host_endpoint: &iroh::Endpoint,
+    session_id: &str,
+    handshake_key: [u8; 16],
+) -> anyhow::Result<([u8; 32], RegisterResult)> {
+    use ed25519_dalek::SigningKey;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let client_signing_key = SigningKey::generate(&mut rand::thread_rng());
+    let client_pubkey = client_signing_key.verifying_key().to_bytes();
+    let client_endpoint = make_endpoint(relay_url).await?;
+    wait_online(&client_endpoint).await;
+
+    let conn = client_endpoint
+        .connect(host_endpoint.addr(), proto::ZEDRA_ALPN)
+        .await?;
+    let remote = irpc_iroh::IrohRemoteConnection::new(conn);
+    let client = irpc::Client::<ZedraProto>::boxed(remote);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let hmac = zedra_rpc::compute_registration_hmac(&handshake_key, &client_pubkey, timestamp);
+
+    let result: RegisterResult = client
+        .rpc(RegisterReq {
+            client_pubkey,
+            timestamp,
+            hmac,
+            session_id: session_id.to_string(),
+        })
+        .await?;
+    Ok((client_pubkey, result))
 }
 
 async fn prove_registered_client(
@@ -814,6 +870,64 @@ async fn test_register_bad_hmac_rejected() {
     assert!(
         matches!(result, RegisterResult::InvalidHandshake),
         "expected InvalidHandshake, got {:?}",
+        result
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_static_pairing_slot_registers_multiple_clients() {
+    let (_relay, relay_url) = spawn_test_relay().await.unwrap();
+    let (host_ep, registry, _identity, _dir) = setup_host(relay_url.clone()).await.unwrap();
+    let session = registry
+        .create_named("test", std::path::PathBuf::from("/tmp"))
+        .await;
+    let handshake_key: [u8; 16] = rand::random();
+    registry
+        .add_pairing_slot_with_mode(&session.id, handshake_key, PairingSlotMode::Static)
+        .await;
+
+    let first_pubkey =
+        register_client_with_handshake_key(relay_url.clone(), &host_ep, &session.id, handshake_key)
+            .await
+            .unwrap();
+    let second_pubkey =
+        register_client_with_handshake_key(relay_url, &host_ep, &session.id, handshake_key)
+            .await
+            .unwrap();
+
+    assert_ne!(first_pubkey, second_pubkey);
+    assert!(registry.is_globally_authorized(&first_pubkey).await);
+    assert!(registry.is_globally_authorized(&second_pubkey).await);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_superseded_static_qr_returns_slot_not_found() {
+    let (_relay, relay_url) = spawn_test_relay().await.unwrap();
+    let (host_ep, registry, _identity, _dir) = setup_host(relay_url.clone()).await.unwrap();
+    let session = registry
+        .create_named("test", std::path::PathBuf::from("/tmp"))
+        .await;
+    let old_handshake_key: [u8; 16] = rand::random();
+    let new_handshake_key: [u8; 16] = rand::random();
+    registry
+        .add_pairing_slot_with_mode(&session.id, old_handshake_key, PairingSlotMode::Static)
+        .await;
+    registry
+        .add_pairing_slot_with_mode(&session.id, new_handshake_key, PairingSlotMode::Static)
+        .await;
+
+    let (_pubkey, result) = register_client_with_handshake_key_result(
+        relay_url,
+        &host_ep,
+        &session.id,
+        old_handshake_key,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        matches!(result, RegisterResult::SlotNotFound),
+        "expected SlotNotFound, got {:?}",
         result
     );
 }

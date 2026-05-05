@@ -11,7 +11,7 @@ connection state machine, and the authorization model.
 The QR payload is a `ZedraPairingTicket` encoded as a `zedra://` URL:
 
 ```
-zedra://zedra<BASE32LOWER(postcard(ZedraPairingTicket))>
+zedra://connect?ticket=<base64url(postcard(ZedraPairingTicket))>
 ```
 
 ```rust
@@ -21,10 +21,11 @@ pub struct ZedraPairingTicket {
     /// Host's 32-byte Ed25519 public key.
     /// Used as pkarr lookup key and to verify AuthChallenge signatures.
     pub endpoint_id: iroh::PublicKey,
-    /// 32-byte random key for this pairing slot.
-    /// One-use: consumed by the first valid Register.
+    /// 16-byte random secret for this pairing slot.
+    /// Normal slots are consumed by the first valid Register.
+    /// Static QR slots remain reusable while the daemon runs.
     /// Client uses this as the HMAC key to prove QR possession.
-    pub handshake_key: [u8; 32],
+    pub handshake_secret: [u8; 16],
     /// The session this QR was generated for.
     /// New client's pubkey is auto-added to this session's ACL on Register.
     pub session_id: String,
@@ -38,19 +39,24 @@ dynamically via pkarr at connect time, so the QR stays valid after IP changes.
 
 Error correction level L (7% recovery).
 
-| Payload | Raw bytes | Base32 chars | QR version |
+| Payload | Raw bytes | Encoded chars | QR version |
 |---------|-----------|--------------|------------|
-| EndpointId (32) + handshake_key (32) + session_id (~8) | ~72 | ~116 | v4 |
+| EndpointId (32) + handshake_secret (16) + session_id (~32) | ~80 | ~128 | v4 |
 | With embedded EndpointAddr (relay URL + 2 LAN IPs, future) | ~112 | ~180 | v6 |
 
 ### Handshake slot lifecycle
 
-- **Created**: one slot per session at `zedra start` time (`rand::random::<[u8;32]>()`).
-- **Stored**: in `SessionRegistry` (in-memory + `sessions.json`). A host crash
-  before pairing invalidates the QR — restart the daemon to get a new one.
-- **Consumed**: atomically on the first valid `Register`. Subsequent attempts
-  return `HandshakeConsumed`.
-- **Expires**: 10 minutes after creation regardless of use.
+- **Created**: one slot per session at `zedra start` time or when `zedra qr`
+  is run.
+- **Stored**: in `SessionRegistry` memory only. A host crash or restart
+  invalidates the QR.
+- **Default**: one-time. The slot is consumed atomically on the first valid
+  `Register`. Subsequent attempts return `HandshakeConsumed`.
+- **Static mode**: `zedra start --static-qr` or `zedra qr --static` creates a
+  QR that can be scanned repeatedly until the daemon exits or another QR
+  replaces it. Use only for testing or store review.
+- **Expiry**: default slots expire 10 minutes after creation. Static slots do
+  not expire while the daemon is running.
 
 ---
 
@@ -65,8 +71,9 @@ iroh QUIC + TLS 1.3 established
 Client → host: Register { client_pubkey, timestamp, hmac }
   hmac = HMAC-SHA256(handshake_key, client_pubkey || timestamp_le_bytes)
   Proves sender physically scanned the QR (has handshake_key).
-  Host verifies: |now - timestamp| ≤ 60s, HMAC valid, slot not consumed.
-  On success: slot consumed, client_pubkey added to authorized_clients + session ACL.
+  Host verifies: |now - timestamp| ≤ 60s, HMAC valid, slot active.
+  On success: one-time slot consumed; static slot remains active;
+  client_pubkey added to authorized_clients + session ACL.
 Host → client: RegisterResult::Ok
 
 Client → host: Connect { client_pubkey, session_id, session_token: None }
@@ -117,10 +124,10 @@ Host → client: AuthProveResult::Ok(SyncSessionResult { session_token, ... })
 | Code | Meaning |
 |------|---------|
 | `Ok` | Registered. Proceed to `Connect`. |
-| `HandshakeConsumed` | Slot already used. Ask host to run `zedra qr --workdir <workdir>` to get a new QR. |
+| `HandshakeConsumed` | One-time slot already used. Ask host to run `zedra qr --workdir <workdir>` to get a new QR. |
 | `InvalidHandshake` | HMAC failed. Wrong key or tampered packet. |
 | `StaleTimestamp` | Clock skew > 60s or replay attempt. |
-| `SlotNotFound` | No slot for this session. QR expired (> 10 min) or wrong session. |
+| `SlotNotFound` | No slot for this session. One-time QR expired (> 10 min), QR was replaced, or wrong session. |
 
 ### AuthProve result codes
 

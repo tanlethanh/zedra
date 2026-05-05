@@ -245,7 +245,7 @@ pub enum RegisterResult {
     /// Registration accepted. Client pubkey stored in authorized list and
     /// added to the session ACL. Proceed to Authenticate.
     Ok,
-    /// Handshake slot already consumed by another device.
+    /// One-time handshake slot already consumed by another device.
     /// Client should prompt: "This QR has already been used.
     /// Ask the host to run `zedra qr` to generate a new one."
     HandshakeConsumed,
@@ -253,7 +253,7 @@ pub enum RegisterResult {
     InvalidHandshake,
     /// Timestamp outside ±60s window. Clock skew or replay attempt.
     StaleTimestamp,
-    /// No pairing slot found for this session. QR may have expired (>10 min).
+    /// No pairing slot found for this session. QR may have expired or been replaced.
     SlotNotFound,
 }
 

@@ -61,7 +61,9 @@ cd android && ./gradlew installDebug && cd ..  # install APK
 cargo run -p zedra-host -- start                    # start, show QR
 cargo run -p zedra-host -- start --workdir ~/project  # specific directory
 cargo run -p zedra-host -- start --detach           # keep running after SSH logout
+cargo run -p zedra-host -- start --static-qr        # static startup QR for review/testing
 cargo run -p zedra-host -- qr --workdir .           # refresh one-time QR
+cargo run -p zedra-host -- qr --workdir . --static  # static QR for testing/store review
 cargo run -p zedra-host -- logs --workdir .         # show recent daemon logs
 cargo run -p zedra-host -- client                   # measure RTT
 cargo run -p zedra-host -- stop                     # stop daemon

@@ -8,6 +8,7 @@
 // Endpoints:
 //   GET  /api/status              — daemon health, active sessions, and terminals
 //   POST /api/qr                  — create and return a fresh one-time pairing QR
+//   POST /api/qr/static           — create and return a static pairing QR
 //   POST /api/terminal            — create a terminal in the active session
 //
 // Auth: every request must carry  Authorization: Bearer <token>
@@ -27,7 +28,7 @@ use crate::metrics;
 use crate::pty::SpawnOptions;
 use crate::qr;
 use crate::rpc_daemon::{create_terminal, DaemonState};
-use crate::session_registry::SessionRegistry;
+use crate::session_registry::{PairingSlotMode, SessionRegistry};
 use zedra_rpc::proto::HostEvent;
 use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
@@ -160,7 +161,22 @@ async fn status(State(s): State<ApiState>, headers: HeaderMap) -> impl IntoRespo
 async fn create_pairing_qr_handler(
     State(s): State<ApiState>,
     headers: HeaderMap,
-) -> impl IntoResponse {
+) -> axum::response::Response {
+    create_pairing_qr_response(s, headers, PairingSlotMode::OneTime).await
+}
+
+async fn create_static_pairing_qr_handler(
+    State(s): State<ApiState>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    create_pairing_qr_response(s, headers, PairingSlotMode::Static).await
+}
+
+async fn create_pairing_qr_response(
+    s: ApiState,
+    headers: HeaderMap,
+    mode: PairingSlotMode,
+) -> axum::response::Response {
     if !verify_token(&headers, &s.token) {
         return (
             StatusCode::UNAUTHORIZED,
@@ -182,10 +198,10 @@ async fn create_pairing_qr_handler(
         handshake_secret: rand::random(),
         session_id: session.id.clone(),
     };
-    match qr::build_pairing_info(&ticket, &s.endpoint, &s.relay_urls) {
+    match qr::build_pairing_info(&ticket, &s.endpoint, &s.relay_urls, mode) {
         Ok(info) => {
             s.registry
-                .add_pairing_slot(&session.id, ticket.handshake_secret)
+                .add_pairing_slot_with_mode(&session.id, ticket.handshake_secret, mode)
                 .await;
             if let Err(e) = metrics::record_qr_created(&s.daemon_state.workdir) {
                 tracing::warn!("Failed to record QR metrics: {}", e);
@@ -312,6 +328,7 @@ pub async fn start(state: ApiState) -> anyhow::Result<std::net::SocketAddr> {
     let app = Router::new()
         .route("/api/status", get(status))
         .route("/api/qr", post(create_pairing_qr_handler))
+        .route("/api/qr/static", post(create_static_pairing_qr_handler))
         .route("/api/terminal", post(create_terminal_handler))
         .with_state(state);
 
@@ -358,8 +375,11 @@ mod tests {
 
         let client = reqwest::Client::new();
         let url = format!("http://{addr}/api/qr");
+        let static_url = format!("http://{addr}/api/qr/static");
         let unauthorized = client.post(&url).send().await.unwrap();
         assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        let unauthorized_static = client.post(&static_url).send().await.unwrap();
+        assert_eq!(unauthorized_static.status(), StatusCode::UNAUTHORIZED);
 
         let info: qr::StartupInfo = client
             .post(&url)
@@ -372,6 +392,8 @@ mod tests {
             .json()
             .await
             .unwrap();
+        assert!(!info.pairing_static);
+        assert_eq!(info.pairing_expires_in_secs, Some(600));
         let ticket = ZedraPairingTicket::from_pairing_url(&info.pairing_url).unwrap();
         assert_eq!(ticket.session_id, session.id);
         assert_eq!(ticket.endpoint_id, identity.endpoint_id());
@@ -386,6 +408,32 @@ mod tests {
             registry.consume_pairing_slot(&session.id).await,
             ConsumeSlotResult::Consumed
         ));
+
+        let info: qr::StartupInfo = client
+            .post(&static_url)
+            .bearer_auth("test-token")
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(info.pairing_static);
+        assert_eq!(info.pairing_expires_in_secs, None);
+        let ticket = ZedraPairingTicket::from_pairing_url(&info.pairing_url).unwrap();
+        assert_eq!(ticket.session_id, session.id);
+        assert_eq!(ticket.endpoint_id, identity.endpoint_id());
+
+        for _ in 0..2 {
+            match registry.consume_pairing_slot(&session.id).await {
+                ConsumeSlotResult::Active(slot) => {
+                    assert_eq!(slot.handshake_secret, ticket.handshake_secret);
+                }
+                _ => panic!("expected static active pairing slot"),
+            }
+        }
 
         endpoint.close().await;
     }

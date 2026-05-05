@@ -5,7 +5,7 @@
 //
 // v3 (Phase 1 PKI): Auth tokens removed. Sessions use per-session ACLs of
 // authorized client public keys. One active client per session at a time.
-// Pairing slots (one-use handshake keys) are used for first registration.
+// Pairing slots are used for first registration.
 
 use crate::docs_tree::{
     snapshot_page_result, DocsTreeCacheEntry, DocsTreeSnapshot, DOCS_TREE_CACHE_TTL,
@@ -23,24 +23,49 @@ use zedra_osc::{OscEvent, OscScanner};
 use zedra_rpc::proto::{
     BacklogEntry, FsDocsTreeError, FsDocsTreeResult, HostEvent, TermOutput, TerminalSyncEntry,
 };
+use zedra_rpc::verify_registration_hmac;
 
 // ---------------------------------------------------------------------------
 // Pairing slot
 // ---------------------------------------------------------------------------
 
-/// A one-use registration slot created when `zedra qr` is run.
+pub const ONE_TIME_PAIRING_SLOT_TTL_SECS: u64 = 600;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PairingSlotMode {
+    OneTime,
+    Static,
+}
+
+impl PairingSlotMode {
+    pub fn expires_in_secs(self) -> Option<u64> {
+        match self {
+            Self::OneTime => Some(ONE_TIME_PAIRING_SLOT_TTL_SECS),
+            Self::Static => None,
+        }
+    }
+
+    fn expires_at_from_now(self) -> Option<Instant> {
+        self.expires_in_secs()
+            .map(|secs| Instant::now() + Duration::from_secs(secs))
+    }
+}
+
+/// A registration slot created when a pairing QR is printed.
 ///
 /// The host stores the random `handshake_secret` locally. The QR ticket carries
-/// the same secret for the client to produce an HMAC. On first use the slot is
-/// consumed; the client pubkey is added to the session ACL.
+/// the same secret for the client to produce an HMAC. Normal slots are consumed
+/// on first use; static slots remain reusable while the daemon is running.
 #[derive(Clone)]
 pub struct PairingSlot {
     /// Random 16-byte secret embedded in the QR ticket.
     pub handshake_secret: [u8; 16],
     /// Session the new client should be added to.
     pub session_id: String,
-    /// When this slot expires (10 minutes after creation).
-    pub expires_at: Instant,
+    /// How this slot is consumed.
+    pub mode: PairingSlotMode,
+    /// When this slot expires. Static slots do not expire while the daemon runs.
+    pub expires_at: Option<Instant>,
 }
 
 /// Result of attempting to atomically consume a pairing slot.
@@ -55,6 +80,7 @@ pub enum ConsumeSlotResult {
 
 const ACTIVE_CLIENT_STALE_AFTER: Duration = Duration::from_secs(4);
 const ACTIVE_CLIENT_PROBE_INTERVAL: Duration = Duration::from_secs(1);
+const MAX_SUPERSEDED_PAIRING_SLOTS_PER_SESSION: usize = 8;
 
 static NEXT_ACTIVE_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -571,6 +597,8 @@ pub struct SessionRegistry {
     authorized_clients: Mutex<HashSet<[u8; 32]>>,
     /// Active pairing slots: session_id → slot.
     pairing_slots: Mutex<HashMap<String, PairingSlot>>,
+    /// Recently replaced pairing slots, kept briefly to classify stale QR scans.
+    superseded_pairing_slots: Mutex<HashMap<String, VecDeque<PairingSlot>>>,
     /// Consumed slot session IDs (kept briefly to return HandshakeConsumed).
     consumed_slots: Mutex<HashSet<String>>,
     /// Path to persist registry state across restarts. `None` = in-memory only.
@@ -591,6 +619,7 @@ impl SessionRegistry {
             name_index: Mutex::new(HashMap::new()),
             authorized_clients: Mutex::new(HashSet::new()),
             pairing_slots: Mutex::new(HashMap::new()),
+            superseded_pairing_slots: Mutex::new(HashMap::new()),
             consumed_slots: Mutex::new(HashSet::new()),
             storage_path: None,
         }
@@ -883,6 +912,9 @@ impl SessionRegistry {
             // Also expire old consumed slot entries
             let mut consumed = self.consumed_slots.lock().await;
             consumed.retain(|id| !to_remove.contains(id));
+
+            let mut superseded = self.superseded_pairing_slots.lock().await;
+            superseded.retain(|id, _| !to_remove.contains(id));
         }
 
         removed
@@ -1045,21 +1077,47 @@ impl SessionRegistry {
     // Pairing slots
     // -----------------------------------------------------------------------
 
-    /// Store a new one-use pairing slot for a session.
+    /// Store a new one-time pairing slot for a session.
     /// Replaces any existing slot for the same session_id.
     pub async fn add_pairing_slot(&self, session_id: &str, handshake_secret: [u8; 16]) {
+        self.add_pairing_slot_with_mode(session_id, handshake_secret, PairingSlotMode::OneTime)
+            .await;
+    }
+
+    /// Store a new pairing slot for a session.
+    /// Replaces any existing slot for the same session_id.
+    pub async fn add_pairing_slot_with_mode(
+        &self,
+        session_id: &str,
+        handshake_secret: [u8; 16],
+        mode: PairingSlotMode,
+    ) {
         let slot = PairingSlot {
             handshake_secret,
             session_id: session_id.to_string(),
-            expires_at: Instant::now() + Duration::from_secs(600), // 10 min
+            mode,
+            expires_at: mode.expires_at_from_now(),
         };
-        self.pairing_slots
+        let previous = self
+            .pairing_slots
             .lock()
             .await
             .insert(session_id.to_string(), slot);
+        if let Some(previous) = previous {
+            let mut superseded = self.superseded_pairing_slots.lock().await;
+            let entries = superseded.entry(session_id.to_string()).or_default();
+            entries.push_back(previous);
+            while entries.len() > MAX_SUPERSEDED_PAIRING_SLOTS_PER_SESSION {
+                entries.pop_front();
+            }
+        }
         // Remove from consumed set if it was there (new QR supersedes old)
         self.consumed_slots.lock().await.remove(session_id);
-        tracing::info!("Pairing slot created for session {}", session_id);
+        tracing::info!(
+            "Pairing slot created for session {} ({:?})",
+            session_id,
+            mode
+        );
     }
 
     /// Atomically consume a pairing slot.
@@ -1070,6 +1128,13 @@ impl SessionRegistry {
     pub async fn consume_pairing_slot(&self, session_id: &str) -> ConsumeSlotResult {
         let mut slots = self.pairing_slots.lock().await;
 
+        if let Some(slot) = slots.get(session_id) {
+            if slot.mode == PairingSlotMode::Static {
+                // Static QR slots are intentionally reusable for testing and store review.
+                return ConsumeSlotResult::Active(slot.clone());
+            }
+        }
+
         if let Some(slot) = slots.remove(session_id) {
             // Move to consumed set
             self.consumed_slots
@@ -1078,7 +1143,10 @@ impl SessionRegistry {
                 .insert(session_id.to_string());
 
             // Check expiry
-            if slot.expires_at < Instant::now() {
+            if slot
+                .expires_at
+                .is_some_and(|expires_at| expires_at < Instant::now())
+            {
                 tracing::warn!("Pairing slot for {} expired", session_id);
                 return ConsumeSlotResult::NotFound;
             }
@@ -1089,6 +1157,23 @@ impl SessionRegistry {
         } else {
             ConsumeSlotResult::NotFound
         }
+    }
+
+    pub async fn matches_superseded_pairing_hmac(
+        &self,
+        session_id: &str,
+        client_pubkey: &[u8; 32],
+        timestamp: u64,
+        hmac: &[u8; 32],
+    ) -> bool {
+        let superseded = self.superseded_pairing_slots.lock().await;
+        let Some(slots) = superseded.get(session_id) else {
+            return false;
+        };
+
+        slots.iter().any(|slot| {
+            verify_registration_hmac(&slot.handshake_secret, client_pubkey, timestamp, hmac)
+        })
     }
 }
 
@@ -1700,6 +1785,81 @@ mod tests {
             ConsumeSlotResult::Consumed => {}
             _ => panic!("expected Consumed"),
         }
+    }
+
+    #[tokio::test]
+    async fn one_time_pairing_slot_expires_after_ttl() {
+        let registry = SessionRegistry::new();
+        let session = registry.create_named("s1", PathBuf::from("/s1")).await;
+        let slot = PairingSlot {
+            handshake_secret: [7u8; 16],
+            session_id: session.id.clone(),
+            mode: PairingSlotMode::OneTime,
+            expires_at: Some(Instant::now() - Duration::from_secs(1)),
+        };
+        registry
+            .pairing_slots
+            .lock()
+            .await
+            .insert(session.id.clone(), slot);
+
+        match registry.consume_pairing_slot(&session.id).await {
+            ConsumeSlotResult::NotFound => {}
+            _ => panic!("expected NotFound"),
+        }
+    }
+
+    #[tokio::test]
+    async fn static_pairing_slot_can_be_reused() {
+        let registry = SessionRegistry::new();
+        let session = registry.create_named("s1", PathBuf::from("/s1")).await;
+        let key = [9u8; 16];
+
+        registry
+            .add_pairing_slot_with_mode(&session.id, key, PairingSlotMode::Static)
+            .await;
+
+        for _ in 0..2 {
+            match registry.consume_pairing_slot(&session.id).await {
+                ConsumeSlotResult::Active(slot) => {
+                    assert_eq!(slot.handshake_secret, key);
+                    assert_eq!(slot.session_id, session.id);
+                    assert_eq!(slot.mode, PairingSlotMode::Static);
+                    assert_eq!(slot.expires_at, None);
+                }
+                _ => panic!("expected Active"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn superseded_pairing_slot_can_classify_stale_qr() {
+        let registry = SessionRegistry::new();
+        let session = registry.create_named("s1", PathBuf::from("/s1")).await;
+        let old_key = [3u8; 16];
+        let new_key = [4u8; 16];
+        let pubkey = [5u8; 32];
+        let timestamp = 123;
+        let old_hmac = zedra_rpc::compute_registration_hmac(&old_key, &pubkey, timestamp);
+        let wrong_hmac = zedra_rpc::compute_registration_hmac(&[6u8; 16], &pubkey, timestamp);
+
+        registry
+            .add_pairing_slot_with_mode(&session.id, old_key, PairingSlotMode::Static)
+            .await;
+        registry
+            .add_pairing_slot_with_mode(&session.id, new_key, PairingSlotMode::Static)
+            .await;
+
+        assert!(
+            registry
+                .matches_superseded_pairing_hmac(&session.id, &pubkey, timestamp, &old_hmac)
+                .await
+        );
+        assert!(
+            !registry
+                .matches_superseded_pairing_hmac(&session.id, &pubkey, timestamp, &wrong_hmac)
+                .await
+        );
     }
 
     #[tokio::test]
