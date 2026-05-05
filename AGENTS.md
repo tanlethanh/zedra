@@ -96,3 +96,4 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - GPUI text wrapping requires definite width constraints. Use `.w(px(width))` not `.max_w(px(width))` for text containers or text wraps at viewport width.
 - Prefer `cx.spawn(...)` for UI-thread async work and `session_runtime().spawn(...)` for Tokio session or network work when `cx` is unavailable.
 - Session-to-UI flow is `Session / SessionHandle -> ConnectEvent -> SessionState -> WorkspaceState -> Views`. Preserve that layering.
+- New `extern "C"` Rust→Swift call: add a weak stub in `crates/zedra/src/ios_stub.c` matching the function signature or the iOS staticlib link will fail with undefined symbol.
