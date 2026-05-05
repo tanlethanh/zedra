@@ -21,6 +21,9 @@ private func zedra_firebase_initialize()
 @_silgen_name("zedra_ios_send_key_input")
 private func zedra_ios_send_key_input(_ key: UnsafePointer<CChar>)
 
+@_silgen_name("zedra_ios_app_will_terminate")
+private func zedra_ios_app_will_terminate()
+
 final class GPUIRuntimeController: NSObject {
     private var gpuiApp: UnsafeMutableRawPointer?
     private var gpuiWindow: UnsafeMutableRawPointer?
@@ -96,6 +99,7 @@ final class GPUIRuntimeController: NSObject {
     func applicationWillTerminate() {
         keyboardAccessoryController.stopRepeating()
         stopDisplayLink()
+        zedra_ios_app_will_terminate()
         gpui_ios_will_terminate(gpuiApp)
     }
 

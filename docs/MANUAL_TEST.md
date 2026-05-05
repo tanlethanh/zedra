@@ -146,12 +146,14 @@
 
 1. Connect via QR (test 1 above), create at least three terminals, and note their order in the drawer Terminals tab
 2. Force-close the app
-3. Reopen — tap the saved workspace entry in the home screen
-4. Expected: reconnects using stored session ID (no QR needed); terminal
+3. On another client, immediately connect to the same host session using a saved workspace or a fresh host QR
+4. Expected: the second client connects without several `Host occupied` / retry attempts
+5. Disconnect the second client, then reopen the original app and tap the saved workspace entry in the home screen
+6. Expected: reconnects using stored session ID (no QR needed); terminal
    backlog replays any missed output
-5. Expected: the workspace drawer Terminals tab shows the active remote
+7. Expected: the workspace drawer Terminals tab shows the active remote
    terminals from the host without creating a replacement terminal
-6. Expected: terminal cards appear in the same order they had before force-close
+8. Expected: terminal cards appear in the same order they had before force-close
 
 ## 3a. Remove Saved Workspace From Home
 
@@ -187,13 +189,22 @@
 ## 5. Host Unreachable → Retry
 
 1. Connect via QR and create at least three terminals
-2. Take the host machine offline (disable network interface)
-3. Expected: badge shows `Reconnecting (N) · Ns` with a per-second countdown, up to 3 attempts
-4. After 3 attempts: connect view shows "Host unreachable. Check network and host."
-5. Bring host network back up, tap "Retry"
-6. Expected: reconnects successfully
-7. Expected: the workspace drawer Terminals tab preserves the pre-reconnect terminal order
-8. If the host was restarted and no remote terminals remain, expected: a fresh terminal is created and opened
+2. In one terminal, run:
+   ```sh
+   sh -c 'i=0; while true; do echo "tick:$i"; i=$((i+1)); sleep 1; done'
+   ```
+3. In another terminal, run `cat`
+4. Take the host machine offline (disable network interface)
+5. Expected: badge shows `Reconnecting (N) · Ns` with a per-second countdown, up to 3 attempts
+6. After 3 attempts: connect view shows "Host unreachable. Check network and host."
+7. Bring host network back up, tap "Retry"
+8. Expected: reconnects successfully
+9. Expected: the ticking terminal continues receiving new `tick:<n>` output after reconnect, not only replayed backlog
+10. In the `cat` terminal, type `after-reconnect` and press Enter
+11. Expected: `after-reconnect` echoes once, proving the reattached input stream still reaches the PTY
+12. Expected: the workspace drawer Terminals tab preserves the pre-reconnect terminal order
+13. If the host was restarted and no remote terminals remain, expected: a fresh terminal is created and opened
+14. Expected: host logs do not report reconnect teardown as `ERROR zedra_host::rpc_daemon: TermAttach: input receiver error: Io error`
 
 ## 5a. Idle Before Reconnect
 
@@ -227,8 +238,17 @@
 1. Pair Device A via QR → connected to session S
 2. Start a new `zedra start` for the same workdir on the host (same session)
 3. Pair Device B via the new QR → should attach to session S
-4. Expected: Device B blocked with "Host occupied. Disconnect other device and retry."
-5. Disconnect Device A → Device B can now attach
+4. Expected while Device A is still live: Device B is blocked with "Host occupied. Disconnect other device and retry."
+5. Manually disconnect Device A, then immediately retry Device B
+6. Expected: Device B attaches on the first retry
+7. Reconnect Device A, then background it without quitting
+8. Immediately retry Device B
+9. Expected: Device B is still blocked because backgrounding alone keeps Device A's session active
+10. Force-quit Device A from the app switcher, then immediately retry Device B
+11. Expected: Device B attaches without several "Host occupied" retry attempts
+12. Reconnect Device A again, then network-disconnect Device A without a graceful client close
+13. Retry Device B after the active-client stale window
+14. Expected: the host evicts the stale Device A connection without waiting for the full transport timeout
 
 ## 7. `zedra client` RTT Test
 

@@ -142,6 +142,8 @@ extern void gpui_ios_detach_embedded_view(void *window_ptr);
  */
 bool zedra_ios_check_pending_frame(void);
 
+void zedra_ios_app_will_terminate(void);
+
 void zedra_ios_native_floating_button_pressed(uint32_t callback_id);
 
 void zedra_launch_gpui(void);
