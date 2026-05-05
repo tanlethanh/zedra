@@ -648,7 +648,11 @@ impl Render for TerminalView {
                                 )
                             };
                             if !alt_scroll {
-                                if offset == 0 && this.scroll_offset_px < 0.0 {
+                                if offset == 0 && history == 0 && this.scroll_offset_px > 0.0 {
+                                    // With no real scrollback, top and bottom are the same boundary;
+                                    // keep touch overscroll from creating fake empty history.
+                                    this.scroll_offset_px = 0.0;
+                                } else if offset == 0 && this.scroll_offset_px < 0.0 {
                                     this.scroll_offset_px = 0.0; // at bottom
                                 }
                                 if offset == 0 || offset < history {
@@ -1080,6 +1084,38 @@ mod tests {
                     terminal_view.compute_keyboard_content_offset(px(80.0), cx),
                     None
                 );
+            })
+            .unwrap();
+        cx.quit();
+    }
+
+    #[test]
+    fn touch_scroll_without_history_does_not_accumulate_empty_offset() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                terminal_view.terminal.update(cx, |terminal, _| {
+                    terminal.advance_bytes(b"prompt> ");
+                });
+                assert_eq!(terminal_view.terminal.read(cx).history_size(), 0);
+            })
+            .unwrap();
+
+        for _ in 0..10 {
+            scroll_terminal_touch_delta(window, &mut cx, px(16.0), TouchPhase::Moved);
+            cx.run_until_parked();
+        }
+
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                let terminal = terminal_view.terminal.read(cx);
+                assert_eq!(terminal.display_offset(), 0);
+                assert_eq!(terminal.history_size(), 0);
+                assert_eq!(terminal_view.scroll_offset_px, 0.0);
+                assert_eq!(terminal_view.keyboard_top_reveal_px, 0.0);
             })
             .unwrap();
         cx.quit();
