@@ -176,7 +176,7 @@ main() {
     trap 'rm -rf "$tmpdir"' EXIT
 
     echo "  Downloading ${archive_url}..."
-    curl -fsSL -o "${tmpdir}/${archive_name}" "$archive_url" || {
+    curl -fL --progress-bar -o "${tmpdir}/${archive_name}" "$archive_url" || {
         echo "Error: download failed. Check that version '${version}' exists at:"
         echo "  https://github.com/${REPO}/releases"
         exit 1
