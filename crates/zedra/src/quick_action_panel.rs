@@ -20,6 +20,15 @@ pub enum QuickActionEvent {
 
 impl EventEmitter<QuickActionEvent> for QuickActionPanel {}
 
+fn is_active_terminal_card(
+    active_workspace_index: Option<usize>,
+    workspace_index: usize,
+    active_terminal_id: Option<&str>,
+    terminal_id: &str,
+) -> bool {
+    active_workspace_index == Some(workspace_index) && active_terminal_id == Some(terminal_id)
+}
+
 pub struct QuickActionPanel {
     workspaces: Entity<Workspaces>,
     focus_handle: FocusHandle,
@@ -94,6 +103,7 @@ impl Render for QuickActionPanel {
 
         let workspaces = self.workspaces.read(cx);
         let ws_count = workspaces.len();
+        let active_workspace_index = workspaces.active_index();
 
         let panel = div()
             .w_full()
@@ -269,10 +279,12 @@ impl Render for QuickActionPanel {
                 for (i, tid) in state.terminal_ids.iter().enumerate() {
                     let tid_click = tid.clone();
                     let tid_del = tid.clone();
-                    let is_active = state
-                        .active_terminal_id
-                        .clone()
-                        .is_some_and(|id| id == *tid);
+                    let is_active = is_active_terminal_card(
+                        active_workspace_index,
+                        index,
+                        state.active_terminal_id.as_deref(),
+                        tid,
+                    );
                     let meta = terminal_state.read(cx).meta(tid);
 
                     let on_close = Box::new(cx.listener(move |this, _event, _window, cx| {
@@ -334,5 +346,33 @@ impl Render for QuickActionPanel {
             .child(div().h(px(bottom_inset)));
 
         panel.track_focus(&self.focus_handle).child(content)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_active_terminal_card;
+
+    #[test]
+    fn terminal_card_active_requires_active_workspace_and_terminal() {
+        assert!(is_active_terminal_card(
+            Some(1),
+            1,
+            Some("term-2"),
+            "term-2"
+        ));
+        assert!(!is_active_terminal_card(
+            Some(0),
+            1,
+            Some("term-2"),
+            "term-2"
+        ));
+        assert!(!is_active_terminal_card(
+            Some(1),
+            1,
+            Some("term-1"),
+            "term-2"
+        ));
+        assert!(!is_active_terminal_card(None, 1, Some("term-2"), "term-2"));
     }
 }

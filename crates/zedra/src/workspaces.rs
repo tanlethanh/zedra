@@ -64,6 +64,10 @@ impl Workspaces {
         self.active_index.and_then(|i| self.entries.get(i))
     }
 
+    pub fn active_index(&self) -> Option<usize> {
+        self.active_index
+    }
+
     pub fn active_view(&self) -> Option<AnyView> {
         self.active().map(|e| AnyView::from(e.clone()))
     }

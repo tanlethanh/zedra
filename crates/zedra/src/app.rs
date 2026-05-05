@@ -28,6 +28,12 @@ fn app_view_descriptor(screen: AppScreen) -> Option<ViewDescriptor> {
     }
 }
 
+/// Workspace content projects `Workspaces.active_index`, so same-screen
+/// workspace navigation still needs to remount the active workspace view.
+fn should_update_drawer_content(current: AppScreen, next: AppScreen) -> bool {
+    current != next || next == AppScreen::Workspace
+}
+
 pub struct ZedraApp {
     screen: AppScreen,
     home_view: Entity<HomeView>,
@@ -296,11 +302,16 @@ impl ZedraApp {
 
     fn set_screen(&mut self, screen: AppScreen, cx: &mut Context<Self>) {
         let screen_changed = self.screen != screen;
+        let should_update_content = should_update_drawer_content(self.screen, screen);
         if screen_changed {
             self.screen = screen;
+        }
+
+        if should_update_content {
             self.update_drawer_content(cx);
             cx.notify();
         }
+
         if screen_changed {
             self.record_current_view(cx);
         }
@@ -374,7 +385,7 @@ pub fn open_zedra_window(app: &mut App, window_options: WindowOptions) -> Result
 mod tests {
     use super::{
         AppScreen, app_view_descriptor, screen_after_workspace_disconnect,
-        should_process_pending_ticket,
+        should_process_pending_ticket, should_update_drawer_content,
     };
     use crate::telemetry::view_telemetry;
 
@@ -402,5 +413,21 @@ mod tests {
     #[test]
     fn manual_workspace_disconnect_returns_home() {
         assert_eq!(screen_after_workspace_disconnect(), AppScreen::Home);
+    }
+
+    #[test]
+    fn workspace_navigation_refreshes_content_even_on_same_screen() {
+        assert!(should_update_drawer_content(
+            AppScreen::Workspace,
+            AppScreen::Workspace
+        ));
+        assert!(should_update_drawer_content(
+            AppScreen::Home,
+            AppScreen::Workspace
+        ));
+        assert!(!should_update_drawer_content(
+            AppScreen::Home,
+            AppScreen::Home
+        ));
     }
 }
