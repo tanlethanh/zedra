@@ -2,34 +2,42 @@
 ///
 /// The iOS keyboard accessory bar sends key input via a C FFI callback
 /// (`zedra_ios_send_key_input`) without any GPUI context. This module
-/// holds a single process-scoped callback that is updated by `WorkspaceView`
-/// whenever the active terminal changes, pointing directly at the right
-/// `SessionHandle::send_terminal_input` call.
+/// holds a single process-scoped sender for the active terminal. Terminal
+/// activation and reconnect attach both refresh this slot, so native input
+/// reads the current channel instead of a callback that captured an older one.
 ///
 /// Nothing in `zedra-session` is involved — the routing is entirely
 /// within the `zedra` crate.
 use std::sync::{Mutex, OnceLock};
 
-type InputFn = Box<dyn Fn(Vec<u8>) + Send + 'static>;
+use tokio::sync::mpsc;
+use tracing::warn;
 
-static ACTIVE_INPUT: OnceLock<Mutex<Option<InputFn>>> = OnceLock::new();
+#[derive(Clone)]
+struct ActiveInput {
+    terminal_id: String,
+    sender: mpsc::Sender<Vec<u8>>,
+}
 
-fn slot() -> &'static Mutex<Option<InputFn>> {
+static ACTIVE_INPUT: OnceLock<Mutex<Option<ActiveInput>>> = OnceLock::new();
+
+fn slot() -> &'static Mutex<Option<ActiveInput>> {
     ACTIVE_INPUT.get_or_init(|| Mutex::new(None))
 }
 
-/// Register a callback for the currently-active terminal.
+/// Register the input channel for the currently-active terminal.
 ///
 /// Called by `WorkspaceView` whenever `active_terminal_id` changes.
-/// The callback captures the `SessionHandle` and terminal ID, so the
-/// caller doesn't need to pass them separately.
-pub fn set_active_input(f: InputFn) {
+pub fn set_active_input(terminal_id: String, sender: mpsc::Sender<Vec<u8>>) {
     if let Ok(mut slot) = slot().lock() {
-        *slot = Some(f);
+        *slot = Some(ActiveInput {
+            terminal_id,
+            sender,
+        });
     }
 }
 
-/// Clear the callback (e.g. when all terminals are closed).
+/// Clear the active input channel (e.g. when all terminals are closed).
 pub fn clear_active_input() {
     if let Ok(mut slot) = slot().lock() {
         *slot = None;
@@ -38,13 +46,46 @@ pub fn clear_active_input() {
 
 /// Send bytes to the currently-active terminal.
 ///
-/// Returns `true` if a callback was registered and invoked.
+/// Returns `true` if the data was accepted by the active channel.
 pub fn send_to_active(data: Vec<u8>) -> bool {
-    if let Ok(slot) = slot().lock() {
-        if let Some(ref f) = *slot {
-            f(data);
-            return true;
+    let active = slot().lock().ok().and_then(|slot| slot.clone());
+    let Some(active) = active else {
+        return false;
+    };
+
+    match active.sender.try_send(data) {
+        Ok(()) => true,
+        Err(error) => {
+            warn!(
+                terminal_id = active.terminal_id,
+                "failed to send input: {}", error
+            );
+            false
         }
     }
-    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc::error::TryRecvError;
+
+    #[test]
+    fn send_to_active_reads_latest_registered_channel() {
+        clear_active_input();
+
+        let (first_tx, mut first_rx) = mpsc::channel(1);
+        let (second_tx, mut second_rx) = mpsc::channel(1);
+        set_active_input("first".to_string(), first_tx);
+        set_active_input("second".to_string(), second_tx);
+
+        assert!(send_to_active(b"\t".to_vec()));
+        assert!(matches!(
+            first_rx.try_recv(),
+            Err(TryRecvError::Empty | TryRecvError::Disconnected)
+        ));
+        assert_eq!(second_rx.try_recv(), Ok(b"\t".to_vec()));
+
+        clear_active_input();
+    }
 }
