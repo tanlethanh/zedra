@@ -2,10 +2,17 @@ name: Zedra
 options:
   minimumXcodeGenVersion: "2.45.0"
   projectFormat: xcode15_3
+  xcodeVersion: "26.4"
   bundleIdPrefix: dev.zedra
   deploymentTarget:
     iOS: "16.0"
   generateEmptyDirectories: true
+
+settings:
+  base:
+    # CocoaPods/Firebase and the Rust FFI wrapper read tools outside their declared inputs.
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    STRING_CATALOG_GENERATE_SYMBOLS: YES
 
 targets:
   Zedra:
@@ -83,8 +90,6 @@ targets:
           ENABLE_TESTABILITY: NO
           GCC_OPTIMIZATION_LEVEL: s
           MTL_ENABLE_DEBUG_INFO: NO
-          STRIP_INSTALLED_PRODUCT: YES
-          STRIP_STYLE: all
           SWIFT_COMPILATION_MODE: wholemodule
           SWIFT_OPTIMIZATION_LEVEL: "-O"
           VALIDATE_PRODUCT: YES

@@ -99,6 +99,28 @@ Before committing:
 - If a file contains both related and unrelated edits, stage only the related hunks or apply an exact patch to the index.
 - Run `git diff --cached --check` before the commit.
 
+## Pull Requests
+
+Use the same title convention as root commits:
+
+```text
+{type}: {short_message}
+```
+
+Keep the description to this shape:
+
+```md
+## Summary
+
+- ...
+
+## Notes
+
+- ...
+```
+
+Use `## Summary` for what changed and why. Use `## Notes` for risks, follow-ups, screenshots, or manual context. Do not add a validation section; CI owns validation.
+
 ## Documentation Style
 
 Write docs for developers who are scanning while trying to do a task.
