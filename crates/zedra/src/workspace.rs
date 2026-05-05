@@ -2498,7 +2498,7 @@ impl Render for WorkspaceContent {
         let top_inset = status_bar_inset();
         let this = cx.weak_entity();
         let workspace_state = self.workspace_state.read(cx);
-        let title = workspace_state.project_name.to_string();
+        let title = workspace_state.display_name().to_string();
         let default_subtitle = workspace_state.strip_path.to_string();
         let connect_phase = workspace_state.connect_phase.clone();
         let mainview_measure = canvas(

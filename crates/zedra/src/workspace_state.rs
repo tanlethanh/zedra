@@ -83,6 +83,8 @@ pub struct WorkspaceState {
     pub session_id: String,
     pub strip_path: String,
     pub project_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_name: Option<String>,
     pub workdir: String,
     pub homedir: String,
     pub hostname: String,
@@ -126,6 +128,7 @@ impl PartialEq for WorkspaceState {
             && self.session_id == other.session_id
             && self.strip_path == other.strip_path
             && self.project_name == other.project_name
+            && self.custom_name == other.custom_name
             && self.workdir == other.workdir
             && self.homedir == other.homedir
             && self.hostname == other.hostname
@@ -198,6 +201,22 @@ impl WorkspaceState {
     pub fn mark_disconnected(&mut self, cx: &mut Context<Self>) {
         self.clear_runtime_state_for_disconnect();
 
+        cx.emit(WorkspaceStateEvent::StateChanged);
+        cx.notify();
+    }
+
+    /// The name shown in the UI. Returns `custom_name` if set, otherwise `project_name`.
+    pub fn display_name(&self) -> &str {
+        self.custom_name
+            .as_deref()
+            .unwrap_or(self.project_name.as_str())
+    }
+
+    pub fn set_custom_name(&mut self, name: Option<String>, cx: &mut Context<Self>) {
+        if self.custom_name == name {
+            return;
+        }
+        self.custom_name = name;
         cx.emit(WorkspaceStateEvent::StateChanged);
         cx.notify();
     }

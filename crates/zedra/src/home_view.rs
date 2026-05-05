@@ -1,13 +1,12 @@
 use std::sync::OnceLock;
-use std::time::Duration;
 
+use futures::StreamExt as _;
 use gpui::*;
 use zedra_session::ConnectPhase;
 use zedra_telemetry::*;
 
 use crate::button::outline_button;
 use crate::fonts;
-use crate::pending::{PendingSlot, spawn_periodic_task};
 use crate::platform_bridge::{self, AlertButton, HapticFeedback};
 use crate::theme;
 use crate::transport_badge::{ConnectionStatusIndicator, phase_indicator_color};
@@ -27,21 +26,50 @@ pub enum HomeEvent {
 
 impl EventEmitter<HomeEvent> for HomeView {}
 
-/// Pending workspace delete confirmed via native alert.
-static PENDING_DELETE: PendingSlot<String> = PendingSlot::new();
+enum HomeAction {
+    Disconnect {
+        endpoint_addr: String,
+        display_name: String,
+    },
+    ConfirmDisconnect {
+        endpoint_addr: String,
+    },
+    Delete {
+        endpoint_addr: String,
+        display_name: String,
+    },
+    ConfirmDelete {
+        endpoint_addr: String,
+    },
+    BeginRename {
+        endpoint_addr: String,
+        current_name: String,
+    },
+    ConfirmRename {
+        endpoint_addr: String,
+        name: String,
+    },
+}
 
 pub struct HomeView {
     workspaces: Entity<Workspaces>,
     focus_handle: FocusHandle,
     selected_guide_tab: GuideTab,
-    _pending_delete_task: Task<()>,
+    action_tx: futures::channel::mpsc::UnboundedSender<HomeAction>,
+    _action_task: Task<()>,
 }
 
 impl HomeView {
     pub fn new(workspaces: Entity<Workspaces>, cx: &mut Context<Self>) -> Self {
-        let pending_delete_task = spawn_periodic_task(cx, Duration::from_millis(50), |this, cx| {
-            if let Some(endpoint_addr) = PENDING_DELETE.take() {
-                this.process_pending_delete(endpoint_addr, cx);
+        let (action_tx, mut action_rx) = futures::channel::mpsc::unbounded::<HomeAction>();
+        let action_task = cx.spawn(async move |this, cx| {
+            while let Some(action) = action_rx.next().await {
+                if this
+                    .update(cx, |view, cx| view.process_action(action, cx))
+                    .is_err()
+                {
+                    break;
+                }
             }
         });
 
@@ -49,7 +77,8 @@ impl HomeView {
             workspaces,
             focus_handle: cx.focus_handle(),
             selected_guide_tab: GuideTab::Curl,
-            _pending_delete_task: pending_delete_task,
+            action_tx,
+            _action_task: action_task,
         }
     }
 
@@ -87,34 +116,132 @@ impl HomeView {
         cx.emit(HomeEvent::NavigateToWorkspace);
     }
 
-    fn handle_workspace_remove(&self, item_idx: usize, cx: &mut Context<Self>) {
+    fn handle_workspace_long_press(&self, item_idx: usize, cx: &mut Context<Self>) {
         let states = self.workspaces.read(cx).states();
         let Some(state) = states.get(item_idx) else {
             return;
         };
+        let endpoint_addr = state.read(cx).endpoint_addr.clone();
+        let display = state.read(cx).display_name().to_string();
+        let tx = self.action_tx.clone();
 
-        let endpoint_addr = state.read(cx).endpoint_addr.to_string();
-        let display = state.read(cx).project_name.to_string();
-
-        platform_bridge::show_alert(
+        platform_bridge::show_selection(
             "",
-            &format!("Remove {} workspace?", display),
+            "",
             vec![
+                AlertButton::default("Rename"),
+                AlertButton::default("Disconnect"),
                 AlertButton::destructive("Delete"),
-                AlertButton::cancel("Cancel"),
             ],
-            move |button_index| {
-                if button_index == 0 {
-                    PENDING_DELETE.set(endpoint_addr.clone());
+            move |choice| match choice {
+                Some(0) => {
+                    let _ = tx.unbounded_send(HomeAction::BeginRename {
+                        endpoint_addr,
+                        current_name: display,
+                    });
                 }
+                Some(1) => {
+                    let _ = tx.unbounded_send(HomeAction::Disconnect {
+                        endpoint_addr,
+                        display_name: display,
+                    });
+                }
+                Some(2) => {
+                    let _ = tx.unbounded_send(HomeAction::Delete {
+                        endpoint_addr,
+                        display_name: display,
+                    });
+                }
+                _ => {}
             },
         );
     }
 
-    fn process_pending_delete(&self, endpoint_addr: String, cx: &mut Context<Self>) {
-        self.workspaces.update(cx, |ws, cx| {
-            ws.remove_by_endpoint_addr(&endpoint_addr, cx);
-        });
+    fn process_action(&mut self, action: HomeAction, cx: &mut Context<Self>) {
+        match action {
+            HomeAction::Disconnect {
+                endpoint_addr,
+                display_name,
+            } => {
+                let tx = self.action_tx.clone();
+                platform_bridge::show_alert(
+                    "",
+                    &format!("Disconnect from {}?", display_name),
+                    vec![
+                        AlertButton::destructive("Disconnect"),
+                        AlertButton::cancel("Cancel"),
+                    ],
+                    move |button_index| {
+                        if button_index == 0 {
+                            let _ =
+                                tx.unbounded_send(HomeAction::ConfirmDisconnect { endpoint_addr });
+                        }
+                    },
+                );
+            }
+            HomeAction::ConfirmDisconnect { endpoint_addr } => {
+                self.workspaces.update(cx, |ws, cx| {
+                    ws.disconnect_by_endpoint_addr(&endpoint_addr, cx);
+                });
+            }
+            HomeAction::Delete {
+                endpoint_addr,
+                display_name,
+            } => {
+                let tx = self.action_tx.clone();
+                platform_bridge::show_alert(
+                    "",
+                    &format!("Remove {} workspace?", display_name),
+                    vec![
+                        AlertButton::destructive("Delete"),
+                        AlertButton::cancel("Cancel"),
+                    ],
+                    move |button_index| {
+                        if button_index == 0 {
+                            let _ = tx.unbounded_send(HomeAction::ConfirmDelete { endpoint_addr });
+                        }
+                    },
+                );
+            }
+            HomeAction::ConfirmDelete { endpoint_addr } => {
+                self.workspaces.update(cx, |ws, cx| {
+                    ws.remove_by_endpoint_addr(&endpoint_addr, cx);
+                });
+            }
+            HomeAction::BeginRename {
+                endpoint_addr,
+                current_name,
+            } => {
+                let tx = self.action_tx.clone();
+                platform_bridge::show_text_input(
+                    "Rename workspace",
+                    "Workspace name",
+                    &current_name,
+                    move |result| {
+                        if let Some(value) = result {
+                            let _ = tx.unbounded_send(HomeAction::ConfirmRename {
+                                endpoint_addr,
+                                name: value,
+                            });
+                        }
+                    },
+                );
+            }
+            HomeAction::ConfirmRename {
+                endpoint_addr,
+                name,
+            } => {
+                let trimmed = name.trim();
+                let custom_name = if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                };
+                self.workspaces.update(cx, |ws, cx| {
+                    ws.rename_workspace(&endpoint_addr, custom_name, cx)
+                });
+            }
+        }
     }
 
     fn select_guide_tab(&mut self, tab: GuideTab, cx: &mut Context<Self>) {
@@ -234,11 +361,8 @@ impl Render for HomeView {
                     _ => "Reconnect",
                 };
 
-                let project_name = if state.project_name.is_empty() {
-                    "Workspace".to_string()
-                } else {
-                    state.project_name.to_string()
-                };
+                let name = state.display_name();
+                let project_name = if name.is_empty() { "Workspace" } else { name }.to_string();
                 let strip_path = state.strip_path.to_string();
                 let hostname = state.hostname.to_string();
                 let subtitle = match (hostname.is_empty(), strip_path.is_empty()) {
@@ -736,7 +860,8 @@ fn workspace_card(
             this.handle_workspace_tap(index, window, cx);
         }))
         .on_long_press(cx.listener(move |this, _event, _window, cx| {
-            this.handle_workspace_remove(index, cx);
+            platform_bridge::trigger_haptic(HapticFeedback::ImpactMedium);
+            this.handle_workspace_long_press(index, cx);
         }))
         .child(
             div()

@@ -284,6 +284,30 @@ impl Workspaces {
         self.remove_saved(endpoint_addr, cx);
     }
 
+    pub fn rename_workspace(
+        &mut self,
+        endpoint_addr: &str,
+        custom_name: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(state) = self
+            .states
+            .iter()
+            .find(|s| s.read(cx).endpoint_addr == endpoint_addr)
+            .cloned()
+        {
+            state.update(cx, |s, cx| s.set_custom_name(custom_name.clone(), cx));
+            // Active workspaces auto-persist via their WorkspaceStateEvent::StateChanged
+            // subscription in workspace.rs. Only upsert directly for saved-only states.
+            let is_active = self.entry_by_endpoint_addr(endpoint_addr, cx).is_some();
+            if !is_active {
+                WorkspaceState::upsert(state.read(cx).clone())
+                    .map_err(|e| error!("Failed to persist renamed workspace: {e}"))
+                    .ok();
+            }
+        }
+    }
+
     pub fn remove_saved(&mut self, endpoint_addr: &str, cx: &mut Context<Self>) {
         WorkspaceState::remove_by_endpoint_add(endpoint_addr)
             .map_err(|e| error!("Failed to remove workspace state: {e}"))

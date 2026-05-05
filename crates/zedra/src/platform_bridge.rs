@@ -199,6 +199,9 @@ static ALERT_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>
 static NEXT_SELECTION_ID: AtomicU32 = AtomicU32::new(1);
 static SELECTION_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>) + Send>>>> =
     OnceLock::new();
+static NEXT_TEXT_INPUT_ID: AtomicU32 = AtomicU32::new(1);
+static TEXT_INPUT_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(Option<String>) + Send>>>> =
+    OnceLock::new();
 static NEXT_NATIVE_FLOATING_BUTTON_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_NATIVE_DICTATION_PREVIEW_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_NATIVE_NOTIFICATION_ID: AtomicU32 = AtomicU32::new(1);
@@ -219,6 +222,10 @@ fn selection_callbacks() -> &'static Mutex<HashMap<u32, Box<dyn FnOnce(Option<us
 
 fn native_notification_callbacks() -> &'static Mutex<HashMap<u32, Box<dyn FnOnce() + Send>>> {
     NATIVE_NOTIFICATION_CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn text_input_callbacks() -> &'static Mutex<HashMap<u32, Box<dyn FnOnce(Option<String>) + Send>>> {
+    TEXT_INPUT_CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Present a native alert dialog with the given title, message, and buttons.
@@ -259,6 +266,39 @@ pub fn show_selection(
         .unwrap()
         .insert(id, Box::new(on_result));
     bridge().present_selection(id, title, message, &buttons);
+}
+
+/// Present a native text-input dialog (UIAlertController with a UITextField on iOS).
+///
+/// `on_result` receives `Some(text)` when the user confirms, or `None` when cancelled.
+pub fn show_text_input(
+    title: &str,
+    placeholder: &str,
+    initial_value: &str,
+    on_result: impl FnOnce(Option<String>) + Send + 'static,
+) {
+    let id = NEXT_TEXT_INPUT_ID.fetch_add(1, Ordering::Relaxed);
+    text_input_callbacks()
+        .lock()
+        .unwrap()
+        .insert(id, Box::new(on_result));
+    bridge().present_text_input(id, title, placeholder, initial_value);
+}
+
+/// Called by the platform after the user confirms a text-input dialog.
+pub fn dispatch_text_input_result(callback_id: u32, value: String) {
+    let cb = text_input_callbacks().lock().unwrap().remove(&callback_id);
+    if let Some(cb) = cb {
+        cb(Some(value));
+    }
+}
+
+/// Called by the platform after a text-input dialog is dismissed without confirming.
+pub fn dispatch_text_input_dismiss(callback_id: u32) {
+    let cb = text_input_callbacks().lock().unwrap().remove(&callback_id);
+    if let Some(cb) = cb {
+        cb(None);
+    }
 }
 
 /// Present a configurable native custom sheet.
@@ -431,6 +471,16 @@ pub fn clear_pending_alerts() {
             );
         }
     }
+    if let Ok(mut map) = text_input_callbacks().lock() {
+        let count = map.len();
+        map.clear();
+        if count > 0 {
+            tracing::debug!(
+                "clear_pending_alerts: dropped {} unacknowledged text input dialog(s)",
+                count
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -524,6 +574,11 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn hide_native_dictation_preview(&self, _id: u32) {}
     /// Display a native in-app notification banner.
     fn present_native_notification(&self, _id: u32, _options: &NativeNotificationOptions) {}
+    /// Display a native text-input dialog.
+    /// The platform should call `dispatch_text_input_result(id, value)` on confirm,
+    /// or `dispatch_text_input_dismiss(id)` on cancel.
+    fn present_text_input(&self, _id: u32, _title: &str, _placeholder: &str, _initial_value: &str) {
+    }
 }
 
 static BRIDGE: OnceLock<Box<dyn PlatformBridge>> = OnceLock::new();
