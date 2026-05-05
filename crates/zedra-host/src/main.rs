@@ -1051,10 +1051,10 @@ async fn main() -> Result<()> {
 
             // Confirm unless --yes
             if !yes {
-                eprint!("Proceed with update? [y/N] ");
+                eprint!("Proceed with update? [Y/n] ");
                 let mut input = String::new();
                 std::io::stdin().read_line(&mut input)?;
-                if !input.trim().eq_ignore_ascii_case("y") {
+                if !should_proceed_with_update(&input) {
                     utils::eprintln_note("Cancelled.");
                     return Ok(());
                 }
@@ -1184,6 +1184,12 @@ fn classify_update_error(e: &anyhow::Error) -> &'static str {
     } else {
         "unknown"
     }
+}
+
+fn should_proceed_with_update(input: &str) -> bool {
+    // `[Y/n]` makes an empty response accept the update by default.
+    let input = input.trim();
+    !input.eq_ignore_ascii_case("n") && !input.eq_ignore_ascii_case("no")
 }
 
 fn daemon_log_path(workdir: &Path) -> Result<PathBuf> {
@@ -1829,6 +1835,15 @@ mod tests {
             "Zedra CLI - Desktop daemon v{}",
             env!("CARGO_PKG_VERSION")
         )));
+    }
+
+    #[test]
+    fn update_confirmation_defaults_to_yes() {
+        assert!(should_proceed_with_update(""));
+        assert!(should_proceed_with_update("y"));
+        assert!(should_proceed_with_update("yes"));
+        assert!(!should_proceed_with_update("n"));
+        assert!(!should_proceed_with_update("no"));
     }
 
     #[test]
