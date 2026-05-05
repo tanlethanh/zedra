@@ -172,7 +172,7 @@ impl WorkspaceDrawer {
 
     pub fn title_by_tab(&self, tab: DrawerTab, cx: &mut Context<Self>) -> (String, String) {
         let workspace_state = self.workspace_state.read(cx);
-        let title = workspace_state.project_name.to_string();
+        let title = workspace_state.display_name().to_string();
 
         let subtitle = match tab {
             DrawerTab::FileExplorer => match self.file_display_mode {

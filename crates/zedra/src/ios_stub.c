@@ -67,6 +67,11 @@ __attribute__((weak)) void ios_present_custom_sheet(
     float corner_radius,
     _Bool modal_in_presentation) {}
 __attribute__((weak)) void ios_trigger_haptic(int kind) {}
+__attribute__((weak)) void ios_present_text_input(
+    unsigned int callback_id,
+    const char *title,
+    const char *placeholder,
+    const char *initial_value) {}
 
 // Firebase Analytics + Crashlytics stubs.
 // Real implementations live in ios/Zedra/ZedraFirebase.m and override at Xcode link time.

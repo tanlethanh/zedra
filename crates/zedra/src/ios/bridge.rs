@@ -140,6 +140,14 @@ unsafe extern "C" {
         duration_secs: f32,
         auto_close: bool,
     );
+    /// Present a native text-input dialog (UIAlertController with UITextField).
+    /// Result delivered via `zedra_ios_text_input_result` or `zedra_ios_text_input_dismiss`.
+    fn ios_present_text_input(
+        callback_id: u32,
+        title: *const std::ffi::c_char,
+        placeholder: *const std::ffi::c_char,
+        initial_value: *const std::ffi::c_char,
+    );
 }
 
 impl PlatformBridge for IosBridge {
@@ -377,6 +385,23 @@ impl PlatformBridge for IosBridge {
             );
         }
     }
+
+    fn present_text_input(&self, id: u32, title: &str, placeholder: &str, initial_value: &str) {
+        use std::ffi::CString;
+
+        let title = CString::new(title).unwrap_or_else(|_| CString::new("").unwrap());
+        let placeholder = CString::new(placeholder).unwrap_or_else(|_| CString::new("").unwrap());
+        let initial_value =
+            CString::new(initial_value).unwrap_or_else(|_| CString::new("").unwrap());
+        unsafe {
+            ios_present_text_input(
+                id,
+                title.as_ptr(),
+                placeholder.as_ptr(),
+                initial_value.as_ptr(),
+            );
+        }
+    }
 }
 
 /// Called from the native alert handler after the user taps a button.
@@ -409,6 +434,26 @@ pub extern "C" fn zedra_ios_selection_result(callback_id: u32, button_index: i32
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_selection_dismiss(callback_id: u32) {
     platform_bridge::dispatch_selection_dismiss(callback_id);
+}
+
+/// Called when the user confirms a text-input dialog with the entered value.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_text_input_result(callback_id: u32, value: *const std::ffi::c_char) {
+    let text = if value.is_null() {
+        String::new()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(value) }
+            .to_str()
+            .unwrap_or("")
+            .to_string()
+    };
+    platform_bridge::dispatch_text_input_result(callback_id, text);
+}
+
+/// Called when a text-input dialog is cancelled or dismissed.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_text_input_dismiss(callback_id: u32) {
+    platform_bridge::dispatch_text_input_dismiss(callback_id);
 }
 
 /// Called from the native app delegate when the app enters the background.

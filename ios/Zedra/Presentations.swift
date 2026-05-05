@@ -34,6 +34,12 @@ private func zedra_ios_unmount_custom_sheet_content()
 @_silgen_name("zedra_ios_sheet_content_is_at_top")
 private func zedra_ios_sheet_content_is_at_top() -> Bool
 
+@_silgen_name("zedra_ios_text_input_result")
+private func zedra_ios_text_input_result(_ callbackID: UInt32, _ value: UnsafePointer<CChar>?)
+
+@_silgen_name("zedra_ios_text_input_dismiss")
+private func zedra_ios_text_input_dismiss(_ callbackID: UInt32)
+
 @_silgen_name("zedra_ios_native_floating_button_pressed")
 private func zedra_ios_native_floating_button_pressed(_ callbackID: UInt32)
 
@@ -1277,12 +1283,7 @@ private enum PresentationCoordinator {
             let sheet = UIAlertController(title: title, message: message, preferredStyle: .actionSheet)
             let delegate = PresentationDismissDelegate(callbackID: callbackID, isSelection: true)
             sheet.presentationController?.delegate = delegate
-            objc_setAssociatedObject(
-                sheet,
-                dismissAssociationKey,
-                delegate,
-                .OBJC_ASSOCIATION_RETAIN_NONATOMIC
-            )
+            objc_setAssociatedObject(sheet, dismissAssociationKey, delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
 
             for index in 0..<buttonLabels.count {
                 let style = buttonStyles[safe: index] ?? .default
@@ -1297,7 +1298,49 @@ private enum PresentationCoordinator {
                 sheet.addAction(action)
             }
 
+            // Required by HIG and UIKit: enables backdrop dismiss on iPhone.
+            sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
+                delegate.handled = true
+                zedra_ios_selection_dismiss(callbackID)
+            })
+
             presenter.present(sheet, animated: true)
+        }
+    }
+
+    static func presentTextInput(
+        callbackID: UInt32,
+        title: String?,
+        placeholder: String?,
+        initialValue: String?
+    ) {
+        DispatchQueue.main.async {
+            guard let presenter = NativePresentationBridge.topViewController() else { return }
+
+            let alert = UIAlertController(
+                title: title?.isEmpty == false ? title : nil,
+                message: nil,
+                preferredStyle: .alert
+            )
+            alert.addTextField { field in
+                field.placeholder = placeholder
+                field.text = initialValue
+                field.clearButtonMode = .whileEditing
+                field.autocapitalizationType = .words
+                field.returnKeyType = .done
+            }
+            alert.addAction(UIAlertAction(title: "Save", style: .default) { _ in
+                let value = alert.textFields?.first?.text ?? ""
+                value.withCString { ptr in
+                    zedra_ios_text_input_result(callbackID, ptr)
+                }
+            })
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
+                zedra_ios_text_input_dismiss(callbackID)
+            })
+            presenter.present(alert, animated: true) {
+                alert.textFields?.first?.selectAll(nil)
+            }
         }
     }
 
@@ -1630,6 +1673,21 @@ func ios_present_selection(
             count: buttonCount,
             labels: imageNames
         )
+    )
+}
+
+@_cdecl("ios_present_text_input")
+func ios_present_text_input(
+    _ callbackID: UInt32,
+    _ title: UnsafePointer<CChar>?,
+    _ placeholder: UnsafePointer<CChar>?,
+    _ initialValue: UnsafePointer<CChar>?
+) {
+    PresentationCoordinator.presentTextInput(
+        callbackID: callbackID,
+        title: NativePresentationBridge.string(title),
+        placeholder: NativePresentationBridge.string(placeholder),
+        initialValue: NativePresentationBridge.string(initialValue)
     )
 }
 

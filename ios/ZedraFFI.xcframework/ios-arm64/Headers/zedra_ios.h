@@ -294,6 +294,15 @@ extern void ios_present_native_notification(uint32_t callback_id,
                                             bool auto_close);
 
 /**
+ * Present a native text-input dialog (UIAlertController with UITextField).
+ * Result delivered via `zedra_ios_text_input_result` or `zedra_ios_text_input_dismiss`.
+ */
+extern void ios_present_text_input(uint32_t callback_id,
+                                   const char *title,
+                                   const char *placeholder,
+                                   const char *initial_value);
+
+/**
  * Called from the native alert handler after the user taps a button.
  *
  * `callback_id` matches the value passed to `ios_present_alert`.
@@ -316,6 +325,16 @@ void zedra_ios_selection_result(uint32_t callback_id, int32_t button_index);
  * Called when an action sheet is dismissed without selecting an item.
  */
 void zedra_ios_selection_dismiss(uint32_t callback_id);
+
+/**
+ * Called when the user confirms a text-input dialog with the entered value.
+ */
+void zedra_ios_text_input_result(uint32_t callback_id, const char *value);
+
+/**
+ * Called when a text-input dialog is cancelled or dismissed.
+ */
+void zedra_ios_text_input_dismiss(uint32_t callback_id);
 
 /**
  * Called from the native app delegate when the app enters the background.
