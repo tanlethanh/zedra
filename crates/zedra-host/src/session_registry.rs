@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -53,6 +53,114 @@ pub enum ConsumeSlotResult {
     NotFound,
 }
 
+const ACTIVE_CLIENT_STALE_AFTER: Duration = Duration::from_secs(4);
+const ACTIVE_CLIENT_PROBE_INTERVAL: Duration = Duration::from_secs(1);
+
+static NEXT_ACTIVE_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Host-side lease for the active client connection.
+#[derive(Clone)]
+pub struct ActiveClientConnection {
+    id: u64,
+    client_pubkey: [u8; 32],
+    conn: Option<iroh::endpoint::Connection>,
+    last_rx_bytes: Arc<AtomicU64>,
+    last_rx_at: Arc<StdMutex<Instant>>,
+    closed: Arc<AtomicBool>,
+}
+
+impl ActiveClientConnection {
+    pub fn new(client_pubkey: [u8; 32], conn: iroh::endpoint::Connection) -> Self {
+        let stats = conn.stats();
+        Self {
+            id: NEXT_ACTIVE_CONNECTION_ID.fetch_add(1, Ordering::Relaxed),
+            client_pubkey,
+            conn: Some(conn),
+            last_rx_bytes: Arc::new(AtomicU64::new(stats.udp_rx.bytes)),
+            last_rx_at: Arc::new(StdMutex::new(Instant::now())),
+            closed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    #[cfg(test)]
+    fn for_test(client_pubkey: [u8; 32], last_rx_at: Instant, closed: bool) -> Self {
+        Self {
+            id: NEXT_ACTIVE_CONNECTION_ID.fetch_add(1, Ordering::Relaxed),
+            client_pubkey,
+            conn: None,
+            last_rx_bytes: Arc::new(AtomicU64::new(0)),
+            last_rx_at: Arc::new(StdMutex::new(last_rx_at)),
+            closed: Arc::new(AtomicBool::new(closed)),
+        }
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn client_pubkey(&self) -> [u8; 32] {
+        self.client_pubkey
+    }
+
+    pub fn spawn_monitor(&self) {
+        let Some(conn) = self.conn.clone() else {
+            return;
+        };
+        let last_rx_bytes = self.last_rx_bytes.clone();
+        let last_rx_at = self.last_rx_at.clone();
+        let closed = self.closed.clone();
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(ACTIVE_CLIENT_PROBE_INTERVAL);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        if conn.close_reason().is_some() {
+                            closed.store(true, Ordering::Release);
+                            break;
+                        }
+
+                        let rx_bytes = conn.stats().udp_rx.bytes;
+                        let previous = last_rx_bytes.swap(rx_bytes, Ordering::AcqRel);
+                        if rx_bytes > previous {
+                            if let Ok(mut last_rx_at) = last_rx_at.lock() {
+                                *last_rx_at = Instant::now();
+                            }
+                        }
+                    }
+                    _ = conn.closed() => {
+                        closed.store(true, Ordering::Release);
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    pub fn is_stale(&self, now: Instant) -> bool {
+        if self.closed.load(Ordering::Acquire)
+            || self
+                .conn
+                .as_ref()
+                .is_some_and(|conn| conn.close_reason().is_some())
+        {
+            return true;
+        }
+
+        self.last_rx_at
+            .lock()
+            .map(|last_rx_at| now.duration_since(*last_rx_at) > ACTIVE_CLIENT_STALE_AFTER)
+            .unwrap_or(true)
+    }
+
+    pub fn close_for_takeover(&self) {
+        if let Some(conn) = &self.conn {
+            conn.close(0u32.into(), b"replaced by new client");
+        }
+        self.closed.store(true, Ordering::Release);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ServerSession
 // ---------------------------------------------------------------------------
@@ -70,8 +178,8 @@ pub struct ServerSession {
     pub terminal_order: Mutex<Vec<String>>,
     /// Client pubkeys authorized to attach to this session (per-session ACL).
     pub acl: Mutex<HashSet<[u8; 32]>>,
-    /// Currently attached client pubkey. None = session is free.
-    pub active_client: Mutex<Option<[u8; 32]>>,
+    /// Currently attached client connection. None = session is free.
+    pub active_client: Mutex<Option<ActiveClientConnection>>,
     /// Ephemeral in-memory session token for the currently attached client.
     /// At most one token exists per session at a time (bound to the active
     /// client pubkey). Rotated on every successful connect. Consumed atomically
@@ -715,7 +823,7 @@ impl SessionRegistry {
         for session in sessions.values() {
             let terminal_count = session.terminals.lock().await.len();
             let last_activity = *session.last_activity.lock().await;
-            let is_occupied = session.active_client.lock().await.is_some();
+            let is_occupied = session.is_occupied().await;
             result.push(SessionInfo {
                 id: session.id.clone(),
                 name: session.name.clone(),
@@ -819,14 +927,19 @@ impl SessionRegistry {
         added
     }
 
-    /// Try to attach a client to a session (set as active_client).
+    /// Try to attach a client connection to a session.
     ///
-    /// Returns `true` if the client was attached successfully.
-    /// Returns `false` if:
+    /// Returns `AttachResult::Ok` if the client was attached successfully.
+    /// Returns another `AttachResult` if:
     /// - Session not found
     /// - Client not in session ACL
     /// - Another client is already active
-    pub async fn attach_client(&self, session_id: &str, client_pubkey: [u8; 32]) -> AttachResult {
+    pub async fn attach_client(
+        &self,
+        session_id: &str,
+        connection: ActiveClientConnection,
+    ) -> AttachResult {
+        let client_pubkey = connection.client_pubkey();
         let sessions = self.sessions.lock().await;
         let session = match sessions.get(session_id) {
             Some(s) => s,
@@ -838,27 +951,64 @@ impl SessionRegistry {
             return AttachResult::NotInSessionAcl;
         }
 
-        // Check if occupied
         let mut active = session.active_client.lock().await;
-        if active.is_some() && *active != Some(client_pubkey) {
-            return AttachResult::SessionOccupied;
+        let previous = match active.as_ref() {
+            Some(current) if current.client_pubkey() == client_pubkey => Some(current.clone()),
+            Some(current) if current.is_stale(Instant::now()) => Some(current.clone()),
+            Some(_) => return AttachResult::SessionOccupied,
+            None => None,
+        };
+
+        if let Some(previous) = &previous {
+            if previous.client_pubkey() != client_pubkey {
+                tracing::info!(
+                    "Replacing stale active client in session {} with {:?}...",
+                    session_id,
+                    &client_pubkey[..4],
+                );
+            }
         }
 
-        *active = Some(client_pubkey);
+        *active = Some(connection);
         session.touch().await;
-        AttachResult::Ok
+        AttachResult::Ok { previous }
     }
 
     /// Clear the active client for a session (on disconnect or detach).
-    pub async fn detach_client(&self, session_id: &str, client_pubkey: [u8; 32]) {
+    pub async fn detach_client(
+        &self,
+        session_id: &str,
+        client_pubkey: [u8; 32],
+        connection_id: u64,
+    ) {
         let sessions = self.sessions.lock().await;
         if let Some(session) = sessions.get(session_id) {
             let mut active = session.active_client.lock().await;
-            if *active == Some(client_pubkey) {
+            if active.as_ref().is_some_and(|active| {
+                active.client_pubkey() == client_pubkey && active.id() == connection_id
+            }) {
                 *active = None;
                 tracing::info!("Detached client from session {}", session_id);
             }
         }
+    }
+
+    pub async fn is_active_client(
+        &self,
+        session_id: &str,
+        client_pubkey: [u8; 32],
+        connection_id: u64,
+    ) -> bool {
+        let sessions = self.sessions.lock().await;
+        let session = sessions.get(session_id).cloned();
+        drop(sessions);
+        let Some(session) = session else {
+            return false;
+        };
+        let active = session.active_client.lock().await;
+        active.as_ref().is_some_and(|active| {
+            active.client_pubkey() == client_pubkey && active.id() == connection_id
+        })
     }
 
     /// Find the first session that has `client_pubkey` in its ACL.
@@ -948,7 +1098,9 @@ impl SessionRegistry {
 
 /// Outcome of an `attach_client` attempt.
 pub enum AttachResult {
-    Ok,
+    Ok {
+        previous: Option<ActiveClientConnection>,
+    },
     SessionNotFound,
     NotInSessionAcl,
     SessionOccupied,
@@ -1218,7 +1370,11 @@ impl ServerSession {
 
     /// Whether a client is currently attached.
     pub async fn is_occupied(&self) -> bool {
-        self.active_client.lock().await.is_some()
+        self.active_client
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|active| !active.is_stale(Instant::now()))
     }
 
     /// Allocate the next terminal ID for this session.
@@ -1274,6 +1430,26 @@ mod tests {
         [seed; 32]
     }
 
+    fn active_connection(pubkey: [u8; 32]) -> ActiveClientConnection {
+        ActiveClientConnection::for_test(pubkey, Instant::now(), false)
+    }
+
+    fn connection_last_seen(
+        pubkey: [u8; 32],
+        last_rx_at: Instant,
+        closed: bool,
+    ) -> ActiveClientConnection {
+        ActiveClientConnection::for_test(pubkey, last_rx_at, closed)
+    }
+
+    fn stale_connection(pubkey: [u8; 32]) -> ActiveClientConnection {
+        ActiveClientConnection::for_test(
+            pubkey,
+            Instant::now() - ACTIVE_CLIENT_STALE_AFTER - Duration::from_secs(1),
+            false,
+        )
+    }
+
     async fn create_session(registry: &SessionRegistry) -> Arc<ServerSession> {
         registry.create_named("test", PathBuf::from("/tmp")).await
     }
@@ -1287,6 +1463,37 @@ mod tests {
             truncated: false,
             created_at: Instant::now(),
         }
+    }
+
+    #[test]
+    fn active_connection_stale_state_uses_close_and_rx_deadline() {
+        let pubkey = make_pubkey(1);
+        let now = Instant::now();
+
+        let fresh = connection_last_seen(pubkey, now - Duration::from_secs(1), false);
+        assert!(!fresh.is_stale(now));
+
+        let at_deadline = connection_last_seen(pubkey, now - ACTIVE_CLIENT_STALE_AFTER, false);
+        assert!(!at_deadline.is_stale(now));
+
+        let past_deadline = connection_last_seen(
+            pubkey,
+            now - ACTIVE_CLIENT_STALE_AFTER - Duration::from_millis(1),
+            false,
+        );
+        assert!(past_deadline.is_stale(now));
+
+        let closed = connection_last_seen(pubkey, now, true);
+        assert!(closed.is_stale(now));
+    }
+
+    #[test]
+    fn close_for_takeover_marks_connection_stale() {
+        let connection = active_connection(make_pubkey(1));
+
+        assert!(!connection.is_stale(Instant::now()));
+        connection.close_for_takeover();
+        assert!(connection.is_stale(Instant::now()));
     }
 
     #[test]
@@ -1518,12 +1725,21 @@ mod tests {
         assert!(registry.is_globally_authorized(&pubkey).await);
 
         // Attach
-        match registry.attach_client(&session.id, pubkey).await {
-            AttachResult::Ok => {}
+        let connection = active_connection(pubkey);
+        match registry
+            .attach_client(&session.id, connection.clone())
+            .await
+        {
+            AttachResult::Ok { previous: None } => {}
             _ => panic!("expected Ok"),
         }
 
         assert!(session.is_occupied().await);
+        assert!(
+            registry
+                .is_active_client(&session.id, pubkey, connection.id())
+                .await
+        );
     }
 
     #[tokio::test]
@@ -1537,16 +1753,206 @@ mod tests {
         registry.add_client_to_session(&session.id, key_b).await;
 
         // A attaches first
+        let connection_a = active_connection(key_a);
         assert!(matches!(
-            registry.attach_client(&session.id, key_a).await,
-            AttachResult::Ok
+            registry
+                .attach_client(&session.id, connection_a.clone())
+                .await,
+            AttachResult::Ok { previous: None }
         ));
 
         // B is blocked
         assert!(matches!(
-            registry.attach_client(&session.id, key_b).await,
+            registry
+                .attach_client(&session.id, active_connection(key_b))
+                .await,
             AttachResult::SessionOccupied
         ));
+
+        assert!(
+            registry
+                .is_active_client(&session.id, key_a, connection_a.id())
+                .await
+        );
+        assert!(
+            !registry
+                .is_active_client(&session.id, key_b, connection_a.id())
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_replaces_stale_active_client() {
+        let registry = SessionRegistry::new();
+        let session = registry.create_named("s1", PathBuf::from("/s1")).await;
+        let key_a = make_pubkey(1);
+        let key_b = make_pubkey(2);
+
+        registry.add_client_to_session(&session.id, key_a).await;
+        registry.add_client_to_session(&session.id, key_b).await;
+
+        let stale_a = stale_connection(key_a);
+        let connection_b = active_connection(key_b);
+        let _ = registry.attach_client(&session.id, stale_a.clone()).await;
+
+        match registry
+            .attach_client(&session.id, connection_b.clone())
+            .await
+        {
+            AttachResult::Ok {
+                previous: Some(previous),
+            } => assert_eq!(previous.id(), stale_a.id()),
+            _ => panic!("expected stale client replacement"),
+        }
+
+        assert!(
+            registry
+                .is_active_client(&session.id, key_b, connection_b.id())
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_replaces_closed_active_client_before_stale_deadline() {
+        let registry = SessionRegistry::new();
+        let session = registry.create_named("s1", PathBuf::from("/s1")).await;
+        let key_a = make_pubkey(1);
+        let key_b = make_pubkey(2);
+
+        registry.add_client_to_session(&session.id, key_a).await;
+        registry.add_client_to_session(&session.id, key_b).await;
+
+        let closed_a = connection_last_seen(key_a, Instant::now(), true);
+        let connection_b = active_connection(key_b);
+        let _ = registry.attach_client(&session.id, closed_a.clone()).await;
+
+        match registry
+            .attach_client(&session.id, connection_b.clone())
+            .await
+        {
+            AttachResult::Ok {
+                previous: Some(previous),
+            } => assert_eq!(previous.id(), closed_a.id()),
+            _ => panic!("expected closed client replacement"),
+        }
+
+        assert!(
+            registry
+                .is_active_client(&session.id, key_b, connection_b.id())
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_same_client_replaces_live_connection() {
+        let registry = SessionRegistry::new();
+        let session = registry.create_named("s1", PathBuf::from("/s1")).await;
+        let pubkey = make_pubkey(1);
+
+        registry.add_client_to_session(&session.id, pubkey).await;
+
+        let first = active_connection(pubkey);
+        let second = active_connection(pubkey);
+        let _ = registry.attach_client(&session.id, first.clone()).await;
+
+        match registry.attach_client(&session.id, second.clone()).await {
+            AttachResult::Ok {
+                previous: Some(previous),
+            } => assert_eq!(previous.id(), first.id()),
+            _ => panic!("expected same-client replacement"),
+        }
+
+        assert!(
+            registry
+                .is_active_client(&session.id, pubkey, second.id())
+                .await
+        );
+        assert!(
+            !registry
+                .is_active_client(&session.id, pubkey, first.id())
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_active_client_does_not_report_session_occupied() {
+        let registry = SessionRegistry::new();
+        let session = registry.create_named("s1", PathBuf::from("/s1")).await;
+        let pubkey = make_pubkey(1);
+
+        registry.add_client_to_session(&session.id, pubkey).await;
+        let _ = registry
+            .attach_client(&session.id, stale_connection(pubkey))
+            .await;
+
+        assert!(!session.is_occupied().await);
+        let sessions = registry.list_sessions().await;
+        assert_eq!(sessions.len(), 1);
+        assert!(!sessions[0].is_occupied);
+    }
+
+    #[tokio::test]
+    async fn old_connection_detach_does_not_clear_replacement() {
+        let registry = SessionRegistry::new();
+        let session = registry.create_named("s1", PathBuf::from("/s1")).await;
+        let key_a = make_pubkey(1);
+        let key_b = make_pubkey(2);
+
+        registry.add_client_to_session(&session.id, key_a).await;
+        registry.add_client_to_session(&session.id, key_b).await;
+
+        let stale_a = stale_connection(key_a);
+        let connection_b = active_connection(key_b);
+        let _ = registry.attach_client(&session.id, stale_a.clone()).await;
+        let _ = registry
+            .attach_client(&session.id, connection_b.clone())
+            .await;
+
+        registry
+            .detach_client(&session.id, key_a, stale_a.id())
+            .await;
+
+        assert!(
+            registry
+                .is_active_client(&session.id, key_b, connection_b.id())
+                .await
+        );
+        assert!(session.is_occupied().await);
+    }
+
+    #[tokio::test]
+    async fn detach_ignores_wrong_connection_id_or_pubkey() {
+        let registry = SessionRegistry::new();
+        let session = registry.create_named("s1", PathBuf::from("/s1")).await;
+        let key_a = make_pubkey(1);
+        let key_b = make_pubkey(2);
+
+        registry.add_client_to_session(&session.id, key_a).await;
+        registry.add_client_to_session(&session.id, key_b).await;
+
+        let connection = active_connection(key_a);
+        let _ = registry
+            .attach_client(&session.id, connection.clone())
+            .await;
+
+        registry
+            .detach_client(&session.id, key_a, connection.id() + 1)
+            .await;
+        assert!(
+            registry
+                .is_active_client(&session.id, key_a, connection.id())
+                .await
+        );
+
+        registry
+            .detach_client(&session.id, key_b, connection.id())
+            .await;
+        assert!(
+            registry
+                .is_active_client(&session.id, key_a, connection.id())
+                .await
+        );
+        assert!(session.is_occupied().await);
     }
 
     #[tokio::test]
@@ -1556,10 +1962,15 @@ mod tests {
         let pubkey = make_pubkey(1);
 
         registry.add_client_to_session(&session.id, pubkey).await;
-        let _ = registry.attach_client(&session.id, pubkey).await;
+        let connection = active_connection(pubkey);
+        let _ = registry
+            .attach_client(&session.id, connection.clone())
+            .await;
         assert!(session.is_occupied().await);
 
-        registry.detach_client(&session.id, pubkey).await;
+        registry
+            .detach_client(&session.id, pubkey, connection.id())
+            .await;
         assert!(!session.is_occupied().await);
     }
 
@@ -1569,7 +1980,10 @@ mod tests {
         let session = registry.create_named("s1", PathBuf::from("/s1")).await;
         let pubkey = make_pubkey(99);
 
-        match registry.attach_client(&session.id, pubkey).await {
+        match registry
+            .attach_client(&session.id, active_connection(pubkey))
+            .await
+        {
             AttachResult::NotInSessionAcl => {}
             _ => panic!("expected NotInSessionAcl"),
         }
@@ -1674,7 +2088,9 @@ mod tests {
         let s = registry.create_named("s", PathBuf::from("/s")).await;
         let pubkey = make_pubkey(7);
         registry.add_client_to_session(&s.id, pubkey).await;
-        let _ = registry.attach_client(&s.id, pubkey).await;
+        let _ = registry
+            .attach_client(&s.id, active_connection(pubkey))
+            .await;
 
         let list = registry.list_sessions().await;
         assert_eq!(list.len(), 1);
@@ -1689,8 +2105,10 @@ mod tests {
 
         registry.add_client_to_session(&session.id, pubkey).await;
         assert!(matches!(
-            registry.attach_client(&session.id, pubkey).await,
-            AttachResult::Ok
+            registry
+                .attach_client(&session.id, active_connection(pubkey))
+                .await,
+            AttachResult::Ok { previous: None }
         ));
 
         let first = session.issue_session_token(pubkey).await;
