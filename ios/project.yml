@@ -52,7 +52,7 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: YES
         MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "5"
+        CURRENT_PROJECT_VERSION: "6"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: GHV27CNR5U
         INFOPLIST_KEY_CFBundleDisplayName: Zedra
