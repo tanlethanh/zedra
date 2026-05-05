@@ -224,7 +224,7 @@ impl Render for QuickActionPanel {
                                             .font_weight(FontWeight::MEDIUM)
                                             .min_w_0()
                                             .truncate()
-                                            .child(state.project_name.to_string()),
+                                            .child(state.display_name().to_string()),
                                     ),
                             )
                             .child(
