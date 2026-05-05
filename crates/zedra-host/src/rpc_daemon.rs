@@ -2120,8 +2120,22 @@ async fn dispatch(
                         }
                     }
                     Ok(None) => break,
+                    Err(irpc::channel::mpsc::RecvError::Io { source, .. }) => {
+                        tracing::info!(
+                            "TermAttach: input stream closed id={} session={} error={:?}",
+                            term_id,
+                            session.id,
+                            source
+                        );
+                        break;
+                    }
                     Err(e) => {
-                        tracing::error!("TermAttach: input receiver error: {}", e);
+                        tracing::warn!(
+                            "TermAttach: input receiver failed id={} session={} error={}",
+                            term_id,
+                            session.id,
+                            e
+                        );
                         break;
                     }
                 }

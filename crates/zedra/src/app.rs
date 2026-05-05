@@ -332,6 +332,16 @@ impl ZedraApp {
             workspace.update(cx, |workspace, cx| workspace.record_current_view(cx));
         }
     }
+
+    #[cfg(target_os = "ios")]
+    pub(crate) fn close_transports_for_lifecycle(
+        &mut self,
+        reason: &'static [u8],
+        cx: &mut Context<Self>,
+    ) {
+        self.workspaces
+            .update(cx, |ws, cx| ws.close_transports_for_lifecycle(reason, cx));
+    }
 }
 
 impl Render for ZedraApp {

@@ -418,6 +418,9 @@ pub extern "C" fn zedra_ios_selection_dismiss(callback_id: u32) {
 /// Wire this to the iOS app delegate's `applicationDidEnterBackground`.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_app_did_enter_background() {
+    // iOS may not deliver `applicationWillTerminate` after a force-quit from
+    // the app switcher, so release the host slot as soon as the app backgrounds.
+    super::app::close_active_transports_for_lifecycle(b"client app background");
     platform_bridge::clear_pending_alerts();
 }
 

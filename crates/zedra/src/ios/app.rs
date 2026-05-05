@@ -73,6 +73,36 @@ pub(crate) fn notify_main_window() {
     });
 }
 
+pub(crate) fn close_active_transports_for_lifecycle(reason: &'static [u8]) {
+    IOS_APP_CELL.with(|cell| {
+        IOS_WINDOW.with(|window| {
+            let Some(app_cell) = cell.borrow().as_ref().cloned() else {
+                return;
+            };
+            let Some(window) = *window.borrow() else {
+                return;
+            };
+
+            let Some(window) = window.downcast::<app::ZedraApp>() else {
+                tracing::warn!("Zedra iOS: root window is not ZedraApp during lifecycle close");
+                return;
+            };
+            let Ok(mut app) = app_cell.try_borrow_mut() else {
+                return;
+            };
+            let cx: &mut App = &mut app;
+            let _ = window.update(cx, |view, _window, cx| {
+                view.close_transports_for_lifecycle(reason, cx);
+            });
+        });
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_app_will_terminate() {
+    close_active_transports_for_lifecycle(b"client app terminate");
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_native_floating_button_pressed(callback_id: u32) {
     IOS_APP_CELL.with(|cell| {
