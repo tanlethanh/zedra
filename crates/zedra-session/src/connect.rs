@@ -25,9 +25,10 @@ use zedra_rpc::{
     },
 };
 
-use crate::RemoteTerminal;
-use crate::signer::ClientSigner;
 use crate::state::{AuthOutcome, ConnectError, ReconnectReason};
+use crate::{
+    RemoteTerminal, register_active_connection, signer::ClientSigner, unregister_active_connection,
+};
 
 pub struct ConnectConfig {
     alpn: Vec<u8>,
@@ -224,8 +225,10 @@ impl Connector {
     fn set_active_connection(&self, conn: Connection) {
         if let Ok(mut active) = self.active_connection.lock() {
             if let Some(previous) = active.take() {
+                unregister_active_connection(&previous);
                 previous.close(0u32.into(), b"client reconnect");
             }
+            register_active_connection(&conn);
             *active = Some(conn);
         }
     }
@@ -233,6 +236,7 @@ impl Connector {
     fn close_active_connection(&self, reason: &'static [u8]) {
         if let Ok(mut active) = self.active_connection.lock() {
             if let Some(conn) = active.take() {
+                unregister_active_connection(&conn);
                 conn.close(0u32.into(), reason);
             }
         }

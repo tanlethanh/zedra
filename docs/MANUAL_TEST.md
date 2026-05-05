@@ -239,8 +239,16 @@
 2. Start a new `zedra start` for the same workdir on the host (same session)
 3. Pair Device B via the new QR → should attach to session S
 4. Expected while Device A is still live: Device B is blocked with "Host occupied. Disconnect other device and retry."
-5. Quit or network-disconnect Device A, then retry Device B after the active-client stale window
-6. Expected: the host evicts the stale Device A connection and Device B attaches without waiting for the full transport timeout
+5. Manually disconnect Device A, then immediately retry Device B
+6. Expected: Device B attaches on the first retry
+7. Reconnect Device A, then background it without quitting
+8. Immediately retry Device B
+9. Expected: Device B is still blocked because backgrounding alone keeps Device A's session active
+10. Force-quit Device A from the app switcher, then immediately retry Device B
+11. Expected: Device B attaches without several "Host occupied" retry attempts
+12. Reconnect Device A again, then network-disconnect Device A without a graceful client close
+13. Retry Device B after the active-client stale window
+14. Expected: the host evicts the stale Device A connection without waiting for the full transport timeout
 
 ## 7. `zedra client` RTT Test
 

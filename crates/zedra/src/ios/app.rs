@@ -74,6 +74,8 @@ pub(crate) fn notify_main_window() {
 }
 
 pub(crate) fn close_active_transports_for_lifecycle(reason: &'static [u8]) {
+    zedra_session::close_all_active_connections_for_lifecycle(reason);
+
     IOS_APP_CELL.with(|cell| {
         IOS_WINDOW.with(|window| {
             let Some(app_cell) = cell.borrow().as_ref().cloned() else {
