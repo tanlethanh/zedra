@@ -233,6 +233,13 @@ pub struct IMEState {
     /// True after a dictation hypothesis has been committed while keeping the
     /// synthetic text store available for UIKit's trailing dictation queries.
     pub committed_dictation_pending_cleanup: bool,
+    /// True while an unconfirmed text-input stream is previewed but not yet
+    /// committed to the PTY. The marked range must stay available for UIKit
+    /// dictation reconciliation.
+    pub streamed_text_input_pending_commit: bool,
+    /// Committed dictation text whose native cleanup delete has already been
+    /// consumed, but whose late `insertDictationResult` may still arrive.
+    pub late_dictation_result_after_cleanup: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -743,6 +750,8 @@ impl Terminal {
         state.selected_range = Some(selection_range.clone());
         state.dictation_preview_visible = false;
         state.committed_dictation_pending_cleanup = false;
+        state.streamed_text_input_pending_commit = false;
+        state.late_dictation_result_after_cleanup = None;
 
         let (backspaces, text_to_insert) =
             Self::diff_keyboard_input_context(&committed_before, &state.document_text);
@@ -753,6 +762,161 @@ impl Terminal {
             document_text: state.document_text.clone(),
             selection_range,
         }
+    }
+
+    pub fn replace_streamed_text_input_context_range(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+        text: &str,
+    ) -> KeyboardInputContextEdit {
+        let state = self.ime_state_mut();
+        let document_len = Self::utf16_len(&state.document_text);
+        let replacement_range = replacement_range
+            .or_else(|| state.selected_range.clone())
+            .unwrap_or(document_len..document_len);
+        let (document_text, inserted_range) =
+            Self::replace_utf16_range(&state.document_text, replacement_range, text);
+        state.document_text = document_text;
+        state.marked_text = text.to_string();
+        state.marked_range = (!text.is_empty()).then_some(inserted_range.clone());
+        let selection_range = inserted_range.end..inserted_range.end;
+        state.selected_range = Some(selection_range.clone());
+        state.dictation_active = false;
+        state.dictation_preview_visible = !text.is_empty();
+        state.committed_dictation_pending_cleanup = false;
+        state.streamed_text_input_pending_commit = !text.is_empty();
+        state.late_dictation_result_after_cleanup = None;
+
+        // UIKit's dictation controller reconciles by asking for the previous
+        // hypothesis in the marked range. Keep the live hypothesis out of the
+        // PTY until the dictation lifecycle commits it, but preserve only that
+        // inserted hypothesis, not pre-existing terminal input in the synthetic
+        // document.
+        let committed_before = state.committed_text.clone();
+        let (backspaces, text_to_insert) =
+            Self::diff_keyboard_input_context(&committed_before, &state.document_text);
+        let edit = KeyboardInputContextEdit {
+            backspaces,
+            text_to_insert,
+            document_text: state.document_text.clone(),
+            selection_range,
+        };
+        if !text.is_empty() {
+            self.emit_dictation_preview_changed(Some(text.to_string()));
+        }
+        edit
+    }
+
+    pub fn commit_streamed_text_input_context(&mut self) -> Option<KeyboardInputContextEdit> {
+        self.finish_streamed_text_input_context(true)
+    }
+
+    pub fn flush_streamed_text_input_context(&mut self) -> Option<KeyboardInputContextEdit> {
+        self.finish_streamed_text_input_context(false)
+    }
+
+    fn finish_streamed_text_input_context(
+        &mut self,
+        keep_native_cleanup_store: bool,
+    ) -> Option<KeyboardInputContextEdit> {
+        let (edit, should_hide_preview) = {
+            let state = self.ime_state.as_mut()?;
+            if state.dictation_active
+                || !state.streamed_text_input_pending_commit
+                || state.marked_text.is_empty()
+            {
+                return None;
+            }
+
+            let committed_before = state.committed_text.clone();
+            let (backspaces, text_to_insert) =
+                Self::diff_keyboard_input_context(&committed_before, &state.document_text);
+            let selection_range = state.selected_range.clone().unwrap_or_else(|| {
+                let len = Self::utf16_len(&state.document_text);
+                len..len
+            });
+            state.committed_text = state.document_text.clone();
+            state.committed_dictation_pending_cleanup = keep_native_cleanup_store;
+            state.streamed_text_input_pending_commit = false;
+            state.late_dictation_result_after_cleanup = None;
+            let should_hide_preview = state.dictation_preview_visible;
+            state.dictation_preview_visible = false;
+            if !keep_native_cleanup_store {
+                state.marked_text.clear();
+                state.marked_range = None;
+            }
+
+            (
+                KeyboardInputContextEdit {
+                    backspaces,
+                    text_to_insert,
+                    document_text: state.document_text.clone(),
+                    selection_range,
+                },
+                should_hide_preview,
+            )
+        };
+
+        if should_hide_preview {
+            self.emit_dictation_preview_changed(None);
+        }
+        Some(edit)
+    }
+
+    pub fn cancel_streamed_text_input_context(&mut self) -> bool {
+        let should_hide_preview = {
+            let Some(state) = self.ime_state.as_mut() else {
+                return false;
+            };
+            if !state.streamed_text_input_pending_commit {
+                return false;
+            }
+
+            let should_hide_preview = state.dictation_preview_visible;
+            state.document_text = state.committed_text.clone();
+            state.marked_text.clear();
+            state.marked_range = None;
+            state.selected_range = (!state.document_text.is_empty()).then(|| {
+                let len = Self::utf16_len(&state.document_text);
+                len..len
+            });
+            state.dictation_preview_visible = false;
+            state.committed_dictation_pending_cleanup = false;
+            state.streamed_text_input_pending_commit = false;
+            state.late_dictation_result_after_cleanup = None;
+            should_hide_preview
+        };
+
+        if should_hide_preview {
+            self.emit_dictation_preview_changed(None);
+        }
+        true
+    }
+
+    pub fn dismiss_dictation_preview(&mut self) -> bool {
+        // Tap-to-dismiss is the escape hatch for false-positive staged streams.
+        if self.cancel_streamed_text_input_context() {
+            return true;
+        }
+
+        if self.is_dictation_active() {
+            self.cancel_dictation();
+            return true;
+        }
+
+        let should_hide_preview = {
+            let Some(state) = self.ime_state.as_mut() else {
+                return false;
+            };
+            let should_hide_preview = state.dictation_preview_visible;
+            state.dictation_preview_visible = false;
+            should_hide_preview
+        };
+
+        if should_hide_preview {
+            self.emit_dictation_preview_changed(None);
+        }
+        should_hide_preview
     }
 
     pub fn delete_keyboard_input_context_backward(&mut self) -> Option<KeyboardInputContextEdit> {
@@ -783,6 +947,8 @@ impl Terminal {
         state.selected_range = Some(inserted_range.clone());
         state.dictation_preview_visible = false;
         state.committed_dictation_pending_cleanup = false;
+        state.streamed_text_input_pending_commit = false;
+        state.late_dictation_result_after_cleanup = None;
 
         let (backspaces, text_to_insert) =
             Self::diff_keyboard_input_context(&committed_before, &state.document_text);
@@ -816,6 +982,8 @@ impl Terminal {
         state.selected_range = Some(selection_range.clone());
         state.dictation_preview_visible = false;
         state.committed_dictation_pending_cleanup = false;
+        state.streamed_text_input_pending_commit = false;
+        state.late_dictation_result_after_cleanup = None;
 
         // Marked IME preedit lives only in the native text store. Diff against
         // committed_text so committing Japanese/Vietnamese candidates does not
@@ -890,13 +1058,16 @@ impl Terminal {
     /// Clear the marked text.
     pub fn clear_marked_state(&mut self) {
         if let Some(state) = self.ime_state.as_mut() {
-            let restore_committed_text =
-                !state.dictation_active && !state.committed_dictation_pending_cleanup;
+            let restore_committed_text = !state.dictation_active
+                && !state.committed_dictation_pending_cleanup
+                && !state.streamed_text_input_pending_commit;
             state.marked_text.clear();
             state.marked_range = None;
             state.selected_range = None;
             state.dictation_preview_visible = false;
             state.committed_dictation_pending_cleanup = false;
+            state.streamed_text_input_pending_commit = false;
+            state.late_dictation_result_after_cleanup = None;
             if !state.dictation_active {
                 if restore_committed_text {
                     state.document_text = state.committed_text.clone();
@@ -920,6 +1091,8 @@ impl Terminal {
             state.selected_range = None;
             state.dictation_preview_visible = false;
             state.committed_dictation_pending_cleanup = false;
+            state.streamed_text_input_pending_commit = false;
+            state.late_dictation_result_after_cleanup = None;
         }
     }
 
@@ -940,14 +1113,29 @@ impl Terminal {
             .is_some_and(|state| state.committed_dictation_pending_cleanup)
     }
 
+    pub fn has_streamed_text_input_pending_commit(&self) -> bool {
+        self.ime_state
+            .as_ref()
+            .is_some_and(|state| state.streamed_text_input_pending_commit)
+    }
+
+    pub fn has_late_dictation_result_after_cleanup(&self) -> bool {
+        self.ime_state
+            .as_ref()
+            .is_some_and(|state| state.late_dictation_result_after_cleanup.is_some())
+    }
+
     pub fn has_uncommitted_marked_text(&self) -> bool {
-        self.marked_text().is_some() && !self.has_committed_dictation_pending_cleanup()
+        self.marked_text().is_some()
+            && !self.has_committed_dictation_pending_cleanup()
+            && !self.has_streamed_text_input_pending_commit()
     }
 
     pub fn unmark_text(&mut self) -> bool {
         let should_clear = if let Some(state) = self.ime_state.as_ref() {
-            let should_preserve =
-                state.dictation_active || state.committed_dictation_pending_cleanup;
+            let should_preserve = state.dictation_active
+                || state.committed_dictation_pending_cleanup
+                || state.streamed_text_input_pending_commit;
             !should_preserve && (state.marked_range.is_some() || !state.marked_text.is_empty())
         } else {
             false
@@ -967,7 +1155,10 @@ impl Terminal {
         let Some(state) = self.ime_state.as_mut() else {
             return false;
         };
-        if state.dictation_active || !state.committed_dictation_pending_cleanup {
+        if state.dictation_active
+            || !(state.committed_dictation_pending_cleanup
+                || state.streamed_text_input_pending_commit)
+        {
             return false;
         }
 
@@ -984,17 +1175,63 @@ impl Terminal {
             return false;
         }
 
-        // Critical: after dictation commits, UIKit may delete the whole marked
-        // placeholder as cleanup. That must clear only our synthetic text store;
-        // sending terminal backspaces here would erase the already-committed
-        // dictated command.
-        state.document_text.clear();
-        state.committed_text.clear();
+        let late_dictation_result_after_cleanup = state
+            .committed_dictation_pending_cleanup
+            .then(|| {
+                if state.marked_text.is_empty() {
+                    state.committed_text.clone()
+                } else {
+                    state.marked_text.clone()
+                }
+            })
+            .filter(|text| !text.is_empty());
+        let restore_committed_text =
+            state.streamed_text_input_pending_commit && !state.committed_dictation_pending_cleanup;
+        let should_hide_preview = state.dictation_preview_visible;
+        // Critical: native cleanup deletes operate on the synthetic text store.
+        // Before commit they cancel the preview; after commit they must not
+        // backspace terminal output that already received the dictated command.
+        if restore_committed_text {
+            state.document_text = state.committed_text.clone();
+        } else {
+            state.document_text.clear();
+            state.committed_text.clear();
+        }
         state.marked_text.clear();
         state.marked_range = None;
-        state.selected_range = None;
+        state.selected_range = (!state.document_text.is_empty()).then(|| {
+            let len = Self::utf16_len(&state.document_text);
+            len..len
+        });
+        state.dictation_preview_visible = false;
         state.committed_dictation_pending_cleanup = false;
+        state.streamed_text_input_pending_commit = false;
+        state.late_dictation_result_after_cleanup = late_dictation_result_after_cleanup;
+        if should_hide_preview {
+            self.emit_dictation_preview_changed(None);
+        }
         true
+    }
+
+    pub fn reconcile_late_dictation_result_after_cleanup(
+        &mut self,
+        text: &str,
+    ) -> Option<KeyboardInputContextEdit> {
+        let state = self.ime_state.as_mut()?;
+        let committed_text = state.late_dictation_result_after_cleanup.take()?;
+        // Late final results after cleanup are corrections to committed text,
+        // not a second transcript insertion.
+        let (backspaces, text_to_insert) = if text.is_empty() {
+            (0, String::new())
+        } else {
+            Self::diff_keyboard_input_context(&committed_text, text)
+        };
+        Some(KeyboardInputContextEdit {
+            backspaces,
+            text_to_insert,
+            document_text: String::new(),
+            selection_range: 0..0,
+        })
     }
 
     pub fn reconcile_committed_dictation_text(
@@ -1019,6 +1256,8 @@ impl Terminal {
         let selection_range = inserted_range.end..inserted_range.end;
         state.selected_range = Some(selection_range.clone());
         state.committed_dictation_pending_cleanup = true;
+        state.streamed_text_input_pending_commit = false;
+        state.late_dictation_result_after_cleanup = None;
 
         let (backspaces, text_to_insert) =
             Self::diff_keyboard_input_context(&committed_text, &state.marked_text);
@@ -1054,6 +1293,8 @@ impl Terminal {
             state.document_text = document_text;
             state.marked_text = text.clone();
             state.committed_dictation_pending_cleanup = false;
+            state.streamed_text_input_pending_commit = false;
+            state.late_dictation_result_after_cleanup = None;
             state.marked_range = if text.is_empty() && !state.dictation_active {
                 None
             } else {
@@ -1100,7 +1341,8 @@ impl Terminal {
     pub fn begin_dictation(&mut self) {
         let emit_empty_preview = {
             let state = self.ime_state_mut();
-            if state.committed_dictation_pending_cleanup {
+            if state.committed_dictation_pending_cleanup || state.streamed_text_input_pending_commit
+            {
                 state.document_text.clear();
                 state.committed_text.clear();
                 state.marked_text.clear();
@@ -1108,11 +1350,15 @@ impl Terminal {
                 state.selected_range = None;
                 state.dictation_preview_visible = false;
                 state.committed_dictation_pending_cleanup = false;
+                state.streamed_text_input_pending_commit = false;
+                state.late_dictation_result_after_cleanup = None;
             }
             let already_active = state.dictation_active;
             let mut emit_empty_preview = false;
             state.dictation_active = true;
             state.committed_dictation_pending_cleanup = false;
+            state.streamed_text_input_pending_commit = false;
+            state.late_dictation_result_after_cleanup = None;
             if !already_active {
                 state.dictation_preview_visible = true;
                 if state.document_text.is_empty() {
@@ -1162,6 +1408,8 @@ impl Terminal {
             let text = state.marked_text.clone();
             state.committed_text = text.clone();
             state.committed_dictation_pending_cleanup = !text.is_empty();
+            state.streamed_text_input_pending_commit = false;
+            state.late_dictation_result_after_cleanup = None;
             (
                 if text.is_empty() { None } else { Some(text) },
                 should_hide_preview,
@@ -1178,8 +1426,12 @@ impl Terminal {
 
     pub fn dictation_recording_ended(&mut self) {
         let should_hide_preview = if let Some(state) = self.ime_state.as_mut() {
-            let should_hide_preview = state.dictation_active && state.dictation_preview_visible;
-            state.dictation_preview_visible = false;
+            let should_hide_preview = state.dictation_active
+                && state.dictation_preview_visible
+                && !state.streamed_text_input_pending_commit;
+            if should_hide_preview {
+                state.dictation_preview_visible = false;
+            }
             should_hide_preview
         } else {
             false
@@ -1197,6 +1449,8 @@ impl Terminal {
             should_hide_preview = state.dictation_preview_visible;
             state.dictation_preview_visible = false;
             state.committed_dictation_pending_cleanup = false;
+            state.streamed_text_input_pending_commit = false;
+            state.late_dictation_result_after_cleanup = None;
             state.committed_text.clear();
         }
         self.clear_marked_state();
@@ -2419,10 +2673,21 @@ mod tests {
     #[test]
     fn cancel_dictation_clears_text_input_store() {
         let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let mut events = terminal.subscribe_events();
+
         terminal.begin_dictation();
+        match events.try_recv().expect("expected empty preview") {
+            super::TerminalEvent::DictationPreviewChanged(Some(text)) => assert_eq!(text, ""),
+            event => panic!("expected empty dictation preview, got {event:?}"),
+        }
+
         terminal.set_marked_text("echo hello".to_string());
 
         terminal.cancel_dictation();
+        match events.try_recv().expect("expected preview dismissal") {
+            super::TerminalEvent::DictationPreviewChanged(None) => {}
+            event => panic!("expected dictation preview dismissal, got {event:?}"),
+        }
 
         assert!(!terminal.is_dictation_active());
         assert_eq!(terminal.marked_text(), None);
@@ -2561,6 +2826,271 @@ mod tests {
         assert_eq!(terminal.marked_text(), Some("Hello h"));
         assert_eq!(terminal.marked_text_range(), Some(0..7));
         assert_eq!(terminal.text_input_selection_range(), 7..7);
+    }
+
+    #[test]
+    fn streamed_text_input_preserves_marked_store_for_reconciliation() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        assert_eq!(
+            terminal.replace_streamed_text_input_context_range(Some(0..1), "hey"),
+            super::KeyboardInputContextEdit {
+                backspaces: 0,
+                text_to_insert: "hey".to_string(),
+                document_text: "hey".to_string(),
+                selection_range: 3..3,
+            }
+        );
+
+        assert!(!terminal.is_dictation_active());
+        assert!(!terminal.has_committed_dictation_pending_cleanup());
+        assert!(terminal.has_streamed_text_input_pending_commit());
+        assert!(!terminal.has_uncommitted_marked_text());
+        assert_eq!(terminal.marked_text(), Some("hey"));
+        assert_eq!(terminal.marked_text_range(), Some(0..3));
+        assert_eq!(terminal.text_input_document(), "hey");
+        assert_eq!(terminal.text_input_selection_range(), 3..3);
+    }
+
+    #[test]
+    fn streamed_text_input_rewrites_preview_without_committing_until_end() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let mut events = terminal.subscribe_events();
+
+        terminal.replace_streamed_text_input_context_range(Some(0..1), "hey");
+        match events.try_recv().expect("expected first preview") {
+            super::TerminalEvent::DictationPreviewChanged(Some(text)) => assert_eq!(text, "hey"),
+            event => panic!("expected first preview, got {event:?}"),
+        }
+        assert_eq!(
+            terminal.replace_streamed_text_input_context_range(Some(0..3), "hey how"),
+            super::KeyboardInputContextEdit {
+                backspaces: 0,
+                text_to_insert: "hey how".to_string(),
+                document_text: "hey how".to_string(),
+                selection_range: 7..7,
+            }
+        );
+        match events.try_recv().expect("expected updated preview") {
+            super::TerminalEvent::DictationPreviewChanged(Some(text)) => {
+                assert_eq!(text, "hey how");
+            }
+            event => panic!("expected updated preview, got {event:?}"),
+        }
+
+        assert_eq!(terminal.marked_text(), Some("hey how"));
+        assert_eq!(terminal.marked_text_range(), Some(0..7));
+        assert!(terminal.has_streamed_text_input_pending_commit());
+        assert_eq!(terminal.reconcile_committed_dictation_text("hey how"), None);
+        assert_eq!(
+            terminal.commit_streamed_text_input_context(),
+            Some(super::KeyboardInputContextEdit {
+                backspaces: 0,
+                text_to_insert: "hey how".to_string(),
+                document_text: "hey how".to_string(),
+                selection_range: 7..7,
+            })
+        );
+        match events.try_recv().expect("expected preview dismissal") {
+            super::TerminalEvent::DictationPreviewChanged(None) => {}
+            event => panic!("expected preview dismissal, got {event:?}"),
+        }
+        assert!(terminal.has_committed_dictation_pending_cleanup());
+        assert!(!terminal.has_streamed_text_input_pending_commit());
+        assert_eq!(terminal.commit_streamed_text_input_context(), None);
+    }
+
+    #[test]
+    fn streamed_text_input_can_flush_as_plain_keyboard_input() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let mut events = terminal.subscribe_events();
+
+        terminal.replace_streamed_text_input_context_range(Some(0..1), "h");
+        match events.try_recv().expect("expected staged preview") {
+            super::TerminalEvent::DictationPreviewChanged(Some(text)) => assert_eq!(text, "h"),
+            event => panic!("expected staged preview, got {event:?}"),
+        }
+        assert_eq!(terminal.marked_text(), Some("h"));
+        assert_eq!(terminal.marked_text_range(), Some(0..1));
+        assert!(terminal.has_streamed_text_input_pending_commit());
+
+        assert_eq!(
+            terminal.flush_streamed_text_input_context(),
+            Some(super::KeyboardInputContextEdit {
+                backspaces: 0,
+                text_to_insert: "h".to_string(),
+                document_text: "h".to_string(),
+                selection_range: 1..1,
+            })
+        );
+        match events.try_recv().expect("expected preview dismissal") {
+            super::TerminalEvent::DictationPreviewChanged(None) => {}
+            event => panic!("expected preview dismissal, got {event:?}"),
+        }
+        assert_eq!(terminal.marked_text(), None);
+        assert_eq!(terminal.marked_text_range(), None);
+        assert!(!terminal.has_streamed_text_input_pending_commit());
+        assert!(!terminal.has_committed_dictation_pending_cleanup());
+    }
+
+    #[test]
+    fn streamed_text_input_cleanup_delete_only_clears_synthetic_store() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.replace_streamed_text_input_context_range(Some(0..1), "hey");
+
+        assert!(terminal.consume_committed_dictation_cleanup_delete(Some(0..3)));
+        assert_eq!(terminal.marked_text(), None);
+        assert_eq!(terminal.marked_text_range(), None);
+        assert_eq!(terminal.text_input_document(), " ");
+        assert!(!terminal.has_streamed_text_input_pending_commit());
+        assert!(!terminal.has_late_dictation_result_after_cleanup());
+    }
+
+    #[test]
+    fn late_dictation_result_after_streamed_cleanup_does_not_duplicate_commit() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.replace_streamed_text_input_context_range(Some(0..1), "hello world");
+        assert_eq!(
+            terminal.commit_streamed_text_input_context(),
+            Some(super::KeyboardInputContextEdit {
+                backspaces: 0,
+                text_to_insert: "hello world".to_string(),
+                document_text: "hello world".to_string(),
+                selection_range: 11..11,
+            })
+        );
+        assert!(terminal.consume_committed_dictation_cleanup_delete(Some(0..11)));
+        assert!(terminal.has_late_dictation_result_after_cleanup());
+
+        assert_eq!(
+            terminal.reconcile_late_dictation_result_after_cleanup("hello world"),
+            Some(super::KeyboardInputContextEdit {
+                backspaces: 0,
+                text_to_insert: String::new(),
+                document_text: String::new(),
+                selection_range: 0..0,
+            })
+        );
+        assert!(!terminal.has_late_dictation_result_after_cleanup());
+    }
+
+    #[test]
+    fn late_dictation_result_after_streamed_cleanup_reconciles_final_correction() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.replace_streamed_text_input_context_range(Some(0..1), "hello worl");
+        assert_eq!(
+            terminal.commit_streamed_text_input_context(),
+            Some(super::KeyboardInputContextEdit {
+                backspaces: 0,
+                text_to_insert: "hello worl".to_string(),
+                document_text: "hello worl".to_string(),
+                selection_range: 10..10,
+            })
+        );
+        assert!(terminal.consume_committed_dictation_cleanup_delete(Some(0..10)));
+
+        assert_eq!(
+            terminal.reconcile_late_dictation_result_after_cleanup("hello world"),
+            Some(super::KeyboardInputContextEdit {
+                backspaces: 0,
+                text_to_insert: "d".to_string(),
+                document_text: String::new(),
+                selection_range: 0..0,
+            })
+        );
+    }
+
+    #[test]
+    fn streamed_text_input_marks_only_inserted_hypothesis_after_existing_context() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+
+        terminal.replace_keyboard_input_context_range(None, "x");
+        assert_eq!(
+            terminal.replace_streamed_text_input_context_range(None, "hey"),
+            super::KeyboardInputContextEdit {
+                backspaces: 0,
+                text_to_insert: "hey".to_string(),
+                document_text: "xhey".to_string(),
+                selection_range: 4..4,
+            }
+        );
+
+        assert_eq!(terminal.marked_text(), Some("hey"));
+        assert_eq!(terminal.marked_text_range(), Some(1..4));
+        assert_eq!(terminal.text_input_document(), "xhey");
+    }
+
+    #[test]
+    fn cancelling_streamed_text_input_preview_restores_committed_context() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let mut events = terminal.subscribe_events();
+
+        terminal.replace_keyboard_input_context_range(None, "x");
+        terminal.replace_streamed_text_input_context_range(None, "hey");
+        events.try_recv().expect("expected preview");
+
+        assert!(terminal.cancel_streamed_text_input_context());
+        match events.try_recv().expect("expected preview dismissal") {
+            super::TerminalEvent::DictationPreviewChanged(None) => {}
+            event => panic!("expected preview dismissal, got {event:?}"),
+        }
+        assert_eq!(terminal.marked_text(), None);
+        assert_eq!(terminal.marked_text_range(), None);
+        assert_eq!(terminal.text_input_document(), "x");
+        assert_eq!(terminal.text_input_selection_range(), 1..1);
+        assert!(!terminal.has_streamed_text_input_pending_commit());
+    }
+
+    #[test]
+    fn dismissing_dictation_preview_cancels_streamed_text_input_preview() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let mut events = terminal.subscribe_events();
+
+        terminal.replace_keyboard_input_context_range(None, "x");
+        terminal.replace_streamed_text_input_context_range(None, "hey");
+        events.try_recv().expect("expected preview");
+
+        assert!(terminal.dismiss_dictation_preview());
+        match events.try_recv().expect("expected preview dismissal") {
+            super::TerminalEvent::DictationPreviewChanged(None) => {}
+            event => panic!("expected preview dismissal, got {event:?}"),
+        }
+        assert_eq!(terminal.marked_text(), None);
+        assert_eq!(terminal.text_input_document(), "x");
+        assert!(!terminal.has_streamed_text_input_pending_commit());
+    }
+
+    #[test]
+    fn streamed_text_input_recording_end_keeps_preview_until_commit() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let mut events = terminal.subscribe_events();
+
+        terminal.replace_streamed_text_input_context_range(Some(0..1), "hello");
+        events.try_recv().expect("expected preview");
+
+        terminal.dictation_recording_ended();
+        assert!(
+            events.try_recv().is_err(),
+            "recording end should not hide a pending streamed preview"
+        );
+        assert!(terminal.has_streamed_text_input_pending_commit());
+
+        assert_eq!(
+            terminal.commit_streamed_text_input_context(),
+            Some(super::KeyboardInputContextEdit {
+                backspaces: 0,
+                text_to_insert: "hello".to_string(),
+                document_text: "hello".to_string(),
+                selection_range: 5..5,
+            })
+        );
+        match events.try_recv().expect("expected preview dismissal") {
+            super::TerminalEvent::DictationPreviewChanged(None) => {}
+            event => panic!("expected preview dismissal, got {event:?}"),
+        }
     }
 
     #[test]

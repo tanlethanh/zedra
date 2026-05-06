@@ -815,9 +815,9 @@ impl EntityInputHandler for Input {
 
     fn replace_and_mark_text_in_range(
         &mut self,
-        range_utf16: Option<Range<usize>>,
-        new_text: &str,
-        new_selected_range_utf16: Option<Range<usize>>,
+        replacement_range_utf16: Option<Range<usize>>,
+        marked_text: &str,
+        selected_range_utf16: Option<Range<usize>>,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -827,23 +827,40 @@ impl EntityInputHandler for Input {
 
         // Critical: native IMEs keep provisional composition in marked text.
         // Replacing it as committed text breaks Vietnamese/Japanese updates.
-        let range = self.active_replacement_range(range_utf16);
-        self.replace_range_with_marked_text(range, new_text, new_selected_range_utf16, cx);
+        let range = self.active_replacement_range(replacement_range_utf16);
+        self.replace_range_with_marked_text(range, marked_text, selected_range_utf16, cx);
     }
 
-    fn dictation_started(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn insert_dictation_result_placeholder(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.begin_dictation(cx);
     }
 
-    fn insert_dictation_text(&mut self, text: &str, _window: &mut Window, cx: &mut Context<Self>) {
-        self.insert_live_dictation_text(text, cx);
+    fn remove_dictation_result_placeholder(
+        &mut self,
+        will_insert_result: bool,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !will_insert_result {
+            self.finish_dictation(cx);
+        }
     }
 
-    fn dictation_ended(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn insert_dictation_result(
+        &mut self,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.insert_live_dictation_text(text, cx);
         self.finish_dictation(cx);
     }
 
-    fn dictation_cancelled(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn dictation_recognition_failed(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_dictation(cx);
     }
 

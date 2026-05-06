@@ -263,6 +263,14 @@ impl TerminalView {
         self.terminal.read(cx).input_sender()
     }
 
+    pub fn dismiss_dictation_preview(&mut self, cx: &mut Context<Self>) {
+        self.terminal.update(cx, |terminal, cx| {
+            if terminal.dismiss_dictation_preview() {
+                cx.notify();
+            }
+        });
+    }
+
     pub fn attach_channel(
         &mut self,
         input_tx: mpsc::Sender<Vec<u8>>,

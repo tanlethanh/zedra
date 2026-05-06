@@ -340,6 +340,17 @@ impl WorkspaceTerminal {
             );
         }
 
+        let dictation_preview_id = platform_bridge::allocate_native_dictation_preview_id();
+        let terminal_view_for_preview_dismiss = terminal_view.clone();
+        platform_bridge::set_native_dictation_preview_dismiss_callback(
+            dictation_preview_id,
+            move |cx| {
+                let _ = terminal_view_for_preview_dismiss.update(cx, |terminal_view, cx| {
+                    terminal_view.dismiss_dictation_preview(cx);
+                });
+            },
+        );
+
         Self {
             terminal_id,
             workspace_state,
@@ -350,7 +361,7 @@ impl WorkspaceTerminal {
             is_alt_screen: false,
             last_synced_keyboard_inset: px(0.0),
             scroll_to_bottom_button_id: native_floating_button_id(),
-            dictation_preview_id: platform_bridge::allocate_native_dictation_preview_id(),
+            dictation_preview_id,
             scroll_to_bottom_button_visible: false,
             scroll_to_bottom_button_hide_pending: false,
             scroll_to_bottom_button_hide_generation: 0,
@@ -536,6 +547,6 @@ impl Render for WorkspaceTerminal {
 impl Drop for WorkspaceTerminal {
     fn drop(&mut self) {
         hide_native_floating_button(self.scroll_to_bottom_button_id);
-        platform_bridge::hide_native_dictation_preview(self.dictation_preview_id);
+        platform_bridge::remove_native_dictation_preview(self.dictation_preview_id);
     }
 }
