@@ -43,6 +43,9 @@ private func zedra_ios_text_input_dismiss(_ callbackID: UInt32)
 @_silgen_name("zedra_ios_native_floating_button_pressed")
 private func zedra_ios_native_floating_button_pressed(_ callbackID: UInt32)
 
+@_silgen_name("zedra_ios_dictation_preview_dismiss")
+private func zedra_ios_dictation_preview_dismiss(_ previewID: UInt32)
+
 @_silgen_name("zedra_ios_native_notification_action")
 private func zedra_ios_native_notification_action(_ callbackID: UInt32)
 
@@ -499,7 +502,7 @@ private final class NativeFloatingButtonController {
 private final class NativeDictationPreviewController {
     static let shared = NativeDictationPreviewController()
 
-    private final class Overlay {
+    private final class Overlay: NSObject {
         private static let enterDuration: TimeInterval = 0.22
         private static let exitDuration: TimeInterval = 0.16
         private static let initialScale = CGAffineTransform(scaleX: 0.94, y: 0.94)
@@ -507,8 +510,10 @@ private final class NativeDictationPreviewController {
         private static let labelInsets = UIEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
         private static let maxContentHeight: CGFloat = 72
 
+        let previewID: UInt32
         let effectView: UIVisualEffectView
         let label: UILabel
+        weak var owner: NativeDictationPreviewController?
         weak var window: UIWindow?
         private var isVisible = false
         private var animationGeneration: UInt64 = 0
@@ -516,20 +521,38 @@ private final class NativeDictationPreviewController {
         private var lastBottomOffset: CGFloat?
         private var lastWindowBounds = CGRect.null
 
-        init() {
+        init(previewID: UInt32, owner: NativeDictationPreviewController) {
+            self.previewID = previewID
+            self.owner = owner
             effectView = UIVisualEffectView(effect: nil)
+            label = UILabel()
+
+            super.init()
+
             effectView.clipsToBounds = true
             effectView.transform = Self.initialScale
-            effectView.isUserInteractionEnabled = false
+            effectView.isUserInteractionEnabled = true
+            effectView.isAccessibilityElement = true
             effectView.accessibilityLabel = "Dictation preview"
+            effectView.accessibilityHint = "Double tap to dismiss"
+            effectView.accessibilityTraits.insert(.button)
 
-            label = UILabel()
             label.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .medium)
             label.textColor = UIColor(white: 1.0, alpha: 0.92)
             label.numberOfLines = 3
             label.lineBreakMode = .byTruncatingTail
             label.alpha = 0
             effectView.contentView.addSubview(label)
+
+            let tapGesture = UITapGestureRecognizer(
+                target: self,
+                action: #selector(dismissFromTap)
+            )
+            effectView.addGestureRecognizer(tapGesture)
+        }
+
+        @objc private func dismissFromTap() {
+            owner?.dismissFromTap(previewID: previewID)
         }
 
         func update(in window: UIWindow, text: String, bottomOffset: CGFloat) {
@@ -680,7 +703,7 @@ private final class NativeDictationPreviewController {
         DispatchQueue.main.async {
             let window = NativePresentationBridge.activeWindow()
             let overlay = self.overlays[previewID] ?? {
-                let overlay = Overlay()
+                let overlay = Overlay(previewID: previewID, owner: self)
                 self.overlays[previewID] = overlay
                 return overlay
             }()
@@ -696,6 +719,11 @@ private final class NativeDictationPreviewController {
                 self.overlays.removeValue(forKey: previewID)
             }
         }
+    }
+
+    private func dismissFromTap(previewID: UInt32) {
+        hide(previewID: previewID)
+        zedra_ios_dictation_preview_dismiss(previewID)
     }
 }
 

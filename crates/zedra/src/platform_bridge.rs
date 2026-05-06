@@ -210,6 +210,7 @@ static NATIVE_NOTIFICATION_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce
 thread_local! {
     static PENDING_CUSTOM_SHEET_VIEW: std::cell::RefCell<Option<AnyView>> = const { std::cell::RefCell::new(None) };
     static NATIVE_FLOATING_BUTTON_CALLBACKS: RefCell<HashMap<u32, Box<dyn FnMut(&mut App)>>> = RefCell::new(HashMap::new());
+    static NATIVE_DICTATION_PREVIEW_DISMISS_CALLBACKS: RefCell<HashMap<u32, Box<dyn FnMut(&mut App)>>> = RefCell::new(HashMap::new());
 }
 
 fn alert_callbacks() -> &'static Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>) + Send>>> {
@@ -351,12 +352,28 @@ pub(crate) fn allocate_native_dictation_preview_id() -> u32 {
     NEXT_NATIVE_DICTATION_PREVIEW_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+pub(crate) fn set_native_dictation_preview_dismiss_callback(
+    id: u32,
+    on_dismiss: impl FnMut(&mut App) + 'static,
+) {
+    NATIVE_DICTATION_PREVIEW_DISMISS_CALLBACKS.with(|callbacks| {
+        callbacks.borrow_mut().insert(id, Box::new(on_dismiss));
+    });
+}
+
 pub(crate) fn update_native_dictation_preview(id: u32, options: NativeDictationPreviewOptions) {
     bridge().update_native_dictation_preview(id, &options);
 }
 
 pub(crate) fn hide_native_dictation_preview(id: u32) {
     bridge().hide_native_dictation_preview(id);
+}
+
+pub(crate) fn remove_native_dictation_preview(id: u32) {
+    NATIVE_DICTATION_PREVIEW_DISMISS_CALLBACKS.with(|callbacks| {
+        callbacks.borrow_mut().remove(&id);
+    });
+    hide_native_dictation_preview(id);
 }
 
 pub fn show_native_notification(options: NativeNotificationOptions) {
@@ -413,6 +430,14 @@ pub fn dispatch_selection_dismiss(callback_id: u32) {
 pub fn dispatch_native_floating_button_press(callback_id: u32, cx: &mut App) {
     NATIVE_FLOATING_BUTTON_CALLBACKS.with(|callbacks| {
         if let Some(callback) = callbacks.borrow_mut().get_mut(&callback_id) {
+            callback(cx);
+        }
+    });
+}
+
+pub fn dispatch_native_dictation_preview_dismiss(preview_id: u32, cx: &mut App) {
+    NATIVE_DICTATION_PREVIEW_DISMISS_CALLBACKS.with(|callbacks| {
+        if let Some(callback) = callbacks.borrow_mut().get_mut(&preview_id) {
             callback(cx);
         }
     });

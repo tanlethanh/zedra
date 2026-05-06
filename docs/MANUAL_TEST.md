@@ -386,15 +386,17 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:
 1. Connect to a session on a physical iPhone and open the terminal view
 2. Tap the terminal so the software keyboard appears
 3. Tap the keyboard dictation microphone and dictate a short command fragment such as `echo hello`
-4. Expected: a compact native glass/material preview appears above the keyboard and updates with the live dictated text
+4. Expected: recognized text appears in the native dictation preview while the terminal output stays stable during live hypothesis rewrites
 5. Stop dictation
-6. Expected: the preview hides, and the dictated text stays inserted in the PTY once, without being removed, without a stuck marked-text underline, and without duplicate characters
+6. Expected: the dictated text commits to the PTY once when dictation finalizes, without being removed, without a stuck marked-text underline, without duplicate characters, and without a `UIDictationController` hypothesis-cancel log
 7. Repeat with a longer phrase and stop immediately after the last words
 8. Expected: the final committed PTY text includes the last words, with no `UIDictationController` hypothesis-cancel log
-9. Repeat with a dictated phrase that includes a newline or return command
-10. Expected: newline input is routed as terminal enter rather than leaving literal marked text behind
-11. Start dictation again, then cancel or force recognition failure by stopping before speech is recognized
-12. Expected: the preview hides, the terminal remains focused, no stale dictation text is committed, and normal keyboard typing still reaches the PTY
+9. While preview text is visible, tap the preview bubble
+10. Expected: the preview dismisses immediately and does not stay stuck above the keyboard
+11. Repeat with a dictated phrase that includes a newline or return command
+12. Expected: newline input is routed as terminal enter rather than leaving literal marked text behind
+13. Start dictation again, then cancel or force recognition failure by stopping before speech is recognized
+14. Expected: the terminal remains focused, no stale dictation text is committed, and normal keyboard typing still reaches the PTY
 
 ## 11c. Native Keyboard Suggestions On iOS
 
@@ -414,7 +416,7 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:
 14. Type prose and accept an available native suggestion
 15. Expected: the suggestion inserts into the commit message, while smart punctuation and autocapitalization remain disabled
 16. Switch the software keyboard to Vietnamese Telex and type `lee`, `chaf`, `toois`, `vois`, `ddungs`, and `uw ` in the terminal
-17. Expected: the PTY receives `lê`, `chà`, `tối`, `với`, `đúng`, and `ư `, without duplicate base consonants such as `llê` or `chhà`, without placing the tone on the final vowel as `tôí`, without duplicating a replayed composed cluster as `vơới`, without dropping preserved prefixes such as `đ`, and without dropping the standalone composed character before the space
+17. Expected: the PTY receives `lê`, `chà`, `tối`, `với`, `đúng`, and `ư `, without duplicate base consonants such as `llê` or `chhà`, without placing the tone on the final vowel as `tôí`, without duplicating a replayed composed cluster as `vơới`, without dropping preserved prefixes such as `đ`, without dropping the standalone composed character before the space, and without showing the dictation preview while typing or backspacing
 18. Switch to a Japanese keyboard, type a short marked composition, and accept a candidate
 19. Expected: the marked text commits once to the PTY, the candidate UI anchors near the terminal input area, and there is no repeated `variant selector cell index number could not be found` warning
 
@@ -427,17 +429,19 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:
 5. Terminal, native suggestion: type `teh`, accept the keyboard suggestion `the`, then type `hel` and accept `hello`
 6. Expected: replacements are sent as minimal PTY diffs, with no extra backspaces, no duplicate prefix, and no stuck native marked range
 7. Terminal, dictation: dictate a phrase, stop immediately after the final word, then wait for any late final transcript update
-8. Expected: the preview hides on recording stop, the late hypothesis stays in the dictation store, final text includes the last words, and there is no `UIDictationController` hypothesis-cancel log
+8. Expected: streamed text updates the preview first, commits to the PTY once at finalization, late native reconciliation does not duplicate or delete PTY text, and there is no `UIDictationController` hypothesis-cancel log
 9. Terminal, native dictation stream: dictate `hello, how's it going` and watch the first `insertText` word plus following `replaceRange` rewrites
-10. Expected: the first word moves directly into dictation preview without streaming to the PTY first, and finalization commits once without a hypothesis-cancel log
-11. Cross-flow: after a dictation commit, press backspace repeatedly, then type `hel` and accept `hello`
-12. Expected: dictation cleanup does not delete already-committed terminal text, repeated backspace continues through the PTY, and the following suggestion starts from a fresh keyboard context
-13. Cross-flow: start a Japanese marked composition, cancel it, then accept a native suggestion in the same terminal focus session
-14. Expected: cancelled marked text does not poison the following suggestion replacement or leave stale candidate UI
-15. Commit message input: type Japanese marked text, accept a candidate, then accept a native suggestion
-16. Expected: normal input uses the same native IME protocol correctly, with marked text committed once and suggestions replacing only the requested range
-17. Commit message input, dictation: tap the microphone, dictate a short phrase, then stop dictation
-18. Expected: the dictated phrase remains in the input after UIKit commits, the final cleanup delete does not clear the field, and any late `insertDictationResult` does not duplicate the phrase
+10. Expected: the first word and following rewrites update the preview while the synthetic marked range remains available for UIKit reconciliation; the final transcript commits once, with no hypothesis-cancel log
+11. Terminal, native dictation preview: tap the visible preview bubble before finalization
+12. Expected: the preview dismisses and the terminal does not keep a stuck streamed preview state
+13. Cross-flow: after a dictation commit, press backspace repeatedly, then type `hel` and accept `hello`
+14. Expected: dictation cleanup does not delete already-committed terminal text, repeated backspace continues through the PTY, and the following suggestion starts from a fresh keyboard context
+15. Cross-flow: start a Japanese marked composition, cancel it, then accept a native suggestion in the same terminal focus session
+16. Expected: cancelled marked text does not poison the following suggestion replacement or leave stale candidate UI
+17. Commit message input: type Japanese marked text, accept a candidate, then accept a native suggestion
+18. Expected: normal input uses the same native IME protocol correctly, with marked text committed once and suggestions replacing only the requested range
+19. Commit message input, dictation: tap the microphone, dictate a short phrase, then stop dictation
+20. Expected: the dictated phrase remains in the input after UIKit commits, the final cleanup delete does not clear the field, and any late `insertDictationResult` does not duplicate the phrase
 
 ## 11e. Terminal Keyboard Accessory Arrow Repeat On iOS
 

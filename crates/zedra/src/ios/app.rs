@@ -122,6 +122,22 @@ pub extern "C" fn zedra_ios_native_floating_button_pressed(callback_id: u32) {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_dictation_preview_dismiss(preview_id: u32) {
+    IOS_APP_CELL.with(|cell| {
+        let Some(app_cell) = cell.borrow().as_ref().cloned() else {
+            return;
+        };
+
+        let Ok(mut app) = app_cell.try_borrow_mut() else {
+            return;
+        };
+
+        let cx: &mut App = &mut app;
+        platform_bridge::dispatch_native_dictation_preview_dismiss(preview_id, cx);
+    });
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn zedra_launch_gpui() {
     let log_level = if cfg!(feature = "debug-logs") {
         log::LevelFilter::Debug
