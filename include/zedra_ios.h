@@ -146,6 +146,8 @@ void zedra_ios_app_will_terminate(void);
 
 void zedra_ios_native_floating_button_pressed(uint32_t callback_id);
 
+void zedra_ios_dictation_preview_dismiss(uint32_t preview_id);
+
 void zedra_launch_gpui(void);
 
 void *zedra_ios_mount_custom_sheet_content(void *parent_view_ptr,
