@@ -148,7 +148,7 @@ platform, reconnect, terminal input, pairing, or gesture changes, update
 
 ## Pull Requests
 
-Use a fork and open PRs against `dev` unless a maintainer asks for another base.
+Use a fork and open PRs against `main` unless a maintainer asks for another base.
 Keep PRs small and focused; avoid unrelated cleanup, generated churn, and
 dependency updates.
 
