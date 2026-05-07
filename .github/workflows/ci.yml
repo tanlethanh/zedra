@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 jobs:
   rust-check:
@@ -32,6 +32,29 @@ jobs:
             -p zedra-session \
             -p zedra-terminal \
             -p zedra-host
+
+  ios-rust-check:
+    name: iOS Rust
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios-rust
+
+      - name: Check iOS app crate
+        run: cargo check -p zedra --features ios-platform --target aarch64-apple-ios
+
+      - name: Check vendored GPUI iOS crates
+        run: cargo check --manifest-path vendor/zed/Cargo.toml -p gpui_ios -p gpui --target aarch64-apple-ios
 
   js-check:
     name: JS/TS
