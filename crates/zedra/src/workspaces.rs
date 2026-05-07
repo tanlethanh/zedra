@@ -3,7 +3,7 @@ use std::sync::Arc;
 use gpui::*;
 use tracing::*;
 use zedra_rpc::ZedraPairingTicket;
-use zedra_session::signer::ClientSigner;
+use zedra_session::{ConnectPhase, signer::ClientSigner};
 
 use crate::pending::PendingSlot;
 use crate::platform_bridge;
@@ -31,7 +31,7 @@ pub struct Workspaces {
     states: Vec<Entity<WorkspaceState>>,
     active_index: Option<usize>,
     signer: Option<Arc<dyn ClientSigner>>,
-    _subscriptions: Vec<Subscription>,
+    _subscriptions: Vec<(Entity<Workspace>, Subscription)>,
 }
 
 impl Workspaces {
@@ -126,6 +126,33 @@ impl Workspaces {
         cx: &mut Context<Self>,
     ) {
         let addr = iroh::EndpointAddr::from(ticket.endpoint_id);
+        let encoded_addr = match zedra_rpc::pairing::encode_endpoint_addr(&addr) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("Failed to encode endpoint address: {e}");
+                return;
+            }
+        };
+
+        // If an active entry exists for this endpoint, switch to it instead of connecting again.
+        if let Some(idx) = self.entry_index_by_endpoint_addr(&encoded_addr, cx) {
+            if let Some(entry) = self.entries.get(idx) {
+                let phase = entry.read(cx).workspace_state(cx).connect_phase.clone();
+                if matches!(
+                    phase,
+                    Some(ConnectPhase::Connected) | Some(ConnectPhase::Idle { .. })
+                ) {
+                    info!("Workspace for this project is already active; switching to it.");
+                    crate::platform_bridge::trigger_haptic(
+                        crate::platform_bridge::HapticFeedback::ImpactMedium,
+                    );
+                    self.switch_to(idx, cx);
+                    cx.emit(WorkspacesEvent::Connected { index: idx });
+                    return;
+                }
+            }
+        }
+
         self.connect_and_intialize_workspace(addr, Some(ticket), None, None, window, cx);
     }
 
@@ -163,6 +190,23 @@ impl Workspaces {
 
         let session_id = state.read(cx).session_id.clone();
         let endpoint_addr = state.read(cx).endpoint_addr.clone();
+
+        // Skip if already connected to this endpoint.
+        if let Some(idx) = self.entry_index_by_endpoint_addr(&endpoint_addr, cx) {
+            if let Some(entry) = self.entries.get(idx) {
+                let phase = entry.read(cx).workspace_state(cx).connect_phase.clone();
+                if matches!(
+                    phase,
+                    Some(ConnectPhase::Connected) | Some(ConnectPhase::Idle { .. })
+                ) {
+                    info!("Workspace for this project is already active; switching to it.");
+                    self.switch_to(idx, cx);
+                    cx.emit(WorkspacesEvent::Connected { index: idx });
+                    return;
+                }
+            }
+        }
+
         match zedra_rpc::pairing::decode_endpoint_addr(&endpoint_addr) {
             Ok(addr) => {
                 info!("Reconnecting to workspace: {}", addr.id.fmt_short());
@@ -198,23 +242,70 @@ impl Workspaces {
             return;
         };
 
-        let encoded_addr = zedra_rpc::pairing::encode_endpoint_addr(&addr).unwrap_or_default();
+        let encoded_addr = match zedra_rpc::pairing::encode_endpoint_addr(&addr) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("Failed to encode endpoint address: {e}");
+                return;
+            }
+        };
 
-        // Workspace state (from saved or fresh)
-        let workspace_state = saved.unwrap_or_else(|| {
-            let workspace_state = cx.new(|_cx| {
-                let mut ws = WorkspaceState::default();
-                ws.endpoint_addr = encoded_addr.clone();
-                ws
+        // Disconnect any stale entry for the same endpoint (e.g. previous session killed on host).
+        if let Some(idx) = self
+            .entries
+            .iter()
+            .position(|e| e.read(cx).endpoint_addr(cx) == encoded_addr)
+        {
+            let stale = self.entries.remove(idx);
+            self.remove_subscription_for(&stale);
+            if let Some(ai) = self.active_index {
+                if idx < ai {
+                    self.active_index = Some(ai - 1);
+                } else if idx == ai {
+                    self.active_index = None;
+                }
+            }
+            stale.update(cx, |ws, cx| {
+                ws.disconnect(cx);
             });
-            self.states.push(workspace_state.clone());
-            workspace_state
-        });
+            info!(
+                "Removed stale workspace entry for endpoint; reconnecting ({}) remaining",
+                self.entries.len()
+            );
+        }
+
+        // Workspace state: reuse saved, match by endpoint_addr, or create fresh.
+        let workspace_state = saved
+            .or_else(|| {
+                // Avoid duplicate states for the same endpoint (e.g. session killed & restarted).
+                self.states
+                    .iter()
+                    .find(|s| s.read(cx).endpoint_addr == encoded_addr)
+                    .cloned()
+            })
+            .unwrap_or_else(|| {
+                let workspace_state = cx.new(|_cx| {
+                    let mut ws = WorkspaceState::default();
+                    ws.endpoint_addr = encoded_addr.clone();
+                    ws
+                });
+                self.states.push(workspace_state.clone());
+                self.emit_states_changed(cx);
+                workspace_state
+            });
+
+        // Reset phase on reused state so the card doesn't flash "Disconnected".
+        if workspace_state.read(cx).connect_phase.is_some() {
+            workspace_state.update(cx, |state, cx| {
+                state.connect_phase = None;
+                cx.notify();
+            });
+        }
 
         // Create workspace entity
         let workspace = cx.new(|cx| Workspace::new(workspace_state.clone(), window, cx));
-        self._subscriptions
-            .push(self.subscribe_workspace_event(&workspace, cx));
+        let sub = self.subscribe_workspace_event(&workspace, cx);
+        self._subscriptions.push((workspace.clone(), sub));
 
         // Start connection
         workspace.update(cx, |ws, cx| {
@@ -337,15 +428,30 @@ impl Workspaces {
     }
 
     fn remove_entry(&mut self, index: usize, cx: &mut Context<Self>) {
-        self.entries.remove(index);
+        let removed = self.entries.remove(index);
+        self.remove_subscription_for(&removed);
         self.active_index = if self.entries.is_empty() {
             None
         } else {
-            Some(0)
+            match self.active_index {
+                Some(ai) if ai == index => Some(0),
+                Some(ai) if ai > index => Some(ai - 1),
+                other => other,
+            }
         };
 
         info!("Workspace disconnected; {} remaining", self.entries.len());
         cx.emit(WorkspacesEvent::Disconnected { index });
+    }
+
+    fn remove_subscription_for(&mut self, workspace: &Entity<Workspace>) {
+        if let Some(pos) = self
+            ._subscriptions
+            .iter()
+            .position(|(e, _)| *e == *workspace)
+        {
+            drop(self._subscriptions.remove(pos));
+        }
     }
 
     fn emit_states_changed(&mut self, cx: &mut Context<Self>) {
