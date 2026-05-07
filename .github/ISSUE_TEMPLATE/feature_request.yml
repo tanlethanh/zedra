@@ -1,0 +1,25 @@
+name: Feature Request
+description: Suggest a focused improvement or new workflow
+labels: feature
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow or limitation does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should Zedra do?
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Related docs, screenshots, alternatives, or constraints.
+    validations:
+      required: false
