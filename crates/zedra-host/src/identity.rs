@@ -4,9 +4,9 @@
 // instances on the same machine have distinct iroh NodeIds and don't
 // conflict on the relay.
 //
-// Keys are stored at:
-//   ~/.config/zedra/identity.key           (base, used by `zedra qr` without --workdir)
-//   ~/.config/zedra/workspaces/<hash>/identity.key  (per-workspace)
+// Keys are stored under the platform config root:
+//   Unix:    ~/.config/zedra/
+//   Windows: %APPDATA%\zedra\
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -87,7 +87,7 @@ impl HostIdentity {
     }
 }
 
-/// Path for the host-level telemetry ID file (`~/.config/zedra/telemetry_id`).
+/// Path for the host-level telemetry ID file.
 ///
 /// Shared across all workspaces on the same machine so connection counts
 /// roll up to a single host identity in telemetry.
@@ -95,9 +95,6 @@ pub fn telemetry_id_path() -> Result<PathBuf> {
     Ok(zedra_config_dir()?.join("telemetry_id"))
 }
 
-/// Returns the per-workspace config directory:
-/// `~/.config/zedra/workspaces/<hash>/`
-///
 /// Exported so other modules can co-locate their persistent state alongside
 /// the identity key without duplicating the hash logic.
 pub fn workspace_config_dir(workdir: &Path) -> Result<PathBuf> {
@@ -105,8 +102,28 @@ pub fn workspace_config_dir(workdir: &Path) -> Result<PathBuf> {
     Ok(zedra_config_dir()?.join("workspaces").join(hash))
 }
 
-/// Returns `~/.config/zedra/` as the config root on all platforms.
-fn zedra_config_dir() -> Result<PathBuf> {
+/// Returns Zedra's host config root.
+///
+/// Unix keeps the existing `~/.config/zedra` path for compatibility. Windows
+/// uses the roaming AppData config directory so lock, log, identity, and session
+/// files land in the native per-user location.
+pub fn zedra_config_dir() -> Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        let config = directories::BaseDirs::new()
+            .map(|b| b.config_dir().join("zedra"))
+            .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
+        return Ok(config);
+    }
+
+    #[cfg(not(windows))]
+    {
+        unix_zedra_config_dir()
+    }
+}
+
+#[cfg(not(windows))]
+fn unix_zedra_config_dir() -> Result<PathBuf> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .or_else(|| directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf()))

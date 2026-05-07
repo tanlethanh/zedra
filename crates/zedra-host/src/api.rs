@@ -10,6 +10,7 @@
 //   POST /api/qr                  — create and return a fresh one-time pairing QR
 //   POST /api/qr/static           — create and return a static pairing QR
 //   POST /api/terminal            — create a terminal in the active session
+//   POST /api/shutdown            — request a clean local daemon shutdown
 //
 // Auth: every request must carry  Authorization: Bearer <token>
 //       where <token> is the contents of  <config_dir>/api-token
@@ -44,6 +45,7 @@ pub struct ApiState {
     pub endpoint: iroh::Endpoint,
     pub relay_urls: Vec<String>,
     pub token: String,
+    pub shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +318,22 @@ async fn create_terminal_handler(
     }
 }
 
+async fn shutdown_handler(State(s): State<ApiState>, headers: HeaderMap) -> impl IntoResponse {
+    if !verify_token(&headers, &s.token) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        )
+            .into_response();
+    }
+
+    if let Some(tx) = &s.shutdown_tx {
+        let _ = tx.send(true);
+    }
+
+    (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
+}
+
 // ---------------------------------------------------------------------------
 // Server startup
 // ---------------------------------------------------------------------------
@@ -330,6 +348,7 @@ pub async fn start(state: ApiState) -> anyhow::Result<std::net::SocketAddr> {
         .route("/api/qr", post(create_pairing_qr_handler))
         .route("/api/qr/static", post(create_static_pairing_qr_handler))
         .route("/api/terminal", post(create_terminal_handler))
+        .route("/api/shutdown", post(shutdown_handler))
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -369,6 +388,7 @@ mod tests {
             endpoint: endpoint.clone(),
             relay_urls: vec!["https://test.relay.zedra.dev".to_string()],
             token: "test-token".to_string(),
+            shutdown_tx: None,
         })
         .await
         .unwrap();
@@ -434,6 +454,49 @@ mod tests {
                 _ => panic!("expected static active pairing slot"),
             }
         }
+
+        endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_endpoint_requires_token_and_signals() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = Arc::new(HostIdentity::load_or_generate_for_workdir(dir.path()).unwrap());
+        let registry = Arc::new(SessionRegistry::new());
+        let daemon_state = Arc::new(DaemonState::new(dir.path().to_path_buf(), identity));
+        let endpoint = iroh::Endpoint::builder()
+            .relay_mode(iroh::RelayMode::Disabled)
+            .secret_key(iroh::SecretKey::from(rand::random::<[u8; 32]>()))
+            .bind()
+            .await
+            .unwrap();
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+        let addr = start(ApiState {
+            registry,
+            daemon_state,
+            endpoint: endpoint.clone(),
+            relay_urls: vec!["https://test.relay.zedra.dev".to_string()],
+            token: "test-token".to_string(),
+            shutdown_tx: Some(shutdown_tx),
+        })
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/api/shutdown");
+        let unauthorized = client.post(&url).send().await.unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        assert!(!*shutdown_rx.borrow());
+
+        let authorized = client
+            .post(&url)
+            .bearer_auth("test-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(authorized.status(), StatusCode::OK);
+        shutdown_rx.changed().await.unwrap();
+        assert!(*shutdown_rx.borrow());
 
         endpoint.close().await;
     }

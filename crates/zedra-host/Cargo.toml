@@ -63,10 +63,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 hostname = "0.4"
 sysinfo = "0.31.4"
 
-# Unix process signaling (for workspace lock PID check)
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
 # Error handling
 anyhow.workspace = true
 
@@ -84,6 +80,16 @@ serde_bytes.workspace = true
 zedra-osc = { path = "../zedra-osc" }
 zedra-rpc = { path = "../zedra-rpc" }
 zedra-telemetry.workspace = true
+
+# Unix process signaling (for workspace lock PID check)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 tempfile = "3"

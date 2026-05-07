@@ -23,6 +23,7 @@ pub struct SpawnOptions {
     pub launch_cmd: Option<String>,
 }
 
+#[cfg(not(windows))]
 fn launch_script(launch_cmd: &str) -> String {
     format!("{launch_cmd}\nexec \"$SHELL\" -l")
 }
@@ -43,18 +44,9 @@ impl ShellSession {
             .openpty(pty_size)
             .map_err(|e| anyhow::anyhow!("Failed to open PTY: {}", e))?;
 
-        // Determine shell to use
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-
+        let shell = default_shell();
         let mut cmd = CommandBuilder::new(&shell);
-        if let Some(launch_cmd) = &opts.launch_cmd {
-            // Avoid typing into the PTY before the shell has drawn its prompt.
-            cmd.arg("-l");
-            cmd.arg("-c");
-            cmd.arg(launch_script(launch_cmd));
-        } else {
-            cmd.arg("-l"); // Login shell
-        }
+        configure_shell_command(&mut cmd, opts.launch_cmd.as_deref());
 
         // Start in the session working directory if provided.
         if let Some(dir) = &opts.workdir {
@@ -64,23 +56,12 @@ impl ShellSession {
         // Build a sanitized environment: start clean, allow only safe variables.
         // This prevents daemon secrets (AWS keys, tokens, etc.) from leaking into shells.
         cmd.env_clear();
-        let allowed = [
-            "HOME",
-            "PATH",
-            "SHELL",
-            "TERM",
-            "LANG",
-            "USER",
-            "LOGNAME",
-            "COLORTERM",
-            "XDG_RUNTIME_DIR",
-        ];
-        for key in &allowed {
+        for key in allowed_env_vars() {
             if let Ok(val) = std::env::var(key) {
                 cmd.env(key, val);
             }
         }
-        cmd.env("SHELL", &shell);
+        set_shell_env(&mut cmd, &shell);
         // Always set a known-good TERM; override any inherited value.
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
@@ -122,10 +103,91 @@ impl ShellSession {
     }
 }
 
+#[cfg(windows)]
+fn default_shell() -> String {
+    std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
+}
+
+#[cfg(not(windows))]
+fn default_shell() -> String {
+    std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
+}
+
+#[cfg(windows)]
+fn configure_shell_command(cmd: &mut CommandBuilder, launch_cmd: Option<&str>) {
+    cmd.arg("/d");
+    if let Some(launch_cmd) = launch_cmd.filter(|command| !command.is_empty()) {
+        cmd.arg("/k");
+        cmd.arg(launch_cmd);
+    }
+}
+
+#[cfg(not(windows))]
+fn configure_shell_command(cmd: &mut CommandBuilder, launch_cmd: Option<&str>) {
+    if let Some(launch_cmd) = launch_cmd.filter(|command| !command.is_empty()) {
+        // Avoid typing into the PTY before the shell has drawn its prompt.
+        cmd.arg("-l");
+        cmd.arg("-c");
+        cmd.arg(launch_script(launch_cmd));
+    } else {
+        cmd.arg("-l"); // Login shell
+    }
+}
+
+#[cfg(windows)]
+fn allowed_env_vars() -> &'static [&'static str] {
+    &[
+        "APPDATA",
+        "COMSPEC",
+        "ComSpec",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "LANG",
+        "LOCALAPPDATA",
+        "PATH",
+        "PATHEXT",
+        "Path",
+        "ProgramFiles",
+        "SystemRoot",
+        "TEMP",
+        "TMP",
+        "USERNAME",
+        "USERPROFILE",
+        "WINDIR",
+    ]
+}
+
+#[cfg(not(windows))]
+fn allowed_env_vars() -> &'static [&'static str] {
+    &[
+        "HOME",
+        "PATH",
+        "SHELL",
+        "TERM",
+        "LANG",
+        "USER",
+        "LOGNAME",
+        "COLORTERM",
+        "XDG_RUNTIME_DIR",
+    ]
+}
+
+#[cfg(windows)]
+fn set_shell_env(cmd: &mut CommandBuilder, shell: &str) {
+    cmd.env("COMSPEC", shell);
+    cmd.env("ComSpec", shell);
+}
+
+#[cfg(not(windows))]
+fn set_shell_env(cmd: &mut CommandBuilder, shell: &str) {
+    cmd.env("SHELL", shell);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(not(windows))]
     #[test]
     fn launch_script_runs_command_before_interactive_shell() {
         assert_eq!(
@@ -134,6 +196,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn launch_command_runs_without_typed_echo() {
         let session = ShellSession::spawn(

@@ -1,7 +1,7 @@
 // workspace_lock.rs — PID lock file to prevent duplicate zedra-host instances
 // on the same workspace directory.
 //
-// Lock file: ~/.config/zedra/workspaces/<hash>/daemon.lock
+// Lock file: <platform config>/zedra/workspaces/<hash>/daemon.lock
 // Contains:  JSON with PID, workdir path, hostname, and start timestamp.
 //
 // Acquire semantics:
@@ -13,12 +13,15 @@
 //
 // Stop command (`kill_and_unlock`):
 //   - Reads the lock file for the given workdir.
-//   - Sends SIGTERM; polls up to 5 s; escalates to SIGKILL if needed.
+//   - On Unix, sends SIGTERM; polls up to the grace period; escalates to SIGKILL.
+//   - On Windows, terminates the process if the local shutdown API did not work.
 //   - Removes the lock file.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+
+use crate::identity;
 
 // ---------------------------------------------------------------------------
 // Lock metadata
@@ -140,18 +143,13 @@ pub fn acquire(workdir: &Path) -> Result<WorkspaceLock> {
     Ok(WorkspaceLock { path: lock_path })
 }
 
-/// Scan all workspace config directories under `~/.config/zedra/workspaces/`
+/// Scan all workspace config directories under Zedra's platform config root
 /// and return every instance that has a lock file, along with whether its
 /// process is still alive and the path to its config directory.
 pub fn scan_all_instances() -> Vec<(PathBuf, LockInfo, bool)> {
-    let workspaces_dir = match (|| -> Option<PathBuf> {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .or_else(|| directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf()))?;
-        Some(home.join(".config").join("zedra").join("workspaces"))
-    })() {
-        Some(d) => d,
-        None => return Vec::new(),
+    let workspaces_dir = match identity::zedra_config_dir() {
+        Ok(dir) => dir.join("workspaces"),
+        Err(_) => return Vec::new(),
     };
 
     let entries = match std::fs::read_dir(&workspaces_dir) {
@@ -187,12 +185,11 @@ pub fn read_lock_info(workdir: &Path) -> Result<Option<LockInfo>> {
 /// Stop the daemon owning `workdir`'s lock.
 ///
 /// 1. Reads the lock file to get the PID and confirm it is alive.
-/// 2. Sends SIGTERM and waits up to `grace_secs` for a clean exit.
-/// 3. Sends SIGKILL if the process is still running after the grace period.
+/// 2. Sends the platform stop request and waits up to `grace_secs`.
+/// 3. Escalates if the process is still running after the grace period.
 /// 4. Removes the lock file.
 ///
 /// Returns an error if there is no lock file or the process cannot be stopped.
-#[cfg(unix)]
 pub fn kill_and_unlock(workdir: &Path, grace_secs: u64) -> Result<()> {
     let lock_path = lock_file_path(workdir)?;
 
@@ -212,13 +209,7 @@ pub fn kill_and_unlock(workdir: &Path, grace_secs: u64) -> Result<()> {
         return Ok(());
     }
 
-    tracing::info!(
-        "Sending SIGTERM to PID {} (workdir: {}, started: {})",
-        info.pid,
-        info.workdir,
-        info.running_for()
-    );
-    send_signal(info.pid, libc::SIGTERM)?;
+    request_process_exit(&info)?;
 
     // Poll for clean exit.
     let poll_interval = std::time::Duration::from_millis(200);
@@ -232,13 +223,7 @@ pub fn kill_and_unlock(workdir: &Path, grace_secs: u64) -> Result<()> {
         }
     }
 
-    // Grace period expired — escalate to SIGKILL.
-    tracing::warn!(
-        "Process {} did not exit after {}s; sending SIGKILL.",
-        info.pid,
-        grace_secs
-    );
-    send_signal(info.pid, libc::SIGKILL)?;
+    escalate_process_exit(info.pid, grace_secs)?;
     std::thread::sleep(std::time::Duration::from_millis(500));
     let _ = std::fs::remove_file(&lock_path);
 
@@ -250,36 +235,17 @@ pub fn kill_and_unlock(workdir: &Path, grace_secs: u64) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub fn kill_and_unlock(_workdir: &Path, _grace_secs: u64) -> Result<()> {
-    anyhow::bail!("'zedra stop' is not supported on this platform.");
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Path: `~/.config/zedra/workspaces/<hash>/daemon.lock`
+/// Path: `<platform config>/zedra/workspaces/<hash>/daemon.lock`
 fn lock_file_path(workdir: &Path) -> Result<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .or_else(|| directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf()))
-        .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-    let config = home.join(".config").join("zedra");
-    let hash = path_hash(workdir);
-    let path = config.join("workspaces").join(&hash).join("daemon.lock");
+    let path = identity::workspace_config_dir(workdir)?.join("daemon.lock");
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     Ok(path)
-}
-
-/// Same 16-hex-char hash used by `identity.rs` for the workspace directory.
-fn path_hash(workdir: &Path) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    workdir.to_string_lossy().hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
 }
 
 /// Try to create the lock file atomically; fail if it already exists.
@@ -320,10 +286,66 @@ pub fn is_process_alive(pid: u32) -> bool {
     errno == libc::EPERM
 }
 
-#[cfg(not(unix))]
+#[cfg(all(not(unix), not(windows)))]
 pub fn is_process_alive(pid: u32) -> bool {
     let _ = pid;
     true
+}
+
+/// Send a graceful process exit request.
+#[cfg(unix)]
+fn request_process_exit(info: &LockInfo) -> Result<()> {
+    tracing::info!(
+        "Sending SIGTERM to PID {} (workdir: {}, started: {})",
+        info.pid,
+        info.workdir,
+        info.running_for()
+    );
+    send_signal(info.pid, libc::SIGTERM)
+}
+
+#[cfg(windows)]
+fn request_process_exit(info: &LockInfo) -> Result<()> {
+    // `zedra stop` tries the authenticated local shutdown API before this
+    // fallback. Windows has no Unix-style SIGTERM, so the fallback is terminate.
+    tracing::warn!(
+        "Terminating PID {} (workdir: {}, started: {})",
+        info.pid,
+        info.workdir,
+        info.running_for()
+    );
+    terminate_process(info.pid)
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn request_process_exit(_info: &LockInfo) -> Result<()> {
+    anyhow::bail!("'zedra stop' is not supported on this platform.");
+}
+
+/// Escalate when graceful stop did not exit within the grace period.
+#[cfg(unix)]
+fn escalate_process_exit(pid: u32, grace_secs: u64) -> Result<()> {
+    tracing::warn!(
+        "Process {} did not exit after {}s; sending SIGKILL.",
+        pid,
+        grace_secs
+    );
+    send_signal(pid, libc::SIGKILL)
+}
+
+#[cfg(windows)]
+fn escalate_process_exit(pid: u32, grace_secs: u64) -> Result<()> {
+    tracing::warn!(
+        "Process {} did not exit after {}s; terminating again.",
+        pid,
+        grace_secs
+    );
+    terminate_process(pid)
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn escalate_process_exit(_pid: u32, _grace_secs: u64) -> Result<()> {
+    anyhow::bail!("'zedra stop' is not supported on this platform.");
 }
 
 /// Send a signal to a process.
@@ -334,5 +356,51 @@ fn send_signal(pid: u32, signal: libc::c_int) -> Result<()> {
         Ok(())
     } else {
         Err(std::io::Error::last_os_error()).context(format!("kill({}, {})", pid, signal))
+    }
+}
+
+#[cfg(windows)]
+pub fn is_process_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+
+        let mut exit_code = 0;
+        let ok = GetExitCodeProcess(handle, &mut exit_code) != 0;
+        let _ = CloseHandle(handle);
+        ok && exit_code == STILL_ACTIVE
+    }
+}
+
+#[cfg(windows)]
+fn terminate_process(pid: u32) -> Result<()> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+    };
+
+    unsafe {
+        let handle = OpenProcess(
+            PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+            0,
+            pid,
+        );
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error()).context(format!("OpenProcess({pid})"));
+        }
+        let ok = TerminateProcess(handle, 0) != 0;
+        let _ = CloseHandle(handle);
+        if ok {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error()).context(format!("TerminateProcess({pid})"))
+        }
     }
 }
