@@ -75,6 +75,23 @@ Scan the printed QR from the app, or pass the URL during development:
 ./scripts/run-ios.sh sim --no-build --launch-url 'zedra://connect?ticket=...'
 ```
 
+### Windows Host CLI
+
+Windows support is for the host daemon, not a native desktop client. Use the MSVC Rust toolchain and Git for Windows.
+
+```sh
+rustup toolchain install stable-x86_64-pc-windows-msvc
+cargo build -p zedra-host
+.\target\debug\zedra.exe start --workdir C:\path\to\project --detach
+.\target\debug\zedra.exe qr --workdir C:\path\to\project
+.\target\debug\zedra.exe status --workdir C:\path\to\project
+.\target\debug\zedra.exe logs --workdir C:\path\to\project
+.\target\debug\zedra.exe client --workdir C:\path\to\project --count 3
+.\target\debug\zedra.exe stop --workdir C:\path\to\project
+```
+
+Runtime files are stored under `%APPDATA%\zedra\workspaces\<hash>\`, including `daemon.lock`, `daemon.log`, `sessions.json`, `host-info.json`, and API discovery files. Terminal sessions use `%ComSpec%` (`cmd.exe`) by default; install Git, language tools, and agent CLIs on `PATH` before starting the daemon.
+
 ## Pre-Commit Checks
 
 ```bash

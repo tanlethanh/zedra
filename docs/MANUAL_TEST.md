@@ -128,6 +128,24 @@
 22. Connect to an older host that does not support docs-tree RPCs
 23. Expected: the docs tree shows an unsupported-host message and the refresh icon no longer stays in the building state
 
+## 1d. Windows Host CLI
+
+1. On an x86_64 Windows machine with the MSVC Rust toolchain and Git for Windows installed, build the host: `cargo build -p zedra-host`
+2. Start the daemon from PowerShell: `.\target\debug\zedra.exe start --workdir C:\path\to\repo --detach`
+3. Expected: startup succeeds, Windows may show a firewall prompt, and `daemon.log` plus `daemon.lock` are written under `%APPDATA%\zedra\workspaces\<hash>\`
+4. Run `.\target\debug\zedra.exe status --workdir C:\path\to\repo`
+5. Expected: status shows the running daemon, endpoint, workspace path, sessions, and terminal count without Unix path assumptions
+6. Run `.\target\debug\zedra.exe qr --workdir C:\path\to\repo`, scan from the mobile app, then disconnect and reconnect the app without scanning again
+7. Expected: QR pairing succeeds, reconnect uses the saved session identity, and relay fallback still works if direct P2P is unavailable
+8. Open a terminal from the app
+9. Expected: a Windows PTY opens with a `cmd.exe` prompt, keystrokes echo, resize works, and commands available on `PATH` run normally
+10. Run `.\target\debug\zedra.exe client --workdir C:\path\to\repo --count 3`
+11. Expected: the CLI client authenticates without QR and prints three RTT samples
+12. Run `.\target\debug\zedra.exe logs --workdir C:\path\to\repo`
+13. Expected: recent daemon log lines are printed from the AppData workspace directory
+14. Run `.\target\debug\zedra.exe stop --workdir C:\path\to\repo`
+15. Expected: the daemon exits, the lock file is removed, and a follow-up `status` reports no running daemon
+
 ## 2. QR Already Consumed
 
 1. Start host: `zedra start --workdir .`
