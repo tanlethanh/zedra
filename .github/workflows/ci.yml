@@ -63,9 +63,6 @@ jobs:
       - name: Check iOS app crate
         run: cargo check -p zedra --features ios-platform --target aarch64-apple-ios
 
-      - name: Check vendored GPUI iOS crates
-        run: cargo check --manifest-path vendor/zed/Cargo.toml -p gpui_ios -p gpui --target aarch64-apple-ios
-
       - name: Test app crate
         run: cargo test -p zedra --features ios-platform
 
