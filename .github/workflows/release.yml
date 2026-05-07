@@ -19,11 +19,13 @@ jobs:
           # - target: x86_64-apple-darwin
           #   runner: macos-14
           #   cross: false
+          # Build Linux artifacts on Ubuntu 22.04 so GNU binaries do not inherit
+          # ubuntu-latest's newer glibc baseline.
           - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
+            runner: ubuntu-22.04
             cross: false
           - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest
+            runner: ubuntu-22.04
             cross: true
 
     runs-on: ${{ matrix.runner }}
