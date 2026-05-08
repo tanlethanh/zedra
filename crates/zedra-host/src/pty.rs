@@ -23,7 +23,6 @@ pub struct SpawnOptions {
     pub launch_cmd: Option<String>,
 }
 
-#[cfg(not(windows))]
 fn launch_script(launch_cmd: &str) -> String {
     format!("{launch_cmd}\nexec \"$SHELL\" -l")
 }
@@ -46,7 +45,7 @@ impl ShellSession {
 
         let shell = default_shell();
         let mut cmd = CommandBuilder::new(&shell);
-        configure_shell_command(&mut cmd, opts.launch_cmd.as_deref());
+        configure_shell_command(&mut cmd, &shell, opts.launch_cmd.as_deref())?;
 
         // Start in the session working directory if provided.
         if let Some(dir) = &opts.workdir {
@@ -105,7 +104,8 @@ impl ShellSession {
 
 #[cfg(windows)]
 fn default_shell() -> String {
-    std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
+    windows_shell_from_env(&["ZEDRA_SHELL", "SHELL", "COMSPEC", "ComSpec"])
+        .unwrap_or_else(|| "cmd.exe".to_string())
 }
 
 #[cfg(not(windows))]
@@ -114,16 +114,55 @@ fn default_shell() -> String {
 }
 
 #[cfg(windows)]
-fn configure_shell_command(cmd: &mut CommandBuilder, launch_cmd: Option<&str>) {
-    cmd.arg("/d");
-    if let Some(launch_cmd) = launch_cmd.filter(|command| !command.is_empty()) {
-        cmd.arg("/k");
-        cmd.arg(launch_cmd);
+fn shell_from_env(keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        std::env::var(key)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+#[cfg(windows)]
+fn windows_shell_from_env(keys: &[&str]) -> Option<String> {
+    shell_from_env(keys).map(|shell| normalize_windows_shell_path(&shell))
+}
+
+#[cfg(any(windows, test))]
+fn normalize_windows_shell_path(shell: &str) -> String {
+    if shell.starts_with('/') && !shell.starts_with("//") {
+        let file_name = shell
+            .rsplit('/')
+            .find(|part| !part.is_empty())
+            .unwrap_or(shell);
+        if file_name.contains('.') {
+            file_name.to_string()
+        } else {
+            format!("{file_name}.exe")
+        }
+    } else {
+        shell.to_string()
     }
 }
 
+#[cfg(windows)]
+fn configure_shell_command(
+    cmd: &mut CommandBuilder,
+    shell: &str,
+    launch_cmd: Option<&str>,
+) -> Result<()> {
+    for arg in windows_shell_args(shell, launch_cmd)? {
+        cmd.arg(arg);
+    }
+    Ok(())
+}
+
 #[cfg(not(windows))]
-fn configure_shell_command(cmd: &mut CommandBuilder, launch_cmd: Option<&str>) {
+fn configure_shell_command(
+    cmd: &mut CommandBuilder,
+    _shell: &str,
+    launch_cmd: Option<&str>,
+) -> Result<()> {
     if let Some(launch_cmd) = launch_cmd.filter(|command| !command.is_empty()) {
         // Avoid typing into the PTY before the shell has drawn its prompt.
         cmd.arg("-l");
@@ -131,6 +170,80 @@ fn configure_shell_command(cmd: &mut CommandBuilder, launch_cmd: Option<&str>) {
         cmd.arg(launch_script(launch_cmd));
     } else {
         cmd.arg("-l"); // Login shell
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WindowsShellKind {
+    Cmd,
+    PowerShell,
+    Posix,
+    Unknown,
+}
+
+#[cfg(any(windows, test))]
+fn windows_shell_args(shell: &str, launch_cmd: Option<&str>) -> Result<Vec<String>> {
+    let launch_cmd = launch_cmd.filter(|command| !command.is_empty());
+
+    match windows_shell_kind(shell) {
+        WindowsShellKind::Cmd => {
+            let mut args = vec!["/d".to_string()];
+            if let Some(launch_cmd) = launch_cmd {
+                args.push("/k".to_string());
+                args.push(launch_cmd.to_string());
+            }
+            Ok(args)
+        }
+        WindowsShellKind::PowerShell => {
+            let mut args = vec!["-NoLogo".to_string()];
+            if let Some(launch_cmd) = launch_cmd {
+                args.push("-NoExit".to_string());
+                args.push("-Command".to_string());
+                args.push(launch_cmd.to_string());
+            }
+            Ok(args)
+        }
+        WindowsShellKind::Posix => {
+            let mut args = vec!["-l".to_string()];
+            if let Some(launch_cmd) = launch_cmd {
+                args.push("-c".to_string());
+                args.push(launch_script(launch_cmd));
+            }
+            Ok(args)
+        }
+        WindowsShellKind::Unknown => {
+            if launch_cmd.is_some() {
+                anyhow::bail!(
+                    "launch commands are not supported for Windows shell `{}`; \
+                     set ZEDRA_SHELL to cmd.exe, pwsh.exe, powershell.exe, or bash.exe",
+                    shell
+                );
+            }
+            Ok(Vec::new())
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
+fn windows_shell_kind(shell: &str) -> WindowsShellKind {
+    let file_name = shell
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(shell)
+        .to_ascii_lowercase();
+    let stem = file_name
+        .strip_suffix(".exe")
+        .or_else(|| file_name.strip_suffix(".cmd"))
+        .or_else(|| file_name.strip_suffix(".bat"))
+        .unwrap_or(&file_name);
+
+    match stem {
+        "cmd" => WindowsShellKind::Cmd,
+        "pwsh" | "powershell" => WindowsShellKind::PowerShell,
+        "bash" | "sh" | "zsh" | "fish" => WindowsShellKind::Posix,
+        _ => WindowsShellKind::Unknown,
     }
 }
 
@@ -151,6 +264,7 @@ fn allowed_env_vars() -> &'static [&'static str] {
         "SystemRoot",
         "TEMP",
         "TMP",
+        "SHELL",
         "USERNAME",
         "USERPROFILE",
         "WINDIR",
@@ -174,8 +288,11 @@ fn allowed_env_vars() -> &'static [&'static str] {
 
 #[cfg(windows)]
 fn set_shell_env(cmd: &mut CommandBuilder, shell: &str) {
-    cmd.env("COMSPEC", shell);
-    cmd.env("ComSpec", shell);
+    cmd.env("SHELL", shell);
+    if windows_shell_kind(shell) == WindowsShellKind::Cmd {
+        cmd.env("COMSPEC", shell);
+        cmd.env("ComSpec", shell);
+    }
 }
 
 #[cfg(not(windows))]
@@ -187,13 +304,54 @@ fn set_shell_env(cmd: &mut CommandBuilder, shell: &str) {
 mod tests {
     use super::*;
 
-    #[cfg(not(windows))]
     #[test]
     fn launch_script_runs_command_before_interactive_shell() {
         assert_eq!(
             launch_script("echo ready"),
             "echo ready\nexec \"$SHELL\" -l"
         );
+    }
+
+    #[test]
+    fn windows_shell_kind_matches_common_shell_names() {
+        assert_eq!(windows_shell_kind("cmd.exe"), WindowsShellKind::Cmd);
+        assert_eq!(windows_shell_kind("/usr/bin/bash"), WindowsShellKind::Posix);
+        assert_eq!(
+            windows_shell_kind(r"C:\Program Files\PowerShell\7\pwsh.exe"),
+            WindowsShellKind::PowerShell
+        );
+        assert_eq!(
+            windows_shell_kind(r"C:\Program Files\Git\bin\bash.exe"),
+            WindowsShellKind::Posix
+        );
+        assert_eq!(windows_shell_kind("nu.exe"), WindowsShellKind::Unknown);
+    }
+
+    #[test]
+    fn windows_shell_normalizes_posix_paths_for_win32_spawn() {
+        assert_eq!(normalize_windows_shell_path("/usr/bin/bash"), "bash.exe");
+        assert_eq!(normalize_windows_shell_path("/bin/zsh"), "zsh.exe");
+        assert_eq!(
+            normalize_windows_shell_path(r"C:\Program Files\Git\bin\bash.exe"),
+            r"C:\Program Files\Git\bin\bash.exe"
+        );
+    }
+
+    #[test]
+    fn windows_shell_args_match_shell_family() {
+        assert_eq!(
+            windows_shell_args("cmd.exe", Some("echo ready")).unwrap(),
+            vec!["/d", "/k", "echo ready"]
+        );
+        assert_eq!(
+            windows_shell_args("pwsh.exe", Some("Write-Host ready")).unwrap(),
+            vec!["-NoLogo", "-NoExit", "-Command", "Write-Host ready"]
+        );
+        assert_eq!(
+            windows_shell_args(r"C:\Program Files\Git\bin\bash.exe", Some("echo ready")).unwrap(),
+            vec!["-l", "-c", "echo ready\nexec \"$SHELL\" -l"]
+        );
+        assert!(windows_shell_args("nu.exe", Some("echo ready")).is_err());
     }
 
     #[cfg(not(windows))]

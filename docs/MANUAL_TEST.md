@@ -138,13 +138,15 @@
 6. Run `.\target\debug\zedra.exe qr --workdir C:\path\to\repo`, scan from the mobile app, then disconnect and reconnect the app without scanning again
 7. Expected: QR pairing succeeds, reconnect uses the saved session identity, and relay fallback still works if direct P2P is unavailable
 8. Open a terminal from the app
-9. Expected: a Windows PTY opens with a `cmd.exe` prompt, keystrokes echo, resize works, and commands available on `PATH` run normally
-10. Run `.\target\debug\zedra.exe client --workdir C:\path\to\repo --count 3`
-11. Expected: the CLI client authenticates without QR and prints three RTT samples
-12. Run `.\target\debug\zedra.exe logs --workdir C:\path\to\repo`
-13. Expected: recent daemon log lines are printed from the AppData workspace directory
-14. Run `.\target\debug\zedra.exe stop --workdir C:\path\to\repo`
-15. Expected: the daemon exits, the lock file is removed, and a follow-up `status` reports no running daemon
+9. Expected: a Windows PTY opens with the selected shell prompt (`ZEDRA_SHELL`, `SHELL`, or `%ComSpec%`), keystrokes echo, resize works, and commands available on `PATH` run normally
+10. Stop the daemon, set `$env:ZEDRA_SHELL = "pwsh.exe"` in PowerShell, restart the daemon, and open another terminal from the app
+11. Expected: the terminal opens in PowerShell and launch commands still leave an interactive shell after they run
+12. Run `.\target\debug\zedra.exe client --workdir C:\path\to\repo --count 3`
+13. Expected: the CLI client authenticates without QR and prints three RTT samples
+14. Run `.\target\debug\zedra.exe logs --workdir C:\path\to\repo`
+15. Expected: recent daemon log lines are printed from the AppData workspace directory
+16. Run `.\target\debug\zedra.exe stop --workdir C:\path\to\repo`
+17. Expected: the daemon exits, the lock file is removed, and a follow-up `status` reports no running daemon
 
 ## 2. QR Already Consumed
 
