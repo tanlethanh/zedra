@@ -43,6 +43,14 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - Use complete working examples. Use `sh` fences for terminal command blocks and backticks for inline commands, paths, settings, and keybindings.
 - Keep repo guidance high-signal. New rules should be non-obvious, repeatedly encountered, and specific enough to act on; crate-specific rules belong in that crate's `AGENTS.md`.
 
+## GitHub Issues
+
+- When asked to create an issue, first check `.github/ISSUE_TEMPLATE/` and use the matching template if one exists.
+- Preserve the template's headings, prompts, and required fields. Only omit optional sections that clearly do not apply.
+- If the repo has no issue template, use `## Summary`, `## Reproduction`, `## Expected Behavior`, `## Actual Behavior`, and `## Notes` as the fallback structure.
+- Keep issues concrete and concise: state the problem, affected platform/scope, repro steps, expected vs actual behavior, and relevant logs, screenshots, or context when available.
+- Search existing open issues before creating a new one to avoid duplicates.
+
 ## Validation
 
 - Prefer targeted checks over broad suites.
