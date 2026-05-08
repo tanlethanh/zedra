@@ -296,7 +296,7 @@ printf '\033]8;;https://zedra.dev\033\\zedra.dev\033]8;;\033\\\n'
 
 3. Expected before tapping: only the OSC 8 `src/main.rs:12:3` and `zedra.dev` rows show a subtle underline; the plain `src/main.rs:12:3`, `git:(refactor-app-session-architecture)`, `hello`, `README`, `v0.112.0`, `gpt-5.4`, and `/model` rows do not
 4. Tap the underlined OSC 8 `src/main.rs:12:3`
-5. Expected: the terminal file preview opens for `src/main.rs` at line/column metadata
+5. Expected: the terminal file preview opens for `src/main.rs` at line 12/column metadata and does not reuse any previous preview scroll position
 6. Expected: the preview header metadata and code body both render with the app monospace font rather than a proportional fallback
 7. Tap the underlined OSC 8 `zedra.dev`
 8. Expected: the URL opens externally
@@ -309,24 +309,31 @@ printf '\033]8;;https://zedra.dev\033\\zedra.dev\033]8;;\033\\\n'
 2. Run:
 
 ```bash
-cat > /tmp/zedra-long-code.rs <<'EOF'
-fn main() {
-    let message = "this line is intentionally very long so the terminal preview code editor needs horizontal scrolling inside the native custom sheet without moving the sheet detent or dismissing the sheet while the drag is horizontal";
-    println!("{message}");
-}
-EOF
-printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:1\033]8;;\033\\\n'
+{
+  printf 'fn main() {\n'
+  for i in $(seq 1 80); do
+    if [ "$i" = 40 ]; then
+      printf '    let message = "this line is intentionally very long so the terminal preview code editor needs horizontal scrolling inside the native custom sheet without moving the sheet detent or dismissing the sheet while the drag is horizontal";\n'
+    else
+      printf '    println!("line %02d");\n' "$i"
+    fi
+  done
+  printf '}\n'
+} > /tmp/zedra-long-code.rs
+printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs:41\033]8;;\033\\\n'
 ```
 
-3. Tap `/tmp/zedra-long-code.rs:1`
-4. Expected: the preview opens in code editor mode inside the native custom sheet
+3. Tap `/tmp/zedra-long-code.rs:41`
+4. Expected: the preview opens in code editor mode inside the native custom sheet with line 41 at the top of the code body
 5. Expected: Rust keywords and string tokens gain syntax colors after the preview finishes parsing
 6. Swipe horizontally across the long string line
 7. Expected: the code scrolls sideways and the native sheet does not move or dismiss
 8. Swipe mostly vertically inside the preview body
 9. Expected: the preview content scrolls vertically
-10. Scroll to the top of the preview body, then drag downward
-11. Expected: the native sheet moves or dismisses normally from the top edge
+10. Dismiss the sheet, tap `/tmp/zedra-long-code.rs:41` again, then drag downward before line 1 is visible
+11. Expected: the code scrolls toward line 1 first; the opened line is not treated as the file top
+12. Scroll to the top of the preview body, then drag downward
+13. Expected: the native sheet moves or dismisses normally from the top edge
 
 ## 10. Connecting Overlay Layout On Wide Screens
 
