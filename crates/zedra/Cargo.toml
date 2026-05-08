@@ -20,6 +20,7 @@ gpui = { path = "../../vendor/zed/crates/gpui", default-features = false }
 http_client = { path = "../../vendor/zed/crates/http_client" }
 anyhow.workspace = true
 tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 log.workspace = true
 futures.workspace = true
 tokio.workspace = true

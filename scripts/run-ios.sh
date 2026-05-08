@@ -95,6 +95,88 @@ LAUNCH_URL=""
 NO_BUILD=false
 PREF_FILE="/tmp/zedra-ios-device-$PPID"
 
+write_saved_device_pref() {
+    printf '%s|%s|%s\n' "$1" "$2" "$3" > "$PREF_FILE"
+}
+
+read_saved_device_pref() {
+    local first=""
+    local second=""
+    local third=""
+
+    IFS='|' read -r first second third < "$PREF_FILE" || return 1
+
+    if [ "$first" = "dev" ] || [ "$first" = "sim" ]; then
+        SAVED_DEVICE_TYPE="$first"
+        SAVED_DEVICE_ID="${second:-}"
+        SAVED_DEVICE_NAME="${third:-}"
+    elif [ -n "$first" ] && [ -n "$second" ]; then
+        # Older script versions saved physical devices as "udid|name".
+        SAVED_DEVICE_TYPE="dev"
+        SAVED_DEVICE_ID="$first"
+        SAVED_DEVICE_NAME="$second"
+        write_saved_device_pref "$SAVED_DEVICE_TYPE" "$SAVED_DEVICE_ID" "$SAVED_DEVICE_NAME"
+    else
+        return 1
+    fi
+
+    [ -n "$SAVED_DEVICE_ID" ]
+}
+
+list_xctrace_physical_devices() {
+    xcrun xctrace list devices 2>&1 | awk '
+        /^== Devices ==/ { in_devices = 1; next }
+        /^==/ { in_devices = 0; next }
+        in_devices && /^[[:alnum:]].*\([0-9]+\.[0-9]+(\.[0-9]+)?\)/ { print }
+    '
+}
+
+latest_built_app() {
+    local product_dir="$1"
+
+    find "$HOME/Library/Developer/Xcode/DerivedData"/Zedra-*/Build/Products/"$product_dir" \
+        -name "Zedra.app" \
+        -type d \
+        -print0 2>/dev/null \
+        | xargs -0 stat -f "%m %N" 2>/dev/null \
+        | sort -rn \
+        | sed -n '1s/^[0-9][0-9]* //p'
+}
+
+terminate_running_zedra_processes() {
+    local device_id="$1"
+    local processes_json
+    processes_json=$(mktemp /tmp/zedra-ios-processes.XXXXXX.json)
+
+    if xcrun devicectl device info processes --device "$device_id" --json-output "$processes_json" --quiet >/dev/null 2>&1; then
+        python3 - "$processes_json" <<'PY' | while IFS= read -r pid; do
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as file:
+    payload = json.load(file)
+
+def visit(value):
+    if isinstance(value, dict):
+        executable = str(value.get("executable", ""))
+        pid = value.get("processIdentifier")
+        if "/Zedra.app/Zedra" in executable and pid is not None:
+            print(pid)
+        for child in value.values():
+            visit(child)
+    elif isinstance(value, list):
+        for child in value:
+            visit(child)
+
+visit(payload)
+PY
+            xcrun devicectl device process terminate --device "$device_id" --pid "$pid" --quiet >/dev/null 2>&1 || true
+        done
+    fi
+
+    rm -f "$processes_json"
+}
+
 args=("$@")
 i=0
 while [ $i -lt ${#args[@]} ]; do
@@ -175,6 +257,7 @@ for runtime, devices in data['devices'].items():
             sys.exit(0)
 " 2>/dev/null)
         echo "==> Target: $SIM_NAME ($BOOTED_ID)"
+        write_saved_device_pref "sim" "$BOOTED_ID" "$SIM_NAME"
 
         if [ "$NO_BUILD" = false ]; then
             # Build Rust libraries (simulator target only)
@@ -194,7 +277,7 @@ for runtime, devices in data['devices'].items():
                 -quiet
 
             # Find the built .app
-            APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData/Zedra-*/Build/Products/${XCODE_CONFIGURATION}-iphonesimulator -name "Zedra.app" -type d 2>/dev/null | head -1)
+            APP_PATH=$(latest_built_app "${XCODE_CONFIGURATION}-iphonesimulator")
 
             if [ -z "$APP_PATH" ]; then
                 echo "Error: Could not find built .app"
@@ -225,31 +308,39 @@ for runtime, devices in data['devices'].items():
 
         if [ -n "$FORCED_DEVICE_ID" ]; then
             # Explicit --device-id takes priority, resolve name/OS from it
-            DEVICE_LINE=$(xcrun xctrace list devices 2>&1 | grep "$FORCED_DEVICE_ID" | head -1)
+            DEVICE_LINE=$(list_xctrace_physical_devices | grep "$FORCED_DEVICE_ID" | head -1)
             if [ -z "$DEVICE_LINE" ]; then
                 echo "Error: Device with UDID '$FORCED_DEVICE_ID' not found."
                 echo ""
                 echo "Available devices:"
-                xcrun xctrace list devices 2>&1 | grep -E '^\w.+\(\d+\.\d+'
+                list_xctrace_physical_devices
                 exit 1
             fi
             DEVICE_ID="$FORCED_DEVICE_ID"
+            DEVICE_NAME_SAVED=$(echo "$DEVICE_LINE" | sed 's/ ([^)]*) ([^)]*)$//' | sed 's/ ([^)]*)$//')
+            write_saved_device_pref "dev" "$DEVICE_ID" "$DEVICE_NAME_SAVED"
         else
             # Check session-scoped pref file (shared with ios-log.sh)
             if [ "$SELECT_DEVICE" = false ] && [ -f "$PREF_FILE" ]; then
-                IFS='|' read -r DEVICE_ID DEVICE_NAME_SAVED < "$PREF_FILE"
-                DEVICE_LINE=$(xcrun xctrace list devices 2>&1 | grep "$DEVICE_ID" | head -1)
-                if [ -z "$DEVICE_LINE" ]; then
-                    echo "Warning: Saved device $DEVICE_ID not found, re-prompting..."
-                    DEVICE_ID=""
-                else
-                    echo "==> Using saved device: $DEVICE_NAME_SAVED ($DEVICE_ID)"
+                SAVED_DEVICE_TYPE=""
+                SAVED_DEVICE_ID=""
+                SAVED_DEVICE_NAME=""
+                if read_saved_device_pref && [ "$SAVED_DEVICE_TYPE" = "dev" ]; then
+                    DEVICE_ID="$SAVED_DEVICE_ID"
+                    DEVICE_NAME_SAVED="$SAVED_DEVICE_NAME"
+                    DEVICE_LINE=$(list_xctrace_physical_devices | grep "$DEVICE_ID" | head -1)
+                    if [ -z "$DEVICE_LINE" ]; then
+                        echo "Warning: Saved device $DEVICE_ID not found, re-prompting..."
+                        DEVICE_ID=""
+                    else
+                        echo "==> Using saved device: $DEVICE_NAME_SAVED ($DEVICE_ID)"
+                    fi
                 fi
             fi
 
             # Interactive selection if no device yet
             if [ -z "$DEVICE_ID" ]; then
-                DEVICE_LINES=$(xcrun xctrace list devices 2>&1 | grep -E '^\w.+\(\d+\.\d+' | grep -v Simulator)
+                DEVICE_LINES=$(list_xctrace_physical_devices)
                 if [ -z "$DEVICE_LINES" ]; then
                     echo "Error: No connected iOS device found." >&2
                     exit 1
@@ -281,7 +372,7 @@ for runtime, devices in data['devices'].items():
                 DEVICE_ID=$(echo "$SELECTED_LINE" | grep -oE '\([A-F0-9a-f-]{25,}\)' | tail -1 | tr -d '()')
                 DEVICE_NAME_SAVED=$(echo "$SELECTED_LINE" | sed 's/ ([^)]*) ([^)]*)$//' | sed 's/ ([^)]*)$//')
                 DEVICE_LINE="$SELECTED_LINE"
-                echo "$DEVICE_ID|$DEVICE_NAME_SAVED" > "$PREF_FILE"
+                write_saved_device_pref "dev" "$DEVICE_ID" "$DEVICE_NAME_SAVED"
             fi
         fi
 
@@ -312,15 +403,15 @@ for runtime, devices in data['devices'].items():
                 -quiet
 
             # Find the built .app
-            APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData/Zedra-*/Build/Products/${XCODE_CONFIGURATION}-iphoneos -name "Zedra.app" -type d 2>/dev/null | head -1)
+            APP_PATH=$(latest_built_app "${XCODE_CONFIGURATION}-iphoneos")
 
             if [ -z "$APP_PATH" ]; then
                 echo "Error: Could not find built .app"
                 exit 1
             fi
 
-            # Kill running app before install to avoid install-over-running-process issues
-            xcrun devicectl device process terminate --device "$DEVICE_ID" --bundle-id "$BUNDLE_ID" 2>/dev/null || true
+            echo "==> Stopping running Zedra processes..."
+            terminate_running_zedra_processes "$DEVICE_ID"
 
             # Install on device
             echo "==> Installing on $DEVICE_NAME..."
@@ -328,6 +419,7 @@ for runtime, devices in data['devices'].items():
         fi
 
         echo "==> Launching..."
+        terminate_running_zedra_processes "$DEVICE_ID"
         if [ -n "$LAUNCH_URL" ]; then
             echo "==> Opening URL: $LAUNCH_URL"
             xcrun devicectl device process launch --device "$DEVICE_ID" --payload-url "$LAUNCH_URL" "$BUNDLE_ID"

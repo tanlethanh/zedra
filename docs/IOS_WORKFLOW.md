@@ -41,7 +41,11 @@ ZEDRA_SKIP_RUST_XCODE_BUILD=1 xcodebuild build \
 ./scripts/log-ios.sh                     # stream all logs via USB
 ./scripts/log-ios.sh --filter zedra      # filtered
 ./scripts/log-ios.sh --select-device     # choose device
+./scripts/log-ios.sh --simulator         # stream from a booted simulator
 ```
+
+For physical devices, the log script only shows USB-paired devices visible to
+`libimobiledevice`. Use `--select-device` after switching devices.
 
 ## Build Pipeline
 
