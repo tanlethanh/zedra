@@ -134,21 +134,38 @@ impl Workspaces {
             }
         };
 
-        // If an active entry exists for this endpoint, switch to it instead of connecting again.
         if let Some(idx) = self.entry_index_by_endpoint_addr(&encoded_addr, cx) {
             if let Some(entry) = self.entries.get(idx) {
                 let phase = entry.read(cx).workspace_state(cx).connect_phase.clone();
-                if matches!(
-                    phase,
-                    Some(ConnectPhase::Connected) | Some(ConnectPhase::Idle { .. })
-                ) {
-                    info!("Workspace for this project is already active; switching to it.");
-                    crate::platform_bridge::trigger_haptic(
-                        crate::platform_bridge::HapticFeedback::ImpactMedium,
-                    );
-                    self.switch_to(idx, cx);
-                    cx.emit(WorkspacesEvent::Connected { index: idx });
-                    return;
+                match phase {
+                    // Dead entry — evict and reconnect.
+                    Some(ConnectPhase::Disconnected)
+                    | Some(ConnectPhase::Failed(_))
+                    | Some(ConnectPhase::Reconnecting { .. }) => {
+                        info!("Evicting stale entry for endpoint before reconnecting.");
+                        let removed = self.entries.remove(idx);
+                        self.remove_subscription_for(&removed);
+                        removed.update(cx, |ws, cx| {
+                            ws.disconnect(cx);
+                        });
+                        if let Some(ai) = self.active_index {
+                            if idx < ai {
+                                self.active_index = Some(ai - 1);
+                            } else if idx == ai {
+                                self.active_index = None;
+                            }
+                        }
+                    }
+                    // Active or in-flight — switch to it.
+                    _ => {
+                        info!("Workspace for this endpoint already exists; switching to it.");
+                        crate::platform_bridge::trigger_haptic(
+                            crate::platform_bridge::HapticFeedback::ImpactLight,
+                        );
+                        self.switch_to(idx, cx);
+                        cx.emit(WorkspacesEvent::Connected { index: idx });
+                        return;
+                    }
                 }
             }
         }
@@ -190,23 +207,6 @@ impl Workspaces {
 
         let session_id = state.read(cx).session_id.clone();
         let endpoint_addr = state.read(cx).endpoint_addr.clone();
-
-        // Skip if already connected to this endpoint.
-        if let Some(idx) = self.entry_index_by_endpoint_addr(&endpoint_addr, cx) {
-            if let Some(entry) = self.entries.get(idx) {
-                let phase = entry.read(cx).workspace_state(cx).connect_phase.clone();
-                if matches!(
-                    phase,
-                    Some(ConnectPhase::Connected) | Some(ConnectPhase::Idle { .. })
-                ) {
-                    info!("Workspace for this project is already active; switching to it.");
-                    self.switch_to(idx, cx);
-                    cx.emit(WorkspacesEvent::Connected { index: idx });
-                    return;
-                }
-            }
-        }
-
         match zedra_rpc::pairing::decode_endpoint_addr(&endpoint_addr) {
             Ok(addr) => {
                 info!("Reconnecting to workspace: {}", addr.id.fmt_short());
@@ -249,30 +249,6 @@ impl Workspaces {
                 return;
             }
         };
-
-        // Disconnect any stale entry for the same endpoint (e.g. previous session killed on host).
-        if let Some(idx) = self
-            .entries
-            .iter()
-            .position(|e| e.read(cx).endpoint_addr(cx) == encoded_addr)
-        {
-            let stale = self.entries.remove(idx);
-            self.remove_subscription_for(&stale);
-            if let Some(ai) = self.active_index {
-                if idx < ai {
-                    self.active_index = Some(ai - 1);
-                } else if idx == ai {
-                    self.active_index = None;
-                }
-            }
-            stale.update(cx, |ws, cx| {
-                ws.disconnect(cx);
-            });
-            info!(
-                "Removed stale workspace entry for endpoint; reconnecting ({}) remaining",
-                self.entries.len()
-            );
-        }
 
         // Workspace state: reuse saved, match by endpoint_addr, or create fresh.
         let workspace_state = saved
