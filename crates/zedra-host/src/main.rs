@@ -693,7 +693,6 @@ async fn main() -> Result<()> {
                 workdir.clone(),
                 host_identity.clone(),
             ));
-            let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
             // 1. Bind iroh endpoint with configured relay URLs.
             let endpoint_relay_urls: Vec<String> = if relay_url.is_empty() {
@@ -847,7 +846,6 @@ async fn main() -> Result<()> {
                     token: token.clone(),
                     endpoint: endpoint.clone(),
                     relay_urls: endpoint_relay_urls.clone(),
-                    shutdown_tx: Some(shutdown_tx.clone()),
                 })
                 .await
                 {
@@ -902,18 +900,8 @@ async fn main() -> Result<()> {
                 });
             }
 
-            // 5. Run iroh accept loop until the endpoint closes or local stop requests shutdown.
-            tokio::select! {
-                result = iroh_listener::run_accept_loop(&endpoint, registry, state) => {
-                    result?;
-                }
-                changed = shutdown_rx.changed() => {
-                    if changed.is_ok() && *shutdown_rx.borrow() {
-                        tracing::info!("Local shutdown requested; closing iroh endpoint.");
-                        endpoint.close().await;
-                    }
-                }
-            }
+            // 5. Run iroh accept loop until the endpoint closes or the process exits.
+            iroh_listener::run_accept_loop(&endpoint, registry, state).await?;
         }
 
         Commands::Status { workdir } => {
@@ -1268,19 +1256,7 @@ async fn main() -> Result<()> {
                 }
             }
 
-            let mut stopped = false;
-            if let Some(info) = &lock_info {
-                if workspace_lock::is_process_alive(info.pid) {
-                    match request_daemon_shutdown(&workdir, info.pid, grace).await {
-                        Ok(true) => stopped = true,
-                        Ok(false) => {}
-                        Err(e) => tracing::warn!("Failed to request local daemon shutdown: {}", e),
-                    }
-                }
-            }
-            if !stopped {
-                workspace_lock::kill_and_unlock(&workdir, grace)?;
-            }
+            workspace_lock::kill_and_unlock(&workdir, grace)?;
             utils::eprintln_success("Stopped.");
         }
     }
@@ -1333,45 +1309,6 @@ fn should_proceed_with_update(input: &str) -> bool {
 
 fn daemon_log_path(workdir: &Path) -> Result<PathBuf> {
     Ok(identity::workspace_config_dir(workdir)?.join("daemon.log"))
-}
-
-async fn request_daemon_shutdown(workdir: &Path, pid: u32, grace_secs: u64) -> Result<bool> {
-    let config_dir = identity::workspace_config_dir(workdir)?;
-    let addr = std::fs::read_to_string(config_dir.join("api-addr")).unwrap_or_default();
-    let token = std::fs::read_to_string(config_dir.join("api-token")).unwrap_or_default();
-    let addr = addr.trim();
-    let token = token.trim();
-    if addr.is_empty() || token.is_empty() {
-        return Ok(false);
-    }
-
-    let url = format!("http://{addr}/api/shutdown");
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .build()?;
-    let resp = match client.post(url).bearer_auth(token).send().await {
-        Ok(resp) => resp,
-        Err(e) => {
-            tracing::warn!("Local shutdown API request failed: {}", e);
-            return Ok(false);
-        }
-    };
-    if !resp.status().is_success() {
-        tracing::warn!("Local shutdown API returned HTTP {}", resp.status());
-        return Ok(false);
-    }
-
-    let poll_interval = std::time::Duration::from_millis(100);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(grace_secs);
-    loop {
-        if !workspace_lock::is_process_alive(pid) {
-            return Ok(true);
-        }
-        if std::time::Instant::now() >= deadline {
-            return Ok(false);
-        }
-        tokio::time::sleep(poll_interval).await;
-    }
 }
 
 fn read_recent_log_lines(log_path: &Path, lines: usize) -> Result<String> {

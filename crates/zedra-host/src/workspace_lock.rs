@@ -14,7 +14,7 @@
 // Stop command (`kill_and_unlock`):
 //   - Reads the lock file for the given workdir.
 //   - On Unix, sends SIGTERM; polls up to the grace period; escalates to SIGKILL.
-//   - On Windows, terminates the process if the local shutdown API did not work.
+//   - On Windows, terminates the process because detached processes have no SIGTERM equivalent.
 //   - Removes the lock file.
 
 use anyhow::{Context, Result};
@@ -332,8 +332,7 @@ fn request_process_exit(info: &LockInfo) -> Result<()> {
 
 #[cfg(windows)]
 fn request_process_exit(info: &LockInfo) -> Result<()> {
-    // `zedra stop` tries the authenticated local shutdown API before this
-    // fallback. Windows has no Unix-style SIGTERM, so the fallback is terminate.
+    // Detached Windows hosts have no Unix-style SIGTERM equivalent.
     tracing::warn!(
         "Terminating PID {} (workdir: {}, started: {})",
         info.pid,
