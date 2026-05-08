@@ -8,6 +8,7 @@ target
 # Android
 .idea
 .gradle
+android/.kotlin/
 android/app/libs
 android/android/app/libs
 android/build
