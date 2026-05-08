@@ -5,15 +5,19 @@ buildscript {
     }
     dependencies {
         classpath 'com.android.tools.build:gradle:8.13.2'
+        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.10'
     }
 }
 
 apply plugin: 'com.android.application'
+apply plugin: 'org.jetbrains.kotlin.android'
 
 repositories {
     google()
     mavenCentral()
 }
+
+def useLocalReleaseSigning = project.findProperty('zedra.localReleaseSigning') == 'true'
 
 android {
     namespace='dev.zedra.app'
@@ -25,6 +29,7 @@ android {
         targetSdk 34
         versionCode 1
         versionName "0.1"
+        manifestPlaceholders = [appLabel: "@string/app_name"]
     }
 
     signingConfigs {
@@ -38,9 +43,15 @@ android {
 
     buildTypes {
         debug {
+            applicationIdSuffix ".debug"
+            manifestPlaceholders = [appLabel: "Zedra Dev"]
             signingConfig signingConfigs.debug
         }
         release {
+            manifestPlaceholders = [appLabel: "@string/app_name"]
+            if (useLocalReleaseSigning) {
+                signingConfig signingConfigs.debug
+            }
             minifyEnabled true
         }
     }
@@ -50,10 +61,24 @@ android {
         targetCompatibility JavaVersion.VERSION_1_8
     }
 
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
     sourceSets {
         main {
             manifest.srcFile 'app/src/main/AndroidManifest.xml'
             java.srcDirs = ['app/src/main/java']
+            kotlin.srcDirs = [
+                'app/src/main/kotlin',
+                // gpui_android framework — ships GpuiSurfaceView and
+                // GpuiRuntimeController as Kotlin sources.
+                '../vendor/zed/crates/gpui_android/android/src/main/kotlin',
+            ]
             resources.srcDirs = ['app/src/main/resources']
             res.srcDirs = ['app/src/main/res']
             jniLibs.srcDirs = ['app/libs']
@@ -144,7 +169,7 @@ android.applicationVariants.configureEach { variant ->
 task launchApp(type: Exec) {
     dependsOn 'installDebug'
     commandLine adbPath(), 'shell', 'am', 'start', '-n',
-            "${android.defaultConfig.applicationId}/.MainActivity",
+            "${android.defaultConfig.applicationId}.debug/dev.zedra.app.MainActivity",
             '-a', 'android.intent.action.MAIN',
             '-c', 'android.intent.category.LAUNCHER'
 }

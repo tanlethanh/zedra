@@ -1,0 +1,314 @@
+package dev.zedra.app
+
+import android.app.Activity
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.util.Log
+import android.view.HapticFeedbackConstants
+import android.widget.FrameLayout
+import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import dev.zed.gpui.GpuiRuntimeController
+import dev.zed.gpui.GpuiSurfaceView
+
+/**
+ * Thin host Activity. Owns deeplink handling and the static surface for
+ * Rust→Java callbacks (alerts, haptics, keyboard, native presentations).
+ * Everything else — surface lifecycle, touch / IME / fling forwarding,
+ * Choreographer-driven frame loop, app-active broadcasts — is owned by
+ * `dev.zed.gpui.GpuiRuntimeController` shipped from the framework.
+ */
+class MainActivity : AppCompatActivity() {
+    private lateinit var runtime: GpuiRuntimeController
+    private lateinit var rootView: FrameLayout
+    private lateinit var surfaceView: GpuiSurfaceView
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
+        installSplashScreen()
+        super.onCreate(savedInstanceState)
+
+        bootstrap(this, APP_VERSION_VALUE, APP_BUILD_NUMBER_VALUE)
+
+        runtime = GpuiRuntimeController(this)
+        runtime.initialize()
+
+        rootView = FrameLayout(this)
+        surfaceView = runtime.attach(rootView)
+        sSurfaceView = surfaceView
+        sActivity = this
+        NativePresentations.register(this, rootView)
+
+        setContentView(rootView)
+
+        // Builds the GPUI App and registers the finish-launching callback.
+        // Unlike iOS, the callback is fired by the framework on first surface
+        // attach (see GpuiSurfaceView.nativeSurfaceCreated) — Android's
+        // SurfaceView is async, and GPUI's first draw can only succeed once
+        // the GPU surface is bound.
+        zedraLaunchGpui()
+
+        handleDeeplinkIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleDeeplinkIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        runtime.onResume()
+        if (::surfaceView.isInitialized) {
+            surfaceView.requestFocus()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        runtime.onPause()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        runtime.onStop()
+    }
+
+    override fun onDestroy() {
+        NativePresentations.unregister()
+        sSurfaceView = null
+        sActivity = null
+        runtime.onDestroy()
+        super.onDestroy()
+    }
+
+    private fun handleDeeplinkIntent(intent: Intent?) {
+        if (intent == null || intent.action != Intent.ACTION_VIEW) return
+        val uri = intent.data ?: return
+        Log.d(TAG, "Deeplink received: $uri")
+        nativeDeeplinkReceived(uri.toString())
+    }
+
+    companion object {
+        private const val TAG = "MainActivity"
+
+        // Pre-compute strings exposed via JNI. Calling kotlin.text.StringsKt
+        // (`.trim()` etc.) from a native-thread JNI invocation can recursively
+        // trip class-init paths and surface as StackOverflowError. Resolving
+        // these at companion-init time keeps the JNI hot path a plain field
+        // read.
+        private val APP_VERSION_VALUE: String = (BuildConfig.VERSION_NAME ?: "").trim()
+        private val APP_BUILD_NUMBER_VALUE: String = BuildConfig.VERSION_CODE.toString()
+
+        init {
+            System.loadLibrary("zedra")
+        }
+
+        private var sSurfaceView: GpuiSurfaceView? = null
+        private var sActivity: Activity? = null
+
+        // ===== Native (downstream) =====
+        @JvmStatic external fun bootstrap(
+            activity: Activity,
+            appVersion: String,
+            appBuildNumber: String,
+        )
+
+        @JvmStatic external fun zedraLaunchGpui()
+
+        @JvmStatic external fun nativeDeeplinkReceived(url: String)
+
+        @JvmStatic external fun nativeAlertResult(callbackId: Int, buttonIndex: Int)
+
+        @JvmStatic external fun nativeAlertDismiss(callbackId: Int)
+
+        @JvmStatic external fun nativeSelectionResult(callbackId: Int, buttonIndex: Int)
+
+        @JvmStatic external fun nativeSelectionDismiss(callbackId: Int)
+
+        @JvmStatic external fun nativeTextInputResult(callbackId: Int, value: String)
+
+        @JvmStatic external fun nativeTextInputDismiss(callbackId: Int)
+
+        @JvmStatic external fun nativeFloatingButtonPressed(callbackId: Int)
+
+        @JvmStatic external fun nativeDictationPreviewDismiss(previewId: Int)
+
+        @JvmStatic external fun nativeNotificationAction(callbackId: Int)
+
+        @JvmStatic external fun nativeNotificationDismiss(callbackId: Int)
+
+        @JvmStatic external fun nativeSheetContentIsAtTop(): Boolean
+
+        // ===== Rust → Java callbacks =====
+
+        @JvmStatic
+        fun showKeyboard() {
+            sSurfaceView?.post { sSurfaceView?.requestKeyboard() }
+        }
+
+        @JvmStatic
+        fun hideKeyboard() {
+            sSurfaceView?.post { sSurfaceView?.dismissKeyboard() }
+        }
+
+        @JvmStatic
+        fun launchQrScanner() {
+            val activity = sActivity ?: return
+            activity.runOnUiThread {
+                activity.startActivity(Intent(activity, QRScannerActivity::class.java))
+            }
+        }
+
+        @JvmStatic
+        fun openUrl(url: String) {
+            val activity = sActivity ?: return
+            activity.runOnUiThread {
+                activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            }
+        }
+
+        @JvmStatic
+        fun showAlert(
+            callbackId: Int,
+            title: String?,
+            message: String?,
+            labels: Array<String>,
+            styles: IntArray,
+        ) {
+            NativePresentations.showAlert(callbackId, title, message, labels, styles)
+        }
+
+        @JvmStatic
+        fun showSelection(
+            callbackId: Int,
+            title: String?,
+            message: String?,
+            labels: Array<String>,
+            styles: IntArray,
+        ) {
+            NativePresentations.showSelection(callbackId, title, message, labels, styles)
+        }
+
+        @JvmStatic
+        fun showTextInput(
+            callbackId: Int,
+            title: String?,
+            placeholder: String?,
+            initialValue: String?,
+        ) {
+            NativePresentations.showTextInput(callbackId, title, placeholder, initialValue)
+        }
+
+        @JvmStatic
+        fun presentCustomSheet(
+            detents: IntArray,
+            initialDetent: Int,
+            showsGrabber: Boolean,
+            expandsOnScrollEdge: Boolean,
+            modalInPresentation: Boolean,
+            cornerRadius: Float,
+        ) {
+            NativePresentations.presentCustomSheet(
+                detents,
+                initialDetent,
+                showsGrabber,
+                expandsOnScrollEdge,
+                modalInPresentation,
+                cornerRadius,
+            )
+        }
+
+        @JvmStatic
+        fun updateNativeFloatingButton(
+            id: Int,
+            imageName: String,
+            accessibilityLabel: String,
+            x: Float,
+            y: Float,
+            width: Float,
+            height: Float,
+            iconSize: Float,
+            iconWeight: Int,
+        ) {
+            NativePresentations.updateNativeFloatingButton(
+                id,
+                imageName,
+                accessibilityLabel,
+                x,
+                y,
+                width,
+                height,
+                iconSize,
+                iconWeight,
+            )
+        }
+
+        @JvmStatic
+        fun hideNativeFloatingButton(id: Int) {
+            NativePresentations.hideNativeFloatingButton(id)
+        }
+
+        @JvmStatic
+        fun updateNativeDictationPreview(id: Int, text: String, bottomOffset: Float) {
+            NativePresentations.updateNativeDictationPreview(id, text, bottomOffset)
+        }
+
+        @JvmStatic
+        fun hideNativeDictationPreview(id: Int) {
+            NativePresentations.hideNativeDictationPreview(id)
+        }
+
+        @JvmStatic
+        fun showNativeNotification(
+            id: Int,
+            title: String,
+            message: String,
+            imageName: String,
+            kind: Int,
+            durationSecs: Float,
+            autoClose: Boolean,
+        ) {
+            NativePresentations.showNativeNotification(
+                id,
+                title,
+                message,
+                imageName,
+                kind,
+                durationSecs,
+                autoClose,
+            )
+        }
+
+        @JvmStatic
+        fun triggerHaptic(kind: Int) {
+            val view = sSurfaceView ?: return
+            view.post {
+                val constant =
+                    when (kind) {
+                        0, 3, 5 -> HapticFeedbackConstants.KEYBOARD_TAP
+                        1 -> HapticFeedbackConstants.VIRTUAL_KEY
+                        2, 4 -> HapticFeedbackConstants.LONG_PRESS
+                        6 ->
+                            if (Build.VERSION.SDK_INT >= 30) {
+                                HapticFeedbackConstants.CONFIRM
+                            } else {
+                                HapticFeedbackConstants.VIRTUAL_KEY
+                            }
+                        7 -> HapticFeedbackConstants.CONTEXT_CLICK
+                        8 ->
+                            if (Build.VERSION.SDK_INT >= 30) {
+                                HapticFeedbackConstants.REJECT
+                            } else {
+                                HapticFeedbackConstants.LONG_PRESS
+                            }
+                        else -> return@post
+                    }
+                view.performHapticFeedback(constant)
+            }
+        }
+    }
+}

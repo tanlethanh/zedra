@@ -10003,7 +10003,6 @@ dependencies = [
  "anyhow",
  "cbindgen 0.29.2",
  "cc",
- "crossbeam-channel",
  "futures",
  "gpui",
  "gpui_android",
