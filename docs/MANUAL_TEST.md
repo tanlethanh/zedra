@@ -33,7 +33,7 @@
 4. Run a Release build and open the Home screen
 5. Expected: the settings icon is not visible and the developer Settings screen is not reachable from Home
 
-## 0c. Developer Native Notification
+## 0c. Developer Native Notification (iOS)
 
 1. Run a Debug build and open Settings
 2. Tap `Native Notification` in the Developer section
@@ -48,6 +48,46 @@
 11. Expected: only that bubble dismisses, and the remaining bubbles move up smoothly
 12. Tap `Native Notification` repeatedly
 13. Expected: multiple notifications collect into the same bubble stack and all auto-close after their configured durations by default
+
+## 0c-Android. Native Presentations And Embedded Sheet
+
+1. Run a Debug Android build and open Settings
+2. Tap the developer alert and selection presentation actions
+3. Expected: Material dialogs appear, button callbacks fire once, and dismissing the selection reports a dismiss rather than choosing the last item
+4. Tap `Native Notification`
+5. Expected: Material notification banners appear near the top safe area, auto-close by default, and tapping the action banner triggers the callback notification
+6. Trigger the text input dialog from an existing call site
+7. Expected: the Material text field shows the initial value, `OK` returns the entered value, and `Cancel`/outside dismissal returns no value
+8. Open a terminal file link so the native custom sheet opens
+9. Expected: a Material bottom sheet appears with a grabber when requested and GPUI-rendered preview content inside the embedded sheet surface
+10. Scroll inside the sheet preview, then drag downward from the top of the preview
+11. Expected: inner content scrolls while not at top; when it is at top, the bottom sheet can take the downward drag for detent/dismiss handoff
+12. Trigger the scroll-to-bottom floating button
+13. Expected: the native floating button appears at the GPUI wrapper bounds and pressing it runs the Rust callback
+14. Trigger dictation preview events if the call site is available
+15. Expected: Android displays the preview overlay and dismiss callback, without attempting iOS-specific dictation stream interpretation
+
+## 0c-Android-Renderer. GPUI Surface Lifecycle
+
+1. Run a Debug Android build on a physical device
+2. Connect via QR and open a terminal
+3. Expected: after returning from the scanner, logcat shows `ZedraApp: window activated`, the pending ticket is processed, and connect succeeds
+4. Type, scroll, and fling terminal output for at least 30 seconds
+5. Expected: scrolling remains smooth and fling momentum does not continue after a drawer drag calls `prevent_default()`
+6. Open and close the workspace drawer while nested terminal/editor content is scrollable
+7. Expected: drawer drags do not scroll the inner content, and inner vertical scroll does not move the drawer once the drawer gesture is not claimed
+8. Background the app, wait 5 seconds, then foreground it
+9. Expected: the existing GPUI window resumes without recreating all renderer state, and no surface validation or device-lost crash appears in logcat
+10. Rotate the device or otherwise resize the surface
+11. Expected: the app redraws at full physical surface resolution with `scale_factor = density`, with no fixed 0.75 render scale
+
+## 0c-Android-AppIds. Debug And Release Application IDs
+
+1. Run `./scripts/run-android.sh --target arm64-v8a`
+2. Expected: Android installs and launches the debug app id `dev.zedra.app.debug` with the launcher label `Zedra Dev`
+3. Expected: startup logcat has no `getAppVersion` / `getAppBuildNumber` JavaException and no GPUI atlas panic during the first surface draw
+4. Run `./scripts/run-android.sh --release --target arm64-v8a`
+5. Expected: Android installs and launches the release app id `dev.zedra.app` with the normal app label, and it can coexist with the debug build
 
 ## 0d. Firebase GPUI Screen Views
 

@@ -1,15 +1,18 @@
 # GPUI Native Presentations
 
-Native presentation stays in UIKit.
+Native presentation stays in platform-native UI.
 
-- Rust asks through FFI.
-- Swift presents native UI.
+- Rust asks through `platform_bridge`.
+- Swift presents native UI on iOS.
+- Kotlin presents Material UI on Android.
 - GPUI does not own alert / action sheet / sheet gestures or animation.
 
 ## Current split
 
 - `platform_bridge` is the Rust entry point for native presentation requests.
 - `ios/Zedra/Presentations.swift` is the Swift presentation layer.
+- `android/app/src/main/kotlin/dev/zedra/app/NativePresentations.kt` is the
+  Android presentation layer.
 - `platform_bridge::show_custom_sheet(options, view)` takes the caller-owned GPUI view entity to host in the sheet.
 - `platform_bridge::show_native_notification(options)` presents a transient
   native in-app notification.
@@ -17,13 +20,13 @@ Native presentation stays in UIKit.
   presents the same notification and calls the Rust callback when the user taps
   the front notification bubble.
 - `native_floating_button(...)` is a GPUI element wrapper that owns position,
-  lifecycle, and the caller callback while Swift draws the native glass button
-  at the wrapper bounds.
-- UIKit owns:
+  lifecycle, and the caller callback while the native layer draws the platform
+  button at the wrapper bounds.
+- The native layer owns:
   - alert
   - selection / action sheet
-  - in-app notification bubble stack
-  - floating icon button chrome and glass effect
+  - in-app notification chrome
+  - floating icon button chrome
   - sheet detents
   - sheet gestures
   - sheet animation
@@ -77,7 +80,8 @@ Configuration:
   then falls back to an SF Symbol with the same name. Notification icons are
   rendered as template images and tinted with the same light/dark color as the
   notification title, so SVG assets should use `currentColor` and asset-catalog
-  template rendering.
+  template rendering. Android v1 maps known symbol names to Material text glyphs
+  and otherwise falls back to a neutral marker.
 - `system_image(...)`: alias for `image(...)` when the caller intends an SF
   Symbol.
 - `kind`: `Info`, `Success`, `Warning`, or `Error`. The kind controls the
@@ -87,7 +91,7 @@ Configuration:
 - `auto_close`: optional. Default is `true`. Set to `false` only when the
   notification should remain until the user taps or swipes it away.
 
-Stack behavior:
+iOS stack behavior:
 
 - Each call creates an independent notification item.
 - New items fade in quickly, enter from above with a near-zero scale, and keep
@@ -105,6 +109,14 @@ Stack behavior:
 - When a visible bubble dismisses, the remaining items close the gap smoothly.
 - Each item owns its own auto-close timer.
 
+Android v1 behavior:
+
+- Each call creates an independent Material banner near the top safe area.
+- Tapping the banner invokes the action callback when one exists, then dismisses
+  the banner.
+- Auto-close dismissal drops the pending callback without invoking it.
+- Android does not implement UIKit glass stack expansion gestures in v1.
+
 Callback behavior:
 
 - `show_native_notification(...)` has no action callback; tapping still
@@ -120,51 +132,59 @@ Call site rules:
 - Call from event handlers, subscriptions, or async tasks. Do not trigger a
   notification from `render()`.
 - Route all callers through `platform_bridge`; app UI code should not call
-  UIKit or Swift presentation APIs directly.
-- The current concrete renderer is iOS. Other platform bridges may treat this
-  as a no-op until they add their own native presentation.
+  UIKit, Swift, Kotlin, or Android presentation APIs directly.
+- The current concrete renderers are iOS and Android. Desktop/test bridges may
+  treat this as a no-op until they add their own native presentation.
 
 ## Custom sheet rule
 
 Custom sheet is a native shell, not UIKit content.
 
 - Swift creates the sheet container and canvas view.
+- Kotlin creates the Android `BottomSheetDialog` container and sheet surface.
 - GPUI renders into the canvas view.
-- The sheet body should not be mocked with UIKit labels/buttons.
+- The sheet body should not be mocked with UIKit or Material labels/buttons.
 
 ## Embedded GPUI view
 
-To render inside a native sheet, GPUI needs an embeddable iOS surface.
+To render inside a native sheet, GPUI needs an embeddable platform surface.
 
-- root mode: GPUI owns a `UIWindow`
-- embedded mode: GPUI attaches `GPUIMetalView` into a provided parent `UIView`
+- iOS root mode: GPUI owns a `UIWindow`
+- iOS embedded mode: GPUI attaches `GPUIMetalView` into a provided parent `UIView`
+- Android root mode: GPUI renders into the root `GpuiSurfaceView`
+- Android embedded mode: GPUI renders into a sheet `SheetHostView`
 
 Required pieces:
 
-- FFI to pass a parent `UIView`
-- `gpui_ios` path to create an embedded window/view
+- FFI/JNI to pass a parent native view or `Surface`
+- `gpui_ios` / `gpui_android` path to create an embedded window/view
 - resize + frame driving for the embedded surface
 - attach / detach when the native container is dismissed or reopened
 
 ## Sheet scrolling contract
 
-Sheet-hosted GPUI content does not receive UIKit `touchesMoved` reliably once the
-native sheet starts competing for the same drag gesture.
+Sheet-hosted GPUI content can lose direct drag ownership once the native sheet
+starts competing for the same gesture.
 
 For custom sheet content that needs inner scrolling:
 
 - Swift owns the outer gesture source through the custom sheet content pan recognizer
 - Swift forwards two-dimensional pan deltas into the embedded GPUI window as
   synthetic `ScrollWheel` input
+- Android forwards touch and fling input directly to the embedded GPUI sheet
+  window from `SheetHostView`.
 - GPUI content reports whether it is currently at the top edge for vertical
   sheet handoff
-- Swift rejects only downward vertical drags when content is already at top,
-  allowing the native sheet gesture to take over for dismiss / detent motion
+- Native code rejects only downward vertical drags when content is already at
+  top, allowing the native sheet gesture to take over for dismiss / detent
+  motion
 
 Current minimal bridge:
 
 - `gpui_ios_inject_scroll(...)` forwards native deltas into the embedded iOS GPUI window
 - `zedra_ios_sheet_content_is_at_top()` exposes the active sheet content boundary
+- Android calls `nativeSheetContentIsAtTop()` from `SheetHostView` for the same
+  boundary check.
 
 Current content participation:
 
@@ -192,8 +212,9 @@ types need it.
 The custom sheet should feel instant.
 
 - do not create a fresh GPUI sheet window on every open
-- keep one embedded GPUI sheet window alive
-- detach and reattach its native `GPUIMetalView` between sheet presentations
+- keep one embedded GPUI sheet window alive per platform runtime
+- detach and reattach its native `GPUIMetalView` / Android `SurfaceView`
+  between sheet presentations
 - force the first frame immediately after attach, then continue normal frame driving
 
 Reusing only the renderer context is not enough. Reuse the embedded GPUI window/view too.
