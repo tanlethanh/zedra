@@ -1,7 +1,9 @@
 // workspace_lock.rs — PID lock file to prevent duplicate zedra-host instances
 // on the same workspace directory.
 //
-// Lock file: <platform config>/zedra/workspaces/<hash>/daemon.lock
+// Lock file:
+//   Unix:    $HOME/.config/zedra/workspaces/<DefaultHasher(workdir)>/daemon.lock
+//   Windows: %APPDATA%\zedra\workspaces\<stable workspace hash>\daemon.lock
 // Contains:  JSON with PID, workdir path, hostname, and start timestamp.
 //
 // Acquire semantics:
@@ -239,7 +241,7 @@ pub fn kill_and_unlock(workdir: &Path, grace_secs: u64) -> Result<()> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Path: `<platform config>/zedra/workspaces/<hash>/daemon.lock`
+/// Path of the platform-specific workspace lock file.
 fn lock_file_path(workdir: &Path) -> Result<PathBuf> {
     let path = lock_config_dir(workdir)?.join("daemon.lock");
     if let Some(parent) = path.parent() {
@@ -253,6 +255,7 @@ fn lock_config_dir(workdir: &Path) -> Result<PathBuf> {
     identity::workspace_config_dir(workdir)
 }
 
+/// Unix lock path hashes the workdir with `DefaultHasher`.
 #[cfg(not(windows))]
 fn lock_config_dir(workdir: &Path) -> Result<PathBuf> {
     let home = std::env::var_os("HOME")

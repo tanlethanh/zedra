@@ -104,9 +104,8 @@ pub fn workspace_config_dir(workdir: &Path) -> Result<PathBuf> {
 
 /// Returns Zedra's host config root.
 ///
-/// Unix keeps the existing `~/.config/zedra` path for compatibility. Windows
-/// uses the roaming AppData config directory so lock, log, identity, and session
-/// files land in the native per-user location.
+/// Unix: `$HOME/.config/zedra`
+/// Windows: `%APPDATA%\zedra` via `directories::BaseDirs::config_dir()`
 pub fn zedra_config_dir() -> Result<PathBuf> {
     #[cfg(windows)]
     {
