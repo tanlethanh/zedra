@@ -3,7 +3,7 @@
 //
 // Lock file:
 //   Unix:    $HOME/.config/zedra/workspaces/<DefaultHasher(workdir)>/daemon.lock
-//   Windows: %APPDATA%\zedra\workspaces\<stable workspace hash>\daemon.lock
+//   Windows: %APPDATA%\zedra\workspaces\<DefaultHasher(workdir)>\daemon.lock
 // Contains:  JSON with PID, workdir path, hostname, and start timestamp.
 //
 // Acquire semantics:
@@ -250,27 +250,13 @@ fn lock_file_path(workdir: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
-#[cfg(windows)]
 fn lock_config_dir(workdir: &Path) -> Result<PathBuf> {
-    identity::workspace_config_dir(workdir)
-}
-
-/// Unix lock path hashes the workdir with `DefaultHasher`.
-#[cfg(not(windows))]
-fn lock_config_dir(workdir: &Path) -> Result<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .or_else(|| directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf()))
-        .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-    Ok(home
-        .join(".config")
-        .join("zedra")
+    Ok(identity::zedra_config_dir()?
         .join("workspaces")
-        .join(path_hash(workdir)))
+        .join(lock_path_hash(workdir)))
 }
 
-#[cfg(not(windows))]
-fn path_hash(workdir: &Path) -> String {
+fn lock_path_hash(workdir: &Path) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     workdir.to_string_lossy().hash(&mut hasher);

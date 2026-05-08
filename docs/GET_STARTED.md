@@ -90,7 +90,7 @@ cargo build -p zedra-host
 .\target\debug\zedra.exe stop --workdir C:\path\to\project
 ```
 
-Runtime files are stored under `%APPDATA%\zedra\workspaces\<hash>\`, including `daemon.lock`, `daemon.log`, `sessions.json`, `host-info.json`, and API discovery files. Terminal sessions use `%ComSpec%` (`cmd.exe`) by default; install Git, language tools, and agent CLIs on `PATH` before starting the daemon.
+Runtime files are stored under `%APPDATA%\zedra\workspaces\`. `daemon.lock` uses the lock hash for the workdir; `daemon.log`, `sessions.json`, `host-info.json`, and API discovery files use the stable workspace hash. Terminal sessions use `%ComSpec%` (`cmd.exe`) by default; install Git, language tools, and agent CLIs on `PATH` before starting the daemon.
 
 ## Pre-Commit Checks
 

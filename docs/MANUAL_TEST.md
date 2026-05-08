@@ -132,7 +132,7 @@
 
 1. On an x86_64 Windows machine with the MSVC Rust toolchain and Git for Windows installed, build the host: `cargo build -p zedra-host`
 2. Start the daemon from PowerShell: `.\target\debug\zedra.exe start --workdir C:\path\to\repo --detach`
-3. Expected: startup succeeds, Windows may show a firewall prompt, and `daemon.log` plus `daemon.lock` are written under `%APPDATA%\zedra\workspaces\<hash>\`
+3. Expected: startup succeeds, Windows may show a firewall prompt, and `daemon.lock` plus `daemon.log` are written under `%APPDATA%\zedra\workspaces\` using their respective workspace hashes
 4. Run `.\target\debug\zedra.exe status --workdir C:\path\to\repo`
 5. Expected: status shows the running daemon, endpoint, workspace path, sessions, and terminal count without Unix path assumptions
 6. Run `.\target\debug\zedra.exe qr --workdir C:\path\to\repo`, scan from the mobile app, then disconnect and reconnect the app without scanning again
