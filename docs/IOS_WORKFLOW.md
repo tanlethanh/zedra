@@ -78,6 +78,10 @@ Zedra app target
 falls back to `ios/Zedra.xcodeproj` otherwise. Direct `xcodebuild` commands for
 Firebase/CocoaPods builds should use the workspace.
 
+Debug builds do not require `ios/Zedra/GoogleService-Info.plist`; the Firebase
+bridge disables itself when the bundled config is absent. Release builds require
+the plist and the Xcode build fails with an explicit error if it is missing.
+
 **Note**: `Cargo.toml` declares `crate-type = ["cdylib", "staticlib"]`. The
 cdylib is for Android. On iOS, `build-ios.sh` builds the `zedra` package for
 the selected target, fails on cargo errors, and checks for the `.a` before
@@ -206,5 +210,6 @@ Automatic in `ios/project.yml`. Pass `-allowProvisioningUpdates` to xcodebuild.
 - **Stale xcframework**: Xcode builds refresh the matching Rust slice through the `ZedraRustFFI` dependency target. If you skip that target or use `--no-build`, run `build-ios.sh` after Rust changes.
 - **New extern "C" call**: must add weak stub in `crates/zedra/src/ios_stub.c` or staticlib will be stale.
 - **xcodegen required**: after editing `project.yml`, run `cd ios && xcodegen generate`. `run-ios.sh` does this automatically only when `ios/project.yml` is newer than the generated project; set `ZEDRA_FORCE_XCODEGEN=1` to force regeneration.
+- **Firebase config**: Debug builds work without `ios/Zedra/GoogleService-Info.plist`; Release builds require it.
 - **Metal device**: iOS uses `system_default()` directly. macOS `isRemovable()`/`isLowPower()` selectors crash on iOS.
 - **`with_input_handler` log spam**: harmless — UIKit queries text input before IosWindow is registered.

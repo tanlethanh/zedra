@@ -32,7 +32,6 @@
 		980622780D44495907582D63 /* Network.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 47A99A911DFEB67B22FF841B /* Network.framework */; };
 		A69ED82EFBA5E7757C5DBF77 /* CoreFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 63C6681ECC3A80F94D9F1A0A /* CoreFoundation.framework */; };
 		A7EEE2EFA03F51452EA9FEFE /* ZedraFFI.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B9A9EA625E2ED4114945F081 /* ZedraFFI.xcframework */; };
-		AC71CFF172BCC3FE83A29DF5 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = CB837291612FBC7C669A4883 /* GoogleService-Info.plist */; };
 		BE058F99FCA4058A88807631 /* CoreText.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 33FBCE1A928EAF32E817D1DE /* CoreText.framework */; };
 		C4615C398F2572ED57528BB1 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E0368E716FAFC7DC17C3B7B1 /* UIKit.framework */; };
 		C6719995D3E0E4499805BFA7 /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 94CC8ED9DAA6944067FF57DB /* main.m */; };
@@ -73,7 +72,6 @@
 		B9A9EA625E2ED4114945F081 /* ZedraFFI.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = ZedraFFI.xcframework; sourceTree = "<group>"; };
 		C1CC23275A2211DE5D4991B1 /* GPUIRuntimeController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPUIRuntimeController.swift; sourceTree = "<group>"; };
 		C27468FDB02BEAEEF9A0835F /* Pods-Zedra.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Zedra.debug.xcconfig"; path = "Target Support Files/Pods-Zedra/Pods-Zedra.debug.xcconfig"; sourceTree = "<group>"; };
-		CB837291612FBC7C669A4883 /* GoogleService-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
 		CBA9E86324F7D522B45D5BF8 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		E0368E716FAFC7DC17C3B7B1 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		E2710A21022C473FA88BF88A /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
@@ -156,7 +154,6 @@
 			isa = PBXGroup;
 			children = (
 				CBA9E86324F7D522B45D5BF8 /* Assets.xcassets */,
-				CB837291612FBC7C669A4883 /* GoogleService-Info.plist */,
 				C1CC23275A2211DE5D4991B1 /* GPUIRuntimeController.swift */,
 				F48626960A7B8482AA6C9676 /* Info.plist */,
 				69F922850E131108EA0DCDA2 /* KeyboardSupporter.swift */,
@@ -180,6 +177,7 @@
 				909545E704A1285F03F00F56 /* Sources */,
 				3D0993EE512488A75299992B /* Resources */,
 				B904AB45BFDAA98506246086 /* Frameworks */,
+				8CA192F395F9B0CD6745F5AB /* Firebase Config */,
 				9B92177DC22DAAB553CD16E4 /* Firebase Crashlytics dSYM Upload */,
 				8F7199AD59B2972E2A956EC9 /* [CP] Copy Pods Resources */,
 			);
@@ -234,7 +232,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				8D2C90EFA428CCCDE0B092E7 /* Assets.xcassets in Resources */,
-				AC71CFF172BCC3FE83A29DF5 /* GoogleService-Info.plist in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -279,8 +276,28 @@
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-Zedra/Pods-Zedra-resources.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
+		8CA192F395F9B0CD6745F5AB /* Firebase Config */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Firebase Config";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\n\nGOOGLE_SERVICE_PLIST=\"${SRCROOT}/Zedra/GoogleService-Info.plist\"\nAPP_BUNDLE=\"${BUILT_PRODUCTS_DIR}/${WRAPPER_NAME:-${PRODUCT_NAME}.app}\"\nDESTINATION=\"${APP_BUNDLE}/GoogleService-Info.plist\"\n\nif [ -f \"$GOOGLE_SERVICE_PLIST\" ]; then\n  mkdir -p \"$APP_BUNDLE\"\n  cp \"$GOOGLE_SERVICE_PLIST\" \"$DESTINATION\"\n  exit 0\nfi\n\ncase \"${CONFIGURATION:-}\" in\n  Release*)\n    echo \"error: Missing $GOOGLE_SERVICE_PLIST. Release builds require Firebase configuration.\"\n    exit 1\n    ;;\n  *)\n    echo \"warning: Missing $GOOGLE_SERVICE_PLIST. Firebase is disabled for this debug build.\"\n    ;;\nesac\n";
+		};
 		9B92177DC22DAAB553CD16E4 /* Firebase Crashlytics dSYM Upload */ = {
 			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);
@@ -297,7 +314,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "${PODS_ROOT}/FirebaseCrashlytics/run";
+			shellScript = "set -eu\n\nGOOGLE_SERVICE_PLIST=\"${SRCROOT}/Zedra/GoogleService-Info.plist\"\n\nif [ ! -f \"$GOOGLE_SERVICE_PLIST\" ]; then\n  case \"${CONFIGURATION:-}\" in\n    Release*)\n      echo \"error: Missing $GOOGLE_SERVICE_PLIST. Release builds require Firebase configuration.\"\n      exit 1\n      ;;\n    *)\n      echo \"warning: Skipping Firebase Crashlytics dSYM upload because $GOOGLE_SERVICE_PLIST is missing.\"\n      exit 0\n      ;;\n  esac\nfi\n\n\"${PODS_ROOT}/FirebaseCrashlytics/run\"\n";
 		};
 		FF282E57A73EF1F4E2A2C291 /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
