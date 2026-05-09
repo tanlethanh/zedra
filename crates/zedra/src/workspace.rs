@@ -950,7 +950,7 @@ impl Workspace {
         );
     }
 
-    fn restart_connection(&mut self, cx: &mut Context<Self>) {
+    pub fn restart_connection(&mut self, cx: &mut Context<Self>) {
         let Some(mut request) = self.connection_request.clone() else {
             warn!("restart connection requested without a connection request");
             return;
