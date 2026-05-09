@@ -278,6 +278,7 @@
 		};
 		8CA192F395F9B0CD6745F5AB /* Firebase Config */ = {
 			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);
@@ -296,6 +297,7 @@
 		};
 		9B92177DC22DAAB553CD16E4 /* Firebase Crashlytics dSYM Upload */ = {
 			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);
@@ -312,7 +314,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "${PODS_ROOT}/FirebaseCrashlytics/run";
+			shellScript = "set -eu\n\nGOOGLE_SERVICE_PLIST=\"${SRCROOT}/Zedra/GoogleService-Info.plist\"\n\nif [ ! -f \"$GOOGLE_SERVICE_PLIST\" ]; then\n  case \"${CONFIGURATION:-}\" in\n    Release*)\n      echo \"error: Missing $GOOGLE_SERVICE_PLIST. Release builds require Firebase configuration.\"\n      exit 1\n      ;;\n    *)\n      echo \"warning: Skipping Firebase Crashlytics dSYM upload because $GOOGLE_SERVICE_PLIST is missing.\"\n      exit 0\n      ;;\n  esac\nfi\n\n\"${PODS_ROOT}/FirebaseCrashlytics/run\"\n";
 		};
 		FF282E57A73EF1F4E2A2C291 /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
