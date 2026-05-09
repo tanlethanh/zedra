@@ -281,10 +281,18 @@ if [ "$NO_BUILD" = false ]; then
     echo "==> Android ABI: $TARGET_ABI"
 
     echo "==> Building Rust for Android..."
-    ./scripts/build-android.sh "${RUST_FLAGS[@]}" "--target=$TARGET_ABI"
+    if [ "${#RUST_FLAGS[@]}" -gt 0 ]; then
+        ./scripts/build-android.sh "${RUST_FLAGS[@]}" "--target=$TARGET_ABI"
+    else
+        ./scripts/build-android.sh "--target=$TARGET_ABI"
+    fi
 
     echo "==> Building Android app..."
-    (cd android && ./gradlew "$GRADLE_TASK" "${GRADLE_FLAGS[@]}" -x "$RUST_TASK")
+    if [ "${#GRADLE_FLAGS[@]}" -gt 0 ]; then
+        (cd android && ./gradlew "$GRADLE_TASK" "${GRADLE_FLAGS[@]}" -x "$RUST_TASK")
+    else
+        (cd android && ./gradlew "$GRADLE_TASK" -x "$RUST_TASK")
+    fi
 
     APK_PATH="$(find_apk)"
     if [ -z "$APK_PATH" ]; then
