@@ -1313,6 +1313,7 @@ private enum PresentationCoordinator {
             sheet.presentationController?.delegate = delegate
             objc_setAssociatedObject(sheet, dismissAssociationKey, delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
 
+            let hasCancelAction = buttonStyles.prefix(buttonLabels.count).contains(.cancel)
             for index in 0..<buttonLabels.count {
                 let style = buttonStyles[safe: index] ?? .default
                 let action = UIAlertAction(title: buttonLabels[index], style: style.uiKitStyle) { _ in
@@ -1326,11 +1327,13 @@ private enum PresentationCoordinator {
                 sheet.addAction(action)
             }
 
-            // Required by HIG and UIKit: enables backdrop dismiss on iPhone.
-            sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
-                delegate.handled = true
-                zedra_ios_selection_dismiss(callbackID)
-            })
+            if !hasCancelAction {
+                // UIKit allows one cancel action; add a dismiss affordance only when callers omit it.
+                sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
+                    delegate.handled = true
+                    zedra_ios_selection_dismiss(callbackID)
+                })
+            }
 
             presenter.present(sheet, animated: true)
         }

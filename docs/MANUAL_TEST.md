@@ -59,6 +59,16 @@
 6. Expected: manual `screen_view` events include `screen_name` and `screen_class` for `Home`, `Settings`, `Quick Actions`, `Workspace Connecting`, `Workspace Editor`, `Workspace Markdown`, `Workspace Git Diff`, `Workspace Terminal`, each drawer tab, `Custom Sheet Editor`, and `Custom Sheet Markdown`
 7. Expected: native automatic rows such as `UIViewController`, `CustomSheetViewController`, `UIAlertController`, and `ZedraQRScannerVC` are still present because native Firebase screen reporting remains enabled
 
+## 0e. Developer Native Selection
+
+1. Run a Debug iOS build and open Settings
+2. Tap `Native Selection` in the Developer section
+3. Expected: a native action sheet opens without crashing and shows `First Action`, `Second Action`, `Destructive Action`, and `Cancel`
+4. Tap `Cancel`
+5. Expected: the action sheet dismisses without running another action
+6. Open `Native Selection` again, then tap outside the sheet
+7. Expected: the sheet dismisses without crashing
+
 ## 1. Normal QR Scan → Connect
 
 1. Start host daemon: `zedra start --workdir .`
