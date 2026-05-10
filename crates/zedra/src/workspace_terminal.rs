@@ -277,14 +277,13 @@ impl WorkspaceTerminal {
                         vec![NativeEditMenuItem::new("Paste").image("doc.on.clipboard")],
                         move |index, cx| match index {
                             0 => {
-                                let Some(text) =
+                                if let Some(text) =
                                     cx.read_from_clipboard().and_then(|item| item.text())
-                                else {
-                                    return;
-                                };
-                                let _ = terminal_view.update(cx, |terminal_view, cx| {
-                                    terminal_view.paste_text_from_native_menu(&text, cx);
-                                });
+                                {
+                                    let _ = terminal_view.update(cx, |terminal_view, cx| {
+                                        terminal_view.paste_text_from_native_menu(&text, cx);
+                                    });
+                                }
                             }
                             _ => {}
                         },

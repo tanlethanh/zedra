@@ -12,7 +12,7 @@ use tracing::*;
 use zedra_osc::OscEvent;
 
 use crate::element::TerminalElement;
-use crate::selection::{PasteFromClipboard, TerminalSelectionDocument};
+use crate::selection::TerminalSelectionDocument;
 use crate::terminal::{Terminal, TerminalContent, TerminalEvent};
 
 const FALLBACK_CELL_WIDTH: f32 = 9.0;
@@ -486,12 +486,17 @@ impl TerminalView {
 
     fn handle_terminal_press(
         &mut self,
-        position: Point<Pixels>,
+        event: &PressEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let position = event
+            .up
+            .as_ref()
+            .map_or(event.down.position, |up| up.position);
+
         if self.terminal.update(cx, |terminal, cx| {
-            let cleared = terminal.clear_output_selection_range();
+            let cleared = terminal.clear_selection_range();
             if cleared {
                 cx.notify();
             }
@@ -499,13 +504,9 @@ impl TerminalView {
         }) {
             // A selected terminal range makes the next tap a dismissal gesture only;
             // keyboard/focus state is owned by the normal no-selection tap path.
-            window.clear_read_only_selection();
             window.prevent_default();
             return;
         }
-
-        let is_focused = self.focus_handle.is_focused(window);
-        let keyboard_visible = window.is_soft_keyboard_visible();
 
         let hyperlink = self.terminal.read(cx).hyperlink_at(
             position,
@@ -517,15 +518,19 @@ impl TerminalView {
             return;
         }
 
+        let is_focused = self.focus_handle.is_focused(window);
+        let keyboard_visible = window.is_soft_keyboard_visible();
+
         window.prevent_default();
 
         if is_focused && keyboard_visible {
-            // Must explicitly hide the keyboard; window.blur only changes GPUI focus.
+            // Must explicitly hide the keyboard, window.blur only blurs the focus, not the keyboard.
             window.hide_soft_keyboard();
             window.blur();
             cx.notify();
         } else if is_focused {
             // Keyboard might not be visible when already focused.
+            // It does nothing if the keyboard is already visible.
             window.show_soft_keyboard();
             cx.notify();
         } else if !is_focused {
@@ -537,32 +542,26 @@ impl TerminalView {
 
     fn handle_terminal_long_press(
         &mut self,
-        position: Point<Pixels>,
+        event: &PressEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let position = event.down.position;
         window.prevent_default();
 
-        let Some((selection_document, on_text)) = self.selection_document_at_point(position, cx)
-        else {
-            return;
-        };
-
-        let Some(index) = on_text else {
-            if cx
-                .read_from_clipboard()
-                .and_then(|item| item.text())
-                .is_some()
-            {
+        match self.selection_document_at_point(position, cx) {
+            Some((selection_document, Some(index))) => {
+                let range = selection_document.word_range_at(index);
+                self.terminal.update(cx, |terminal, cx| {
+                    terminal.set_selection_range(range);
+                    cx.notify();
+                });
+            }
+            Some((_, None)) => {
                 cx.emit(TerminalEvent::NativePasteMenuRequested { position });
             }
-            return;
-        };
-        let range = selection_document.word_range_at(index);
-        self.terminal.update(cx, |terminal, cx| {
-            terminal.set_output_selection_range(range);
-            cx.notify();
-        });
+            None => {}
+        }
     }
 
     fn selection_document_at_point(
@@ -591,44 +590,11 @@ impl TerminalView {
         Some((selection_document, on_text))
     }
 
-    fn paste_from_clipboard(
-        &mut self,
-        _: &PasteFromClipboard,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
-            return;
-        };
-
-        window.clear_read_only_selection();
-        self.terminal.update(cx, |terminal, _| {
-            terminal.clear_output_selection_range();
-            terminal.paste_text(&text);
-        });
-        cx.notify();
-    }
-
     pub fn paste_text_from_native_menu(&mut self, text: &str, cx: &mut Context<Self>) {
         self.terminal.update(cx, |terminal, _| {
-            terminal.clear_output_selection_range();
+            terminal.clear_selection_range();
             terminal.paste_text(text);
         });
-        cx.notify();
-    }
-
-    pub fn request_keyboard_from_native_menu(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.terminal.update(cx, |terminal, cx| {
-            if terminal.clear_output_selection_range() {
-                cx.notify();
-            }
-        });
-        self.focus_handle.focus(window, cx);
-        window.show_soft_keyboard();
         cx.notify();
     }
 }
@@ -660,16 +626,11 @@ impl Render for TerminalView {
             .bg(rgb(0x0e0c0c))
             .track_focus(&focus_handle)
             .manual_focus()
-            .on_action(cx.listener(Self::paste_from_clipboard))
             .on_press(cx.listener(|this, event: &PressEvent, window, cx| {
-                let position = event
-                    .up
-                    .as_ref()
-                    .map_or(event.down.position, |up| up.position);
-                this.handle_terminal_press(position, window, cx);
+                this.handle_terminal_press(event, window, cx);
             }))
             .on_long_press(cx.listener(|this, event: &PressEvent, window, cx| {
-                this.handle_terminal_long_press(event.down.position, window, cx);
+                this.handle_terminal_long_press(event, window, cx);
             }))
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
                 let previous_display_offset = this.display_offset(cx);
@@ -1185,7 +1146,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_tap_dismisses_output_selection_without_keyboard_toggle() {
+    fn terminal_tap_dismisses_selection_without_keyboard_toggle() {
         let mut cx = TestAppContext::single();
         let window = open_terminal_window(&mut cx);
         cx.run_until_parked();
@@ -1197,7 +1158,7 @@ mod tests {
                 assert!(terminal_view.focus_handle.is_focused(window));
                 assert!(window.is_soft_keyboard_visible());
                 terminal_view.terminal.update(cx, |terminal, _| {
-                    terminal.set_output_selection_range(1..3);
+                    terminal.set_selection_range(1..3);
                 });
             })
             .unwrap();
@@ -1209,10 +1170,7 @@ mod tests {
             .update(&mut cx, |terminal_view, window, cx| {
                 assert!(terminal_view.focus_handle.is_focused(window));
                 assert!(window.is_soft_keyboard_visible());
-                assert_eq!(
-                    terminal_view.terminal.read(cx).output_selection_range(),
-                    None
-                );
+                assert_eq!(terminal_view.terminal.read(cx).selection_range(), None);
             })
             .unwrap();
         cx.quit();
@@ -1241,7 +1199,7 @@ mod tests {
                 assert!(!terminal_view.focus_handle.is_focused(window));
                 assert!(!window.is_soft_keyboard_visible());
                 assert_eq!(
-                    terminal_view.terminal.read(cx).output_selection_range(),
+                    terminal_view.terminal.read(cx).selection_range(),
                     Some(0..5)
                 );
             })
@@ -1272,10 +1230,7 @@ mod tests {
             .update(&mut cx, |terminal_view, window, cx| {
                 assert!(!terminal_view.focus_handle.is_focused(window));
                 assert!(!window.is_soft_keyboard_visible());
-                assert_eq!(
-                    terminal_view.terminal.read(cx).output_selection_range(),
-                    None
-                );
+                assert_eq!(terminal_view.terminal.read(cx).selection_range(), None);
             })
             .unwrap();
         cx.quit();

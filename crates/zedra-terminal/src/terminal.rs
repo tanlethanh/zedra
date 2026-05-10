@@ -268,7 +268,7 @@ pub struct Terminal {
     alacritty_event_rx: std_mpsc::Receiver<AlacTermEvent>,
     input_tx: Option<mpsc::Sender<Vec<u8>>>,
     output_task: Option<Task<()>>,
-    output_selection_range: Option<Range<usize>>,
+    selection_range: Option<Range<usize>>,
 }
 
 impl Terminal {
@@ -302,7 +302,7 @@ impl Terminal {
             alacritty_event_rx,
             input_tx: None,
             output_task: None,
-            output_selection_range: None,
+            selection_range: None,
         }
     }
 
@@ -592,20 +592,20 @@ impl Terminal {
         }
     }
 
-    pub fn output_selection_range(&self) -> Option<Range<usize>> {
-        self.output_selection_range.clone()
+    pub fn selection_range(&self) -> Option<Range<usize>> {
+        self.selection_range.clone()
     }
 
-    pub fn set_output_selection_range(&mut self, range: Range<usize>) {
-        self.output_selection_range = Some(range);
+    pub fn set_selection_range(&mut self, range: Range<usize>) {
+        self.selection_range = Some(range);
     }
 
-    pub fn clear_output_selection_range(&mut self) -> bool {
-        self.output_selection_range.take().is_some()
+    pub fn clear_selection_range(&mut self) -> bool {
+        self.selection_range.take().is_some()
     }
 
     pub fn selection_active(&self) -> bool {
-        self.output_selection_range.is_some()
+        self.selection_range.is_some()
     }
 
     /// Scroll the terminal by a number of lines (positive = up)

@@ -376,32 +376,32 @@ impl TerminalInputHandler {
         self.selection_document.as_ref()
     }
 
-    fn output_selection_range(&mut self, cx: &mut App) -> Option<Range<usize>> {
-        let range = self.raw_output_selection_range(cx)?;
+    fn selection_range(&mut self, cx: &mut App) -> Option<Range<usize>> {
+        let range = self.raw_selection_range(cx)?;
         let document = self.selection_document(cx)?;
         Some(document.clamp_range(range))
     }
 
-    fn raw_output_selection_range(&self, cx: &mut App) -> Option<Range<usize>> {
+    fn raw_selection_range(&self, cx: &mut App) -> Option<Range<usize>> {
         self.entity
-            .read_with(cx, |term, _| term.output_selection_range())
+            .read_with(cx, |term, _| term.selection_range())
             .ok()
             .flatten()
     }
 
     fn selection_active(&self, cx: &mut App) -> bool {
-        self.raw_output_selection_range(cx).is_some()
+        self.raw_selection_range(cx).is_some()
     }
 
-    fn using_output_selection_document(&self, cx: &mut App) -> bool {
+    fn using_selection_document(&self, cx: &mut App) -> bool {
         self.selection_candidate.is_some() || self.selection_active(cx)
     }
 
-    fn has_output_selection_state(&self, cx: &mut App) -> bool {
+    fn has_selection_state(&self, cx: &mut App) -> bool {
         self.selection_candidate.is_some() || self.selection_active(cx)
     }
 
-    fn resolve_output_selection_range(
+    fn resolve_selection_range(
         &mut self,
         requested_range: Range<usize>,
         cx: &mut App,
@@ -424,8 +424,8 @@ impl TerminalInputHandler {
         (clamped_range, resolved_range)
     }
 
-    fn clear_output_selection_for_text_input(&mut self, cx: &mut App) -> bool {
-        if !self.has_output_selection_state(cx) {
+    fn clear_selection_for_text_input(&mut self, cx: &mut App) -> bool {
+        if !self.has_selection_state(cx) {
             return false;
         }
 
@@ -433,7 +433,7 @@ impl TerminalInputHandler {
         let entity = self.entity.clone();
         entity
             .update(cx, |term, cx| {
-                let cleared = term.clear_output_selection_range();
+                let cleared = term.clear_selection_range();
                 if cleared {
                     cx.notify();
                 }
@@ -454,8 +454,8 @@ impl InputHandler for TerminalInputHandler {
         _window: &mut Window,
         cx: &mut App,
     ) -> Option<UTF16Selection> {
-        if self.using_output_selection_document(cx) {
-            if let Some(range) = self.output_selection_range(cx) {
+        if self.using_selection_document(cx) {
+            if let Some(range) = self.selection_range(cx) {
                 return Some(UTF16Selection {
                     range,
                     reversed: false,
@@ -490,8 +490,8 @@ impl InputHandler for TerminalInputHandler {
     }
 
     fn set_selected_text_range(&mut self, range: Range<usize>, _window: &mut Window, cx: &mut App) {
-        if self.using_output_selection_document(cx) {
-            let (_, range) = self.resolve_output_selection_range(range, cx);
+        if self.using_selection_document(cx) {
+            let (_, range) = self.resolve_selection_range(range, cx);
             if range.is_empty() && !self.selection_active(cx) {
                 self.selection_candidate = Some(range.start);
                 return;
@@ -499,7 +499,7 @@ impl InputHandler for TerminalInputHandler {
             self.selection_candidate = None;
             let entity = self.entity.clone();
             let _ = entity.update(cx, move |term, cx| {
-                term.set_output_selection_range(range);
+                term.set_selection_range(range);
                 cx.notify();
             });
             return;
@@ -521,11 +521,11 @@ impl InputHandler for TerminalInputHandler {
         _window: &mut Window,
         cx: &mut App,
     ) -> Option<Range<usize>> {
-        if !self.using_output_selection_document(cx) {
+        if !self.using_selection_document(cx) {
             return None;
         }
 
-        let (_, resolved_range) = self.resolve_output_selection_range(range, cx);
+        let (_, resolved_range) = self.resolve_selection_range(range, cx);
         Some(resolved_range)
     }
 
@@ -543,7 +543,7 @@ impl InputHandler for TerminalInputHandler {
         _window: &mut Window,
         cx: &mut App,
     ) -> Option<String> {
-        if self.using_output_selection_document(cx) {
+        if self.using_selection_document(cx) {
             let document = self.selection_document(cx)?;
             let (range, text) = document.text_for_range(range_utf16);
             *adjusted_range = Some(range);
@@ -569,7 +569,7 @@ impl InputHandler for TerminalInputHandler {
     }
 
     fn text_len_utf16(&mut self, _window: &mut Window, cx: &mut App) -> Option<usize> {
-        if self.using_output_selection_document(cx) {
+        if self.using_selection_document(cx) {
             return self
                 .selection_document(cx)
                 .map(TerminalSelectionDocument::len_utf16);
@@ -612,7 +612,7 @@ impl InputHandler for TerminalInputHandler {
 
     fn insert_text(&mut self, text: &str, _window: &mut Window, cx: &mut App) {
         let text = text.to_string();
-        if self.clear_output_selection_for_text_input(cx) {
+        if self.clear_selection_for_text_input(cx) {
             if text.is_empty() {
                 return;
             }
@@ -660,7 +660,7 @@ impl InputHandler for TerminalInputHandler {
         cx: &mut App,
     ) {
         let text = text.to_string();
-        if self.clear_output_selection_for_text_input(cx) {
+        if self.clear_selection_for_text_input(cx) {
             self.clear_text_input_preflight();
             if !text.is_empty() {
                 self.replace_text_input_range(None, &text, false, cx);
@@ -713,7 +713,7 @@ impl InputHandler for TerminalInputHandler {
         cx: &mut App,
     ) {
         let text = text.to_string();
-        if self.clear_output_selection_for_text_input(cx) {
+        if self.clear_selection_for_text_input(cx) {
             self.clear_text_input_preflight();
             if !text.is_empty() {
                 self.replace_text_input_range(None, &text, false, cx);
@@ -796,7 +796,7 @@ impl InputHandler for TerminalInputHandler {
     }
 
     fn delete_backward(&mut self, _window: &mut Window, cx: &mut App) {
-        if self.clear_output_selection_for_text_input(cx) {
+        if self.clear_selection_for_text_input(cx) {
             self.clear_text_input_preflight();
             return;
         }
@@ -845,7 +845,7 @@ impl InputHandler for TerminalInputHandler {
         _window: &mut Window,
         cx: &mut App,
     ) {
-        let replacement_range = if self.clear_output_selection_for_text_input(cx) {
+        let replacement_range = if self.clear_selection_for_text_input(cx) {
             None
         } else {
             replacement_range
@@ -861,7 +861,7 @@ impl InputHandler for TerminalInputHandler {
     }
 
     fn insert_dictation_result_placeholder(&mut self, _window: &mut Window, cx: &mut App) {
-        self.clear_output_selection_for_text_input(cx);
+        self.clear_selection_for_text_input(cx);
         self.clear_text_input_preflight();
         let entity = self.entity.clone();
         let _ = entity.update(cx, |term, cx| {
@@ -877,7 +877,7 @@ impl InputHandler for TerminalInputHandler {
     }
 
     fn insert_dictation_result(&mut self, text: &str, _window: &mut Window, cx: &mut App) {
-        self.clear_output_selection_for_text_input(cx);
+        self.clear_selection_for_text_input(cx);
         self.clear_text_input_preflight();
         let text = text.to_string();
         let entity = self.entity.clone();
@@ -968,7 +968,7 @@ impl InputHandler for TerminalInputHandler {
         _window: &mut Window,
         cx: &mut App,
     ) -> Option<Bounds<Pixels>> {
-        if self.using_output_selection_document(cx) {
+        if self.using_selection_document(cx) {
             let document = self.selection_document(cx)?;
             if let Some(bounds) = document.bounds_for_range(range_utf16.clone()) {
                 return Some(bounds);
@@ -985,7 +985,7 @@ impl InputHandler for TerminalInputHandler {
         _window: &mut Window,
         cx: &mut App,
     ) -> SmallVec<[Bounds<Pixels>; 4]> {
-        if self.using_output_selection_document(cx) {
+        if self.using_selection_document(cx) {
             return self
                 .selection_document(cx)
                 .map(|document| document.rects_for_range(range_utf16))
@@ -1023,7 +1023,7 @@ impl InputHandler for TerminalInputHandler {
         _window: &mut Window,
         cx: &mut App,
     ) -> Option<usize> {
-        if self.using_output_selection_document(cx) {
+        if self.using_selection_document(cx) {
             return self
                 .selection_document(cx)
                 .and_then(|document| document.nearest_character_index_for_point(point));
@@ -1044,7 +1044,7 @@ impl InputHandler for TerminalInputHandler {
         if self.selection_active(cx) {
             let entity = self.entity.clone();
             let _ = entity.update(cx, |term, cx| {
-                if term.clear_output_selection_range() {
+                if term.clear_selection_range() {
                     cx.notify();
                 }
             });
@@ -1057,7 +1057,7 @@ impl InputHandler for TerminalInputHandler {
     }
 
     fn handles_native_selection(&mut self, _window: &mut Window, cx: &mut App) -> bool {
-        self.selection_enabled || self.using_output_selection_document(cx)
+        self.selection_enabled || self.using_selection_document(cx)
     }
 
     fn text_input_traits(
@@ -1186,7 +1186,7 @@ mod tests {
                 assert_eq!(index, Some(0));
                 assert_eq!(handler.selection_candidate, Some(0));
                 assert!(handler.selection_document.is_some());
-                assert_eq!(terminal.read(cx).output_selection_range(), None);
+                assert_eq!(terminal.read(cx).selection_range(), None);
             })
             .unwrap();
     }
@@ -1205,7 +1205,7 @@ mod tests {
                 );
 
                 handler.set_selected_text_range(1..1, window, cx);
-                assert_eq!(terminal.read(cx).output_selection_range(), Some(0..5));
+                assert_eq!(terminal.read(cx).selection_range(), Some(0..5));
 
                 assert_eq!(
                     handler
@@ -1227,7 +1227,7 @@ mod tests {
     }
 
     #[test]
-    fn set_selected_range_without_hit_test_does_not_start_output_selection() {
+    fn set_selected_range_without_hit_test_does_not_start_selection() {
         let mut cx = TestAppContext::single();
         let (terminal, mut handler, window) =
             terminal_handler_for_output(&mut cx, b"hello world", true);
@@ -1236,7 +1236,7 @@ mod tests {
             .update(&mut cx, |_, window, cx| {
                 handler.set_selected_text_range(0..1, window, cx);
 
-                assert_eq!(terminal.read(cx).output_selection_range(), None);
+                assert_eq!(terminal.read(cx).selection_range(), None);
                 assert_eq!(handler.selection_candidate, None);
                 assert!(handler.selection_document.is_none());
             })
@@ -1256,11 +1256,11 @@ mod tests {
                     Some(1)
                 );
                 handler.set_selected_text_range(1..1, window, cx);
-                assert_eq!(terminal.read(cx).output_selection_range(), Some(0..5));
+                assert_eq!(terminal.read(cx).selection_range(), Some(0..5));
 
                 handler.clear_selected_text_range(window, cx);
 
-                assert_eq!(terminal.read(cx).output_selection_range(), None);
+                assert_eq!(terminal.read(cx).selection_range(), None);
                 assert_eq!(handler.selection_candidate, None);
                 assert!(handler.handles_native_selection(window, cx));
             })

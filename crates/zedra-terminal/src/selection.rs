@@ -1,14 +1,10 @@
 use std::ops::Range;
 
 use alacritty_terminal::term::cell::Flags as CellFlags;
-use gpui::{Action, Bounds, Pixels, Point, point, px, size};
+use gpui::{Bounds, Pixels, Point, point, px, size};
 use smallvec::SmallVec;
 
 use crate::terminal::{IndexedCell, TerminalContent, is_blank};
-
-#[derive(Clone, PartialEq, Action)]
-#[action(namespace = terminal, no_json)]
-pub struct PasteFromClipboard;
 
 #[derive(Clone, Debug)]
 pub struct TerminalSelectionDocument {
@@ -16,7 +12,6 @@ pub struct TerminalSelectionDocument {
     len_utf16: usize,
     chars: Vec<TerminalSelectionChar>,
     lines: Vec<TerminalSelectionLine>,
-    bounds: Option<Bounds<Pixels>>,
 }
 
 #[derive(Clone, Debug)]
@@ -52,7 +47,6 @@ impl TerminalSelectionDocument {
             len_utf16: 0,
             chars: Vec::new(),
             lines: Vec::new(),
-            bounds: None,
         }
     }
 
@@ -97,7 +91,6 @@ impl TerminalSelectionDocument {
         let mut len_utf16 = 0;
         let mut chars = Vec::new();
         let mut lines = Vec::new();
-        let mut document_bounds: Option<Bounds<Pixels>> = None;
 
         for row_idx in first_content_row..=last_content_row {
             let row = &mut visible_rows[row_idx];
@@ -143,8 +136,6 @@ impl TerminalSelectionDocument {
                         origin: point(origin.x + cell_width * col as f32, y),
                         size: size(cell_width * width_cells as f32, line_height),
                     };
-                    document_bounds =
-                        Some(document_bounds.map_or(bounds, |existing| existing.union(&bounds)));
                     cells.push(TerminalSelectionCell {
                         start_utf16,
                         end_utf16: len_utf16,
@@ -183,24 +174,11 @@ impl TerminalSelectionDocument {
             len_utf16,
             chars,
             lines,
-            bounds: document_bounds,
         }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len_utf16 == 0
-    }
-
-    pub fn bounds(&self) -> Option<Bounds<Pixels>> {
-        self.bounds
     }
 
     pub fn len_utf16(&self) -> usize {
         self.len_utf16
-    }
-
-    pub fn text(&self) -> &str {
-        &self.text
     }
 
     pub fn word_range_at(&self, offset_utf16: usize) -> Range<usize> {
@@ -464,9 +442,9 @@ mod tests {
         let mut terminal = Terminal::new(cols, rows, px(10.0), px(20.0));
         terminal.advance_bytes(output);
         let content = terminal.content();
-        TerminalSelectionDocument::new(&content, point(px(0.0), px(0.0)), px(10.0), px(20.0))
-            .text()
-            .to_string()
+        let document =
+            TerminalSelectionDocument::new(&content, point(px(0.0), px(0.0)), px(10.0), px(20.0));
+        document.text_for_range(0..document.len_utf16()).1
     }
 
     #[test]
@@ -499,7 +477,7 @@ mod tests {
         let document =
             TerminalSelectionDocument::new(&content, point(px(0.0), px(0.0)), px(10.0), px(20.0));
 
-        assert!(document.is_empty());
+        assert_eq!(document.len_utf16(), 0);
         assert_eq!(document.text_for_range(0..1), (0..0, String::new()));
     }
 
@@ -570,6 +548,11 @@ mod tests {
         let document =
             TerminalSelectionDocument::new(&content, point(px(0.0), px(0.0)), px(10.0), px(20.0));
 
-        assert!(document.text().contains("crates/foo/file_a.rs"));
+        assert!(
+            document
+                .text_for_range(0..document.len_utf16())
+                .1
+                .contains("crates/foo/file_a.rs")
+        );
     }
 }

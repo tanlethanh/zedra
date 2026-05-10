@@ -49,11 +49,10 @@ focused handler accepts text
 
 ## Terminal Flow
 
-The terminal is a full-screen text surface with native text-selection gestures.
-Tapping terminal text uses the existing focus/keyboard toggle: unfocused taps
-focus and show the keyboard, focused taps with a visible keyboard hide it and
-blur terminal focus, and focused taps with a hidden keyboard show it again.
-Terminal native selection starts from long press, not double tap.
+Terminal tap policy stays narrow: unfocused taps focus and show the keyboard,
+focused taps with a visible keyboard hide it and blur terminal focus, and
+focused taps with a hidden keyboard show it again. Terminal native selection
+starts from long press, not double tap.
 
 Terminal uses `.track_focus(&focus_handle).manual_focus()`:
 
@@ -106,7 +105,7 @@ accepts_text_input=true, manual_focus=true
     -> UITextInput callbacks still route through the handler
 
 selection handler present
-    -> non-editable text interaction mode
+    -> non-editable text interaction mode for read-only surfaces
 ```
 
 `GPUIMetalView` remains the single native `UIView` / `UITextInput` responder for

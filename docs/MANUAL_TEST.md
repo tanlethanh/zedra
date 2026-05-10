@@ -366,10 +366,10 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 14. Expected: copied text preserves visible hard newlines, omits soft-wrap newlines, preserves non-ASCII text, and trims trailing blank cells
 15. Tap visible terminal output outside the active selection once
 16. Expected: terminal output selection clears, and that same dismiss tap does not toggle terminal focus or keyboard visibility
-17. Put text containing multiple lines on the clipboard, then long-press an empty terminal cell while a shell command such as `cat` is running
+17. Long-press an empty terminal cell
 18. Expected: a custom native edit menu appears slightly above the touch point with a `Paste` action even though no output text is under the finger
 19. Tap `Paste`
-20. Expected: pasted text is sent to the PTY through terminal paste handling and multi-line paste keeps line breaks
+20. Expected: if the clipboard has text, it is sent to the PTY through terminal paste handling; if the clipboard is empty, the menu dismisses without changing terminal focus or keyboard state
 21. Tap a non-hyperlink area of the already-focused terminal again
 22. Expected: the keyboard hides and terminal focus clears
 23. Dismiss the keyboard through a platform control or hardware-keyboard state while the terminal remains focused
