@@ -138,6 +138,31 @@ pub extern "C" fn zedra_ios_dictation_preview_dismiss(preview_id: u32) {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_native_edit_menu_result(callback_id: u32, item_index: i32) {
+    if item_index < 0 {
+        return;
+    }
+
+    IOS_APP_CELL.with(|cell| {
+        let Some(app_cell) = cell.borrow().as_ref().cloned() else {
+            return;
+        };
+
+        let Ok(mut app) = app_cell.try_borrow_mut() else {
+            return;
+        };
+
+        let cx: &mut App = &mut app;
+        platform_bridge::dispatch_native_edit_menu_result(callback_id, item_index as usize, cx);
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_native_edit_menu_dismiss(callback_id: u32) {
+    platform_bridge::dispatch_native_edit_menu_dismiss(callback_id);
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn zedra_launch_gpui() {
     let log_level = if cfg!(feature = "debug-logs") {
         log::LevelFilter::Debug

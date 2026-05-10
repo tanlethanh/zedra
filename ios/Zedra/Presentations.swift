@@ -46,6 +46,12 @@ private func zedra_ios_native_floating_button_pressed(_ callbackID: UInt32)
 @_silgen_name("zedra_ios_dictation_preview_dismiss")
 private func zedra_ios_dictation_preview_dismiss(_ previewID: UInt32)
 
+@_silgen_name("zedra_ios_native_edit_menu_result")
+private func zedra_ios_native_edit_menu_result(_ callbackID: UInt32, _ itemIndex: Int32)
+
+@_silgen_name("zedra_ios_native_edit_menu_dismiss")
+private func zedra_ios_native_edit_menu_dismiss(_ callbackID: UInt32)
+
 @_silgen_name("zedra_ios_native_notification_action")
 private func zedra_ios_native_notification_action(_ callbackID: UInt32)
 
@@ -1260,9 +1266,95 @@ private final class NativeNotificationBannerController {
 
 }
 
+@available(iOS 16.0, *)
+private final class NativeEditMenuPresenter: NSObject, UIEditMenuInteractionDelegate {
+    private let callbackID: UInt32
+    private let itemLabels: [String]
+    private let itemImageNames: [String?]
+    private let targetRect: CGRect
+    private let onFinish: (UInt32) -> Void
+    private var hostView: UIView?
+    private weak var interaction: UIEditMenuInteraction?
+    private var handled = false
+    private var finished = false
+
+    init(
+        callbackID: UInt32,
+        itemLabels: [String],
+        itemImageNames: [String?],
+        targetRect: CGRect,
+        onFinish: @escaping (UInt32) -> Void
+    ) {
+        self.callbackID = callbackID
+        self.itemLabels = itemLabels
+        self.itemImageNames = itemImageNames
+        self.targetRect = targetRect
+        self.onFinish = onFinish
+    }
+
+    func attach(interaction: UIEditMenuInteraction, to view: UIView) {
+        self.interaction = interaction
+        self.hostView = view
+        view.addInteraction(interaction)
+    }
+
+    func editMenuInteraction(
+        _ interaction: UIEditMenuInteraction,
+        targetRectFor configuration: UIEditMenuConfiguration
+    ) -> CGRect {
+        targetRect
+    }
+
+    func editMenuInteraction(
+        _ interaction: UIEditMenuInteraction,
+        menuFor configuration: UIEditMenuConfiguration,
+        suggestedActions: [UIMenuElement]
+    ) -> UIMenu? {
+        let actions = itemLabels.enumerated().map { index, label in
+            let image = itemImageNames[safe: index]
+                .flatMap { $0 }
+                .flatMap { NativePresentationBridge.actionImage(named: $0) }
+            return UIAction(title: label, image: image) { [weak self] _ in
+                guard let self else { return }
+                self.handled = true
+                zedra_ios_native_edit_menu_result(self.callbackID, Int32(index))
+                self.finish()
+            }
+        }
+        return UIMenu(children: actions)
+    }
+
+    func editMenuInteraction(
+        _ interaction: UIEditMenuInteraction,
+        willDismissMenuFor configuration: UIEditMenuConfiguration,
+        animator: UIEditMenuInteractionAnimating
+    ) {
+        animator.addCompletion { [weak self] in
+            guard let self else { return }
+            if !self.handled {
+                zedra_ios_native_edit_menu_dismiss(self.callbackID)
+            }
+            self.finish()
+        }
+    }
+
+    private func finish() {
+        if finished { return }
+        finished = true
+        if let interaction {
+            hostView?.removeInteraction(interaction)
+        }
+        hostView?.removeFromSuperview()
+        hostView = nil
+        onFinish(callbackID)
+    }
+}
+
 private enum PresentationCoordinator {
     private static let dismissAssociationKey = "zedra_presentation_dismiss_delegate"
     private static let alertOutsideTapAssociationKey = "zedra_alert_outside_tap_handler"
+    @available(iOS 16.0, *)
+    private static var nativeEditMenuPresenters: [UInt32: NativeEditMenuPresenter] = [:]
 
     static func presentAlert(
         callbackID: UInt32,
@@ -1334,6 +1426,79 @@ private enum PresentationCoordinator {
 
             presenter.present(sheet, animated: true)
         }
+    }
+
+    static func presentNativeEditMenu(
+        callbackID: UInt32,
+        sourcePoint: CGPoint,
+        itemLabels: [String],
+        itemImageNames: [String?]
+    ) {
+        DispatchQueue.main.async {
+            guard !itemLabels.isEmpty else {
+                zedra_ios_native_edit_menu_dismiss(callbackID)
+                return
+            }
+            guard #available(iOS 16.0, *) else {
+                zedra_ios_native_edit_menu_dismiss(callbackID)
+                return
+            }
+
+            let window = NativePresentationBridge.activeWindow()
+            guard let anchor = nativeEditMenuAnchor(sourcePoint: sourcePoint, in: window.bounds) else {
+                zedra_ios_native_edit_menu_dismiss(callbackID)
+                return
+            }
+            let hostView = UIView(frame: window.bounds)
+            hostView.backgroundColor = .clear
+            hostView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            window.addSubview(hostView)
+
+            let presenter = NativeEditMenuPresenter(
+                callbackID: callbackID,
+                itemLabels: itemLabels,
+                itemImageNames: itemImageNames,
+                targetRect: anchor.targetRect,
+                onFinish: { callbackID in
+                    nativeEditMenuPresenters.removeValue(forKey: callbackID)
+                }
+            )
+            let interaction = UIEditMenuInteraction(delegate: presenter)
+            presenter.attach(interaction: interaction, to: hostView)
+            nativeEditMenuPresenters[callbackID] = presenter
+            interaction.presentEditMenu(
+                with: UIEditMenuConfiguration(identifier: nil, sourcePoint: anchor.sourcePoint)
+            )
+        }
+    }
+
+    @available(iOS 16.0, *)
+    private static func nativeEditMenuAnchor(
+        sourcePoint: CGPoint,
+        in bounds: CGRect
+    ) -> (sourcePoint: CGPoint, targetRect: CGRect)? {
+        guard sourcePoint.x.isFinite,
+              sourcePoint.y.isFinite,
+              bounds.origin.x.isFinite,
+              bounds.origin.y.isFinite,
+              bounds.width.isFinite,
+              bounds.height.isFinite,
+              bounds.width > 0,
+              bounds.height > 0
+        else {
+            return nil
+        }
+
+        let x = min(max(sourcePoint.x, bounds.minX), bounds.maxX)
+        let y = min(max(sourcePoint.y, bounds.minY), bounds.maxY)
+        let rectWidth = min(CGFloat(2), bounds.width)
+        let rectHeight = min(CGFloat(2), bounds.height)
+        let rectX = min(max(x - rectWidth / 2, bounds.minX), bounds.maxX - rectWidth)
+        let rectY = min(max(y - rectHeight / 2, bounds.minY), bounds.maxY - rectHeight)
+        return (
+            CGPoint(x: x, y: y),
+            CGRect(x: rectX, y: rectY, width: rectWidth, height: rectHeight)
+        )
     }
 
     static func presentTextInput(
@@ -1699,6 +1864,26 @@ func ios_present_selection(
         buttonStyles: NativePresentationBridge.styles(count: buttonCount, styles: styles),
         buttonImageNames: NativePresentationBridge.optionalStrings(
             count: buttonCount,
+            labels: imageNames
+        )
+    )
+}
+
+@_cdecl("ios_present_native_edit_menu")
+func ios_present_native_edit_menu(
+    _ callbackID: UInt32,
+    _ xPts: Float,
+    _ yPts: Float,
+    _ itemCount: Int32,
+    _ labels: UnsafePointer<UnsafePointer<CChar>?>?,
+    _ imageNames: UnsafePointer<UnsafePointer<CChar>?>?
+) {
+    PresentationCoordinator.presentNativeEditMenu(
+        callbackID: callbackID,
+        sourcePoint: CGPoint(x: CGFloat(xPts), y: CGFloat(yPts)),
+        itemLabels: NativePresentationBridge.strings(count: itemCount, labels: labels),
+        itemImageNames: NativePresentationBridge.optionalStrings(
+            count: itemCount,
             labels: imageNames
         )
     )

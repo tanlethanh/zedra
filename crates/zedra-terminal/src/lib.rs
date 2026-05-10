@@ -1,12 +1,14 @@
 pub mod element;
 pub mod input;
 pub mod keys;
+pub mod selection;
 pub mod terminal;
 pub mod view;
 
 pub use element::*;
 pub use input::*;
 pub use keys::*;
+pub use selection::*;
 pub use terminal::*;
 pub use view::*;
 

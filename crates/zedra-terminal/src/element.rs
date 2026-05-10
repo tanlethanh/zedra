@@ -11,6 +11,7 @@ use itertools::Itertools;
 
 use crate::MONO_FONT_FAMILY;
 use crate::input::TerminalInputHandler;
+use crate::selection::TerminalSelectionDocument;
 use crate::terminal::*;
 use crate::view::TerminalView;
 
@@ -306,6 +307,7 @@ pub struct TerminalElement {
     terminal: WeakEntity<Terminal>,
     focus_handle: FocusHandle,
     focused: bool,
+    selection_active: bool,
 }
 
 impl TerminalElement {
@@ -319,6 +321,7 @@ impl TerminalElement {
         terminal: WeakEntity<Terminal>,
         focus_handle: FocusHandle,
         focused: bool,
+        selection_active: bool,
     ) -> Self {
         Self {
             content,
@@ -330,6 +333,7 @@ impl TerminalElement {
             terminal,
             focus_handle,
             focused,
+            selection_active,
         }
     }
 
@@ -750,9 +754,6 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let input_handler = TerminalInputHandler::new(self.terminal.clone(), bounds);
-        window.handle_input(&self.focus_handle, input_handler, cx);
-
         let cell_width = layout.cell_width;
         let line_height = layout.line_height;
 
@@ -769,6 +770,17 @@ impl Element for TerminalElement {
             grid_origin.x,
             grid_origin.y + px(self.scroll_offset_px) - self.keyboard_content_offset,
         );
+        let selection_enabled = self.selection_active
+            || TerminalSelectionDocument::has_selectable_text(&layout.content);
+        let input_handler = TerminalInputHandler::new(
+            self.terminal.clone(),
+            bounds,
+            origin,
+            cell_width,
+            line_height,
+            selection_enabled,
+        );
+        window.handle_input(&self.focus_handle, input_handler, cx);
 
         let theme = TerminalTheme::one_dark();
 
@@ -821,11 +833,10 @@ impl Element for TerminalElement {
         );
 
         // Store the actual painted origin (which already incorporates the
-        // smooth-scroll and keyboard-cursor offsets) so tap-to-grid conversion
-        // in TerminalView::handle_terminal_press maps to the same row the user
-        // sees on screen. Using the unshifted bounds origin would cause taps to
-        // miss links rendered above their grid coordinates when the keyboard is
-        // up.
+        // smooth-scroll and keyboard-cursor offsets) so terminal tap hit testing
+        // maps to the same row the user sees on screen. Using the unshifted
+        // bounds origin would cause taps to miss links rendered above their grid
+        // coordinates when the keyboard is up.
         let stored_origin = origin;
         let view = self.view.clone();
         window.defer(cx, move |_window, cx| {

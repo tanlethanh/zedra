@@ -148,6 +148,10 @@ void zedra_ios_native_floating_button_pressed(uint32_t callback_id);
 
 void zedra_ios_dictation_preview_dismiss(uint32_t preview_id);
 
+void zedra_ios_native_edit_menu_result(uint32_t callback_id, int32_t item_index);
+
+void zedra_ios_native_edit_menu_dismiss(uint32_t callback_id);
+
 void zedra_launch_gpui(void);
 
 void *zedra_ios_mount_custom_sheet_content(void *parent_view_ptr,
@@ -230,6 +234,16 @@ extern void ios_present_selection(uint32_t callback_id,
                                   const char *const *labels,
                                   const int32_t *styles,
                                   const char *const *image_names);
+
+/**
+ * Present a native edit menu anchored at a window coordinate.
+ */
+extern void ios_present_native_edit_menu(uint32_t callback_id,
+                                         float x_pts,
+                                         float y_pts,
+                                         int32_t item_count,
+                                         const char *const *labels,
+                                         const char *const *image_names);
 
 /**
  * Present a configurable native custom sheet with a GPUI canvas host.

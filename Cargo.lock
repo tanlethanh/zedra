@@ -10145,6 +10145,7 @@ dependencies = [
  "futures",
  "gpui",
  "itertools 0.14.0",
+ "smallvec",
  "tokio",
  "tracing",
  "zedra-osc",
