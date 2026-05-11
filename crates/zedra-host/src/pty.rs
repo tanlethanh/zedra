@@ -104,7 +104,11 @@ impl ShellSession {
 
 #[cfg(windows)]
 fn default_shell() -> String {
-    windows_shell_from_env(&["ZEDRA_SHELL", "SHELL", "COMSPEC", "ComSpec"])
+    windows_shell_from_env(&["ZEDRA_SHELL"])
+        .or_else(|| windows_shell_from_env(&["ZEDRA_LAUNCH_SHELL"]))
+        .or_else(detect_parent_shell)
+        .or_else(|| windows_shell_from_env(&["SHELL"]))
+        .or_else(|| windows_shell_from_env(&["COMSPEC", "ComSpec"]))
         .unwrap_or_else(|| "cmd.exe".to_string())
 }
 
@@ -126,6 +130,45 @@ fn shell_from_env(keys: &[&str]) -> Option<String> {
 #[cfg(windows)]
 fn windows_shell_from_env(keys: &[&str]) -> Option<String> {
     shell_from_env(keys).map(|shell| normalize_windows_shell_path(&shell))
+}
+
+#[cfg(windows)]
+pub fn detect_parent_shell() -> Option<String> {
+    detect_parent_shell_for_pid(std::process::id())
+}
+
+#[cfg(windows)]
+fn detect_parent_shell_for_pid(pid: u32) -> Option<String> {
+    use sysinfo::{Pid, System};
+
+    let system = System::new_all();
+    let mut current_pid = Pid::from_u32(pid);
+
+    for _ in 0..8 {
+        let parent_pid = system.process(current_pid)?.parent()?;
+        let parent = system.process(parent_pid)?;
+        if let Some(shell) = shell_from_process_names(
+            parent.exe().and_then(|path| path.to_str()),
+            parent.name().to_str(),
+        ) {
+            return Some(shell);
+        }
+        current_pid = parent_pid;
+    }
+
+    None
+}
+
+#[cfg(any(windows, test))]
+fn shell_from_process_names(exe: Option<&str>, name: Option<&str>) -> Option<String> {
+    exe.and_then(shell_from_process_name)
+        .or_else(|| name.and_then(shell_from_process_name))
+}
+
+#[cfg(any(windows, test))]
+fn shell_from_process_name(process_name: &str) -> Option<String> {
+    (windows_shell_kind(process_name) != WindowsShellKind::Unknown)
+        .then(|| normalize_windows_shell_path(process_name))
 }
 
 #[cfg(any(windows, test))]
@@ -335,6 +378,22 @@ mod tests {
             normalize_windows_shell_path(r"C:\Program Files\Git\bin\bash.exe"),
             r"C:\Program Files\Git\bin\bash.exe"
         );
+    }
+
+    #[test]
+    fn windows_shell_uses_detected_process_path_before_name() {
+        assert_eq!(
+            shell_from_process_names(
+                Some(r"C:\Program Files\PowerShell\7\pwsh.exe"),
+                Some("WindowsTerminal.exe"),
+            ),
+            Some(r"C:\Program Files\PowerShell\7\pwsh.exe".to_string())
+        );
+        assert_eq!(
+            shell_from_process_names(None, Some("powershell.exe")),
+            Some("powershell.exe".to_string())
+        );
+        assert_eq!(shell_from_process_names(None, Some("cargo.exe")), None);
     }
 
     #[test]

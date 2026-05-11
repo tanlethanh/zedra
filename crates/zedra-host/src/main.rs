@@ -438,6 +438,10 @@ fn start_detached(options: DetachedStartOptions) -> Result<DetachedStartResult> 
         std::process::id(),
         options.workdir.display()
     )?;
+    let launch_shell = zedra_host::pty::detect_parent_shell();
+    if let Some(shell) = &launch_shell {
+        writeln!(log, "detected_launch_shell={shell}")?;
+    }
 
     let mut command = std::process::Command::new(std::env::current_exe()?);
     command
@@ -448,6 +452,9 @@ fn start_detached(options: DetachedStartOptions) -> Result<DetachedStartResult> 
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
+    if let Some(shell) = launch_shell {
+        command.env("ZEDRA_LAUNCH_SHELL", shell);
+    }
 
     let mut child = command.spawn()?;
     let child_pid = child.id();
