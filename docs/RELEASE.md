@@ -48,7 +48,13 @@ Invoke-WebRequest https://raw.githubusercontent.com/tanlethanh/zedra/main/script
 .\install.ps1 -Version v0.2.0
 ```
 
-**Update** — run the install script again; it overwrites the existing binary.
+**Update:**
+```bash
+zedra update
+```
+
+On Windows, stop running `zedra` daemons before updating because Windows locks
+the running `zedra.exe`.
 
 The Unix script installs to `~/.local/bin/zedra` by default. Override with `--prefix /usr/local/bin` or `ZEDRA_PREFIX`.
 

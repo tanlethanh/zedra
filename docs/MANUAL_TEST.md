@@ -146,8 +146,14 @@
 14. Expected: the CLI client authenticates without QR and prints three RTT samples
 15. Run `zedra logs --workdir C:\path\to\repo`
 16. Expected: recent daemon log lines are printed from the AppData workspace directory
-17. Run `zedra stop --workdir C:\path\to\repo`
-18. Expected: the daemon exits, the lock file is removed, and a follow-up `status` reports no running daemon
+17. Run `zedra update --version <current-release-tag> --yes` while the daemon is still running
+18. Expected: the update is rejected with a message to stop running daemons first
+19. Run `zedra stop --workdir C:\path\to\repo`
+20. Expected: the daemon exits, the lock file is removed, and a follow-up `status` reports no running daemon
+21. Run `zedra update --version <current-release-tag> --yes`
+22. Expected: the update downloads the Windows release asset, verifies the checksum when available, and reports that `zedra.exe` will be replaced after the command exits
+23. Open a new PowerShell window and run `zedra --version`
+24. Expected: the command prints the release version
 
 ## 2. QR Already Consumed
 

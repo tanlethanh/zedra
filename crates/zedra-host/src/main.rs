@@ -1161,6 +1161,12 @@ async fn main() -> Result<()> {
             let alive: Vec<_> = instances.iter().filter(|(_, _, alive)| *alive).collect();
             if !alive.is_empty() {
                 eprintln!();
+                #[cfg(windows)]
+                utils::eprintln_warn(format!(
+                    "{} running daemon(s) found. Stop them before update:",
+                    alive.len()
+                ));
+                #[cfg(not(windows))]
                 utils::eprintln_warn(format!(
                     "{} running daemon(s) found. Restart them after update:",
                     alive.len()
@@ -1169,6 +1175,15 @@ async fn main() -> Result<()> {
                     eprintln!("  pid {}  {}", lock.pid, lock.workdir);
                 }
                 eprintln!();
+
+                #[cfg(windows)]
+                {
+                    // Windows locks every running zedra.exe, including detached
+                    // daemons, so the updater can only replace the CLI after they exit.
+                    utils::eprintln_error("Stop running daemons before updating on Windows.");
+                    utils::eprintln_shell_command("zedra stop -w <dir>");
+                    std::process::exit(1);
+                }
             }
 
             // Confirm unless --yes
@@ -1300,7 +1315,11 @@ fn classify_update_error(e: &anyhow::Error) -> &'static str {
         "download_failed"
     } else if msg.contains("archive did not contain") || msg.contains("failed to extract") {
         "extract_failed"
-    } else if msg.contains("failed to install") || msg.contains("failed to rename") {
+    } else if msg.contains("failed to install")
+        || msg.contains("failed to rename")
+        || msg.contains("install directory is not writable")
+        || msg.contains("failed to start PowerShell")
+    {
         "install_failed"
     } else if msg.contains("failed to resolve latest") {
         "version_resolve_failed"
@@ -1309,12 +1328,6 @@ fn classify_update_error(e: &anyhow::Error) -> &'static str {
     }
 }
 
-#[cfg(windows)]
-fn update_instruction() -> &'static str {
-    "Run `irm https://zedra.dev/install.ps1 | iex`."
-}
-
-#[cfg(not(windows))]
 fn update_instruction() -> &'static str {
     "Run `zedra update`."
 }
