@@ -23,6 +23,13 @@ zedra start
 zedra start --detach
 ```
 
+Windows:
+
+```powershell
+irm https://zedra.dev/install.ps1 | iex
+zedra start --detach
+```
+
 **Claude Code**
 ```shell
 # Config Zedra skills for Claude

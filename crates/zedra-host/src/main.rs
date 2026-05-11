@@ -760,9 +760,10 @@ async fn main() -> Result<()> {
                 match version_check::check_latest_version().await {
                     Ok(Some(ref latest)) => {
                         let update_msg = format!(
-                            "New version available: {} (current: v{}). Run `zedra update`.",
+                            "New version available: {} (current: v{}). {}",
                             latest,
-                            env!("CARGO_PKG_VERSION")
+                            env!("CARGO_PKG_VERSION"),
+                            update_instruction()
                         );
                         utils::eprintln_warn(update_msg);
                         zedra_telemetry::send(Event::UpdateChecked {
@@ -1306,6 +1307,16 @@ fn classify_update_error(e: &anyhow::Error) -> &'static str {
     } else {
         "unknown"
     }
+}
+
+#[cfg(windows)]
+fn update_instruction() -> &'static str {
+    "Run `irm https://zedra.dev/install.ps1 | iex`."
+}
+
+#[cfg(not(windows))]
+fn update_instruction() -> &'static str {
+    "Run `zedra update`."
 }
 
 fn should_proceed_with_update(input: &str) -> bool {

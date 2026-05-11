@@ -32,20 +32,40 @@ Pushing the tag triggers `.github/workflows/release.yml`, which:
 curl -fsSL https://raw.githubusercontent.com/tanlethanh/zedra/main/scripts/install.sh | sh
 ```
 
+**First install on Windows:**
+```powershell
+irm https://raw.githubusercontent.com/tanlethanh/zedra/main/scripts/install.ps1 | iex
+```
+
 **Specific version:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tanlethanh/zedra/main/scripts/install.sh | sh -s -- --version v0.2.0
 ```
 
+**Specific version on Windows:**
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/tanlethanh/zedra/main/scripts/install.ps1 -OutFile install.ps1
+.\install.ps1 -Version v0.2.0
+```
+
 **Update** — run the install script again; it overwrites the existing binary.
 
-The script installs to `~/.local/bin/zedra` by default. Override with `--prefix /usr/local/bin` or `ZEDRA_PREFIX`.
+The Unix script installs to `~/.local/bin/zedra` by default. Override with `--prefix /usr/local/bin` or `ZEDRA_PREFIX`.
+
+The Windows script installs to `%LOCALAPPDATA%\Programs\zedra\bin\zedra.exe` by default and adds that directory to the user `Path`. Override with `-Prefix` or `ZEDRA_PREFIX`.
 
 ## Verify a release locally
 
 ```bash
 cargo build -p zedra-host --release
 ./target/release/zedra --help
+```
+
+On Windows:
+
+```powershell
+cargo build -p zedra-host --release
+.\target\release\zedra.exe --help
 ```
 
 ---

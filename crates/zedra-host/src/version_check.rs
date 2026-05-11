@@ -22,6 +22,12 @@ pub async fn check_latest_version() -> Result<Option<String>> {
 
 /// Download the specified release and replace the current binary.
 pub async fn self_update(tag: &str) -> Result<String> {
+    #[cfg(windows)]
+    {
+        let _ = tag;
+        bail!("self-update is not supported on Windows yet. Re-run the installer: irm https://zedra.dev/install.ps1 | iex");
+    }
+
     let tag = tag.to_string();
 
     let platform = detect_platform()?;
@@ -159,6 +165,7 @@ fn detect_platform() -> Result<String> {
     let os = match os {
         "macos" => "apple-darwin",
         "linux" => "unknown-linux-gnu",
+        "windows" => "pc-windows-msvc",
         other => bail!("unsupported OS: {other}"),
     };
 
@@ -205,6 +212,10 @@ mod tests {
     fn test_detect_platform() {
         // Should not fail on the current platform
         let p = detect_platform().unwrap();
-        assert!(p.contains("apple-darwin") || p.contains("unknown-linux-gnu"));
+        assert!(
+            p.contains("apple-darwin")
+                || p.contains("unknown-linux-gnu")
+                || p.contains("pc-windows-msvc")
+        );
     }
 }
