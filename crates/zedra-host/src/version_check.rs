@@ -107,12 +107,13 @@ const WINDOWS_UPDATE_SCRIPT: &str = r#"param(
 $ErrorActionPreference = "Stop"
 Wait-Process -Id $ParentPid -ErrorAction SilentlyContinue
 
-$backup = "$Destination.old"
-Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
-Move-Item -LiteralPath $Destination -Destination $backup -Force
-
+$backup = "$Destination.old.$([Guid]::NewGuid().ToString("N"))"
 try {
+    Move-Item -LiteralPath $Destination -Destination $backup -Force
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
+
+    # Running daemons can keep the renamed image locked, so old backups are
+    # intentionally best-effort cleanup. Ref: https://docs.rs/self-replace/latest/self_replace/#implementation
     Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
 } catch {
     if ((Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $Destination)) {

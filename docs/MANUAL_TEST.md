@@ -147,7 +147,7 @@
 15. Run `zedra logs --workdir C:\path\to\repo`
 16. Expected: recent daemon log lines are printed from the AppData workspace directory
 17. Run `zedra update --version <current-release-tag> --yes` while the daemon is still running
-18. Expected: the update is rejected with a message to stop running daemons first
+18. Expected: the update succeeds and warns that running daemons keep using the old version until restarted
 19. Run `zedra stop --workdir C:\path\to\repo`
 20. Expected: the daemon exits, the lock file is removed, and a follow-up `status` reports no running daemon
 21. Run `zedra update --version <current-release-tag> --yes`

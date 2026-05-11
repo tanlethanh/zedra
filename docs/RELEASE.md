@@ -53,8 +53,8 @@ Invoke-WebRequest https://raw.githubusercontent.com/tanlethanh/zedra/main/script
 zedra update
 ```
 
-On Windows, stop running `zedra` daemons before updating because Windows locks
-the running `zedra.exe`.
+On Windows, running `zedra` daemons keep using the old `zedra.exe` image until
+you restart them after the update.
 
 The Unix script installs to `~/.local/bin/zedra` by default. Override with `--prefix /usr/local/bin` or `ZEDRA_PREFIX`.
 

@@ -1163,7 +1163,7 @@ async fn main() -> Result<()> {
                 eprintln!();
                 #[cfg(windows)]
                 utils::eprintln_warn(format!(
-                    "{} running daemon(s) found. Stop them before update:",
+                    "{} running daemon(s) found. They will keep using the old version until restarted:",
                     alive.len()
                 ));
                 #[cfg(not(windows))]
@@ -1175,15 +1175,6 @@ async fn main() -> Result<()> {
                     eprintln!("  pid {}  {}", lock.pid, lock.workdir);
                 }
                 eprintln!();
-
-                #[cfg(windows)]
-                {
-                    // Windows locks every running zedra.exe, including detached
-                    // daemons, so the updater can only replace the CLI after they exit.
-                    utils::eprintln_error("Stop running daemons before updating on Windows.");
-                    utils::eprintln_shell_command("zedra stop -w <dir>");
-                    std::process::exit(1);
-                }
             }
 
             // Confirm unless --yes
