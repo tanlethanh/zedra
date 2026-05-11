@@ -495,19 +495,6 @@ impl TerminalView {
             .as_ref()
             .map_or(event.down.position, |up| up.position);
 
-        if self.terminal.update(cx, |terminal, cx| {
-            let cleared = terminal.clear_selection_range();
-            if cleared {
-                cx.notify();
-            }
-            cleared
-        }) {
-            // A selected terminal range makes the next tap a dismissal gesture only;
-            // keyboard/focus state is owned by the normal no-selection tap path.
-            window.prevent_default();
-            return;
-        }
-
         let hyperlink = self.terminal.read(cx).hyperlink_at(
             position,
             self.grid_origin,
@@ -549,18 +536,18 @@ impl TerminalView {
         let position = event.down.position;
         window.prevent_default();
 
-        match self.selection_document_at_point(position, cx) {
-            Some((selection_document, Some(index))) => {
-                let range = selection_document.word_range_at(index);
+        if let Some((selection_document, selection_index)) =
+            self.selection_document_at_point(position, cx)
+        {
+            if let Some(selection_index) = selection_index {
+                let range = selection_document.word_range_at(selection_index);
                 self.terminal.update(cx, |terminal, cx| {
                     terminal.set_selection_range(range);
                     cx.notify();
                 });
-            }
-            Some((_, None)) => {
+            } else {
                 cx.emit(TerminalEvent::NativePasteMenuRequested { position });
             }
-            None => {}
         }
     }
 
@@ -782,9 +769,9 @@ mod tests {
     use alacritty_terminal::term::TermMode;
     use futures::{FutureExt as _, StreamExt as _};
     use gpui::{
-        ClipboardItem, Modifiers, Pixels, Point, PointerButton, PointerCancelEvent,
-        PointerDownEvent, PointerKind, PointerMoveEvent, PointerUpEvent, TestAppContext,
-        TouchPhase, VisualTestContext, WindowHandle, point, px, size,
+        Modifiers, Pixels, Point, PointerButton, PointerCancelEvent, PointerDownEvent, PointerKind,
+        PointerMoveEvent, PointerUpEvent, TestAppContext, TouchPhase, VisualTestContext,
+        WindowHandle, point, px, size,
     };
 
     fn open_terminal_window(cx: &mut TestAppContext) -> WindowHandle<TerminalView> {
@@ -1146,37 +1133,6 @@ mod tests {
     }
 
     #[test]
-    fn terminal_tap_dismisses_selection_without_keyboard_toggle() {
-        let mut cx = TestAppContext::single();
-        let window = open_terminal_window(&mut cx);
-        cx.run_until_parked();
-
-        tap_terminal(window, &mut cx);
-        cx.run_until_parked();
-        window
-            .update(&mut cx, |terminal_view, window, cx| {
-                assert!(terminal_view.focus_handle.is_focused(window));
-                assert!(window.is_soft_keyboard_visible());
-                terminal_view.terminal.update(cx, |terminal, _| {
-                    terminal.set_selection_range(1..3);
-                });
-            })
-            .unwrap();
-
-        tap_terminal(window, &mut cx);
-        cx.run_until_parked();
-
-        window
-            .update(&mut cx, |terminal_view, window, cx| {
-                assert!(terminal_view.focus_handle.is_focused(window));
-                assert!(window.is_soft_keyboard_visible());
-                assert_eq!(terminal_view.terminal.read(cx).selection_range(), None);
-            })
-            .unwrap();
-        cx.quit();
-    }
-
-    #[test]
     fn terminal_long_press_selects_output_without_showing_keyboard() {
         let mut cx = TestAppContext::single();
         let window = open_terminal_window(&mut cx);
@@ -1210,7 +1166,6 @@ mod tests {
     #[test]
     fn terminal_long_press_empty_cell_requests_native_paste_menu() {
         let mut cx = TestAppContext::single();
-        cx.write_to_clipboard(ClipboardItem::new_string("paste me".to_string()));
         let window = open_terminal_window(&mut cx);
         cx.run_until_parked();
 

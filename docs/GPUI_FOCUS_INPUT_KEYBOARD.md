@@ -3,7 +3,8 @@
 Zedra treats GPUI focus, platform text input, and software-keyboard presentation
 as separate responsibilities. Normal text inputs can use GPUI's default focus and
 keyboard behavior. Terminal surfaces opt out of default tap focus so completed
-text taps can activate input without racing native text-selection gestures.
+taps can intentionally toggle keyboard/focus state while long press remains
+available for terminal output selection.
 
 ## Layers
 
@@ -27,9 +28,11 @@ element owns focus changes itself. A lower-level pointer/mouse-down handler can
 also suppress default focus by calling `Window::prevent_default()` before the
 default focus listener runs.
 
-`Window::handle_input(...)` should be registered for the currently focused text
-surface. `InputHandler::accepts_text_input()` only answers whether platform
-text and IME callbacks should route to that handler.
+`Window::handle_input(...)` normally registers the currently focused text
+surface. A handler that owns native selection geometry can also be registered
+before focus so UIKit can ask whether a native selection gesture should begin.
+`InputHandler::accepts_text_input()` only answers whether platform text and IME
+callbacks should route to that handler.
 
 `manual_focus()` disables implicit software-keyboard presentation for that
 focused surface. The terminal still needs `insertText`, `deleteBackward`, marked
@@ -49,16 +52,20 @@ focused handler accepts text
 
 ## Terminal Flow
 
-Terminal tap policy stays narrow: unfocused taps focus and show the keyboard,
-focused taps with a visible keyboard hide it and blur terminal focus, and
-focused taps with a hidden keyboard show it again. Terminal native selection
-starts from long press, not double tap.
+Terminal tap policy stays narrow:
+
+- unfocused tap: focus terminal and show the keyboard
+- focused tap while keyboard is visible: hide the keyboard and clear focus
+- focused tap while keyboard is hidden: show the keyboard again
+- hyperlink tap: open the link without changing terminal focus or keyboard state
+
+Terminal output selection starts from long press, not double tap.
 
 Terminal uses `.track_focus(&focus_handle).manual_focus()`:
 
 - `track_focus` keeps focus state, styles, key context, and input registration
-- `manual_focus` prevents pointer-down from focusing before a tap is confirmed
-- the terminal wrapper uses GPUI's default `on_press` for keyboard/focus toggling
+- `manual_focus` prevents pointer-down from focusing before the tap completes
+- the terminal wrapper uses GPUI's `on_press` for keyboard/focus toggling
   and `on_long_press` for terminal selection/menu setup
 - terminal press handling owns `focus()`, `blur()`, `show_soft_keyboard()`, and
   `hide_soft_keyboard()`
@@ -66,7 +73,7 @@ Terminal uses `.track_focus(&focus_handle).manual_focus()`:
 When a terminal tap should show the keyboard:
 
 ```
-completed terminal text tap
+completed terminal tap
     -> focus terminal if needed
     -> call show_soft_keyboard() if the terminal was not focused or keyboard is hidden
 ```
@@ -74,16 +81,18 @@ completed terminal text tap
 When a focused terminal tap should hide the keyboard:
 
 ```
-completed terminal text tap
+completed terminal tap
     -> if terminal is focused and keyboard is visible, call hide_soft_keyboard()
     -> blur terminal focus
 ```
 
-Long press is intentionally not a tap. The terminal ignores long-press release
-when deciding whether to request the keyboard, so selection or the paste menu
-does not immediately collapse back into tap activation.
+Long press is intentionally not a tap. It either starts terminal-owned output
+selection on text or asks the app layer to show the terminal paste menu on an
+empty terminal cell. The long-press release must not also become keyboard/focus
+activation.
 
-Hyperlink taps are excluded from this activation path. They keep their own tap behavior and should not focus, blur, or request the keyboard.
+Hyperlink taps are excluded from this activation path. They keep their own tap
+behavior and should not focus, blur, or request the keyboard.
 
 Do not add a double-tap delay to this keyboard request. Double tap is ordinary
 tap input from the terminal perspective; native terminal selection is a long
@@ -110,8 +119,9 @@ selection handler present
 
 `GPUIMetalView` remains the single native `UIView` / `UITextInput` responder for
 the GPUI window. Editable input handlers and non-editable selection handlers are
-separate logical systems. Non-editable selection must not create keyboard focus
-or disturb the active input handler.
+separate logical systems. Terminal output selection is input-owned native
+selection, not a window-level non-editable selection handler. Non-editable
+selection must not create keyboard focus or disturb the active input handler.
 
 ## Expected Terminal Behavior
 
