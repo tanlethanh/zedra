@@ -317,13 +317,22 @@ const canonicalUrl = "https://zedra.dev/";
 
       .tab-list {
         display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
+        flex-wrap: nowrap;
+        gap: 10px;
+        overflow-x: auto;
+        overflow-y: hidden;
         padding: 8px 14px 0;
+        scrollbar-width: none;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      .tab-list::-webkit-scrollbar {
+        display: none;
       }
 
       .tab-label {
         display: inline-flex;
+        flex: 0 0 auto;
         align-items: center;
         gap: 8px;
         padding: 7px 2px 9px;
@@ -332,6 +341,7 @@ const canonicalUrl = "https://zedra.dev/";
         background: transparent;
         color: var(--muted);
         font-size: 0.78rem;
+        white-space: nowrap;
         cursor: pointer;
         transition:
           color 0.18s,
@@ -646,6 +656,16 @@ const canonicalUrl = "https://zedra.dev/";
         .install-card {
           height: auto;
           min-height: 180px;
+        }
+
+        .tab-list {
+          gap: 8px;
+          padding-inline: 12px;
+        }
+
+        .tab-label {
+          gap: 6px;
+          font-size: 0.76rem;
         }
 
         .demo-card {
