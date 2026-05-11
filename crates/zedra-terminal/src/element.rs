@@ -833,10 +833,11 @@ impl Element for TerminalElement {
         );
 
         // Store the actual painted origin (which already incorporates the
-        // smooth-scroll and keyboard-cursor offsets) so terminal tap hit testing
-        // maps to the same row the user sees on screen. Using the unshifted
-        // bounds origin would cause taps to miss links rendered above their grid
-        // coordinates when the keyboard is up.
+        // smooth-scroll and keyboard-cursor offsets) so tap-to-grid conversion
+        // in TerminalView::handle_terminal_press maps to the same row the user
+        // sees on screen. Using the unshifted bounds origin would cause taps to
+        // miss links rendered above their grid coordinates when the keyboard is
+        // up.
         let stored_origin = origin;
         let view = self.view.clone();
         window.defer(cx, move |_window, cx| {
