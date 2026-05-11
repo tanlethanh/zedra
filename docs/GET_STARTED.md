@@ -80,7 +80,7 @@ Scan the printed QR from the app, or pass the URL during development:
 Windows support is for the host daemon, not a native desktop client.
 
 ```powershell
-irm https://zedra.dev/install.ps1 | iex
+powershell -c "irm https://zedra.dev/install.ps1 | iex"
 zedra start --workdir C:\path\to\project --detach
 zedra qr --workdir C:\path\to\project
 zedra status --workdir C:\path\to\project

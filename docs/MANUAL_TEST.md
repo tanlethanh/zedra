@@ -17,7 +17,7 @@
 ## 0a. Home Install Guide Tabs
 
 1. Open the app with no saved workspaces visible on the Home screen
-2. Switch between the `curl`, `claude`, `codex`, `opencode`, and `gemini` guide tabs
+2. Switch between the `mac/linux`, `windows`, `claude`, `codex`, `opencode`, and `gemini` guide tabs
 3. Expected: each tab shows the same install commands as the landing page
 4. Tap a command line in each tab
 5. Expected: the tapped command line is copied to the system clipboard without navigating away from Home
@@ -130,7 +130,7 @@
 
 ## 1d. Windows Host CLI
 
-1. On an x86_64 Windows machine, run `irm https://zedra.dev/install.ps1 | iex` from PowerShell
+1. On an x86_64 Windows machine, run `powershell -c "irm https://zedra.dev/install.ps1 | iex"` from Command Prompt or Windows Terminal
 2. Expected: `zedra.exe` is installed under `%LOCALAPPDATA%\Programs\zedra\bin`, the directory is added to the user `Path`, and `zedra --help` works from the current shell
 3. Start the daemon from PowerShell: `zedra start --workdir C:\path\to\repo --detach`
 4. Expected: startup succeeds, Windows may show a firewall prompt, and `daemon.lock` plus `daemon.log` are written under `%APPDATA%\zedra\workspaces\` using their respective workspace hashes

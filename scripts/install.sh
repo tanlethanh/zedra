@@ -52,7 +52,7 @@ detect_platform() {
         Linux)  os="unknown-linux-gnu" ;;
         MINGW*|MSYS*|CYGWIN*)
             echo "Error: use the Windows PowerShell installer instead:"
-            echo "  irm https://zedra.dev/install.ps1 | iex"
+            echo "  powershell -c \"irm https://zedra.dev/install.ps1 | iex\""
             exit 1
             ;;
         *)      echo "Error: unsupported OS: $os"; exit 1 ;;

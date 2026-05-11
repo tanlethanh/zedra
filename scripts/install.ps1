@@ -1,7 +1,7 @@
 # Zedra Host installer for Windows.
 #
 # Usage:
-#   irm https://zedra.dev/install.ps1 | iex
+#   powershell -c "irm https://zedra.dev/install.ps1 | iex"
 #
 # Optional direct usage after download:
 #   .\install.ps1 -Version v0.2.4 -Prefix "$env:LOCALAPPDATA\Programs\zedra\bin"

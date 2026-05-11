@@ -21,7 +21,7 @@ const installTabs = [
     blocks: [
       [
         { text: "# Install Zedra CLI", comment: true },
-        { text: "irm https://zedra.dev/install.ps1 | iex" },
+        { text: 'powershell -c "irm https://zedra.dev/install.ps1 | iex"' },
       ],
       [{ text: "# Start Zedra in the working directory", comment: true }, { text: "zedra start" }],
     ],
