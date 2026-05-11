@@ -12,6 +12,7 @@ use tracing::*;
 use zedra_osc::OscEvent;
 
 use crate::element::TerminalElement;
+use crate::selection::TerminalSelectionDocument;
 use crate::terminal::{Terminal, TerminalContent, TerminalEvent};
 
 const FALLBACK_CELL_WIDTH: f32 = 9.0;
@@ -485,10 +486,15 @@ impl TerminalView {
 
     fn handle_terminal_press(
         &mut self,
-        position: Point<Pixels>,
+        event: &PressEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let position = event
+            .up
+            .as_ref()
+            .map_or(event.down.position, |up| up.position);
+
         let hyperlink = self.terminal.read(cx).hyperlink_at(
             position,
             self.grid_origin,
@@ -520,6 +526,64 @@ impl TerminalView {
             cx.notify();
         }
     }
+
+    fn handle_terminal_long_press(
+        &mut self,
+        event: &PressEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let position = event.down.position;
+        window.prevent_default();
+
+        if let Some((selection_document, selection_index)) =
+            self.selection_document_at_point(position, cx)
+        {
+            if let Some(selection_index) = selection_index {
+                let range = selection_document.word_range_at(selection_index);
+                self.terminal.update(cx, |terminal, cx| {
+                    terminal.set_selection_range(range);
+                    cx.notify();
+                });
+            } else {
+                cx.emit(TerminalEvent::NativePasteMenuRequested { position });
+            }
+        }
+    }
+
+    fn selection_document_at_point(
+        &self,
+        position: Point<Pixels>,
+        cx: &App,
+    ) -> Option<(TerminalSelectionDocument, Option<usize>)> {
+        let origin = self.grid_origin?;
+        let terminal = self.terminal.read(cx);
+        let content = terminal.content();
+        let size = terminal.size();
+        let grid_bounds = Bounds::new(
+            origin,
+            gpui::size(
+                size.cell_width * content.grid_cols as f32,
+                size.line_height * content.grid_rows as f32,
+            ),
+        );
+        if !grid_bounds.contains(&position) {
+            return None;
+        }
+
+        let selection_document =
+            TerminalSelectionDocument::new(&content, origin, size.cell_width, size.line_height);
+        let on_text = selection_document.character_index_for_point(position);
+        Some((selection_document, on_text))
+    }
+
+    pub fn paste_text_from_native_menu(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.terminal.update(cx, |terminal, _| {
+            terminal.clear_selection_range();
+            terminal.paste_text(text);
+        });
+        cx.notify();
+    }
 }
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
@@ -536,6 +600,7 @@ impl Render for TerminalView {
         let content = terminal.content();
         let size = terminal.size();
         let history_size = terminal.history_size();
+        let selection_active = terminal.selection_active();
         let focus_handle = self.focus_handle.clone();
         let visual_scroll_offset_px =
             self.scroll_offset_px + self.effective_keyboard_top_reveal_px(&content, history_size);
@@ -549,7 +614,10 @@ impl Render for TerminalView {
             .track_focus(&focus_handle)
             .manual_focus()
             .on_press(cx.listener(|this, event: &PressEvent, window, cx| {
-                this.handle_terminal_press(event.position(), window, cx);
+                this.handle_terminal_press(event, window, cx);
+            }))
+            .on_long_press(cx.listener(|this, event: &PressEvent, window, cx| {
+                this.handle_terminal_long_press(event, window, cx);
             }))
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
                 let previous_display_offset = this.display_offset(cx);
@@ -687,6 +755,7 @@ impl Render for TerminalView {
                 self.terminal.downgrade(),
                 self.focus_handle.clone(),
                 self.focus_handle.is_focused(window),
+                selection_active,
             ))
     }
 }
@@ -694,14 +763,15 @@ impl Render for TerminalView {
 #[cfg(test)]
 mod tests {
     use super::{TerminalView, keyboard_content_offset_px};
-    use std::path::Path;
+    use std::{path::Path, time::Duration};
 
     use crate::terminal::{Terminal, TerminalContent, TerminalEvent, TerminalHyperlinkTarget};
     use alacritty_terminal::term::TermMode;
     use futures::{FutureExt as _, StreamExt as _};
     use gpui::{
-        Modifiers, Pixels, Point, PointerButton, PointerDownEvent, PointerKind, PointerUpEvent,
-        TestAppContext, TouchPhase, VisualTestContext, WindowHandle, point, px, size,
+        Modifiers, Pixels, Point, PointerButton, PointerCancelEvent, PointerDownEvent, PointerKind,
+        PointerMoveEvent, PointerUpEvent, TestAppContext, TouchPhase, VisualTestContext,
+        WindowHandle, point, px, size,
     };
 
     fn open_terminal_window(cx: &mut TestAppContext) -> WindowHandle<TerminalView> {
@@ -746,6 +816,84 @@ mod tests {
             is_primary: true,
             button: PointerButton::Primary,
             position: point(px(12.0), px(12.0)),
+            modifiers: Modifiers::default(),
+        });
+    }
+
+    fn drag_terminal_tap_candidate(window: WindowHandle<TerminalView>, cx: &mut TestAppContext) {
+        let mut window_cx = VisualTestContext::from_window(*window, cx);
+        let start = point(px(12.0), px(12.0));
+        let moved = point(px(12.0), px(32.0));
+        window_cx.simulate_event(PointerDownEvent {
+            pointer_id: 1,
+            kind: PointerKind::Touch,
+            is_primary: true,
+            button: PointerButton::Primary,
+            position: start,
+            modifiers: Modifiers::default(),
+        });
+        window_cx.simulate_event(PointerMoveEvent {
+            pointer_id: 1,
+            kind: PointerKind::Touch,
+            is_primary: true,
+            pressed_button: Some(PointerButton::Primary),
+            position: moved,
+            modifiers: Modifiers::default(),
+        });
+        window_cx.simulate_event(PointerUpEvent {
+            pointer_id: 1,
+            kind: PointerKind::Touch,
+            is_primary: true,
+            button: PointerButton::Primary,
+            position: moved,
+            modifiers: Modifiers::default(),
+        });
+    }
+
+    fn cancel_terminal_tap_candidate(window: WindowHandle<TerminalView>, cx: &mut TestAppContext) {
+        let mut window_cx = VisualTestContext::from_window(*window, cx);
+        let position = point(px(12.0), px(12.0));
+        window_cx.simulate_event(PointerDownEvent {
+            pointer_id: 1,
+            kind: PointerKind::Touch,
+            is_primary: true,
+            button: PointerButton::Primary,
+            position,
+            modifiers: Modifiers::default(),
+        });
+        window_cx.simulate_event(PointerCancelEvent {
+            pointer_id: 1,
+            kind: PointerKind::Touch,
+            is_primary: true,
+            position,
+            modifiers: Modifiers::default(),
+        });
+    }
+
+    fn long_press_terminal_at(
+        window: WindowHandle<TerminalView>,
+        cx: &mut TestAppContext,
+        position: Point<Pixels>,
+    ) {
+        let mut window_cx = VisualTestContext::from_window(*window, cx);
+        window_cx.simulate_event(PointerDownEvent {
+            pointer_id: 1,
+            kind: PointerKind::Touch,
+            is_primary: true,
+            button: PointerButton::Primary,
+            position,
+            modifiers: Modifiers::default(),
+        });
+        drop(window_cx);
+        cx.executor().advance_clock(Duration::from_millis(600));
+        cx.run_until_parked();
+        let mut window_cx = VisualTestContext::from_window(*window, cx);
+        window_cx.simulate_event(PointerUpEvent {
+            pointer_id: 1,
+            kind: PointerKind::Touch,
+            is_primary: true,
+            button: PointerButton::Primary,
+            position,
             modifiers: Modifiers::default(),
         });
     }
@@ -985,7 +1133,102 @@ mod tests {
     }
 
     #[test]
-    fn touch_scroll_does_not_toggle_keyboard() {
+    fn terminal_long_press_selects_output_without_showing_keyboard() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                terminal_view.terminal.update(cx, |terminal, _| {
+                    terminal.advance_bytes(b"hello world\r\n");
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        long_press_terminal_at(window, &mut cx, point(px(12.0), px(12.0)));
+        cx.run_until_parked();
+
+        window
+            .update(&mut cx, |terminal_view, window, cx| {
+                assert!(!terminal_view.focus_handle.is_focused(window));
+                assert!(!window.is_soft_keyboard_visible());
+                assert_eq!(
+                    terminal_view.terminal.read(cx).selection_range(),
+                    Some(0..5)
+                );
+            })
+            .unwrap();
+        cx.quit();
+    }
+
+    #[test]
+    fn terminal_long_press_empty_cell_requests_native_paste_menu() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+
+        let root = window.root(&mut cx).unwrap();
+        let mut events = cx.events(&root);
+        let position = point(px(42.0), px(42.0));
+        long_press_terminal_at(window, &mut cx, position);
+        cx.run_until_parked();
+
+        match events.next().now_or_never().flatten() {
+            Some(TerminalEvent::NativePasteMenuRequested { position: actual }) => {
+                assert_eq!(actual, position);
+            }
+            event => panic!("expected native paste menu request, got {event:?}"),
+        }
+        window
+            .update(&mut cx, |terminal_view, window, cx| {
+                assert!(!terminal_view.focus_handle.is_focused(window));
+                assert!(!window.is_soft_keyboard_visible());
+                assert_eq!(terminal_view.terminal.read(cx).selection_range(), None);
+            })
+            .unwrap();
+        cx.quit();
+    }
+
+    #[test]
+    fn dragged_terminal_touch_does_not_activate_keyboard() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+
+        drag_terminal_tap_candidate(window, &mut cx);
+        cx.run_until_parked();
+
+        window
+            .update(&mut cx, |terminal, window, _| {
+                assert!(!terminal.focus_handle.is_focused(window));
+                assert!(!window.is_soft_keyboard_visible());
+            })
+            .unwrap();
+        cx.quit();
+    }
+
+    #[test]
+    fn cancelled_terminal_touch_does_not_activate_keyboard() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+
+        cancel_terminal_tap_candidate(window, &mut cx);
+        cx.run_until_parked();
+
+        window
+            .update(&mut cx, |terminal, window, _| {
+                assert!(!terminal.focus_handle.is_focused(window));
+                assert!(!window.is_soft_keyboard_visible());
+            })
+            .unwrap();
+        cx.quit();
+    }
+
+    #[test]
+    fn touch_scroll_does_not_dismiss_keyboard() {
         let mut cx = TestAppContext::single();
         let window = open_terminal_window(&mut cx);
         cx.run_until_parked();

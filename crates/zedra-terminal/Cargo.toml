@@ -10,6 +10,7 @@ tracing.workspace = true
 itertools.workspace = true
 futures.workspace = true
 tokio.workspace = true
+smallvec = "1"
 zedra-osc = { path = "../zedra-osc" }
 
 [dev-dependencies]

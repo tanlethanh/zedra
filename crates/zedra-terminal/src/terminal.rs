@@ -15,14 +15,15 @@ use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{
     Color as AlacColor, CursorShape, NamedColor, Processor, Rgb as AlacRgb,
 };
-use gpui::{Context, Keystroke, Pixels, ScrollDelta, ScrollWheelEvent, Task, px};
+use gpui::{
+    Context, Keystroke, Pixels, Point as GpuiPoint, ScrollDelta, ScrollWheelEvent, Task, px,
+};
 use tokio::sync::{broadcast, mpsc};
 use zedra_osc::{OscEvent, OscScanner};
 
 const REMOTE_TOUCH_SCROLL_STEP_PX: f32 = 12.0;
 
 use crate::keys::to_esc_str;
-
 /// Events emitted by the terminal to observers.
 #[derive(Debug, Clone)]
 pub enum TerminalEvent {
@@ -38,6 +39,9 @@ pub enum TerminalEvent {
     ScrollbackPositionChanged {
         display_offset: usize,
         history_size: usize,
+    },
+    NativePasteMenuRequested {
+        position: GpuiPoint<Pixels>,
     },
 }
 
@@ -264,6 +268,7 @@ pub struct Terminal {
     alacritty_event_rx: std_mpsc::Receiver<AlacTermEvent>,
     input_tx: Option<mpsc::Sender<Vec<u8>>>,
     output_task: Option<Task<()>>,
+    selection_range: Option<Range<usize>>,
 }
 
 impl Terminal {
@@ -297,6 +302,7 @@ impl Terminal {
             alacritty_event_rx,
             input_tx: None,
             output_task: None,
+            selection_range: None,
         }
     }
 
@@ -568,6 +574,38 @@ impl Terminal {
                 error!("failed to send bytes: {:?}", e);
             }
         }
+    }
+
+    pub fn paste_text(&self, text: &str) {
+        let bracketed = self.mode.contains(TermMode::BRACKETED_PASTE);
+        let bytes = if bracketed {
+            let text = text.replace('\x1b', "");
+            format!("\x1b[200~{text}\x1b[201~").into_bytes()
+        } else {
+            text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
+        };
+
+        if let Some(tx) = &self.input_tx {
+            if let Err(error) = tx.try_send(bytes) {
+                error!("failed to send pasted text: {:?}", error);
+            }
+        }
+    }
+
+    pub fn selection_range(&self) -> Option<Range<usize>> {
+        self.selection_range.clone()
+    }
+
+    pub fn set_selection_range(&mut self, range: Range<usize>) {
+        self.selection_range = Some(range);
+    }
+
+    pub fn clear_selection_range(&mut self) -> bool {
+        self.selection_range.take().is_some()
+    }
+
+    pub fn selection_active(&self) -> bool {
+        self.selection_range.is_some()
     }
 
     /// Scroll the terminal by a number of lines (positive = up)
@@ -2508,6 +2546,7 @@ mod tests {
     use std::path::Path;
 
     use alacritty_terminal::index::{Column, Line, Point};
+    use alacritty_terminal::term::TermMode;
     use gpui::px;
     use tokio::sync::mpsc;
 
@@ -2583,6 +2622,31 @@ mod tests {
 
         let response = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
         assert_eq!(response, "\x1b[?6c");
+    }
+
+    #[test]
+    fn paste_text_normalizes_newlines_without_bracketed_paste() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let (input_tx, mut input_rx) = mpsc::channel(4);
+        terminal.input_tx = Some(input_tx);
+
+        terminal.paste_text("one\r\ntwo\nthree");
+
+        let bytes = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
+        assert_eq!(bytes, "one\rtwo\rthree");
+    }
+
+    #[test]
+    fn paste_text_uses_bracketed_paste_and_strips_esc() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let (input_tx, mut input_rx) = mpsc::channel(4);
+        terminal.input_tx = Some(input_tx);
+        terminal.mode.insert(TermMode::BRACKETED_PASTE);
+
+        terminal.paste_text("one\x1b[31mtwo");
+
+        let bytes = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
+        assert_eq!(bytes, "\x1b[200~one[31mtwo\x1b[201~");
     }
 
     #[test]
