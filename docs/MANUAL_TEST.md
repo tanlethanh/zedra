@@ -405,6 +405,18 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:
 20. With the keyboard still visible and enough scrollback to reach history top, drag upward until scrolling stops, then keep dragging slightly
 21. Expected: the oldest scrollback rows can be revealed and are not clipped above the terminal viewport
 
+## 11-Android. Terminal Keyboard And IME
+
+1. Connect to a session on an Android device and open the terminal view
+2. Tap a non-hyperlink area of the terminal once
+3. Expected: the terminal becomes focused, the software keyboard appears, and terminal input works
+4. Type plain text, press backspace, press enter, and type another command
+5. Expected: committed text, delete, and enter reach the PTY exactly once
+6. Use an IME that composes text, such as Vietnamese Telex or Japanese, type a short composition, and accept it
+7. Expected: composing text updates without duplicating committed characters, and the accepted text reaches the PTY once
+8. Tap the already-focused terminal while the keyboard is visible
+9. Expected: the software keyboard dismisses and the next terminal tap reopens it
+
 ## 11a. Terminal Scroll To Bottom Native Button On iOS
 
 1. Connect to a session on iPhone or iOS simulator and open the terminal view
