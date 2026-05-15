@@ -9,7 +9,7 @@ ACTIVITY_CLASS="dev.zedra.app.MainActivity"
 PREF_FILE="/tmp/zedra-android-device-$PPID"
 
 usage() {
-    echo "Usage: $0 [device|emulator] [--no-build] [--release] [--preview] [--debug] [--debug-telemetry] [--device-id <SERIAL>] [--select-device] [--launch-url <URL>] [--target <ABI>]"
+    echo "Usage: $0 [device|emulator] [--no-build] [--release] [--preview] [--debug] [--debug-telemetry] [--atlas-oldest-first] [--device-id <SERIAL>] [--select-device] [--launch-url <URL>] [--target <ABI>]"
     echo ""
     echo "  device    Build, install, and run on a connected Android target (default)"
     echo "  emulator  Restrict target selection to Android emulators"
@@ -19,6 +19,7 @@ usage() {
     echo "  --preview               Enable preview feature flag for Rust"
     echo "  --debug                 Use Rust debug profile (default unless --release is passed)"
     echo "  --debug-telemetry       Enable debug telemetry feature flag"
+    echo "  --atlas-oldest-first    Enable experimental Android mono-atlas oldest-first allocator"
     echo "  --device-id <SERIAL>    Target a specific adb serial (skips selection)"
     echo "  --select-device         Ignore saved device preference and re-prompt"
     echo "  --launch-url <URL>      Open the app with a deep link URL (e.g. zedra://...)"
@@ -87,6 +88,9 @@ while [ $# -gt 0 ]; do
         --debug-telemetry)
             REQUESTED_DEBUG_TELEMETRY=true
             RUST_FLAGS+=(--debug-telemetry)
+            ;;
+        --atlas-oldest-first)
+            RUST_FLAGS+=(--atlas-oldest-first)
             ;;
         --device-id)
             shift

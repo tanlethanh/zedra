@@ -19,6 +19,10 @@ for arg in "$@"; do
             FEATURES="$FEATURES,debug-telemetry"
             echo "Debug telemetry enabled (events logged to logcat)"
             ;;
+        --atlas-oldest-first)
+            FEATURES="$FEATURES,atlas-oldest-first"
+            echo "Experiment enabled: atlas-oldest-first"
+            ;;
         --target=*)
             TARGETS="$TARGETS -t ${arg#--target=}"
             ;;
