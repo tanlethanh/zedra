@@ -58,6 +58,28 @@ debug = 1
 # Faster linking: avoid running dsymutil on macOS
 split-debuginfo = "unpacked"
 
+[profile.dev.package]
+# Android/iOS app builds run from this root workspace, so vendor/zed's dev
+# package overrides are not applied. Keep hot GPUI layout/text dependencies
+# optimized while retaining debug assertions and developer-only benchmark UI.
+gpui = { opt-level = 3 }
+gpui_android = { opt-level = 3 }
+gpui_wgpu = { opt-level = 3 }
+taffy = { opt-level = 3 }
+cosmic-text = { opt-level = 3 }
+swash = { opt-level = 3 }
+fontdb = { opt-level = 3 }
+harfrust = { opt-level = 3 }
+rustybuzz = { opt-level = 3 }
+skrifa = { opt-level = 3 }
+ttf-parser = { opt-level = 3 }
+unicode-bidi = { opt-level = 3 }
+unicode-linebreak = { opt-level = 3 }
+unicode-script = { opt-level = 3 }
+unicode-segmentation = { opt-level = 3 }
+yazi = { opt-level = 3 }
+zeno = { opt-level = 3 }
+
 [profile.release]
 opt-level = 3
 lto = "thin"
