@@ -2,6 +2,7 @@
 
 pub mod api;
 pub mod client;
+pub mod delta;
 pub mod docs_tree;
 pub mod fs;
 pub mod ga4;

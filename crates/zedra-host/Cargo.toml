@@ -39,12 +39,14 @@ clap = { version = "4", features = ["derive"] }
 # Serialization
 serde.workspace = true
 serde_json = { workspace = true, features = ["std"] }
+data-encoding.workspace = true
 
 # Random/crypto
 rand.workspace = true
 ed25519-dalek.workspace = true
 sha2.workspace = true
-uuid = { version = "1", features = ["v4"] }
+hex.workspace = true
+uuid = { version = "1", features = ["v4", "serde"] }
 
 # Archive extraction (for self-update)
 flate2 = "1"

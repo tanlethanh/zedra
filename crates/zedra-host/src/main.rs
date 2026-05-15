@@ -17,8 +17,8 @@ use std::sync::Arc;
 use zedra_host::client as zedra_client;
 use zedra_host::ga4::Ga4;
 use zedra_host::{
-    api, identity, iroh_listener, metrics, net_monitor, qr, rpc_daemon, session_registry, utils,
-    version_check, workspace_lock,
+    api, delta, identity, iroh_listener, metrics, net_monitor, qr, rpc_daemon, session_registry,
+    utils, version_check, workspace_lock,
 };
 use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
@@ -57,6 +57,61 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Authenticate this workspace with Zedra Delta
+    Auth {
+        #[command(subcommand)]
+        command: Option<AuthCommand>,
+
+        /// Working directory to authenticate
+        #[arg(short, long, default_value = ".")]
+        workdir: String,
+
+        /// Delta API origin
+        #[arg(long, default_value = "http://localhost:8080")]
+        delta_url: String,
+
+        /// Dev auth subject for local Delta testing
+        #[arg(long, default_value = "zedra-dev")]
+        dev_subject: String,
+    },
+
+    /// Show Delta stack information
+    Stack {
+        /// Working directory with Delta auth config
+        #[arg(short, long, default_value = ".")]
+        workdir: String,
+
+        #[command(subcommand)]
+        command: Option<StackCommand>,
+    },
+
+    /// Send a test notification through Zedra Delta
+    Send {
+        /// Working directory with Delta auth config
+        #[arg(short, long, default_value = ".")]
+        workdir: String,
+
+        /// Target node id
+        #[arg(long = "id")]
+        id: uuid::Uuid,
+
+        /// Notification title
+        #[arg(long)]
+        title: String,
+
+        /// Notification body
+        #[arg(long)]
+        body: Option<String>,
+
+        /// Notification category
+        #[arg(long)]
+        category: Option<String>,
+
+        /// Deeplink to open from the notification
+        #[arg(long)]
+        deeplink: Option<String>,
+    },
+
     /// Start the Zedra daemon for this workspace
     Start {
         /// Working directory to serve
@@ -208,6 +263,33 @@ enum Commands {
         /// Command to show help for
         #[arg(value_name = "COMMAND")]
         command: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum AuthCommand {
+    /// Show Delta auth status
+    Status {
+        /// Working directory with Delta auth config
+        #[arg(short, long)]
+        workdir: Option<String>,
+    },
+
+    /// Remove stored Delta auth config
+    Logout {
+        /// Working directory with Delta auth config
+        #[arg(short, long)]
+        workdir: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum StackCommand {
+    /// List nodes in the authed Delta stack
+    Nodes {
+        /// Working directory with Delta auth config
+        #[arg(short, long)]
+        workdir: Option<String>,
     },
 }
 
@@ -433,6 +515,12 @@ fn render_cli_version() -> String {
     format!("{}\n", env!("CARGO_PKG_VERSION"))
 }
 
+fn canonical_workdir(workdir: &str) -> PathBuf {
+    std::path::PathBuf::from(workdir)
+        .canonicalize()
+        .unwrap_or_else(|_| std::path::PathBuf::from(workdir))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -476,6 +564,89 @@ async fn main() -> Result<()> {
     }
 
     match command {
+        Commands::Auth {
+            command,
+            workdir,
+            delta_url,
+            dev_subject,
+        } => match command {
+            Some(AuthCommand::Status {
+                workdir: status_workdir,
+            }) => {
+                let workdir = status_workdir.as_deref().unwrap_or(&workdir);
+                let workdir = canonical_workdir(workdir);
+                match delta::load_config(&workdir) {
+                    Ok(config) => print_delta_auth_status(&workdir, &config),
+                    Err(_) => {
+                        utils::println_note("Not authenticated with Zedra Delta.");
+                        utils::println_note(format!(
+                            "Run `{}` from this workspace.",
+                            utils::command_text("zedra auth")
+                        ));
+                    }
+                }
+            }
+            Some(AuthCommand::Logout {
+                workdir: logout_workdir,
+            }) => {
+                let workdir = logout_workdir.as_deref().unwrap_or(&workdir);
+                let workdir = canonical_workdir(workdir);
+                if delta::remove_config(&workdir)? {
+                    utils::println_success("Signed out of Zedra Delta.");
+                } else {
+                    utils::println_note("No Delta auth config found.");
+                }
+            }
+            None => {
+                let workdir = canonical_workdir(&workdir);
+                let config = delta::dev_auth(&workdir, &delta_url, &dev_subject).await?;
+                utils::println_success("Authenticated with Zedra Delta.");
+                println!();
+                print_delta_auth_status(&workdir, &config);
+            }
+        },
+
+        Commands::Stack { workdir, command } => {
+            let workdir = canonical_workdir(&workdir);
+            match command {
+                Some(StackCommand::Nodes {
+                    workdir: node_workdir,
+                }) => {
+                    let workdir = node_workdir
+                        .as_deref()
+                        .map(canonical_workdir)
+                        .unwrap_or(workdir);
+                    let nodes = delta::list_nodes(&workdir).await?;
+                    print_delta_nodes(&nodes);
+                }
+                None => {
+                    let config = delta::load_config(&workdir)?;
+                    print_delta_stack(&workdir, &config);
+                }
+            }
+        }
+
+        Commands::Send {
+            workdir,
+            id,
+            title,
+            body,
+            category,
+            deeplink,
+        } => {
+            let workdir = canonical_workdir(&workdir);
+            let response =
+                delta::send_notification(&workdir, id, title, body, category, deeplink).await?;
+            utils::println_success("Notification accepted.");
+            println!();
+            utils::print_key_values(&[
+                ("Accepted", response.accepted.to_string()),
+                ("Recipients", response.recipients.to_string()),
+                ("Provider OK", response.provider_success.to_string()),
+                ("Provider Fail", response.provider_failure.to_string()),
+            ]);
+        }
+
         Commands::Client {
             workdir,
             count,
@@ -1184,6 +1355,59 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_delta_auth_status(workdir: &Path, config: &delta::DeltaConfig) {
+    utils::println_heading("Zedra Delta Auth");
+    println!();
+    utils::print_key_values(&[
+        ("Workdir", workdir.display().to_string()),
+        ("Delta URL", config.delta_url.clone()),
+        ("Stack", config.stack_id.to_string()),
+        ("Node", config.node_id.to_string()),
+        ("Expires", config.token_expires_at.clone()),
+    ]);
+}
+
+fn print_delta_stack(workdir: &Path, config: &delta::DeltaConfig) {
+    utils::println_heading("Zedra Delta Stack");
+    println!();
+    utils::print_key_values(&[
+        ("Workdir", workdir.display().to_string()),
+        ("Delta URL", config.delta_url.clone()),
+        ("Stack", config.stack_id.to_string()),
+        ("Host Node", config.node_id.to_string()),
+    ]);
+    println!();
+    println!(
+        "Run `{}` to list stack nodes.",
+        utils::command_text("zedra stack nodes")
+    );
+}
+
+fn print_delta_nodes(nodes: &[delta::NodeSummary]) {
+    if nodes.is_empty() {
+        utils::println_note("No nodes found.");
+        return;
+    }
+    utils::println_heading("Zedra Delta Nodes");
+    println!();
+    let rows = nodes
+        .iter()
+        .map(|node| {
+            vec![
+                node.id.to_string(),
+                node.kind.as_str().to_string(),
+                if node.push_enabled { "yes" } else { "no" }.to_string(),
+                node.public_key_fingerprint.clone(),
+                node.display_name.clone().unwrap_or_else(|| "-".to_string()),
+            ]
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "{}",
+        utils::render_table(&["ID", "KIND", "PUSH", "KEY", "NAME"], &rows)
+    );
 }
 
 fn print_command_help(command_path: &[String]) -> Result<()> {
