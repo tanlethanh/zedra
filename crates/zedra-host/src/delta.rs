@@ -4,7 +4,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::identity;
@@ -160,19 +160,19 @@ enum NotificationPriority {
     Normal,
 }
 
-pub fn config_path(workdir: &Path) -> Result<PathBuf> {
-    Ok(identity::workspace_config_dir(workdir)?.join(CONFIG_FILE))
+pub fn config_path() -> Result<PathBuf> {
+    Ok(identity::host_config_dir()?.join(CONFIG_FILE))
 }
 
-pub fn load_config(workdir: &Path) -> Result<DeltaConfig> {
-    let path = config_path(workdir)?;
+pub fn load_config() -> Result<DeltaConfig> {
+    let path = config_path()?;
     let json = std::fs::read_to_string(&path)
         .with_context(|| format!("Delta auth config not found at {}", path.display()))?;
     serde_json::from_str(&json).context("failed to parse Delta auth config")
 }
 
-pub fn remove_config(workdir: &Path) -> Result<bool> {
-    let path = config_path(workdir)?;
+pub fn remove_config() -> Result<bool> {
+    let path = config_path()?;
     if path.exists() {
         std::fs::remove_file(path)?;
         Ok(true)
@@ -181,10 +181,10 @@ pub fn remove_config(workdir: &Path) -> Result<bool> {
     }
 }
 
-pub async fn dev_auth(workdir: &Path, delta_url: &str, subject: &str) -> Result<DeltaConfig> {
-    let config_dir = identity::workspace_config_dir(workdir)?;
+pub async fn dev_auth(delta_url: &str, subject: &str) -> Result<DeltaConfig> {
+    let config_dir = identity::host_config_dir()?;
     std::fs::create_dir_all(&config_dir)?;
-    let signing_key = load_signing_key(workdir)?;
+    let signing_key = load_signing_key()?;
     let client = DeltaClient::new(delta_url);
     let auth = client
         .dev_auth(&DevAuthRequest {
@@ -200,10 +200,9 @@ pub async fn dev_auth(workdir: &Path, delta_url: &str, subject: &str) -> Result<
             &NodeRegistrationRequest {
                 public_key: encode_base64_no_pad(signing_key.verifying_key().to_bytes()),
                 kind: NodeKind::Host,
-                display_name: Some(default_host_display_name(workdir)),
+                display_name: Some(default_host_display_name()),
                 metadata: serde_json::json!({
                     "source": "zedra_cli",
-                    "workdir_name": workdir.file_name().and_then(|name| name.to_str()),
                     "hostname": hostname::get().ok().and_then(|name| name.into_string().ok()),
                 }),
                 receive_notifications: false,
@@ -218,22 +217,21 @@ pub async fn dev_auth(workdir: &Path, delta_url: &str, subject: &str) -> Result<
         refresh_token: auth.refresh_token,
         token_expires_at: auth.expires_at,
     };
-    save_config(workdir, &config)?;
+    save_config(&config)?;
     Ok(config)
 }
 
-pub async fn start_browser_auth(workdir: &Path, delta_url: &str) -> Result<CliAuthSession> {
-    let config_dir = identity::workspace_config_dir(workdir)?;
+pub async fn start_browser_auth(delta_url: &str) -> Result<CliAuthSession> {
+    let config_dir = identity::host_config_dir()?;
     std::fs::create_dir_all(&config_dir)?;
-    let signing_key = load_signing_key(workdir)?;
+    let signing_key = load_signing_key()?;
     let client = DeltaClient::new(delta_url);
     let started = client
         .cli_auth_start(&CliAuthStartRequest {
             public_key: encode_base64_no_pad(signing_key.verifying_key().to_bytes()),
-            display_name: Some(default_host_display_name(workdir)),
+            display_name: Some(default_host_display_name()),
             metadata: serde_json::json!({
                 "source": "zedra_cli",
-                "workdir_name": workdir.file_name().and_then(|name| name.to_str()),
                 "hostname": hostname::get().ok().and_then(|name| name.into_string().ok()),
             }),
         })
@@ -248,10 +246,7 @@ pub async fn start_browser_auth(workdir: &Path, delta_url: &str) -> Result<CliAu
     })
 }
 
-pub async fn complete_browser_auth(
-    workdir: &Path,
-    session: &CliAuthSession,
-) -> Result<DeltaConfig> {
+pub async fn complete_browser_auth(session: &CliAuthSession) -> Result<DeltaConfig> {
     let client = DeltaClient::new(&session.delta_url);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10 * 60);
     loop {
@@ -263,7 +258,7 @@ pub async fn complete_browser_auth(
         {
             CliAuthPollResponse::Pending => {
                 if std::time::Instant::now() >= deadline {
-                    anyhow::bail!("CLI auth timed out; start `zedra auth` again");
+                    anyhow::bail!("CLI auth timed out; start `zedra auth login` again");
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
@@ -282,11 +277,11 @@ pub async fn complete_browser_auth(
                     refresh_token,
                     token_expires_at: expires_at,
                 };
-                save_config(workdir, &config)?;
+                save_config(&config)?;
                 return Ok(config);
             }
             CliAuthPollResponse::Expired => {
-                anyhow::bail!("CLI auth request expired; start `zedra auth` again");
+                anyhow::bail!("CLI auth request expired; start `zedra auth login` again");
             }
             CliAuthPollResponse::Denied => {
                 anyhow::bail!("CLI auth request was denied");
@@ -295,9 +290,9 @@ pub async fn complete_browser_auth(
     }
 }
 
-pub async fn list_nodes(workdir: &Path) -> Result<Vec<NodeSummary>> {
-    let config = load_config(workdir)?;
-    let signing_key = load_signing_key(workdir)?;
+pub async fn list_nodes() -> Result<Vec<NodeSummary>> {
+    let config = load_config()?;
+    let signing_key = load_signing_key()?;
     let client = DeltaClient::new(&config.delta_url);
     let response = client
         .list_nodes_signed(config.stack_id, config.node_id, &signing_key)
@@ -306,15 +301,14 @@ pub async fn list_nodes(workdir: &Path) -> Result<Vec<NodeSummary>> {
 }
 
 pub async fn send_notification(
-    workdir: &Path,
     target_node_id: Uuid,
     title: String,
     body: Option<String>,
     category: Option<String>,
     deeplink: Option<String>,
 ) -> Result<NotificationSendResponse> {
-    let config = load_config(workdir)?;
-    let signing_key = load_signing_key(workdir)?;
+    let config = load_config()?;
+    let signing_key = load_signing_key()?;
     let client = DeltaClient::new(&config.delta_url);
     client
         .send_notification_signed(
@@ -336,8 +330,8 @@ pub async fn send_notification(
         .await
 }
 
-fn save_config(workdir: &Path, config: &DeltaConfig) -> Result<()> {
-    let path = config_path(workdir)?;
+fn save_config(config: &DeltaConfig) -> Result<()> {
+    let path = config_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -346,20 +340,21 @@ fn save_config(workdir: &Path, config: &DeltaConfig) -> Result<()> {
     Ok(())
 }
 
-fn load_signing_key(workdir: &Path) -> Result<SigningKey> {
-    let identity = identity::HostIdentity::load_or_generate_for_workdir(workdir)?;
+fn load_signing_key() -> Result<SigningKey> {
+    let identity = identity::HostIdentity::load_or_generate()?;
     Ok(SigningKey::from_bytes(
         &identity.iroh_secret_key().to_bytes(),
     ))
 }
 
-fn default_host_display_name(workdir: &Path) -> String {
-    let name = workdir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .unwrap_or("workspace");
-    format!("Zedra host ({name})")
+fn default_host_display_name() -> String {
+    match hostname::get()
+        .ok()
+        .and_then(|name| name.into_string().ok())
+    {
+        Some(name) if !name.is_empty() => format!("Zedra host ({name})"),
+        _ => "Zedra host".to_string(),
+    }
 }
 
 struct DeltaClient {

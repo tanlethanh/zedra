@@ -58,40 +58,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Authenticate this workspace with Zedra Delta
+    /// Manage host auth with Zedra Delta
     Auth {
         #[command(subcommand)]
         command: Option<AuthCommand>,
-
-        /// Working directory to authenticate
-        #[arg(short, long, default_value = ".")]
-        workdir: String,
-
-        /// Delta API origin
-        #[arg(long, default_value = "https://delta.zedra.dev")]
-        delta_url: String,
-
-        /// Use local dev auth with this subject instead of browser auth
-        #[arg(long)]
-        dev_subject: Option<String>,
     },
 
     /// Show Delta stack information
     Stack {
-        /// Working directory with Delta auth config
-        #[arg(short, long, default_value = ".")]
-        workdir: String,
-
         #[command(subcommand)]
         command: Option<StackCommand>,
     },
 
     /// Send a test notification through Zedra Delta
     Send {
-        /// Working directory with Delta auth config
-        #[arg(short, long, default_value = ".")]
-        workdir: String,
-
         /// Target node id
         #[arg(long = "id")]
         id: uuid::Uuid,
@@ -269,29 +249,28 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum AuthCommand {
-    /// Show Delta auth status
-    Status {
-        /// Working directory with Delta auth config
-        #[arg(short, long)]
-        workdir: Option<String>,
+    /// Sign in this host with Zedra Delta
+    Login {
+        /// Delta API origin
+        #[arg(long, default_value = "https://delta.zedra.dev")]
+        delta_url: String,
+
+        /// Use local dev auth with this subject instead of browser auth
+        #[arg(long)]
+        dev_subject: Option<String>,
     },
 
+    /// Show Delta auth status
+    Status,
+
     /// Remove stored Delta auth config
-    Logout {
-        /// Working directory with Delta auth config
-        #[arg(short, long)]
-        workdir: Option<String>,
-    },
+    Logout,
 }
 
 #[derive(Subcommand)]
 enum StackCommand {
     /// List nodes in the authed Delta stack
-    Nodes {
-        /// Working directory with Delta auth config
-        #[arg(short, long)]
-        workdir: Option<String>,
-    },
+    Nodes,
 }
 
 fn write_api_discovery_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
@@ -516,12 +495,6 @@ fn render_cli_version() -> String {
     format!("{}\n", env!("CARGO_PKG_VERSION"))
 }
 
-fn canonical_workdir(workdir: &str) -> PathBuf {
-    std::path::PathBuf::from(workdir)
-        .canonicalize()
-        .unwrap_or_else(|_| std::path::PathBuf::from(workdir))
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -565,45 +538,15 @@ async fn main() -> Result<()> {
     }
 
     match command {
-        Commands::Auth {
-            command,
-            workdir,
-            delta_url,
-            dev_subject,
-        } => match command {
-            Some(AuthCommand::Status {
-                workdir: status_workdir,
+        Commands::Auth { command } => match command {
+            Some(AuthCommand::Login {
+                delta_url,
+                dev_subject,
             }) => {
-                let workdir = status_workdir.as_deref().unwrap_or(&workdir);
-                let workdir = canonical_workdir(workdir);
-                match delta::load_config(&workdir) {
-                    Ok(config) => print_delta_auth_status(&workdir, &config),
-                    Err(_) => {
-                        utils::println_note("Not authenticated with Zedra Delta.");
-                        utils::println_note(format!(
-                            "Run `{}` from this workspace.",
-                            utils::command_text("zedra auth")
-                        ));
-                    }
-                }
-            }
-            Some(AuthCommand::Logout {
-                workdir: logout_workdir,
-            }) => {
-                let workdir = logout_workdir.as_deref().unwrap_or(&workdir);
-                let workdir = canonical_workdir(workdir);
-                if delta::remove_config(&workdir)? {
-                    utils::println_success("Signed out of Zedra Delta.");
-                } else {
-                    utils::println_note("No Delta auth config found.");
-                }
-            }
-            None => {
-                let workdir = canonical_workdir(&workdir);
                 let config = if let Some(dev_subject) = dev_subject {
-                    delta::dev_auth(&workdir, &delta_url, &dev_subject).await?
+                    delta::dev_auth(&delta_url, &dev_subject).await?
                 } else {
-                    let session = delta::start_browser_auth(&workdir, &delta_url).await?;
+                    let session = delta::start_browser_auth(&delta_url).await?;
                     print_delta_browser_auth_prompt(&session);
                     if open_browser(&session.auth_url) {
                         utils::println_note("Opened the approval page in your browser.");
@@ -611,45 +554,50 @@ async fn main() -> Result<()> {
                         utils::println_note("Open the approval URL in your browser to continue.");
                     }
                     utils::println_note("Waiting for approval...");
-                    delta::complete_browser_auth(&workdir, &session).await?
+                    delta::complete_browser_auth(&session).await?
                 };
                 utils::println_success("Authenticated with Zedra Delta.");
                 println!();
-                print_delta_auth_status(&workdir, &config);
+                print_delta_auth_status(&config);
+            }
+            Some(AuthCommand::Status) | None => match delta::load_config() {
+                Ok(config) => print_delta_auth_status(&config),
+                Err(_) => {
+                    utils::println_note("Not authenticated with Zedra Delta.");
+                    utils::println_note(format!(
+                        "Run `{}` to sign in this host.",
+                        utils::command_text("zedra auth login")
+                    ));
+                }
+            },
+            Some(AuthCommand::Logout) => {
+                if delta::remove_config()? {
+                    utils::println_success("Signed out of Zedra Delta.");
+                } else {
+                    utils::println_note("No Delta auth config found.");
+                }
             }
         },
 
-        Commands::Stack { workdir, command } => {
-            let workdir = canonical_workdir(&workdir);
-            match command {
-                Some(StackCommand::Nodes {
-                    workdir: node_workdir,
-                }) => {
-                    let workdir = node_workdir
-                        .as_deref()
-                        .map(canonical_workdir)
-                        .unwrap_or(workdir);
-                    let nodes = delta::list_nodes(&workdir).await?;
-                    print_delta_nodes(&nodes);
-                }
-                None => {
-                    let config = delta::load_config(&workdir)?;
-                    print_delta_stack(&workdir, &config);
-                }
+        Commands::Stack { command } => match command {
+            Some(StackCommand::Nodes) => {
+                let nodes = delta::list_nodes().await?;
+                print_delta_nodes(&nodes);
             }
-        }
+            None => {
+                let config = delta::load_config()?;
+                print_delta_stack(&config);
+            }
+        },
 
         Commands::Send {
-            workdir,
             id,
             title,
             body,
             category,
             deeplink,
         } => {
-            let workdir = canonical_workdir(&workdir);
-            let response =
-                delta::send_notification(&workdir, id, title, body, category, deeplink).await?;
+            let response = delta::send_notification(id, title, body, category, deeplink).await?;
             utils::println_success("Notification accepted.");
             println!();
             utils::print_key_values(&[
@@ -1381,11 +1329,10 @@ fn print_delta_browser_auth_prompt(session: &delta::CliAuthSession) {
     println!();
 }
 
-fn print_delta_auth_status(workdir: &Path, config: &delta::DeltaConfig) {
+fn print_delta_auth_status(config: &delta::DeltaConfig) {
     utils::println_heading("Zedra Delta Auth");
     println!();
     utils::print_key_values(&[
-        ("Workdir", workdir.display().to_string()),
         ("Delta URL", config.delta_url.clone()),
         ("Stack", config.stack_id.to_string()),
         ("Node", config.node_id.to_string()),
@@ -1393,11 +1340,10 @@ fn print_delta_auth_status(workdir: &Path, config: &delta::DeltaConfig) {
     ]);
 }
 
-fn print_delta_stack(workdir: &Path, config: &delta::DeltaConfig) {
+fn print_delta_stack(config: &delta::DeltaConfig) {
     utils::println_heading("Zedra Delta Stack");
     println!();
     utils::print_key_values(&[
-        ("Workdir", workdir.display().to_string()),
         ("Delta URL", config.delta_url.clone()),
         ("Stack", config.stack_id.to_string()),
         ("Host Node", config.node_id.to_string()),
