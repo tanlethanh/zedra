@@ -13,6 +13,7 @@ use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 use std::sync::Arc;
 use zedra_host::client as zedra_client;
 use zedra_host::ga4::Ga4;
@@ -67,12 +68,12 @@ enum Commands {
         workdir: String,
 
         /// Delta API origin
-        #[arg(long, default_value = "http://localhost:8080")]
+        #[arg(long, default_value = "https://delta.zedra.dev")]
         delta_url: String,
 
-        /// Dev auth subject for local Delta testing
-        #[arg(long, default_value = "zedra-dev")]
-        dev_subject: String,
+        /// Use local dev auth with this subject instead of browser auth
+        #[arg(long)]
+        dev_subject: Option<String>,
     },
 
     /// Show Delta stack information
@@ -599,7 +600,19 @@ async fn main() -> Result<()> {
             }
             None => {
                 let workdir = canonical_workdir(&workdir);
-                let config = delta::dev_auth(&workdir, &delta_url, &dev_subject).await?;
+                let config = if let Some(dev_subject) = dev_subject {
+                    delta::dev_auth(&workdir, &delta_url, &dev_subject).await?
+                } else {
+                    let session = delta::start_browser_auth(&workdir, &delta_url).await?;
+                    print_delta_browser_auth_prompt(&session);
+                    if open_browser(&session.auth_url) {
+                        utils::println_note("Opened the approval page in your browser.");
+                    } else {
+                        utils::println_note("Open the approval URL in your browser to continue.");
+                    }
+                    utils::println_note("Waiting for approval...");
+                    delta::complete_browser_auth(&workdir, &session).await?
+                };
                 utils::println_success("Authenticated with Zedra Delta.");
                 println!();
                 print_delta_auth_status(&workdir, &config);
@@ -1357,6 +1370,17 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+fn print_delta_browser_auth_prompt(session: &delta::CliAuthSession) {
+    utils::println_heading("Zedra Delta Auth");
+    println!();
+    utils::print_key_values(&[
+        ("URL", session.auth_url.clone()),
+        ("Code", session.user_code.clone()),
+        ("Expires", session.expires_at.clone()),
+    ]);
+    println!();
+}
+
 fn print_delta_auth_status(workdir: &Path, config: &delta::DeltaConfig) {
     utils::println_heading("Zedra Delta Auth");
     println!();
@@ -1408,6 +1432,27 @@ fn print_delta_nodes(nodes: &[delta::NodeSummary]) {
         "{}",
         utils::render_table(&["ID", "KIND", "PUSH", "KEY", "NAME"], &rows)
     );
+}
+
+fn open_browser(url: &str) -> bool {
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = ProcessCommand::new("open");
+        command.arg(url);
+        command
+    } else if cfg!(target_os = "windows") {
+        let mut command = ProcessCommand::new("cmd");
+        command.args(["/C", "start", "", url]);
+        command
+    } else {
+        let mut command = ProcessCommand::new("xdg-open");
+        command.arg(url);
+        command
+    };
+
+    command
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 fn print_command_help(command_path: &[String]) -> Result<()> {

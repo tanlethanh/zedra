@@ -78,6 +78,50 @@ struct DevAuthRequest {
     display_name: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct CliAuthSession {
+    pub auth_url: String,
+    pub user_code: String,
+    pub expires_at: String,
+    poll_token: String,
+    delta_url: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CliAuthStartRequest {
+    public_key: String,
+    display_name: Option<String>,
+    metadata: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct CliAuthStartResponse {
+    auth_url: String,
+    user_code: String,
+    poll_token: String,
+    expires_at: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CliAuthPollRequest {
+    poll_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum CliAuthPollResponse {
+    Pending,
+    Approved {
+        stack_id: Uuid,
+        node_id: Uuid,
+        access_token: String,
+        refresh_token: String,
+        expires_at: String,
+    },
+    Expired,
+    Denied,
+}
+
 #[derive(Debug, Serialize)]
 struct NodeRegistrationRequest {
     public_key: String,
@@ -178,6 +222,79 @@ pub async fn dev_auth(workdir: &Path, delta_url: &str, subject: &str) -> Result<
     Ok(config)
 }
 
+pub async fn start_browser_auth(workdir: &Path, delta_url: &str) -> Result<CliAuthSession> {
+    let config_dir = identity::workspace_config_dir(workdir)?;
+    std::fs::create_dir_all(&config_dir)?;
+    let signing_key = load_signing_key(workdir)?;
+    let client = DeltaClient::new(delta_url);
+    let started = client
+        .cli_auth_start(&CliAuthStartRequest {
+            public_key: encode_base64_no_pad(signing_key.verifying_key().to_bytes()),
+            display_name: Some(default_host_display_name(workdir)),
+            metadata: serde_json::json!({
+                "source": "zedra_cli",
+                "workdir_name": workdir.file_name().and_then(|name| name.to_str()),
+                "hostname": hostname::get().ok().and_then(|name| name.into_string().ok()),
+            }),
+        })
+        .await?;
+
+    Ok(CliAuthSession {
+        auth_url: started.auth_url,
+        user_code: started.user_code,
+        expires_at: started.expires_at,
+        poll_token: started.poll_token,
+        delta_url: client.origin().to_string(),
+    })
+}
+
+pub async fn complete_browser_auth(
+    workdir: &Path,
+    session: &CliAuthSession,
+) -> Result<DeltaConfig> {
+    let client = DeltaClient::new(&session.delta_url);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10 * 60);
+    loop {
+        match client
+            .cli_auth_poll(&CliAuthPollRequest {
+                poll_token: session.poll_token.clone(),
+            })
+            .await?
+        {
+            CliAuthPollResponse::Pending => {
+                if std::time::Instant::now() >= deadline {
+                    anyhow::bail!("CLI auth timed out; start `zedra auth` again");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+            CliAuthPollResponse::Approved {
+                stack_id,
+                node_id,
+                access_token,
+                refresh_token,
+                expires_at,
+            } => {
+                let config = DeltaConfig {
+                    delta_url: session.delta_url.clone(),
+                    stack_id,
+                    node_id,
+                    access_token,
+                    refresh_token,
+                    token_expires_at: expires_at,
+                };
+                save_config(workdir, &config)?;
+                return Ok(config);
+            }
+            CliAuthPollResponse::Expired => {
+                anyhow::bail!("CLI auth request expired; start `zedra auth` again");
+            }
+            CliAuthPollResponse::Denied => {
+                anyhow::bail!("CLI auth request was denied");
+            }
+        }
+    }
+}
+
 pub async fn list_nodes(workdir: &Path) -> Result<Vec<NodeSummary>> {
     let config = load_config(workdir)?;
     let signing_key = load_signing_key(workdir)?;
@@ -264,6 +381,14 @@ impl DeltaClient {
 
     async fn dev_auth(&self, req: &DevAuthRequest) -> Result<AuthResponse> {
         self.post_json("/v1/auth/dev", None, req).await
+    }
+
+    async fn cli_auth_start(&self, req: &CliAuthStartRequest) -> Result<CliAuthStartResponse> {
+        self.post_json("/v1/cli/auth/start", None, req).await
+    }
+
+    async fn cli_auth_poll(&self, req: &CliAuthPollRequest) -> Result<CliAuthPollResponse> {
+        self.post_json("/v1/cli/auth/poll", None, req).await
     }
 
     async fn register_node(
