@@ -1,6 +1,11 @@
+use std::time::Duration;
+
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 
+use crate::delta;
 use crate::fonts;
+use crate::pending::{PendingSlot, spawn_periodic_task};
 use crate::platform_bridge::{
     self, AlertButton, CustomSheetDetent, CustomSheetOptions, HapticFeedback,
     NativeNotificationKind, NativeNotificationOptions,
@@ -16,10 +21,26 @@ pub enum SettingsEvent {
 
 impl EventEmitter<SettingsEvent> for SettingsView {}
 
+enum DeltaSettingsEvent {
+    StartGoogleSignIn,
+    GoogleSignIn(Result<platform_bridge::DeltaGoogleSignInResult, String>),
+    PushToken(Result<platform_bridge::DeltaPushTokenResult, String>),
+    OperationComplete {
+        result: Result<delta::DeltaStatus, String>,
+        success_message: &'static str,
+    },
+}
+
+static PENDING_DELTA_EVENT: PendingSlot<DeltaSettingsEvent> = PendingSlot::new();
+
 pub struct SettingsView {
     focus_handle: FocusHandle,
     sheet_state: Entity<SheetDemoState>,
     sheet_view: Entity<crate::sheet_demo_view::SheetDemoView>,
+    delta_status: delta::DeltaStatus,
+    delta_message: Option<String>,
+    delta_busy: bool,
+    _delta_task: Task<()>,
 }
 
 impl SettingsView {
@@ -27,10 +48,181 @@ impl SettingsView {
         let sheet_state = cx.new(|cx| SheetDemoState::new(cx));
         let sheet_view =
             cx.new(|cx| crate::sheet_demo_view::SheetDemoView::new(sheet_state.clone(), cx));
+        let delta_task = spawn_periodic_task(cx, Duration::from_millis(120), |this, cx| {
+            this.process_delta_events(cx);
+        });
         Self {
             focus_handle: cx.focus_handle(),
             sheet_state,
             sheet_view,
+            delta_status: delta::status(),
+            delta_message: None,
+            delta_busy: false,
+            _delta_task: delta_task,
+        }
+    }
+
+    fn start_google_sign_in(&mut self, cx: &mut Context<Self>) {
+        if self.delta_busy {
+            return;
+        }
+        self.delta_busy = true;
+        self.delta_message = Some("Opening Google sign-in".to_string());
+        platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+        platform_bridge::start_delta_google_sign_in(|result| {
+            PENDING_DELTA_EVENT.set(DeltaSettingsEvent::GoogleSignIn(result));
+        });
+        cx.notify();
+    }
+
+    fn show_sign_in_methods(&mut self, cx: &mut Context<Self>) {
+        if self.delta_busy {
+            return;
+        }
+        self.delta_message = Some("Choose a sign-in method".to_string());
+        platform_bridge::trigger_haptic(HapticFeedback::SelectionChanged);
+        platform_bridge::show_selection(
+            "Sign In",
+            "Choose a sign-in method for Delta.",
+            vec![AlertButton::default("Google")],
+            |result| {
+                if matches!(result, Some(0)) {
+                    PENDING_DELTA_EVENT.set(DeltaSettingsEvent::StartGoogleSignIn);
+                }
+            },
+        );
+        cx.notify();
+    }
+
+    fn request_push_token(&mut self, cx: &mut Context<Self>) {
+        if self.delta_busy {
+            return;
+        }
+        self.delta_busy = true;
+        self.delta_message = Some("Requesting notification permission".to_string());
+        platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+        platform_bridge::request_delta_push_token(|result| {
+            PENDING_DELTA_EVENT.set(DeltaSettingsEvent::PushToken(result));
+        });
+        cx.notify();
+    }
+
+    fn process_delta_events(&mut self, cx: &mut Context<Self>) {
+        let Some(event) = PENDING_DELTA_EVENT.take() else {
+            return;
+        };
+
+        match event {
+            DeltaSettingsEvent::StartGoogleSignIn => {
+                self.start_google_sign_in(cx);
+            }
+            DeltaSettingsEvent::GoogleSignIn(Ok(result)) => {
+                self.delta_message = Some("Registering Delta mobile node".to_string());
+                zedra_session::session_runtime().spawn(async move {
+                    let result = delta::sign_in_with_google(result.id_token, result.email)
+                        .await
+                        .map_err(|err| format!("{err:#}"));
+                    PENDING_DELTA_EVENT.set(DeltaSettingsEvent::OperationComplete {
+                        result,
+                        success_message: "Signed in to Delta",
+                    });
+                });
+            }
+            DeltaSettingsEvent::GoogleSignIn(Err(message)) => {
+                self.finish_delta_error(message);
+            }
+            DeltaSettingsEvent::PushToken(Ok(result)) => {
+                self.delta_message = Some("Registering push token".to_string());
+                zedra_session::session_runtime().spawn(async move {
+                    let result = delta::register_push_token(
+                        result.provider,
+                        result.token,
+                        result.environment,
+                    )
+                    .await
+                    .map_err(|err| format!("{err:#}"));
+                    PENDING_DELTA_EVENT.set(DeltaSettingsEvent::OperationComplete {
+                        result,
+                        success_message: "Notifications enabled",
+                    });
+                });
+            }
+            DeltaSettingsEvent::PushToken(Err(message)) => {
+                self.finish_delta_error(message);
+            }
+            DeltaSettingsEvent::OperationComplete {
+                result: Ok(status),
+                success_message,
+            } => {
+                self.delta_status = status;
+                self.delta_busy = false;
+                self.delta_message = Some(success_message.to_string());
+                platform_bridge::show_native_notification(
+                    NativeNotificationOptions::new(success_message)
+                        .kind(NativeNotificationKind::Success)
+                        .system_image("checkmark.circle")
+                        .duration_secs(2.6),
+                );
+            }
+            DeltaSettingsEvent::OperationComplete {
+                result: Err(message),
+                ..
+            } => {
+                self.finish_delta_error(message);
+            }
+        }
+        cx.notify();
+    }
+
+    fn finish_delta_error(&mut self, message: String) {
+        self.delta_busy = false;
+        self.delta_message = Some(message.clone());
+        platform_bridge::show_native_notification(
+            NativeNotificationOptions::new("Delta setup failed")
+                .message(message)
+                .kind(NativeNotificationKind::Error)
+                .system_image("exclamationmark.triangle")
+                .duration_secs(4.2),
+        );
+    }
+
+    fn profile_title(&self) -> String {
+        self.delta_status
+            .email
+            .clone()
+            .unwrap_or_else(|| "Signed in".to_string())
+    }
+
+    fn profile_summary(&self) -> String {
+        let stack = self
+            .delta_status
+            .stack_id
+            .map(short_id)
+            .unwrap_or_else(|| "no stack".to_string());
+        let node = self
+            .delta_status
+            .mobile_node_id
+            .map(short_id)
+            .unwrap_or_else(|| "no node".to_string());
+        format!("Stack {stack} · Node {node}")
+    }
+
+    fn push_summary(&self) -> String {
+        match (
+            self.delta_status.push_registered,
+            self.delta_status.push_provider.as_deref(),
+            self.delta_status.push_environment.as_deref(),
+            self.delta_status.signed_in,
+        ) {
+            (true, Some(provider), Some(environment), _) => {
+                format!("{provider} {environment} token registered")
+            }
+            (true, Some(provider), None, _) => format!("{provider} token registered"),
+            (false, Some(provider), _, false) => {
+                format!("{provider} token saved, sign in to register")
+            }
+            (false, Some(provider), _, true) => format!("{provider} token not registered"),
+            _ => "Request permission and register this device".to_string(),
         }
     }
 
@@ -122,6 +314,21 @@ impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let top_inset = platform_bridge::status_bar_inset();
         let bottom_inset = platform_bridge::home_indicator_inset();
+        let delta_message = self.delta_message.clone();
+        let profile_title = self.profile_title();
+        let profile_initial = profile_title
+            .chars()
+            .next()
+            .unwrap_or('Z')
+            .to_ascii_uppercase()
+            .to_string();
+        let profile_summary = self.profile_summary();
+        let push_summary = self.push_summary();
+        let sign_in_title = if self.delta_busy {
+            "Working..."
+        } else {
+            "Sign In"
+        };
 
         div()
             .id("settings-view")
@@ -194,23 +401,47 @@ impl Render for SettingsView {
                             .mx_auto()
                             .flex()
                             .flex_col()
-                            .child(
-                                div()
-                                    .pt(px(12.0))
-                                    .pb(px(10.0))
-                                    .border_b_1()
-                                    .border_color(rgb(theme::BORDER_SUBTLE))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(4.0))
-                                    .child(
-                                        div()
-                                            .text_color(rgb(theme::TEXT_PRIMARY))
-                                            .text_size(px(theme::FONT_HEADING))
-                                            .font_family(fonts::MONO_FONT_FAMILY)
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child("Developer"),
+                            .child(section_header("Profile"))
+                            .when(self.delta_status.signed_in, |this| {
+                                this.child(profile_info_row(
+                                    "settings-delta-profile",
+                                    profile_initial,
+                                    profile_title,
+                                    profile_summary,
+                                ))
+                            })
+                            .when(!self.delta_status.signed_in, |this| {
+                                this.child(
+                                    action_row_text(
+                                        "settings-delta-sign-in",
+                                        sign_in_title,
+                                        "Choose a sign-in method",
                                     )
+                                    .on_press(cx.listener(|this, _event, _window, cx| {
+                                        this.show_sign_in_methods(cx);
+                                    })),
+                                )
+                            })
+                            .when_some(delta_message, |this, message| {
+                                this.child(info_row(
+                                    "settings-delta-message",
+                                    "Status",
+                                    message,
+                                ))
+                            })
+                            .child(section_header("Notifications"))
+                            .child(
+                                action_row_text(
+                                    "settings-delta-push-token",
+                                    "Enable Notifications",
+                                    push_summary,
+                                )
+                                .on_press(cx.listener(|this, _event, _window, cx| {
+                                    this.request_push_token(cx);
+                                })),
+                            )
+                            .child(
+                                section_header("Developer")
                             )
                             .child(
                                 action_row(
@@ -283,6 +514,16 @@ impl Render for SettingsView {
 }
 
 fn action_row(id: &'static str, title: &'static str, description: &'static str) -> Stateful<Div> {
+    action_row_text(id, title, description)
+}
+
+fn action_row_text(
+    id: &'static str,
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+) -> Stateful<Div> {
+    let title = title.into();
+    let description = description.into();
     div()
         .id(id)
         .w_full()
@@ -326,4 +567,120 @@ fn action_row(id: &'static str, title: &'static str, description: &'static str) 
                     .text_color(rgb(theme::TEXT_MUTED)),
             ),
         )
+}
+
+fn info_row(
+    id: &'static str,
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+) -> Stateful<Div> {
+    let title = title.into();
+    let description = description.into();
+    div()
+        .id(id)
+        .w_full()
+        .min_w_0()
+        .py(px(8.0))
+        .flex()
+        .flex_col()
+        .gap(px(3.0))
+        .child(
+            div()
+                .text_color(rgb(theme::TEXT_SECONDARY))
+                .text_size(px(theme::FONT_BODY))
+                .font_family(fonts::MONO_FONT_FAMILY)
+                .font_weight(FontWeight::MEDIUM)
+                .child(title),
+        )
+        .child(
+            div()
+                .text_color(rgb(theme::TEXT_MUTED))
+                .text_size(px(theme::FONT_DETAIL))
+                .font_family(fonts::MONO_FONT_FAMILY)
+                .child(description),
+        )
+}
+
+fn profile_info_row(
+    id: &'static str,
+    initials: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+) -> Stateful<Div> {
+    let initials = initials.into();
+    let title = title.into();
+    let description = description.into();
+    div()
+        .id(id)
+        .w_full()
+        .min_w_0()
+        .min_h(px(56.0))
+        .py(px(10.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(theme::SPACING_MD))
+        .child(
+            div()
+                .size(px(34.0))
+                .rounded_full()
+                .bg(rgb(theme::BG_CARD))
+                .border_1()
+                .border_color(rgb(theme::BORDER_SUBTLE))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(rgb(theme::TEXT_SECONDARY))
+                .text_size(px(theme::FONT_BODY))
+                .font_family(fonts::MONO_FONT_FAMILY)
+                .font_weight(FontWeight::MEDIUM)
+                .child(initials),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(3.0))
+                .overflow_hidden()
+                .child(
+                    div()
+                        .text_color(rgb(theme::TEXT_SECONDARY))
+                        .text_size(px(theme::FONT_BODY))
+                        .font_family(fonts::MONO_FONT_FAMILY)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_color(rgb(theme::TEXT_MUTED))
+                        .text_size(px(theme::FONT_DETAIL))
+                        .font_family(fonts::MONO_FONT_FAMILY)
+                        .child(description),
+                ),
+        )
+}
+
+fn section_header(title: &'static str) -> Div {
+    div()
+        .pt(px(12.0))
+        .pb(px(10.0))
+        .border_b_1()
+        .border_color(rgb(theme::BORDER_SUBTLE))
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .child(
+            div()
+                .text_color(rgb(theme::TEXT_PRIMARY))
+                .text_size(px(theme::FONT_HEADING))
+                .font_family(fonts::MONO_FONT_FAMILY)
+                .font_weight(FontWeight::MEDIUM)
+                .child(title),
+        )
+}
+
+fn short_id(id: uuid::Uuid) -> String {
+    id.to_string().chars().take(8).collect()
 }

@@ -72,9 +72,9 @@ enum Commands {
 
     /// Send a test notification through Zedra Delta
     Send {
-        /// Target node id
+        /// Target node alias or UUID
         #[arg(long = "id")]
-        id: uuid::Uuid,
+        id: String,
 
         /// Notification title
         #[arg(long)]
@@ -271,6 +271,22 @@ enum AuthCommand {
 enum StackCommand {
     /// List nodes in the authed Delta stack
     Nodes,
+
+    /// Update a node in the authed Delta stack
+    Update {
+        /// Target node alias or UUID
+        target: String,
+
+        /// New stack-scoped node alias
+        #[arg(long = "name")]
+        name: String,
+    },
+
+    /// Delete a node from the authed Delta stack
+    Delete {
+        /// Target node alias or UUID
+        target: String,
+    },
 }
 
 fn write_api_discovery_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
@@ -583,6 +599,25 @@ async fn main() -> Result<()> {
             Some(StackCommand::Nodes) => {
                 let nodes = delta::list_nodes().await?;
                 print_delta_nodes(&nodes);
+            }
+            Some(StackCommand::Update { target, name }) => {
+                let node = delta::update_node_alias(target, name).await?;
+                utils::println_success("Updated Delta node alias.");
+                println!();
+                utils::print_key_values(&[
+                    ("Alias", node.alias.unwrap_or_else(|| "-".to_string())),
+                    ("Node", node.id.to_string()),
+                    ("Kind", node.kind.as_str().to_string()),
+                ]);
+            }
+            Some(StackCommand::Delete { target }) => {
+                let response = delta::delete_node(target).await?;
+                utils::println_success("Deleted Delta node from stack.");
+                println!();
+                utils::print_key_values(&[
+                    ("Deleted", response.deleted.to_string()),
+                    ("Node", response.node_id.to_string()),
+                ]);
             }
             None => {
                 let config = delta::load_config()?;
@@ -1366,9 +1401,14 @@ fn print_delta_nodes(nodes: &[delta::NodeSummary]) {
         .iter()
         .map(|node| {
             vec![
-                node.id.to_string(),
+                node.alias.clone().unwrap_or_else(|| "-".to_string()),
                 node.kind.as_str().to_string(),
+                metadata_string(node, "os")
+                    .or_else(|| metadata_string(node, "platform"))
+                    .unwrap_or_else(|| "-".to_string()),
+                metadata_string(node, "arch").unwrap_or_else(|| "-".to_string()),
                 if node.push_enabled { "yes" } else { "no" }.to_string(),
+                node.id.to_string(),
                 node.public_key_fingerprint.clone(),
                 node.display_name.clone().unwrap_or_else(|| "-".to_string()),
             ]
@@ -1376,8 +1416,19 @@ fn print_delta_nodes(nodes: &[delta::NodeSummary]) {
         .collect::<Vec<_>>();
     println!(
         "{}",
-        utils::render_table(&["ID", "KIND", "PUSH", "KEY", "NAME"], &rows)
+        utils::render_table(
+            &["ALIAS", "KIND", "OS", "ARCH", "PUSH", "ID", "KEY", "NAME"],
+            &rows
+        )
     );
+}
+
+fn metadata_string(node: &delta::NodeSummary, key: &str) -> Option<String> {
+    node.metadata
+        .get(key)
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
 }
 
 fn open_browser(url: &str) -> bool {
@@ -2172,6 +2223,22 @@ mod tests {
         {
             Some(Commands::Qr { static_qr, .. }) => assert!(static_qr),
             other => panic!("expected qr command, got {:?}", other.map(|_| "other")),
+        }
+    }
+
+    #[test]
+    fn stack_delete_parses_target() {
+        match Cli::try_parse_from(["zedra", "stack", "delete", "zedra-ios"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Stack {
+                command: Some(StackCommand::Delete { target }),
+            }) => assert_eq!(target, "zedra-ios"),
+            other => panic!(
+                "expected stack delete command, got {:?}",
+                other.map(|_| "other")
+            ),
         }
     }
 

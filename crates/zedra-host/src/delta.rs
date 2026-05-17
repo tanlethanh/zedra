@@ -24,8 +24,12 @@ pub struct DeltaConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct NodeSummary {
     pub id: Uuid,
+    #[serde(default)]
+    pub alias: Option<String>,
     pub kind: NodeKind,
     pub display_name: Option<String>,
+    #[serde(default)]
+    pub metadata: Value,
     pub public_key_fingerprint: String,
     pub push_enabled: bool,
 }
@@ -142,6 +146,22 @@ struct NodeListResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct NodeUpdateRequest {
+    alias: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NodeUpdateResponse {
+    node: NodeSummary,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NodeDeleteResponse {
+    pub node_id: Uuid,
+    pub deleted: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct NotificationSendRequest {
     target_node_id: Option<Uuid>,
     title: String,
@@ -186,6 +206,7 @@ pub async fn dev_auth(delta_url: &str, subject: &str) -> Result<DeltaConfig> {
     std::fs::create_dir_all(&config_dir)?;
     let signing_key = load_signing_key()?;
     let client = DeltaClient::new(delta_url);
+    let display_name = default_host_display_name();
     let auth = client
         .dev_auth(&DevAuthRequest {
             subject: subject.to_string(),
@@ -200,11 +221,8 @@ pub async fn dev_auth(delta_url: &str, subject: &str) -> Result<DeltaConfig> {
             &NodeRegistrationRequest {
                 public_key: encode_base64_no_pad(signing_key.verifying_key().to_bytes()),
                 kind: NodeKind::Host,
-                display_name: Some(default_host_display_name()),
-                metadata: serde_json::json!({
-                    "source": "zedra_cli",
-                    "hostname": hostname::get().ok().and_then(|name| name.into_string().ok()),
-                }),
+                display_name: Some(display_name.clone()),
+                metadata: default_host_metadata(),
                 receive_notifications: false,
             },
         )
@@ -218,6 +236,11 @@ pub async fn dev_auth(delta_url: &str, subject: &str) -> Result<DeltaConfig> {
         token_expires_at: auth.expires_at,
     };
     save_config(&config)?;
+    if let Err(err) =
+        refresh_host_alias_if_default(&client, &config, &signing_key, &display_name).await
+    {
+        tracing::warn!("Delta host alias refresh failed: {err:#}");
+    }
     Ok(config)
 }
 
@@ -226,14 +249,12 @@ pub async fn start_browser_auth(delta_url: &str) -> Result<CliAuthSession> {
     std::fs::create_dir_all(&config_dir)?;
     let signing_key = load_signing_key()?;
     let client = DeltaClient::new(delta_url);
+    let display_name = default_host_display_name();
     let started = client
         .cli_auth_start(&CliAuthStartRequest {
             public_key: encode_base64_no_pad(signing_key.verifying_key().to_bytes()),
-            display_name: Some(default_host_display_name()),
-            metadata: serde_json::json!({
-                "source": "zedra_cli",
-                "hostname": hostname::get().ok().and_then(|name| name.into_string().ok()),
-            }),
+            display_name: Some(display_name),
+            metadata: default_host_metadata(),
         })
         .await?;
 
@@ -269,6 +290,8 @@ pub async fn complete_browser_auth(session: &CliAuthSession) -> Result<DeltaConf
                 refresh_token,
                 expires_at,
             } => {
+                let signing_key = load_signing_key()?;
+                let display_name = default_host_display_name();
                 let config = DeltaConfig {
                     delta_url: session.delta_url.clone(),
                     stack_id,
@@ -278,6 +301,12 @@ pub async fn complete_browser_auth(session: &CliAuthSession) -> Result<DeltaConf
                     token_expires_at: expires_at,
                 };
                 save_config(&config)?;
+                if let Err(err) =
+                    refresh_host_alias_if_default(&client, &config, &signing_key, &display_name)
+                        .await
+                {
+                    tracing::warn!("Delta host alias refresh failed: {err:#}");
+                }
                 return Ok(config);
             }
             CliAuthPollResponse::Expired => {
@@ -300,8 +329,43 @@ pub async fn list_nodes() -> Result<Vec<NodeSummary>> {
     Ok(response.nodes)
 }
 
+pub async fn update_node_alias(target: String, alias: String) -> Result<NodeSummary> {
+    let config = load_config()?;
+    let signing_key = load_signing_key()?;
+    let client = DeltaClient::new(&config.delta_url);
+    let target_node_id = resolve_node_target(&client, &config, &signing_key, &target).await?;
+    let response = client
+        .update_node_signed(
+            config.stack_id,
+            config.node_id,
+            target_node_id,
+            &signing_key,
+            &NodeUpdateRequest { alias: Some(alias) },
+        )
+        .await?;
+    Ok(response.node)
+}
+
+pub async fn delete_node(target: String) -> Result<NodeDeleteResponse> {
+    let config = load_config()?;
+    let signing_key = load_signing_key()?;
+    let client = DeltaClient::new(&config.delta_url);
+    let target_node_id = resolve_node_target(&client, &config, &signing_key, &target).await?;
+    if target_node_id == config.node_id {
+        anyhow::bail!("refusing to delete the authenticated host node");
+    }
+    client
+        .delete_node_signed(
+            config.stack_id,
+            config.node_id,
+            target_node_id,
+            &signing_key,
+        )
+        .await
+}
+
 pub async fn send_notification(
-    target_node_id: Uuid,
+    target: String,
     title: String,
     body: Option<String>,
     category: Option<String>,
@@ -310,6 +374,7 @@ pub async fn send_notification(
     let config = load_config()?;
     let signing_key = load_signing_key()?;
     let client = DeltaClient::new(&config.delta_url);
+    let target_node_id = resolve_node_target(&client, &config, &signing_key, &target).await?;
     client
         .send_notification_signed(
             config.stack_id,
@@ -330,6 +395,110 @@ pub async fn send_notification(
         .await
 }
 
+async fn resolve_node_target(
+    client: &DeltaClient,
+    config: &DeltaConfig,
+    signing_key: &SigningKey,
+    target: &str,
+) -> Result<Uuid> {
+    if let Ok(id) = Uuid::parse_str(target) {
+        return Ok(id);
+    }
+
+    let response = client
+        .list_nodes_signed(config.stack_id, config.node_id, signing_key)
+        .await?;
+    let normalized_target = normalize_alias_candidate(target);
+    let matches = response
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.alias.as_deref() == Some(target)
+                || normalized_target
+                    .as_deref()
+                    .is_some_and(|alias| node.alias.as_deref() == Some(alias))
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [node] => Ok(node.id),
+        [] => {
+            let aliases = response
+                .nodes
+                .iter()
+                .filter_map(|node| node.alias.as_deref())
+                .collect::<Vec<_>>();
+            if aliases.is_empty() {
+                anyhow::bail!("unknown Delta node alias `{target}`; run `zedra stack nodes`");
+            }
+            anyhow::bail!(
+                "unknown Delta node alias `{target}`; available aliases: {}",
+                aliases.join(", ")
+            );
+        }
+        _ => anyhow::bail!("Delta node alias `{target}` is ambiguous; use the node id instead"),
+    }
+}
+
+async fn refresh_host_alias_if_default(
+    client: &DeltaClient,
+    config: &DeltaConfig,
+    signing_key: &SigningKey,
+    display_name: &str,
+) -> Result<()> {
+    let response = client
+        .list_nodes_signed(config.stack_id, config.node_id, signing_key)
+        .await?;
+    let Some(self_node) = response.nodes.iter().find(|node| node.id == config.node_id) else {
+        return Ok(());
+    };
+    if !should_refresh_host_alias(self_node.alias.as_deref(), display_name) {
+        return Ok(());
+    }
+    client
+        .update_node_signed(
+            config.stack_id,
+            config.node_id,
+            config.node_id,
+            signing_key,
+            &NodeUpdateRequest {
+                alias: Some(display_name.to_string()),
+            },
+        )
+        .await?;
+    Ok(())
+}
+
+fn should_refresh_host_alias(current_alias: Option<&str>, display_name: &str) -> bool {
+    let Some(display_alias) = normalize_alias_candidate(display_name) else {
+        return false;
+    };
+    match current_alias {
+        None => true,
+        Some(alias) if alias == display_alias => false,
+        Some("host" | "zedra-host") => display_alias != "host" && display_alias != "zedra-host",
+        Some(alias) if alias.starts_with("zedra-host-") => true,
+        Some(_) => false,
+    }
+}
+
+fn normalize_alias_candidate(source: &str) -> Option<String> {
+    let mut alias = String::new();
+    let mut last_was_dash = false;
+    for ch in source.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            alias.push(ch);
+            last_was_dash = false;
+        } else if !last_was_dash && !alias.is_empty() {
+            alias.push('-');
+            last_was_dash = true;
+        }
+    }
+    while alias.ends_with('-') {
+        alias.pop();
+    }
+    (!alias.is_empty()).then_some(alias)
+}
+
 fn save_config(config: &DeltaConfig) -> Result<()> {
     let path = config_path()?;
     if let Some(parent) = path.parent() {
@@ -348,13 +517,27 @@ fn load_signing_key() -> Result<SigningKey> {
 }
 
 fn default_host_display_name() -> String {
-    match hostname::get()
+    default_hostname().unwrap_or_else(|| "zedra-host".to_string())
+}
+
+fn default_host_metadata() -> Value {
+    let hostname = default_hostname();
+    serde_json::json!({
+        "source": "zedra_cli",
+        "hostname": hostname,
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "family": std::env::consts::FAMILY,
+        "zedra_version": env!("CARGO_PKG_VERSION"),
+    })
+}
+
+fn default_hostname() -> Option<String> {
+    hostname::get()
         .ok()
         .and_then(|name| name.into_string().ok())
-    {
-        Some(name) if !name.is_empty() => format!("Zedra host ({name})"),
-        _ => "Zedra host".to_string(),
-    }
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
 }
 
 struct DeltaClient {
@@ -410,6 +593,41 @@ impl DeltaClient {
             "GET",
             &format!("/v1/stacks/{stack_id}/nodes"),
             node_id,
+            signing_key,
+            None,
+        )
+        .await
+    }
+
+    async fn update_node_signed(
+        &self,
+        stack_id: Uuid,
+        signing_node_id: Uuid,
+        target_node_id: Uuid,
+        signing_key: &SigningKey,
+        req: &NodeUpdateRequest,
+    ) -> Result<NodeUpdateResponse> {
+        self.signed_json(
+            "PATCH",
+            &format!("/v1/stacks/{stack_id}/nodes/{target_node_id}"),
+            signing_node_id,
+            signing_key,
+            Some(req),
+        )
+        .await
+    }
+
+    async fn delete_node_signed(
+        &self,
+        stack_id: Uuid,
+        signing_node_id: Uuid,
+        target_node_id: Uuid,
+        signing_key: &SigningKey,
+    ) -> Result<NodeDeleteResponse> {
+        self.signed_json::<serde_json::Value, _>(
+            "DELETE",
+            &format!("/v1/stacks/{stack_id}/nodes/{target_node_id}"),
+            signing_node_id,
             signing_key,
             None,
         )
@@ -555,5 +773,26 @@ mod tests {
             payload,
             "POST\n/v1/stacks/abc/notifications?x=1\n123\ncf6c63ce25116b04e3b776a2957606e18d8ac798dde21e3ec30882ac2dfbe0cb"
         );
+    }
+
+    #[test]
+    fn normalizes_alias_candidates_for_cli_lookup() {
+        assert_eq!(
+            normalize_alias_candidate("Tan iPhone!").as_deref(),
+            Some("tan-iphone")
+        );
+        assert_eq!(normalize_alias_candidate("!!!"), None);
+    }
+
+    #[test]
+    fn refreshes_only_default_host_aliases() {
+        assert!(should_refresh_host_alias(
+            Some("zedra-host-tanmacpro"),
+            "tanmacpro"
+        ));
+        assert!(should_refresh_host_alias(Some("host"), "tanmacpro"));
+        assert!(should_refresh_host_alias(None, "tanmacpro"));
+        assert!(!should_refresh_host_alias(Some("tanmacpro"), "tanmacpro"));
+        assert!(!should_refresh_host_alias(Some("tanmac"), "tanmacpro"));
     }
 }

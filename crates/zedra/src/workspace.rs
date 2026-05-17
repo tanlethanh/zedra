@@ -832,6 +832,7 @@ impl Workspace {
                         }
                         if let ConnectEvent::SyncComplete { sync, .. } = &event {
                             ws.seed_terminal_meta_from_sync(sync, cx);
+                            ws.register_delta_host_node_after_first_pairing(sync, &telemetry_state);
                         }
                         sync_refresh_mode
                     }) {
@@ -948,6 +949,46 @@ impl Workspace {
                 info!("session {:?} connected", session_id);
             },
         );
+    }
+
+    fn register_delta_host_node_after_first_pairing(
+        &self,
+        sync: &SyncSessionResult,
+        state: &SessionState,
+    ) {
+        let snap = &state.snapshot;
+        if !snap.is_first_pairing
+            || !matches!(
+                &snap.auth_outcome,
+                Some(zedra_session::AuthOutcome::Registered)
+            )
+        {
+            return;
+        }
+
+        let Some(request) = self.connection_request.as_ref() else {
+            return;
+        };
+        let host_public_key = *request.addr.id.as_bytes();
+        let metadata = serde_json::json!({
+            "hostname": sync.hostname.clone(),
+            "username": sync.username.clone(),
+            "workdir": sync.workdir.clone(),
+            "os": sync.os.clone(),
+            "arch": sync.arch.clone(),
+            "os_version": sync.os_version.clone(),
+            "host_version": sync.host_version.clone(),
+        });
+
+        zedra_session::session_runtime().spawn(async move {
+            match crate::delta::register_paired_host_node(host_public_key, metadata).await {
+                Ok(true) => tracing::info!("Delta host node registered after first pairing"),
+                Ok(false) => {
+                    tracing::debug!("Delta sign-in unavailable; skipped host registration")
+                }
+                Err(err) => tracing::warn!("Delta host node registration failed: {err:#}"),
+            }
+        });
     }
 
     pub fn restart_connection(&mut self, cx: &mut Context<Self>) {

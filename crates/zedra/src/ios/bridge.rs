@@ -68,6 +68,8 @@ unsafe extern "C" {
     fn ios_get_app_version() -> *const std::ffi::c_char;
     /// Returns the app's build number string from Info.plist metadata.
     fn ios_get_app_build_number() -> *const std::ffi::c_char;
+    /// Returns the native device name for Delta node labels.
+    fn ios_get_delta_device_name() -> *const std::ffi::c_char;
     /// Present a native UIAlertController with dynamic buttons.
     /// `labels` and `styles` are parallel arrays of length `button_count`.
     /// Style values: 0 = default, 1 = cancel, 2 = destructive.
@@ -149,6 +151,10 @@ unsafe extern "C" {
         duration_secs: f32,
         auto_close: bool,
     );
+    /// Start native Google Sign-In for Delta account auth.
+    fn ios_start_delta_google_sign_in(callback_id: u32);
+    /// Request push authorization and return the APNs token.
+    fn ios_request_delta_push_token(callback_id: u32);
     /// Present a native text-input dialog (UIAlertController with UITextField).
     /// Result delivered via `zedra_ios_text_input_result` or `zedra_ios_text_input_dismiss`.
     fn ios_present_text_input(
@@ -205,6 +211,18 @@ impl PlatformBridge for IosBridge {
     fn app_build_number(&self) -> Option<String> {
         unsafe {
             let ptr = ios_get_app_build_number();
+            if ptr.is_null() {
+                return None;
+            }
+            let cstr = std::ffi::CStr::from_ptr(ptr);
+            let s = cstr.to_str().ok()?.trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        }
+    }
+
+    fn device_name(&self) -> Option<String> {
+        unsafe {
+            let ptr = ios_get_delta_device_name();
             if ptr.is_null() {
                 return None;
             }
@@ -430,6 +448,14 @@ impl PlatformBridge for IosBridge {
         }
     }
 
+    fn start_delta_google_sign_in(&self, id: u32) {
+        unsafe { ios_start_delta_google_sign_in(id) };
+    }
+
+    fn request_delta_push_token(&self, id: u32) {
+        unsafe { ios_request_delta_push_token(id) };
+    }
+
     fn present_text_input(&self, id: u32, title: &str, placeholder: &str, initial_value: &str) {
         use std::ffi::CString;
 
@@ -518,6 +544,84 @@ pub extern "C" fn zedra_ios_native_notification_action(callback_id: u32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_native_notification_dismiss(callback_id: u32) {
     platform_bridge::dispatch_native_notification_dismiss(callback_id);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_delta_google_sign_in_result(
+    callback_id: u32,
+    id_token: *const std::ffi::c_char,
+    email: *const std::ffi::c_char,
+) {
+    let id_token = match c_string(id_token) {
+        Some(value) if !value.is_empty() => value,
+        _ => {
+            platform_bridge::dispatch_delta_google_sign_in_error(
+                callback_id,
+                "Google sign-in did not return an ID token".to_string(),
+            );
+            return;
+        }
+    };
+    platform_bridge::dispatch_delta_google_sign_in_result(callback_id, id_token, c_string(email));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_delta_google_sign_in_error(
+    callback_id: u32,
+    message: *const std::ffi::c_char,
+) {
+    platform_bridge::dispatch_delta_google_sign_in_error(
+        callback_id,
+        c_string(message).unwrap_or_else(|| "Google sign-in failed".to_string()),
+    );
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_delta_push_token_result(
+    callback_id: u32,
+    provider: *const std::ffi::c_char,
+    token: *const std::ffi::c_char,
+    environment: *const std::ffi::c_char,
+) {
+    let provider = c_string(provider).unwrap_or_else(|| "apns".to_string());
+    let token = match c_string(token) {
+        Some(value) if !value.is_empty() => value,
+        _ => {
+            platform_bridge::dispatch_delta_push_token_error(
+                callback_id,
+                "Push registration did not return a token".to_string(),
+            );
+            return;
+        }
+    };
+    platform_bridge::dispatch_delta_push_token_result(
+        callback_id,
+        provider,
+        token,
+        c_string(environment),
+    );
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_delta_push_token_error(
+    callback_id: u32,
+    message: *const std::ffi::c_char,
+) {
+    platform_bridge::dispatch_delta_push_token_error(
+        callback_id,
+        c_string(message).unwrap_or_else(|| "Push registration failed".to_string()),
+    );
+}
+
+fn c_string(value: *const std::ffi::c_char) -> Option<String> {
+    if value.is_null() {
+        return None;
+    }
+    unsafe { std::ffi::CStr::from_ptr(value) }
+        .to_str()
+        .ok()
+        .map(|value| value.to_string())
+        .filter(|value| !value.is_empty())
 }
 
 /// Called from the native keyboard accessory bar when a shortcut key button is tapped.

@@ -8,6 +8,7 @@ final class ZedraAppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        ZedraDeltaPushBridge.configure()
         runtime.launch()
         return true
     }
@@ -17,8 +18,25 @@ final class ZedraAppDelegate: UIResponder, UIApplicationDelegate {
         open url: URL,
         options: [UIApplication.OpenURLOptionsKey: Any] = [:]
     ) -> Bool {
+        if ZedraDeltaGoogleSignIn.handleURL(url) {
+            return true
+        }
         runtime.handleOpenURL(url)
         return true
+    }
+
+    func application(
+        _ application: UIApplication,
+        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+    ) {
+        ZedraDeltaPushBridge.didRegister(deviceToken: deviceToken)
+    }
+
+    func application(
+        _ application: UIApplication,
+        didFailToRegisterForRemoteNotificationsWithError error: Error
+    ) {
+        ZedraDeltaPushBridge.didFail(error: error)
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {
