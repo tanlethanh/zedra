@@ -89,9 +89,10 @@
 
 1. Run `./scripts/run-android.sh --target arm64-v8a`
 2. Expected: Android installs and launches the debug app id `dev.zedra.app.debug` with the launcher label `Zedra Dev`
-3. Expected: startup logcat has no `getAppVersion` / `getAppBuildNumber` JavaException and no GPUI atlas panic during the first surface draw
-4. Run `./scripts/run-android.sh --release --target arm64-v8a`
-5. Expected: Android installs and launches the release app id `dev.zedra.app` with the normal app label, and it can coexist with the debug build
+3. Expected: the launcher, app info, and recents icons show the black Zedra lightning icon instead of the default Android robot, including on round-icon launchers
+4. Expected: startup logcat has no `getAppVersion` / `getAppBuildNumber` JavaException and no GPUI atlas panic during the first surface draw
+5. Run `./scripts/run-android.sh --release --target arm64-v8a`
+6. Expected: Android installs and launches the release app id `dev.zedra.app` with the normal app label, and it can coexist with the debug build
 
 ## 0d. Firebase GPUI Screen Views
 
