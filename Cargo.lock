@@ -3000,6 +3000,7 @@ dependencies = [
  "raw-window-handle",
  "smallvec",
  "swash",
+ "unicode-script",
  "util",
 ]
 
