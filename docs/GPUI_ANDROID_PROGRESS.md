@@ -10,6 +10,12 @@ Android backend track is on a **clean baseline**. One experimental backend
 optimisation is wired up and ready to A/B; the rest are documented and queued
 for the next round.
 
+**Latest finding (2026-05-15):** Mali-G68 GPU itself takes ~30 ms per frame
+(`gpu_pass` p50) for the drawer-toggle repro on a 1080×2400 surface, while
+CPU prep / encode / submit / finish total ~4 ms. The bottleneck is how
+`gpui_wgpu` issues work to Mali, not raw GPU power. Full breakdown +
+hypotheses in `docs/GPUI_ANDROID.md` § "2026-05-15 — PerDebug Drill-Down".
+
 | Experiment | Status | Flag | Where |
 |---|---|---|---|
 | Mono atlas oldest-first + larger atlas | **landed**, off by default | `atlas-oldest-first` | `gpui_wgpu/src/wgpu_atlas.rs` |
@@ -75,6 +81,36 @@ What to watch for between the baseline and the `--atlas-oldest-first` build:
   number of taps. Lower jank counts → win.
 - `adb logcat` should be quiet during the animation — the cleanup removed
   all per-frame `AndroidPerf` logging.
+
+## Instrumentation: PerDebug draw_roots timing
+
+Lightweight opt-in timers around the GPUI per-frame `draw_roots` path. Emits
+three `log::info!` lines per frame under the `PerDebug` prefix:
+
+```
+PerDebug phase=prepaint   id=<N> ms=<X.X>
+PerDebug phase=paint      id=<N> ms=<X.X>
+PerDebug phase=draw_roots id=<N> ms=<X.X> dirty=<N> refresh=<bool>
+```
+
+`id` is a monotonically-increasing frame counter; the three phase lines for one
+frame share the same id so the aggregator can stitch them back together.
+
+Build with the flag:
+
+```sh
+./scripts/run-android.sh --debug --target arm64-v8a --perdebug
+```
+
+Capture and summarise:
+
+```sh
+adb logcat -c
+# reproduce the drawer tap sequence (see below), then
+adb logcat -d | ./scripts/android-perf-debug.py
+```
+
+The summary prints a per-frame breakdown table plus p50/p95/p99/max per phase.
 
 ## When you want the other experiments back
 

@@ -88,6 +88,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - `docs/PROTOCOL_SPECS.md` — protocol contract
 - `docs/TELEMETRY.md` — telemetry events and privacy
 - `docs/MANUAL_TEST.md` — manual verification steps for UI and device work
+- `docs/DEVTOOL.md` — in-app HTTP devtool for agent-driven UI scripting (debug Android); wrapper at `scripts/devtool.sh`
 - `vendor/zed/` — GPUI, platform crates, grammars, and desktop reference implementations
 
 ## Recent Learnings
