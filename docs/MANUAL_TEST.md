@@ -79,10 +79,11 @@
 8. Background the app, wait 5 seconds, then foreground it
 9. Expected: the existing GPUI window resumes without recreating all renderer state, and no surface validation or device-lost crash appears in logcat
 10. Rotate the device or otherwise resize the surface
-11. Expected: the app redraws at full physical surface resolution with `scale_factor = density`, with no fixed 0.75 render scale
-12. Confirm outlined buttons, cards, and input borders are visible even when their background is transparent
-13. In the terminal, render `✔ ✘ ⚠ ⏺ ⏹ ⏸` and a real emoji such as `😀`
-14. Expected: terminal/UI symbols render as monochrome symbol glyphs, while the real emoji renders through Android color emoji fallback
+11. Expected: the existing workspace/session state remains visible instead of returning to the initial launch view
+12. Expected: the app redraws at full physical surface resolution with `scale_factor = density`, with no fixed 0.75 render scale
+13. Confirm outlined buttons, cards, and input borders are visible even when their background is transparent
+14. In the terminal, render `✔ ✘ ⚠ ⏺ ⏹ ⏸` and a real emoji such as `😀`
+15. Expected: terminal/UI symbols render as monochrome symbol glyphs, while the real emoji renders through Android color emoji fallback before and after rotation
 
 ## 0c-Android-AppIds. Debug And Release Application IDs
 
