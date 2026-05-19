@@ -52,6 +52,7 @@ android {
             if (useLocalReleaseSigning) {
                 signingConfig signingConfigs.debug
             }
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'app/proguard-rules.pro'
             minifyEnabled true
         }
     }
