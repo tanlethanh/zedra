@@ -228,36 +228,40 @@ object NativePresentations {
         val activity = requireActivity()
         sheetDialog?.dismiss()
 
-        val screenHeight = activity.resources.displayMetrics.heightPixels
-        val initialHeight = when (initialDetent) {
-            0 -> (screenHeight * 0.55f).roundToInt()
-            else -> (screenHeight * 0.92f).roundToInt()
-        }
+        // Real (full-window) height — `displayMetrics.heightPixels` excludes the
+        // system bars, which left the sheet short of the screen bottom.
+        val realMetrics = android.util.DisplayMetrics()
+        @Suppress("DEPRECATION")
+        activity.windowManager.defaultDisplay.getRealMetrics(realMetrics)
+        val fullHeight = realMetrics.heightPixels
+
+        val hasTwoDetents = detents?.contains(0) == true && detents.contains(1)
+        // Detents are pure top offsets: large leaves an ~8% strip, medium ~55%.
+        val largeOffset = (fullHeight * 0.08f).roundToInt()
+        val mediumRatio = 0.55f
 
         val container = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            background = roundedBackground(Color.rgb(20, 22, 27), cornerRadius.takeIf { it >= 0f } ?: 18f)
+            // Transparent: the BottomSheet view carries the rounded chrome,
+            // styled declaratively by the ZedraBottomSheetDialog theme.
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                initialHeight,
+                ViewGroup.LayoutParams.MATCH_PARENT,
             )
         }
 
         if (showsGrabber) {
             container.addView(View(activity).apply {
                 background = roundedBackground(Color.argb(150, 210, 214, 224), 2f)
-                val width = dp(38f)
-                val height = dp(4f)
-                layoutParams = LinearLayout.LayoutParams(width, height).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(38f), dp(4f)).apply {
                     gravity = Gravity.CENTER_HORIZONTAL
                     topMargin = dp(8f)
-                    bottomMargin = dp(8f)
+                    bottomMargin = dp(4f)
                 }
             })
         }
 
         val surface = SheetHostView(activity).apply {
-            this.expandsOnScrollEdge = expandsOnScrollEdge
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 0,
@@ -266,41 +270,48 @@ object NativePresentations {
         }
         container.addView(surface)
 
-        val dialog = BottomSheetDialog(
-            activity,
-            com.google.android.material.R.style.Theme_Design_BottomSheetDialog,
-        ).apply {
+        // No explicit theme: BottomSheetDialog resolves `bottomSheetDialogTheme`
+        // from the activity theme, which points at ZedraBottomSheetDialog.
+        val dialog = BottomSheetDialog(activity).apply {
             setContentView(container)
             setCancelable(!modalInPresentation)
             setCanceledOnTouchOutside(!modalInPresentation)
-            window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+            // The custom sheet hosts a GPUI SurfaceView, not text input. Letting
+            // the dialog follow the activity's adjustResize path can resize the
+            // embedded render surface while the sheet is presenting or dragging.
+            window?.setSoftInputMode(
+                WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING or
+                    WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN,
+            )
             setOnDismissListener {
                 if (sheetDialog === this) sheetDialog = null
             }
         }
-        sheetDialog = dialog
-        dialog.setOnShowListener {
-            val sheet = dialog.findViewById<FrameLayout>(com.google.android.material.R.id.design_bottom_sheet)
-            sheet?.background = null
-            sheet?.let {
-                it.layoutParams = it.layoutParams.apply {
-                    height = if (detents?.contains(0) == true && detents.contains(1)) {
-                        (screenHeight * 0.92f).roundToInt()
-                    } else {
-                        initialHeight
-                    }
-                }
+        surface.bottomSheetBehavior = dialog.behavior
+
+        // Configure the sheet view and behavior before show() so the intro is a
+        // single smooth slide. The sheet view fills the window (MATCH_PARENT) so
+        // it always reaches the screen bottom regardless of the detent.
+        dialog.findViewById<FrameLayout>(
+            com.google.android.material.R.id.design_bottom_sheet,
+        )?.let { sheet ->
+            sheet.layoutParams = sheet.layoutParams.apply {
+                height = ViewGroup.LayoutParams.MATCH_PARENT
             }
-            val behavior = sheet?.let { BottomSheetBehavior.from(it) }
-            behavior?.isFitToContents = false
-            behavior?.halfExpandedRatio = 0.5f
-            behavior?.isHideable = !modalInPresentation
-            behavior?.state = if (initialDetent == 0) {
+        }
+        dialog.behavior.apply {
+            isFitToContents = false
+            isHideable = !modalInPresentation
+            skipCollapsed = true
+            expandedOffset = largeOffset
+            halfExpandedRatio = mediumRatio
+            state = if (initialDetent == 0 && hasTwoDetents) {
                 BottomSheetBehavior.STATE_HALF_EXPANDED
             } else {
                 BottomSheetBehavior.STATE_EXPANDED
             }
         }
+        sheetDialog = dialog
         dialog.show()
     }
 

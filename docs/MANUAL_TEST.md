@@ -53,19 +53,20 @@
 
 1. Run a Debug Android build and open Settings
 2. Tap the developer alert and selection presentation actions
-3. Expected: native AppCompat dialogs appear, button callbacks fire once, and dismissing the selection reports a dismiss rather than choosing the last item
-4. Tap `Native Notification`
-5. Expected: native notification banners appear near the top safe area, auto-close by default, and tapping the action banner triggers the callback notification
-6. Trigger the text input dialog from an existing call site
-7. Expected: the native text field shows the initial value, `OK` returns the entered value, and `Cancel`/outside dismissal returns no value
-8. Open a terminal file link so the native custom sheet opens
-9. Expected: a Material bottom sheet appears with a grabber when requested and GPUI-rendered preview content inside the embedded sheet surface
-10. Scroll inside the sheet preview, then drag downward from the top of the preview
-11. Expected: inner content scrolls while not at top; when it is at top, the bottom sheet can take the downward drag for detent/dismiss handoff
-12. Trigger the scroll-to-bottom floating button
-13. Expected: the native floating button appears at the GPUI wrapper bounds and pressing it runs the Rust callback
-14. Trigger dictation preview events if the call site is available
-15. Expected: Android displays the preview overlay and dismiss callback, without attempting iOS-specific dictation stream interpretation
+3. Expected: native Material dialogs appear; the selection dialog shows `First Action`, `Second Action`, `Destructive Action`, and `Cancel` rows with visible row separation, not just the title
+4. Expected: button callbacks fire once, and dismissing the selection reports a dismiss rather than choosing the last item
+5. Tap `Native Notification`
+6. Expected: native notification banners appear near the top safe area, auto-close by default, and tapping the action banner triggers the callback notification
+7. Trigger the text input dialog from an existing call site
+8. Expected: the native text field shows the initial value, `OK` returns the entered value, and `Cancel`/outside dismissal returns no value
+9. Open a terminal file link so the native custom sheet opens
+10. Expected: a Material bottom sheet appears with a grabber when requested and GPUI-rendered preview content inside the embedded sheet surface
+11. From a fresh sheet open, swipe the preview content upward and downward before it reaches top, then drag downward from the top of the preview
+12. Expected: inner content scrolls while not at top; when it is at top, the bottom sheet can take the downward drag for detent/dismiss handoff without preview repaint glitches during the drag or dismissal
+13. Trigger the scroll-to-bottom floating button
+14. Expected: the native floating button appears at the GPUI wrapper bounds and pressing it runs the Rust callback
+15. Trigger dictation preview events if the call site is available
+16. Expected: Android displays the preview overlay and dismiss callback, without attempting iOS-specific dictation stream interpretation
 
 ## 0c-Android-Renderer. GPUI Surface Lifecycle
 

@@ -8,18 +8,46 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.VelocityTracker
 import android.view.ViewConfiguration
+import com.google.android.material.bottomsheet.BottomSheetBehavior
+import kotlin.math.abs
 
+/**
+ * Hosts the GPUI-rendered custom sheet content.
+ *
+ * Touch coordination mirrors the iOS sheet: a gesture belongs either to the
+ * native sheet or to the embedded GPUI content, never both. We decide after
+ * touch slop. Downward vertical drags at the content top are left for
+ * BottomSheetBehavior; all other gestures temporarily disable sheet dragging
+ * and are forwarded to GPUI.
+ */
 class SheetHostView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
-    var expandsOnScrollEdge: Boolean = true
-    private var velocityTracker: VelocityTracker? = null
+    var bottomSheetBehavior: BottomSheetBehavior<*>? = null
+
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private var velocityTracker: VelocityTracker? = null
+    private var downX = 0f
     private var downY = 0f
+    private var pastSlop = false
+    private var nativeGestureActive = false
+    private var nativeMovesBeforeSheetClaim = 0
 
     init {
         holder.addCallback(this)
         isFocusable = true
         isFocusableInTouchMode = true
     }
+
+    // BottomSheetBehavior consults this to route a downward drag: content scroll
+    // when it can scroll up, sheet drag when it cannot. The analog of the iOS
+    // `zedra_ios_sheet_content_is_at_top()` check.
+    override fun canScrollVertically(direction: Int): Boolean =
+        if (direction < 0) {
+            !MainActivity.nativeSheetContentIsAtTop()
+        } else {
+            true
+        }
+
+    // --- Surface lifecycle --------------------------------------------------
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         Log.d(TAG, "sheet surfaceCreated")
@@ -39,56 +67,96 @@ class SheetHostView(context: Context) : SurfaceView(context), SurfaceHolder.Call
         nativeSheetProcessSurfaceCommands()
     }
 
+    // --- Touch --------------------------------------------------------------
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                downX = event.x
                 downY = event.y
-                parent?.requestDisallowInterceptTouchEvent(true)
+                pastSlop = false
+                nativeMovesBeforeSheetClaim = 0
+                nativeGestureActive = true
+                protectContentGesture()
                 velocityTracker = VelocityTracker.obtain()
                 velocityTracker?.addMovement(event)
-                forwardTouch(ACTION_DOWN, event)
+                nativeSheetTouchEvent(ACTION_DOWN, event.x, event.y, 0)
             }
             MotionEvent.ACTION_MOVE -> {
                 velocityTracker?.addMovement(event)
-                val draggingDown = event.y - downY > touchSlop
-                val handOffToSheet = expandsOnScrollEdge &&
-                    draggingDown &&
-                    MainActivity.nativeSheetContentIsAtTop()
-                parent?.requestDisallowInterceptTouchEvent(!handOffToSheet)
-                forwardTouch(ACTION_MOVE, event)
+                handleMove(event)
             }
             MotionEvent.ACTION_UP -> {
                 velocityTracker?.addMovement(event)
-                velocityTracker?.computeCurrentVelocity(1000)
-                val velX = velocityTracker?.xVelocity ?: 0f
-                val velY = velocityTracker?.yVelocity ?: 0f
-                if (kotlin.math.abs(velX) > 150f || kotlin.math.abs(velY) > 150f) {
-                    nativeSheetFlingEvent(velX, velY)
-                }
-                velocityTracker?.recycle()
-                velocityTracker = null
-                parent?.requestDisallowInterceptTouchEvent(false)
-                forwardTouch(ACTION_UP, event)
+                finishGesture(event, ACTION_UP)
             }
             MotionEvent.ACTION_CANCEL -> {
-                velocityTracker?.recycle()
-                velocityTracker = null
-                parent?.requestDisallowInterceptTouchEvent(false)
-                forwardTouch(ACTION_CANCEL, event)
+                finishGesture(event, ACTION_CANCEL)
             }
             else -> return super.onTouchEvent(event)
         }
         return true
     }
 
-    private fun forwardTouch(action: Int, event: MotionEvent) {
-        val pointerIndex = event.actionIndex.coerceAtMost(event.pointerCount - 1)
-        nativeSheetTouchEvent(
-            action,
-            event.getX(pointerIndex),
-            event.getY(pointerIndex),
-            event.getPointerId(pointerIndex),
-        )
+    private fun handleMove(event: MotionEvent) {
+        if (!pastSlop) {
+            if (abs(event.y - downY) < touchSlop && abs(event.x - downX) < touchSlop) {
+                return
+            }
+            pastSlop = true
+        }
+
+        if (nativeGestureActive) {
+            nativeSheetTouchEvent(ACTION_MOVE, event.x, event.y, 0)
+            nativeMovesBeforeSheetClaim++
+        }
+
+        val dx = event.x - downX
+        val dy = event.y - downY
+        // Give GPUI the first real move before asking it whether the content
+        // reached top; otherwise a fresh downward gesture can be claimed by the
+        // sheet before the embedded scroll view has a chance to consume it.
+        val sheetShouldOwn =
+            nativeMovesBeforeSheetClaim > 1 &&
+                dy > abs(dx) &&
+                dy > 0f &&
+                MainActivity.nativeSheetContentIsAtTop()
+
+        if (sheetShouldOwn) {
+            nativeSheetTouchEvent(ACTION_CANCEL, event.x, event.y, 0)
+            nativeGestureActive = false
+            releaseSheetGesture()
+        }
+    }
+
+    private fun finishGesture(event: MotionEvent, terminalAction: Int) {
+        velocityTracker?.computeCurrentVelocity(1000)
+        val velX = velocityTracker?.xVelocity ?: 0f
+        val velY = velocityTracker?.yVelocity ?: 0f
+
+        if (nativeGestureActive && (abs(velX) > 150f || abs(velY) > 150f)) {
+            nativeSheetFlingEvent(velX, velY)
+        }
+
+        if (nativeGestureActive) {
+            nativeSheetTouchEvent(terminalAction, event.x, event.y, 0)
+        }
+
+        releaseSheetGesture()
+        velocityTracker?.recycle()
+        velocityTracker = null
+        pastSlop = false
+        nativeGestureActive = false
+    }
+
+    private fun protectContentGesture() {
+        bottomSheetBehavior?.isDraggable = false
+        parent?.requestDisallowInterceptTouchEvent(true)
+    }
+
+    private fun releaseSheetGesture() {
+        parent?.requestDisallowInterceptTouchEvent(false)
+        bottomSheetBehavior?.isDraggable = true
     }
 
     private external fun nativeSheetSurfaceCreated(surface: Surface)

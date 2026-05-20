@@ -169,6 +169,18 @@ pub extern "system" fn Java_dev_zedra_app_SheetHostView_nativeSheetFlingEvent(
     sheet::handle_fling(velocity_x, velocity_y);
 }
 
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_SheetHostView_nativeSheetProcessSurfaceCommands(
+    _env: JNIEnv,
+    _this: JObject,
+) {
+    gpui_android::with_platform(|platform| {
+        platform.process_pending_tasks();
+        platform.process_fling();
+        platform.request_frame_for_all_windows();
+    });
+}
+
 // ============================================================================
 // MainActivity initialization (downstream — gathers JVM, files dir, hands
 // JVM/activity to the framework)
