@@ -6,11 +6,11 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
-import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
@@ -19,6 +19,10 @@ import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.divider.MaterialDivider
+import com.google.android.material.textfield.TextInputEditText
+import com.google.android.material.textfield.TextInputLayout
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -52,8 +56,6 @@ object NativePresentations {
         activity = null
     }
 
-    // Keep dialogs on AppCompat widgets because the host activity uses an
-    // AppCompat theme; Material dialog/text-field widgets are theme-sensitive.
     @JvmStatic
     fun showAlert(
         callbackId: Int,
@@ -63,8 +65,10 @@ object NativePresentations {
         styles: IntArray?,
     ) = onUi {
         val safeLabels = labels?.takeIf { it.isNotEmpty() } ?: arrayOf("OK")
-        val safeStyles = styles?.takeIf { it.size == safeLabels.size } ?: IntArray(safeLabels.size)
-        val dialog = AlertDialog.Builder(requireActivity())
+        val safeStyles = styles
+            ?.takeIf { it.size == safeLabels.size }
+            ?: IntArray(safeLabels.size)
+        val dialog = MaterialAlertDialogBuilder(requireActivity())
             .apply {
                 if (!title.isNullOrBlank()) setTitle(title)
                 if (!message.isNullOrBlank()) setMessage(message)
@@ -86,14 +90,14 @@ object NativePresentations {
             .create()
         dialog.setOnShowListener {
             safeStyles.forEachIndexed { index, style ->
-                if (style == 2) {
-                    val which = when (index) {
-                        0 -> android.content.DialogInterface.BUTTON_POSITIVE
-                        1 -> android.content.DialogInterface.BUTTON_NEGATIVE
-                        2 -> android.content.DialogInterface.BUTTON_NEUTRAL
-                        else -> 0
-                    }
-                    if (which != 0) dialog.getButton(which)?.setTextColor(Color.rgb(244, 97, 97))
+                val which = when (index) {
+                    0 -> android.content.DialogInterface.BUTTON_POSITIVE
+                    1 -> android.content.DialogInterface.BUTTON_NEGATIVE
+                    2 -> android.content.DialogInterface.BUTTON_NEUTRAL
+                    else -> 0
+                }
+                if (which != 0) {
+                    dialog.getButton(which)?.setTextColor(alertButtonColor(style))
                 }
             }
         }
@@ -109,20 +113,65 @@ object NativePresentations {
         styles: IntArray?,
     ) = onUi {
         val safeLabels = labels?.takeIf { it.isNotEmpty() } ?: arrayOf("OK")
-        AlertDialog.Builder(requireActivity())
-            .apply {
-                if (!title.isNullOrBlank()) setTitle(title)
-                if (!message.isNullOrBlank()) setMessage(message)
-                setItems(safeLabels) { _, which ->
-                    MainActivity.nativeSelectionResult(callbackId, which)
+        val safeStyles = styles
+            ?.takeIf { it.size == safeLabels.size }
+            ?: IntArray(safeLabels.size)
+        val activity = requireActivity()
+        lateinit var dialog: AlertDialog
+        val content = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            if (!title.isNullOrBlank()) {
+                addView(selectionHeader(title, primary = true))
+            }
+            if (!message.isNullOrBlank()) {
+                addView(selectionHeader(message, primary = title.isNullOrBlank()))
+            }
+            safeLabels.forEachIndexed { index, label ->
+                addView(TextView(activity).apply {
+                    text = label
+                    textSize = 16f
+                    gravity = Gravity.CENTER_VERTICAL
+                    minHeight = dp(56f)
+                    setPadding(dp(24f), 0, dp(24f), 0)
+                    setTextColor(
+                        if (safeStyles[index] == 2) {
+                            Color.rgb(244, 97, 97)
+                        } else {
+                            Color.WHITE
+                        }
+                    )
+                    setSelectableItemBackground(this)
+                    setOnClickListener {
+                        if (safeStyles[index] == 1) {
+                            MainActivity.nativeSelectionDismiss(callbackId)
+                        } else {
+                            MainActivity.nativeSelectionResult(callbackId, index)
+                        }
+                        dialog.dismiss()
+                    }
+                }, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ))
+                if (index + 1 < safeLabels.size) {
+                    addView(MaterialDivider(activity), LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ))
                 }
+            }
+            setPadding(0, if (title.isNullOrBlank() && message.isNullOrBlank()) dp(8f) else 0, 0, dp(8f))
+        }
+        dialog = MaterialAlertDialogBuilder(activity)
+            .apply {
+                // Keep the header and list in one Material custom view so
+                // the dialog title/message panels cannot create a false gap.
+                setView(content)
                 setOnCancelListener { MainActivity.nativeSelectionDismiss(callbackId) }
             }
             .create()
-            .also {
-                it.setCanceledOnTouchOutside(true)
-                it.show()
-            }
+        dialog.setCanceledOnTouchOutside(true)
+        dialog.show()
     }
 
     @JvmStatic
@@ -132,21 +181,27 @@ object NativePresentations {
         placeholder: String?,
         initialValue: String?,
     ) = onUi {
-        val input = EditText(requireActivity()).apply {
+        val input = TextInputEditText(requireActivity()).apply {
             setSingleLine(true)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-            hint = placeholder.orEmpty()
             setText(initialValue.orEmpty())
             setSelection(text?.length ?: 0)
         }
-        val container = FrameLayout(requireActivity()).apply {
-            setPadding(dp(20f), dp(8f), dp(20f), 0)
-            addView(input, FrameLayout.LayoutParams(
+        val inputLayout = TextInputLayout(requireActivity()).apply {
+            hint = placeholder.orEmpty()
+            addView(input, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ))
         }
-        AlertDialog.Builder(requireActivity())
+        val container = FrameLayout(requireActivity()).apply {
+            setPadding(dp(20f), dp(8f), dp(20f), 0)
+            addView(inputLayout, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ))
+        }
+        MaterialAlertDialogBuilder(requireActivity())
             .apply {
                 if (!title.isNullOrBlank()) setTitle(title)
                 setView(container)
@@ -418,12 +473,15 @@ object NativePresentations {
         }
     }
 
+    // Always post, never run inline. These actions add/remove views on the
+    // shared rootView; running synchronously can land mid-traversal when the
+    // caller is itself inside a view-tree walk (e.g. window inset dispatch
+    // triggered by the soft keyboard), corrupting child iteration.
     private fun onUi(action: () -> Unit) {
-        val activity = activity ?: return
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            action()
-        } else {
-            activity.runOnUiThread(action)
+        mainHandler.post {
+            if (activity != null && rootView != null) {
+                action()
+            }
         }
     }
 
@@ -443,11 +501,46 @@ object NativePresentations {
         }
     }
 
+    private fun selectionHeader(text: String, primary: Boolean): TextView {
+        return TextView(requireActivity()).apply {
+            this.text = text
+            textSize = if (primary) 20f else 14f
+            setTextColor(if (primary) Color.WHITE else Color.rgb(202, 209, 222))
+            setPadding(
+                dp(24f),
+                if (primary) dp(24f) else 0,
+                dp(24f),
+                if (primary) dp(16f) else dp(12f),
+            )
+            maxLines = 2
+        }
+    }
+
+    private fun alertButtonColor(style: Int): Int {
+        return if (style == 2) {
+            Color.rgb(244, 97, 97)
+        } else {
+            Color.rgb(189, 189, 189)
+        }
+    }
+
     private fun floatingButtonIconRes(name: String?): Int {
         return when (name) {
             "arrow.down", "chevron.down", "arrow.down.circle", "arrow.down.to.line" ->
                 R.drawable.ic_key_arrow_down
             else -> R.drawable.ic_key_arrow_down
+        }
+    }
+
+    private fun setSelectableItemBackground(view: View) {
+        val outValue = TypedValue()
+        if (view.context.theme.resolveAttribute(
+                android.R.attr.selectableItemBackground,
+                outValue,
+                true,
+            )
+        ) {
+            view.setBackgroundResource(outValue.resourceId)
         }
     }
 

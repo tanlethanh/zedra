@@ -1,14 +1,91 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="AppTheme" parent="@style/Theme.AppCompat.DayNight.NoActionBar">
+    <style name="AppTheme" parent="@style/Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowBackground">@color/splash_bg</item>
         <item name="android:colorBackground">@color/splash_bg</item>
         <item name="android:textColorPrimary">@color/app_text_primary</item>
         <item name="android:textColorSecondary">@color/app_text_secondary</item>
+        <item name="colorPrimary">@color/app_accent</item>
+        <item name="colorPrimaryVariant">@color/app_accent</item>
+        <item name="colorSecondary">@color/app_accent</item>
+        <item name="colorSurface">@color/app_surface</item>
+        <item name="colorSurfaceVariant">@color/app_surface_variant</item>
+        <item name="colorSurfaceContainer">@color/app_surface_container</item>
+        <item name="colorSurfaceContainerHigh">@color/app_surface_container_high</item>
+        <item name="colorSurfaceContainerHighest">@color/app_surface_container_highest</item>
+        <item name="colorOnSurface">@color/app_text_primary</item>
+        <item name="colorOnSurfaceVariant">@color/app_text_secondary</item>
+        <item name="colorOutline">@color/app_outline</item>
+        <item name="colorOutlineVariant">@color/app_surface_variant</item>
+        <item name="colorError">@color/app_error</item>
+        <item name="colorOnError">@color/app_text_primary</item>
+        <item name="materialAlertDialogTheme">@style/ZedraMaterialAlertDialog</item>
+        <item name="bottomSheetDialogTheme">@style/ZedraBottomSheetDialog</item>
+        <item name="alertDialogStyle">@style/ZedraMaterialAlertDialogStyle</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">false</item>
+    </style>
+
+    <style name="ZedraMaterialAlertDialog" parent="@style/ThemeOverlay.MaterialComponents.MaterialAlertDialog">
+        <item name="colorSurface">@color/app_dialog_surface</item>
+        <item name="colorSurfaceContainer">@color/app_surface_container</item>
+        <item name="colorSurfaceContainerHigh">@color/app_surface_container_high</item>
+        <item name="colorSurfaceContainerHighest">@color/app_dialog_surface</item>
+        <item name="colorOnSurface">@color/app_text_primary</item>
+        <item name="colorOnSurfaceVariant">@color/app_text_secondary</item>
+        <item name="colorPrimary">@color/app_accent</item>
+        <item name="colorError">@color/app_error</item>
+        <item name="colorOutline">@color/app_outline</item>
+        <item name="colorOutlineVariant">@color/app_surface_variant</item>
+        <item name="alertDialogStyle">@style/ZedraMaterialAlertDialogStyle</item>
+        <item name="materialAlertDialogBodyTextStyle">@style/ZedraMaterialAlertDialogBodyText</item>
+        <item name="materialAlertDialogTitleTextStyle">@style/ZedraMaterialAlertDialogTitleText</item>
+    </style>
+
+    <style name="ZedraMaterialAlertDialogStyle" parent="@style/MaterialAlertDialog.MaterialComponents">
+        <item name="backgroundTint">@color/app_dialog_surface</item>
+        <item name="shapeAppearance">@style/ZedraMaterialAlertDialogShape</item>
+    </style>
+
+    <style name="ZedraMaterialAlertDialogShape" parent="@style/ShapeAppearance.MaterialComponents.LargeComponent">
+        <item name="cornerSize">28dp</item>
+    </style>
+
+    <style name="ZedraMaterialAlertDialogTitleText" parent="@style/MaterialAlertDialog.MaterialComponents.Title.Text">
+        <item name="android:textColor">@color/app_text_primary</item>
+    </style>
+
+    <style name="ZedraMaterialAlertDialogBodyText" parent="@style/MaterialAlertDialog.MaterialComponents.Body.Text">
+        <item name="android:textColor">@color/app_text_secondary</item>
+    </style>
+
+    <!--
+      Custom sheet styling lives here, not in code: the BottomSheet view is a
+      Material component and is themed declaratively. `elevationOverlayEnabled`
+      is off so the surface stays the exact app background colour, and the
+      shape rounds only the top corners.
+    -->
+    <style name="ZedraBottomSheetDialog" parent="@style/ThemeOverlay.MaterialComponents.BottomSheetDialog">
+        <item name="colorSurface">@color/splash_bg</item>
+        <item name="colorOnSurface">@color/app_text_primary</item>
+        <item name="colorOnSurfaceVariant">@color/app_text_secondary</item>
+        <item name="elevationOverlayEnabled">false</item>
+        <item name="bottomSheetStyle">@style/ZedraBottomSheetStyle</item>
+    </style>
+
+    <style name="ZedraBottomSheetStyle" parent="@style/Widget.MaterialComponents.BottomSheet.Modal">
+        <item name="backgroundTint">@color/splash_bg</item>
+        <item name="shapeAppearanceOverlay">@style/ZedraBottomSheetShape</item>
+    </style>
+
+    <style name="ZedraBottomSheetShape">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSizeTopLeft">18dp</item>
+        <item name="cornerSizeTopRight">18dp</item>
+        <item name="cornerSizeBottomLeft">0dp</item>
+        <item name="cornerSizeBottomRight">0dp</item>
     </style>
 
     <style name="SplashTheme" parent="Theme.SplashScreen">
