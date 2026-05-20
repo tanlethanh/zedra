@@ -1,7 +1,7 @@
 package dev.zedra.app
 
+import android.content.res.ColorStateList
 import android.graphics.Color
-import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
@@ -12,19 +12,22 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 object NativePresentations {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var activity: MainActivity? = null
     private var rootView: FrameLayout? = null
-    private val floatingButtons = mutableMapOf<Int, TextView>()
+    private val floatingButtons = mutableMapOf<Int, ImageButton>()
     private val dictationPreviews = mutableMapOf<Int, TextView>()
     private val notifications = mutableMapOf<Int, View>()
     private var sheetDialog: BottomSheetDialog? = null
@@ -260,18 +263,24 @@ object NativePresentations {
     ) = onUi {
         val root = requireRoot()
         val button = floatingButtons.getOrPut(id) {
-            TextView(requireActivity()).apply {
-                gravity = Gravity.CENTER
-                typeface = Typeface.DEFAULT_BOLD
-                setTextColor(Color.WHITE)
+            ImageButton(requireActivity()).apply {
                 background = roundedBackground(Color.argb(230, 38, 42, 51), 999f)
+                imageTintList = ColorStateList.valueOf(Color.WHITE)
+                scaleType = ImageView.ScaleType.FIT_CENTER
                 elevation = dp(8f).toFloat()
                 setOnClickListener { MainActivity.nativeFloatingButtonPressed(id) }
                 root.addView(this)
             }
         }
-        button.text = symbolFor(imageName)
-        button.textSize = max(10f, iconSize)
+        val safeIconSize = iconSize.coerceAtLeast(10f)
+        val iconPadding = ((min(width, height) - safeIconSize) / 2f).coerceAtLeast(0f)
+        button.setImageResource(floatingButtonIconRes(imageName))
+        button.setPadding(
+            dp(iconPadding),
+            dp(iconPadding),
+            dp(iconPadding),
+            dp(iconPadding),
+        )
         button.contentDescription = accessibilityLabel.orEmpty()
         button.layoutParams = FrameLayout.LayoutParams(dp(width), dp(height)).apply {
             leftMargin = dp(x)
@@ -431,6 +440,14 @@ object NativePresentations {
         return GradientDrawable().apply {
             setColor(color)
             cornerRadius = dp(radiusDp).toFloat()
+        }
+    }
+
+    private fun floatingButtonIconRes(name: String?): Int {
+        return when (name) {
+            "arrow.down", "chevron.down", "arrow.down.circle", "arrow.down.to.line" ->
+                R.drawable.ic_key_arrow_down
+            else -> R.drawable.ic_key_arrow_down
         }
     }
 
