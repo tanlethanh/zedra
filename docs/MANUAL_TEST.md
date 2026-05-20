@@ -421,8 +421,14 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:
 5. Expected: committed text, delete, and enter reach the PTY exactly once without opening the dictation preview
 6. Use an IME that composes text, such as Vietnamese Telex or Japanese, type a short composition, and accept it
 7. Expected: composing text updates without duplicating committed characters, and the accepted text reaches the PTY once
-8. Tap the already-focused terminal while the keyboard is visible
-9. Expected: the software keyboard dismisses and the next terminal tap reopens it
+8. With the keyboard visible, tap `Esc`, `Tab`, `Enter`, and each arrow in the accessory bar
+9. Expected: each accessory key reaches the PTY exactly once
+10. Press and hold each accessory arrow, then release it
+11. Expected: the corresponding arrow input repeats continuously while held and stops immediately on release
+12. Dismiss the keyboard or background the app while holding an accessory arrow
+13. Expected: repeat stops and does not resume when the keyboard or app returns
+14. Tap the already-focused terminal while the keyboard is visible
+15. Expected: the software keyboard dismisses and the next terminal tap reopens it
 
 ## 11a. Terminal Scroll To Bottom Native Button On iOS
 

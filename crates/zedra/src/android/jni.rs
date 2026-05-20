@@ -412,6 +412,22 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeSheetContentIsAtTop
     crate::native_presentation::sheet_content_is_at_top() as jboolean
 }
 
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeKeyboardAccessoryKey(
+    mut env: JNIEnv,
+    _class: JClass,
+    key: jni::objects::JString,
+) {
+    let key_name: String = match env.get_string(&key) {
+        Ok(key) => key.into(),
+        Err(error) => {
+            tracing::error!(?error, "jni: failed to read keyboard accessory key");
+            return;
+        }
+    };
+    crate::active_terminal::send_named_key(&key_name);
+}
+
 fn dispatch_deeplink(url: String) {
     tracing::info!(url = &url[..url.len().min(80)], "jni: deeplink");
     match crate::deeplink::parse(&url) {

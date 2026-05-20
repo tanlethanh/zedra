@@ -501,18 +501,7 @@ pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
         return;
     }
 
-    let bytes: &[u8] = match key_name {
-        "escape" => b"\x1b",
-        "tab" => b"\x09",
-        "left" => b"\x1b[D",
-        "down" => b"\x1b[B",
-        "up" => b"\x1b[A",
-        "right" => b"\x1b[C",
-        "enter" => b"\r",
-        "shift_enter" => b"\n",
-        _ => return,
-    };
-    active_terminal::send_to_active(bytes.to_vec());
+    active_terminal::send_named_key(key_name);
 }
 
 /// Called from the native terminal composer to send finalized text to the active terminal.

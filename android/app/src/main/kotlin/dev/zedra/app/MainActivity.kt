@@ -6,11 +6,15 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.view.Gravity
 import android.view.HapticFeedbackConstants
+import android.view.View
 import android.widget.FrameLayout
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import dev.zed.gpui.GpuiRuntimeController
 import dev.zed.gpui.GpuiSurfaceView
 
@@ -25,6 +29,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var runtime: GpuiRuntimeController
     private lateinit var rootView: FrameLayout
     private lateinit var surfaceView: GpuiSurfaceView
+    private lateinit var keyboardAccessoryBar: KeyboardAccessoryBar
 
     override fun onCreate(savedInstanceState: Bundle?) {
         AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
@@ -39,6 +44,18 @@ class MainActivity : AppCompatActivity() {
 
         rootView = FrameLayout(this)
         surfaceView = runtime.attach(rootView)
+        keyboardAccessoryBar = KeyboardAccessoryBar(this) { key ->
+            nativeKeyboardAccessoryKey(key)
+        }
+        rootView.addView(
+            keyboardAccessoryBar,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                (44 * resources.displayMetrics.density).toInt(),
+                Gravity.BOTTOM,
+            ),
+        )
+        installKeyboardAccessoryInsets()
         sSurfaceView = surfaceView
         sActivity = this
         NativePresentations.register(this, rootView)
@@ -70,6 +87,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        if (::keyboardAccessoryBar.isInitialized) {
+            keyboardAccessoryBar.stopRepeating()
+        }
         runtime.onPause()
     }
 
@@ -79,6 +99,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        if (::keyboardAccessoryBar.isInitialized) {
+            keyboardAccessoryBar.stopRepeating()
+        }
         NativePresentations.unregister()
         sSurfaceView = null
         sActivity = null
@@ -91,6 +114,26 @@ class MainActivity : AppCompatActivity() {
         val uri = intent.data ?: return
         Log.d(TAG, "Deeplink received: $uri")
         nativeDeeplinkReceived(uri.toString())
+    }
+
+    private fun installKeyboardAccessoryInsets() {
+        ViewCompat.setOnApplyWindowInsetsListener(rootView) { _, insets ->
+            val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+            val params = keyboardAccessoryBar.layoutParams as FrameLayout.LayoutParams
+            if (params.bottomMargin != imeBottom) {
+                params.bottomMargin = imeBottom
+                keyboardAccessoryBar.layoutParams = params
+            }
+            keyboardAccessoryBar.visibility = if (imeBottom > 0) View.VISIBLE else View.GONE
+            surfaceView.setKeyboardAccessoryHeight(
+                if (imeBottom > 0) keyboardAccessoryBar.layoutParams.height else 0,
+            )
+            if (imeBottom == 0) {
+                keyboardAccessoryBar.stopRepeating()
+            }
+            insets
+        }
+        ViewCompat.requestApplyInsets(rootView)
     }
 
     companion object {
@@ -143,6 +186,8 @@ class MainActivity : AppCompatActivity() {
         @JvmStatic external fun nativeNotificationDismiss(callbackId: Int)
 
         @JvmStatic external fun nativeSheetContentIsAtTop(): Boolean
+
+        @JvmStatic external fun nativeKeyboardAccessoryKey(key: String)
 
         // ===== Rust → Java callbacks =====
 
