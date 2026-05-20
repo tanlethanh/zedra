@@ -10,14 +10,13 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.textfield.TextInputEditText
-import com.google.android.material.textfield.TextInputLayout
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -50,6 +49,8 @@ object NativePresentations {
         activity = null
     }
 
+    // Keep dialogs on AppCompat widgets because the host activity uses an
+    // AppCompat theme; Material dialog/text-field widgets are theme-sensitive.
     @JvmStatic
     fun showAlert(
         callbackId: Int,
@@ -60,7 +61,7 @@ object NativePresentations {
     ) = onUi {
         val safeLabels = labels?.takeIf { it.isNotEmpty() } ?: arrayOf("OK")
         val safeStyles = styles?.takeIf { it.size == safeLabels.size } ?: IntArray(safeLabels.size)
-        val dialog = MaterialAlertDialogBuilder(requireActivity())
+        val dialog = AlertDialog.Builder(requireActivity())
             .apply {
                 if (!title.isNullOrBlank()) setTitle(title)
                 if (!message.isNullOrBlank()) setMessage(message)
@@ -105,7 +106,7 @@ object NativePresentations {
         styles: IntArray?,
     ) = onUi {
         val safeLabels = labels?.takeIf { it.isNotEmpty() } ?: arrayOf("OK")
-        MaterialAlertDialogBuilder(requireActivity())
+        AlertDialog.Builder(requireActivity())
             .apply {
                 if (!title.isNullOrBlank()) setTitle(title)
                 if (!message.isNullOrBlank()) setMessage(message)
@@ -128,21 +129,24 @@ object NativePresentations {
         placeholder: String?,
         initialValue: String?,
     ) = onUi {
-        val input = TextInputEditText(requireActivity()).apply {
+        val input = EditText(requireActivity()).apply {
             setSingleLine(true)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            hint = placeholder.orEmpty()
             setText(initialValue.orEmpty())
             setSelection(text?.length ?: 0)
         }
-        val layout = TextInputLayout(requireActivity()).apply {
-            hint = placeholder.orEmpty()
-            addView(input)
+        val container = FrameLayout(requireActivity()).apply {
             setPadding(dp(20f), dp(8f), dp(20f), 0)
+            addView(input, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ))
         }
-        MaterialAlertDialogBuilder(requireActivity())
+        AlertDialog.Builder(requireActivity())
             .apply {
                 if (!title.isNullOrBlank()) setTitle(title)
-                setView(layout)
+                setView(container)
                 setNegativeButton("Cancel") { _, _ ->
                     MainActivity.nativeTextInputDismiss(callbackId)
                 }
@@ -204,7 +208,10 @@ object NativePresentations {
         }
         container.addView(surface)
 
-        val dialog = BottomSheetDialog(activity).apply {
+        val dialog = BottomSheetDialog(
+            activity,
+            com.google.android.material.R.style.Theme_Design_BottomSheetDialog,
+        ).apply {
             setContentView(container)
             setCancelable(!modalInPresentation)
             setCanceledOnTouchOutside(!modalInPresentation)
