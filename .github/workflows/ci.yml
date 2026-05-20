@@ -33,6 +33,16 @@ jobs:
             -p zedra-terminal \
             -p zedra-host
 
+      - name: Test (non-app crates)
+        run: |
+          cargo test \
+            -p zedra-rpc \
+            -p zedra-session \
+            -p zedra-terminal \
+            -p zedra-host \
+            -p zedra-osc \
+            -p zedra-telemetry
+
   ios-rust-check:
     name: iOS Rust
     runs-on: macos-14
@@ -52,6 +62,9 @@ jobs:
 
       - name: Check iOS app crate
         run: cargo check -p zedra --features ios-platform --target aarch64-apple-ios
+
+      - name: Test app crate
+        run: cargo test -p zedra --features ios-platform
 
   js-check:
     name: JS/TS

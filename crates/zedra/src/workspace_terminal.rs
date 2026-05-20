@@ -13,7 +13,8 @@ use crate::button::{
     native_floating_button_id,
 };
 use crate::platform_bridge::{
-    self, CustomSheetDetent, CustomSheetOptions, NativeDictationPreviewOptions,
+    self, CustomSheetDetent, CustomSheetOptions, HapticFeedback, NativeDictationPreviewOptions,
+    NativeEditMenuItem,
 };
 use crate::telemetry::view_telemetry;
 use crate::terminal_preview_view::TerminalPreviewView;
@@ -23,6 +24,12 @@ use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
 pub const TERMINAL_PENDING_ID: &str = "___PENDING___";
 const SCROLL_TO_BOTTOM_BUTTON_THRESHOLD_LINES: usize = 10;
 const SCROLL_TO_BOTTOM_BUTTON_DISMISS_DELAY: Duration = Duration::from_millis(160);
+const NATIVE_PASTE_MENU_TAP_GAP: f32 = 28.0;
+
+fn native_paste_menu_anchor(position: Point<Pixels>) -> Point<Pixels> {
+    // Keep the edit menu visibly separated from the long-press finger.
+    point(position.x, position.y - px(NATIVE_PASTE_MENU_TAP_GAP))
+}
 
 pub struct WorkspaceTerminal {
     terminal_id: String,
@@ -262,6 +269,26 @@ impl WorkspaceTerminal {
                         );
                     }
                 },
+                TerminalEvent::NativePasteMenuRequested { position } => {
+                    let terminal_view = this.terminal_view.clone();
+                    platform_bridge::trigger_haptic(HapticFeedback::ImpactMedium);
+                    platform_bridge::show_native_edit_menu(
+                        native_paste_menu_anchor(*position),
+                        vec![NativeEditMenuItem::new("Paste").image("doc.on.clipboard")],
+                        move |index, cx| match index {
+                            0 => {
+                                if let Some(text) =
+                                    cx.read_from_clipboard().and_then(|item| item.text())
+                                {
+                                    let _ = terminal_view.update(cx, |terminal_view, cx| {
+                                        terminal_view.paste_text_from_native_menu(&text, cx);
+                                    });
+                                }
+                            }
+                            _ => {}
+                        },
+                    );
+                }
                 TerminalEvent::AltScreenChanged(is_alt) => {
                     this.is_alt_screen = *is_alt;
                     cx.notify();

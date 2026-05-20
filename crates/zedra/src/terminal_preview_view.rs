@@ -6,6 +6,7 @@ use zedra_terminal::terminal::{TerminalHyperlink, TerminalHyperlinkTarget};
 use crate::editor::code_editor::{EditorView, ParsedEditorSyntax};
 use crate::editor::markdown::{MarkdownView, is_markdown_path, parse_markdown_source};
 use crate::fonts;
+use crate::native_presentation;
 use crate::placeholder::render_placeholder;
 use crate::theme;
 use crate::workspace_state::WorkspaceState;
@@ -48,7 +49,11 @@ impl TerminalPreviewView {
         Self {
             session_handle,
             workspace_state,
-            editor_view: cx.new(|cx| EditorView::new(cx)),
+            editor_view: cx.new(|cx| {
+                let mut editor = EditorView::new(cx);
+                editor.on_scroll_boundary_changed(native_presentation::set_sheet_content_at_top);
+                editor
+            }),
             markdown_view: cx.new(|_cx| MarkdownView::new_for_sheet(SharedString::default())),
             state: PreviewState::Idle,
             content: PreviewContent::Editor,
@@ -63,6 +68,7 @@ impl TerminalPreviewView {
     pub fn open_hyperlink(&mut self, hyperlink: TerminalHyperlink, cx: &mut Context<Self>) {
         self.open_epoch = self.open_epoch.wrapping_add(1);
         let epoch = self.open_epoch;
+        native_presentation::set_sheet_content_at_top(true);
         match hyperlink.target {
             TerminalHyperlinkTarget::Url { url } => {
                 let prev_task = self.read_task.take();
@@ -146,7 +152,11 @@ impl TerminalPreviewView {
                                 }
                                 this.state = PreviewState::Loaded;
                                 this.editor_view.update(cx, |editor_view, _cx| {
-                                    editor_view.set_content(&filename, content);
+                                    editor_view
+                                        .set_content_with_initial_line(&filename, content, line);
+                                    native_presentation::set_sheet_content_at_top(
+                                        editor_view.is_scrolled_to_file_top(),
+                                    );
                                 });
                                 cx.notify();
                             }) {

@@ -3,10 +3,10 @@ use std::sync::Arc;
 use gpui::*;
 use tracing::*;
 use zedra_rpc::ZedraPairingTicket;
-use zedra_session::signer::ClientSigner;
+use zedra_session::{ConnectPhase, signer::ClientSigner};
 
 use crate::pending::PendingSlot;
-use crate::platform_bridge;
+use crate::platform_bridge::{self, HapticFeedback};
 use crate::workspace::{Workspace, WorkspaceEvent};
 use crate::workspace_state::WorkspaceState;
 
@@ -31,7 +31,7 @@ pub struct Workspaces {
     states: Vec<Entity<WorkspaceState>>,
     active_index: Option<usize>,
     signer: Option<Arc<dyn ClientSigner>>,
-    _subscriptions: Vec<Subscription>,
+    _subscriptions: Vec<(Entity<Workspace>, Subscription)>,
 }
 
 impl Workspaces {
@@ -126,6 +126,26 @@ impl Workspaces {
         cx: &mut Context<Self>,
     ) {
         let addr = iroh::EndpointAddr::from(ticket.endpoint_id);
+        let encoded_addr = match zedra_rpc::pairing::encode_endpoint_addr(&addr) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("Failed to encode endpoint address: {e}");
+                return;
+            }
+        };
+
+        // Existing entry just needs to switch into, triggers reconnect if it's failed/disconencted
+        if let Some(index) = self.entry_index_by_endpoint_addr(&encoded_addr, cx) {
+            self.open_existing_entry(index, cx);
+            return;
+        }
+
+        // Saved/registered workspace just needs to start to connect
+        if let Some(saved) = self.saved_state_by_endpoint_addr(&encoded_addr, cx) {
+            self.connect_saved_from_ticket(addr, ticket, saved, window, cx);
+            return;
+        }
+
         self.connect_and_intialize_workspace(addr, Some(ticket), None, None, window, cx);
     }
 
@@ -184,6 +204,62 @@ impl Workspaces {
         }
     }
 
+    fn open_existing_entry(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(entry) = self.entries.get(index).cloned() else {
+            return;
+        };
+
+        let phase = entry.read(cx).workspace_state(cx).connect_phase.clone();
+        if matches!(
+            phase,
+            Some(ConnectPhase::Disconnected) | Some(ConnectPhase::Failed(_))
+        ) {
+            info!("Reconnecting existing workspace for endpoint.");
+            entry.update(cx, |ws, cx| ws.restart_connection(cx));
+        } else {
+            info!("Workspace for this endpoint already exists; switching to it.");
+        }
+
+        self.activate_entry(index, cx);
+    }
+
+    fn activate_entry(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.switch_to(index, cx);
+        platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+        cx.emit(WorkspacesEvent::Connected { index });
+    }
+
+    fn saved_state_by_endpoint_addr(
+        &self,
+        endpoint_addr: &str,
+        cx: &App,
+    ) -> Option<Entity<WorkspaceState>> {
+        self.states
+            .iter()
+            .find(|state| state.read(cx).endpoint_addr == endpoint_addr)
+            .cloned()
+    }
+
+    fn connect_saved_from_ticket(
+        &mut self,
+        addr: iroh::EndpointAddr,
+        ticket: ZedraPairingTicket,
+        saved: Entity<WorkspaceState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let session_id = saved.read(cx).session_id.clone();
+        let (ticket, session_id) = if session_id.is_empty() {
+            (Some(ticket), None)
+        } else {
+            // Saved workspaces are already registered; QR is just an endpoint hint.
+            (None, Some(session_id))
+        };
+
+        info!("Connecting to saved workspace from ticket. sid={session_id:?}");
+        self.connect_and_intialize_workspace(addr, ticket, session_id, Some(saved), window, cx);
+    }
+
     fn connect_and_intialize_workspace(
         &mut self,
         addr: iroh::EndpointAddr,
@@ -198,9 +274,14 @@ impl Workspaces {
             return;
         };
 
-        let encoded_addr = zedra_rpc::pairing::encode_endpoint_addr(&addr).unwrap_or_default();
+        let encoded_addr = match zedra_rpc::pairing::encode_endpoint_addr(&addr) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("Failed to encode endpoint address: {e}");
+                return;
+            }
+        };
 
-        // Workspace state (from saved or fresh)
         let workspace_state = saved.unwrap_or_else(|| {
             let workspace_state = cx.new(|_cx| {
                 let mut ws = WorkspaceState::default();
@@ -208,13 +289,14 @@ impl Workspaces {
                 ws
             });
             self.states.push(workspace_state.clone());
+            self.emit_states_changed(cx);
             workspace_state
         });
 
         // Create workspace entity
         let workspace = cx.new(|cx| Workspace::new(workspace_state.clone(), window, cx));
-        self._subscriptions
-            .push(self.subscribe_workspace_event(&workspace, cx));
+        let sub = self.subscribe_workspace_event(&workspace, cx);
+        self._subscriptions.push((workspace.clone(), sub));
 
         // Start connection
         workspace.update(cx, |ws, cx| {
@@ -337,15 +419,30 @@ impl Workspaces {
     }
 
     fn remove_entry(&mut self, index: usize, cx: &mut Context<Self>) {
-        self.entries.remove(index);
+        let removed = self.entries.remove(index);
+        self.remove_subscription_for(&removed);
         self.active_index = if self.entries.is_empty() {
             None
         } else {
-            Some(0)
+            match self.active_index {
+                Some(ai) if ai == index => Some(0),
+                Some(ai) if ai > index => Some(ai - 1),
+                other => other,
+            }
         };
 
         info!("Workspace disconnected; {} remaining", self.entries.len());
         cx.emit(WorkspacesEvent::Disconnected { index });
+    }
+
+    fn remove_subscription_for(&mut self, workspace: &Entity<Workspace>) {
+        if let Some(pos) = self
+            ._subscriptions
+            .iter()
+            .position(|(e, _)| *e == *workspace)
+        {
+            drop(self._subscriptions.remove(pos));
+        }
     }
 
     fn emit_states_changed(&mut self, cx: &mut Context<Self>) {

@@ -20,6 +20,8 @@
 
 #define TEXT_MUTED 5263440
 
+#define BORDER_HIGHLIGHT 13290186
+
 #define BORDER_DEFAULT 2894892
 
 #define BORDER_ACTIVE 5263440
@@ -37,6 +39,8 @@
 #define ACCENT_DIM 5263440
 
 #define DRAWER_PADDING 12.0
+
+#define SPACING_XS 4.0
 
 #define SPACING_SM 8.0
 
@@ -90,6 +94,8 @@
 
 #define ICON_SM 16.0
 
+#define ICON_XS 14.0
+
 #define ICON_FILE 12.0
 
 #define ICON_FILE_DIR 14.0
@@ -136,7 +142,15 @@ extern void gpui_ios_detach_embedded_view(void *window_ptr);
  */
 bool zedra_ios_check_pending_frame(void);
 
+void zedra_ios_app_will_terminate(void);
+
 void zedra_ios_native_floating_button_pressed(uint32_t callback_id);
+
+void zedra_ios_dictation_preview_dismiss(uint32_t preview_id);
+
+void zedra_ios_native_edit_menu_result(uint32_t callback_id, int32_t item_index);
+
+void zedra_ios_native_edit_menu_dismiss(uint32_t callback_id);
 
 void zedra_launch_gpui(void);
 
@@ -222,6 +236,16 @@ extern void ios_present_selection(uint32_t callback_id,
                                   const char *const *image_names);
 
 /**
+ * Present a native edit menu anchored at a window coordinate.
+ */
+extern void ios_present_native_edit_menu(uint32_t callback_id,
+                                         float x_pts,
+                                         float y_pts,
+                                         int32_t item_count,
+                                         const char *const *labels,
+                                         const char *const *image_names);
+
+/**
  * Present a configurable native custom sheet with a GPUI canvas host.
  */
 extern void ios_present_custom_sheet(int32_t detent_count,
@@ -288,6 +312,15 @@ extern void ios_present_native_notification(uint32_t callback_id,
                                             bool auto_close);
 
 /**
+ * Present a native text-input dialog (UIAlertController with UITextField).
+ * Result delivered via `zedra_ios_text_input_result` or `zedra_ios_text_input_dismiss`.
+ */
+extern void ios_present_text_input(uint32_t callback_id,
+                                   const char *title,
+                                   const char *placeholder,
+                                   const char *initial_value);
+
+/**
  * Called from the native alert handler after the user taps a button.
  *
  * `callback_id` matches the value passed to `ios_present_alert`.
@@ -310,6 +343,16 @@ void zedra_ios_selection_result(uint32_t callback_id, int32_t button_index);
  * Called when an action sheet is dismissed without selecting an item.
  */
 void zedra_ios_selection_dismiss(uint32_t callback_id);
+
+/**
+ * Called when the user confirms a text-input dialog with the entered value.
+ */
+void zedra_ios_text_input_result(uint32_t callback_id, const char *value);
+
+/**
+ * Called when a text-input dialog is cancelled or dismissed.
+ */
+void zedra_ios_text_input_dismiss(uint32_t callback_id);
 
 /**
  * Called from the native app delegate when the app enters the background.
