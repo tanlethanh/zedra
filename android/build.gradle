@@ -6,60 +6,98 @@ buildscript {
     dependencies {
         classpath 'com.android.tools.build:gradle:8.13.2'
         classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.10'
+        classpath 'com.google.gms:google-services:4.4.4'
+        classpath 'com.google.firebase:firebase-crashlytics-gradle:3.0.7'
     }
 }
 
 apply plugin: 'com.android.application'
 apply plugin: 'org.jetbrains.kotlin.android'
 
+def requestedReleaseTask = gradle.startParameter.taskNames.any { it.toLowerCase().contains('release') }
+if (requestedReleaseTask) {
+    apply plugin: 'com.google.gms.google-services'
+    apply plugin: 'com.google.firebase.crashlytics'
+}
+
 repositories {
     google()
     mavenCentral()
 }
 
-def useLocalReleaseSigning = project.findProperty('zedra.localReleaseSigning') == 'true'
+def hasZedraReleaseSigning =
+        project.hasProperty('ZEDRA_KEYSTORE') &&
+        project.hasProperty('ZEDRA_KEYSTORE_ALIAS') &&
+        project.hasProperty('ZEDRA_KEYSTORE_PASSWORD')
 
 android {
-    namespace='dev.zedra.app'
-    compileSdk 34
+    namespace = 'dev.zedra.app'
+    compileSdk = 35
 
     defaultConfig {
-        applicationId "dev.zedra.app"
-        minSdk 21
-        targetSdk 34
-        versionCode 1
-        versionName "0.1"
-        manifestPlaceholders = [appLabel: "@string/app_name"]
+        applicationId = "dev.zedra.app"
+        minSdk = 23
+        targetSdk = 35
+        versionCode = 1
+        versionName = "0.1"
+        manifestPlaceholders = [
+            appLabel: "@string/app_name",
+            firebaseAnalyticsCollectionEnabled: "false",
+            firebaseCrashlyticsCollectionEnabled: "false",
+            firebaseAutomaticScreenReportingEnabled: "false",
+        ]
     }
 
     signingConfigs {
         debug {
-            storeFile file('debug.keystore')
-            storePassword 'android'
-            keyAlias 'androiddebugkey'
-            keyPassword 'android'
+            storeFile = file('debug.keystore')
+            storePassword = 'android'
+            keyAlias = 'androiddebugkey'
+            keyPassword = 'android'
+        }
+        release {
+            if (hasZedraReleaseSigning) {
+                storeFile = file(ZEDRA_KEYSTORE)
+                storePassword = ZEDRA_KEYSTORE_PASSWORD
+                keyAlias = ZEDRA_KEYSTORE_ALIAS
+                keyPassword = project.hasProperty('ZEDRA_KEY_PASSWORD') ? ZEDRA_KEY_PASSWORD : ZEDRA_KEYSTORE_PASSWORD
+            }
         }
     }
 
     buildTypes {
         debug {
-            applicationIdSuffix ".debug"
-            manifestPlaceholders = [appLabel: "Zedra Dev"]
-            signingConfig signingConfigs.debug
+            applicationIdSuffix = ".debug"
+            manifestPlaceholders = [
+                appLabel: "Zedra Dev",
+                firebaseAnalyticsCollectionEnabled: "false",
+                firebaseCrashlyticsCollectionEnabled: "false",
+                firebaseAutomaticScreenReportingEnabled: "false",
+            ]
+            signingConfig = signingConfigs.debug
         }
         release {
-            manifestPlaceholders = [appLabel: "@string/app_name"]
-            if (useLocalReleaseSigning) {
-                signingConfig signingConfigs.debug
-            }
+            manifestPlaceholders = [
+                appLabel: "@string/app_name",
+                firebaseAnalyticsCollectionEnabled: "true",
+                firebaseCrashlyticsCollectionEnabled: "true",
+                firebaseAutomaticScreenReportingEnabled: "true",
+            ]
+            signingConfig = signingConfigs.release
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'app/proguard-rules.pro'
-            minifyEnabled true
+            minifyEnabled = true
+            if (requestedReleaseTask) {
+                firebaseCrashlytics {
+                    nativeSymbolUploadEnabled = true
+                    unstrippedNativeLibsDir = file('build/zedra-unstripped-libs/release')
+                }
+            }
         }
     }
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
     }
 
     kotlinOptions {
@@ -67,7 +105,7 @@ android {
     }
 
     buildFeatures {
-        buildConfig true
+        buildConfig = true
     }
 
     sourceSets {
@@ -87,11 +125,41 @@ android {
     }
 }
 
+tasks.register('validateZedraReleaseSigning') {
+    group = 'verification'
+    description = 'Checks Zedra Android release signing Gradle properties.'
+
+    doLast {
+        if (!hasZedraReleaseSigning) {
+            throw new GradleException(
+                    "Missing Android release signing Gradle properties. " +
+                            "Add ZEDRA_KEYSTORE, ZEDRA_KEYSTORE_ALIAS, and ZEDRA_KEYSTORE_PASSWORD " +
+                            "to ~/.gradle/gradle.properties or pass them with -P."
+            )
+        }
+        def keystoreFile = file(ZEDRA_KEYSTORE)
+        if (!keystoreFile.exists()) {
+            throw new GradleException("ZEDRA_KEYSTORE does not exist: ${keystoreFile}")
+        }
+    }
+}
+
+tasks.configureEach { task ->
+    if (task.name == 'preReleaseBuild') {
+        task.dependsOn 'validateZedraReleaseSigning'
+    }
+}
+
 dependencies {
     implementation 'androidx.core:core-splashscreen:1.0.1'
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.10.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+
+    implementation platform('com.google.firebase:firebase-bom:34.13.0')
+    implementation 'com.google.firebase:firebase-analytics'
+    implementation 'com.google.firebase:firebase-crashlytics'
+    implementation 'com.google.firebase:firebase-crashlytics-ndk'
 
     // CameraX for QR scanning
     def camerax_version = "1.4.0"
@@ -160,17 +228,55 @@ android.applicationVariants.configureEach { variant ->
                 }
             }
 
-
             commandLine args
         }
     }
     variant.preBuildProvider.configure { it.dependsOn(rustTask) }
 }
 
-task launchApp(type: Exec) {
+task launchDebug(type: Exec) {
     dependsOn 'installDebug'
     commandLine adbPath(), 'shell', 'am', 'start', '-n',
             "${android.defaultConfig.applicationId}.debug/dev.zedra.app.MainActivity",
+            '-a', 'android.intent.action.MAIN',
+            '-c', 'android.intent.category.LAUNCHER'
+}
+
+task launchApp {
+    dependsOn 'launchDebug'
+}
+
+def releaseApkFile() {
+    def apkDir = file("$buildDir/outputs/apk/release")
+    def apks = fileTree(apkDir) {
+        include '*.apk'
+    }.files.toList().sort { it.name }
+    if (apks.isEmpty()) {
+        throw new GradleException("Release APK not found under ${apkDir}. Run assembleRelease first.")
+    }
+    return apks.find { it.name.endsWith('-release.apk') } ?: apks.first()
+}
+
+gradle.projectsEvaluated {
+    // AGP only creates installRelease when it sees a complete signing config.
+    // Keep Android Studio run configs stable; assembleRelease still validates
+    // the real ZEDRA_* signing properties before an APK can be installed.
+    if (tasks.findByName('installRelease') == null) {
+        tasks.register('installRelease', Exec) {
+            group = 'install'
+            description = 'Installs the Release build.'
+            dependsOn 'assembleRelease'
+            doFirst {
+                commandLine adbPath(), 'install', '-r', releaseApkFile().absolutePath
+            }
+        }
+    }
+}
+
+task launchRelease(type: Exec) {
+    dependsOn 'installRelease'
+    commandLine adbPath(), 'shell', 'am', 'start', '-n',
+            "${android.defaultConfig.applicationId}/dev.zedra.app.MainActivity",
             '-a', 'android.intent.action.MAIN',
             '-c', 'android.intent.category.LAUNCHER'
 }
