@@ -78,17 +78,26 @@ function Verify-ZedraChecksum {
     )
 
     try {
-        $expectedText = (Invoke-WebRequest -Uri $ChecksumUrl -UseBasicParsing).Content
+        $response = Invoke-WebRequest -Uri $ChecksumUrl -UseBasicParsing
     } catch {
         Write-Host "  (checksum file not available, skipping verification)"
         return
     }
 
-    $expectedHash = ($expectedText -split "\s+")[0].Trim().ToLowerInvariant()
-    if ([string]::IsNullOrWhiteSpace($expectedHash)) {
+    $content = $response.Content
+    if ($content -is [byte[]]) {
+        # Windows PowerShell can expose extensionless GitHub assets as raw bytes.
+        $expectedText = [System.Text.Encoding]::UTF8.GetString($content)
+    } else {
+        $expectedText = [string]$content
+    }
+
+    $match = [regex]::Match($expectedText, "(?im)^\s*([a-f0-9]{64})\b")
+    if (-not $match.Success) {
         Write-Host "  (checksum file empty, skipping verification)"
         return
     }
+    $expectedHash = $match.Groups[1].Value.ToLowerInvariant()
 
     $actualHash = (Get-FileHash -Algorithm SHA256 -Path $ArchivePath).Hash.ToLowerInvariant()
     if ($actualHash -ne $expectedHash) {
