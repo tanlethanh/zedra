@@ -1,6 +1,7 @@
 // PTY spawning for shell sessions
 // Uses portable-pty for cross-platform PTY support
 
+use crate::paths;
 use anyhow::Result;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
@@ -49,7 +50,7 @@ impl ShellSession {
 
         // Start in the session working directory if provided.
         if let Some(dir) = &opts.workdir {
-            cmd.cwd(dir);
+            cmd.cwd(paths::user_path(dir));
         }
 
         // Build a sanitized environment: start clean, allow only safe variables.

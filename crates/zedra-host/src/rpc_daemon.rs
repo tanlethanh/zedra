@@ -15,6 +15,7 @@ use crate::git::GitRepo;
 use crate::host_info;
 use crate::identity::SharedIdentity;
 use crate::metrics;
+use crate::paths;
 use crate::pty::{ShellSession, SpawnOptions};
 use crate::session_registry::{
     ActiveClientConnection, AttachResult, ConsumeSlotResult, HostShellState, HostTermMeta,
@@ -47,7 +48,7 @@ fn collect_host_env(workdir: &std::path::Path) -> HostEnvInfo {
             .and_then(|h| h.into_string().ok())
             .unwrap_or_else(|| "unknown".to_string()),
         username: current_username(),
-        workdir: workdir.to_string_lossy().into_owned(),
+        workdir: paths::user_path_string(workdir),
         home_dir: current_home_dir(),
     }
 }
@@ -166,7 +167,7 @@ fn initial_host_meta(opts: &SpawnOptions) -> HostTermMeta {
     meta.cwd = opts
         .workdir
         .as_ref()
-        .map(|path| path.to_string_lossy().into_owned());
+        .map(|path| paths::user_path_string(path));
     if let Some(command) = opts
         .launch_cmd
         .as_ref()

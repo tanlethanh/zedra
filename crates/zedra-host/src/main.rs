@@ -17,8 +17,8 @@ use std::sync::Arc;
 use zedra_host::client as zedra_client;
 use zedra_host::ga4::Ga4;
 use zedra_host::{
-    api, identity, iroh_listener, metrics, net_monitor, qr, rpc_daemon, session_registry, utils,
-    version_check, workspace_lock,
+    api, identity, iroh_listener, metrics, net_monitor, paths, qr, rpc_daemon, session_registry,
+    utils, version_check, workspace_lock,
 };
 use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
@@ -517,6 +517,12 @@ fn render_cli_version() -> String {
     format!("{}\n", env!("CARGO_PKG_VERSION"))
 }
 
+fn resolve_workdir(workdir: impl AsRef<Path>) -> PathBuf {
+    let fallback = workdir.as_ref().to_path_buf();
+    let workdir = fallback.canonicalize().unwrap_or(fallback);
+    paths::user_path(&workdir)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -565,9 +571,7 @@ async fn main() -> Result<()> {
             count,
             relay_only,
         } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workdir = resolve_workdir(workdir);
             zedra_client::run(&workdir, count, relay_only).await?;
         }
 
@@ -581,9 +585,7 @@ async fn main() -> Result<()> {
             relay_only,
             static_qr,
         } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workdir = resolve_workdir(workdir);
             let pairing_mode = if static_qr {
                 session_registry::PairingSlotMode::Static
             } else {
@@ -913,9 +915,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Status { workdir } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workdir = resolve_workdir(workdir);
             let config_dir = identity::workspace_config_dir(&workdir)?;
             let addr = std::fs::read_to_string(config_dir.join("api-addr")).unwrap_or_default();
             let token = std::fs::read_to_string(config_dir.join("api-token")).unwrap_or_default();
@@ -950,9 +950,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Metrics { workdir } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workdir = resolve_workdir(workdir);
             let snapshot = metrics::snapshot(&workdir)?;
             let http = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(2))
@@ -970,9 +968,7 @@ async fn main() -> Result<()> {
             json,
             static_qr,
         } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workdir = resolve_workdir(workdir);
             let pairing_mode = if static_qr {
                 session_registry::PairingSlotMode::Static
             } else {
@@ -994,9 +990,7 @@ async fn main() -> Result<()> {
             workdir,
             launch_cmd,
         } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workdir = resolve_workdir(workdir);
             let config_dir = identity::workspace_config_dir(&workdir)?;
             let addr = std::fs::read_to_string(config_dir.join("api-addr")).unwrap_or_default();
             let token = std::fs::read_to_string(config_dir.join("api-token")).unwrap_or_default();
@@ -1106,9 +1100,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Logs { workdir, lines } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workdir = resolve_workdir(workdir);
             let log_path = daemon_log_path(&workdir)?;
             if !log_path.exists() {
                 utils::eprintln_error(format!("No daemon log found for: {}", workdir.display()));
@@ -1237,9 +1229,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Stop { workdir, grace } => {
-            let workdir = std::path::PathBuf::from(&workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from(&workdir));
+            let workdir = resolve_workdir(&workdir);
 
             let lock_info = workspace_lock::read_lock_info(&workdir)?;
             match &lock_info {
