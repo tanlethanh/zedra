@@ -28,7 +28,10 @@ jobs:
             runner: ubuntu-22.04
             cross: true
           - target: x86_64-pc-windows-msvc
-            runner: windows-latest
+            runner: windows-2022
+            cross: false
+          - target: aarch64-pc-windows-msvc
+            runner: windows-2022
             cross: false
 
     runs-on: ${{ matrix.runner }}

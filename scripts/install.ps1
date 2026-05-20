@@ -46,6 +46,7 @@ function Get-ZedraTarget {
 
     switch ($arch.ToUpperInvariant()) {
         "AMD64" { return "x86_64-pc-windows-msvc" }
+        "ARM64" { return "aarch64-pc-windows-msvc" }
         default {
             throw "pre-built Windows binaries are not available for architecture: $arch. Build from source with: cargo install --git https://github.com/$Repo zedra-host"
         }
