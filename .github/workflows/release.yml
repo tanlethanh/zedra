@@ -56,11 +56,34 @@ jobs:
           ZEDRA_GA_MEASUREMENT_ID: ${{ secrets.ZEDRA_GA_MEASUREMENT_ID }}
           ZEDRA_GA_API_SECRET: ${{ secrets.ZEDRA_GA_API_SECRET }}
         run: |
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            export RUSTFLAGS="-C target-feature=+crt-static"
+          fi
+
           if [ "${{ matrix.cross }}" = "true" ]; then
             cross build -p zedra-host --release --target ${{ matrix.target }}
           else
             cargo build -p zedra-host --release --target ${{ matrix.target }}
           fi
+
+      - name: Smoke test CLI
+        if: ${{ !matrix.cross }}
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          binary="./zedra"
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            binary="./zedra.exe"
+          fi
+
+          version_output="$("$binary" --version)"
+          if [ -z "$version_output" ]; then
+            echo "zedra --version produced no output" >&2
+            exit 1
+          fi
+
+          "$binary" --help > zedra-help.txt
+          grep -q "Commands" zedra-help.txt
 
       - name: Package
         shell: bash
