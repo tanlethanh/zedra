@@ -452,7 +452,7 @@ Current backend facts:
 - `Window::paint_glyph` synchronously asks for raster bounds, then inserts the
   glyph bitmap into the atlas on a miss:
   `vendor/zed/crates/gpui/src/window.rs`.
-- Zedra Android currently keeps `minSdk 21`: `android/build.gradle`.
+- Zedra Android currently keeps `minSdk 23`: `android/build.gradle`.
 - The comparable iOS path uses the platform text stack, CoreText/CoreGraphics,
   in `vendor/zed/crates/gpui_ios/src/ios/text_system.rs`.
 
@@ -468,7 +468,7 @@ Candidate paths:
    `Canvas#drawGlyphs` can consume glyph IDs. That can preserve
    `cosmic-text` shaping if the Android `Font` object is built from the same
    font bytes and the glyph IDs match. It cannot be the only backend while
-   `minSdk` remains 21.
+   `minSdk` remains 23.
 3. GPU/path/SDF text architecture.
    This could reduce CPU rasterization more fundamentally, but it is a larger
    renderer change because GPUI currently paints bitmap glyph sprites into an
@@ -1433,7 +1433,7 @@ Result:
    benchmark views and renderer rows. Text/glyph raster, atlas upload,
    monochrome batching, and WGPU present/backpressure are still valid suspects.
 5. Keep Android native glyph APIs as an API 31+ experiment, not the main fix for
-   the current `minSdk 21` app.
+   the current `minSdk 23` app.
 
 ### 2026-05-14 Drawer Tap Jank Follow-Up
 

@@ -80,8 +80,8 @@ Configuration:
   then falls back to an SF Symbol with the same name. Notification icons are
   rendered as template images and tinted with the same light/dark color as the
   notification title, so SVG assets should use `currentColor` and asset-catalog
-  template rendering. Android v1 maps known symbol names to Material text glyphs
-  and otherwise falls back to a neutral marker.
+  template rendering. Android v1 maps known symbol names to compact text
+  symbols and otherwise falls back to a neutral marker.
 - `system_image(...)`: alias for `image(...)` when the caller intends an SF
   Symbol.
 - `kind`: `Info`, `Success`, `Warning`, or `Error`. The kind controls the
