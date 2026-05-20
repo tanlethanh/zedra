@@ -107,6 +107,30 @@ function Verify-ZedraChecksum {
     Write-Host "  Checksum verified."
 }
 
+function Invoke-ZedraDownload {
+    param(
+        [string]$Url,
+        [string]$OutFile,
+        [string]$Version,
+        [string]$Target
+    )
+
+    try {
+        Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing
+    } catch {
+        $statusCode = $null
+        if ($null -ne $_.Exception.Response) {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+        }
+
+        if ($statusCode -eq 404) {
+            throw "release $Version does not include a prebuilt Windows binary for $Target. Try a newer release with Windows assets, or build from source with: cargo install --git https://github.com/$Repo zedra-host"
+        }
+
+        throw "failed to download $Url. $($_.Exception.Message)"
+    }
+}
+
 function Assert-PrefixWritable {
     param([string]$InstallPrefix)
 
@@ -209,7 +233,7 @@ function Install-Zedra {
     try {
         $archivePath = Join-Path $tmpDir $archiveName
         Write-Host "  Downloading $archiveUrl..."
-        Invoke-WebRequest -Uri $archiveUrl -OutFile $archivePath -UseBasicParsing
+        Invoke-ZedraDownload -Url $archiveUrl -OutFile $archivePath -Version $resolvedVersion -Target $target
 
         Verify-ZedraChecksum -ArchivePath $archivePath -ChecksumUrl $checksumUrl
 
