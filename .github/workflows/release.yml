@@ -27,12 +27,15 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-22.04
             cross: true
+            smoke_test: false
           - target: x86_64-pc-windows-msvc
             runner: windows-2022
             cross: false
+            smoke_test: true
           - target: aarch64-pc-windows-msvc
             runner: windows-2022
             cross: false
+            smoke_test: false
 
     runs-on: ${{ matrix.runner }}
     steps:
@@ -70,7 +73,7 @@ jobs:
           fi
 
       - name: Smoke test CLI
-        if: ${{ !matrix.cross }}
+        if: ${{ matrix.smoke_test != false }}
         shell: bash
         run: |
           cd target/${{ matrix.target }}/release
