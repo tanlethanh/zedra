@@ -32,6 +32,7 @@
             android:name="dev.zedra.app.MainActivity"
             android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize"
             android:exported="true"
+            android:screenOrientation="portrait"
             android:theme="@style/SplashTheme"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -49,6 +50,7 @@
         <activity
             android:name="dev.zedra.app.QRScannerActivity"
             android:exported="false"
+            android:screenOrientation="portrait"
             android:theme="@style/AppTheme" />
     </application>
 </manifest>

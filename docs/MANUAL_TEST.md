@@ -78,13 +78,13 @@
 7. Expected: drawer drags do not scroll the inner content, and inner vertical scroll does not move the drawer once the drawer gesture is not claimed
 8. Background the app, wait 5 seconds, then foreground it
 9. Expected: the existing GPUI window resumes without recreating all renderer state, and no surface validation or device-lost crash appears in logcat
-10. Rotate the device or otherwise resize the surface
-11. Expected: the existing workspace/session state remains visible instead of returning to the initial launch view
+10. Rotate the device to landscape left and landscape right
+11. Expected: the app remains in portrait orientation and the existing workspace/session state stays visible instead of returning to the initial launch view
 12. Expected: the app redraws at full physical surface resolution with `scale_factor = density`, with no fixed 0.75 render scale
 13. On an Android 15 device, confirm content is not obscured by the status bar, gesture navigation handle, 3-button navigation bar, or display cutout
 14. Confirm outlined buttons, cards, and input borders are visible even when their background is transparent
 15. In the terminal, render `✔ ✘ ⚠ ⏺ ⏹ ⏸` and a real emoji such as `😀`
-16. Expected: terminal/UI symbols render as monochrome symbol glyphs, while the real emoji renders through Android color emoji fallback before and after rotation
+16. Expected: terminal/UI symbols render as monochrome symbol glyphs, while the real emoji renders through Android color emoji fallback before and after attempting rotation
 
 ## 0c-Android-AppIds. Debug And Release Application IDs
 
