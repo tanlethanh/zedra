@@ -188,7 +188,8 @@ Current minimal bridge:
 
 Current content participation:
 
-- markdown preview reports `is_at_top` from its `ScrollHandle`
+- sheet-hosted content exposes its own top-edge state
+- the sheet wrapper publishes the active content boundary to the native bridge
 
 GPUI layout requirement:
 

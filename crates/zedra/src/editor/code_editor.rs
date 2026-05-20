@@ -111,6 +111,11 @@ impl EditorView {
         self.lines_dirty = true;
         self.h_scroll_offset = 0.0;
         self.h_scroll_active = false;
+        self.scroll_handle
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(point(px(0.0), px(0.0)));
     }
 
     pub fn apply_parsed_syntax(&mut self, parsed: ParsedEditorSyntax) {
@@ -124,6 +129,10 @@ impl EditorView {
 
     pub fn language(&self) -> Language {
         self.highlighter.language()
+    }
+
+    pub fn is_scrolled_to_top(&self) -> bool {
+        self.scroll_handle.0.borrow().base_handle.offset().y >= px(-0.5)
     }
 
     pub fn line_range_for_selection(&self, range_utf16: Range<usize>) -> Option<(u32, u32)> {
