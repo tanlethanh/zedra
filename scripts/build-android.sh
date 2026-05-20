@@ -38,7 +38,14 @@ echo "Building Android libraries (targets:$TARGETS)..."
 
 # Build for specified architectures
 # Note: cargo-ndk will automatically find the NDK
-cargo ndk $TARGETS -o ./android/app/libs build -p zedra --lib $PROFILE $FEATURES
+if [ "$PROFILE" = "--release" ]; then
+    CARGO_PROFILE_RELEASE_STRIP=false cargo ndk $TARGETS -o ./android/app/libs build -p zedra --lib $PROFILE $FEATURES
+    rm -rf ./android/build/zedra-unstripped-libs/release
+    mkdir -p ./android/build/zedra-unstripped-libs/release
+    cp -R ./android/app/libs/. ./android/build/zedra-unstripped-libs/release/
+else
+    cargo ndk $TARGETS -o ./android/app/libs build -p zedra --lib $PROFILE $FEATURES
+fi
 
 echo "Android libraries built successfully!"
 echo "Libraries copied to ./android/app/libs/"

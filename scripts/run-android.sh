@@ -69,7 +69,6 @@ FORCED_DEVICE_ID=""
 LAUNCH_URL=""
 TARGET_ABI=""
 RUST_FLAGS=()
-GRADLE_FLAGS=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -155,8 +154,6 @@ if [ "$REQUESTED_RELEASE" = true ]; then
     GRADLE_TASK="assembleRelease"
     RUST_TASK="buildRustLibRelease"
     APP_ID="$APP_ID_RELEASE"
-    # Local release installs need a signature, but plain assembleRelease stays unsigned.
-    GRADLE_FLAGS+=(-Pzedra.localReleaseSigning=true)
 else
     RUST_FLAGS+=(--debug)
 fi
@@ -292,11 +289,7 @@ if [ "$NO_BUILD" = false ]; then
     fi
 
     echo "==> Building Android app..."
-    if [ "${#GRADLE_FLAGS[@]}" -gt 0 ]; then
-        (cd android && ./gradlew "$GRADLE_TASK" "${GRADLE_FLAGS[@]}" -x "$RUST_TASK")
-    else
-        (cd android && ./gradlew "$GRADLE_TASK" -x "$RUST_TASK")
-    fi
+    (cd android && ./gradlew "$GRADLE_TASK" -x "$RUST_TASK")
 
     APK_PATH="$(find_apk)"
     if [ -z "$APK_PATH" ]; then
