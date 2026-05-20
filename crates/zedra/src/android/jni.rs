@@ -62,7 +62,11 @@ pub fn get_files_dir() -> Option<String> {
 }
 
 pub fn get_app_version() -> String {
-    APP_VERSION.lock().ok().and_then(|g| g.clone()).unwrap_or_default()
+    APP_VERSION
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_default()
 }
 
 pub fn get_app_build_number() -> String {
@@ -420,14 +424,15 @@ fn dispatch_deeplink(url: String) {
 // Rust → Java helpers (call MainActivity static methods)
 // ============================================================================
 
-fn jni_call(name: &'static str, f: impl FnOnce() + std::panic::UnwindSafe) {
+pub(crate) fn jni_call(name: &'static str, f: impl FnOnce() + std::panic::UnwindSafe) {
     if let Err(e) = std::panic::catch_unwind(f) {
         tracing::error!(name, err = ?e, "jni: panic");
     }
 }
 
-fn with_main_activity_class(
+pub(crate) fn with_class(
     name: &'static str,
+    class_name: &'static str,
     f: impl for<'local> FnOnce(&mut JNIEnv<'local>, &JClass<'local>),
 ) {
     let jvm = match JVM.lock() {
@@ -455,10 +460,10 @@ fn with_main_activity_class(
         },
     };
 
-    let class = match env.find_class("dev/zedra/app/MainActivity") {
+    let class = match env.find_class(class_name) {
         Ok(class) => class,
         Err(error) => {
-            tracing::error!(name, ?error, "Failed to find MainActivity class");
+            tracing::error!(name, class_name, ?error, "Failed to find JNI class");
             if env.exception_check().unwrap_or(false) {
                 env.exception_describe().ok();
                 env.exception_clear().ok();
@@ -473,6 +478,13 @@ fn with_main_activity_class(
         env.exception_describe().ok();
         env.exception_clear().ok();
     }
+}
+
+fn with_main_activity_class(
+    name: &'static str,
+    f: impl for<'local> FnOnce(&mut JNIEnv<'local>, &JClass<'local>),
+) {
+    with_class(name, "dev/zedra/app/MainActivity", f);
 }
 
 pub fn show_keyboard() {

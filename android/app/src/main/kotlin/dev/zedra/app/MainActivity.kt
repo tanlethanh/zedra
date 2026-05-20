@@ -31,6 +31,7 @@ class MainActivity : AppCompatActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
 
+        ZedraFirebase.initialize(this)
         bootstrap(this, APP_VERSION_VALUE, APP_BUILD_NUMBER_VALUE)
 
         runtime = GpuiRuntimeController(this)
