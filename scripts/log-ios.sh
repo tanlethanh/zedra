@@ -1,11 +1,11 @@
 #!/bin/bash
-# ios-log.sh — Stream logs from a USB-connected iOS device or running simulator.
+# log-ios.sh — Stream logs from a USB-connected iOS device or running simulator.
 #
 # Usage:
-#   ./scripts/ios-log.sh [--filter <pattern>] [--select-device] [--simulator]
+#   ./scripts/log-ios.sh [--filter <pattern>] [--select-device] [--simulator]
 #
 # Options:
-#   --filter <pattern>   Additional grep pattern on top of default Zedra filter
+#   --filter <pattern>   Additional regex pattern on top of default Zedra filter
 #   --with-native        Include native logs
 #   --select-device      Ignore saved device preference and re-prompt
 #   --simulator          Stream logs from a booted simulator instead of a physical device
@@ -23,6 +23,71 @@ WITH_NATIVE=false
 SELECT_DEVICE=false
 SIMULATOR=false
 PREF_FILE="/tmp/zedra-ios-device-$PPID"
+
+find_tool() {
+    local name="$1"
+
+    if command -v "$name" >/dev/null 2>&1; then
+        command -v "$name"
+    elif [[ -x "/opt/homebrew/bin/$name" ]]; then
+        echo "/opt/homebrew/bin/$name"
+    elif [[ -x "/usr/local/bin/$name" ]]; then
+        echo "/usr/local/bin/$name"
+    else
+        return 1
+    fi
+}
+
+write_saved_device_pref() {
+    printf '%s|%s|%s\n' "$1" "$2" "$3" > "$PREF_FILE"
+}
+
+read_saved_device_pref() {
+    local first=""
+    local second=""
+    local third=""
+
+    IFS='|' read -r first second third < "$PREF_FILE" || return 1
+
+    if [[ "$first" == "dev" || "$first" == "sim" ]]; then
+        DEVICE_TYPE="$first"
+        DEVICE_UDID="${second:-}"
+        DEVICE_NAME="${third:-}"
+    elif [[ -n "$first" && -n "$second" ]]; then
+        # Older run-ios.sh builds saved physical devices as "udid|name".
+        DEVICE_TYPE="dev"
+        DEVICE_UDID="$first"
+        DEVICE_NAME="$second"
+        write_saved_device_pref "$DEVICE_TYPE" "$DEVICE_UDID" "$DEVICE_NAME"
+    else
+        return 1
+    fi
+
+    [[ -n "$DEVICE_UDID" ]]
+}
+
+visible_physical_device_lines() {
+    local idevice_id="$1"
+    local udids=""
+    local xctrace_lines=""
+    local udid=""
+    local line=""
+
+    udids=$("$idevice_id" -l 2>/dev/null || true)
+    [[ -n "$udids" ]] || return 1
+
+    xctrace_lines=$(xcrun xctrace list devices 2>&1 || true)
+    while IFS= read -r udid; do
+        [[ -n "$udid" ]] || continue
+
+        line=$(printf '%s\n' "$xctrace_lines" | grep -F "($udid)" | head -1 || true)
+        if [[ -n "$line" ]]; then
+            printf '%s\n' "$line"
+        else
+            printf 'iOS Device (unknown) (%s)\n' "$udid"
+        fi
+    done <<< "$udids"
+}
 
 # ---------------------------------------------------------------------------
 # Parse arguments
@@ -46,6 +111,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+IDEVICE_ID=$(find_tool idevice_id || true)
+IDEVICESYSLOG=$(find_tool idevicesyslog || true)
+
 # ---------------------------------------------------------------------------
 # Device selection
 # ---------------------------------------------------------------------------
@@ -54,15 +122,16 @@ DEVICE_NAME=""
 DEVICE_TYPE=""  # "sim" or "dev"
 
 if [[ "$SELECT_DEVICE" == false ]] && [[ -f "$PREF_FILE" ]]; then
-    IFS='|' read -r DEVICE_TYPE DEVICE_UDID DEVICE_NAME < "$PREF_FILE"
-    # If --simulator flag contradicts saved type, re-select
-    if [[ "$SIMULATOR" == true && "$DEVICE_TYPE" != "sim" ]] || \
-       [[ "$SIMULATOR" == false && "$DEVICE_TYPE" == "sim" ]]; then
-        DEVICE_UDID=""
-        DEVICE_NAME=""
-        DEVICE_TYPE=""
-    else
-        echo "==> Using saved device: $DEVICE_NAME ($DEVICE_UDID)"
+    if read_saved_device_pref; then
+        # If --simulator flag contradicts saved type, re-select
+        if [[ "$SIMULATOR" == true && "$DEVICE_TYPE" != "sim" ]] || \
+           [[ "$SIMULATOR" == false && "$DEVICE_TYPE" == "sim" ]]; then
+            DEVICE_UDID=""
+            DEVICE_NAME=""
+            DEVICE_TYPE=""
+        else
+            echo "==> Using saved device: $DEVICE_NAME ($DEVICE_UDID)"
+        fi
     fi
 fi
 
@@ -115,17 +184,22 @@ if [[ -z "$DEVICE_UDID" ]]; then
             exit 1
         fi
 
-        echo "sim|$DEVICE_UDID|$DEVICE_NAME" > "$PREF_FILE"
+        write_saved_device_pref "sim" "$DEVICE_UDID" "$DEVICE_NAME"
         echo "==> Selected: $DEVICE_NAME ($DEVICE_UDID)"
     else
         # -----------------------------------------------------------------------
         # Physical device selection
         # -----------------------------------------------------------------------
+        if [[ -z "$IDEVICE_ID" ]]; then
+            echo "Error: idevice_id not found. Install with: brew install libimobiledevice" >&2
+            exit 1
+        fi
+
         echo "==> Enumerating connected devices..."
-        DEVICE_LINES=$(xcrun xctrace list devices 2>&1 | grep -E '^\w.+\(\d+\.\d+' | grep -v Simulator)
+        DEVICE_LINES=$(visible_physical_device_lines "$IDEVICE_ID" || true)
 
         if [[ -z "$DEVICE_LINES" ]]; then
-            echo "Error: No physical iOS devices found. Connect a device or use --simulator." >&2
+            echo "Error: No USB-visible iOS devices found. Connect and trust a device, or use --simulator." >&2
             exit 1
         fi
 
@@ -162,7 +236,7 @@ if [[ -z "$DEVICE_UDID" ]]; then
             exit 1
         fi
 
-        echo "dev|$DEVICE_UDID|$DEVICE_NAME" > "$PREF_FILE"
+        write_saved_device_pref "dev" "$DEVICE_UDID" "$DEVICE_NAME"
         echo "==> Selected: $DEVICE_NAME ($DEVICE_UDID)"
     fi
 fi
@@ -170,7 +244,7 @@ fi
 # ---------------------------------------------------------------------------
 # Stream logs
 # ---------------------------------------------------------------------------
-GREP_PATTERN='\[I |\[W |\[E |\[D |panic|PANIC|crash|CRASH|NSException|Terminating'
+GREP_PATTERN='\[I |\[W |\[E |\[D | INFO | WARN | ERROR | DEBUG | TRACE |panic|PANIC|crash|CRASH|NSException|Terminating'
 if [[ -n "$FILTER" ]]; then
     GREP_PATTERN="$GREP_PATTERN|$FILTER"
 fi
@@ -196,20 +270,71 @@ if [[ "$DEVICE_TYPE" == "sim" ]]; then
         | grep -E "$GREP_PATTERN" --line-buffered --color=auto
 else
     # Physical device: use idevicesyslog (USB, no sudo required)
-    IDEVICESYSLOG="/opt/homebrew/bin/idevicesyslog"
-    if [[ ! -x "$IDEVICESYSLOG" ]]; then
-        echo "Error: idevicesyslog not found at $IDEVICESYSLOG" >&2
+    if [[ -z "$IDEVICESYSLOG" ]]; then
+        echo "Error: idevicesyslog not found." >&2
         echo "Install with: brew install libimobiledevice" >&2
+        exit 1
+    fi
+    if [[ -z "$IDEVICE_ID" ]]; then
+        echo "Error: idevice_id not found. Install with: brew install libimobiledevice" >&2
         exit 1
     fi
 
     # Verify device is visible to libimobiledevice (requires USB pairing)
-    if ! /opt/homebrew/bin/idevice_id -l 2>/dev/null | grep -q "$DEVICE_UDID"; then
+    if ! "$IDEVICE_ID" -l 2>/dev/null | grep -F -q "$DEVICE_UDID"; then
         echo "Error: Device $DEVICE_UDID not visible to idevicesyslog." >&2
         echo "idevicesyslog requires a USB-connected (paired) device." >&2
         exit 1
     fi
 
-    "$IDEVICESYSLOG" -u "$DEVICE_UDID" -p Zedra \
-        | grep -E "$GREP_PATTERN" --line-buffered --color=auto
+    # Run idevicesyslog under a pseudo-terminal. When stdout is a pipe,
+    # idevicesyslog can block-buffer and make filtered logs appear stuck.
+    python3 - "$IDEVICESYSLOG" "$DEVICE_UDID" "$GREP_PATTERN" <<'PY'
+import os
+import pty
+import re
+import select
+import signal
+import sys
+
+tool, udid, pattern = sys.argv[1:4]
+regex = re.compile(pattern)
+
+def stop(_signum, _frame):
+    raise KeyboardInterrupt
+
+signal.signal(signal.SIGINT, stop)
+signal.signal(signal.SIGTERM, stop)
+
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(tool, [tool, "--no-colors", "-u", udid, "-p", "Zedra"])
+
+buffer = b""
+try:
+    while True:
+        readable, _, _ = select.select([fd], [], [])
+        if fd not in readable:
+            continue
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            break
+        buffer += chunk
+        while b"\n" in buffer:
+            line, buffer = buffer.split(b"\n", 1)
+            text = line.decode(errors="replace").rstrip("\r")
+            if regex.search(text):
+                print(text, flush=True)
+except KeyboardInterrupt:
+    pass
+finally:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        os.waitpid(pid, 0)
+    except ChildProcessError:
+        pass
+PY
 fi

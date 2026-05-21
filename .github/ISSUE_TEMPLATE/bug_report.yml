@@ -23,10 +23,12 @@ body:
     id: environment
     attributes:
       label: Environment
+      description: Set Transport to `relay`, `p2p`, the visible connection status, or `none` if not sure.
       value: |
         - Platform:
         - App / CLI version:
         - Device / OS:
+        - Transport: none
     validations:
       required: true
   - type: textarea

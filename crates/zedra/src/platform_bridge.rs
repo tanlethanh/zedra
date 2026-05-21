@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use gpui::{AnyView, App, Bounds, Entity, Pixels, Render};
+use gpui::{AnyView, App, Bounds, Entity, Pixels, Point, Render};
 
 // ---------------------------------------------------------------------------
 // Native alert API
@@ -27,6 +27,27 @@ pub struct AlertButton {
     pub label: String,
     pub style: AlertButtonStyle,
     pub image_name: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct NativeEditMenuItem {
+    pub label: String,
+    pub image_name: Option<String>,
+}
+
+impl NativeEditMenuItem {
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            image_name: None,
+        }
+    }
+
+    /// Use either an iOS asset-catalog image name or an SF Symbol name.
+    pub fn image(mut self, image_name: impl Into<String>) -> Self {
+        self.image_name = Some(image_name.into());
+        self
+    }
 }
 
 impl AlertButton {
@@ -205,12 +226,14 @@ static TEXT_INPUT_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(Option<S
 static NEXT_NATIVE_FLOATING_BUTTON_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_NATIVE_DICTATION_PREVIEW_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_NATIVE_NOTIFICATION_ID: AtomicU32 = AtomicU32::new(1);
+static NEXT_NATIVE_EDIT_MENU_ID: AtomicU32 = AtomicU32::new(1);
 static NATIVE_NOTIFICATION_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce() + Send>>>> =
     OnceLock::new();
 thread_local! {
     static PENDING_CUSTOM_SHEET_VIEW: std::cell::RefCell<Option<AnyView>> = const { std::cell::RefCell::new(None) };
     static NATIVE_FLOATING_BUTTON_CALLBACKS: RefCell<HashMap<u32, Box<dyn FnMut(&mut App)>>> = RefCell::new(HashMap::new());
     static NATIVE_DICTATION_PREVIEW_DISMISS_CALLBACKS: RefCell<HashMap<u32, Box<dyn FnMut(&mut App)>>> = RefCell::new(HashMap::new());
+    static NATIVE_EDIT_MENU_CALLBACKS: RefCell<HashMap<u32, Box<dyn FnMut(usize, &mut App)>>> = RefCell::new(HashMap::new());
 }
 
 fn alert_callbacks() -> &'static Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>) + Send>>> {
@@ -396,6 +419,22 @@ pub fn show_native_notification_with_action(
     bridge().present_native_notification(id, &options);
 }
 
+pub fn show_native_edit_menu(
+    position: Point<Pixels>,
+    items: Vec<NativeEditMenuItem>,
+    on_select: impl FnMut(usize, &mut App) + 'static,
+) {
+    if items.is_empty() {
+        return;
+    }
+
+    let id = NEXT_NATIVE_EDIT_MENU_ID.fetch_add(1, Ordering::Relaxed);
+    NATIVE_EDIT_MENU_CALLBACKS.with(|callbacks| {
+        callbacks.borrow_mut().insert(id, Box::new(on_select));
+    });
+    bridge().present_native_edit_menu(id, position, &items);
+}
+
 /// Called from platform code after the user taps a button.
 /// Dispatches the stored callback and removes it from the registry.
 pub fn dispatch_alert_result(callback_id: u32, button_index: usize) {
@@ -443,6 +482,20 @@ pub fn dispatch_native_dictation_preview_dismiss(preview_id: u32, cx: &mut App) 
         if let Some(callback) = callbacks.borrow_mut().get_mut(&preview_id) {
             callback(cx);
         }
+    });
+}
+
+pub fn dispatch_native_edit_menu_result(callback_id: u32, item_index: usize, cx: &mut App) {
+    NATIVE_EDIT_MENU_CALLBACKS.with(|callbacks| {
+        if let Some(mut callback) = callbacks.borrow_mut().remove(&callback_id) {
+            callback(item_index, cx);
+        }
+    });
+}
+
+pub fn dispatch_native_edit_menu_dismiss(callback_id: u32) {
+    NATIVE_EDIT_MENU_CALLBACKS.with(|callbacks| {
+        callbacks.borrow_mut().remove(&callback_id);
     });
 }
 
@@ -509,6 +562,9 @@ pub fn clear_pending_alerts() {
             );
         }
     }
+    NATIVE_EDIT_MENU_CALLBACKS.with(|callbacks| {
+        callbacks.borrow_mut().clear();
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -602,6 +658,15 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn hide_native_dictation_preview(&self, _id: u32) {}
     /// Display a native in-app notification banner.
     fn present_native_notification(&self, _id: u32, _options: &NativeNotificationOptions) {}
+    /// Display a native edit menu anchored in window coordinates.
+    fn present_native_edit_menu(
+        &self,
+        id: u32,
+        _position: Point<Pixels>,
+        _items: &[NativeEditMenuItem],
+    ) {
+        dispatch_native_edit_menu_dismiss(id);
+    }
     /// Display a native text-input dialog.
     /// The platform should call `dispatch_text_input_result(id, value)` on confirm,
     /// or `dispatch_text_input_dismiss(id)` on cancel.

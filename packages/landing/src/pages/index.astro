@@ -3,13 +3,25 @@
 // Copy text = non-comment lines joined by \n.
 const installTabs = [
   {
-    id: "curl",
-    label: "curl",
+    id: "mac-linux",
+    label: "mac/linux",
     icon: `<svg class="tab-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>`,
     blocks: [
       [
         { text: "# Install Zedra CLI", comment: true },
         { text: "curl -fsSL zedra.dev/install.sh | sh" },
+      ],
+      [{ text: "# Start Zedra in the working directory", comment: true }, { text: "zedra start" }],
+    ],
+  },
+  {
+    id: "windows",
+    label: "windows",
+    icon: `<svg class="tab-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.4 10.6 4.3v7.2H3V5.4Zm8.6-1.2L21 2.8v8.7h-9.4V4.2ZM3 12.5h7.6v7.2L3 18.6v-6.1Zm8.6 0H21v8.7l-9.4-1.4v-7.3Z"></path></svg>`,
+    blocks: [
+      [
+        { text: "# Install Zedra CLI", comment: true },
+        { text: 'powershell -c "irm https://zedra.dev/install.ps1 | iex"' },
       ],
       [{ text: "# Start Zedra in the working directory", comment: true }, { text: "zedra start" }],
     ],
@@ -55,29 +67,17 @@ const installTabs = [
       [{ text: "# In OpenCode, reload skills and start", comment: true }, { text: "/zedra-start" }],
     ],
   },
-  {
-    id: "gemini",
-    label: "gemini",
-    icon: `<svg class="tab-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="currentColor" d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81"></path></svg>`,
-    blocks: [
-      [{ text: "# Set up Zedra for Gemini CLI", comment: true }, { text: "zedra setup gemini" }],
-      [
-        { text: "# In Gemini CLI, reload skills and start", comment: true },
-        { text: "/zedra-start" },
-      ],
-    ],
-  },
 ];
 
 const storeLinks = [
   {
-    href: "https://testflight.apple.com/join/1EWe2kRH",
+    href: "https://apps.apple.com/vn/app/zedra-code-from-anywhere/id6760534630",
     className: "store-btn",
-    ariaLabel: "Get Zedra on iOS TestFlight",
+    ariaLabel: "Get Zedra on the App Store",
     analyticsName: "ios",
     icon: `<svg class="store-icon" fill="currentColor" role="img" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><title>Apple</title><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg>`,
     title: "App Store",
-    subtitle: "TestFlight",
+    subtitle: "iOS",
   },
   {
     href: "#",
@@ -305,13 +305,22 @@ const canonicalUrl = "https://zedra.dev/";
 
       .tab-list {
         display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
+        flex-wrap: nowrap;
+        gap: 10px;
+        overflow-x: auto;
+        overflow-y: hidden;
         padding: 8px 14px 0;
+        scrollbar-width: none;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      .tab-list::-webkit-scrollbar {
+        display: none;
       }
 
       .tab-label {
         display: inline-flex;
+        flex: 0 0 auto;
         align-items: center;
         gap: 8px;
         padding: 7px 2px 9px;
@@ -320,6 +329,7 @@ const canonicalUrl = "https://zedra.dev/";
         background: transparent;
         color: var(--muted);
         font-size: 0.78rem;
+        white-space: nowrap;
         cursor: pointer;
         transition:
           color 0.18s,
@@ -396,20 +406,20 @@ const canonicalUrl = "https://zedra.dev/";
 
       /* checked-tab state (CSS-only tabs) */
 
-      #tab-curl:checked ~ .install-card .label-curl,
+      #tab-mac-linux:checked ~ .install-card .label-mac-linux,
+      #tab-windows:checked ~ .install-card .label-windows,
       #tab-claude:checked ~ .install-card .label-claude,
       #tab-codex:checked ~ .install-card .label-codex,
-      #tab-opencode:checked ~ .install-card .label-opencode,
-      #tab-gemini:checked ~ .install-card .label-gemini {
+      #tab-opencode:checked ~ .install-card .label-opencode {
         color: var(--text);
         border-bottom-color: var(--text);
       }
 
-      #tab-curl:checked ~ .install-card .panel-curl,
+      #tab-mac-linux:checked ~ .install-card .panel-mac-linux,
+      #tab-windows:checked ~ .install-card .panel-windows,
       #tab-claude:checked ~ .install-card .panel-claude,
       #tab-codex:checked ~ .install-card .panel-codex,
-      #tab-opencode:checked ~ .install-card .panel-opencode,
-      #tab-gemini:checked ~ .install-card .panel-gemini {
+      #tab-opencode:checked ~ .install-card .panel-opencode {
         display: grid;
       }
 
@@ -632,6 +642,16 @@ const canonicalUrl = "https://zedra.dev/";
         .install-card {
           height: auto;
           min-height: 180px;
+        }
+
+        .tab-list {
+          gap: 8px;
+          padding-inline: 12px;
+        }
+
+        .tab-label {
+          gap: 6px;
+          font-size: 0.76rem;
         }
 
         .demo-card {

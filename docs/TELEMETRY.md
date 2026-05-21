@@ -133,7 +133,8 @@ Firebase is integrated via CocoaPods. Key files:
 | File | Purpose |
 |------|---------|
 | `ios/Podfile` | `FirebaseAnalytics`, `FirebaseCrashlytics` pods |
-| `ios/Zedra/GoogleService-Info.plist` | Firebase project config (from console) |
+| `ios/Zedra/GoogleService-Info.plist` | Firebase project config (from console); optional for Debug, required for Release |
+| `ios/project.yml` | XcodeGen spec that bundles Firebase config when present and fails Release builds when it is missing |
 | `ios/Zedra/NativeBridge.swift` | Swift C-export bridge: `zedra_firebase_initialize`, `zedra_log_event`, `zedra_record_error`, `zedra_record_panic` |
 | `crates/zedra/src/ios/telemetry.rs` | Rust FFI declarations calling into `NativeBridge.swift` |
 | `crates/zedra/src/telemetry.rs` | `FirebaseBackend` — registers with `zedra_telemetry` |
@@ -144,6 +145,9 @@ enabled, so UIKit rows such as alerts, QR scanner, and custom sheet controllers
 can still appear beside logical Zedra rows in Firebase reports.
 
 **Build**: `pod install` in `ios/`, then build via `.xcworkspace`.
+Debug builds can run without `ios/Zedra/GoogleService-Info.plist`; Firebase
+initialization and event calls become no-ops. Release builds require the plist
+and fail during the Xcode build when it is absent.
 
 ### Android
 
@@ -244,6 +248,7 @@ and never transmitted alongside it.
 | `crates/zedra/src/telemetry.rs` | `FirebaseBackend` — registers Firebase with `zedra-telemetry` |
 | `crates/zedra/src/ios/telemetry.rs` | iOS FFI: Rust -> `NativeBridge.swift` -> Firebase SDK |
 | `crates/zedra/src/android/telemetry.rs` | Android JNI: Rust -> `ZedraFirebase.kt` -> Firebase SDK |
+| `ios/project.yml` | iOS Firebase config bundling and Release validation |
 | `crates/zedra-host/src/telemetry.rs` | `HostBackend` — bridges GA4 `Ga4` <-> `zedra-telemetry` |
 | `crates/zedra-host/src/ga4.rs` | GA4 Measurement Protocol transport (`track_raw`, `host_panic_sync`) |
 

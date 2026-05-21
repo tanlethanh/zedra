@@ -76,7 +76,7 @@ impl HomeView {
         Self {
             workspaces,
             focus_handle: cx.focus_handle(),
-            selected_guide_tab: GuideTab::Curl,
+            selected_guide_tab: GuideTab::MacLinux,
             action_tx,
             _action_task: action_task,
         }
@@ -465,11 +465,11 @@ impl Render for HomeView {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GuideTab {
-    Curl,
+    MacLinux,
+    Windows,
     Claude,
     Codex,
     OpenCode,
-    Gemini,
 }
 
 struct GuideTabSpec {
@@ -490,9 +490,15 @@ struct GuideLine {
 
 static GUIDE_TABS: &[GuideTabSpec] = &[
     GuideTabSpec {
-        tab: GuideTab::Curl,
-        label: "curl",
+        tab: GuideTab::MacLinux,
+        label: "mac-linux",
         icon: "icons/terminal.svg",
+        icon_size: 17.0,
+    },
+    GuideTabSpec {
+        tab: GuideTab::Windows,
+        label: "windows",
+        icon: "icons/windows.svg",
         icon_size: 17.0,
     },
     GuideTabSpec {
@@ -513,15 +519,9 @@ static GUIDE_TABS: &[GuideTabSpec] = &[
         icon: "icons/opencode.svg",
         icon_size: 14.5,
     },
-    GuideTabSpec {
-        tab: GuideTab::Gemini,
-        label: "gemini",
-        icon: "icons/gemini.svg",
-        icon_size: 19.0,
-    },
 ];
 
-static CURL_INSTALL_LINES: &[GuideLine] = &[
+static MAC_LINUX_INSTALL_LINES: &[GuideLine] = &[
     GuideLine {
         text: "# Install Zedra CLI",
         comment: true,
@@ -532,7 +532,7 @@ static CURL_INSTALL_LINES: &[GuideLine] = &[
     },
 ];
 
-static CURL_RUN_LINES: &[GuideLine] = &[
+static MAC_LINUX_RUN_LINES: &[GuideLine] = &[
     GuideLine {
         text: "# Start Zedra in the working directory",
         comment: true,
@@ -613,34 +613,43 @@ static OPENCODE_RUN_LINES: &[GuideLine] = &[
     },
 ];
 
-static GEMINI_INSTALL_LINES: &[GuideLine] = &[
+static WINDOWS_INSTALL_LINES: &[GuideLine] = &[
     GuideLine {
-        text: "# Set up Zedra for Gemini",
+        text: "# Install Zedra CLI",
         comment: true,
     },
     GuideLine {
-        text: "zedra setup gemini",
+        text: "powershell -c \"irm https://zedra.dev/install.ps1 | iex\"",
         comment: false,
     },
 ];
 
-static GEMINI_RUN_LINES: &[GuideLine] = &[
+static WINDOWS_RUN_LINES: &[GuideLine] = &[
     GuideLine {
-        text: "# In Gemini, reload skills and start",
+        text: "# Start Zedra in the working directory",
         comment: true,
     },
     GuideLine {
-        text: "/zedra-start",
+        text: "zedra start",
         comment: false,
     },
 ];
 
-static CURL_BLOCKS: &[GuideBlock] = &[
+static MAC_LINUX_BLOCKS: &[GuideBlock] = &[
     GuideBlock {
-        lines: CURL_INSTALL_LINES,
+        lines: MAC_LINUX_INSTALL_LINES,
     },
     GuideBlock {
-        lines: CURL_RUN_LINES,
+        lines: MAC_LINUX_RUN_LINES,
+    },
+];
+
+static WINDOWS_BLOCKS: &[GuideBlock] = &[
+    GuideBlock {
+        lines: WINDOWS_INSTALL_LINES,
+    },
+    GuideBlock {
+        lines: WINDOWS_RUN_LINES,
     },
 ];
 
@@ -671,22 +680,13 @@ static OPENCODE_BLOCKS: &[GuideBlock] = &[
     },
 ];
 
-static GEMINI_BLOCKS: &[GuideBlock] = &[
-    GuideBlock {
-        lines: GEMINI_INSTALL_LINES,
-    },
-    GuideBlock {
-        lines: GEMINI_RUN_LINES,
-    },
-];
-
 fn guide_blocks(tab: GuideTab) -> &'static [GuideBlock] {
     match tab {
-        GuideTab::Curl => CURL_BLOCKS,
+        GuideTab::MacLinux => MAC_LINUX_BLOCKS,
+        GuideTab::Windows => WINDOWS_BLOCKS,
         GuideTab::Claude => CLAUDE_BLOCKS,
         GuideTab::Codex => CODEX_BLOCKS,
         GuideTab::OpenCode => OPENCODE_BLOCKS,
-        GuideTab::Gemini => GEMINI_BLOCKS,
     }
 }
 
@@ -765,7 +765,7 @@ fn guide_tab_button(
 ) -> impl IntoElement {
     div()
         .id(SharedString::from(format!("home-guide-tab-{}", spec.label)))
-        .w(px(48.0))
+        .w(px(42.0))
         .h(px(34.0))
         .flex()
         .items_center()

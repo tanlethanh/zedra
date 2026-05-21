@@ -26,10 +26,13 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - `WorkspaceState` is the single source of truth for display state. Views read `WorkspaceState`, never `SessionHandle`, during render.
 - `render()` must stay pure. Side effects belong in event handlers, subscriptions, or async tasks.
 - Use `platform_bridge::bridge()` for platform integration. Do not call platform APIs directly from UI code.
+- Use existing imports and concise module-qualified calls for platform UI affordances, such as `platform_bridge::trigger_haptic(HapticFeedback::ImpactLight)`. Normal taps and workspace switches should use light haptics; reserve stronger feedback for long press, confirmation, or destructive actions.
 - Use `tracing` for logging. Never add `log::` calls.
 - Read `docs/DESIGN.md` before creating or redesigning UI.
 - GPUI tasks are cancelled when their `Task` handle is dropped. Await, detach, or store tasks according to the intended lifetime.
 - Inside GPUI entity `update`, `read_with`, and related closures, use the inner `cx` passed to the closure and avoid reentrant updates of the same entity.
+- Keep lifecycle helpers aligned with their names. Entry points that own the user action should own policy checks such as dedupe, reconnect, or stale cleanup; lower-level helpers that create/connect/initialize should not also switch entries, disconnect existing state, or hide caller contracts.
+- For workspace reconnect and duplicate-entry handling, treat `Connected`, `Idle`, and in-flight connecting phases as active entries to switch to. Only `Failed` or `Disconnected` entries should be treated as stale reconnect candidates.
 
 ## Protocol And Telemetry
 
@@ -42,6 +45,14 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - Write docs in a practical, direct style: start with the goal, put common actions first, and avoid promotional or apologetic wording.
 - Use complete working examples. Use `sh` fences for terminal command blocks and backticks for inline commands, paths, settings, and keybindings.
 - Keep repo guidance high-signal. New rules should be non-obvious, repeatedly encountered, and specific enough to act on; crate-specific rules belong in that crate's `AGENTS.md`.
+
+## GitHub Issues
+
+- When asked to create an issue, first check `.github/ISSUE_TEMPLATE/` and use the matching template if one exists.
+- Preserve the template's headings, prompts, and required fields. Only omit optional sections that clearly do not apply.
+- If the repo has no issue template, use `## Summary`, `## Reproduction`, `## Expected Behavior`, `## Actual Behavior`, and `## Notes` as the fallback structure.
+- Keep issues concrete and concise: state the problem, affected platform/scope, repro steps, expected vs actual behavior, and relevant logs, screenshots, or context when available.
+- Search existing open issues before creating a new one to avoid duplicates.
 
 ## Validation
 

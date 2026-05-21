@@ -950,13 +950,15 @@ impl Workspace {
         );
     }
 
-    fn restart_connection(&mut self, cx: &mut Context<Self>) {
+    pub fn restart_connection(&mut self, cx: &mut Context<Self>) {
         let Some(mut request) = self.connection_request.clone() else {
             warn!("restart connection requested without a connection request");
             return;
         };
 
-        if self.session_state.read(cx).snapshot.register_ms.is_some() {
+        // Ticket is only needed for initial registration. Once we have a session_id
+        // the ticket has already been consumed on the host and must not be reused.
+        if request.session_id.is_some() {
             request.ticket = None;
         }
 

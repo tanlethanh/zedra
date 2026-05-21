@@ -20,6 +20,8 @@ targets:
     platform: iOS
     sources:
       - path: Zedra
+        excludes:
+          - GoogleService-Info.plist
     dependencies:
       - target: ZedraRustFFI
         link: false
@@ -43,16 +45,59 @@ targets:
           - CFBundleURLSchemes: [zedra]
             CFBundleURLName: dev.zedra.app
     postBuildScripts:
+      - name: "Firebase Config"
+        script: |
+          set -eu
+
+          GOOGLE_SERVICE_PLIST="${SRCROOT}/Zedra/GoogleService-Info.plist"
+          APP_BUNDLE="${BUILT_PRODUCTS_DIR}/${WRAPPER_NAME:-${PRODUCT_NAME}.app}"
+          DESTINATION="${APP_BUNDLE}/GoogleService-Info.plist"
+
+          if [ -f "$GOOGLE_SERVICE_PLIST" ]; then
+            mkdir -p "$APP_BUNDLE"
+            cp "$GOOGLE_SERVICE_PLIST" "$DESTINATION"
+            exit 0
+          fi
+
+          case "${CONFIGURATION:-}" in
+            Release*)
+              echo "error: Missing $GOOGLE_SERVICE_PLIST. Release builds require Firebase configuration."
+              exit 1
+              ;;
+            *)
+              echo "warning: Missing $GOOGLE_SERVICE_PLIST. Firebase is disabled for this debug build."
+              ;;
+          esac
+        basedOnDependencyAnalysis: false
       - name: "Firebase Crashlytics dSYM Upload"
-        script: "${PODS_ROOT}/FirebaseCrashlytics/run"
+        script: |
+          set -eu
+
+          GOOGLE_SERVICE_PLIST="${SRCROOT}/Zedra/GoogleService-Info.plist"
+
+          if [ ! -f "$GOOGLE_SERVICE_PLIST" ]; then
+            case "${CONFIGURATION:-}" in
+              Release*)
+                echo "error: Missing $GOOGLE_SERVICE_PLIST. Release builds require Firebase configuration."
+                exit 1
+                ;;
+              *)
+                echo "warning: Skipping Firebase Crashlytics dSYM upload because $GOOGLE_SERVICE_PLIST is missing."
+                exit 0
+                ;;
+            esac
+          fi
+
+          "${PODS_ROOT}/FirebaseCrashlytics/run"
+        basedOnDependencyAnalysis: false
         inputFiles:
           - "${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}"
           - "$(SRCROOT)/$(BUILT_PRODUCTS_DIR)/$(INFOPLIST_PATH)"
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
-        MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "7"
+        MARKETING_VERSION: "1.1"
+        CURRENT_PROJECT_VERSION: "8"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: GHV27CNR5U
         INFOPLIST_KEY_CFBundleDisplayName: Zedra

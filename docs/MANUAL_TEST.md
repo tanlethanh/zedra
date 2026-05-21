@@ -17,7 +17,7 @@
 ## 0a. Home Install Guide Tabs
 
 1. Open the app with no saved workspaces visible on the Home screen
-2. Switch between the `curl`, `claude`, `codex`, `opencode`, and `gemini` guide tabs
+2. Switch between the `mac/linux`, `windows`, `claude`, `codex`, and `opencode` guide tabs
 3. Expected: each tab shows the same install commands as the landing page
 4. Tap a command line in each tab
 5. Expected: the tapped command line is copied to the system clipboard without navigating away from Home
@@ -107,6 +107,16 @@
 6. Expected: manual `screen_view` events include `screen_name` and `screen_class` for `Home`, `Settings`, `Quick Actions`, `Workspace Connecting`, `Workspace Editor`, `Workspace Markdown`, `Workspace Git Diff`, `Workspace Terminal`, each drawer tab, `Custom Sheet Editor`, and `Custom Sheet Markdown`
 7. Expected: native automatic rows such as `UIViewController`, `CustomSheetViewController`, `UIAlertController`, and `ZedraQRScannerVC` on iOS or Android activity rows on Android are still present because native Firebase screen reporting remains enabled
 
+## 0e. Developer Native Selection
+
+1. Run a Debug iOS build and open Settings
+2. Tap `Native Selection` in the Developer section
+3. Expected: a native action sheet opens without crashing and shows `First Action`, `Second Action`, `Destructive Action`, and `Cancel`
+4. Tap `Cancel`
+5. Expected: the action sheet dismisses without running another action
+6. Open `Native Selection` again, then tap outside the sheet
+7. Expected: the sheet dismisses without crashing
+
 ## 1. Normal QR Scan → Connect
 
 1. Start host daemon: `zedra start --workdir .`
@@ -175,6 +185,33 @@
 21. Expected: files inside dot-prefixed, gitignored, and common generated/dependency directories are not shown
 22. Connect to an older host that does not support docs-tree RPCs
 23. Expected: the docs tree shows an unsupported-host message and the refresh icon no longer stays in the building state
+
+## 1d. Windows Host CLI
+
+1. On an x86_64 Windows machine, run `powershell -c "irm https://zedra.dev/install.ps1 | iex"` from Command Prompt or Windows Terminal
+2. Expected: `zedra.exe` is installed under `%LOCALAPPDATA%\Programs\zedra\bin`, the directory is added to the user `Path`, and `zedra --help` works from the current shell
+3. Start the daemon from PowerShell: `zedra start --workdir C:\path\to\repo --detach`
+4. Expected: startup succeeds, Windows may show a firewall prompt, and `daemon.lock` plus `daemon.log` are written under `%APPDATA%\zedra\workspaces\` using their respective workspace hashes
+5. Run `zedra status --workdir C:\path\to\repo`
+6. Expected: status shows the running daemon, endpoint, workspace path, sessions, and terminal count without Unix path assumptions
+7. Run `zedra qr --workdir C:\path\to\repo`, scan from the mobile app, then disconnect and reconnect the app without scanning again
+8. Expected: QR pairing succeeds, reconnect uses the saved session identity, and relay fallback still works if direct P2P is unavailable
+9. Open a terminal from the app
+10. Expected: a Windows PTY opens with the shell that launched the host, keystrokes echo, resize works, and commands available on `PATH` run normally
+11. Stop the daemon, set `$env:ZEDRA_SHELL = "cmd.exe"` in PowerShell, restart the daemon, and open another terminal from the app
+12. Expected: the terminal opens in `cmd.exe`; clear `ZEDRA_SHELL`, restart from PowerShell, and launch commands still leave an interactive PowerShell after they run
+13. Run `zedra client --workdir C:\path\to\repo --count 3`
+14. Expected: the CLI client authenticates without QR and prints three RTT samples
+15. Run `zedra logs --workdir C:\path\to\repo`
+16. Expected: recent daemon log lines are printed from the AppData workspace directory
+17. Run `zedra update --version <current-release-tag> --yes` while the daemon is still running
+18. Expected: the update succeeds and warns that running daemons keep using the old version until restarted
+19. Run `zedra stop --workdir C:\path\to\repo`
+20. Expected: the daemon exits, the lock file is removed, and a follow-up `status` reports no running daemon
+21. Run `zedra update --version <current-release-tag> --yes`
+22. Expected: the update downloads the Windows release asset, verifies the checksum when available, and reports that `zedra.exe` will be replaced after the command exits
+23. Open a new PowerShell window and run `zedra --version`
+24. Expected: the command prints the release version
 
 ## 2. QR Already Consumed
 
@@ -344,7 +381,7 @@ printf '\033]8;;https://zedra.dev\033\\zedra.dev\033]8;;\033\\\n'
 
 3. Expected before tapping: only the OSC 8 `src/main.rs:12:3` and `zedra.dev` rows show a subtle underline; the plain `src/main.rs:12:3`, `git:(refactor-app-session-architecture)`, `hello`, `README`, `v0.112.0`, `gpt-5.4`, and `/model` rows do not
 4. Tap the underlined OSC 8 `src/main.rs:12:3`
-5. Expected: the terminal file preview opens for `src/main.rs` at line/column metadata
+5. Expected: the terminal file preview opens for `src/main.rs` at line 12/column metadata and does not reuse any previous preview scroll position
 6. Expected: the preview header metadata and code body both render with the app monospace font rather than a proportional fallback
 7. Tap the underlined OSC 8 `zedra.dev`
 8. Expected: the URL opens externally
@@ -357,24 +394,31 @@ printf '\033]8;;https://zedra.dev\033\\zedra.dev\033]8;;\033\\\n'
 2. Run:
 
 ```bash
-cat > /tmp/zedra-long-code.rs <<'EOF'
-fn main() {
-    let message = "this line is intentionally very long so the terminal preview code editor needs horizontal scrolling inside the native custom sheet without moving the sheet detent or dismissing the sheet while the drag is horizontal";
-    println!("{message}");
-}
-EOF
-printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:1\033]8;;\033\\\n'
+{
+  printf 'fn main() {\n'
+  for i in $(seq 1 80); do
+    if [ "$i" = 40 ]; then
+      printf '    let message = "this line is intentionally very long so the terminal preview code editor needs horizontal scrolling inside the native custom sheet without moving the sheet detent or dismissing the sheet while the drag is horizontal";\n'
+    else
+      printf '    println!("line %02d");\n' "$i"
+    fi
+  done
+  printf '}\n'
+} > /tmp/zedra-long-code.rs
+printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs:41\033]8;;\033\\\n'
 ```
 
-3. Tap `/tmp/zedra-long-code.rs:1`
-4. Expected: the preview opens in code editor mode inside the native custom sheet
+3. Tap `/tmp/zedra-long-code.rs:41`
+4. Expected: the preview opens in code editor mode inside the native custom sheet with line 41 at the top of the code body
 5. Expected: Rust keywords and string tokens gain syntax colors after the preview finishes parsing
 6. Swipe horizontally across the long string line
 7. Expected: the code scrolls sideways and the native sheet does not move or dismiss
 8. Swipe mostly vertically inside the preview body
 9. Expected: the preview content scrolls vertically
-10. Scroll to the top of the preview body, then drag downward
-11. Expected: the native sheet moves or dismisses normally from the top edge
+10. Dismiss the sheet, tap `/tmp/zedra-long-code.rs:41` again, then drag downward before line 1 is visible
+11. Expected: the code scrolls toward line 1 first; the opened line is not treated as the file top
+12. Scroll to the top of the preview body, then drag downward
+13. Expected: the native sheet moves or dismisses normally from the top edge
 
 ## 10. Connecting Overlay Layout On Wide Screens
 
@@ -389,29 +433,42 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:1:1\033\\/tmp/zedra-long-code.rs:
 9. Tap `View Details`, then `Hide Details`
 10. Expected: the subtitle stays horizontally centered and does not jump when details expand or collapse
 
-## 11. Terminal Keyboard Tap Toggle On iOS
+## 11. Terminal Keyboard And Native Selection On iOS
 
 1. Connect to a session on iPhone or iOS simulator and open the terminal view
 2. Tap a non-hyperlink area of the terminal once
 3. Expected: the terminal becomes focused, the software keyboard appears, and terminal input works
 4. Expected: the visible terminal surface does not show a native full-height UIKit caret
-5. Expected: long-press on terminal content does not show native iOS text-selection handles or selection highlight
-6. Tap a non-hyperlink area of the already-focused terminal again
-7. Expected: the software keyboard dismisses, terminal focus is cleared, and the keyboard does not immediately reopen
-8. Tap the terminal a third time
-9. Expected: the terminal becomes focused again and the software keyboard reopens on that first tap after dismissal
-10. Dismiss the keyboard through a platform control or hardware-keyboard state while the terminal remains focused, then tap the terminal again
-11. Expected: the terminal stays focused and the software keyboard reopens
-12. With the keyboard visible, drag vertically in terminal content to scroll scrollback or a terminal app that handles touch scroll
-13. Expected: the terminal scrolls without dismissing the keyboard or clearing terminal focus
-14. In a fresh non-alt terminal with the keyboard visible, run a slow stream such as `for i in $(seq 1 20); do echo "line $i"; sleep .2; done`
-15. Expected: early output continues from the top without being pushed upward into an empty lower gap; once the occupied rows reach the keyboard edge, the terminal lifts gradually and never more than the keyboard height
-16. With retained scrollback, clear the terminal using `printf '\033[2J\033[Htop\n'`
-17. Expected: the cleared content stays top-aligned instead of inheriting a full keyboard lift from old scrollback; TUI-authored blank layout rows still count as occupied space
-18. In a fresh non-alt terminal with no scrollback, drag upward repeatedly past the prompt
-19. Expected: the prompt does not drift downward into unbounded empty space, and the scroll-to-bottom button does not appear
-20. With the keyboard still visible and enough scrollback to reach history top, drag upward until scrolling stops, then keep dragging slightly
-21. Expected: the oldest scrollback rows can be revealed and are not clipped above the terminal viewport
+5. Hide the keyboard so the terminal is unfocused, then double-tap visible terminal output
+6. Expected: double tap behaves like normal tap input: the terminal focuses and requests the keyboard, and no terminal output selection starts
+7. Tap a non-hyperlink area of the terminal once
+8. Expected: because the terminal is focused and the keyboard is visible, the keyboard hides and terminal focus clears
+9. Tap the terminal again, then long-press visible terminal output while the keyboard is visible
+10. Expected: terminal enters terminal-owned output-selection mode without dismissing the keyboard or showing an editable caret
+11. Drag the native selection handles to extend and shrink the output selection
+12. Expected: selection remains active, terminal output is not replaceable, and keyboard/IME state is unchanged
+13. Long-press hard-wrapped output, soft-wrapped output, emoji, and CJK text, then tap `Copy`
+14. Expected: copied text preserves visible hard newlines, omits soft-wrap newlines, preserves non-ASCII text, and trims trailing blank cells
+15. Tap visible terminal output outside the active selection once
+16. Expected: terminal output selection clears, and that same dismiss tap does not toggle terminal focus or keyboard visibility
+17. Long-press an empty terminal cell
+18. Expected: a custom native edit menu appears slightly above the touch point with a `Paste` action even though no output text is under the finger
+19. Tap `Paste`
+20. Expected: if the clipboard has text, it is sent to the PTY through terminal paste handling; if the clipboard is empty, the menu dismisses without changing terminal focus or keyboard state
+21. Tap a non-hyperlink area of the already-focused terminal again
+22. Expected: the keyboard hides and terminal focus clears
+23. Dismiss the keyboard through a platform control or hardware-keyboard state while the terminal remains focused
+24. Expected: tapping terminal text again keeps focus and requests the software keyboard
+25. With the keyboard visible, drag vertically in terminal content to scroll scrollback or a terminal app that handles touch scroll
+26. Expected: the terminal scrolls without dismissing the keyboard or clearing terminal focus
+27. In a fresh non-alt terminal with the keyboard visible, run a slow stream such as `for i in $(seq 1 20); do echo "line $i"; sleep .2; done`
+28. Expected: early output continues from the top without being pushed upward into an empty lower gap; once the occupied rows reach the keyboard edge, the terminal lifts gradually and never more than the keyboard height
+29. With retained scrollback, clear the terminal using `printf '\033[2J\033[Htop\n'`
+30. Expected: the cleared content stays top-aligned instead of inheriting a full keyboard lift from old scrollback; TUI-authored blank layout rows still count as occupied space
+31. In a fresh non-alt terminal with no scrollback, drag upward repeatedly past the prompt
+32. Expected: the prompt does not drift downward into unbounded empty space, and the scroll-to-bottom button does not appear
+33. With the keyboard still visible and enough scrollback to reach history top, drag upward until scrolling stops, then keep dragging slightly
+34. Expected: the oldest scrollback rows can be revealed and are not clipped above the terminal viewport
 
 ## 11-Android. Terminal Keyboard And IME
 

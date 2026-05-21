@@ -5,8 +5,8 @@ use crate::active_terminal;
 use crate::deeplink;
 use crate::platform_bridge::{
     self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback,
-    NativeDictationPreviewOptions, NativeFloatingButtonOptions, NativeNotificationOptions,
-    PlatformBridge,
+    NativeDictationPreviewOptions, NativeEditMenuItem, NativeFloatingButtonOptions,
+    NativeNotificationOptions, PlatformBridge,
 };
 
 /// Screen scale factor (e.g. 3.0 for @3x), stored as f32 bits.
@@ -88,6 +88,15 @@ unsafe extern "C" {
         button_count: i32,
         labels: *const *const std::ffi::c_char,
         styles: *const i32,
+        image_names: *const *const std::ffi::c_char,
+    );
+    /// Present a native edit menu anchored at a window coordinate.
+    fn ios_present_native_edit_menu(
+        callback_id: u32,
+        x_pts: f32,
+        y_pts: f32,
+        item_count: i32,
+        labels: *const *const std::ffi::c_char,
         image_names: *const *const std::ffi::c_char,
     );
     /// Present a configurable native custom sheet with a GPUI canvas host.
@@ -296,6 +305,41 @@ impl PlatformBridge for IosBridge {
                 buttons.len() as i32,
                 label_ptrs.as_ptr(),
                 styles.as_ptr(),
+                image_name_ptrs.as_ptr(),
+            );
+        }
+    }
+
+    fn present_native_edit_menu(
+        &self,
+        id: u32,
+        position: gpui::Point<gpui::Pixels>,
+        items: &[NativeEditMenuItem],
+    ) {
+        use std::ffi::CString;
+
+        let c_labels: Vec<CString> = items
+            .iter()
+            .map(|item| CString::new(item.label.as_str()).unwrap_or_else(|_| CString::default()))
+            .collect();
+        let label_ptrs: Vec<*const std::ffi::c_char> =
+            c_labels.iter().map(|label| label.as_ptr()).collect();
+        let c_image_names: Vec<CString> = items
+            .iter()
+            .map(|item| {
+                CString::new(item.image_name.as_deref().unwrap_or(""))
+                    .unwrap_or_else(|_| CString::default())
+            })
+            .collect();
+        let image_name_ptrs: Vec<*const std::ffi::c_char> =
+            c_image_names.iter().map(|image| image.as_ptr()).collect();
+        unsafe {
+            ios_present_native_edit_menu(
+                id,
+                position.x.as_f32(),
+                position.y.as_f32(),
+                items.len() as i32,
+                label_ptrs.as_ptr(),
                 image_name_ptrs.as_ptr(),
             );
         }

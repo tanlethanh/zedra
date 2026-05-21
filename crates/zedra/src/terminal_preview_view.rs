@@ -64,6 +64,7 @@ impl TerminalPreviewView {
     pub fn open_hyperlink(&mut self, hyperlink: TerminalHyperlink, cx: &mut Context<Self>) {
         self.open_epoch = self.open_epoch.wrapping_add(1);
         let epoch = self.open_epoch;
+        native_presentation::set_sheet_content_at_top(true);
         match hyperlink.target {
             TerminalHyperlinkTarget::Url { url } => {
                 let prev_task = self.read_task.take();
@@ -149,7 +150,11 @@ impl TerminalPreviewView {
                                 }
                                 this.state = PreviewState::Loaded;
                                 this.editor_view.update(cx, |editor_view, _cx| {
-                                    editor_view.set_content(&filename, content);
+                                    editor_view
+                                        .set_content_with_initial_line(&filename, content, line);
+                                    native_presentation::set_sheet_content_at_top(
+                                        editor_view.is_scrolled_to_file_top(),
+                                    );
                                 });
                                 this.update_sheet_scroll_boundary(cx);
                                 cx.notify();

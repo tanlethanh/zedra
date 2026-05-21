@@ -70,6 +70,7 @@ pub struct EditorView {
     /// True once a gesture has been committed to horizontal scroll.
     /// Stays true until a clearly vertical event overrides it.
     h_scroll_active: bool,
+    on_scroll_boundary_changed: Option<Box<dyn FnMut(bool)>>,
 }
 
 impl EditorView {
@@ -99,12 +100,26 @@ impl EditorView {
             h_scroll_offset: 0.0,
             max_line_chars: 0,
             h_scroll_active: false,
+            on_scroll_boundary_changed: None,
         }
+    }
+
+    pub fn on_scroll_boundary_changed(&mut self, callback: impl FnMut(bool) + 'static) {
+        self.on_scroll_boundary_changed = Some(Box::new(callback));
     }
 
     /// Replace the entire buffer content (e.g. when loading a remote file).
     /// The language is detected from the filename.
     pub fn set_content(&mut self, filename: &str, content: String) {
+        self.set_content_with_initial_line(filename, content, None);
+    }
+
+    pub fn set_content_with_initial_line(
+        &mut self,
+        filename: &str,
+        content: String,
+        initial_line: Option<u32>,
+    ) {
         self.highlighter = Rc::new(Highlighter::from_filename(filename));
         self.buffer.set_text(content);
         self.cached_line_highlights = Rc::new(Vec::new());
@@ -167,6 +182,23 @@ impl EditorView {
         }
         self.cached_lines = Rc::new(lines);
         self.lines_dirty = false;
+    }
+
+    pub fn is_scrolled_to_file_top(&self) -> bool {
+        let scroll_state = self.scroll_handle.0.borrow();
+        // Opening at `file:line` moves the viewport, but only file line 1 is the file top.
+        if let Some(deferred_scroll) = scroll_state.deferred_scroll_to_item {
+            return deferred_scroll.item_index == 0;
+        }
+
+        scroll_state.base_handle.offset().y >= px(-0.5)
+    }
+
+    fn notify_scroll_boundary_changed(&mut self) {
+        let is_at_top = self.is_scrolled_to_file_top();
+        if let Some(callback) = self.on_scroll_boundary_changed.as_mut() {
+            callback(is_at_top);
+        }
     }
 }
 
@@ -325,6 +357,7 @@ impl Render for EditorView {
                             .set_offset(point(px(0.0), scroll_y_lock));
                         cx.notify();
                     }
+                    this.notify_scroll_boundary_changed();
                 }),
             )
             .child(
@@ -417,6 +450,8 @@ impl Render for EditorView {
 mod tests {
     use std::rc::Rc;
 
+    use gpui::{ScrollStrategy, point, px};
+
     use super::{
         CODE_TEXT_COLOR, EditorView, PENDING_SYNTAX_TEXT_COLOR, ParsedEditorSyntax,
         code_text_color_for_highlighter, line_range_for_selection_lines,
@@ -484,5 +519,60 @@ mod tests {
         let mut parsed = Highlighter::from_filename("main.rs");
         parsed.parse("fn main() {}\n");
         assert_eq!(code_text_color_for_highlighter(&parsed), CODE_TEXT_COLOR);
+    }
+
+    #[test]
+    fn set_content_resets_scroll_to_file_top() {
+        let mut editor = EditorView::build(
+            "old line\nold line\n".to_string(),
+            Highlighter::from_filename("old.rs"),
+        );
+        editor
+            .scroll_handle
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(point(px(0.0), px(-120.0)));
+
+        editor.set_content("new.rs", "new line\n".to_string());
+
+        let scroll_state = editor.scroll_handle.0.borrow();
+        assert_eq!(scroll_state.base_handle.offset().y, px(0.0));
+        let deferred_scroll = scroll_state
+            .deferred_scroll_to_item
+            .expect("expected reset scroll target");
+        assert_eq!(deferred_scroll.item_index, 0);
+        assert_eq!(deferred_scroll.strategy, ScrollStrategy::Top);
+        drop(scroll_state);
+        assert!(editor.is_scrolled_to_file_top());
+    }
+
+    #[test]
+    fn initial_line_scroll_is_not_treated_as_file_top() {
+        let mut editor = EditorView::build(String::new(), Highlighter::from_filename("new.rs"));
+
+        editor.set_content_with_initial_line("new.rs", "one\ntwo\nthree\n".to_string(), Some(2));
+
+        let scroll_state = editor.scroll_handle.0.borrow();
+        let deferred_scroll = scroll_state
+            .deferred_scroll_to_item
+            .expect("expected initial line scroll target");
+        assert_eq!(deferred_scroll.item_index, 1);
+        assert_eq!(deferred_scroll.strategy, ScrollStrategy::Top);
+        drop(scroll_state);
+        assert!(!editor.is_scrolled_to_file_top());
+    }
+
+    #[test]
+    fn initial_line_scroll_clamps_to_file_length() {
+        let mut editor = EditorView::build(String::new(), Highlighter::from_filename("new.rs"));
+
+        editor.set_content_with_initial_line("new.rs", "one\ntwo".to_string(), Some(99));
+
+        let scroll_state = editor.scroll_handle.0.borrow();
+        let deferred_scroll = scroll_state
+            .deferred_scroll_to_item
+            .expect("expected clamped initial line scroll target");
+        assert_eq!(deferred_scroll.item_index, 1);
     }
 }

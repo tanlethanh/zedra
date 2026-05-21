@@ -31,6 +31,34 @@ private final class CStringStorage {
     }
 }
 
+private enum ZedraFirebase {
+    private static let lock = NSLock()
+    private static var configured = false
+    private static var missingConfigLogged = false
+
+    static func configureIfAvailable() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if configured || FirebaseApp.app() != nil {
+            configured = true
+            return true
+        }
+
+        guard Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") != nil else {
+            if !missingConfigLogged {
+                NSLog("Zedra Firebase disabled: GoogleService-Info.plist is not bundled")
+                missingConfigLogged = true
+            }
+            return false
+        }
+
+        FirebaseApp.configure()
+        configured = FirebaseApp.app() != nil
+        return configured
+    }
+}
+
 @_cdecl("ios_get_app_version")
 func ios_get_app_version() -> UnsafePointer<CChar>? {
     let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
@@ -51,7 +79,7 @@ func ios_get_documents_directory() -> UnsafePointer<CChar>? {
 
 @_cdecl("zedra_firebase_initialize")
 func zedra_firebase_initialize_bridge() {
-    FirebaseApp.configure()
+    _ = ZedraFirebase.configureIfAvailable()
 }
 
 @_cdecl("ios_trigger_haptic")
@@ -100,6 +128,7 @@ func zedra_log_event(
     _ values: UnsafePointer<UnsafePointer<CChar>?>?,
     _ count: Int32
 ) {
+    guard ZedraFirebase.configureIfAvailable() else { return }
     guard let name = NativePresentationBridge.string(name) else { return }
 
     var params: [String: String] = [:]
@@ -121,6 +150,7 @@ func zedra_record_error(
     _ file: UnsafePointer<CChar>?,
     _ line: Int32
 ) {
+    guard ZedraFirebase.configureIfAvailable() else { return }
     guard let message = NativePresentationBridge.string(message) else { return }
     let fileString = NativePresentationBridge.string(file) ?? "unknown"
     let fullMessage = "[\(fileString):\(line)] \(message)"
@@ -130,6 +160,7 @@ func zedra_record_error(
 
 @_cdecl("zedra_record_panic")
 func zedra_record_panic(_ message: UnsafePointer<CChar>?, _ location: UnsafePointer<CChar>?) {
+    guard ZedraFirebase.configureIfAvailable() else { return }
     guard let message = NativePresentationBridge.string(message) else { return }
     let locationString = NativePresentationBridge.string(location) ?? "unknown"
     let fullMessage = "Rust panic at \(locationString): \(message)"
@@ -140,6 +171,7 @@ func zedra_record_panic(_ message: UnsafePointer<CChar>?, _ location: UnsafePoin
 
 @_cdecl("zedra_set_user_id")
 func zedra_set_user_id(_ userID: UnsafePointer<CChar>?) {
+    guard ZedraFirebase.configureIfAvailable() else { return }
     guard let userID = NativePresentationBridge.string(userID) else { return }
     Analytics.setUserID(userID)
     Crashlytics.crashlytics().setUserID(userID)
@@ -147,6 +179,7 @@ func zedra_set_user_id(_ userID: UnsafePointer<CChar>?) {
 
 @_cdecl("zedra_set_custom_key")
 func zedra_set_custom_key(_ key: UnsafePointer<CChar>?, _ value: UnsafePointer<CChar>?) {
+    guard ZedraFirebase.configureIfAvailable() else { return }
     guard let key = NativePresentationBridge.string(key), let value = NativePresentationBridge.string(value) else {
         return
     }
@@ -155,6 +188,7 @@ func zedra_set_custom_key(_ key: UnsafePointer<CChar>?, _ value: UnsafePointer<C
 
 @_cdecl("zedra_set_collection_enabled")
 func zedra_set_collection_enabled(_ enabled: Int32) {
+    guard ZedraFirebase.configureIfAvailable() else { return }
     let isEnabled = enabled != 0
     Analytics.setAnalyticsCollectionEnabled(isEnabled)
     Crashlytics.crashlytics().setCrashlyticsCollectionEnabled(isEnabled)

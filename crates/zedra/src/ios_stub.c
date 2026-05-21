@@ -55,6 +55,13 @@ __attribute__((weak)) void ios_present_selection(
     const char **labels,
     const int *styles,
     const char **image_names) {}
+__attribute__((weak)) void ios_present_native_edit_menu(
+    unsigned int callback_id,
+    float x_pts,
+    float y_pts,
+    int item_count,
+    const char **labels,
+    const char **image_names) {}
 __attribute__((weak)) void ios_present_custom_sheet(
     int detent_count,
     const int *detents,

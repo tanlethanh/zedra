@@ -17,8 +17,8 @@ use std::sync::Arc;
 use zedra_host::client as zedra_client;
 use zedra_host::ga4::Ga4;
 use zedra_host::{
-    api, identity, iroh_listener, metrics, net_monitor, qr, rpc_daemon, session_registry, utils,
-    version_check, workspace_lock,
+    api, identity, iroh_listener, metrics, net_monitor, paths, qr, rpc_daemon, session_registry,
+    utils, version_check, workspace_lock,
 };
 use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
@@ -397,9 +397,93 @@ fn start_detached(options: DetachedStartOptions) -> Result<DetachedStartResult> 
     })
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn start_detached(options: DetachedStartOptions) -> Result<DetachedStartResult> {
+    use std::os::windows::process::CommandExt;
+    use std::process::Stdio;
+
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+    if let Some(existing) = workspace_lock::read_lock_info(&options.workdir)? {
+        if workspace_lock::is_process_alive(existing.pid) {
+            anyhow::bail!(
+                "Zedra daemon is already running for this workspace.\n\
+                 \n\
+                 \x20 PID:      {}\n\
+                 \x20 Workdir:  {}\n\
+                 \x20 Host:     {}\n\
+                 \x20 Started:  {}\n\
+                 \n\
+                 Run `zedra stop` from this workspace to stop it.\n\
+                 From another directory, add `--workdir <path>`.",
+                existing.pid,
+                existing.workdir,
+                existing.hostname,
+                existing.running_for(),
+            );
+        }
+    }
+
+    let config_dir = identity::workspace_config_dir(&options.workdir)?;
+    std::fs::create_dir_all(&config_dir)?;
+    let log_path = config_dir.join("daemon.log");
+    let mut log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+    writeln!(
+        log,
+        "\n--- zedra detached start parent_pid={} workdir={} ---",
+        std::process::id(),
+        options.workdir.display()
+    )?;
+    let launch_shell = zedra_host::pty::detect_parent_shell();
+    if let Some(shell) = &launch_shell {
+        writeln!(log, "detected_launch_shell={shell}")?;
+    }
+
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command
+        .args(detached_start_child_args(&options))
+        .current_dir(&options.workdir)
+        .env("ZEDRA_DETACHED", "1")
+        .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log));
+    if let Some(shell) = launch_shell {
+        command.env("ZEDRA_LAUNCH_SHELL", shell);
+    }
+
+    let mut child = command.spawn()?;
+    let child_pid = child.id();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        if let Some(status) = child.try_wait()? {
+            anyhow::bail!(
+                "detached zedra-host exited early with status {}. See log: {}",
+                status,
+                log_path.display()
+            );
+        }
+        if let Some(info) = workspace_lock::read_lock_info(&options.workdir)? {
+            if info.pid == child_pid {
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    Ok(DetachedStartResult {
+        pid: child_pid,
+        workdir: options.workdir,
+    })
+}
+
+#[cfg(all(not(unix), not(windows)))]
 fn start_detached(_options: DetachedStartOptions) -> Result<DetachedStartResult> {
-    anyhow::bail!("`zedra start --detach` is only supported on Unix platforms.");
+    anyhow::bail!("`zedra start --detach` is not supported on this platform.");
 }
 
 fn telemetry_disabled(no_telemetry: bool) -> bool {
@@ -431,6 +515,12 @@ fn new_ga4(
 
 fn render_cli_version() -> String {
     format!("{}\n", env!("CARGO_PKG_VERSION"))
+}
+
+fn resolve_workdir(workdir: impl AsRef<Path>) -> PathBuf {
+    let fallback = workdir.as_ref().to_path_buf();
+    let workdir = fallback.canonicalize().unwrap_or(fallback);
+    paths::user_path(&workdir)
 }
 
 #[tokio::main]
@@ -481,9 +571,7 @@ async fn main() -> Result<()> {
             count,
             relay_only,
         } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workdir = resolve_workdir(workdir);
             zedra_client::run(&workdir, count, relay_only).await?;
         }
 
@@ -497,9 +585,7 @@ async fn main() -> Result<()> {
             relay_only,
             static_qr,
         } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workdir = resolve_workdir(workdir);
             let pairing_mode = if static_qr {
                 session_registry::PairingSlotMode::Static
             } else {
@@ -676,9 +762,10 @@ async fn main() -> Result<()> {
                 match version_check::check_latest_version().await {
                     Ok(Some(ref latest)) => {
                         let update_msg = format!(
-                            "New version available: {} (current: v{}). Run `zedra update`.",
+                            "New version available: {} (current: v{}). {}",
                             latest,
-                            env!("CARGO_PKG_VERSION")
+                            env!("CARGO_PKG_VERSION"),
+                            update_instruction()
                         );
                         utils::eprintln_warn(update_msg);
                         zedra_telemetry::send(Event::UpdateChecked {
@@ -823,14 +910,12 @@ async fn main() -> Result<()> {
                 });
             }
 
-            // 5. Run iroh accept loop (blocks main)
+            // 5. Run iroh accept loop until the endpoint closes or the process exits.
             iroh_listener::run_accept_loop(&endpoint, registry, state).await?;
         }
 
         Commands::Status { workdir } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workdir = resolve_workdir(workdir);
             let config_dir = identity::workspace_config_dir(&workdir)?;
             let addr = std::fs::read_to_string(config_dir.join("api-addr")).unwrap_or_default();
             let token = std::fs::read_to_string(config_dir.join("api-token")).unwrap_or_default();
@@ -865,9 +950,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Metrics { workdir } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workdir = resolve_workdir(workdir);
             let snapshot = metrics::snapshot(&workdir)?;
             let http = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(2))
@@ -885,9 +968,7 @@ async fn main() -> Result<()> {
             json,
             static_qr,
         } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workdir = resolve_workdir(workdir);
             let pairing_mode = if static_qr {
                 session_registry::PairingSlotMode::Static
             } else {
@@ -909,9 +990,7 @@ async fn main() -> Result<()> {
             workdir,
             launch_cmd,
         } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workdir = resolve_workdir(workdir);
             let config_dir = identity::workspace_config_dir(&workdir)?;
             let addr = std::fs::read_to_string(config_dir.join("api-addr")).unwrap_or_default();
             let token = std::fs::read_to_string(config_dir.join("api-token")).unwrap_or_default();
@@ -1021,9 +1100,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Logs { workdir, lines } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workdir = resolve_workdir(workdir);
             let log_path = daemon_log_path(&workdir)?;
             if !log_path.exists() {
                 utils::eprintln_error(format!("No daemon log found for: {}", workdir.display()));
@@ -1076,6 +1153,12 @@ async fn main() -> Result<()> {
             let alive: Vec<_> = instances.iter().filter(|(_, _, alive)| *alive).collect();
             if !alive.is_empty() {
                 eprintln!();
+                #[cfg(windows)]
+                utils::eprintln_warn(format!(
+                    "{} running daemon(s) found. They will keep using the old version until restarted:",
+                    alive.len()
+                ));
+                #[cfg(not(windows))]
                 utils::eprintln_warn(format!(
                     "{} running daemon(s) found. Restart them after update:",
                     alive.len()
@@ -1146,11 +1229,10 @@ async fn main() -> Result<()> {
         }
 
         Commands::Stop { workdir, grace } => {
-            let workdir = std::path::PathBuf::from(&workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from(&workdir));
+            let workdir = resolve_workdir(&workdir);
 
-            match workspace_lock::read_lock_info(&workdir)? {
+            let lock_info = workspace_lock::read_lock_info(&workdir)?;
+            match &lock_info {
                 None => {
                     utils::eprintln_error(format!(
                         "No running Zedra daemon found for: {}",
@@ -1214,13 +1296,21 @@ fn classify_update_error(e: &anyhow::Error) -> &'static str {
         "download_failed"
     } else if msg.contains("archive did not contain") || msg.contains("failed to extract") {
         "extract_failed"
-    } else if msg.contains("failed to install") || msg.contains("failed to rename") {
+    } else if msg.contains("failed to install")
+        || msg.contains("failed to rename")
+        || msg.contains("install directory is not writable")
+        || msg.contains("failed to start PowerShell")
+    {
         "install_failed"
     } else if msg.contains("failed to resolve latest") {
         "version_resolve_failed"
     } else {
         "unknown"
     }
+}
+
+fn update_instruction() -> &'static str {
+    "Run `zedra update`."
 }
 
 fn should_proceed_with_update(input: &str) -> bool {

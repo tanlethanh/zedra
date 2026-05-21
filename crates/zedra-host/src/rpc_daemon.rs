@@ -15,6 +15,7 @@ use crate::git::GitRepo;
 use crate::host_info;
 use crate::identity::SharedIdentity;
 use crate::metrics;
+use crate::paths;
 use crate::pty::{ShellSession, SpawnOptions};
 use crate::session_registry::{
     ActiveClientConnection, AttachResult, ConsumeSlotResult, HostShellState, HostTermMeta,
@@ -46,10 +47,25 @@ fn collect_host_env(workdir: &std::path::Path) -> HostEnvInfo {
             .ok()
             .and_then(|h| h.into_string().ok())
             .unwrap_or_else(|| "unknown".to_string()),
-        username: std::env::var("USER").unwrap_or_else(|_| "unknown".to_string()),
-        workdir: workdir.to_string_lossy().into_owned(),
-        home_dir: std::env::var("HOME").ok(),
+        username: current_username(),
+        workdir: paths::user_path_string(workdir),
+        home_dir: current_home_dir(),
     }
+}
+
+fn current_username() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+fn current_home_dir() -> Option<String> {
+    std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok())
+        .or_else(|| {
+            directories::BaseDirs::new().map(|base| base.home_dir().to_string_lossy().into_owned())
+        })
 }
 
 async fn build_sync_result(
@@ -151,7 +167,7 @@ fn initial_host_meta(opts: &SpawnOptions) -> HostTermMeta {
     meta.cwd = opts
         .workdir
         .as_ref()
-        .map(|path| path.to_string_lossy().into_owned());
+        .map(|path| paths::user_path_string(path));
     if let Some(command) = opts
         .launch_cmd
         .as_ref()
