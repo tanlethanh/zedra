@@ -17,7 +17,7 @@
 ## 0a. Home Install Guide Tabs
 
 1. Open the app with no saved workspaces visible on the Home screen
-2. Switch between the `mac/linux`, `win`, `claude`, `codex`, and `opencode` guide tabs
+2. Switch between the `mac/linux`, `windows`, `claude`, `codex`, and `opencode` guide tabs
 3. Expected: each tab shows the same install commands as the landing page
 4. Tap a command line in each tab
 5. Expected: the tapped command line is copied to the system clipboard without navigating away from Home

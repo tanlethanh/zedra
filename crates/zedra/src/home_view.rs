@@ -466,7 +466,7 @@ impl Render for HomeView {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GuideTab {
     MacLinux,
-    Win,
+    Windows,
     Claude,
     Codex,
     OpenCode,
@@ -496,8 +496,8 @@ static GUIDE_TABS: &[GuideTabSpec] = &[
         icon_size: 17.0,
     },
     GuideTabSpec {
-        tab: GuideTab::Win,
-        label: "win",
+        tab: GuideTab::Windows,
+        label: "windows",
         icon: "icons/windows.svg",
         icon_size: 17.0,
     },
@@ -613,7 +613,7 @@ static OPENCODE_RUN_LINES: &[GuideLine] = &[
     },
 ];
 
-static WIN_INSTALL_LINES: &[GuideLine] = &[
+static WINDOWS_INSTALL_LINES: &[GuideLine] = &[
     GuideLine {
         text: "# Install Zedra CLI",
         comment: true,
@@ -624,7 +624,7 @@ static WIN_INSTALL_LINES: &[GuideLine] = &[
     },
 ];
 
-static WIN_RUN_LINES: &[GuideLine] = &[
+static WINDOWS_RUN_LINES: &[GuideLine] = &[
     GuideLine {
         text: "# Start Zedra in the working directory",
         comment: true,
@@ -644,12 +644,12 @@ static MAC_LINUX_BLOCKS: &[GuideBlock] = &[
     },
 ];
 
-static WIN_BLOCKS: &[GuideBlock] = &[
+static WINDOWS_BLOCKS: &[GuideBlock] = &[
     GuideBlock {
-        lines: WIN_INSTALL_LINES,
+        lines: WINDOWS_INSTALL_LINES,
     },
     GuideBlock {
-        lines: WIN_RUN_LINES,
+        lines: WINDOWS_RUN_LINES,
     },
 ];
 
@@ -683,7 +683,7 @@ static OPENCODE_BLOCKS: &[GuideBlock] = &[
 fn guide_blocks(tab: GuideTab) -> &'static [GuideBlock] {
     match tab {
         GuideTab::MacLinux => MAC_LINUX_BLOCKS,
-        GuideTab::Win => WIN_BLOCKS,
+        GuideTab::Windows => WINDOWS_BLOCKS,
         GuideTab::Claude => CLAUDE_BLOCKS,
         GuideTab::Codex => CODEX_BLOCKS,
         GuideTab::OpenCode => OPENCODE_BLOCKS,
