@@ -3,13 +3,25 @@
 // Copy text = non-comment lines joined by \n.
 const installTabs = [
   {
-    id: "curl",
-    label: "curl",
+    id: "mac-linux",
+    label: "mac/linux",
     icon: `<svg class="tab-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>`,
     blocks: [
       [
         { text: "# Install Zedra CLI", comment: true },
         { text: "curl -fsSL zedra.dev/install.sh | sh" },
+      ],
+      [{ text: "# Start Zedra in the working directory", comment: true }, { text: "zedra start" }],
+    ],
+  },
+  {
+    id: "windows",
+    label: "windows",
+    icon: `<svg class="tab-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.4 10.6 4.3v7.2H3V5.4Zm8.6-1.2L21 2.8v8.7h-9.4V4.2ZM3 12.5h7.6v7.2L3 18.6v-6.1Zm8.6 0H21v8.7l-9.4-1.4v-7.3Z"></path></svg>`,
+    blocks: [
+      [
+        { text: "# Install Zedra CLI", comment: true },
+        { text: 'powershell -c "irm https://zedra.dev/install.ps1 | iex"' },
       ],
       [{ text: "# Start Zedra in the working directory", comment: true }, { text: "zedra start" }],
     ],
@@ -305,13 +317,22 @@ const canonicalUrl = "https://zedra.dev/";
 
       .tab-list {
         display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
+        flex-wrap: nowrap;
+        gap: 10px;
+        overflow-x: auto;
+        overflow-y: hidden;
         padding: 8px 14px 0;
+        scrollbar-width: none;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      .tab-list::-webkit-scrollbar {
+        display: none;
       }
 
       .tab-label {
         display: inline-flex;
+        flex: 0 0 auto;
         align-items: center;
         gap: 8px;
         padding: 7px 2px 9px;
@@ -320,6 +341,7 @@ const canonicalUrl = "https://zedra.dev/";
         background: transparent;
         color: var(--muted);
         font-size: 0.78rem;
+        white-space: nowrap;
         cursor: pointer;
         transition:
           color 0.18s,
@@ -396,7 +418,8 @@ const canonicalUrl = "https://zedra.dev/";
 
       /* checked-tab state (CSS-only tabs) */
 
-      #tab-curl:checked ~ .install-card .label-curl,
+      #tab-mac-linux:checked ~ .install-card .label-mac-linux,
+      #tab-windows:checked ~ .install-card .label-windows,
       #tab-claude:checked ~ .install-card .label-claude,
       #tab-codex:checked ~ .install-card .label-codex,
       #tab-opencode:checked ~ .install-card .label-opencode,
@@ -405,7 +428,8 @@ const canonicalUrl = "https://zedra.dev/";
         border-bottom-color: var(--text);
       }
 
-      #tab-curl:checked ~ .install-card .panel-curl,
+      #tab-mac-linux:checked ~ .install-card .panel-mac-linux,
+      #tab-windows:checked ~ .install-card .panel-windows,
       #tab-claude:checked ~ .install-card .panel-claude,
       #tab-codex:checked ~ .install-card .panel-codex,
       #tab-opencode:checked ~ .install-card .panel-opencode,
@@ -632,6 +656,16 @@ const canonicalUrl = "https://zedra.dev/";
         .install-card {
           height: auto;
           min-height: 180px;
+        }
+
+        .tab-list {
+          gap: 8px;
+          padding-inline: 12px;
+        }
+
+        .tab-label {
+          gap: 6px;
+          font-size: 0.76rem;
         }
 
         .demo-card {

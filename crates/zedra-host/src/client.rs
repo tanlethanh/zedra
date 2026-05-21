@@ -19,7 +19,7 @@ use zedra_rpc::proto::{
 // Host info file — written by `zedra start`, read by `zedra client`
 // ---------------------------------------------------------------------------
 
-/// Persisted alongside daemon.lock so `zedra client` can auto-connect.
+/// Persisted under the workspace config directory so `zedra client` can auto-connect.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HostInfo {
     /// Iroh endpoint public key (full hex).
@@ -35,7 +35,7 @@ pub fn host_info_path(config_dir: &Path) -> PathBuf {
     config_dir.join("host-info.json")
 }
 
-/// Write host info alongside the daemon lock (called from `zedra start`).
+/// Write host info for `zedra client` auto-discovery (called from `zedra start`).
 pub fn write_host_info(config_dir: &Path, info: &HostInfo) -> Result<()> {
     let path = host_info_path(config_dir);
     let json = serde_json::to_string_pretty(info)?;

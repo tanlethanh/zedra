@@ -5,6 +5,8 @@
 
 use crate::utils;
 use anyhow::{bail, Context, Result};
+use std::path::Path;
+
 const REPO: &str = "tanlethanh/zedra";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -78,48 +80,170 @@ pub async fn self_update(tag: &str) -> Result<String> {
     let mut archive = tar::Archive::new(decoder);
     archive.unpack(tmp_dir.path())?;
 
-    let extracted = tmp_dir.path().join("zedra");
+    let extracted = tmp_dir.path().join(binary_name());
     if !extracted.exists() {
-        bail!("archive did not contain 'zedra' binary");
+        bail!("archive did not contain '{}' binary", binary_name());
     }
 
-    // Replace current binary via atomic rename
     let current_exe =
         std::env::current_exe().context("cannot determine current executable path")?;
     let current_exe = current_exe
         .canonicalize()
         .unwrap_or_else(|_| current_exe.clone());
 
-    // On macOS/Linux: rename the old binary out of the way, move new one in,
-    // then delete old. This avoids "text file busy" on some systems.
+    replace_current_binary(&extracted, &current_exe, tmp_dir)?;
+
+    Ok(tag)
+}
+
+#[cfg(windows)]
+const WINDOWS_UPDATE_SCRIPT: &str = r#"param(
+    [int]$ParentPid,
+    [string]$Source,
+    [string]$Destination,
+    [string]$StagingDir
+)
+
+$ErrorActionPreference = "Stop"
+Wait-Process -Id $ParentPid -ErrorAction SilentlyContinue
+
+$backup = "$Destination.old.$([Guid]::NewGuid().ToString("N"))"
+try {
+    Move-Item -LiteralPath $Destination -Destination $backup -Force
+    Copy-Item -LiteralPath $Source -Destination $Destination -Force
+
+    # Running daemons can keep the renamed image locked, so old backups are
+    # intentionally best-effort cleanup. Ref: https://docs.rs/self-replace/latest/self_replace/#implementation
+    Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+} catch {
+    if ((Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $Destination)) {
+        Move-Item -LiteralPath $backup -Destination $Destination -Force
+    }
+    throw
+} finally {
+    Remove-Item -LiteralPath $StagingDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+"#;
+
+fn binary_name() -> &'static str {
+    if cfg!(windows) {
+        "zedra.exe"
+    } else {
+        "zedra"
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_current_binary(
+    extracted: &Path,
+    current_exe: &Path,
+    _tmp_dir: tempfile::TempDir,
+) -> Result<()> {
+    // Rename the old binary out of the way, move new one in, then delete old.
+    // This avoids "text file busy" on some systems.
     let backup = current_exe.with_extension("old");
     if backup.exists() {
         let _ = std::fs::remove_file(&backup);
     }
-    std::fs::rename(&current_exe, &backup).with_context(|| {
+    std::fs::rename(current_exe, &backup).with_context(|| {
         format!(
             "failed to rename current binary at {}",
             current_exe.display()
         )
     })?;
-    match std::fs::copy(&extracted, &current_exe) {
+    match std::fs::copy(extracted, current_exe) {
         Ok(_) => {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 let _ =
-                    std::fs::set_permissions(&current_exe, std::fs::Permissions::from_mode(0o755));
+                    std::fs::set_permissions(current_exe, std::fs::Permissions::from_mode(0o755));
             }
             let _ = std::fs::remove_file(&backup);
         }
         Err(e) => {
             // Rollback
-            let _ = std::fs::rename(&backup, &current_exe);
+            let _ = std::fs::rename(&backup, current_exe);
             bail!("failed to install new binary: {e}");
         }
     }
 
-    Ok(tag)
+    Ok(())
+}
+
+#[cfg(windows)]
+fn replace_current_binary(
+    extracted: &Path,
+    current_exe: &Path,
+    tmp_dir: tempfile::TempDir,
+) -> Result<()> {
+    assert_parent_writable(current_exe)?;
+
+    let script_path = tmp_dir.path().join("finish-update.ps1");
+    std::fs::write(&script_path, WINDOWS_UPDATE_SCRIPT)
+        .context("failed to write Windows update helper")?;
+
+    let staging_dir = tmp_dir.keep();
+    let spawn_result =
+        spawn_windows_update_helper(&script_path, extracted, current_exe, &staging_dir);
+    if let Err(err) = spawn_result {
+        let _ = std::fs::remove_dir_all(&staging_dir);
+        return Err(err);
+    }
+
+    utils::eprintln_note("Windows will finish replacing zedra.exe after this command exits.");
+    Ok(())
+}
+
+#[cfg(windows)]
+fn assert_parent_writable(current_exe: &Path) -> Result<()> {
+    let parent = current_exe
+        .parent()
+        .context("cannot determine current executable directory")?;
+    let probe = parent.join(format!(".zedra-update-write-test-{}", std::process::id()));
+    std::fs::write(&probe, b"zedra")
+        .with_context(|| format!("install directory is not writable: {}", parent.display()))?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(())
+}
+
+#[cfg(windows)]
+fn spawn_windows_update_helper(
+    script_path: &Path,
+    extracted: &Path,
+    current_exe: &Path,
+    staging_dir: &Path,
+) -> Result<()> {
+    let parent_pid = std::process::id().to_string();
+    let mut last_error = None;
+    for shell in ["powershell.exe", "pwsh.exe"] {
+        let result = std::process::Command::new(shell)
+            .arg("-NoProfile")
+            .arg("-ExecutionPolicy")
+            .arg("Bypass")
+            .arg("-File")
+            .arg(script_path)
+            .arg(parent_pid.as_str())
+            .arg(extracted)
+            .arg(current_exe)
+            .arg(staging_dir)
+            .spawn();
+
+        match result {
+            Ok(_) => return Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                last_error = Some(err);
+            }
+            Err(err) => {
+                return Err(err).with_context(|| format!("failed to start {shell}"));
+            }
+        }
+    }
+
+    match last_error {
+        Some(err) => Err(err).context("failed to start PowerShell for Windows self-update"),
+        None => bail!("failed to start PowerShell for Windows self-update"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +283,7 @@ fn detect_platform() -> Result<String> {
     let os = match os {
         "macos" => "apple-darwin",
         "linux" => "unknown-linux-gnu",
+        "windows" => "pc-windows-msvc",
         other => bail!("unsupported OS: {other}"),
     };
 
@@ -205,6 +330,19 @@ mod tests {
     fn test_detect_platform() {
         // Should not fail on the current platform
         let p = detect_platform().unwrap();
-        assert!(p.contains("apple-darwin") || p.contains("unknown-linux-gnu"));
+        assert!(
+            p.contains("apple-darwin")
+                || p.contains("unknown-linux-gnu")
+                || p.contains("pc-windows-msvc")
+        );
+    }
+
+    #[test]
+    fn test_binary_name_matches_platform() {
+        if cfg!(windows) {
+            assert_eq!(binary_name(), "zedra.exe");
+        } else {
+            assert_eq!(binary_name(), "zedra");
+        }
     }
 }

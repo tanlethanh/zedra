@@ -17,7 +17,7 @@
 ## 0a. Home Install Guide Tabs
 
 1. Open the app with no saved workspaces visible on the Home screen
-2. Switch between the `curl`, `claude`, `codex`, `opencode`, and `gemini` guide tabs
+2. Switch between the `mac/linux`, `windows`, `claude`, `codex`, `opencode`, and `gemini` guide tabs
 3. Expected: each tab shows the same install commands as the landing page
 4. Tap a command line in each tab
 5. Expected: the tapped command line is copied to the system clipboard without navigating away from Home
@@ -137,6 +137,33 @@
 21. Expected: files inside dot-prefixed, gitignored, and common generated/dependency directories are not shown
 22. Connect to an older host that does not support docs-tree RPCs
 23. Expected: the docs tree shows an unsupported-host message and the refresh icon no longer stays in the building state
+
+## 1d. Windows Host CLI
+
+1. On an x86_64 Windows machine, run `powershell -c "irm https://zedra.dev/install.ps1 | iex"` from Command Prompt or Windows Terminal
+2. Expected: `zedra.exe` is installed under `%LOCALAPPDATA%\Programs\zedra\bin`, the directory is added to the user `Path`, and `zedra --help` works from the current shell
+3. Start the daemon from PowerShell: `zedra start --workdir C:\path\to\repo --detach`
+4. Expected: startup succeeds, Windows may show a firewall prompt, and `daemon.lock` plus `daemon.log` are written under `%APPDATA%\zedra\workspaces\` using their respective workspace hashes
+5. Run `zedra status --workdir C:\path\to\repo`
+6. Expected: status shows the running daemon, endpoint, workspace path, sessions, and terminal count without Unix path assumptions
+7. Run `zedra qr --workdir C:\path\to\repo`, scan from the mobile app, then disconnect and reconnect the app without scanning again
+8. Expected: QR pairing succeeds, reconnect uses the saved session identity, and relay fallback still works if direct P2P is unavailable
+9. Open a terminal from the app
+10. Expected: a Windows PTY opens with the shell that launched the host, keystrokes echo, resize works, and commands available on `PATH` run normally
+11. Stop the daemon, set `$env:ZEDRA_SHELL = "cmd.exe"` in PowerShell, restart the daemon, and open another terminal from the app
+12. Expected: the terminal opens in `cmd.exe`; clear `ZEDRA_SHELL`, restart from PowerShell, and launch commands still leave an interactive PowerShell after they run
+13. Run `zedra client --workdir C:\path\to\repo --count 3`
+14. Expected: the CLI client authenticates without QR and prints three RTT samples
+15. Run `zedra logs --workdir C:\path\to\repo`
+16. Expected: recent daemon log lines are printed from the AppData workspace directory
+17. Run `zedra update --version <current-release-tag> --yes` while the daemon is still running
+18. Expected: the update succeeds and warns that running daemons keep using the old version until restarted
+19. Run `zedra stop --workdir C:\path\to\repo`
+20. Expected: the daemon exits, the lock file is removed, and a follow-up `status` reports no running daemon
+21. Run `zedra update --version <current-release-tag> --yes`
+22. Expected: the update downloads the Windows release asset, verifies the checksum when available, and reports that `zedra.exe` will be replaced after the command exits
+23. Open a new PowerShell window and run `zedra --version`
+24. Expected: the command prints the release version
 
 ## 2. QR Already Consumed
 

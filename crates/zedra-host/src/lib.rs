@@ -11,6 +11,7 @@ pub mod identity;
 pub mod iroh_listener;
 pub mod metrics;
 pub mod net_monitor;
+pub mod paths;
 pub mod pty;
 pub mod qr;
 pub mod rpc_daemon;
