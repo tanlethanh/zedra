@@ -3,6 +3,8 @@
 // Call `init()` once at app startup (before any events fire).
 // After init, all crates can use `zedra_telemetry::send(Event::...)` etc.
 
+#[cfg(target_os = "android")]
+use crate::android::telemetry as android_telemetry;
 #[cfg(target_os = "ios")]
 use crate::ios::telemetry as ios_telemetry;
 
@@ -21,13 +23,18 @@ impl zedra_telemetry::TelemetryBackend for FirebaseBackend {
         let param_refs: Vec<(&str, &str)> = params.iter().map(|(k, v)| (*k, v.as_str())).collect();
         #[cfg(target_os = "ios")]
         ios_telemetry::log_event(name, &param_refs);
-        // Android Firebase not yet implemented; events are no-ops on Android.
+        #[cfg(target_os = "android")]
+        android_telemetry::log_event(name, &param_refs);
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
         let _ = (name, param_refs);
     }
 
     fn record_error(&self, message: &str, file: &str, line: u32) {
         #[cfg(target_os = "ios")]
         ios_telemetry::record_error(message, file, line);
+        #[cfg(target_os = "android")]
+        android_telemetry::record_error(message, file, line);
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
         let _ = (message, file, line);
     }
 
@@ -36,24 +43,36 @@ impl zedra_telemetry::TelemetryBackend for FirebaseBackend {
         eprintln!("[telemetry] panic: {} at {}", message, location);
         #[cfg(target_os = "ios")]
         ios_telemetry::record_panic(message, location);
+        #[cfg(target_os = "android")]
+        android_telemetry::record_panic(message, location);
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
         let _ = (message, location);
     }
 
     fn set_user_id(&self, id: &str) {
         #[cfg(target_os = "ios")]
         ios_telemetry::set_user_id(id);
+        #[cfg(target_os = "android")]
+        android_telemetry::set_user_id(id);
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
         let _ = id;
     }
 
     fn set_custom_key(&self, key: &str, value: &str) {
         #[cfg(target_os = "ios")]
         ios_telemetry::set_custom_key(key, value);
+        #[cfg(target_os = "android")]
+        android_telemetry::set_custom_key(key, value);
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
         let _ = (key, value);
     }
 
     fn set_collection_enabled(&self, enabled: bool) {
         #[cfg(target_os = "ios")]
         ios_telemetry::set_collection_enabled(enabled);
+        #[cfg(target_os = "android")]
+        android_telemetry::set_collection_enabled(enabled);
+        #[cfg(not(any(target_os = "ios", target_os = "android")))]
         let _ = enabled;
     }
 }

@@ -3,6 +3,7 @@
 
 // Shared Zedra app (screen navigation + connection)
 pub mod app;
+pub mod app_action;
 
 // Generic async→main-thread channel
 pub mod pending;

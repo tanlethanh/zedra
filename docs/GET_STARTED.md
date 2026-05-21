@@ -55,6 +55,17 @@ cd android && ./gradlew installDebug && cd ..  # install APK
 ./scripts/log-android.sh tail                  # view logs
 ```
 
+Android release builds read signing credentials from Gradle properties. Gradle
+loads `~/.gradle/gradle.properties` automatically, so a global config can use:
+
+```properties
+ZEDRA_KEYSTORE=/absolute/path/to/zedra-release.jks
+ZEDRA_KEYSTORE_ALIAS=zedra
+ZEDRA_KEYSTORE_PASSWORD=...
+# Optional when the key password differs from the keystore password:
+ZEDRA_KEY_PASSWORD=...
+```
+
 ## Host Daemon
 
 ```bash

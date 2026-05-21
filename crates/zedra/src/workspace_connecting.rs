@@ -106,8 +106,9 @@ fn render_details_toggle(expanded: bool, cx: &mut Context<WorkspaceConnecting>) 
         .items_center()
         .gap(px(4.0))
         .mb(px(theme::SPACING_SM))
-        .on_press(cx.listener(|this, _event, _window, _cx| {
+        .on_press(cx.listener(|this, _event, _window, cx| {
             this.details_expanded = !this.details_expanded;
+            cx.notify();
         }))
         .child(
             div()

@@ -126,15 +126,22 @@ impl EditorView {
         self.lines_dirty = true;
         self.h_scroll_offset = 0.0;
         self.h_scroll_active = false;
-        // A new file owns its vertical origin; reusing this handle leaks the previous offset.
-        self.scroll_handle = UniformListScrollHandle::new();
-
-        let initial_line_ix = initial_line
-            .map(|line| line.saturating_sub(1) as usize)
-            .unwrap_or(0)
-            .min(self.buffer.line_count().saturating_sub(1));
         self.scroll_handle
-            .scroll_to_item_strict(initial_line_ix, ScrollStrategy::Top);
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(point(px(0.0), px(0.0)));
+
+        let line_count = self.buffer.line_count();
+        let target_index = match initial_line {
+            Some(line) if line > 0 => {
+                // initial_line is 1-based; clamp to last line index
+                ((line as usize) - 1).min(line_count.saturating_sub(1))
+            }
+            _ => 0,
+        };
+        self.scroll_handle
+            .scroll_to_item(target_index, ScrollStrategy::Top);
     }
 
     pub fn apply_parsed_syntax(&mut self, parsed: ParsedEditorSyntax) {
@@ -148,6 +155,10 @@ impl EditorView {
 
     pub fn language(&self) -> Language {
         self.highlighter.language()
+    }
+
+    pub fn is_scrolled_to_top(&self) -> bool {
+        self.scroll_handle.0.borrow().base_handle.offset().y >= px(-0.5)
     }
 
     pub fn line_range_for_selection(&self, range_utf16: Range<usize>) -> Option<(u32, u32)> {

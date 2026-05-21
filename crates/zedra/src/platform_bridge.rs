@@ -336,6 +336,9 @@ where
     PENDING_CUSTOM_SHEET_VIEW.with(|pending| {
         *pending.borrow_mut() = Some(view.into());
     });
+    // Fresh content always starts at the top; clear any stale boundary left by
+    // a previously presented sheet so the drag hand-off starts correct.
+    crate::native_presentation::set_sheet_content_at_top(true);
     bridge().present_custom_sheet(&options);
 }
 

@@ -49,12 +49,8 @@ impl TerminalPreviewView {
         Self {
             session_handle,
             workspace_state,
-            editor_view: cx.new(|cx| {
-                let mut editor = EditorView::new(cx);
-                editor.on_scroll_boundary_changed(native_presentation::set_sheet_content_at_top);
-                editor
-            }),
-            markdown_view: cx.new(|_cx| MarkdownView::new_for_sheet(SharedString::default())),
+            editor_view: cx.new(|cx| EditorView::new(cx)),
+            markdown_view: cx.new(|_cx| MarkdownView::new(SharedString::default())),
             state: PreviewState::Idle,
             content: PreviewContent::Editor,
             title: "Terminal Link".into(),
@@ -80,6 +76,7 @@ impl TerminalPreviewView {
                 self.state = PreviewState::Error(
                     "Only file hyperlinks are supported in the preview sheet.".into(),
                 );
+                self.update_sheet_scroll_boundary(cx);
                 cx.notify();
             }
             TerminalHyperlinkTarget::File {
@@ -108,6 +105,7 @@ impl TerminalPreviewView {
                 };
                 self.content = preview_content_for_path(&path);
                 self.state = PreviewState::Loading;
+                self.update_sheet_scroll_boundary(cx);
                 cx.notify();
 
                 let prev_task = self.read_task.take();
@@ -158,6 +156,7 @@ impl TerminalPreviewView {
                                         editor_view.is_scrolled_to_file_top(),
                                     );
                                 });
+                                this.update_sheet_scroll_boundary(cx);
                                 cx.notify();
                             }) {
                                 error!("terminal link preview update failed for {}: {}", path, e);
@@ -202,6 +201,7 @@ impl TerminalPreviewView {
                                 this.markdown_view.update(cx, |markdown_view, _cx| {
                                     markdown_view.set_parsed_source(parsed);
                                 });
+                                this.update_sheet_scroll_boundary(cx);
                                 cx.notify();
                             });
                         }
@@ -214,6 +214,7 @@ impl TerminalPreviewView {
                             }
                             error!("terminal link preview fs/read error for {}: {}", path, msg);
                             this.state = PreviewState::Error(msg);
+                            this.update_sheet_scroll_boundary(cx);
                             cx.notify();
                         });
                     }
@@ -227,6 +228,20 @@ impl TerminalPreviewView {
         self.open_epoch != epoch
             || self.active_path.as_deref() != Some(path)
             || self.content != content
+    }
+
+    fn update_sheet_scroll_boundary(&self, cx: &mut Context<Self>) {
+        let is_at_top = match self.state {
+            PreviewState::Loaded => match self.content {
+                PreviewContent::Editor => self.editor_view.read(cx).is_scrolled_to_top(),
+                PreviewContent::Markdown => self.markdown_view.read(cx).is_scrolled_to_top(),
+            },
+            PreviewState::Idle
+            | PreviewState::Loading
+            | PreviewState::TooLarge
+            | PreviewState::Error(_) => true,
+        };
+        native_presentation::set_sheet_content_at_top(is_at_top);
     }
 }
 
@@ -274,7 +289,7 @@ impl Render for TerminalPreviewView {
                 div()
                     .w_full()
                     .px(px(theme::SPACING_LG))
-                    .pt(px(18.0))
+                    .pt(px(8.0))
                     .pb(px(8.0))
                     .border_b_1()
                     .border_color(rgb(theme::BORDER_SUBTLE))
@@ -304,6 +319,11 @@ impl Render for TerminalPreviewView {
                     .min_h_0()
                     .flex()
                     .flex_col()
+                    // The custom sheet owns native handoff state; the active
+                    // content view only reports whether its scroll is at top.
+                    .on_scroll_wheel(_cx.listener(|this, _event, _window, cx| {
+                        this.update_sheet_scroll_boundary(cx);
+                    }))
                     .child(body),
             )
     }

@@ -3,6 +3,7 @@ use std::time::Duration;
 use gpui::*;
 use zedra_telemetry::*;
 
+use crate::app_action::SystemBack;
 use crate::deeplink::{self, DeeplinkAction};
 use crate::fonts;
 use crate::home_view::{HomeEvent, HomeView};
@@ -300,6 +301,34 @@ impl ZedraApp {
         }
     }
 
+    fn handle_system_back_action(
+        &mut self,
+        _action: &SystemBack,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.handle_system_back(window, cx);
+    }
+
+    pub fn handle_system_back(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.quick_action_drawer.read(cx).is_open() {
+            self.quick_action_drawer
+                .update(cx, |drawer, cx| drawer.close_with_window(window, cx));
+            return true;
+        }
+
+        match self.screen {
+            AppScreen::Home => false,
+            AppScreen::Settings => {
+                self.set_screen(AppScreen::Home, cx);
+                true
+            }
+            AppScreen::Workspace => self.workspaces.update(cx, |workspaces, cx| {
+                workspaces.handle_system_back(window, cx)
+            }),
+        }
+    }
+
     fn set_screen(&mut self, screen: AppScreen, cx: &mut Context<Self>) {
         let screen_changed = self.screen != screen;
         let should_update_content = should_update_drawer_content(self.screen, screen);
@@ -356,9 +385,10 @@ impl ZedraApp {
 }
 
 impl Render for ZedraApp {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
+            .on_action(cx.listener(Self::handle_system_back_action))
             .font_family(fonts::MONO_FONT_FAMILY)
             .child(self.quick_action_drawer.clone())
     }

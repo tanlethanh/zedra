@@ -365,6 +365,12 @@ impl Workspaces {
         }
     }
 
+    pub fn handle_system_back(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.active().cloned().is_some_and(|workspace| {
+            workspace.update(cx, |ws, cx| ws.handle_system_back(window, cx))
+        })
+    }
+
     pub fn remove_by_endpoint_addr(&mut self, endpoint_addr: &str, cx: &mut Context<Self>) {
         if let Some(index) = self
             .entries

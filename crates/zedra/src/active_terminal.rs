@@ -1,7 +1,7 @@
 /// Active terminal input routing.
 ///
-/// The iOS keyboard accessory bar sends key input via a C FFI callback
-/// (`zedra_ios_send_key_input`) without any GPUI context. This module
+/// Native keyboard accessory bars send key input via platform FFI callbacks
+/// without any GPUI context. This module
 /// holds a single process-scoped sender for the active terminal. Terminal
 /// activation and reconnect attach both refresh this slot, so native input
 /// reads the current channel instead of a callback that captured an older one.
@@ -63,6 +63,22 @@ pub fn send_to_active(data: Vec<u8>) -> bool {
             false
         }
     }
+}
+
+/// Map a native accessory key name and send it to the active terminal.
+pub fn send_named_key(key_name: &str) -> bool {
+    let bytes: &[u8] = match key_name {
+        "escape" => b"\x1b",
+        "tab" => b"\x09",
+        "left" => b"\x1b[D",
+        "down" => b"\x1b[B",
+        "up" => b"\x1b[A",
+        "right" => b"\x1b[C",
+        "enter" => b"\r",
+        "shift_enter" => b"\n",
+        _ => return false,
+    };
+    send_to_active(bytes.to_vec())
 }
 
 #[cfg(test)]

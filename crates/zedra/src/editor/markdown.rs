@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use crate::editor::merge_highlights;
 use crate::fonts;
-use crate::native_presentation;
 use crate::platform_bridge;
 use crate::theme;
 use crate::workspace_action::AddSelectionToChat;
@@ -33,7 +32,6 @@ pub const MARKDOWN_SELECTION_AREA_ID: &str = "markdown-preview-selection";
 pub struct MarkdownView {
     document: MarkdownDocument,
     list_state: ListState,
-    track_sheet_scroll_boundary: bool,
     focus_handle: Option<FocusHandle>,
 }
 
@@ -49,18 +47,8 @@ impl MarkdownView {
         Self {
             document,
             list_state,
-            track_sheet_scroll_boundary: false,
             focus_handle: None,
         }
-    }
-
-    pub fn new_for_sheet(source: impl Into<SharedString>) -> Self {
-        let mut this = Self::new(source);
-        this.track_sheet_scroll_boundary = true;
-        this.list_state.set_scroll_handler(|event, _window, _cx| {
-            native_presentation::set_sheet_content_at_top(!event.is_scrolled);
-        });
-        this
     }
 
     pub fn set_source(&mut self, source: impl Into<SharedString>) {
@@ -70,6 +58,11 @@ impl MarkdownView {
 
     pub fn line_range_for_selection(&self, range_utf16: Range<usize>) -> Option<(u32, u32)> {
         self.document.line_range_for_selection(range_utf16)
+    }
+
+    pub fn is_scrolled_to_top(&self) -> bool {
+        let scroll_top = self.list_state.logical_scroll_top();
+        scroll_top.item_ix == 0 && scroll_top.offset_in_item <= px(0.5)
     }
 
     pub(crate) fn set_parsed_source(&mut self, parsed: ParsedMarkdownSource) {
@@ -239,10 +232,6 @@ impl InlineRenderBuffer {
 
 impl Render for MarkdownView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        if self.track_sheet_scroll_boundary {
-            update_sheet_scroll_boundary(&self.list_state);
-        }
-
         let blocks = Arc::clone(&self.document.blocks);
         let block_count = blocks.len();
         let bottom_inset = f32::max(
@@ -298,12 +287,6 @@ impl Render for MarkdownView {
                     .into_any_element(),
             )
     }
-}
-
-fn update_sheet_scroll_boundary(list_state: &ListState) {
-    let scroll_top = list_state.logical_scroll_top();
-    let is_at_top = scroll_top.item_ix == 0 && scroll_top.offset_in_item <= px(0.5);
-    native_presentation::set_sheet_content_at_top(is_at_top);
 }
 
 fn parse_document(source: &str) -> MarkdownDocument {

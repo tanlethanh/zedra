@@ -33,7 +33,7 @@
 4. Run a Release build and open the Home screen
 5. Expected: the settings icon is not visible and the developer Settings screen is not reachable from Home
 
-## 0c. Developer Native Notification
+## 0c. Developer Native Notification (iOS)
 
 1. Run a Debug build and open Settings
 2. Tap `Native Notification` in the Developer section
@@ -49,15 +49,65 @@
 12. Tap `Native Notification` repeatedly
 13. Expected: multiple notifications collect into the same bubble stack and all auto-close after their configured durations by default
 
+## 0c-Android. Native Presentations And Embedded Sheet
+
+1. Run a Debug Android build and open Settings
+2. Tap the developer alert and selection presentation actions
+3. Expected: native Material dialogs appear; the selection dialog shows `First Action`, `Second Action`, `Destructive Action`, and `Cancel` rows with visible row separation, not just the title
+4. Expected: button callbacks fire once, and dismissing the selection reports a dismiss rather than choosing the last item
+5. Tap `Native Notification`
+6. Expected: native notification banners appear near the top safe area, auto-close by default, and tapping the action banner triggers the callback notification
+7. Trigger the text input dialog from an existing call site
+8. Expected: the native text field shows the initial value, `OK` returns the entered value, and `Cancel`/outside dismissal returns no value
+9. Open a terminal file link so the native custom sheet opens
+10. Expected: a Material bottom sheet appears with a grabber when requested and GPUI-rendered preview content inside the embedded sheet surface
+11. From a fresh sheet open, swipe the preview content upward and downward before it reaches top, then drag downward from the top of the preview
+12. Expected: inner content scrolls while not at top; when it is at top, the bottom sheet can take the downward drag for detent/dismiss handoff without preview repaint glitches during the drag or dismissal
+13. Trigger the scroll-to-bottom floating button
+14. Expected: the native floating button appears at the GPUI wrapper bounds and pressing it runs the Rust callback
+15. Trigger dictation preview events if the call site is available
+16. Expected: Android displays the preview overlay and dismiss callback, without attempting iOS-specific dictation stream interpretation
+
+## 0c-Android-Renderer. GPUI Surface Lifecycle
+
+1. Run a Debug Android build on a physical device
+2. Connect via QR and open a terminal
+3. Expected: after returning from the scanner, logcat shows `ZedraApp: window activated`, the pending ticket is processed, and connect succeeds
+4. Type, scroll, and fling terminal output for at least 30 seconds
+5. Expected: scrolling remains smooth and fling momentum does not continue after a drawer drag calls `prevent_default()`
+5a. Slowly drag-scroll the terminal through scrollback a fraction of a row at a time
+5b. Expected: the row entering at the top edge (and leaving at the bottom edge) slides in pixel by pixel; rows do not pop in only once fully visible
+6. Open and close the workspace drawer while nested terminal/editor content is scrollable
+7. Expected: drawer drags do not scroll the inner content, and inner vertical scroll does not move the drawer once the drawer gesture is not claimed
+8. Background the app, wait 5 seconds, then foreground it
+9. Expected: the existing GPUI window resumes without recreating all renderer state, and no surface validation or device-lost crash appears in logcat
+10. Rotate the device to landscape left and landscape right
+11. Expected: the app remains in portrait orientation and the existing workspace/session state stays visible instead of returning to the initial launch view
+12. Expected: the app redraws at full physical surface resolution with `scale_factor = density`, with no fixed 0.75 render scale
+13. On an Android 15 device, confirm content is not obscured by the status bar, gesture navigation handle, 3-button navigation bar, or display cutout
+14. Confirm outlined buttons, cards, and input borders are visible even when their background is transparent
+15. In the terminal, render `✔ ✘ ⚠ ⏺ ⏹ ⏸` and a real emoji such as `😀`
+16. Expected: terminal/UI symbols render as monochrome symbol glyphs, while the real emoji renders through Android color emoji fallback before and after attempting rotation
+
+## 0c-Android-AppIds. Debug And Release Application IDs
+
+1. Run `./scripts/run-android.sh --target arm64-v8a`
+2. Expected: Android installs and launches the debug app id `dev.zedra.app.debug` with the launcher label `Zedra Dev`
+3. Expected: the launcher, app info, and recents icons show the black Zedra lightning icon instead of the default Android robot, including on round-icon launchers
+4. Expected: startup logcat has no `getAppVersion` / `getAppBuildNumber` JavaException and no GPUI atlas panic during the first surface draw
+5. Confirm Android release signing properties are present in global Gradle config: `ZEDRA_KEYSTORE`, `ZEDRA_KEYSTORE_ALIAS`, and `ZEDRA_KEYSTORE_PASSWORD`
+6. Run `./scripts/run-android.sh --release --target arm64-v8a`
+7. Expected: Android installs and launches the release app id `dev.zedra.app` with the normal app label, and it can coexist with the debug build
+
 ## 0d. Firebase GPUI Screen Views
 
-1. Run an iOS build with Firebase Analytics enabled and open Firebase DebugView or a build with `debug-telemetry`
+1. Run an iOS build with Firebase Analytics enabled, or add `android/google-services.json` with the `dev.zedra.app` client and run `./scripts/run-android.sh --release --target arm64-v8a`
 2. Open Home, Settings, Quick Actions, then connect to a workspace
 3. Open the workspace drawer and switch through Files, Documents, Git Diff, Terminals, and Session
 4. Open a non-markdown file, a markdown file, a git diff, and a terminal as the main workspace view
 5. Tap terminal file links for both a source file and a markdown file so the native custom sheet opens
 6. Expected: manual `screen_view` events include `screen_name` and `screen_class` for `Home`, `Settings`, `Quick Actions`, `Workspace Connecting`, `Workspace Editor`, `Workspace Markdown`, `Workspace Git Diff`, `Workspace Terminal`, each drawer tab, `Custom Sheet Editor`, and `Custom Sheet Markdown`
-7. Expected: native automatic rows such as `UIViewController`, `CustomSheetViewController`, `UIAlertController`, and `ZedraQRScannerVC` are still present because native Firebase screen reporting remains enabled
+7. Expected: native automatic rows such as `UIViewController`, `CustomSheetViewController`, `UIAlertController`, and `ZedraQRScannerVC` on iOS or Android activity rows on Android are still present because native Firebase screen reporting remains enabled
 
 ## 0e. Developer Native Selection
 
@@ -85,6 +135,21 @@
 12. Expected: the connecting view closes and the selected workspace content is visible
 13. Expected: file explorer root entries and git status are already loaded without waiting for the first drawer open to trigger them
 14. Navigate to terminal — verify PTY works (shell prompt, keystrokes echo)
+
+## 1a-Android. System Back Navigation
+
+1. On Android, connect to a workspace and open Quick Actions from the workspace header
+2. Press the system Back button or gesture
+3. Expected: Quick Actions closes and the app remains on the workspace
+4. Open Settings from Home, then press system Back
+5. Expected: Settings returns to Home
+6. Connect to a workspace, open the workspace drawer, then press system Back
+7. Expected: the workspace drawer closes
+8. Open the connecting overlay from the Session tab, then press system Back
+9. Expected: the connecting overlay closes and the workspace content remains visible
+10. Open a terminal, then a file, then a git diff, then reopen the same terminal
+11. Press system Back repeatedly
+12. Expected: Back visits the previous distinct main content views in order, without duplicate entries for the reopened terminal
 
 ## 1a. Host Info Subscription
 
@@ -428,6 +493,24 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 32. Expected: the prompt does not drift downward into unbounded empty space, and the scroll-to-bottom button does not appear
 33. With the keyboard still visible and enough scrollback to reach history top, drag upward until scrolling stops, then keep dragging slightly
 34. Expected: the oldest scrollback rows can be revealed and are not clipped above the terminal viewport
+
+## 11-Android. Terminal Keyboard And IME
+
+1. Connect to a session on an Android device and open the terminal view
+2. Tap a non-hyperlink area of the terminal once
+3. Expected: the terminal becomes focused, the software keyboard appears, and terminal input works
+4. Type plain text, press backspace, press enter, and type another command
+5. Expected: committed text, delete, and enter reach the PTY exactly once without opening the dictation preview
+6. Use an IME that composes text, such as Vietnamese Telex or Japanese, type a short composition, and accept it
+7. Expected: composing text updates without duplicating committed characters, and the accepted text reaches the PTY once
+8. With the keyboard visible, tap `Esc`, `Tab`, `Enter`, and each arrow in the accessory bar
+9. Expected: each accessory key reaches the PTY exactly once
+10. Press and hold each accessory arrow, then release it
+11. Expected: the corresponding arrow input repeats continuously while held and stops immediately on release
+12. Dismiss the keyboard or background the app while holding an accessory arrow
+13. Expected: repeat stops and does not resume when the keyboard or app returns
+14. Tap the already-focused terminal while the keyboard is visible
+15. Expected: the software keyboard dismisses and the next terminal tap reopens it
 
 ## 11a. Terminal Scroll To Bottom Native Button On iOS
 

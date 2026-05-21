@@ -561,6 +561,7 @@ impl Render for WorkspaceTerminal {
                             });
                         },
                     )
+                    .icon_size(22.0)
                     .absolute()
                     .right(px(24.0))
                     .bottom(px(24.0 + bottom_offset))
