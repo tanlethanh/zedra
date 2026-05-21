@@ -367,8 +367,10 @@ impl TerminalElement {
             };
             let line = first_cell.point.line.0 + display_offset;
 
-            // Skip cells outside the visible grid (stale circular buffer data)
-            if line < 0 || line >= grid_rows as i32 {
+            // Skip cells outside the visible grid (stale circular buffer data).
+            // One overscan row each side (`-1` and `grid_rows`) is kept so a
+            // partially-revealed row at the edge slides in during smooth scroll.
+            if line < -1 || line > grid_rows as i32 {
                 continue;
             }
 

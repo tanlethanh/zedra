@@ -225,6 +225,13 @@
 5. Repeat with a non-alt AI CLI session such as `claude`, `codex`, or a `/zedra-start` resumed session
 6. Expected: resumed output uses the current device width without stale wrapping or dumped resize artifacts
 
+## 3c. Terminal Smooth Scroll Edge Rendering
+
+1. Connect via QR and open a terminal with enough output to fill the scrollback
+2. Slowly drag-scroll the terminal through scrollback a fraction of a row at a time
+3. Expected: the row entering at the top edge (and the row leaving at the bottom edge) slides in pixel by pixel
+4. Expected: rows do not pop in only once fully visible, and the edge gap never shows a blank partial row
+
 ## 4. Reconnect After Host Restart
 
 1. Connect via QR, note session ID
