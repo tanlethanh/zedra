@@ -131,6 +131,17 @@ impl EditorView {
             .borrow()
             .base_handle
             .set_offset(point(px(0.0), px(0.0)));
+
+        let line_count = self.buffer.line_count();
+        let target_index = match initial_line {
+            Some(line) if line > 0 => {
+                // initial_line is 1-based; clamp to last line index
+                ((line as usize) - 1).min(line_count.saturating_sub(1))
+            }
+            _ => 0,
+        };
+        self.scroll_handle
+            .scroll_to_item(target_index, ScrollStrategy::Top);
     }
 
     pub fn apply_parsed_syntax(&mut self, parsed: ParsedEditorSyntax) {
