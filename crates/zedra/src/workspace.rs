@@ -956,7 +956,9 @@ impl Workspace {
             return;
         };
 
-        if self.session_state.read(cx).snapshot.register_ms.is_some() {
+        // Ticket is only needed for initial registration. Once we have a session_id
+        // the ticket has already been consumed on the host and must not be reused.
+        if request.session_id.is_some() {
             request.ticket = None;
         }
 
