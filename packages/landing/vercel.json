@@ -23,11 +23,6 @@
       "source": "/codex.sh",
       "destination": "https://raw.githubusercontent.com/tanlethanh/zedra/main/scripts/codex.sh",
       "statusCode": 302
-    },
-    {
-      "source": "/gemini.sh",
-      "destination": "https://raw.githubusercontent.com/tanlethanh/zedra/main/scripts/gemini.sh",
-      "statusCode": 302
     }
   ]
 }
