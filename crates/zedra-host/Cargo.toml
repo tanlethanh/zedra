@@ -72,7 +72,7 @@ anyhow.workspace = true
 
 # P2P networking
 iroh.workspace = true
-iroh-relay.workspace = true
+iroh-relay = { workspace = true, features = ["server"] }
 
 # RPC framework
 irpc.workspace = true
@@ -89,6 +89,7 @@ zedra-telemetry.workspace = true
 tempfile = "3"
 serde_json.workspace = true
 iroh = { workspace = true, features = ["test-utils"] }
+iroh-relay = { workspace = true, features = ["test-utils"] }
 irpc.workspace = true
 irpc-iroh.workspace = true
 rand = "0.8"

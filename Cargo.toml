@@ -43,7 +43,7 @@ rand = "0.8"
 
 # P2P networking (iroh)
 iroh = "0.96"
-iroh-relay = { version = "0.96", features = ["server", "test-utils"] }
+iroh-relay = "0.96"
 
 # RPC framework (irpc)
 irpc = { version = "0.12", features = ["derive", "rpc"] }

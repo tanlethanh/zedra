@@ -80,6 +80,26 @@ find_output() {
     find "$dir" -name "$pattern" -type f 2>/dev/null | sort | head -1
 }
 
+format_size() {
+    local path="$1"
+    local bytes
+    bytes="$(wc -c < "$path" | tr -d '[:space:]')"
+    awk -v bytes="$bytes" 'BEGIN {
+        split("B KiB MiB GiB", units, " ")
+        value = bytes
+        unit = 1
+        while (value >= 1024 && unit < 4) {
+            value /= 1024
+            unit += 1
+        }
+        if (unit == 1) {
+            printf "%d %s", value, units[unit]
+        } else {
+            printf "%.1f %s", value, units[unit]
+        }
+    }'
+}
+
 echo "==> Building Android Rust library ($BUILD_TYPE)..."
 if [ "${#RUST_FLAGS[@]}" -gt 0 ]; then
     ./scripts/build-android.sh "${RUST_FLAGS[@]}"
@@ -106,5 +126,5 @@ if [ -z "$AAB_PATH" ]; then
     exit 1
 fi
 
-echo "==> APK: $APK_PATH"
-echo "==> AAB: $AAB_PATH"
+echo "==> APK: $APK_PATH ($(format_size "$APK_PATH"))"
+echo "==> AAB: $AAB_PATH ($(format_size "$AAB_PATH"))"
