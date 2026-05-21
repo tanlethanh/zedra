@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.util.Log
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
+import android.view.KeyEvent
 import android.view.View
 import android.widget.FrameLayout
 import androidx.appcompat.app.AppCompatActivity
@@ -116,6 +117,18 @@ class MainActivity : AppCompatActivity() {
         nativeDeeplinkReceived(uri.toString())
     }
 
+    // dispatchKeyEvent runs before the view hierarchy, so it intercepts KEYCODE_BACK before
+    // GpuiSurfaceView.onKeyDown() can consume it. This covers hardware back buttons and MIUI's
+    // gesture-nav implementation which sends KEYCODE_BACK as a key event (source=SOURCE_KEYBOARD).
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
+            if (nativeSystemBackPressed()) {
+                return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     private fun installKeyboardAccessoryInsets() {
         ViewCompat.setOnApplyWindowInsetsListener(rootView) { _, insets ->
             val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
@@ -188,6 +201,8 @@ class MainActivity : AppCompatActivity() {
         @JvmStatic external fun nativeSheetContentIsAtTop(): Boolean
 
         @JvmStatic external fun nativeKeyboardAccessoryKey(key: String)
+
+        @JvmStatic external fun nativeSystemBackPressed(): Boolean
 
         // ===== Rust → Java callbacks =====
 

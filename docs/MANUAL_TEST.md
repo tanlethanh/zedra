@@ -75,6 +75,8 @@
 3. Expected: after returning from the scanner, logcat shows `ZedraApp: window activated`, the pending ticket is processed, and connect succeeds
 4. Type, scroll, and fling terminal output for at least 30 seconds
 5. Expected: scrolling remains smooth and fling momentum does not continue after a drawer drag calls `prevent_default()`
+5a. Slowly drag-scroll the terminal through scrollback a fraction of a row at a time
+5b. Expected: the row entering at the top edge (and leaving at the bottom edge) slides in pixel by pixel; rows do not pop in only once fully visible
 6. Open and close the workspace drawer while nested terminal/editor content is scrollable
 7. Expected: drawer drags do not scroll the inner content, and inner vertical scroll does not move the drawer once the drawer gesture is not claimed
 8. Background the app, wait 5 seconds, then foreground it
@@ -133,6 +135,21 @@
 12. Expected: the connecting view closes and the selected workspace content is visible
 13. Expected: file explorer root entries and git status are already loaded without waiting for the first drawer open to trigger them
 14. Navigate to terminal — verify PTY works (shell prompt, keystrokes echo)
+
+## 1a-Android. System Back Navigation
+
+1. On Android, connect to a workspace and open Quick Actions from the workspace header
+2. Press the system Back button or gesture
+3. Expected: Quick Actions closes and the app remains on the workspace
+4. Open Settings from Home, then press system Back
+5. Expected: Settings returns to Home
+6. Connect to a workspace, open the workspace drawer, then press system Back
+7. Expected: the workspace drawer closes
+8. Open the connecting overlay from the Session tab, then press system Back
+9. Expected: the connecting overlay closes and the workspace content remains visible
+10. Open a terminal, then a file, then a git diff, then reopen the same terminal
+11. Press system Back repeatedly
+12. Expected: Back visits the previous distinct main content views in order, without duplicate entries for the reopened terminal
 
 ## 1a. Host Info Subscription
 

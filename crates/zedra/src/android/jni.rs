@@ -440,6 +440,14 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeKeyboardAccessoryKe
     crate::active_terminal::send_named_key(&key_name);
 }
 
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeSystemBackPressed(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jboolean {
+    crate::android::entry::handle_system_back() as jboolean
+}
+
 fn dispatch_deeplink(url: String) {
     tracing::info!(url = &url[..url.len().min(80)], "jni: deeplink");
     match crate::deeplink::parse(&url) {

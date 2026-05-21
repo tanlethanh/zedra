@@ -28,6 +28,7 @@ use crate::{ZedraAssets, app, install_panic_hook, platform_bridge};
 thread_local! {
     /// Kept alive so the GPUI runtime survives across Choreographer ticks.
     static ANDROID_APP_CELL: RefCell<Option<Rc<AppCell>>> = const { RefCell::new(None) };
+    static ANDROID_WINDOW: RefCell<Option<AnyWindowHandle>> = const { RefCell::new(None) };
 }
 
 /// JNI entry point invoked from `MainActivity.zedraLaunchGpui`.
@@ -74,8 +75,11 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_zedraLaunchGpui(
             ..Default::default()
         };
 
-        if let Err(error) = app::open_zedra_window(cx, window_options) {
-            tracing::error!("Zedra Android: open_zedra_window failed: {error:?}");
+        match app::open_zedra_window(cx, window_options) {
+            Ok(handle) => {
+                ANDROID_WINDOW.with(|window| *window.borrow_mut() = Some(handle));
+            }
+            Err(error) => tracing::error!("Zedra Android: open_zedra_window failed: {error:?}"),
         }
     }));
 
@@ -85,4 +89,22 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_zedraLaunchGpui(
 /// Returns the root `AppCell` if `zedra_launch_gpui` has run on this thread.
 pub(crate) fn app_cell() -> Option<Rc<AppCell>> {
     ANDROID_APP_CELL.with(|cell| cell.borrow().clone())
+}
+
+pub(crate) fn handle_system_back() -> bool {
+    let Some(app_cell) = app_cell() else {
+        return false;
+    };
+    let Some(any_window) = ANDROID_WINDOW.with(|window| *window.borrow()) else {
+        return false;
+    };
+    let Some(window) = any_window.downcast::<app::ZedraApp>() else {
+        return false;
+    };
+
+    let mut app = app_cell.borrow_mut();
+    let cx: &mut App = &mut app;
+    window
+        .update(cx, |view, window, cx| view.handle_system_back(window, cx))
+        .unwrap_or(false)
 }

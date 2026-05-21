@@ -1034,8 +1034,8 @@ impl Workspace {
 
     fn activate_existing_terminal(&mut self, id: String, cx: &mut Context<Self>) {
         self.drawer_host.update(cx, |host, cx| host.close(cx));
-        if let Some(terminal_entity) = self.terminal_by_id(&id, cx) {
-            self.activate_terminal(id, terminal_entity, cx);
+        if self.terminal_by_id(&id, cx).is_some() {
+            self.navigate_to(WorkspaceMainView::Terminal { id }, cx);
         } else {
             warn!("requested uninitialized terminal {}", id);
         }
@@ -1051,6 +1051,24 @@ impl Workspace {
 
     pub fn close_terminal_from_quick_action(&mut self, id: String, _cx: &mut Context<Self>) {
         self.request_terminal_delete_confirmation(id);
+    }
+
+    pub fn handle_system_back(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.drawer_host.read(cx).is_open() {
+            self.drawer_host
+                .update(cx, |host, cx| host.close_with_window(window, cx));
+            return true;
+        }
+
+        if self.content.read(cx).is_showing_connecting() {
+            self.content.update(cx, |content, cx| {
+                content.hide_connecting_view(cx);
+            });
+            self.record_current_view(cx);
+            return true;
+        }
+
+        self.navigate_back(cx)
     }
 
     // ─── Action Handlers ─────────────────────────────────────────────────────
@@ -1170,21 +1188,101 @@ impl Workspace {
     }
 
     fn open_file_in_editor(&mut self, path: String, cx: &mut Context<Self>) {
-        self.workspace_state.update(cx, |state, cx| {
-            state.set_active_main_view(WorkspaceMainView::File { path: path.clone() }, cx);
-        });
-        self.editor.update(cx, |e, cx| {
-            e.open_file(path.clone(), cx);
-        });
+        self.navigate_to(WorkspaceMainView::File { path }, cx);
+    }
 
-        let editor = self.editor.clone();
-        let content_path = path.clone();
-        self.content.update(cx, move |c, cx| {
-            c.set_file_subtitle(content_path.clone(), cx);
-            c.set_main_view(editor.into(), cx);
-            c.hide_connecting_view(cx);
+    /// Forward navigation: push route onto the nav stack and apply the view.
+    fn navigate_to(&mut self, route: WorkspaceMainView, cx: &mut Context<Self>) {
+        // Guard: entity must exist before mutating state to keep stack ↔ active_main_view in sync.
+        if let WorkspaceMainView::Terminal { ref id } = route {
+            if self.terminal_by_id(id, cx).is_none() {
+                warn!(terminal_id = id, "navigate_to: terminal entity missing, skipping");
+                return;
+            }
+        }
+        let prev_terminal_id = self.workspace_state.read(cx).active_terminal_id.clone();
+        self.workspace_state.update(cx, |state, cx| {
+            state.navigate(route.clone(), cx);
         });
-        view_telemetry::record(view_telemetry::workspace_file(&path));
+        self.apply_route(route, prev_terminal_id, cx);
+    }
+
+    /// Back navigation: pop the nav stack and apply the revealed route. Returns false if
+    /// already at the bottom of the stack.
+    fn navigate_back(&mut self, cx: &mut Context<Self>) -> bool {
+        let prev_terminal_id = self.workspace_state.read(cx).active_terminal_id.clone();
+        let Some(route) = self.workspace_state.update(cx, |state, cx| state.go_back(cx)) else {
+            return false;
+        };
+        self.apply_route(route, prev_terminal_id, cx);
+        true
+    }
+
+    /// Apply view effects for the given route. State (nav stack + active_main_view +
+    /// active_terminal_id) must already be set before calling this. `prev_terminal_id` is
+    /// the active_terminal_id captured before the state update, used to deactivate the
+    /// previous terminal when switching.
+    fn apply_route(
+        &mut self,
+        route: WorkspaceMainView,
+        prev_terminal_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        match route {
+            WorkspaceMainView::Default => {
+                let editor = self.editor.clone();
+                self.content.update(cx, |c, cx| {
+                    c.clear_subtitle(cx);
+                    c.set_main_view(editor.into(), cx);
+                    c.hide_connecting_view(cx);
+                });
+            }
+            WorkspaceMainView::File { path } => {
+                self.editor.update(cx, |e, cx| {
+                    e.open_file(path.clone(), cx);
+                });
+                let editor = self.editor.clone();
+                let subtitle = path.clone();
+                self.content.update(cx, move |c, cx| {
+                    c.set_file_subtitle(subtitle.clone(), cx);
+                    c.set_main_view(editor.into(), cx);
+                    c.hide_connecting_view(cx);
+                });
+                view_telemetry::record(view_telemetry::workspace_file(&path));
+            }
+            WorkspaceMainView::GitDiff { path, section } => {
+                let git_section = section_from_u8(section);
+                self.gitdiff.update(cx, |g, cx| {
+                    g.open_diff(path, git_section, cx);
+                });
+                let gitdiff = self.gitdiff.clone();
+                self.content.update(cx, move |c, cx| {
+                    c.set_main_view(gitdiff.into(), cx);
+                    c.hide_connecting_view(cx);
+                });
+                view_telemetry::record(view_telemetry::WORKSPACE_GIT_DIFF);
+            }
+            WorkspaceMainView::NoActiveTerminal => {
+                self.content.update(cx, |c, cx| {
+                    c.set_no_active_terminal_view(cx);
+                    c.hide_connecting_view(cx);
+                });
+                view_telemetry::record(view_telemetry::WORKSPACE_NO_ACTIVE_TERMINAL);
+            }
+            WorkspaceMainView::Terminal { id } => {
+                if let Some(entity) = self.terminal_by_id(&id, cx) {
+                    self.switch_terminal(id, entity, prev_terminal_id, cx);
+                } else {
+                    warn!(terminal_id = id, "navigate target terminal entity missing, falling back to default");
+                    // navigate(Default) keeps stack.active() == active_main_view. The stale
+                    // Terminal entry (if any) will be pruned by prune_stale_terminals.
+                    self.workspace_state.update(cx, |state, cx| {
+                        state.navigate(WorkspaceMainView::Default, cx);
+                    });
+                    self.apply_route(WorkspaceMainView::Default, None, cx);
+                }
+            }
+        }
     }
 
     fn handle_add_selection_to_chat(
@@ -1260,27 +1358,15 @@ impl Workspace {
         self.drawer_host
             .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
 
-        let section = section_from_u8(action.section);
-        let active_section = section_to_u8(section);
-        self.workspace_state.update(cx, |state, cx| {
-            state.set_active_main_view(
-                WorkspaceMainView::GitDiff {
-                    path: action.path.clone(),
-                    section: active_section,
-                },
-                cx,
-            );
-        });
-        self.gitdiff.update(cx, |g, cx| {
-            g.open_diff(action.path.clone(), section, cx);
-        });
-
-        let gitdiff = self.gitdiff.clone();
-        self.content.update(cx, move |c, cx| {
-            c.set_main_view(gitdiff.into(), cx);
-            c.hide_connecting_view(cx);
-        });
-        view_telemetry::record(view_telemetry::WORKSPACE_GIT_DIFF);
+        // Round-trip through section_from_u8/section_to_u8 to canonicalise the section value.
+        let section = section_to_u8(section_from_u8(action.section));
+        self.navigate_to(
+            WorkspaceMainView::GitDiff {
+                path: action.path.clone(),
+                section,
+            },
+            cx,
+        );
     }
 
     fn handle_git_stage(
@@ -1475,7 +1561,7 @@ impl Workspace {
                     });
                 });
 
-                ws.activate_terminal(terminal_id, workspace_terminal.into(), cx);
+                ws.navigate_to(WorkspaceMainView::Terminal { id: terminal_id }, cx);
                 let terminal_count = ws.workspace_state.read(cx).terminal_ids.len();
                 zedra_telemetry::send(zedra_telemetry::Event::TerminalOpened {
                     source: telemetry_source,
@@ -1497,12 +1583,11 @@ impl Workspace {
             .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
 
         let id = &action.id;
-        let terminal_entity = self.terminal_by_id(id, cx).unwrap_or_else(|| {
+        if self.terminal_by_id(id, cx).is_none() {
             info!("terminal not yet tracked locally, creating view for {}", id);
-            self.create_terminal_entity(id.clone(), window, cx)
-        });
-
-        self.activate_terminal(id.clone(), terminal_entity, cx);
+            self.create_terminal_entity(id.clone(), window, cx);
+        }
+        self.navigate_to(WorkspaceMainView::Terminal { id: id.clone() }, cx);
     }
 
     fn handle_close_terminal(
@@ -1517,33 +1602,24 @@ impl Workspace {
         self.request_terminal_delete_confirmation(action.id.clone());
     }
 
-    fn activate_terminal(
+    /// Terminal-specific view effects: deactivate the previous terminal and swap the content
+    /// view. All state (nav stack, active_main_view, active_terminal_id, TerminalOpened event)
+    /// is owned by state.navigate / state.go_back before this is called.
+    fn switch_terminal(
         &mut self,
         id: String,
-        terminal_entity: Entity<WorkspaceTerminal>,
+        entity: Entity<WorkspaceTerminal>,
+        prev_terminal_id: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        let previous_active_id = self.workspace_state.read(cx).active_terminal_id.clone();
-        if previous_active_id.as_deref() != Some(id.as_str()) {
-            if let Some(previous_terminal) =
-                previous_active_id.and_then(|active_id| self.terminal_by_id(&active_id, cx))
-            {
-                previous_terminal.update(cx, |terminal, cx| {
-                    terminal.deactivate(cx);
-                });
+        if prev_terminal_id.as_deref() != Some(id.as_str()) {
+            if let Some(prev) = prev_terminal_id.and_then(|pid| self.terminal_by_id(&pid, cx)) {
+                prev.update(cx, |t, cx| t.deactivate(cx));
             }
         }
-
-        let subtitle_id = id.clone();
-        self.workspace_state.update(cx, |state, cx| {
-            state.active_terminal_id = Some(id.clone());
-            state.set_active_main_view(WorkspaceMainView::Terminal { id: id.clone() }, cx);
-            cx.emit(WorkspaceStateEvent::TerminalOpened { id });
-            cx.notify();
-        });
         self.content.update(cx, |c, cx| {
-            c.set_terminal_subtitle(subtitle_id, cx);
-            c.set_main_view(terminal_entity.into(), cx);
+            c.set_terminal_subtitle(id, cx);
+            c.set_main_view(entity.into(), cx);
             c.hide_connecting_view(cx);
         });
         view_telemetry::record(view_telemetry::WORKSPACE_TERMINAL);
@@ -1563,6 +1639,7 @@ impl Workspace {
         let replacement_terminal_id = was_active_main_terminal
             .then(|| replacement_terminal_id_after_close(&id, &terminal_ids_before_close))
             .flatten();
+        let has_replacement_terminal = replacement_terminal_id.is_some();
 
         if let Some(terminal) = self.terminal_by_id(&id, cx) {
             terminal.update(cx, |terminal, cx| {
@@ -1575,34 +1652,23 @@ impl Workspace {
 
         self.workspace_state.update(cx, |state, cx| {
             state.terminal_ids = terminal_ids_after_close(&id, &state.terminal_ids);
+            state
+                .main_view_stack
+                .prune_stale_terminals(&state.terminal_ids);
             if was_active_terminal || state.terminal_ids.is_empty() {
                 state.active_terminal_id = None;
                 active_terminal::clear_active_input();
             }
-            if was_active_main_terminal {
-                state.set_active_main_view(WorkspaceMainView::NoActiveTerminal, cx);
+            if was_active_main_terminal && !has_replacement_terminal {
+                state.navigate(WorkspaceMainView::NoActiveTerminal, cx);
             }
             cx.notify();
         });
 
         if let Some(replacement_id) = replacement_terminal_id {
-            if let Some(replacement_terminal) = self.terminal_by_id(&replacement_id, cx) {
-                self.activate_terminal(replacement_id, replacement_terminal, cx);
-            } else {
-                warn!(
-                    terminal_id = replacement_id,
-                    "replacement terminal entity missing after close"
-                );
-                self.content.update(cx, |content, cx| {
-                    content.set_no_active_terminal_view(cx);
-                });
-                view_telemetry::record(view_telemetry::WORKSPACE_NO_ACTIVE_TERMINAL);
-            }
+            self.navigate_to(WorkspaceMainView::Terminal { id: replacement_id }, cx);
         } else if was_active_main_terminal {
-            self.content.update(cx, |content, cx| {
-                content.set_no_active_terminal_view(cx);
-            });
-            view_telemetry::record(view_telemetry::WORKSPACE_NO_ACTIVE_TERMINAL);
+            self.apply_route(WorkspaceMainView::NoActiveTerminal, None, cx);
         }
 
         let remaining = self.workspace_state.read(cx).terminal_ids.len();
@@ -1643,18 +1709,17 @@ impl Workspace {
                     active_terminal::clear_active_input();
                 }
                 if active_main_terminal_is_stale {
-                    state.set_active_main_view(WorkspaceMainView::Default, cx);
+                    state
+                        .main_view_stack
+                        .prune_stale_terminals(&state.terminal_ids);
+                    state.navigate(WorkspaceMainView::Default, cx);
                 }
                 cx.notify();
             });
         }
 
         if active_main_terminal_is_stale {
-            let editor = self.editor.clone();
-            self.content.update(cx, |content, cx| {
-                content.clear_subtitle(cx);
-                content.set_main_view(editor.into(), cx);
-            });
+            self.apply_route(WorkspaceMainView::Default, None, cx);
         }
     }
 
