@@ -466,11 +466,10 @@ impl Render for HomeView {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GuideTab {
     MacLinux,
-    Windows,
+    Win,
     Claude,
     Codex,
     OpenCode,
-    Gemini,
 }
 
 struct GuideTabSpec {
@@ -497,8 +496,8 @@ static GUIDE_TABS: &[GuideTabSpec] = &[
         icon_size: 17.0,
     },
     GuideTabSpec {
-        tab: GuideTab::Windows,
-        label: "windows",
+        tab: GuideTab::Win,
+        label: "win",
         icon: "icons/windows.svg",
         icon_size: 17.0,
     },
@@ -519,12 +518,6 @@ static GUIDE_TABS: &[GuideTabSpec] = &[
         label: "opencode",
         icon: "icons/opencode.svg",
         icon_size: 14.5,
-    },
-    GuideTabSpec {
-        tab: GuideTab::Gemini,
-        label: "gemini",
-        icon: "icons/gemini.svg",
-        icon_size: 19.0,
     },
 ];
 
@@ -620,29 +613,7 @@ static OPENCODE_RUN_LINES: &[GuideLine] = &[
     },
 ];
 
-static GEMINI_INSTALL_LINES: &[GuideLine] = &[
-    GuideLine {
-        text: "# Set up Zedra for Gemini",
-        comment: true,
-    },
-    GuideLine {
-        text: "zedra setup gemini",
-        comment: false,
-    },
-];
-
-static GEMINI_RUN_LINES: &[GuideLine] = &[
-    GuideLine {
-        text: "# In Gemini, reload skills and start",
-        comment: true,
-    },
-    GuideLine {
-        text: "/zedra-start",
-        comment: false,
-    },
-];
-
-static WINDOWS_INSTALL_LINES: &[GuideLine] = &[
+static WIN_INSTALL_LINES: &[GuideLine] = &[
     GuideLine {
         text: "# Install Zedra CLI",
         comment: true,
@@ -653,7 +624,7 @@ static WINDOWS_INSTALL_LINES: &[GuideLine] = &[
     },
 ];
 
-static WINDOWS_RUN_LINES: &[GuideLine] = &[
+static WIN_RUN_LINES: &[GuideLine] = &[
     GuideLine {
         text: "# Start Zedra in the working directory",
         comment: true,
@@ -673,12 +644,12 @@ static MAC_LINUX_BLOCKS: &[GuideBlock] = &[
     },
 ];
 
-static WINDOWS_BLOCKS: &[GuideBlock] = &[
+static WIN_BLOCKS: &[GuideBlock] = &[
     GuideBlock {
-        lines: WINDOWS_INSTALL_LINES,
+        lines: WIN_INSTALL_LINES,
     },
     GuideBlock {
-        lines: WINDOWS_RUN_LINES,
+        lines: WIN_RUN_LINES,
     },
 ];
 
@@ -709,23 +680,13 @@ static OPENCODE_BLOCKS: &[GuideBlock] = &[
     },
 ];
 
-static GEMINI_BLOCKS: &[GuideBlock] = &[
-    GuideBlock {
-        lines: GEMINI_INSTALL_LINES,
-    },
-    GuideBlock {
-        lines: GEMINI_RUN_LINES,
-    },
-];
-
 fn guide_blocks(tab: GuideTab) -> &'static [GuideBlock] {
     match tab {
         GuideTab::MacLinux => MAC_LINUX_BLOCKS,
-        GuideTab::Windows => WINDOWS_BLOCKS,
+        GuideTab::Win => WIN_BLOCKS,
         GuideTab::Claude => CLAUDE_BLOCKS,
         GuideTab::Codex => CODEX_BLOCKS,
         GuideTab::OpenCode => OPENCODE_BLOCKS,
-        GuideTab::Gemini => GEMINI_BLOCKS,
     }
 }
 

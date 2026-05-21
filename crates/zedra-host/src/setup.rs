@@ -36,11 +36,6 @@ pub enum SetupAgent {
         #[command(flatten)]
         action: SetupActionArgs,
     },
-    /// Manage Zedra skills with Gemini CLI
-    Gemini {
-        #[command(flatten)]
-        action: SetupActionArgs,
-    },
 }
 
 pub async fn run(agent: SetupAgent, assume_yes: bool) -> Result<()> {
@@ -48,7 +43,6 @@ pub async fn run(agent: SetupAgent, assume_yes: bool) -> Result<()> {
         SetupAgent::Claude { action } => setup_claude(action.into()),
         SetupAgent::Codex { action } => setup_codex(action.into(), assume_yes).await,
         SetupAgent::OpenCode { action } => setup_opencode(action.into()).await,
-        SetupAgent::Gemini { action } => setup_gemini(action.into()).await,
     }
 }
 
@@ -193,111 +187,6 @@ fn setup_opencode_remove() -> Result<()> {
     Ok(())
 }
 
-async fn setup_gemini(action: SetupAction) -> Result<()> {
-    require_command("gemini")?;
-    match action {
-        SetupAction::Install => setup_gemini_install().await,
-        SetupAction::Remove => setup_gemini_remove(),
-    }
-}
-
-async fn setup_gemini_install() -> Result<()> {
-    println!("Installing Zedra skills for Gemini:");
-    if !install_gemini_skills_with_cli()? {
-        println!("Falling back to direct skill install.");
-        let skills_dir = gemini_skills_dir()?;
-        install_skills_from_raw("Gemini", &skills_dir, "Installing").await?;
-    }
-
-    println!();
-    println!("Gemini setup complete.");
-    println!("In Gemini CLI, run:");
-    print_suggested_command("/zedra-start");
-    Ok(())
-}
-
-fn install_gemini_skills_with_cli() -> Result<bool> {
-    let skills_dir = gemini_skills_dir()?;
-    let mut failed = Vec::new();
-
-    for skill in SKILL_NAMES {
-        if skills_dir.join(skill).join("SKILL.md").exists() {
-            print_step_label(skill);
-            print_success_detail("already installed");
-            continue;
-        }
-
-        let skill_path = format!("plugins/zedra/skills/{skill}");
-        let args = [
-            "skills",
-            "install",
-            PLUGIN_GIT_URL,
-            "--path",
-            skill_path.as_str(),
-            "--scope",
-            "user",
-            "--consent",
-        ];
-
-        if !run_command_step_status(skill, "gemini", &args, true)? {
-            failed.push(*skill);
-        }
-    }
-
-    if !failed.is_empty() {
-        println!("Gemini CLI install failed for: {}", failed.join(", "));
-    }
-
-    Ok(failed.is_empty())
-}
-
-fn setup_gemini_remove() -> Result<()> {
-    println!("Removing Zedra skills for Gemini:");
-    let skills_dir = gemini_skills_dir()?;
-    let mut removed = uninstall_gemini_skills(&skills_dir)?;
-
-    removed += remove_remaining_skill_files(&skills_dir)?;
-    if removed == 0 {
-        println!("No Zedra skills were installed.");
-    }
-
-    println!();
-    println!("Gemini setup removed.");
-    println!("Restart Gemini CLI or reload skills to apply the change.");
-    Ok(())
-}
-
-fn uninstall_gemini_skills(skills_dir: &Path) -> Result<usize> {
-    let mut removed = 0usize;
-    for skill in SKILL_NAMES {
-        if !skills_dir.join(skill).join("SKILL.md").exists() {
-            continue;
-        }
-
-        if run_optional_command_step(
-            skill,
-            "gemini",
-            &["skills", "uninstall", skill, "--scope", "user"],
-        )? {
-            removed += 1;
-        }
-    }
-    Ok(removed)
-}
-
-fn remove_remaining_skill_files(skills_dir: &Path) -> Result<usize> {
-    let mut removed = 0usize;
-    for skill in SKILL_NAMES {
-        let path = skills_dir.join(skill);
-        if remove_skill_path(&path)? {
-            removed += 1;
-            print_step_label(skill);
-            print_success_detail(&format!("remove {}", path.display()));
-        }
-    }
-    Ok(removed)
-}
-
 fn print_suggested_command(command: &str) {
     utils::println_command(command);
 }
@@ -369,7 +258,7 @@ async fn download_skill(client: &reqwest::Client, url: &str) -> Result<String> {
     let contents = response.text().await?;
 
     if !contents.starts_with("---\n") {
-        bail!("downloaded file is not a Codex/Gemini skill");
+        bail!("downloaded file is not a Codex skill");
     }
 
     Ok(contents)
@@ -433,10 +322,6 @@ fn codex_skills_dir() -> Result<PathBuf> {
 
 fn opencode_skills_dir() -> Result<PathBuf> {
     Ok(home_dir()?.join(".config").join("opencode").join("skills"))
-}
-
-fn gemini_skills_dir() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".gemini").join("skills"))
 }
 
 fn home_dir() -> Result<PathBuf> {
