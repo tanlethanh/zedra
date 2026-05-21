@@ -441,6 +441,34 @@ impl Terminal {
             });
         }
 
+        // Overscan: include one grid row just above and below the viewport so
+        // sub-line smooth scrolling slides real content into the edge gap
+        // instead of popping a whole row in once it is fully visible.
+        // `display_iter` yields grid lines in `[-display_offset, rows-1-display_offset]`.
+        {
+            let grid = self.term.grid();
+            let cols = self.size.columns;
+            let display_offset = content.display_offset as i32;
+            let mut push_row = |line: i32| {
+                let row = &grid[Line(line)];
+                for col in 0..cols {
+                    let column = Column(col);
+                    cells.push(IndexedCell {
+                        point: Point::new(Line(line), column),
+                        cell: row[column].clone(),
+                    });
+                }
+            };
+            let above = -display_offset - 1;
+            if above >= grid.topmost_line().0 {
+                push_row(above);
+            }
+            // The below row only exists within the screen while scrolled up.
+            if display_offset >= 1 {
+                push_row(self.size.rows as i32 - display_offset);
+            }
+        }
+
         let cursor_point = content.cursor.point;
         let cursor_char = self.term.grid()[cursor_point].c;
 
