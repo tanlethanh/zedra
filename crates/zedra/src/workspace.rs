@@ -1196,7 +1196,10 @@ impl Workspace {
         // Guard: entity must exist before mutating state to keep stack ↔ active_main_view in sync.
         if let WorkspaceMainView::Terminal { ref id } = route {
             if self.terminal_by_id(id, cx).is_none() {
-                warn!(terminal_id = id, "navigate_to: terminal entity missing, skipping");
+                warn!(
+                    terminal_id = id,
+                    "navigate_to: terminal entity missing, skipping"
+                );
                 return;
             }
         }
@@ -1211,7 +1214,10 @@ impl Workspace {
     /// already at the bottom of the stack.
     fn navigate_back(&mut self, cx: &mut Context<Self>) -> bool {
         let prev_terminal_id = self.workspace_state.read(cx).active_terminal_id.clone();
-        let Some(route) = self.workspace_state.update(cx, |state, cx| state.go_back(cx)) else {
+        let Some(route) = self
+            .workspace_state
+            .update(cx, |state, cx| state.go_back(cx))
+        else {
             return false;
         };
         self.apply_route(route, prev_terminal_id, cx);
@@ -1273,7 +1279,10 @@ impl Workspace {
                 if let Some(entity) = self.terminal_by_id(&id, cx) {
                     self.switch_terminal(id, entity, prev_terminal_id, cx);
                 } else {
-                    warn!(terminal_id = id, "navigate target terminal entity missing, falling back to default");
+                    warn!(
+                        terminal_id = id,
+                        "navigate target terminal entity missing, falling back to default"
+                    );
                     // navigate(Default) keeps stack.active() == active_main_view. The stale
                     // Terminal entry (if any) will be pruned by prune_stale_terminals.
                     self.workspace_state.update(cx, |state, cx| {

@@ -323,10 +323,9 @@ impl ZedraApp {
                 self.set_screen(AppScreen::Home, cx);
                 true
             }
-            AppScreen::Workspace => {
-                self.workspaces
-                    .update(cx, |workspaces, cx| workspaces.handle_system_back(window, cx))
-            }
+            AppScreen::Workspace => self.workspaces.update(cx, |workspaces, cx| {
+                workspaces.handle_system_back(window, cx)
+            }),
         }
     }
 
