@@ -57,6 +57,7 @@ iroh.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
 rust-embed = { workspace = true, features = ["debug-embed"] }
+chrono.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 gpui_android = { path = "../../vendor/zed/crates/gpui_android" }

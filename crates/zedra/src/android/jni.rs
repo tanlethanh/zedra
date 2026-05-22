@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex, Once};
 use crate::android::sheet;
 use crate::install_panic_hook;
 use crate::platform_bridge::{
-    self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback,
+    self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback, ListPickerItem,
     NativeDictationPreviewOptions, NativeFloatingButtonOptions, NativeNotificationOptions,
 };
 
@@ -607,6 +607,65 @@ pub fn show_selection(id: u32, title: &str, message: &str, buttons: &[AlertButto
         .collect();
     jni_call("show_selection", move || {
         present_buttons("showSelection", id, title, message, labels, styles);
+    });
+}
+
+pub fn show_list_picker(id: u32, title: &str, message: &str, items: &[ListPickerItem]) {
+    let title = title.to_string();
+    let message = message.to_string();
+    let labels: Vec<String> = items.iter().map(|item| item.label.clone()).collect();
+    let subtitles: Vec<String> = items
+        .iter()
+        .map(|item| item.subtitle.clone().unwrap_or_default())
+        .collect();
+    let image_names: Vec<String> = items
+        .iter()
+        .map(|item| item.image_name.clone().unwrap_or_default())
+        .collect();
+    jni_call("show_list_picker", move || {
+        with_main_activity_class("show_list_picker", |env, class| {
+            let title_value = env.new_string(&title).expect("title");
+            let message_value = env.new_string(&message).expect("message");
+            let string_class = env.find_class("java/lang/String").expect("String");
+            let label_array = env
+                .new_object_array(labels.len() as i32, string_class, JObject::null())
+                .expect("labels");
+            for (index, label) in labels.iter().enumerate() {
+                let label_value = env.new_string(label).expect("label");
+                env.set_object_array_element(&label_array, index as i32, label_value)
+                    .expect("set label");
+            }
+            let subtitle_array = env
+                .new_object_array(subtitles.len() as i32, string_class, JObject::null())
+                .expect("subtitles");
+            for (index, subtitle) in subtitles.iter().enumerate() {
+                let subtitle_value = env.new_string(subtitle).expect("subtitle");
+                env.set_object_array_element(&subtitle_array, index as i32, subtitle_value)
+                    .expect("set subtitle");
+            }
+            let image_array = env
+                .new_object_array(image_names.len() as i32, string_class, JObject::null())
+                .expect("images");
+            for (index, image) in image_names.iter().enumerate() {
+                let image_value = env.new_string(image).expect("image");
+                env.set_object_array_element(&image_array, index as i32, image_value)
+                    .expect("set image");
+            }
+            env.call_static_method(
+                class,
+                "showListPicker",
+                "(ILjava/lang/String;Ljava/lang/String;[Ljava/lang/String;[Ljava/lang/String;[Ljava/lang/String;)V",
+                &[
+                    JValue::Int(id as i32),
+                    JValue::Object(&title_value),
+                    JValue::Object(&message_value),
+                    JValue::Object(&label_array),
+                    JValue::Object(&subtitle_array),
+                    JValue::Object(&image_array),
+                ],
+            )
+            .expect("showListPicker");
+        });
     });
 }
 

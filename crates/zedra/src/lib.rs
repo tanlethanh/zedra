@@ -10,6 +10,9 @@ pub mod pending;
 
 // Components
 pub mod agent;
+pub mod agent_manage_view;
+pub mod agent_session_list;
+pub mod agent_session_view;
 pub mod button;
 pub mod docs_tree;
 pub mod editor;

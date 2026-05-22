@@ -227,6 +227,14 @@ extern void ios_present_alert(uint32_t callback_id,
 /**
  * Present a dismissible native action sheet with dynamic items.
  */
+extern void ios_present_list_picker(uint32_t callback_id,
+                                    const char *title,
+                                    const char *message,
+                                    int32_t item_count,
+                                    const char *const *labels,
+                                    const char *const *subtitles,
+                                    const char *const *image_names);
+
 extern void ios_present_selection(uint32_t callback_id,
                                   const char *title,
                                   const char *message,

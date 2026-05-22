@@ -255,6 +255,18 @@ class MainActivity : AppCompatActivity() {
         }
 
         @JvmStatic
+        fun showListPicker(
+            callbackId: Int,
+            title: String?,
+            message: String?,
+            labels: Array<String>,
+            subtitles: Array<String?>,
+            imageNames: Array<String?>,
+        ) {
+            NativePresentations.showListPicker(callbackId, title, message, labels, subtitles, imageNames)
+        }
+
+        @JvmStatic
         fun showTextInput(
             callbackId: Int,
             title: String?,

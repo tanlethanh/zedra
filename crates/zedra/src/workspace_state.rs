@@ -39,6 +39,8 @@ pub enum WorkspaceMainView {
     Terminal {
         id: String,
     },
+    AgentSessions,
+    AgentManage,
     NoActiveTerminal,
 }
 

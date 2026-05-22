@@ -7,7 +7,7 @@ use gpui::{prelude::FluentBuilder as _, *};
 use tokio::sync::{broadcast, mpsc};
 use tracing::*;
 use zedra_rpc::ZedraPairingTicket;
-use zedra_rpc::proto::{HostEvent, SyncSessionResult};
+use zedra_rpc::proto::{HostEvent, ManagedAgentKind, SyncSessionResult};
 use zedra_session::{
     ConnectEvent, ConnectPhase, ConnectSnapshot, ReconnectReason, Session, SessionHandle,
     SessionState, signer::ClientSigner,
@@ -15,10 +15,14 @@ use zedra_session::{
 
 use crate::active_terminal;
 use crate::agent;
+use crate::agent_manage_view::AgentManageView;
+use crate::agent_session_view::AgentSessionView;
 use crate::editor::git_sidebar::GitFileSection;
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
 use crate::placeholder::render_placeholder;
-use crate::platform_bridge::{self, AlertButton, HapticFeedback, status_bar_inset};
+use crate::platform_bridge::{
+    self, AlertButton, HapticFeedback, ListPickerItem, show_list_picker, status_bar_inset,
+};
 use crate::telemetry::view_telemetry;
 use crate::terminal_card::strip_ps1_prefix;
 use crate::terminal_state::TerminalState;
@@ -27,9 +31,10 @@ use crate::transport_badge::ConnectionStatusIndicator;
 use crate::ui::{DrawerEvent, DrawerHost, DrawerSide};
 use crate::workspace_action::{self, GoHome, OpenQuickAction, RequestDisconnect};
 use crate::workspace_action::{
-    AddSelectionToChat, CloseDrawer, CloseTerminal, CreateNewTerminal, GitCommit,
-    GitShowItemActions, GitStage, GitUnstage, HideConnecting, OpenFile, OpenGitDiff, OpenTerminal,
-    RestartConnection, ShowConnecting, ToggleDrawer,
+    AddSelectionToChat, CloseDrawer, CloseTerminal, CreateAgent, CreateNewTerminal, GitCommit,
+    GitShowItemActions, GitStage, GitUnstage, HideConnecting, OpenAgentManage, OpenAgentSessions,
+    OpenFile, OpenGitDiff, OpenTerminal, RestartConnection, ResumeAgentSession, ShowConnecting,
+    SpawnAgentTerminal, ToggleDrawer,
 };
 use crate::workspace_connecting::WorkspaceConnecting;
 use crate::workspace_drawer::WorkspaceDrawer;
@@ -87,6 +92,9 @@ enum PendingWorkspaceAction {
     AddSelectionToChat {
         target: AddToChatTarget,
         input: agent::AddToChat,
+    },
+    SpawnAgentTerminal {
+        launch_cmd: String,
     },
 }
 
@@ -956,9 +964,11 @@ impl Workspace {
             return;
         };
 
-        // Ticket is only needed for initial registration. Once we have a session_id
-        // the ticket has already been consumed on the host and must not be reused.
-        if request.session_id.is_some() {
+        // Drop the one-time pairing ticket once registration has been
+        // attempted: it is consumed host-side and resending it would be
+        // rejected. `register_attempted` (not `register_ms`) is the guard so a
+        // connection that dropped before `RegisterComplete` still clears it.
+        if self.session_state.read(cx).snapshot.register_attempted {
             request.ticket = None;
         }
 
@@ -1291,6 +1301,24 @@ impl Workspace {
                     self.apply_route(WorkspaceMainView::Default, None, cx);
                 }
             }
+            WorkspaceMainView::AgentSessions => {
+                let view = cx.new(|cx| AgentSessionView::new(self.session.handle().clone(), cx));
+                self.content.update(cx, move |content, cx| {
+                    content.set_text_subtitle("Agent sessions", cx);
+                    content.set_main_view(view.into(), cx);
+                    content.hide_connecting_view(cx);
+                });
+                view_telemetry::record(view_telemetry::WORKSPACE_AGENT_SESSIONS);
+            }
+            WorkspaceMainView::AgentManage => {
+                let view = cx.new(|cx| AgentManageView::new(self.session.handle().clone(), cx));
+                self.content.update(cx, move |content, cx| {
+                    content.set_text_subtitle("Manage agents", cx);
+                    content.set_main_view(view.into(), cx);
+                    content.hide_connecting_view(cx);
+                });
+                view_telemetry::record(view_telemetry::WORKSPACE_AGENT_MANAGE);
+            }
         }
     }
 
@@ -1522,16 +1550,105 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.create_new_terminal("user_action", window, cx);
+        self.spawn_terminal("user_action", None, window, cx);
     }
 
-    fn create_new_terminal(
+    fn handle_create_agent(
         &mut self,
-        telemetry_source: &'static str,
+        _action: &CreateAgent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        info!("handle CreateNewTerminal from workspace");
+        info!("handle CreateAgent from workspace");
+        self.drawer_host
+            .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
+
+        let session_handle = self.session.handle().clone();
+        let pending_platform_action = self.pending_platform_action.clone();
+        cx.spawn(async move |workspace, cx| {
+            let agents = match session_handle.agent_installed_list(false).await {
+                Ok(agents) => agents,
+                Err(err) => {
+                    tracing::error!("agent installed list failed: {}", err);
+                    let _ = workspace.update(cx, |_ws, _cx| {
+                        platform_bridge::show_alert(
+                            "Create Agent",
+                            "Failed to load installed agents.",
+                            vec![AlertButton::default("OK")],
+                            |_| {},
+                        );
+                    });
+                    return;
+                }
+            };
+            let available: Vec<_> = agents.into_iter().filter(|agent| agent.available).collect();
+            if available.is_empty() {
+                let _ = workspace.update(cx, |_ws, _cx| {
+                    platform_bridge::show_alert(
+                        "Create Agent",
+                        "No supported agent CLIs are installed on the host.",
+                        vec![AlertButton::default("OK")],
+                        |_| {},
+                    );
+                });
+                return;
+            }
+
+            let picker_items: Vec<ListPickerItem> = available
+                .iter()
+                .map(|agent| ListPickerItem {
+                    label: agent.display_name.clone(),
+                    subtitle: agent.version.clone(),
+                    image_name: Some(agent.icon_name.clone()),
+                })
+                .collect();
+
+            let launch_cmds: Vec<Option<String>> = available
+                .iter()
+                .map(|agent| agent.launch_cmd.clone())
+                .collect();
+
+            let _ = workspace.update(cx, |_, _cx| {
+                show_list_picker(
+                    "Create Agent",
+                    "Choose an installed agent to launch in a new terminal.",
+                    picker_items,
+                    move |selection| {
+                        let Some(index) = selection else {
+                            return;
+                        };
+                        let Some(launch_cmd) = launch_cmds
+                            .get(index)
+                            .and_then(|launch_cmd| launch_cmd.clone())
+                        else {
+                            return;
+                        };
+                        pending_platform_action
+                            .set(PendingWorkspaceAction::SpawnAgentTerminal { launch_cmd });
+                    },
+                );
+            });
+        })
+        .detach();
+    }
+
+    fn handle_spawn_agent_terminal(
+        &mut self,
+        action: &SpawnAgentTerminal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.spawn_terminal("create_agent", Some(action.launch_cmd.clone()), window, cx);
+    }
+
+    fn spawn_terminal(
+        &mut self,
+        telemetry_source: &'static str,
+        launch_cmd: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!(?launch_cmd, "spawn_terminal");
         self.drawer_host
             .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
 
@@ -1541,14 +1658,12 @@ impl Workspace {
         let cols = initial_grid_size.columns;
         let rows = initial_grid_size.rows;
 
-        // Pre-create a workspace terminal entity with a placeholder terminal ID.
-        // This is required due to the terminal view requires `window` to be available from main thread.
         let workspace_terminal =
             self.create_terminal_entity(TERMINAL_PENDING_ID.to_string(), window, cx);
 
         cx.spawn(async move |workspace, cx| {
             let terminal_id = match session_handle
-                .terminal_create(cols as u16, rows as u16)
+                .terminal_create_with_cmd(cols as u16, rows as u16, launch_cmd)
                 .await
             {
                 Ok(id) => id,
@@ -1564,7 +1679,6 @@ impl Workspace {
                 });
 
                 ws.workspace_state.update(cx, |_state, cx| {
-                    // The WorkspaceTerminal will need this subscription to attach the input/output channel.
                     cx.emit(WorkspaceStateEvent::TerminalCreated {
                         id: terminal_id.clone(),
                     });
@@ -1574,6 +1688,128 @@ impl Workspace {
                 let terminal_count = ws.workspace_state.read(cx).terminal_ids.len();
                 zedra_telemetry::send(zedra_telemetry::Event::TerminalOpened {
                     source: telemetry_source,
+                    terminal_count,
+                });
+            });
+        })
+        .detach();
+    }
+
+    fn create_new_terminal(
+        &mut self,
+        telemetry_source: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.spawn_terminal(telemetry_source, None, window, cx);
+    }
+
+    fn handle_open_agent_sessions(
+        &mut self,
+        _action: &OpenAgentSessions,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!("handle OpenAgentSessions from workspace");
+        self.drawer_host
+            .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
+
+        self.workspace_state.update(cx, |state, cx| {
+            state.set_active_main_view(WorkspaceMainView::AgentSessions, cx);
+        });
+        let view = cx.new(|cx| AgentSessionView::new(self.session.handle().clone(), cx));
+        self.content.update(cx, move |content, cx| {
+            content.set_text_subtitle("Agent sessions", cx);
+            content.set_main_view(view.into(), cx);
+            content.hide_connecting_view(cx);
+        });
+        view_telemetry::record(view_telemetry::WORKSPACE_AGENT_SESSIONS);
+    }
+
+    fn handle_open_agent_manage(
+        &mut self,
+        _action: &OpenAgentManage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!("handle OpenAgentManage from workspace");
+        self.drawer_host
+            .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
+
+        self.workspace_state.update(cx, |state, cx| {
+            state.set_active_main_view(WorkspaceMainView::AgentManage, cx);
+        });
+        let view = cx.new(|cx| AgentManageView::new(self.session.handle().clone(), cx));
+        self.content.update(cx, move |content, cx| {
+            content.set_text_subtitle("Manage agents", cx);
+            content.set_main_view(view.into(), cx);
+            content.hide_connecting_view(cx);
+        });
+        view_telemetry::record(view_telemetry::WORKSPACE_AGENT_MANAGE);
+    }
+
+    fn handle_resume_agent_session(
+        &mut self,
+        action: &ResumeAgentSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!(
+            ?action.kind,
+            session_id = %action.session_id,
+            "handle ResumeAgentSession from workspace"
+        );
+        self.resume_agent_session(action.kind, action.session_id.clone(), window, cx);
+    }
+
+    fn resume_agent_session(
+        &mut self,
+        kind: ManagedAgentKind,
+        session_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let session_handle = self.session.handle().clone();
+        let initial_viewport = self.mainview_viewport(window, cx);
+        let initial_grid_size = TerminalView::compute_grid_size(window, initial_viewport);
+        let cols = initial_grid_size.columns;
+        let rows = initial_grid_size.rows;
+        let workspace_terminal =
+            self.create_terminal_entity(TERMINAL_PENDING_ID.to_string(), window, cx);
+
+        cx.spawn(async move |workspace, cx| {
+            let terminal_id = match session_handle
+                .agent_resume_session(kind, session_id, cols as u16, rows as u16)
+                .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::error!(?kind, "agent session resume failed: {}", e);
+                    let _ = workspace.update(cx, |_ws, _cx| {
+                        platform_bridge::show_alert(
+                            "Resume Agent",
+                            "Failed to resume the agent session.",
+                            vec![AlertButton::default("OK")],
+                            |_| {},
+                        );
+                    });
+                    return;
+                }
+            };
+
+            let _ = workspace.update(cx, |ws, cx| {
+                workspace_terminal.update(cx, |terminal, cx| {
+                    terminal.set_terminal_id(terminal_id.clone(), cx);
+                });
+                ws.workspace_state.update(cx, |_state, cx| {
+                    cx.emit(WorkspaceStateEvent::TerminalCreated {
+                        id: terminal_id.clone(),
+                    });
+                });
+                ws.navigate_to(WorkspaceMainView::Terminal { id: terminal_id }, cx);
+                let terminal_count = ws.workspace_state.read(cx).terminal_ids.len();
+                zedra_telemetry::send(zedra_telemetry::Event::TerminalOpened {
+                    source: "resume_agent",
                     terminal_count,
                 });
             });
@@ -1763,6 +1999,14 @@ impl Workspace {
                 self.activate_existing_terminal(target.terminal_id.clone(), cx);
                 self.schedule_add_to_chat_after_activation(target, input, cx);
             }
+            PendingWorkspaceAction::SpawnAgentTerminal { launch_cmd } => {
+                let Some(window) = cx.active_window() else {
+                    return;
+                };
+                let _ = cx.update_window(window, |_, window, cx| {
+                    window.dispatch_action(SpawnAgentTerminal { launch_cmd }.boxed_clone(), cx);
+                });
+            }
         }
     }
 
@@ -1923,6 +2167,11 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_git_item_long_press))
             .on_action(cx.listener(Self::handle_git_commit))
             .on_action(cx.listener(Self::handle_create_new_terminal))
+            .on_action(cx.listener(Self::handle_create_agent))
+            .on_action(cx.listener(Self::handle_spawn_agent_terminal))
+            .on_action(cx.listener(Self::handle_open_agent_sessions))
+            .on_action(cx.listener(Self::handle_open_agent_manage))
+            .on_action(cx.listener(Self::handle_resume_agent_session))
             .on_action(cx.listener(Self::handle_open_terminal))
             .on_action(cx.listener(Self::handle_close_terminal))
             .size_full()
@@ -2363,6 +2612,9 @@ pub struct WorkspaceContent {
 
 enum WorkspaceSubtitle {
     Default,
+    Text {
+        text: SharedString,
+    },
     File {
         path: SharedString,
     },
@@ -2473,6 +2725,11 @@ impl WorkspaceContent {
         cx.notify();
     }
 
+    pub fn set_text_subtitle(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.subtitle = WorkspaceSubtitle::Text { text: text.into() };
+        cx.notify();
+    }
+
     pub fn set_terminal_subtitle(&mut self, id: String, cx: &mut Context<Self>) {
         self.subtitle = WorkspaceSubtitle::Terminal { id };
         cx.notify();
@@ -2518,6 +2775,7 @@ impl WorkspaceContent {
     fn render_subtitle(&self, default_subtitle: &str, cx: &mut Context<Self>) -> AnyElement {
         match &self.subtitle {
             WorkspaceSubtitle::Default => render_subtitle(default_subtitle.to_owned()),
+            WorkspaceSubtitle::Text { text } => render_subtitle(text.clone()),
             WorkspaceSubtitle::File { path } => render_subtitle(path.clone()),
             WorkspaceSubtitle::Terminal { id } => {
                 let meta = self.terminal_state.read(cx).meta(id);

@@ -64,6 +64,8 @@
 
 #define PANEL_ITEM_HEIGHT 28.0
 
+#define DRAWER_EDGE_ZONE 72.0
+
 #define DRAWER_EDGE_ZONE 56.0
 
 #define DRAWER_VELOCITY_THRESHOLD 12.0
@@ -143,6 +145,8 @@ extern void gpui_ios_detach_embedded_view(void *window_ptr);
 bool zedra_ios_check_pending_frame(void);
 
 void zedra_ios_app_will_terminate(void);
+
+bool zedra_ios_system_back(void);
 
 void zedra_ios_native_floating_button_pressed(uint32_t callback_id);
 
@@ -234,6 +238,14 @@ extern void ios_present_selection(uint32_t callback_id,
                                   const char *const *labels,
                                   const int32_t *styles,
                                   const char *const *image_names);
+
+extern void ios_present_list_picker(uint32_t callback_id,
+                                    const char *title,
+                                    const char *message,
+                                    int32_t item_count,
+                                    const char *const *labels,
+                                    const char *const *subtitles,
+                                    const char *const *image_names);
 
 /**
  * Present a native edit menu anchored at a window coordinate.

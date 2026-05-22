@@ -3,7 +3,7 @@
 /// Delegates every call to the corresponding function in `super::jni`.
 use crate::android::jni;
 use crate::platform_bridge::{
-    AlertButton, CustomSheetOptions, HapticFeedback, NativeDictationPreviewOptions,
+    AlertButton, CustomSheetOptions, HapticFeedback, ListPickerItem, NativeDictationPreviewOptions,
     NativeFloatingButtonOptions, NativeNotificationOptions, PlatformBridge,
 };
 
@@ -67,6 +67,10 @@ impl PlatformBridge for AndroidBridge {
 
     fn present_selection(&self, id: u32, title: &str, message: &str, buttons: &[AlertButton]) {
         jni::show_selection(id, title, message, buttons);
+    }
+
+    fn present_list_picker(&self, id: u32, title: &str, message: &str, items: &[ListPickerItem]) {
+        jni::show_list_picker(id, title, message, items);
     }
 
     fn present_custom_sheet(&self, options: &CustomSheetOptions) {

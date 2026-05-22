@@ -1,5 +1,6 @@
 use gpui::*;
 
+use crate::platform_bridge::{self, HapticFeedback};
 use crate::terminal_card::{TerminalCardProps, render_terminal_card};
 use crate::terminal_state::TerminalState;
 use crate::workspace_state::WorkspaceState;
@@ -43,6 +44,45 @@ impl Render for TerminalPanel {
 
         let mut content = div().pt(px(12.0)).flex().flex_col().flex_1();
 
+        content = content.child(
+            div()
+                .mx(px(theme::DRAWER_PADDING))
+                .mb(px(8.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(6.0))
+                .child(toolbar_button(
+                    "terminal-create-agent-btn",
+                    "icons/plus.svg",
+                    "Create agent",
+                    cx,
+                    workspace_action::CreateAgent,
+                ))
+                .child(toolbar_button(
+                    "terminal-create-terminal-btn",
+                    "icons/terminal.svg",
+                    "Create terminal",
+                    cx,
+                    workspace_action::CreateNewTerminal,
+                ))
+                .child(toolbar_button(
+                    "terminal-view-sessions-btn",
+                    "icons/list-tree.svg",
+                    "View sessions",
+                    cx,
+                    workspace_action::OpenAgentSessions,
+                ))
+                .child(toolbar_button(
+                    "terminal-manage-agents-btn",
+                    "icons/settings.svg",
+                    "Manage agents",
+                    cx,
+                    workspace_action::OpenAgentManage,
+                )),
+        );
+
         if !terminals.is_empty() {
             content = content.gap_1();
             for (index, tid, is_active, meta) in terminals {
@@ -83,26 +123,47 @@ impl Render for TerminalPanel {
             }
         }
 
-        content = content.child(
-            div()
-                .id("new-terminal-btn")
-                .mx(px(theme::DRAWER_PADDING))
-                .mt(px(8.0))
-                .px(px(8.0))
-                .py(px(8.0))
-                .cursor_pointer()
-                .on_press(cx.listener(|_this, _event, window, cx| {
-                    window.dispatch_action(workspace_action::CreateNewTerminal.boxed_clone(), cx);
-                }))
-                .child(
-                    div()
-                        .text_color(rgb(theme::TEXT_MUTED))
-                        .text_size(px(theme::FONT_BODY))
-                        .text_center()
-                        .child("+ New Terminal"),
-                ),
-        );
-
         content
     }
+}
+
+fn toolbar_button<A: Action>(
+    id: &'static str,
+    icon: &'static str,
+    label: &'static str,
+    cx: &mut Context<TerminalPanel>,
+    action: A,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex_1()
+        .min_w_0()
+        .px(px(6.0))
+        .py(px(8.0))
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(rgb(theme::BORDER_SUBTLE))
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(4.0))
+        .cursor_pointer()
+        .on_press(cx.listener(move |_this, _event, window, cx| {
+            platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+            window.dispatch_action(action.boxed_clone(), cx);
+        }))
+        .child(
+            svg()
+                .path(icon)
+                .size(px(theme::ICON_SM))
+                .text_color(rgb(theme::TEXT_MUTED)),
+        )
+        .child(
+            div()
+                .text_size(px(10.0))
+                .text_color(rgb(theme::TEXT_MUTED))
+                .text_center()
+                .child(label),
+        )
 }
