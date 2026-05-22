@@ -143,8 +143,8 @@ impl WorkspaceEditor {
                                 return;
                             }
                             this.state = FileState::Loaded;
-                            this.markdown_view.update(cx, |markdown_view, _cx| {
-                                markdown_view.set_parsed_source(parsed);
+                            this.markdown_view.update(cx, |markdown_view, cx| {
+                                markdown_view.set_parsed_source(parsed, cx);
                             });
                             cx.notify();
                         }) {
