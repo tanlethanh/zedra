@@ -3,6 +3,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Always package artifacts from this repo's target/ directory.
+unset CARGO_TARGET_DIR
+
 LIB_NAME="zedra"
 FRAMEWORK_NAME="ZedraFFI"
 
@@ -67,25 +70,57 @@ echo "==> Deployment target: iOS $IPHONEOS_DEPLOYMENT_TARGET"
 # Build the static library explicitly and fail hard on cargo errors.
 # Remove any stale output first so the XCFramework step cannot accidentally
 # package an older libzedra.a from a previous successful build.
+#
+# With crate-type = ["cdylib", "staticlib"], recent Cargo places libzedra.a
+# under deps/ rather than the profile root; resolve either location.
+resolve_staticlib() {
+    local target_triple="$1"
+    local base="target/${target_triple}/${PROFILE_DIR}"
+    if [ -f "${base}/lib${LIB_NAME}.a" ]; then
+        echo "${base}/lib${LIB_NAME}.a"
+        return 0
+    fi
+    if [ -f "${base}/deps/lib${LIB_NAME}.a" ]; then
+        echo "${base}/deps/lib${LIB_NAME}.a"
+        return 0
+    fi
+    return 1
+}
+
+clear_staticlib() {
+    local target_triple="$1"
+    local base="target/${target_triple}/${PROFILE_DIR}"
+    rm -f "${base}/lib${LIB_NAME}.a" "${base}/deps/lib${LIB_NAME}.a"
+}
+
+DEVICE_STATICLIB=""
+SIM_STATICLIB=""
+
+build_ios_staticlib() {
+    local target_triple="$1"
+    clear_staticlib "$target_triple"
+    cargo build --target "$target_triple" $PROFILE $FEATURES -p zedra
+    if ! resolve_staticlib "$target_triple" >/dev/null; then
+        # Recent Cargo may only link cdylib on incremental builds; force staticlib.
+        cargo rustc --target "$target_triple" $PROFILE $FEATURES -p zedra --crate-type staticlib
+    fi
+    resolve_staticlib "$target_triple"
+}
 
 if [ "$BUILD_DEVICE" = true ]; then
     echo "==> Building for iOS device (aarch64-apple-ios)..."
-    rm -f "target/aarch64-apple-ios/${PROFILE_DIR}/lib${LIB_NAME}.a"
-    cargo build --target aarch64-apple-ios $PROFILE $FEATURES -p zedra
-    if [ ! -f "target/aarch64-apple-ios/${PROFILE_DIR}/lib${LIB_NAME}.a" ]; then
+    DEVICE_STATICLIB="$(build_ios_staticlib aarch64-apple-ios)" || {
         echo "ERROR: staticlib not produced for device"
         exit 1
-    fi
+    }
 fi
 
 if [ "$BUILD_SIM" = true ]; then
     echo "==> Building for iOS simulator (aarch64-apple-ios-sim)..."
-    rm -f "target/aarch64-apple-ios-sim/${PROFILE_DIR}/lib${LIB_NAME}.a"
-    cargo build --target aarch64-apple-ios-sim $PROFILE $FEATURES -p zedra
-    if [ ! -f "target/aarch64-apple-ios-sim/${PROFILE_DIR}/lib${LIB_NAME}.a" ]; then
+    SIM_STATICLIB="$(build_ios_staticlib aarch64-apple-ios-sim)" || {
         echo "ERROR: staticlib not produced for simulator"
         exit 1
-    fi
+    }
 fi
 
 echo "==> XCFramework..."
@@ -95,10 +130,10 @@ trap 'rm -rf "$TMP"' EXIT
 
 XCF_ARGS=()
 if [ "$BUILD_DEVICE" = true ]; then
-    XCF_ARGS+=(-library "target/aarch64-apple-ios/${PROFILE_DIR}/lib${LIB_NAME}.a" -headers include/)
+    XCF_ARGS+=(-library "$DEVICE_STATICLIB" -headers include/)
 fi
 if [ "$BUILD_SIM" = true ]; then
-    XCF_ARGS+=(-library "target/aarch64-apple-ios-sim/${PROFILE_DIR}/lib${LIB_NAME}.a" -headers include/)
+    XCF_ARGS+=(-library "$SIM_STATICLIB" -headers include/)
 fi
 
 NEW="$TMP/${FRAMEWORK_NAME}.xcframework"

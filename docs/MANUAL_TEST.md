@@ -942,3 +942,9 @@ Expected:
 4. Archive the Release build and inspect the generated `Info.plist`
 5. Expected: the base `UISupportedInterfaceOrientations` key contains `UIInterfaceOrientationPortrait`
 6. Expected: the iPad-specific `UISupportedInterfaceOrientations~ipad` key contains portrait, portrait upside down, landscape left, and landscape right
+
+## 21. iOS Release logging
+
+1. Install a **Release** build on device (not Xcode Run with debugger attached)
+2. Connect via **Scan QR**; optional: `scripts/log-ios.sh --grep connect`
+3. Expected: no burst of per-packet iroh/quinn trace lines (`tracing-subscriber` requires `debug-logs`)

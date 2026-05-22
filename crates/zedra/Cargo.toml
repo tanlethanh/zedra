@@ -12,8 +12,8 @@ android-platform = []
 ios-platform = []
 # Log every telemetry event to stderr/logcat. Never enable in production builds.
 debug-telemetry = []
-# Set log level to Debug (default is Info). Enables verbose iroh/quinn logs.
-debug-logs = []
+# Set log level to Debug (default is Info). Enables verbose iroh/quinn logs and tracing subscriber.
+debug-logs = ["tracing-subscriber"]
 devtool = ["gpui_android/devtool"]
 
 [dependencies]
@@ -21,7 +21,7 @@ gpui = { path = "../../vendor/zed/crates/gpui", default-features = false }
 http_client = { path = "../../vendor/zed/crates/http_client" }
 anyhow.workspace = true
 tracing.workspace = true
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
 log.workspace = true
 futures.workspace = true
 tokio.workspace = true

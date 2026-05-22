@@ -2438,7 +2438,7 @@ impl WorkspaceContent {
         cx: &mut Context<Self>,
     ) -> Self {
         let empty_view = cx.new(|_cx| Empty);
-        let connecting = cx.new(|_cx| WorkspaceConnecting::new(session_state));
+        let connecting = cx.new(|cx| WorkspaceConnecting::new(session_state, cx));
 
         let terminal_state_sub = cx.observe(&terminal_state, |_, _, cx| cx.notify());
         let workspace_state_sub = cx.observe(&workspace_state, |_, _, cx| cx.notify());
