@@ -545,6 +545,75 @@ impl SessionHandle {
         }
     }
 
+    pub async fn agent_installed_list(&self, refresh: bool) -> Result<Vec<InstalledAgentEntry>> {
+        let result: AgentInstalledListResult = self
+            .client()?
+            .rpc(AgentInstalledListReq { refresh })
+            .await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
+        Ok(result.agents)
+    }
+
+    pub async fn agent_list(&self, refresh: bool) -> Result<Vec<AgentSummary>> {
+        let result: AgentListResult = self.client()?.rpc(AgentListReq { refresh }).await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
+        Ok(result.agents)
+    }
+
+    pub async fn agent_sessions(
+        &self,
+        kind: ManagedAgentKind,
+        refresh: bool,
+        limit: u32,
+    ) -> Result<Vec<AgentSessionSummary>> {
+        let result: AgentSessionsResult = self
+            .client()?
+            .rpc(AgentSessionsReq {
+                kind,
+                refresh,
+                limit,
+            })
+            .await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
+        Ok(result.sessions)
+    }
+
+    pub async fn agent_resume_session(
+        &self,
+        kind: ManagedAgentKind,
+        session_id: String,
+        cols: u16,
+        rows: u16,
+    ) -> Result<String> {
+        let client = self.client()?;
+        let result: AgentResumeResult = client
+            .rpc(AgentResumeReq {
+                kind,
+                session_id,
+                cols,
+                rows,
+            })
+            .await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
+
+        let terminal = RemoteTerminal::new(result.terminal_id.clone());
+        if terminal.attach_remote(&client).await.is_ok() {
+            self.add_terminal(terminal);
+            tracing::info!("Agent session resumed in terminal: {}", result.terminal_id);
+            Ok(result.terminal_id)
+        } else {
+            Err(anyhow::anyhow!("Failed to attach resumed agent terminal"))
+        }
+    }
+
     pub async fn terminal_resize(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
         let _: TermResizeResult = self
             .client()?
