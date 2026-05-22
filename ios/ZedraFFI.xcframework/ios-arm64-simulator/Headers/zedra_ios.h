@@ -144,6 +144,8 @@ bool zedra_ios_check_pending_frame(void);
 
 void zedra_ios_app_will_terminate(void);
 
+bool zedra_ios_system_back(void);
+
 void zedra_ios_native_floating_button_pressed(uint32_t callback_id);
 
 void zedra_ios_dictation_preview_dismiss(uint32_t preview_id);
