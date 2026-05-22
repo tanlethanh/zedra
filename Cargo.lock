@@ -9991,6 +9991,7 @@ dependencies = [
  "anyhow",
  "cbindgen 0.29.2",
  "cc",
+ "chrono",
  "futures",
  "gpui",
  "gpui_android",
@@ -10040,9 +10041,11 @@ version = "0.2.5"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
+ "chrono",
  "clap",
  "directories",
  "ed25519-dalek 2.2.0",
+ "filetime",
  "flate2",
  "hostname",
  "ignore",
@@ -10083,6 +10086,7 @@ version = "0.2.5"
 dependencies = [
  "anyhow",
  "base64-url",
+ "chrono",
  "hex",
  "hmac",
  "iroh",
