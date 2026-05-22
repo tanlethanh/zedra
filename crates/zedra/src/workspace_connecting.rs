@@ -12,14 +12,18 @@ pub struct WorkspaceConnecting {
     session_state: Entity<SessionState>,
     details_expanded: bool,
     restart_animation_id: u64,
+    _session_state_subscription: Subscription,
 }
 
 impl WorkspaceConnecting {
-    pub fn new(session_state: Entity<SessionState>) -> Self {
+    pub fn new(session_state: Entity<SessionState>, cx: &mut Context<Self>) -> Self {
+        let session_state_subscription = cx.observe(&session_state, |_, _, cx| cx.notify());
+
         Self {
             session_state,
             details_expanded: false,
             restart_animation_id: 0,
+            _session_state_subscription: session_state_subscription,
         }
     }
 }
