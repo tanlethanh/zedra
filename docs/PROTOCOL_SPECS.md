@@ -174,7 +174,8 @@ Most result structs carry `error: Option<String>`. When set, the operation faile
 Result types that carry `error: Option<String>`:
 `FsListResult`, `FsReadResult`, `FsStatResult`, `SessionSwitchResult`, `TermCreateResult`,
 `GitStatusResult`, `GitDiffResult`, `GitLogResult`, `GitCommitResult`, `GitStageResult`,
-`GitUnstageResult`, `GitBranchesResult`, `LspDiagnosticsResult`.
+`GitUnstageResult`, `GitBranchesResult`, `AgentListResult`, `AgentSessionsResult`,
+`AgentResumeResult`, `LspDiagnosticsResult`.
 
 Types that use non-string status fields or enum variants instead:
 `FsWriteResult` (`ok: bool`), `GitCheckoutResult` (`ok: bool`), `FsWatchResult`/`FsUnwatchResult` (enum),
@@ -281,11 +282,34 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
 - `GitStage` stages the provided paths with `git add -- <paths>`.
 - `GitUnstage` removes the provided paths from the index while preserving working tree contents.
 
-## 5.7 AI and LSP
+## 5.7 AI, Managed Agents, and LSP
 
 - `AiPrompt(AiPromptReq) -> AiPromptResult`
+- `AgentList(AgentListReq) -> AgentListResult`
+- `AgentSessions(AgentSessionsReq) -> AgentSessionsResult`
+- `AgentResume(AgentResumeReq) -> AgentResumeResult`
+- `AgentInstalledList(AgentInstalledListReq) -> AgentInstalledListResult`
 - `LspDiagnostics(LspDiagnosticsReq) -> LspDiagnosticsResult`
 - `LspHover(LspHoverReq) -> LspHoverResult`
+
+### Managed agent conventions
+
+- `ManagedAgentKind` is intentionally narrower than the terminal AI-agent classifier. Current RPC-visible managed agents are `Claude`, `Codex`, and `OpenCode`.
+- `AgentListResult.agents` returns one `AgentSummary` for every supported managed agent, even when the CLI is missing or no sessions exist.
+- `AgentListReq.refresh` and `AgentInstalledListReq.refresh` default to `false`. When `false`, the host serves its startup cache; when `true`, the host rescans before responding.
+- `AgentSessionsResult.sessions` returns the latest workspace-matching sessions for one managed agent. `AgentSessionsResult.total` is the full match count before applying `limit`.
+- `AgentSessionsReq.limit` defaults to `0`, which uses the host default (`50`, overridable with `ZEDRA_AGENT_SESSION_LIMIT`, max `200`).
+- `AgentSessionsReq.refresh` follows the same cache rule as `AgentListReq.refresh`.
+- `AgentResume` creates a new terminal and starts the provider-specific resume command on the host. Clients must not build provider shell commands from summary fields.
+- `AgentInstalledList` returns all supported terminal agent slugs with host-owned `launch_cmd` values for available CLIs. Clients create agents through `TermCreate` with that launch command.
+- `AgentSummary.account.fields` exposes locally discovered account/setup metadata for manage-agent detail views. Values must remain privacy-safe.
+- `AgentSessionSummary.title` uses provider-stored titles when available, otherwise `"Unknown"`.
+- `AgentSessionSummary.transcript_size_bytes` reports transcript file size when the host scan has a local file path.
+- `AgentGitSummary.worktree` is populated for Claude when the encoded project path includes `--claude-worktrees-<name>`.
+- Summary timestamps use `DateTime<Utc>` serialization through serde/postcard.
+- Data sources are explicit through `AgentDataSource` so clients can distinguish CLI/setup checks, historical scans, terminal metadata, hook state, status lines, and provider CLI output.
+- Summaries must not expose prompt text, command arguments, tool input/output, transcript bodies, or last assistant messages. Allowed fields are safe labels, ids, timestamps, counts, paths already scoped to the workspace, and provider metadata such as model, source, permission mode, CLI version, git branch, and PR link metadata.
+- `AgentLifecycleStatus`, `AgentEventKind`, and `AgentActionKind` provide the cross-agent vocabulary for future hook-driven prompts and notifications.
 
 ---
 

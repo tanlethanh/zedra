@@ -17,7 +17,7 @@
 ## 0a. Home Install Guide Tabs
 
 1. Open the app with no saved workspaces visible on the Home screen
-2. Switch between the `mac/linux`, `windows`, `claude`, `codex`, and `opencode` guide tabs
+2. Switch between the `curl`, `claude`, `codex`, `opencode`, and `gemini` guide tabs
 3. Expected: each tab shows the same install commands as the landing page
 4. Tap a command line in each tab
 5. Expected: the tapped command line is copied to the system clipboard without navigating away from Home
@@ -104,7 +104,7 @@
 1. Run an iOS build with Firebase Analytics enabled, or add `android/google-services.json` with the `dev.zedra.app` client and run `./scripts/run-android.sh --release --target arm64-v8a`
 2. Open Home, Settings, Quick Actions, then connect to a workspace
 3. Open the workspace drawer and switch through Files, Documents, Git Diff, Terminals, and Session
-4. Open a non-markdown file, a markdown file, a git diff, and a terminal as the main workspace view
+4. Open a non-markdown file, a markdown file, a git diff, a terminal, and the managed-agent view as the main workspace view
 5. Tap terminal file links for both a source file and a markdown file so the native custom sheet opens
 6. Expected: manual `screen_view` events include `screen_name` and `screen_class` for `Home`, `Settings`, `Quick Actions`, `Workspace Connecting`, `Workspace Editor`, `Workspace Markdown`, `Workspace Git Diff`, `Workspace Terminal`, each drawer tab, `Custom Sheet Editor`, and `Custom Sheet Markdown`
 7. Expected: native automatic rows such as `UIViewController`, `CustomSheetViewController`, `UIAlertController`, and `ZedraQRScannerVC` on iOS or Android activity rows on Android are still present because native Firebase screen reporting remains enabled
@@ -919,6 +919,47 @@ Expected:
   `launch_cmd` path such as `claude --resume <session_id>`. Expected: while
   Claude is running, the terminal card shows the Claude icon even before a shell
   prompt emits fresh OSC metadata.
+
+## 18b. Agent Toolbar, Sessions, and Manage Views
+
+1. Open a connected workspace and open the workspace drawer Terminals tab.
+2. Expected: the top toolbar shows four icon actions: Create agent, Create
+   terminal, View sessions, and Manage agents.
+3. Tap `Create terminal`.
+4. Expected: the drawer closes, a new shell terminal opens in the main view,
+   and the terminal card appears in the drawer.
+5. Tap `Create agent`.
+6. Expected: a scrollable native list picker shows installed host agents with
+   icon and version subtitle; unavailable agents are omitted.
+7. Pick an installed agent such as Claude or Codex.
+8. Expected: Zedra creates a new terminal using the host-owned launch command,
+   opens it as the active main view, and the terminal card shows the matching
+   agent icon once OSC metadata arrives.
+9. Tap `View sessions`.
+10. Expected: the drawer closes and the main view shows a unified session list
+    grouped by day across Claude, Codex, and OpenCode for the current
+    workspace. Each row shows agent icon, title, datetime, branch/worktree,
+    transcript size, and model when available.
+11. Tap a resumable session row.
+12. Expected: Zedra immediately resumes the session in a new terminal and opens
+    it as the active main view.
+13. Tap `Manage agents`.
+14. Expected: the main view shows managed agents as a list with setup/session
+    counts. Tapping an agent opens detail with CLI/setup/account fields and a
+    session list below.
+15. In manage detail, verify discovered account fields:
+    - Claude: model, effort, permission mode, total sessions/messages/cost when
+      `stats-cache.json` exists
+    - Codex: logged in, last refresh, model/personality from `config.toml`
+    - OpenCode: config dir presence
+16. Tap `Resume` on a session from manage detail.
+17. Expected: same immediate resume behavior as the unified sessions view.
+18. Re-open `View sessions` or `Manage agents` without tapping Refresh.
+19. Expected: lists load quickly from the host startup cache (default limit 50
+    sessions per agent).
+20. Tap Refresh in either view.
+21. Expected: the host rescans agent metadata and session lists, then updates
+    the UI.
 
 ## 19. Xcode Rust Build Target
 
