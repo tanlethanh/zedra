@@ -6,6 +6,7 @@ use crate::editor::markdown::{
     MARKDOWN_SELECTION_AREA_ID, MarkdownView, is_markdown_path, parse_markdown_source,
 };
 use crate::placeholder::render_placeholder;
+use crate::theme;
 
 #[derive(Clone, Debug)]
 enum FileState {
@@ -64,7 +65,6 @@ impl WorkspaceEditor {
         self.state = FileState::Loading;
         cx.notify();
 
-        // Drop any previous task before starting a new one.
         let prev_task = self.read_task.take();
         drop(prev_task);
 
@@ -212,11 +212,11 @@ pub struct EditorSelection {
 }
 
 impl Render for WorkspaceEditor {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         match self.state.clone() {
-            FileState::Loading => render_placeholder("Loading ..."),
-            FileState::TooLarge => render_placeholder("File too large (>500 KB)"),
-            FileState::Error { error } => render_placeholder(format!("Error: {}", error)),
+            FileState::Loading => render_placeholder(cx, "Loading ..."),
+            FileState::TooLarge => render_placeholder(cx, "File too large (>500 KB)"),
+            FileState::Error { error } => render_placeholder(cx, format!("Error: {}", error)),
             FileState::Loaded => match self.content {
                 EditorContent::Code => div().size_full().child(self.editor_view.clone()),
                 EditorContent::Markdown => div()

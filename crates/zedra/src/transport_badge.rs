@@ -4,16 +4,17 @@ use std::time::Duration;
 use gpui::*;
 use zedra_session::{ConnectPhase, TransportSnapshot};
 
-use crate::theme;
+use crate::theme::{self, ThemePalette};
 
 /// Compute badge label and dot color from phase and transport.
 /// Returns `(label, dot_color)`.
 pub(crate) fn transport_badge(
+    palette: &ThemePalette,
     phase: &ConnectPhase,
     transport: Option<&TransportSnapshot>,
 ) -> (String, u32) {
     match phase {
-        ConnectPhase::Init => ("Initializing".into(), theme::ACCENT_YELLOW),
+        ConnectPhase::Init => ("Initializing".into(), palette.accent_yellow),
         ConnectPhase::Connected => {
             let (conn_type, relay): (String, Option<&str>) = match transport {
                 Some(t) if t.is_direct => {
@@ -34,13 +35,13 @@ pub(crate) fn transport_badge(
                 _ => conn_type.to_string(),
             };
             let color = match transport {
-                Some(t) if t.is_direct => theme::ACCENT_GREEN,
-                Some(_) => theme::ACCENT_GREEN,
-                None => theme::ACCENT_GREEN,
+                Some(t) if t.is_direct => palette.accent_green,
+                Some(_) => palette.accent_green,
+                None => palette.accent_green,
             };
             (label, color)
         }
-        ConnectPhase::Disconnected => ("Tap refresh to reconnect.".into(), theme::ACCENT_RED),
+        ConnectPhase::Disconnected => ("Tap refresh to reconnect.".into(), palette.accent_red),
         ConnectPhase::Reconnecting {
             attempt,
             next_retry_secs,
@@ -51,36 +52,36 @@ pub(crate) fn transport_badge(
             } else {
                 format!("Reconnecting ({attempt})")
             };
-            (label, theme::ACCENT_RED)
+            (label, palette.accent_red)
         }
-        ConnectPhase::Failed(err) => (err.user_message(), theme::ACCENT_RED),
-        ConnectPhase::BindingEndpoint => ("Binding endpoint".into(), theme::ACCENT_YELLOW),
-        ConnectPhase::HolePunching => ("Hole punching".into(), theme::ACCENT_YELLOW),
-        ConnectPhase::Registering => ("Registering device".into(), theme::ACCENT_YELLOW),
-        ConnectPhase::Authenticating => ("Authenticating".into(), theme::ACCENT_YELLOW),
-        ConnectPhase::Proving => ("Auth challenge".into(), theme::ACCENT_YELLOW),
-        ConnectPhase::Sync => ("Syncing state".into(), theme::ACCENT_YELLOW),
+        ConnectPhase::Failed(err) => (err.user_message(), palette.accent_red),
+        ConnectPhase::BindingEndpoint => ("Binding endpoint".into(), palette.accent_yellow),
+        ConnectPhase::HolePunching => ("Hole punching".into(), palette.accent_yellow),
+        ConnectPhase::Registering => ("Registering device".into(), palette.accent_yellow),
+        ConnectPhase::Authenticating => ("Authenticating".into(), palette.accent_yellow),
+        ConnectPhase::Proving => ("Auth challenge".into(), palette.accent_yellow),
+        ConnectPhase::Sync => ("Syncing state".into(), palette.accent_yellow),
         ConnectPhase::Idle { idle_since } => (
             format!("Idle {}s", idle_since.elapsed().as_secs()),
-            theme::ACCENT_YELLOW,
+            palette.accent_yellow,
         ),
     }
 }
 
-pub(crate) fn phase_indicator_color(phase: &ConnectPhase) -> u32 {
+pub(crate) fn phase_indicator_color(palette: &ThemePalette, phase: &ConnectPhase) -> u32 {
     if phase.is_connected() {
-        theme::ACCENT_GREEN
+        palette.accent_green
     } else if phase.is_idle() || phase.is_connecting() || phase.is_reconnecting() {
-        theme::ACCENT_YELLOW
+        palette.accent_yellow
     } else if phase.is_failed() {
-        theme::ACCENT_RED
+        palette.accent_red
     } else {
-        theme::ACCENT_DIM
+        palette.accent_dim
     }
 }
 
-fn phase_indicator_blinks(phase: &ConnectPhase) -> bool {
-    phase_indicator_color(phase) == theme::ACCENT_YELLOW
+fn phase_indicator_blinks(palette: &ThemePalette, phase: &ConnectPhase) -> bool {
+    phase_indicator_color(palette, phase) == palette.accent_yellow
 }
 
 const STATUS_PULSE_MS: u64 = 1800;
@@ -95,11 +96,17 @@ pub(crate) struct ConnectionStatusIndicator {
 }
 
 impl ConnectionStatusIndicator {
-    pub(crate) fn from_phase(id: impl Into<ElementId>, phase: Option<&ConnectPhase>) -> Self {
+    pub(crate) fn from_phase(
+        id: impl Into<ElementId>,
+        phase: Option<&ConnectPhase>,
+        palette: &ThemePalette,
+    ) -> Self {
         let color = phase
-            .map(phase_indicator_color)
-            .unwrap_or(theme::ACCENT_DIM);
-        let blink = phase.map(phase_indicator_blinks).unwrap_or(false);
+            .map(|phase| phase_indicator_color(palette, phase))
+            .unwrap_or(palette.accent_dim);
+        let blink = phase
+            .map(|phase| phase_indicator_blinks(palette, phase))
+            .unwrap_or(false);
 
         Self {
             id: id.into(),
@@ -165,7 +172,7 @@ pub fn format_bytes(bytes: u64) -> String {
 mod tests {
     use std::time::Instant;
 
-    use crate::theme;
+    use crate::theme::ThemePalette;
     use crate::transport_badge::{
         ConnectionStatusIndicator, phase_indicator_color, transport_badge,
     };
@@ -173,15 +180,18 @@ mod tests {
 
     #[test]
     fn disconnected_badge_uses_manual_reconnect_hint() {
-        let (label, color) = transport_badge(&ConnectPhase::Disconnected, None);
+        let palette = ThemePalette::dark();
+        let (label, color) = transport_badge(&palette, &ConnectPhase::Disconnected, None);
 
         assert_eq!(label, "Tap refresh to reconnect.");
-        assert_eq!(color, theme::ACCENT_RED);
+        assert_eq!(color, palette.accent_red);
     }
 
     #[test]
     fn reconnecting_badge_includes_retry_countdown() {
+        let palette = ThemePalette::dark();
         let (label, color) = transport_badge(
+            &palette,
             &ConnectPhase::Reconnecting {
                 attempt: 2,
                 reason: zedra_session::ReconnectReason::ConnectionLost,
@@ -191,11 +201,12 @@ mod tests {
         );
 
         assert_eq!(label, "Reconnecting (2) \u{00b7} 3s");
-        assert_eq!(color, theme::ACCENT_RED);
+        assert_eq!(color, palette.accent_red);
     }
 
     #[test]
     fn warning_status_indicator_blinks() {
+        let palette = ThemePalette::dark();
         let idle = ConnectPhase::Idle {
             idle_since: Instant::now(),
         };
@@ -208,20 +219,29 @@ mod tests {
         let failed = ConnectPhase::Failed(ConnectError::HostUnreachable);
 
         for phase in [&idle, &reconnecting] {
-            let indicator = ConnectionStatusIndicator::from_phase("test-dot", Some(phase));
-            assert_eq!(phase_indicator_color(phase), theme::ACCENT_YELLOW);
+            let indicator =
+                ConnectionStatusIndicator::from_phase("test-dot", Some(phase), &palette);
+            assert_eq!(
+                phase_indicator_color(&palette, phase),
+                palette.accent_yellow
+            );
             assert!(indicator.blink);
         }
 
         for phase in [&connected, &failed] {
-            let indicator = ConnectionStatusIndicator::from_phase("test-dot", Some(phase));
-            assert_ne!(phase_indicator_color(phase), theme::ACCENT_YELLOW);
+            let indicator =
+                ConnectionStatusIndicator::from_phase("test-dot", Some(phase), &palette);
+            assert_ne!(
+                phase_indicator_color(&palette, phase),
+                palette.accent_yellow
+            );
             assert!(!indicator.blink);
         }
     }
 
     #[test]
     fn failed_badge_uses_friendly_error_message() {
+        let palette = ThemePalette::dark();
         let cases = [
             (
                 ConnectError::AlpnMismatch,
@@ -246,10 +266,10 @@ mod tests {
         ];
 
         for (error, message) in cases {
-            let (label, color) = transport_badge(&ConnectPhase::Failed(error), None);
+            let (label, color) = transport_badge(&palette, &ConnectPhase::Failed(error), None);
 
             assert_eq!(label, message);
-            assert_eq!(color, theme::ACCENT_RED);
+            assert_eq!(color, palette.accent_red);
         }
     }
 }

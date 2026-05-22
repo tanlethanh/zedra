@@ -98,17 +98,20 @@ impl Render for TerminalPanel {
                 }));
 
                 let tid_tap = tid.clone();
-                let card = render_terminal_card(TerminalCardProps {
-                    id: tid,
-                    index: index + 1,
-                    is_active,
-                    title: meta.title,
-                    cwd: meta.cwd,
-                    agent_icon: meta.agent_icon,
-                    shell_state: meta.shell_state,
-                    last_exit_code: meta.last_exit_code,
-                    on_close: Some(on_close),
-                })
+                let card = render_terminal_card(
+                    cx,
+                    TerminalCardProps {
+                        id: tid,
+                        index: index + 1,
+                        is_active,
+                        title: meta.title,
+                        cwd: meta.cwd,
+                        agent_icon: meta.agent_icon,
+                        shell_state: meta.shell_state,
+                        last_exit_code: meta.last_exit_code,
+                        on_close: Some(on_close),
+                    },
+                )
                 .on_press(cx.listener(move |_this, _event, window, cx| {
                     window.dispatch_action(
                         workspace_action::OpenTerminal {
@@ -142,7 +145,7 @@ fn toolbar_button<A: Action>(
         .py(px(8.0))
         .rounded(px(6.0))
         .border_1()
-        .border_color(rgb(theme::BORDER_SUBTLE))
+        .border_color(rgb(theme::border_subtle(cx)))
         .flex()
         .flex_col()
         .items_center()
@@ -157,12 +160,12 @@ fn toolbar_button<A: Action>(
             svg()
                 .path(icon)
                 .size(px(theme::ICON_SM))
-                .text_color(rgb(theme::TEXT_MUTED)),
+                .text_color(rgb(theme::text_muted(cx))),
         )
         .child(
             div()
                 .text_size(px(10.0))
-                .text_color(rgb(theme::TEXT_MUTED))
+                .text_color(rgb(theme::text_muted(cx)))
                 .text_center()
                 .child(label),
         )

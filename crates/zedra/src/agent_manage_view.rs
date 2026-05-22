@@ -177,8 +177,8 @@ impl AgentManageView {
                     .py(px(theme::SPACING_SM))
                     .rounded(px(6.0))
                     .border_1()
-                    .border_color(rgb(theme::BORDER_SUBTLE))
-                    .bg(rgb(theme::BG_CARD))
+                    .border_color(rgb(theme::border_subtle(cx)))
+                    .bg(rgb(theme::bg_card(cx)))
                     .cursor_pointer()
                     .on_press(cx.listener(move |this, _event, _window, cx| {
                         platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
@@ -194,7 +194,7 @@ impl AgentManageView {
                                 svg()
                                     .path(agent_icon(kind))
                                     .size(px(theme::ICON_SM))
-                                    .text_color(rgb(theme::TEXT_MUTED)),
+                                    .text_color(rgb(theme::text_muted(cx))),
                             )
                             .child(
                                 div()
@@ -204,14 +204,14 @@ impl AgentManageView {
                                         div()
                                             .truncate()
                                             .text_size(px(theme::FONT_BODY))
-                                            .text_color(rgb(theme::TEXT_PRIMARY))
+                                            .text_color(rgb(theme::text_primary(cx)))
                                             .child(agent.display_name.clone()),
                                     )
                                     .child(
                                         div()
                                             .truncate()
                                             .text_size(px(theme::FONT_DETAIL))
-                                            .text_color(rgb(theme::TEXT_MUTED))
+                                            .text_color(rgb(theme::text_muted(cx)))
                                             .child(format!(
                                                 "{} · {} sessions",
                                                 setup_label(agent.setup.state),
@@ -227,7 +227,7 @@ impl AgentManageView {
 
     fn render_detail(&self, cx: &mut Context<Self>) -> Div {
         let Some(agent) = self.selected_agent() else {
-            return empty_text("No agent selected.");
+            return empty_text(cx, "No agent selected.");
         };
         let kind = agent.kind;
 
@@ -254,21 +254,21 @@ impl AgentManageView {
                                 div()
                                     .truncate()
                                     .text_size(px(theme::FONT_BODY))
-                                    .text_color(rgb(theme::TEXT_PRIMARY))
+                                    .text_color(rgb(theme::text_primary(cx)))
                                     .child(agent.display_name.clone()),
                             )
                             .child(
                                 div()
                                     .truncate()
                                     .text_size(px(theme::FONT_DETAIL))
-                                    .text_color(rgb(theme::TEXT_MUTED))
+                                    .text_color(rgb(theme::text_muted(cx)))
                                     .child(managed_agent_name(kind)),
                             ),
                     )
                     .child(refresh_button(cx)),
             )
-            .child(render_detail_summary(agent))
-            .child(section_header("Sessions"))
+            .child(render_detail_summary(agent, cx))
+            .child(section_header(cx, "Sessions"))
             .child(render_agent_session_list(
                 AgentSessionListProps {
                     sections: crate::agent_session_list::group_sessions_by_day(
@@ -293,19 +293,20 @@ impl Render for AgentManageView {
             .id("agent-manage-view")
             .size_full()
             .min_h_0()
-            .bg(rgb(theme::BG_PRIMARY))
+            .bg(rgb(theme::bg_primary(cx)))
             .flex()
             .flex_col();
 
         match &self.agent_state {
             LoadState::Loading => {
-                root = root.child(empty_text("Loading managed agents..."));
+                root = root.child(empty_text(cx, "Loading managed agents..."));
             }
             LoadState::Error(message) => {
                 root = root
-                    .child(empty_text(format!(
-                        "Failed to load managed agents: {message}"
-                    )))
+                    .child(empty_text(
+                        cx,
+                        format!("Failed to load managed agents: {message}"),
+                    ))
                     .child(refresh_button(cx));
             }
             LoadState::Ready => {
@@ -319,7 +320,7 @@ impl Render for AgentManageView {
     }
 }
 
-fn render_detail_summary(agent: &AgentSummary) -> Div {
+fn render_detail_summary(agent: &AgentSummary, cx: &App) -> Div {
     let mut summary = div()
         .mx(px(theme::SPACING_MD))
         .mb(px(theme::SPACING_SM))
@@ -327,8 +328,8 @@ fn render_detail_summary(agent: &AgentSummary) -> Div {
         .py(px(theme::SPACING_SM))
         .rounded(px(6.0))
         .border_1()
-        .border_color(rgb(theme::BORDER_SUBTLE))
-        .bg(rgb(theme::BG_CARD))
+        .border_color(rgb(theme::border_subtle(cx)))
+        .bg(rgb(theme::bg_card(cx)))
         .flex()
         .flex_col()
         .gap(px(4.0));
@@ -348,12 +349,14 @@ fn render_detail_summary(agent: &AgentSummary) -> Div {
     };
 
     summary = summary
-        .child(summary_line("CLI", cli))
+        .child(summary_line(cx, "CLI", cli))
         .child(summary_line(
+            cx,
             "Setup",
             setup_label(agent.setup.state).to_string(),
         ))
         .child(summary_line(
+            cx,
             "Sessions",
             format!(
                 "{} resumable / {} total",
@@ -362,11 +365,12 @@ fn render_detail_summary(agent: &AgentSummary) -> Div {
         ));
 
     for field in &agent.account.fields {
-        summary = summary.child(summary_line(&field.label, field.value.clone()));
+        summary = summary.child(summary_line(cx, &field.label, field.value.clone()));
     }
 
     if !agent.warnings.is_empty() {
         summary = summary.child(summary_line(
+            cx,
             "Warnings",
             agent
                 .warnings
@@ -386,7 +390,7 @@ fn back_button(cx: &mut Context<AgentManageView>) -> Stateful<Div> {
         .py(px(6.0))
         .rounded(px(6.0))
         .border_1()
-        .border_color(rgb(theme::BORDER_SUBTLE))
+        .border_color(rgb(theme::border_subtle(cx)))
         .cursor_pointer()
         .on_press(cx.listener(|this, _event, _window, cx| {
             platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
@@ -396,7 +400,7 @@ fn back_button(cx: &mut Context<AgentManageView>) -> Stateful<Div> {
             svg()
                 .path("icons/chevron-left.svg")
                 .size(px(theme::ICON_SM))
-                .text_color(rgb(theme::TEXT_SECONDARY)),
+                .text_color(rgb(theme::text_secondary(cx))),
         )
 }
 
@@ -407,7 +411,7 @@ fn refresh_button(cx: &mut Context<AgentManageView>) -> Stateful<Div> {
         .py(px(6.0))
         .rounded(px(6.0))
         .border_1()
-        .border_color(rgb(theme::BORDER_SUBTLE))
+        .border_color(rgb(theme::border_subtle(cx)))
         .cursor_pointer()
         .on_press(cx.listener(|this, _event, _window, cx| {
             this.load_agents(true, cx);
@@ -415,22 +419,22 @@ fn refresh_button(cx: &mut Context<AgentManageView>) -> Stateful<Div> {
         .child(
             div()
                 .text_size(px(theme::FONT_DETAIL))
-                .text_color(rgb(theme::TEXT_SECONDARY))
+                .text_color(rgb(theme::text_secondary(cx)))
                 .child("Refresh"),
         )
 }
 
-fn section_header(label: &'static str) -> Div {
+fn section_header(cx: &App, label: &'static str) -> Div {
     div()
         .px(px(theme::SPACING_MD))
         .pt(px(theme::SPACING_SM))
         .pb(px(4.0))
         .text_size(px(theme::FONT_DETAIL))
-        .text_color(rgb(theme::TEXT_MUTED))
+        .text_color(rgb(theme::text_muted(cx)))
         .child(label)
 }
 
-fn summary_line(label: &str, value: String) -> Div {
+fn summary_line(cx: &App, label: &str, value: String) -> Div {
     div()
         .flex()
         .flex_row()
@@ -441,7 +445,7 @@ fn summary_line(label: &str, value: String) -> Div {
                 .w(px(120.0))
                 .flex_shrink_0()
                 .text_size(px(theme::FONT_DETAIL))
-                .text_color(rgb(theme::TEXT_MUTED))
+                .text_color(rgb(theme::text_muted(cx)))
                 .child(label.to_string()),
         )
         .child(
@@ -449,12 +453,12 @@ fn summary_line(label: &str, value: String) -> Div {
                 .min_w_0()
                 .truncate()
                 .text_size(px(theme::FONT_DETAIL))
-                .text_color(rgb(theme::TEXT_SECONDARY))
+                .text_color(rgb(theme::text_secondary(cx)))
                 .child(value),
         )
 }
 
-fn empty_text(text: impl Into<SharedString>) -> Div {
+fn empty_text(cx: &App, text: impl Into<SharedString>) -> Div {
     div()
         .flex()
         .flex_1()
@@ -462,7 +466,7 @@ fn empty_text(text: impl Into<SharedString>) -> Div {
         .justify_center()
         .px(px(theme::SPACING_MD))
         .text_size(px(theme::FONT_BODY))
-        .text_color(rgb(theme::TEXT_MUTED))
+        .text_color(rgb(theme::text_muted(cx)))
         .child(text.into())
 }
 

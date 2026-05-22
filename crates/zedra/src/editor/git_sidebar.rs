@@ -342,12 +342,12 @@ impl GitSidebar {
                                 "icons/chevron-right.svg"
                             })
                             .size(px(theme::FONT_DETAIL))
-                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_color(rgb(theme::text_muted(cx)))
                             .left(px(-2.0)),
                     )
                     .child(
                         div()
-                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_color(rgb(theme::text_muted(cx)))
                             .text_size(px(theme::FONT_DETAIL))
                             .font_weight(FontWeight::MEDIUM)
                             .child(title),
@@ -356,7 +356,7 @@ impl GitSidebar {
             .child(
                 div()
                     .px_1()
-                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_color(rgb(theme::text_muted(cx)))
                     .text_size(px(theme::FONT_DETAIL))
                     .child(count.to_string()),
             )
@@ -374,14 +374,14 @@ impl GitSidebar {
             .as_ref()
             .is_some_and(|active| active.path == file.path && active.section == file.section);
         let status_color = if is_active {
-            theme::TEXT_SECONDARY
+            theme::text_secondary(cx)
         } else {
-            theme::TEXT_MUTED
+            theme::text_muted(cx)
         };
         let filename_color = if is_active {
-            theme::TEXT_PRIMARY
+            theme::text_primary(cx)
         } else {
-            theme::TEXT_SECONDARY
+            theme::text_secondary(cx)
         };
 
         let mut row = div()
@@ -452,21 +452,21 @@ impl GitSidebar {
                     .when(insertions > 0, |s| {
                         s.child(
                             div()
-                                .text_color(rgb(theme::TEXT_MUTED))
+                                .text_color(rgb(theme::text_muted(cx)))
                                 .child(format!("+{}", insertions)),
                         )
                     })
                     .when(deletions > 0, |s| {
                         s.child(
                             div()
-                                .text_color(rgb(theme::TEXT_MUTED))
+                                .text_color(rgb(theme::text_muted(cx)))
                                 .child(format!("-{}", deletions)),
                         )
                     }),
             );
 
         if is_active {
-            row = row.bg(hsla(0.0, 0.0, 1.0, 0.10));
+            row = row.bg(theme::row_pressed_bg(cx));
         }
 
         row
@@ -480,9 +480,9 @@ impl GitSidebar {
             "icons/check.svg"
         };
         let icon_color = if is_enabled || self.committing {
-            theme::TEXT_SECONDARY
+            theme::text_secondary(cx)
         } else {
-            theme::TEXT_MUTED
+            theme::text_muted(cx)
         };
         let icon_size = if self.committing { px(14.0) } else { px(20.0) };
 
@@ -600,7 +600,7 @@ impl Render for GitSidebar {
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(theme::BG_PRIMARY))
+            .bg(rgb(theme::bg_primary(cx)))
             .child(self.render_commit_composer(cx))
             // File sections (scrollable)
             .child(

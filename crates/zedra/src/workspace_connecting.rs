@@ -32,7 +32,7 @@ impl Render for WorkspaceConnecting {
             .id("connecting-view")
             .size_full()
             .relative()
-            .bg(rgb(theme::BG_PRIMARY))
+            .bg(rgb(theme::bg_primary(cx)))
             .flex()
             .flex_col()
             .justify_start()
@@ -55,7 +55,7 @@ impl Render for WorkspaceConnecting {
                     ))
                     .child(render_details_toggle(expanded, cx))
                     .when(expanded, |d| {
-                        d.child(render_detail(&state.phase, &state.snapshot))
+                        d.child(render_detail(cx, &state.phase, &state.snapshot))
                     }),
             )
             .child(render_close_button(cx))
@@ -82,7 +82,7 @@ fn render_close_button(cx: &mut Context<WorkspaceConnecting>) -> Stateful<Div> {
             svg()
                 .path("icons/x.svg")
                 .size(px(16.0))
-                .text_color(rgb(theme::TEXT_MUTED)),
+                .text_color(rgb(theme::text_muted(cx))),
         )
 }
 
@@ -113,14 +113,14 @@ fn render_details_toggle(expanded: bool, cx: &mut Context<WorkspaceConnecting>) 
         .child(
             div()
                 .text_size(px(theme::FONT_DETAIL))
-                .text_color(rgb(theme::TEXT_MUTED))
+                .text_color(rgb(theme::text_muted(cx)))
                 .child(label),
         )
         .child(
             svg()
                 .path(chevron)
                 .size(px(12.0))
-                .text_color(rgb(theme::TEXT_MUTED)),
+                .text_color(rgb(theme::text_muted(cx))),
         )
 }
 
@@ -130,7 +130,7 @@ fn render_phase_title(
     restart_animation_id: u64,
     cx: &mut Context<WorkspaceConnecting>,
 ) -> Div {
-    let (label, color) = transport_badge(phase, snap.transport.as_ref());
+    let (label, color) = transport_badge(&theme::palette(cx), phase, snap.transport.as_ref());
 
     let title = match phase {
         ConnectPhase::BindingEndpoint | ConnectPhase::HolePunching => "Connect",
@@ -162,7 +162,7 @@ fn render_phase_title(
                         .min_w_0()
                         .truncate()
                         .text_align(TextAlign::Center)
-                        .text_color(rgb(theme::TEXT_PRIMARY))
+                        .text_color(rgb(theme::text_primary(cx)))
                         .text_size(px(theme::FONT_HEADING))
                         .font_weight(FontWeight::MEDIUM)
                         .child(title),
@@ -204,14 +204,14 @@ fn render_restart_button(
             window.dispatch_action(workspace_action::RestartConnection.boxed_clone(), cx);
             cx.notify();
         }))
-        .child(render_restart_icon(restart_animation_id))
+        .child(render_restart_icon(cx, restart_animation_id))
 }
 
-fn render_restart_icon(restart_animation_id: u64) -> AnyElement {
+fn render_restart_icon(cx: &App, restart_animation_id: u64) -> AnyElement {
     let icon = svg()
         .path("icons/refresh-ccw.svg")
         .size(px(14.0))
-        .text_color(rgb(theme::TEXT_MUTED));
+        .text_color(rgb(theme::text_muted(cx)));
 
     if restart_animation_id == 0 {
         icon.into_any_element()
@@ -235,7 +235,7 @@ fn has_discovery_data(snap: &ConnectSnapshot) -> bool {
         || snap.relay_latency_ms.is_some()
 }
 
-fn render_discovery_rows(snap: &ConnectSnapshot) -> Div {
+fn render_discovery_rows(cx: &App, snap: &ConnectSnapshot) -> Div {
     let mut d = div().flex().flex_col().gap(px(2.0));
 
     let relay_status = if snap.relay_connected {
@@ -246,7 +246,7 @@ fn render_discovery_rows(snap: &ConnectSnapshot) -> Div {
     } else {
         "Connecting\u{2026}".into()
     };
-    d = d.child(kv_row("Relay", &relay_status));
+    d = d.child(kv_row(cx, "Relay", &relay_status));
 
     if !snap.direct_addrs.is_empty() {
         let count = snap.direct_addrs.len();
@@ -279,7 +279,7 @@ fn render_discovery_rows(snap: &ConnectSnapshot) -> Div {
                     div()
                         .w(px(60.0))
                         .flex_shrink_0()
-                        .text_color(rgb(theme::TEXT_MUTED))
+                        .text_color(rgb(theme::text_muted(cx)))
                         .text_size(px(theme::FONT_DETAIL))
                         .child("Direct"),
                 )
@@ -288,7 +288,7 @@ fn render_discovery_rows(snap: &ConnectSnapshot) -> Div {
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_color(rgb(theme::TEXT_SECONDARY))
+                        .text_color(rgb(theme::text_secondary(cx)))
                         .text_size(px(theme::FONT_DETAIL))
                         .child(direct_label),
                 ),
@@ -301,7 +301,7 @@ fn render_discovery_rows(snap: &ConnectSnapshot) -> Div {
         (false, true) => "IPv6 only",
         (false, false) => "probing\u{2026}",
     };
-    d = d.child(kv_row("UDP", ip_status));
+    d = d.child(kv_row(cx, "UDP", ip_status));
 
     if let Some(varies) = snap.mapping_varies {
         let nat = if varies {
@@ -309,11 +309,11 @@ fn render_discovery_rows(snap: &ConnectSnapshot) -> Div {
         } else {
             "Cone / direct"
         };
-        d = d.child(kv_row("NAT", nat));
+        d = d.child(kv_row(cx, "NAT", nat));
     }
 
     if snap.captive_portal == Some(true) {
-        d = d.child(kv_row("Portal", "Captive portal detected"));
+        d = d.child(kv_row(cx, "Portal", "Captive portal detected"));
     }
 
     d
@@ -321,7 +321,7 @@ fn render_discovery_rows(snap: &ConnectSnapshot) -> Div {
 
 // ─── Vertical detail panel ───────────────────────────────────────────────────
 
-fn render_detail(phase: &ConnectPhase, snap: &ConnectSnapshot) -> Div {
+fn render_detail(cx: &App, phase: &ConnectPhase, snap: &ConnectSnapshot) -> Div {
     let mut col = div()
         .w(px(theme::CONNECT_DETAIL_WIDTH))
         .min_w_0()
@@ -330,30 +330,42 @@ fn render_detail(phase: &ConnectPhase, snap: &ConnectSnapshot) -> Div {
         .gap(px(theme::SPACING_SM));
 
     if snap.local_node_id.is_some() || snap.remote_node_id.is_some() || snap.relay_url.is_some() {
-        col = col.child(render_section("Endpoint", render_endpoint_rows(snap)));
+        col = col.child(render_section(
+            cx,
+            "Endpoint",
+            render_endpoint_rows(cx, snap),
+        ));
     }
 
     if has_discovery_data(snap) {
-        col = col.child(render_section("Discovery", render_discovery_rows(snap)));
+        col = col.child(render_section(
+            cx,
+            "Discovery",
+            render_discovery_rows(cx, snap),
+        ));
     }
 
     if let Some(t) = &snap.transport {
-        col = col.child(render_section("Transport", render_transport_rows(t)));
+        col = col.child(render_section(
+            cx,
+            "Transport",
+            render_transport_rows(cx, t),
+        ));
     }
 
     if snap.session_id.is_some() || snap.auth_outcome.is_some() {
-        col = col.child(render_section("Auth", render_auth_rows(snap)));
+        col = col.child(render_section(cx, "Auth", render_auth_rows(cx, snap)));
     }
 
     if !snap.hostname.is_empty() {
-        col = col.child(render_section("Daemon", render_host_rows(snap)));
+        col = col.child(render_section(cx, "Daemon", render_host_rows(cx, snap)));
     }
 
     let timing = build_timing_string(snap);
     if !timing.is_empty() {
         col = col.child(
             div()
-                .text_color(rgb(theme::TEXT_MUTED))
+                .text_color(rgb(theme::text_muted(cx)))
                 .text_size(px(theme::FONT_DETAIL))
                 .child(timing),
         );
@@ -368,7 +380,7 @@ fn render_detail(phase: &ConnectPhase, snap: &ConnectSnapshot) -> Div {
     {
         col = col.child(
             div()
-                .text_color(rgb(theme::TEXT_MUTED))
+                .text_color(rgb(theme::text_muted(cx)))
                 .text_size(px(theme::FONT_DETAIL))
                 .child(format!(
                     "Attempt {} · retry in {}s",
@@ -380,14 +392,14 @@ fn render_detail(phase: &ConnectPhase, snap: &ConnectSnapshot) -> Div {
     col
 }
 
-fn render_section(title: &'static str, rows: Div) -> Div {
+fn render_section(cx: &App, title: &'static str, rows: Div) -> Div {
     div()
         .flex()
         .flex_col()
         .gap(px(2.0))
         .child(
             div()
-                .text_color(rgb(theme::TEXT_MUTED))
+                .text_color(rgb(theme::text_muted(cx)))
                 .text_size(px(theme::FONT_DETAIL))
                 .mb(px(2.0))
                 .child(title),
@@ -395,24 +407,24 @@ fn render_section(title: &'static str, rows: Div) -> Div {
         .child(rows)
 }
 
-fn render_endpoint_rows(snap: &ConnectSnapshot) -> Div {
+fn render_endpoint_rows(cx: &App, snap: &ConnectSnapshot) -> Div {
     let mut d = div().flex().flex_col().gap(px(2.0));
     if let Some(id) = &snap.local_node_id {
-        d = d.child(kv_row("Local", id));
+        d = d.child(kv_row(cx, "Local", id));
     }
     if let Some(id) = &snap.remote_node_id {
-        d = d.child(kv_row("Remote", id));
+        d = d.child(kv_row(cx, "Remote", id));
     }
     if let Some(relay) = &snap.relay_url {
-        d = d.child(kv_row("Relay", relay));
+        d = d.child(kv_row(cx, "Relay", relay));
     }
     if let Some(alpn) = &snap.alpn {
-        d = d.child(kv_row("Protocol", alpn));
+        d = d.child(kv_row(cx, "Protocol", alpn));
     }
     d
 }
 
-fn render_transport_rows(t: &TransportSnapshot) -> Div {
+fn render_transport_rows(cx: &App, t: &TransportSnapshot) -> Div {
     let conn_type = if t.is_direct {
         match &t.network_hint {
             Some(h) => format!("P2P \u{00b7} {}", h.label()),
@@ -426,14 +438,15 @@ fn render_transport_rows(t: &TransportSnapshot) -> Div {
         .flex()
         .flex_col()
         .gap(px(2.0))
-        .child(kv_row("Type", &conn_type))
+        .child(kv_row(cx, "Type", &conn_type))
         .child(kv_row(
+            cx,
             "Address",
             &format!("{} ({})", t.remote_addr, t.num_paths),
         ));
 
     if let Some(relay) = &t.relay_url {
-        d = d.child(kv_row("Relay", relay));
+        d = d.child(kv_row(cx, "Relay", relay));
     }
     let net = format!(
         "{}ms - {} \u{2191} / {} \u{2193}",
@@ -441,44 +454,44 @@ fn render_transport_rows(t: &TransportSnapshot) -> Div {
         format_bytes(t.bytes_sent),
         format_bytes(t.bytes_recv)
     );
-    d = d.child(kv_row("Net", &net));
+    d = d.child(kv_row(cx, "Net", &net));
     d
 }
 
-fn render_auth_rows(snap: &ConnectSnapshot) -> Div {
+fn render_auth_rows(cx: &App, snap: &ConnectSnapshot) -> Div {
     let mut d = div().flex().flex_col().gap(px(2.0));
     if let Some(sid) = &snap.session_id {
-        d = d.child(kv_row("Session", sid));
+        d = d.child(kv_row(cx, "Session", sid));
     }
     if let Some(outcome) = &snap.auth_outcome {
         let label = match outcome {
             zedra_session::AuthOutcome::Registered => "Registered (first pairing)",
             zedra_session::AuthOutcome::Authenticated => "Authorized",
         };
-        d = d.child(kv_row("Status", label));
+        d = d.child(kv_row(cx, "Status", label));
     }
     d
 }
 
-fn render_host_rows(snap: &ConnectSnapshot) -> Div {
+fn render_host_rows(cx: &App, snap: &ConnectSnapshot) -> Div {
     let mut d = div().flex().flex_col().gap(px(2.0));
     if !snap.hostname.is_empty() && !snap.username.is_empty() {
         let host_label = format!("{}@{}", snap.username, snap.hostname);
-        d = d.child(kv_row("Host", &host_label));
+        d = d.child(kv_row(cx, "Host", &host_label));
     }
     if let Some(os) = &snap.os {
         let label = match &snap.arch {
             Some(arch) if !arch.is_empty() => format!("{os} / {arch}"),
             _ => os.clone(),
         };
-        d = d.child(kv_row("OS", &label));
+        d = d.child(kv_row(cx, "OS", &label));
     }
     if !snap.workdir.is_empty() {
-        d = d.child(kv_row("Workdir", &snap.workdir));
+        d = d.child(kv_row(cx, "Workdir", &snap.workdir));
     }
     if let Some(v) = &snap.host_version {
         if !v.is_empty() {
-            d = d.child(kv_row("Version", v));
+            d = d.child(kv_row(cx, "Version", v));
         }
     }
     d
@@ -509,7 +522,7 @@ fn build_timing_string(snap: &ConnectSnapshot) -> String {
     parts.join(" \u{00b7} ")
 }
 
-fn kv_row(key: &'static str, value: &str) -> Div {
+fn kv_row(cx: &App, key: &'static str, value: &str) -> Div {
     div()
         .flex()
         .flex_row()
@@ -518,7 +531,7 @@ fn kv_row(key: &'static str, value: &str) -> Div {
             div()
                 .w(px(60.0))
                 .flex_shrink_0()
-                .text_color(rgb(theme::TEXT_MUTED))
+                .text_color(rgb(theme::text_muted(cx)))
                 .text_size(px(theme::FONT_DETAIL))
                 .child(key),
         )
@@ -527,7 +540,7 @@ fn kv_row(key: &'static str, value: &str) -> Div {
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .text_color(rgb(theme::TEXT_SECONDARY))
+                .text_color(rgb(theme::text_secondary(cx)))
                 .text_size(px(theme::FONT_DETAIL))
                 .child(value.to_string()),
         )

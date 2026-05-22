@@ -19,6 +19,7 @@ pub mod editor;
 pub mod fonts;
 pub mod placeholder;
 pub mod theme;
+pub mod theme_state;
 pub mod ui;
 
 // Sceens

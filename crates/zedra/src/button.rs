@@ -7,7 +7,7 @@ use crate::theme;
 const DEFAULT_NATIVE_FLOATING_BUTTON_ICON_SIZE: f32 = 16.0;
 
 /// An outlined button - bordered, centered text.
-pub fn outline_button(id: impl Into<ElementId>, label: &str) -> Stateful<Div> {
+pub fn outline_button(cx: &App, id: impl Into<ElementId>, label: &str) -> Stateful<Div> {
     div()
         .id(id)
         .flex()
@@ -17,9 +17,9 @@ pub fn outline_button(id: impl Into<ElementId>, label: &str) -> Stateful<Div> {
         .py(px(10.0))
         .rounded(px(8.0))
         .border_1()
-        .border_color(rgb(theme::BORDER_DEFAULT))
+        .border_color(rgb(theme::border_default(cx)))
         .cursor_pointer()
-        .text_color(rgb(theme::TEXT_PRIMARY))
+        .text_color(rgb(theme::text_primary(cx)))
         .text_size(px(theme::FONT_BODY))
         .font_weight(FontWeight::MEDIUM)
         .child(label.to_string())

@@ -11,7 +11,7 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::*;
 use zedra_osc::OscEvent;
 
-use crate::element::TerminalElement;
+use crate::element::{TerminalElement, TerminalTheme};
 use crate::selection::TerminalSelectionDocument;
 use crate::terminal::{Terminal, TerminalContent, TerminalEvent};
 
@@ -115,6 +115,7 @@ pub struct TerminalView {
     /// Cached from terminal mode; updated each render so parent views can read without
     /// creating a GPUI dependency on the inner terminal entity.
     pub is_alt_screen: bool,
+    terminal_theme: crate::element::TerminalTheme,
     _event_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -180,6 +181,7 @@ impl TerminalView {
             keyboard_content_offset: px(0.0),
             suppress_touch_scroll_until: None,
             is_alt_screen: false,
+            terminal_theme: TerminalTheme::dark(),
             _event_task: event_task,
             _subscriptions: vec![],
         }
@@ -187,6 +189,14 @@ impl TerminalView {
 
     pub fn set_terminal_id(&mut self, terminal_id: String) {
         self.terminal_id = terminal_id;
+    }
+
+    pub fn set_terminal_theme(&mut self, theme: TerminalTheme, cx: &mut Context<Self>) {
+        if self.terminal_theme == theme {
+            return;
+        }
+        self.terminal_theme = theme;
+        cx.notify();
     }
 
     /// Computes the upward pixel shift needed to keep active bottom content visible above
@@ -610,7 +620,7 @@ impl Render for TerminalView {
             .key_context("Terminal")
             .size_full()
             .overflow_hidden()
-            .bg(rgb(0x0e0c0c))
+            .bg(rgb(self.terminal_theme.background))
             .track_focus(&focus_handle)
             .manual_focus()
             .on_press(cx.listener(|this, event: &PressEvent, window, cx| {
@@ -751,6 +761,7 @@ impl Render for TerminalView {
                 visual_scroll_offset_px,
                 self.keyboard_inset,
                 self.keyboard_content_offset,
+                self.terminal_theme,
                 cx.weak_entity(),
                 self.terminal.downgrade(),
                 self.focus_handle.clone(),

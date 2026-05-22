@@ -67,17 +67,17 @@ pub fn render_agent_session_list<C: 'static>(
         .gap(px(theme::SPACING_SM));
 
     if props.loading {
-        return list.child(empty_text("Loading sessions..."));
+        return list.child(empty_text(cx, "Loading sessions..."));
     }
     if let Some(error) = props.error {
-        return list.child(empty_text(format!("Failed to load sessions: {error}")));
+        return list.child(empty_text(cx, format!("Failed to load sessions: {error}")));
     }
     if props.sections.is_empty() {
-        return list.child(empty_text(props.empty_message));
+        return list.child(empty_text(cx, props.empty_message));
     }
 
     for section in props.sections {
-        list = list.child(section_header(&section.label));
+        list = list.child(section_header(cx, &section.label));
         for session in section.sessions {
             list = list.child(render_agent_session_item(session, props.resume_on_tap, cx));
         }
@@ -104,8 +104,8 @@ pub fn render_agent_session_item<C: 'static>(
         .py(px(theme::SPACING_SM))
         .rounded(px(6.0))
         .border_1()
-        .border_color(rgb(theme::BORDER_SUBTLE))
-        .bg(rgb(theme::BG_CARD))
+        .border_color(rgb(theme::border_subtle(cx)))
+        .bg(rgb(theme::bg_card(cx)))
         .flex()
         .flex_col()
         .gap(px(6.0))
@@ -136,7 +136,7 @@ pub fn render_agent_session_item<C: 'static>(
                     svg()
                         .path(agent_icon(kind))
                         .size(px(theme::ICON_SM))
-                        .text_color(rgb(theme::TEXT_MUTED)),
+                        .text_color(rgb(theme::text_muted(cx))),
                 )
                 .child(
                     div()
@@ -150,7 +150,7 @@ pub fn render_agent_session_item<C: 'static>(
                                 .min_w_0()
                                 .truncate()
                                 .text_size(px(theme::FONT_BODY))
-                                .text_color(rgb(theme::TEXT_PRIMARY))
+                                .text_color(rgb(theme::text_primary(cx)))
                                 .child(session_title(&session)),
                         )
                         .child(
@@ -158,24 +158,24 @@ pub fn render_agent_session_item<C: 'static>(
                                 .min_w_0()
                                 .truncate()
                                 .text_size(px(theme::FONT_DETAIL))
-                                .text_color(rgb(theme::TEXT_MUTED))
+                                .text_color(rgb(theme::text_muted(cx)))
                                 .child(session_subtitle(&session)),
                         ),
                 ),
         )
-        .child(session_meta_row(&session))
+        .child(session_meta_row(cx, &session))
 }
 
-fn section_header(label: &str) -> Div {
+fn section_header(cx: &App, label: &str) -> Div {
     div()
         .pt(px(theme::SPACING_SM))
         .pb(px(4.0))
         .text_size(px(theme::FONT_DETAIL))
-        .text_color(rgb(theme::TEXT_MUTED))
+        .text_color(rgb(theme::text_muted(cx)))
         .child(label.to_string())
 }
 
-fn empty_text(text: impl Into<SharedString>) -> Div {
+fn empty_text(cx: &App, text: impl Into<SharedString>) -> Div {
     div()
         .flex()
         .flex_1()
@@ -183,11 +183,11 @@ fn empty_text(text: impl Into<SharedString>) -> Div {
         .justify_center()
         .px(px(theme::SPACING_MD))
         .text_size(px(theme::FONT_BODY))
-        .text_color(rgb(theme::TEXT_MUTED))
+        .text_color(rgb(theme::text_muted(cx)))
         .child(text.into())
 }
 
-fn session_meta_row(session: &AgentSessionSummary) -> Div {
+fn session_meta_row(cx: &App, session: &AgentSessionSummary) -> Div {
     let mut parts = Vec::new();
     if let Some(at) = session.last_activity_at.or(session.created_at) {
         parts.push(format_session_time(at));
@@ -214,7 +214,7 @@ fn session_meta_row(session: &AgentSessionSummary) -> Div {
         .min_w_0()
         .truncate()
         .text_size(px(theme::FONT_DETAIL))
-        .text_color(rgb(theme::TEXT_MUTED))
+        .text_color(rgb(theme::text_muted(cx)))
         .child(if parts.is_empty() {
             short_id(&session.session_id)
         } else {
