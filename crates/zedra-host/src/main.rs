@@ -23,7 +23,9 @@ use zedra_host::{
 use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
 
+mod agent_cli;
 mod setup;
+mod terminal_cli;
 
 #[derive(Parser)]
 #[command(
@@ -171,15 +173,13 @@ enum Commands {
         lines: usize,
     },
 
-    /// Open a terminal on the connected phone
-    Terminal {
-        /// Working directory of the running daemon
-        #[arg(short, long, default_value = ".")]
-        workdir: String,
+    /// Open or list terminals on the connected phone
+    Terminal(terminal_cli::TerminalArgs),
 
-        /// Command to run in the terminal on startup (e.g. "claude --resume <id>")
-        #[arg(long)]
-        launch_cmd: Option<String>,
+    /// Inspect and test managed AI-agent integration
+    Agent {
+        #[command(subcommand)]
+        command: agent_cli::AgentCommand,
     },
 
     /// Install Zedra skills or plugins for an AI coding agent
@@ -702,6 +702,13 @@ async fn main() -> Result<()> {
                 workdir.clone(),
                 host_identity.clone(),
             ));
+            {
+                let cache = state.agent_cache.clone();
+                let preload_workdir = workdir.clone();
+                tokio::spawn(async move {
+                    cache.preload(preload_workdir).await;
+                });
+            }
 
             // 1. Bind iroh endpoint with configured relay URLs.
             let endpoint_relay_urls: Vec<String> = if relay_url.is_empty() {
@@ -910,7 +917,7 @@ async fn main() -> Result<()> {
                 });
             }
 
-            // 5. Run iroh accept loop until the endpoint closes or the process exits.
+            // 5. Run iroh accept loop (blocks main)
             iroh_listener::run_accept_loop(&endpoint, registry, state).await?;
         }
 
@@ -986,51 +993,12 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Terminal {
-            workdir,
-            launch_cmd,
-        } => {
-            let workdir = resolve_workdir(workdir);
-            let config_dir = identity::workspace_config_dir(&workdir)?;
-            let addr = std::fs::read_to_string(config_dir.join("api-addr")).unwrap_or_default();
-            let token = std::fs::read_to_string(config_dir.join("api-token")).unwrap_or_default();
-            if addr.trim().is_empty() {
-                utils::eprintln_error(format!(
-                    "No running daemon found for: {}",
-                    workdir.display()
-                ));
-                std::process::exit(1);
-            }
-            let url = format!("http://{}/api/terminal", addr.trim());
-            let body = serde_json::json!({ "launch_cmd": launch_cmd.as_deref() });
-            let client = reqwest::Client::new();
-            match client
-                .post(&url)
-                .bearer_auth(token.trim())
-                .json(&body)
-                .send()
-                .await
-            {
-                Ok(resp) => {
-                    let status = resp.status();
-                    let text = resp.text().await.unwrap_or_default();
-                    if !status.is_success() {
-                        utils::eprintln_error(format!(
-                            "Failed to open terminal: HTTP {} {}",
-                            status, text
-                        ));
-                        std::process::exit(1);
-                    }
-                    match render_terminal_created_output(&text, launch_cmd.as_deref()) {
-                        Some(output) => println!("{output}"),
-                        None => println!("{}", text),
-                    }
-                }
-                Err(e) => {
-                    utils::eprintln_error(format!("Failed to reach daemon: {}", e));
-                    std::process::exit(1);
-                }
-            }
+        Commands::Terminal(args) => {
+            terminal_cli::run(args).await?;
+        }
+
+        Commands::Agent { command } => {
+            agent_cli::run(command).await?;
         }
 
         Commands::Setup { yes, agent } => {
@@ -1231,8 +1199,7 @@ async fn main() -> Result<()> {
         Commands::Stop { workdir, grace } => {
             let workdir = resolve_workdir(&workdir);
 
-            let lock_info = workspace_lock::read_lock_info(&workdir)?;
-            match &lock_info {
+            match workspace_lock::read_lock_info(&workdir)? {
                 None => {
                     utils::eprintln_error(format!(
                         "No running Zedra daemon found for: {}",
@@ -1622,21 +1589,6 @@ fn terminal_status_row(terminal: &serde_json::Value) -> Vec<String> {
         .unwrap_or_else(|| "-".to_string());
 
     vec![id, title.to_string(), created, uptime, session]
-}
-
-fn render_terminal_created_output(body: &str, launch_cmd: Option<&str>) -> Option<String> {
-    let response = serde_json::from_str::<serde_json::Value>(body).ok()?;
-    let id = response["id"].as_str()?;
-    let session_id = response["session_id"].as_str()?;
-    let mut rows = vec![("ID", id.to_string()), ("Session", session_id.to_string())];
-    if let Some(launch_cmd) = launch_cmd.filter(|command| !command.is_empty()) {
-        rows.push(("Command", launch_cmd.to_string()));
-    }
-
-    Some(format!(
-        "Terminal Opened\n\n{}",
-        utils::render_key_values(&rows)
-    ))
 }
 
 fn non_empty_str(value: &serde_json::Value) -> Option<&str> {
@@ -2242,20 +2194,6 @@ mod tests {
         assert!(output.contains("  Daemon        not running"));
         assert!(output.contains("  Active Time   40s"));
         assert!(output.contains("  Active Now    0 connections"));
-    }
-
-    #[test]
-    fn terminal_created_output_summarizes_api_response() {
-        let output = render_terminal_created_output(
-            r#"{"id":"terminal-id","session_id":"session-id"}"#,
-            Some("claude"),
-        )
-        .unwrap();
-
-        assert!(output.contains("Terminal Opened"));
-        assert!(output.contains("  ID       terminal-id"));
-        assert!(output.contains("  Session  session-id"));
-        assert!(output.contains("  Command  claude"));
     }
 
     #[cfg(unix)]

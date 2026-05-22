@@ -22,6 +22,8 @@ pub struct SpawnOptions {
     /// Shell command to run when the PTY starts.
     /// Example: `"claude --resume"` to drop straight into a Claude session.
     pub launch_cmd: Option<String>,
+    /// Extra environment variables set on the spawned shell after sanitization.
+    pub env: Vec<(String, String)>,
 }
 
 fn launch_script(launch_cmd: &str) -> String {
@@ -65,6 +67,9 @@ impl ShellSession {
         // Always set a known-good TERM; override any inherited value.
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        for (key, val) in &opts.env {
+            cmd.env(key, val);
+        }
 
         // Spawn the shell process
         let child = pair
@@ -423,6 +428,7 @@ mod tests {
             SpawnOptions {
                 workdir: None,
                 launch_cmd: Some("printf 'ZEDRA_LAUNCH_OK\\n'; exit".to_string()),
+                env: Vec::new(),
             },
         )
         .unwrap();

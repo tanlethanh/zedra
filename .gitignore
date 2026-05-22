@@ -1,6 +1,10 @@
 .DS_Store
 
 .claude/worktrees/
+.claude/settings.local.json
+.codex/hooks.json
+.opencode/plugins/zedra.js
+.zedra/agent-hooks/
 
 /target
 target

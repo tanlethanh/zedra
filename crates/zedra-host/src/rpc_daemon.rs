@@ -6,6 +6,8 @@
 //   PKI reconnect:  Connect(None) → Challenge → AuthProve → Ok(SyncSessionResult) → (RPC calls)
 //   Health:         Ping (every 2s, foreground only, 5 misses = client reconnects)
 
+use crate::agent;
+use crate::agent_cache;
 use crate::docs_tree::{
     build_snapshot, docs_tree_cache_key, docs_tree_limit, snapshot_page_result,
     validate_docs_tree_offset,
@@ -24,11 +26,11 @@ use crate::session_registry::{
 };
 use crate::utils;
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zedra_rpc::proto::*;
@@ -235,6 +237,7 @@ mod terminal_meta_preamble_tests {
         let opts = SpawnOptions {
             workdir: Some(PathBuf::from("/repo/project")),
             launch_cmd: Some("claude --resume session".to_owned()),
+            env: Vec::new(),
         };
 
         assert_eq!(
@@ -490,6 +493,9 @@ pub struct DaemonState {
     pub identity: SharedIdentity,
     /// When the daemon started; used to compute uptime.
     pub started_at: std::time::Instant,
+    pub agent_hook_events: tokio::sync::Mutex<VecDeque<AgentHookEventRecord>>,
+    pub agent_cache: Arc<agent_cache::AgentCache>,
+    next_agent_hook_event_seq: AtomicU64,
 }
 
 impl std::fmt::Debug for DaemonState {
@@ -507,8 +513,72 @@ impl DaemonState {
             workdir,
             identity,
             started_at: std::time::Instant::now(),
+            agent_hook_events: tokio::sync::Mutex::new(VecDeque::new()),
+            agent_cache: agent_cache::AgentCache::new(),
+            next_agent_hook_event_seq: AtomicU64::new(1),
         }
     }
+
+    pub async fn record_agent_hook_event(&self, mut event: AgentHookEventRecord) -> u64 {
+        let seq = self
+            .next_agent_hook_event_seq
+            .fetch_add(1, Ordering::Relaxed);
+        event.seq = seq;
+        let mut events = self.agent_hook_events.lock().await;
+        events.push_back(event);
+        while events.len() > MAX_AGENT_HOOK_EVENTS {
+            events.pop_front();
+        }
+        seq
+    }
+
+    pub async fn list_agent_hook_events(
+        &self,
+        terminal_id: Option<&str>,
+        after_seq: u64,
+        limit: usize,
+    ) -> Vec<AgentHookEventRecord> {
+        let limit = limit.clamp(1, MAX_AGENT_HOOK_EVENTS);
+        self.agent_hook_events
+            .lock()
+            .await
+            .iter()
+            .filter(|event| event.seq > after_seq)
+            .filter(|event| {
+                terminal_id
+                    .map(|terminal_id| event.terminal_id.as_deref() == Some(terminal_id))
+                    .unwrap_or(true)
+            })
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+}
+
+const MAX_AGENT_HOOK_EVENTS: usize = 512;
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentHookEventRecord {
+    pub seq: u64,
+    pub kind: ManagedAgentKind,
+    pub provider_event_name: String,
+    pub provider_ids: AgentHookProviderIds,
+    pub normalized: Option<AgentEventSummary>,
+    pub terminal_id: Option<String>,
+    pub terminal_bound: bool,
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct AgentHookProviderIds {
+    pub session_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub tool_use_id: Option<String>,
+    pub task_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub elicitation_id: Option<String>,
+    pub transcript_id: Option<String>,
+    pub batch_tool_use_ids: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -969,6 +1039,23 @@ async fn handle_register(
             RegisterResult::Ok
         }
         ConsumeSlotResult::Consumed => {
+            // The slot may have been consumed by THIS client on an earlier
+            // connection that dropped before the client observed the result.
+            // Re-registration from a pubkey already in the ACL is idempotent:
+            // report success instead of a fatal HandshakeConsumed. A pubkey
+            // not in the ACL (e.g. the slot was burned by a bad-HMAC attempt)
+            // still gets HandshakeConsumed.
+            if registry
+                .is_in_session_acl(&msg.session_id, &msg.client_pubkey)
+                .await
+            {
+                tracing::info!(
+                    "Register: client {:?}... already registered to session {}; idempotent ok",
+                    &msg.client_pubkey[..4],
+                    msg.session_id,
+                );
+                return RegisterResult::Ok;
+            }
             tracing::warn!("Register: slot for {} already consumed", msg.session_id);
             utils::eprintln_warn(
                 "QR already used. Run `zedra qr` from the workspace, or add `--workdir <path>` from another directory.",
@@ -1145,7 +1232,7 @@ pub async fn create_terminal(
     session: &Arc<ServerSession>,
     cols: u16,
     rows: u16,
-    opts: SpawnOptions,
+    mut opts: SpawnOptions,
 ) -> Result<String> {
     if session.terminals.lock().await.len() >= MAX_TERMINALS_PER_SESSION {
         anyhow::bail!(
@@ -1156,10 +1243,18 @@ pub async fn create_terminal(
         );
     }
 
+    let id = session.next_terminal_id().await;
+    opts.env.push(("ZEDRA_TERMINAL_ID".to_string(), id.clone()));
+    if let Some(workdir) = &opts.workdir {
+        opts.env.push((
+            "ZEDRA_WORKDIR".to_string(),
+            workdir.to_string_lossy().into_owned(),
+        ));
+    }
+
     let initial_meta = initial_host_meta(&opts);
     let shell = ShellSession::spawn(cols, rows, opts)?;
     let (pty_reader, pty_writer, master, child) = shell.take_reader();
-    let id = session.next_terminal_id().await;
 
     tracing::info!(
         "create_terminal: id={} cols={} rows={} session={}",
@@ -1909,6 +2004,7 @@ async fn dispatch(
                 SpawnOptions {
                     workdir,
                     launch_cmd,
+                    env: Vec::new(),
                 },
             )
             .await
@@ -2412,6 +2508,94 @@ async fn dispatch(
                 response_bytes: text.len(),
             });
             let _ = msg.tx.send(AiPromptResult { text, done }).await;
+        }
+
+        ZedraMessage::AgentList(msg) => {
+            session.touch().await;
+            let workdir = session.workdir.as_ref().unwrap_or(&state.workdir);
+            let result =
+                agent::list_agents(&state.agent_cache, workdir, Some(&session), msg.refresh).await;
+            let _ = msg.tx.send(result).await;
+        }
+
+        ZedraMessage::AgentSessions(msg) => {
+            session.touch().await;
+            let workdir = session.workdir.as_ref().unwrap_or(&state.workdir);
+            let result = agent::list_agent_sessions(
+                &state.agent_cache,
+                msg.kind,
+                workdir,
+                Some(&session),
+                msg.limit,
+                msg.refresh,
+            )
+            .await;
+            let _ = msg.tx.send(result).await;
+        }
+
+        ZedraMessage::AgentInstalledList(msg) => {
+            session.touch().await;
+            let result = agent::list_installed_agents(&state.agent_cache, msg.refresh).await;
+            let _ = msg.tx.send(result).await;
+        }
+
+        ZedraMessage::AgentResume(msg) => {
+            session.touch().await;
+            let workdir = session
+                .workdir
+                .clone()
+                .or_else(|| Some(state.workdir.clone()));
+            let launch_cmd = agent::resume_launch_command(msg.kind, &msg.session_id);
+            let Some(launch_cmd) = launch_cmd else {
+                let _ = msg
+                    .tx
+                    .send(AgentResumeResult {
+                        terminal_id: String::new(),
+                        error: Some("missing session id".to_string()),
+                    })
+                    .await;
+                return Ok(());
+            };
+            match create_terminal(
+                &session,
+                msg.cols,
+                msg.rows,
+                SpawnOptions {
+                    workdir,
+                    launch_cmd: Some(launch_cmd),
+                    env: Vec::new(),
+                },
+            )
+            .await
+            {
+                Ok(terminal_id) => {
+                    zedra_telemetry::send(Event::HostTerminalOpen {
+                        has_launch_cmd: true,
+                    });
+                    let terminal_count = session.terminals.lock().await.len();
+                    if let Err(e) = metrics::record_terminal_created(&state.workdir, terminal_count)
+                    {
+                        tracing::warn!("Failed to record terminal metrics: {}", e);
+                    }
+                    let _ = msg
+                        .tx
+                        .send(AgentResumeResult {
+                            terminal_id,
+                            error: None,
+                        })
+                        .await;
+                }
+                Err(e) => {
+                    tracing::warn!("AgentResume failed: {}", e);
+                    let _ = msg
+                        .tx
+                        .send(AgentResumeResult {
+                            terminal_id: String::new(),
+                            error: Some(e.to_string()),
+                        })
+                        .await;
+                }
+            }
         }
 
         // -- LSP --
