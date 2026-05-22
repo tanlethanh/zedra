@@ -63,6 +63,9 @@ pub struct ZedraAssets;
 
 impl gpui::AssetSource for ZedraAssets {
     fn load(&self, path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        if let Some(bytes) = editor::mermaid::load_mermaid_svg(path) {
+            return Ok(Some(std::borrow::Cow::Owned(bytes.to_vec())));
+        }
         Ok(Self::get(path).map(|f| f.data))
     }
 

@@ -198,8 +198,8 @@ impl TerminalPreviewView {
                                     return;
                                 }
                                 this.state = PreviewState::Loaded;
-                                this.markdown_view.update(cx, |markdown_view, _cx| {
-                                    markdown_view.set_parsed_source(parsed);
+                                this.markdown_view.update(cx, |markdown_view, cx| {
+                                    markdown_view.set_parsed_source(parsed, cx);
                                 });
                                 this.update_sheet_scroll_boundary(cx);
                                 cx.notify();

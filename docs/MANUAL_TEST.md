@@ -732,7 +732,26 @@ printf '/tmp/zedra-markdown-table.md:1\n'
 10. Swipe vertically starting inside the table
 11. Expected: the markdown preview scrolls vertically and the table does not drift horizontally
 
-## 15c. Markdown Bottom Padding And Link Hit Slop
+## 15c. Markdown Mermaid Diagram In Preview
+
+1. Connect to a session and open the terminal view
+2. Run:
+
+```bash
+printf '%s\n' '# Mermaid Test' '' '```mermaid' 'flowchart LR' '  A[Start] --> B[End]' '```' > /tmp/zedra-markdown-mermaid.md
+printf '/tmp/zedra-markdown-mermaid.md:1\n'
+```
+
+3. Tap `/tmp/zedra-markdown-mermaid.md:1`
+4. Expected: the preview opens in markdown mode
+5. Expected: a rendered flowchart appears in a card instead of raw `flowchart LR` source
+6. Expected: invalid mermaid syntax falls back to monospace source with a muted error line
+7. Tap `Show source` below a rendered diagram
+8. Expected: the fenced mermaid source appears and remains selectable for Add to Chat
+9. Open the same file from the workspace docs tree or editor
+10. Expected: the main workspace markdown view renders the diagram the same way
+
+## 15d. Markdown Bottom Padding And Link Hit Slop
 
 1. Connect to a session and open the terminal view
 2. Run:

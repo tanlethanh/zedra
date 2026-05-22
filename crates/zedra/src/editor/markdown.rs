@@ -1,11 +1,13 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 
 use crate::editor::merge_highlights;
+use crate::editor::mermaid::{self, MermaidDiagram};
 use crate::fonts;
 use crate::platform_bridge;
 use crate::theme;
@@ -27,12 +29,24 @@ const TABLE_CELL_MAX_WIDTH: f32 = 220.0;
 const TABLE_CELL_CHAR_WIDTH_FACTOR: f32 = 0.62;
 const TABLE_CELL_PADDING_X: f32 = CODE_BLOCK_PADDING_X;
 const TABLE_CELL_PADDING_Y: f32 = CODE_BLOCK_PADDING_Y;
+const MERMAID_PENDING_HEIGHT: f32 = 120.0;
+const MERMAID_CONTENT_WIDTH: f32 = 360.0;
 pub const MARKDOWN_SELECTION_AREA_ID: &str = "markdown-preview-selection";
+
+#[derive(Clone, Debug)]
+enum MermaidBlockState {
+    Pending,
+    Ready(MermaidDiagram),
+    Failed,
+}
 
 pub struct MarkdownView {
     document: MarkdownDocument,
     list_state: ListState,
     focus_handle: Option<FocusHandle>,
+    mermaid_states: HashMap<usize, MermaidBlockState>,
+    mermaid_show_source: HashSet<usize>,
+    mermaid_generation: u64,
 }
 
 impl MarkdownView {
@@ -48,12 +62,15 @@ impl MarkdownView {
             document,
             list_state,
             focus_handle: None,
+            mermaid_states: HashMap::new(),
+            mermaid_show_source: HashSet::new(),
+            mermaid_generation: 0,
         }
     }
 
-    pub fn set_source(&mut self, source: impl Into<SharedString>) {
+    pub fn set_source(&mut self, source: impl Into<SharedString>, cx: &mut Context<Self>) {
         let source = source.into();
-        self.replace_document(parse_document(source.as_ref()));
+        self.replace_document(parse_document(source.as_ref()), cx);
     }
 
     pub fn line_range_for_selection(&self, range_utf16: Range<usize>) -> Option<(u32, u32)> {
@@ -65,17 +82,58 @@ impl MarkdownView {
         scroll_top.item_ix == 0 && scroll_top.offset_in_item <= px(0.5)
     }
 
-    pub(crate) fn set_parsed_source(&mut self, parsed: ParsedMarkdownSource) {
-        self.replace_document(parsed.document);
+    pub(crate) fn set_parsed_source(
+        &mut self,
+        parsed: ParsedMarkdownSource,
+        cx: &mut Context<Self>,
+    ) {
+        self.replace_document(parsed.document, cx);
     }
 
-    fn replace_document(&mut self, document: MarkdownDocument) {
+    fn replace_document(&mut self, document: MarkdownDocument, cx: &mut Context<Self>) {
         self.document = document;
+        self.mermaid_show_source.clear();
+        self.mermaid_generation = self.mermaid_generation.wrapping_add(1);
+        mermaid::clear_mermaid_svg_cache();
         // ListState caches row measurements. Reset it whenever the parsed block
         // tree changes, or scroll position and item heights can be reused from
         // the previous file.
         self.list_state
             .reset(markdown_list_item_count(self.document.blocks.len()));
+        self.schedule_mermaid_renders(cx);
+    }
+
+    fn schedule_mermaid_renders(&mut self, cx: &mut Context<Self>) {
+        self.mermaid_states.clear();
+        let generation = self.mermaid_generation;
+        for (block_ix, block) in self.document.blocks.iter().enumerate() {
+            let Block::Mermaid { text } = block else {
+                continue;
+            };
+            self.mermaid_states
+                .insert(block_ix, MermaidBlockState::Pending);
+            let source = text.clone();
+            let block_ix = block_ix;
+            cx.spawn(async move |this, cx| {
+                let rendered = cx
+                    .background_spawn(
+                        async move { mermaid::render_mermaid_diagram(block_ix, &source) },
+                    )
+                    .await;
+                let _ = this.update(cx, |view, cx| {
+                    if view.mermaid_generation != generation {
+                        return;
+                    }
+                    let state = match rendered {
+                        Some(diagram) => MermaidBlockState::Ready(diagram),
+                        None => MermaidBlockState::Failed,
+                    };
+                    view.mermaid_states.insert(block_ix, state);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
     }
 }
 
@@ -161,6 +219,10 @@ enum Block {
         items: Vec<Vec<Block>>,
     },
     CodeBlock {
+        language: Option<String>,
+        text: String,
+    },
+    Mermaid {
         text: String,
     },
     Table(TableBlock),
@@ -231,8 +293,11 @@ impl InlineRenderBuffer {
 }
 
 impl Render for MarkdownView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let blocks = Arc::clone(&self.document.blocks);
+        let mermaid_states = self.mermaid_states.clone();
+        let mermaid_show_source = self.mermaid_show_source.clone();
+        let view = cx.weak_entity();
         let block_count = blocks.len();
         let bottom_inset = f32::max(
             platform_bridge::home_indicator_inset(),
@@ -240,7 +305,7 @@ impl Render for MarkdownView {
         );
         let focus_handle = self
             .focus_handle
-            .get_or_insert_with(|| _cx.focus_handle())
+            .get_or_insert_with(|| cx.focus_handle())
             .clone();
         let press_focus_handle = focus_handle.clone();
         // Keep each top-level markdown block as one variable-height list row.
@@ -257,7 +322,16 @@ impl Render for MarkdownView {
                     } else {
                         px(theme::SPACING_MD)
                     })
-                    .child(render_block(block, format!("md-{ix}"), window, cx))
+                    .child(render_block(
+                        block,
+                        ix,
+                        format!("md-{ix}"),
+                        &mermaid_states,
+                        &mermaid_show_source,
+                        view.clone(),
+                        window,
+                        cx,
+                    ))
                     .into_any_element()
             } else if ix == block_count {
                 div().h(px(bottom_inset)).into_any_element()
@@ -812,6 +886,32 @@ fn line_number_for_byte_offset(source: &str, byte_offset: usize) -> u32 {
         + 1
 }
 
+fn take_code_block_body(events: &[Event<'_>], cursor: &mut usize) -> String {
+    *cursor += 1;
+    let mut text = String::new();
+    while *cursor < events.len() {
+        match &events[*cursor] {
+            Event::End(TagEnd::CodeBlock) => {
+                *cursor += 1;
+                break;
+            }
+            Event::Text(value)
+            | Event::Code(value)
+            | Event::Html(value)
+            | Event::InlineHtml(value) => {
+                text.push_str(value);
+                *cursor += 1;
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                text.push('\n');
+                *cursor += 1;
+            }
+            _ => *cursor += 1,
+        }
+    }
+    text
+}
+
 fn parse_blocks(events: &[Event<'_>], cursor: &mut usize, end: Option<TagEnd>) -> Vec<Block> {
     let mut blocks = Vec::new();
 
@@ -873,30 +973,24 @@ fn parse_blocks(events: &[Event<'_>], cursor: &mut usize, end: Option<TagEnd>) -
                     items,
                 });
             }
-            Event::Start(Tag::CodeBlock(_)) => {
-                *cursor += 1;
-                let mut text = String::new();
-                while *cursor < events.len() {
-                    match &events[*cursor] {
-                        Event::End(TagEnd::CodeBlock) => {
-                            *cursor += 1;
-                            break;
+            Event::Start(Tag::CodeBlock(kind)) => {
+                let language = match kind {
+                    CodeBlockKind::Fenced(lang) => {
+                        let lang = lang.to_string();
+                        if mermaid::is_mermaid_language(&lang) {
+                            blocks.push(Block::Mermaid {
+                                text: take_code_block_body(events, cursor),
+                            });
+                            continue;
                         }
-                        Event::Text(value)
-                        | Event::Code(value)
-                        | Event::Html(value)
-                        | Event::InlineHtml(value) => {
-                            text.push_str(value);
-                            *cursor += 1;
-                        }
-                        Event::SoftBreak | Event::HardBreak => {
-                            text.push('\n');
-                            *cursor += 1;
-                        }
-                        _ => *cursor += 1,
+                        Some(lang)
                     }
-                }
-                blocks.push(Block::CodeBlock { text });
+                    CodeBlockKind::Indented => None,
+                };
+                blocks.push(Block::CodeBlock {
+                    language,
+                    text: take_code_block_body(events, cursor),
+                });
             }
             Event::Start(Tag::Table(_)) => {
                 *cursor += 1;
@@ -1100,7 +1194,60 @@ fn parse_inline_event(events: &[Event<'_>], cursor: &mut usize) -> Vec<Inline> {
     }
 }
 
-fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -> AnyElement {
+fn render_code_block_content(text: &str, key: &str) -> AnyElement {
+    let code_width = code_block_content_min_width(text);
+    let code_lines = div()
+        .min_w(px(code_width))
+        .px(px(CODE_BLOCK_PADDING_X))
+        .py(px(CODE_BLOCK_PADDING_Y))
+        .flex()
+        .flex_col()
+        .children(text.lines().map(|line| {
+            let line = if line.is_empty() {
+                " ".to_string()
+            } else {
+                line.to_string()
+            };
+            div()
+                .w_full()
+                .text_color(rgb(theme::TEXT_PRIMARY))
+                .text_size(px(CODE_BLOCK_FONT_SIZE))
+                .line_height(px(CODE_BLOCK_LINE_HEIGHT))
+                .font_family(fonts::MONO_FONT_FAMILY)
+                .whitespace_nowrap()
+                .child(markdown_text(StyledText::new(line), "\n"))
+        }));
+
+    let mut container = div()
+        .id(format!("{key}-code-scroll"))
+        .w_full()
+        .bg(rgb(theme::BG_CARD))
+        .border_1()
+        .border_color(rgb(theme::BORDER_DEFAULT))
+        .rounded(px(6.0))
+        .overflow_x_scroll()
+        .child(code_lines);
+    container.style().restrict_scroll_to_axis = Some(true);
+
+    container.into_any_element()
+}
+
+fn mermaid_display_height(diagram: &MermaidDiagram) -> f32 {
+    let width = diagram.intrinsic_width.max(1.0);
+    let height = diagram.intrinsic_height.max(1.0);
+    (MERMAID_CONTENT_WIDTH * (height / width)).clamp(80.0, 2000.0)
+}
+
+fn render_block(
+    block: &Block,
+    block_ix: usize,
+    key: String,
+    mermaid_states: &HashMap<usize, MermaidBlockState>,
+    mermaid_show_source: &HashSet<usize>,
+    view: WeakEntity<MarkdownView>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     match block {
         Block::Paragraph(content) => render_inline_block(content, InlineBlockStyle::Body, key),
         Block::Heading { level, content } => {
@@ -1111,20 +1258,27 @@ fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -
             };
             render_inline_block(content, style, key)
         }
-        Block::BlockQuote(children) => {
-            div()
-                .w_full()
-                .pl(px(theme::SPACING_MD))
-                .border_l_1()
-                .border_color(rgb(theme::BORDER_DEFAULT))
-                .flex()
-                .flex_col()
-                .gap(px(10.0))
-                .children(children.iter().enumerate().map(|(ix, child)| {
-                    render_block(child, format!("{key}-quote-{ix}"), window, cx)
-                }))
-                .into_any_element()
-        }
+        Block::BlockQuote(children) => div()
+            .w_full()
+            .pl(px(theme::SPACING_MD))
+            .border_l_1()
+            .border_color(rgb(theme::BORDER_DEFAULT))
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .children(children.iter().enumerate().map(|(ix, child)| {
+                render_block(
+                    child,
+                    usize::MAX,
+                    format!("{key}-quote-{ix}"),
+                    mermaid_states,
+                    mermaid_show_source,
+                    view.clone(),
+                    window,
+                    cx,
+                )
+            }))
+            .into_any_element(),
         Block::List {
             ordered,
             start,
@@ -1166,7 +1320,11 @@ fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -
                             .children(item.iter().enumerate().map(|(child_ix, child)| {
                                 render_block(
                                     child,
+                                    usize::MAX,
                                     format!("{key}-item-{ix}-{child_ix}"),
+                                    mermaid_states,
+                                    mermaid_show_source,
+                                    view.clone(),
                                     window,
                                     cx,
                                 )
@@ -1174,43 +1332,119 @@ fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -
                     )
             }))
             .into_any_element(),
-        Block::CodeBlock { text } => {
-            let code_width = code_block_content_min_width(text);
-            let code_lines = div()
-                .min_w(px(code_width))
-                .px(px(CODE_BLOCK_PADDING_X))
-                .py(px(CODE_BLOCK_PADDING_Y))
+        Block::Mermaid { text } => {
+            let show_source = mermaid_show_source.contains(&block_ix);
+            let state = mermaid_states.get(&block_ix);
+            let mut body: Vec<AnyElement> = Vec::new();
+
+            match state {
+                Some(MermaidBlockState::Ready(diagram)) => {
+                    let display_height = mermaid_display_height(diagram);
+                    let asset_path = diagram.asset_path.clone();
+                    body.push(
+                        div()
+                            .id(format!("{key}-mermaid"))
+                            .w_full()
+                            .h(px(display_height))
+                            .bg(rgb(theme::BG_CARD))
+                            .border_1()
+                            .border_color(rgb(theme::BORDER_DEFAULT))
+                            .rounded(px(6.0))
+                            .overflow_hidden()
+                            .child(
+                                img(asset_path)
+                                    .w_full()
+                                    .h_full()
+                                    .object_fit(ObjectFit::Contain),
+                            )
+                            .into_any_element(),
+                    );
+                }
+                Some(MermaidBlockState::Pending) => {
+                    body.push(
+                        div()
+                            .w_full()
+                            .h(px(MERMAID_PENDING_HEIGHT))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .bg(rgb(theme::BG_CARD))
+                            .border_1()
+                            .border_color(rgb(theme::BORDER_DEFAULT))
+                            .rounded(px(6.0))
+                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_size(px(theme::FONT_DETAIL))
+                            .font_family(fonts::MONO_FONT_FAMILY)
+                            .child("Rendering diagram…")
+                            .into_any_element(),
+                    );
+                }
+                Some(MermaidBlockState::Failed) | None => {
+                    body.push(render_code_block_content(
+                        text,
+                        &format!("{key}-mermaid-fallback"),
+                    ));
+                    body.push(
+                        div()
+                            .mt(px(6.0))
+                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_size(px(theme::FONT_DETAIL))
+                            .font_family(fonts::MONO_FONT_FAMILY)
+                            .child("Diagram could not be rendered.")
+                            .into_any_element(),
+                    );
+                }
+            }
+
+            if matches!(
+                state,
+                Some(MermaidBlockState::Ready(_)) | Some(MermaidBlockState::Pending)
+            ) {
+                let toggle_label = if show_source {
+                    "Hide source"
+                } else {
+                    "Show source"
+                };
+                let toggle_ix = block_ix;
+                body.push(
+                    div()
+                        .id(format!("{key}-mermaid-source-toggle"))
+                        .mt(px(6.0))
+                        .cursor_pointer()
+                        .text_color(rgb(theme::ACCENT_BLUE))
+                        .text_size(px(theme::FONT_DETAIL))
+                        .font_family(fonts::MONO_FONT_FAMILY)
+                        .on_click(move |_, _window, cx| {
+                            let _ = view.update(cx, |view, cx| {
+                                if view.mermaid_show_source.contains(&toggle_ix) {
+                                    view.mermaid_show_source.remove(&toggle_ix);
+                                } else {
+                                    view.mermaid_show_source.insert(toggle_ix);
+                                }
+                                cx.notify();
+                            });
+                        })
+                        .child(toggle_label)
+                        .into_any_element(),
+                );
+            }
+
+            if show_source {
+                body.push(render_code_block_content(
+                    text,
+                    &format!("{key}-mermaid-source"),
+                ));
+            }
+
+            div()
+                .w_full()
                 .flex()
                 .flex_col()
-                .children(text.lines().map(|line| {
-                    let line = if line.is_empty() {
-                        " ".to_string()
-                    } else {
-                        line.to_string()
-                    };
-                    div()
-                        .w_full()
-                        .text_color(rgb(theme::TEXT_PRIMARY))
-                        .text_size(px(CODE_BLOCK_FONT_SIZE))
-                        .line_height(px(CODE_BLOCK_LINE_HEIGHT))
-                        .font_family(fonts::MONO_FONT_FAMILY)
-                        .whitespace_nowrap()
-                        .child(markdown_text(StyledText::new(line), "\n"))
-                }));
-
-            let mut container = div()
-                .id(format!("{key}-code-scroll"))
-                .w_full()
-                .bg(rgb(theme::BG_CARD))
-                .border_1()
-                .border_color(rgb(theme::BORDER_DEFAULT))
-                .rounded(px(6.0))
-                .overflow_x_scroll()
-                .child(code_lines);
-            container.style().restrict_scroll_to_axis = Some(true);
-
-            container.into_any_element()
+                .gap(px(6.0))
+                .children(body)
+                .into_any_element()
         }
+        Block::CodeBlock { text, .. } => render_code_block_content(text, &key),
         Block::Table(table) => render_table(table, key),
         Block::Html(text) => {
             render_inline_block(&[Inline::Html(text.clone())], InlineBlockStyle::Html, key)
@@ -1687,7 +1921,13 @@ fn main() {}
         assert!(matches!(document.blocks[1], Block::Paragraph(_)));
         assert!(matches!(document.blocks[2], Block::BlockQuote(_)));
         assert!(matches!(document.blocks[3], Block::List { .. }));
-        assert!(matches!(document.blocks[4], Block::CodeBlock { .. }));
+        assert!(matches!(
+            document.blocks[4],
+            Block::CodeBlock {
+                language: Some(_),
+                ..
+            }
+        ));
         assert!(matches!(document.blocks[5], Block::Table(_)));
         assert!(document.total_block_count() > document.blocks.len());
     }
@@ -1770,16 +2010,39 @@ fn main() {}
     }
 
     #[test]
-    fn markdown_view_resets_virtualized_rows_when_source_changes() {
-        let mut view = MarkdownView::new("# Title\n\nBody paragraph.");
-        assert_eq!(
-            view.list_state.item_count(),
-            markdown_list_item_count(view.document.blocks.len())
-        );
-        assert_eq!(view.document.blocks.len(), 2);
+    fn parses_mermaid_fence_into_mermaid_block() {
+        let document = parse_document("```mermaid\nflowchart LR\n  A --> B\n```\n");
+        assert_eq!(document.blocks.len(), 1);
+        assert!(matches!(document.blocks[0], Block::Mermaid { .. }));
+    }
 
-        view.set_source(
-            r#"# Updated
+    #[test]
+    fn parses_non_mermaid_fenced_blocks_with_language() {
+        let document = parse_document("```rust\nfn main() {}\n```\n");
+        let Block::CodeBlock { language, .. } = &document.blocks[0] else {
+            panic!("expected code block");
+        };
+        assert_eq!(language.as_deref(), Some("rust"));
+    }
+
+    #[test]
+    fn markdown_view_resets_virtualized_rows_when_source_changes() {
+        use gpui::{AppContext as _, TestAppContext};
+
+        let mut cx = TestAppContext::single();
+        let view = cx.update(|cx| cx.new(|_cx| MarkdownView::new("# Title\n\nBody paragraph.")));
+
+        view.update(&mut cx, |view, _cx| {
+            assert_eq!(
+                view.list_state.item_count(),
+                markdown_list_item_count(view.document.blocks.len())
+            );
+            assert_eq!(view.document.blocks.len(), 2);
+        });
+
+        view.update(&mut cx, |view, cx| {
+            view.set_source(
+                r#"# Updated
 
 - First
 - Second
@@ -1788,12 +2051,16 @@ fn main() {}
 fn main() {}
 ```
 "#,
-        );
+                cx,
+            );
+        });
 
-        assert_eq!(view.document.blocks.len(), 3);
-        assert_eq!(
-            view.list_state.item_count(),
-            markdown_list_item_count(view.document.blocks.len())
-        );
+        view.update(&mut cx, |view, _cx| {
+            assert_eq!(view.document.blocks.len(), 3);
+            assert_eq!(
+                view.list_state.item_count(),
+                markdown_list_item_count(view.document.blocks.len())
+            );
+        });
     }
 }
