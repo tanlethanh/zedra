@@ -273,12 +273,12 @@ impl Render for HomeView {
                 svg()
                     .path("icons/logo.svg")
                     .size(px(60.0))
-                    .text_color(rgb(theme::TEXT_PRIMARY))
+                    .text_color(rgb(theme::text_primary(cx)))
                     .mb(px(theme::SPACING_LG)),
             )
             .child(
                 div()
-                    .text_color(rgb(theme::TEXT_PRIMARY))
+                    .text_color(rgb(theme::text_primary(cx)))
                     .text_size(px(theme::FONT_APP_TITLE))
                     .font_family(fonts::HEADING_FONT_FAMILY)
                     .font_weight(FontWeight::EXTRA_BOLD)
@@ -288,7 +288,7 @@ impl Render for HomeView {
                 div()
                     .flex()
                     .items_center()
-                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_color(rgb(theme::text_muted(cx)))
                     .text_size(px(theme::FONT_BODY))
                     .child("Code from anywhere. ")
                     .child(
@@ -305,7 +305,6 @@ impl Render for HomeView {
             )
             .mb(px(theme::SPACING_LG));
 
-        #[cfg(debug_assertions)]
         let settings_button = div()
             .id("home-settings-button")
             .absolute()
@@ -322,7 +321,7 @@ impl Render for HomeView {
                 svg()
                     .path("icons/settings.svg")
                     .size(px(theme::ICON_LG))
-                    .text_color(rgb(theme::TEXT_MUTED)),
+                    .text_color(rgb(theme::text_muted(cx))),
             );
 
         let mut content = div()
@@ -350,8 +349,8 @@ impl Render for HomeView {
 
                 let connect_phase = state.connect_phase.clone();
                 let status_color = match connect_phase.as_ref() {
-                    Some(p) => phase_indicator_color(p),
-                    None => theme::ACCENT_DIM,
+                    Some(p) => phase_indicator_color(&theme::palette(cx), p),
+                    None => theme::accent_dim(cx),
                 };
                 let status_label = match connect_phase.as_ref() {
                     Some(ConnectPhase::Connected) => "Connected",
@@ -393,7 +392,7 @@ impl Render for HomeView {
         }
 
         content = content.child(
-            outline_button("home-scan-qr", "Scan QR Code")
+            outline_button(cx, "home-scan-qr", "Scan QR Code")
                 .w(px(theme::HOME_CARD_WIDTH))
                 .on_press(cx.listener(|this, _event, _window, _cx| {
                     this.handle_scan_qr();
@@ -441,7 +440,7 @@ impl Render for HomeView {
             )
             .child(
                 div()
-                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_color(rgb(theme::text_muted(cx)))
                     .text_size(px(theme::FONT_DETAIL))
                     .child(app_version_text()),
             );
@@ -450,16 +449,16 @@ impl Render for HomeView {
             .id("home-view")
             .track_focus(&self.focus_handle)
             .size_full()
-            .bg(rgb(theme::BG_PRIMARY))
+            .bg(rgb(theme::bg_primary(cx)))
             .flex()
             .flex_col()
             .items_center()
             .justify_center();
 
-        #[cfg(debug_assertions)]
-        let root = root.child(settings_button);
-
-        root.child(header).child(content).child(footer)
+        root.child(settings_button)
+            .child(header)
+            .child(content)
+            .child(footer)
     }
 }
 
@@ -748,9 +747,9 @@ fn install_guide(selected_tab: GuideTab, cx: &mut Context<HomeView>) -> impl Int
                 .w_full()
                 .max_h(px(184.0))
                 .rounded(px(8.0))
-                .bg(rgb(theme::BG_CARD))
+                .bg(rgb(theme::bg_card(cx)))
                 .border_1()
-                .border_color(rgb(theme::BORDER_SUBTLE))
+                .border_color(rgb(theme::border_subtle(cx)))
                 .px(px(theme::SPACING_SM))
                 .pb(px(theme::SPACING_SM))
                 .child(tab_list)
@@ -773,9 +772,9 @@ fn guide_tab_button(
         .cursor_pointer()
         .border_b_1()
         .border_color(rgb(if selected {
-            theme::BORDER_HIGHLIGHT
+            theme::border_highlight(cx)
         } else {
-            theme::BG_CARD
+            theme::bg_card(cx)
         }))
         .hit_slop(px(10.0))
         .on_press(cx.listener(move |this, _event, _window, cx| {
@@ -786,9 +785,9 @@ fn guide_tab_button(
                 .path(spec.icon)
                 .size(px(spec.icon_size))
                 .text_color(rgb(if selected {
-                    theme::TEXT_SECONDARY
+                    theme::text_secondary(cx)
                 } else {
-                    theme::TEXT_MUTED
+                    theme::text_muted(cx)
                 })),
         )
 }
@@ -800,7 +799,7 @@ fn guide_line(
     line: &'static GuideLine,
     selection_order: u64,
     is_last_line: bool,
-    _cx: &mut Context<HomeView>,
+    cx: &mut Context<HomeView>,
 ) -> AnyElement {
     let text = StyledText::new(line.text)
         .selectable()
@@ -814,9 +813,9 @@ fn guide_line(
         )))
         .w_full()
         .text_color(rgb(if line.comment {
-            theme::TEXT_MUTED
+            theme::text_muted(cx)
         } else {
-            theme::TEXT_SECONDARY
+            theme::text_secondary(cx)
         }))
         .text_size(px(theme::FONT_DETAIL))
         .child(text);
@@ -850,9 +849,9 @@ fn workspace_card(
         .id(SharedString::from(format!("ws-card-{}", index)))
         .w_full()
         .rounded(px(8.0))
-        .bg(rgb(theme::BG_CARD))
+        .bg(rgb(theme::bg_card(cx)))
         .border_1()
-        .border_color(rgb(theme::BORDER_SUBTLE))
+        .border_color(rgb(theme::border_subtle(cx)))
         .p(px(12.0))
         .cursor_pointer()
         .on_press(cx.listener(move |this, _event, window, cx| {
@@ -872,11 +871,12 @@ fn workspace_card(
                 .child(ConnectionStatusIndicator::from_phase(
                     ("home-connect-status", index),
                     connect_phase.as_ref(),
+                    &theme::palette(cx),
                 ))
                 .child(
                     div()
                         .flex_1()
-                        .text_color(rgb(theme::TEXT_PRIMARY))
+                        .text_color(rgb(theme::text_primary(cx)))
                         .text_size(px(theme::FONT_BODY))
                         .font_weight(FontWeight::MEDIUM)
                         .child(project_name),
@@ -894,7 +894,7 @@ fn workspace_card(
             Some(
                 div()
                     .mt(px(4.0))
-                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_color(rgb(theme::text_muted(cx)))
                     .text_size(px(theme::FONT_DETAIL))
                     .text_overflow(TextOverflow::Truncate(SharedString::new("...")))
                     .child(subtitle),
@@ -923,6 +923,6 @@ fn social_button(
             svg()
                 .path(icon)
                 .size(px(size))
-                .text_color(rgb(theme::TEXT_MUTED)),
+                .text_color(rgb(theme::text_muted(cx))),
         )
 }

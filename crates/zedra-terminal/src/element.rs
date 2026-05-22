@@ -15,8 +15,8 @@ use crate::selection::TerminalSelectionDocument;
 use crate::terminal::*;
 use crate::view::TerminalView;
 
-/// Per-terminal color palette. Construct with `TerminalTheme::one_dark()` for the default
-/// One Dark palette, or supply custom values for alternative themes.
+/// Per-terminal color palette.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TerminalTheme {
     pub background: u32,
     pub foreground: u32,
@@ -40,7 +40,7 @@ pub struct TerminalTheme {
 }
 
 impl TerminalTheme {
-    pub fn one_dark() -> Self {
+    pub fn dark() -> Self {
         Self {
             background: 0x0e0c0c,
             foreground: 0xabb2bf,
@@ -62,6 +62,34 @@ impl TerminalTheme {
             bright_cyan: 0x56b6c2,
             bright_white: 0xffffff,
         }
+    }
+
+    pub fn light() -> Self {
+        Self {
+            background: 0xfafafa,
+            foreground: 0x24292f,
+            cursor: 0x0969da,
+            black: 0x24292f,
+            red: 0xcf222e,
+            green: 0x116329,
+            yellow: 0x953800,
+            blue: 0x0550ae,
+            magenta: 0x8250df,
+            cyan: 0x116329,
+            white: 0x24292f,
+            bright_black: 0x57606a,
+            bright_red: 0xcf222e,
+            bright_green: 0x116329,
+            bright_yellow: 0x953800,
+            bright_blue: 0x0550ae,
+            bright_magenta: 0x8250df,
+            bright_cyan: 0x116329,
+            bright_white: 0x1a1a1a,
+        }
+    }
+
+    pub fn one_dark() -> Self {
+        Self::dark()
     }
 
     fn named_color(&self, color: NamedColor) -> Hsla {
@@ -303,6 +331,7 @@ pub struct TerminalElement {
     scroll_offset_px: f32,
     keyboard_inset: Pixels,
     keyboard_content_offset: Pixels,
+    theme: TerminalTheme,
     view: WeakEntity<TerminalView>,
     terminal: WeakEntity<Terminal>,
     focus_handle: FocusHandle,
@@ -317,6 +346,7 @@ impl TerminalElement {
         scroll_offset_px: f32,
         keyboard_inset: Pixels,
         keyboard_content_offset: Pixels,
+        theme: TerminalTheme,
         view: WeakEntity<TerminalView>,
         terminal: WeakEntity<Terminal>,
         focus_handle: FocusHandle,
@@ -329,6 +359,7 @@ impl TerminalElement {
             scroll_offset_px,
             keyboard_inset,
             keyboard_content_offset,
+            theme,
             view,
             terminal,
             focus_handle,
@@ -784,7 +815,7 @@ impl Element for TerminalElement {
         );
         window.handle_input(&self.focus_handle, input_handler, cx);
 
-        let theme = TerminalTheme::one_dark();
+        let theme = self.theme;
 
         // Draw terminal background
         window.paint_quad(fill(bounds, rgb(theme.background)));

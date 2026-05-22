@@ -335,7 +335,7 @@ impl DocsTree {
                         svg()
                             .path(icon_path)
                             .size(icon_size)
-                            .text_color(rgb(theme::TEXT_MUTED)),
+                            .text_color(rgb(theme::text_muted(cx))),
                     ),
                 )
                 .child(
@@ -343,7 +343,7 @@ impl DocsTree {
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_color(rgb(theme::TEXT_SECONDARY))
+                        .text_color(rgb(theme::text_secondary(cx)))
                         .text_size(px(theme::FONT_BODY))
                         .child(row.name),
                 )
@@ -379,7 +379,7 @@ impl DocsTree {
                     svg()
                         .path("icons/file-text.svg")
                         .size(px(theme::ICON_FILE))
-                        .text_color(rgb(theme::TEXT_MUTED)),
+                        .text_color(rgb(theme::text_muted(cx))),
                 ),
             )
             .child(
@@ -387,17 +387,17 @@ impl DocsTree {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_color(rgb(theme::TEXT_SECONDARY))
+                    .text_color(rgb(theme::text_secondary(cx)))
                     .text_size(px(theme::FONT_BODY))
                     .child(row.name),
             );
         if is_selected {
-            row_el = row_el.bg(hsla(0.0, 0.0, 1.0, 0.10));
+            row_el = row_el.bg(theme::row_pressed_bg(cx));
         }
         row_el.into_any_element()
     }
 
-    fn render_status_row(&self, message: String) -> Div {
+    fn render_status_row(&self, cx: &App, message: String) -> Div {
         div()
             .min_h(px(96.0))
             .w_full()
@@ -409,7 +409,7 @@ impl DocsTree {
                 div()
                     .w_full()
                     .min_w_0()
-                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_color(rgb(theme::text_muted(cx)))
                     .text_size(px(theme::FONT_BODY))
                     .text_center()
                     .child(message),
@@ -441,14 +441,14 @@ impl DocsTree {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_color(rgb(theme::text_muted(cx)))
                     .text_size(px(theme::FONT_BODY))
                     .child(label),
             )
             .into_any_element()
     }
 
-    fn render_all_loaded_row(&self) -> impl IntoElement {
+    fn render_all_loaded_row(&self, cx: &App) -> impl IntoElement {
         div()
             .id("docs-tree-all-loaded-row")
             .flex_1()
@@ -461,17 +461,17 @@ impl DocsTree {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_color(rgb(theme::text_muted(cx)))
                     .text_size(px(theme::FONT_BODY))
                     .child("All loaded"),
             )
     }
 
-    fn render_refresh_icon(&self, is_building: bool) -> AnyElement {
+    fn render_refresh_icon(&self, cx: &App, is_building: bool) -> AnyElement {
         let icon = svg()
             .path("icons/refresh-ccw.svg")
             .size(px(14.0))
-            .text_color(rgb(theme::TEXT_MUTED));
+            .text_color(rgb(theme::text_muted(cx)));
 
         if !is_building {
             return icon.into_any_element();
@@ -497,7 +497,7 @@ impl DocsTree {
             .justify_center()
             .rounded(px(6.0))
             .opacity(if is_building { 0.45 } else { 1.0 })
-            .child(self.render_refresh_icon(is_building));
+            .child(self.render_refresh_icon(cx, is_building));
 
         if !is_building {
             button = button
@@ -528,7 +528,7 @@ impl DocsTree {
         if matches!(self.build_state, DocsBuildState::Building) {
             row = row.child(
                 div()
-                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_color(rgb(theme::text_muted(cx)))
                     .text_size(px(theme::FONT_BODY))
                     .child("Building documents..."),
             );
@@ -568,7 +568,7 @@ impl DocsTree {
         if self.has_more {
             footer = footer.child(self.render_load_more_row(cx));
         } else {
-            footer = footer.child(self.render_all_loaded_row());
+            footer = footer.child(self.render_all_loaded_row(cx));
         }
 
         footer
@@ -612,7 +612,7 @@ impl Render for DocsTree {
                 .items_stretch()
                 .justify_center();
             if let Some(message) = status_message {
-                scroll_content = scroll_content.child(self.render_status_row(message));
+                scroll_content = scroll_content.child(self.render_status_row(cx, message));
             }
             return div()
                 .track_focus(&self.focus_handle)

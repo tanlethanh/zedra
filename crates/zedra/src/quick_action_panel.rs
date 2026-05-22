@@ -108,9 +108,9 @@ impl Render for QuickActionPanel {
         let panel = div()
             .w_full()
             .h(viewport_h)
-            .bg(rgb(theme::BG_PRIMARY))
+            .bg(rgb(theme::bg_primary(cx)))
             .border_l_1()
-            .border_color(rgb(theme::BORDER_SUBTLE))
+            .border_color(rgb(theme::border_subtle(cx)))
             .flex()
             .flex_col()
             .child(div().h(px(top_inset)))
@@ -121,7 +121,7 @@ impl Render for QuickActionPanel {
                     .flex_row()
                     .items_center()
                     .border_b_1()
-                    .border_color(rgb(theme::BORDER_SUBTLE))
+                    .border_color(rgb(theme::border_subtle(cx)))
                     .child(
                         div()
                             .id("quick-action-home-icon")
@@ -141,13 +141,13 @@ impl Render for QuickActionPanel {
                                 svg()
                                     .path("icons/logo.svg")
                                     .size(px(theme::ICON_LOGO))
-                                    .text_color(rgb(theme::TEXT_SECONDARY)),
+                                    .text_color(rgb(theme::text_secondary(cx))),
                             ),
                     )
                     .child(
                         div().flex_1().flex().flex_col().child(
                             div()
-                                .text_color(rgb(theme::TEXT_SECONDARY))
+                                .text_color(rgb(theme::text_secondary(cx)))
                                 .text_size(px(theme::FONT_BODY))
                                 .text_center()
                                 .font_weight(FontWeight::MEDIUM)
@@ -172,7 +172,7 @@ impl Render for QuickActionPanel {
                                 svg()
                                     .path("icons/x.svg")
                                     .size(px(16.0))
-                                    .text_color(rgb(theme::TEXT_SECONDARY)),
+                                    .text_color(rgb(theme::text_secondary(cx))),
                             ),
                     ),
             );
@@ -225,11 +225,12 @@ impl Render for QuickActionPanel {
                                     .child(ConnectionStatusIndicator::from_phase(
                                         ("quick-action-connect-status", index),
                                         connect_phase.as_ref(),
+                                        &theme::palette(cx),
                                     ))
                                     .child(
                                         div()
                                             .flex_1()
-                                            .text_color(rgb(theme::TEXT_PRIMARY))
+                                            .text_color(rgb(theme::text_primary(cx)))
                                             .text_size(px(theme::FONT_BODY))
                                             .font_weight(FontWeight::MEDIUM)
                                             .min_w_0()
@@ -239,7 +240,7 @@ impl Render for QuickActionPanel {
                             )
                             .child(
                                 div()
-                                    .text_color(rgb(theme::TEXT_MUTED))
+                                    .text_color(rgb(theme::text_muted(cx)))
                                     .text_size(px(theme::FONT_BODY))
                                     .min_w_0()
                                     .truncate()
@@ -269,7 +270,7 @@ impl Render for QuickActionPanel {
                                 svg()
                                     .path("icons/plus.svg")
                                     .size(px(16.0))
-                                    .text_color(rgb(theme::TEXT_MUTED)),
+                                    .text_color(rgb(theme::text_muted(cx))),
                             ),
                     ),
             );
@@ -291,22 +292,23 @@ impl Render for QuickActionPanel {
                         this.handle_terminal_delete(index, tid_del.clone(), cx);
                     }));
 
-                    let card = render_terminal_card(TerminalCardProps {
-                        id: format!("{}-{}", index, tid),
-                        index: i + 1,
-                        is_active,
-                        title: meta.title,
-                        cwd: meta.cwd,
-                        agent_icon: meta.agent_icon,
-                        shell_state: meta.shell_state,
-                        last_exit_code: meta.last_exit_code,
-                        on_close: Some(on_close),
-                    })
-                    .on_press(cx.listener(
-                        move |this, _event, _window, cx| {
-                            this.handle_switch_terminal(index, tid_click.clone(), cx);
+                    let card = render_terminal_card(
+                        cx,
+                        TerminalCardProps {
+                            id: format!("{}-{}", index, tid),
+                            index: i + 1,
+                            is_active,
+                            title: meta.title,
+                            cwd: meta.cwd,
+                            agent_icon: meta.agent_icon,
+                            shell_state: meta.shell_state,
+                            last_exit_code: meta.last_exit_code,
+                            on_close: Some(on_close),
                         },
-                    ));
+                    )
+                    .on_press(cx.listener(move |this, _event, _window, cx| {
+                        this.handle_switch_terminal(index, tid_click.clone(), cx);
+                    }));
 
                     content = content.child(card);
                 }
@@ -317,7 +319,7 @@ impl Render for QuickActionPanel {
                     .h(px(1.0))
                     .mx(px(16.0))
                     .mt(px(6.0))
-                    .bg(rgb(theme::BORDER_SUBTLE)),
+                    .bg(rgb(theme::border_subtle(cx))),
             );
         }
 
@@ -326,14 +328,14 @@ impl Render for QuickActionPanel {
                 div()
                     .px(px(16.0))
                     .py(px(16.0))
-                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_color(rgb(theme::text_muted(cx)))
                     .text_size(px(theme::FONT_BODY))
                     .child("No active workspaces"),
             );
         }
 
         content = content.child(
-            crate::button::outline_button("quick-action-scan-qr", "Scan QR Code")
+            crate::button::outline_button(cx, "quick-action-scan-qr", "Scan QR Code")
                 .mx(px(16.0))
                 .mt(px(12.0))
                 .on_press(cx.listener(|this, _event, _window, cx| {

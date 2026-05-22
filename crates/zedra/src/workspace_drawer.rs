@@ -188,7 +188,7 @@ impl WorkspaceDrawer {
                     .clone()
                     .unwrap_or_else(|| session_state.phase());
                 let transport = session_state.snapshot().transport;
-                let (label, _) = transport_badge(&phase, transport.as_ref());
+                let (label, _) = transport_badge(&theme::palette(cx), &phase, transport.as_ref());
                 label
             }
         };
@@ -225,14 +225,14 @@ impl WorkspaceDrawer {
     fn nav_icon(&self, tab: DrawerTab, cx: &mut Context<Self>) -> impl IntoElement {
         let is_active = self.current_tab == tab;
         let color = if is_active {
-            rgb(theme::TEXT_PRIMARY)
+            rgb(theme::text_primary(cx))
         } else {
-            rgb(theme::TEXT_MUTED)
+            rgb(theme::text_muted(cx))
         };
         let fill = if is_active {
-            rgb(theme::BG_CARD)
+            rgb(theme::bg_card(cx))
         } else {
-            rgb(theme::BG_PRIMARY)
+            rgb(theme::bg_primary(cx))
         };
 
         div()
@@ -268,9 +268,9 @@ impl WorkspaceDrawer {
     fn file_mode_button(&self, mode: FileDisplayMode, cx: &mut Context<Self>) -> impl IntoElement {
         let is_active = self.file_display_mode == mode;
         let color = if is_active {
-            rgb(theme::TEXT_SECONDARY)
+            rgb(theme::text_secondary(cx))
         } else {
-            rgb(theme::TEXT_MUTED)
+            rgb(theme::text_muted(cx))
         };
 
         div()
@@ -305,13 +305,13 @@ impl WorkspaceDrawer {
             .top(px(0.0))
             .right(px(0.0))
             .pb_1()
-            .bg(rgb(theme::BG_SURFACE))
+            .bg(rgb(theme::bg_surface(cx)))
             .occlude()
             .on_pointer_down(|_, _, cx| cx.stop_propagation())
             .rounded_bl(px(6.0))
             .border_b_1()
             .border_l_1()
-            .border_color(rgb(theme::BORDER_SUBTLE))
+            .border_color(rgb(theme::border_subtle(cx)))
             .flex()
             .flex_col()
             .child(self.file_mode_button(FileDisplayMode::Explorer, cx))
@@ -351,7 +351,7 @@ impl Render for WorkspaceDrawer {
             .flex_col()
             .w_full()
             .h(viewport_h)
-            .bg(rgb(theme::BG_PRIMARY))
+            .bg(rgb(theme::bg_primary(cx)))
             .child(div().h(px(top_inset)))
             // Header
             .child(
@@ -361,7 +361,7 @@ impl Render for WorkspaceDrawer {
                     .flex_row()
                     .items_center()
                     .border_b_1()
-                    .border_color(rgb(theme::BORDER_SUBTLE))
+                    .border_color(rgb(theme::border_subtle(cx)))
                     .child(
                         div()
                             .id("drawer-home-icon")
@@ -379,7 +379,7 @@ impl Render for WorkspaceDrawer {
                                 svg()
                                     .path("icons/logo.svg")
                                     .size(px(theme::ICON_LOGO))
-                                    .text_color(rgb(theme::TEXT_PRIMARY)),
+                                    .text_color(rgb(theme::text_primary(cx))),
                             ),
                     )
                     .child(
@@ -395,7 +395,7 @@ impl Render for WorkspaceDrawer {
                                     .min_w_0()
                                     .truncate()
                                     .text_center()
-                                    .text_color(rgb(theme::TEXT_SECONDARY))
+                                    .text_color(rgb(theme::text_secondary(cx)))
                                     .text_size(px(theme::FONT_BODY))
                                     .font_weight(FontWeight::MEDIUM)
                                     .child(title),
@@ -406,7 +406,7 @@ impl Render for WorkspaceDrawer {
                                     .min_w_0()
                                     .truncate()
                                     .text_center()
-                                    .text_color(rgb(theme::TEXT_MUTED))
+                                    .text_color(rgb(theme::text_muted(cx)))
                                     .text_size(px(theme::FONT_BODY))
                                     .font_weight(FontWeight::MEDIUM)
                                     .child(subtitle),
@@ -422,6 +422,7 @@ impl Render for WorkspaceDrawer {
                                 ConnectionStatusIndicator::from_phase(
                                     "drawer-connect-status",
                                     connect_phase.as_ref(),
+                                    &theme::palette(cx),
                                 )
                                 .size(6.0),
                             ),
@@ -451,7 +452,7 @@ impl Render for WorkspaceDrawer {
                     .justify_center()
                     .gap(px(36.0))
                     .border_t_1()
-                    .border_color(rgb(theme::BORDER_SUBTLE))
+                    .border_color(rgb(theme::border_subtle(cx)))
                     .child(self.nav_icon(DrawerTab::FileExplorer, cx))
                     .child(self.nav_icon(DrawerTab::GitDiff, cx))
                     .child(self.nav_icon(DrawerTab::Terminals, cx))

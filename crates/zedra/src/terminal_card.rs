@@ -29,13 +29,13 @@ pub struct TerminalCardProps {
 }
 
 /// Colour of the status dot based on shell state and last exit code.
-fn dot_color(shell_state: &ShellState, last_exit_code: Option<i32>) -> u32 {
+fn dot_color(cx: &App, shell_state: &ShellState, last_exit_code: Option<i32>) -> u32 {
     match shell_state {
-        ShellState::Unknown => theme::TEXT_MUTED,
-        ShellState::Running => theme::ACCENT_YELLOW,
+        ShellState::Unknown => theme::text_muted(cx),
+        ShellState::Running => theme::accent_yellow(cx),
         ShellState::Idle => match last_exit_code {
-            None | Some(0) => theme::ACCENT_GREEN,
-            _ => theme::ACCENT_RED,
+            None | Some(0) => theme::accent_green(cx),
+            _ => theme::accent_red(cx),
         },
     }
 }
@@ -67,7 +67,7 @@ pub fn strip_ps1_prefix(title: &str) -> &str {
 ///
 /// Returns a `Div` — chain `.on_press()` and `.on_long_press()` for tap and
 /// long-press actions respectively.
-pub fn render_terminal_card(props: TerminalCardProps) -> Stateful<Div> {
+pub fn render_terminal_card(cx: &App, props: TerminalCardProps) -> Stateful<Div> {
     // Primary label: OSC 2 title (stripped of user@host: prefix) — the most
     // dynamic source, updated each prompt and with each command via preexec.
     // Falls back to cwd last component, then to the numbered placeholder.
@@ -94,7 +94,7 @@ pub fn render_terminal_card(props: TerminalCardProps) -> Stateful<Div> {
         .unwrap_or_default();
     let has_subtitle = !subtitle.is_empty();
 
-    let status_color = dot_color(&props.shell_state, props.last_exit_code);
+    let status_color = dot_color(cx, &props.shell_state, props.last_exit_code);
     let card_id = SharedString::from(format!("term-card-{}", props.id));
     let close_btn_id = SharedString::from(format!("term-close-{}", props.id));
     let is_active = props.is_active;
@@ -120,7 +120,7 @@ pub fn render_terminal_card(props: TerminalCardProps) -> Stateful<Div> {
                 svg()
                     .path("icons/x.svg")
                     .size(px(14.0))
-                    .text_color(rgb(theme::TEXT_MUTED)),
+                    .text_color(rgb(theme::text_muted(cx))),
             )
             .into_any_element()
     } else {
@@ -144,9 +144,9 @@ pub fn render_terminal_card(props: TerminalCardProps) -> Stateful<Div> {
         .px(px(12.0))
         .py(px(8.0))
         .rounded(px(6.0))
-        .bg(rgb(theme::BG_CARD))
+        .bg(rgb(theme::bg_card(cx)))
         .border_1()
-        .border_color(rgb(theme::BORDER_SUBTLE))
+        .border_color(rgb(theme::border_subtle(cx)))
         .cursor_pointer()
         // Icon — brand icon for known AI agents, terminal icon otherwise.
         // Colour tied to active state only for visual consistency.
@@ -156,9 +156,9 @@ pub fn render_terminal_card(props: TerminalCardProps) -> Stateful<Div> {
                 .size(px(theme::ICON_TERMINAL))
                 .flex_shrink_0()
                 .text_color(if is_active {
-                    rgb(theme::TEXT_PRIMARY)
+                    rgb(theme::text_primary(cx))
                 } else {
-                    rgb(theme::TEXT_MUTED)
+                    rgb(theme::text_muted(cx))
                 }),
         )
         // Text column: always two rows for a fixed card height.
@@ -178,9 +178,9 @@ pub fn render_terminal_card(props: TerminalCardProps) -> Stateful<Div> {
                         .whitespace_nowrap()
                         .font_family(fonts::MONO_FONT_FAMILY)
                         .text_color(if is_active {
-                            rgb(theme::TEXT_PRIMARY)
+                            rgb(theme::text_primary(cx))
                         } else {
-                            rgb(theme::TEXT_SECONDARY)
+                            rgb(theme::text_secondary(cx))
                         })
                         .text_size(px(theme::FONT_BODY))
                         .when(is_active, |s| s.font_weight(FontWeight::MEDIUM))
@@ -193,7 +193,7 @@ pub fn render_terminal_card(props: TerminalCardProps) -> Stateful<Div> {
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .font_family(fonts::MONO_FONT_FAMILY)
-                        .text_color(rgb(theme::TEXT_MUTED))
+                        .text_color(rgb(theme::text_muted(cx)))
                         .text_size(px(theme::FONT_BODY - 1.0))
                         .when(!has_subtitle, |s| s.invisible())
                         .child(subtitle),
