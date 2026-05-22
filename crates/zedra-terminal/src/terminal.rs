@@ -2460,7 +2460,7 @@ fn is_url_trailing_punct(c: char) -> bool {
 fn is_surrounding_punct(c: char) -> bool {
     matches!(
         c,
-        '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>'
+        '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | ',' | ';'
     )
 }
 
@@ -3842,6 +3842,26 @@ mod tests {
         assert_eq!(path, "/repo/src/main.rs");
         assert_eq!(line_num, Some(12));
         assert_eq!(col_num, Some(3));
+    }
+
+    #[test]
+    fn detects_comma_separated_slash_file_paths_as_distinct_links() {
+        let line = "Code: proj/src/Foo.java:110, proj/src/mapper/Bar.java:21";
+        let terminal = terminal_with_output(format!("{line}\r\n").as_bytes());
+
+        let first = terminal
+            .hyperlink_at_point(point_for_substring(line, "Foo.java"), Some("/repo"))
+            .expect("expected first comma-separated file hyperlink");
+        let (_label, path, _, line_num, _) = file_target(first);
+        assert_eq!(path, "/repo/proj/src/Foo.java");
+        assert_eq!(line_num, Some(110));
+
+        let second = terminal
+            .hyperlink_at_point(point_for_substring(line, "Bar.java"), Some("/repo"))
+            .expect("expected second comma-separated file hyperlink");
+        let (_label, path, _, line_num, _) = file_target(second);
+        assert_eq!(path, "/repo/proj/src/mapper/Bar.java");
+        assert_eq!(line_num, Some(21));
     }
 
     #[test]
