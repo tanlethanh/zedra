@@ -91,8 +91,7 @@ const STATUS_PULSE_MIN_OPACITY: f32 = 0.35;
 const STATUS_PULSE_MAX_SCALE: f32 = 1.3;
 const STATUS_HIT_SLOP: f32 = 20.0;
 
-type ConnectionStatusPressHandler =
-    Arc<dyn Fn(&PressEvent, &mut Window, &mut App) + 'static>;
+type ConnectionStatusPressHandler = Arc<dyn Fn(&PressEvent, &mut Window, &mut App) + 'static>;
 
 #[derive(Clone, IntoElement)]
 pub(crate) struct ConnectionStatusIndicator {

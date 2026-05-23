@@ -217,7 +217,8 @@ impl ZedraApp {
     }
 
     fn close_quick_action_drawer(&self, cx: &mut Context<Self>) {
-        self.quick_action_drawer.update(cx, |host, cx| host.close(cx));
+        self.quick_action_drawer
+            .update(cx, |host, cx| host.close(cx));
     }
 
     fn handle_show_connecting(

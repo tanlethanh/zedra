@@ -425,12 +425,14 @@ impl Render for WorkspaceDrawer {
                                     &theme::palette(cx),
                                 )
                                 .size(6.0)
-                                .on_press(cx.listener(|_this, _event, window, cx| {
-                                    window.dispatch_action(
-                                        workspace_action::ShowConnecting.boxed_clone(),
-                                        cx,
-                                    );
-                                })),
+                                .on_press(cx.listener(
+                                    |_this, _event, window, cx| {
+                                        window.dispatch_action(
+                                            workspace_action::ShowConnecting.boxed_clone(),
+                                            cx,
+                                        );
+                                    },
+                                )),
                             ),
                     ),
             )

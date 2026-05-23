@@ -241,9 +241,11 @@ impl Render for QuickActionPanel {
                                             connect_phase.as_ref(),
                                             &theme::palette(cx),
                                         )
-                                        .on_press(cx.listener(move |this, _event, window, cx| {
-                                            this.show_connecting_for_entry(index, window, cx);
-                                        })),
+                                        .on_press(
+                                            cx.listener(move |this, _event, window, cx| {
+                                                this.show_connecting_for_entry(index, window, cx);
+                                            }),
+                                        ),
                                     )
                                     .child(
                                         div()

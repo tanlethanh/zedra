@@ -2676,9 +2676,11 @@ impl Render for WorkspaceContent {
                                                     &theme::palette(cx),
                                                 )
                                                 .size(6.0)
-                                                .on_press(cx.listener(|this, _event, window, cx| {
-                                                    this.open_connecting_view(window, cx);
-                                                })),
+                                                .on_press(cx.listener(
+                                                    |this, _event, window, cx| {
+                                                        this.open_connecting_view(window, cx);
+                                                    },
+                                                )),
                                             )
                                             .child(
                                                 div()
