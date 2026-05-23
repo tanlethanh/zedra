@@ -9,6 +9,7 @@ use crate::fonts;
 use crate::home_view::{HomeEvent, HomeView};
 use crate::platform_bridge;
 use crate::quick_action_panel::{QuickActionEvent, QuickActionPanel};
+use crate::settings::{ThemeState, ThemeStateEvent};
 use crate::settings_view::{SettingsEvent, SettingsView};
 use crate::telemetry::view_telemetry::{self, ViewDescriptor};
 use crate::ui::{DrawerHost, DrawerSide};
@@ -50,6 +51,9 @@ impl ZedraApp {
 
         let mut subscriptions = Vec::new();
 
+        let theme_state = cx.new(ThemeState::new);
+        ThemeState::register_global(theme_state.downgrade(), cx);
+
         // --- Workspaces ---
         let workspaces = cx.new(|cx| Workspaces::new(cx));
 
@@ -58,8 +62,11 @@ impl ZedraApp {
         let sub = cx.subscribe(&home_view, Self::on_home_event);
         subscriptions.push(sub);
 
-        let settings_view = cx.new(SettingsView::new);
+        let settings_view = cx.new(|cx| SettingsView::new(theme_state.clone(), cx));
         let sub = cx.subscribe(&settings_view, Self::on_settings_event);
+        subscriptions.push(sub);
+
+        let sub = cx.subscribe(&theme_state, Self::on_theme_changed);
         subscriptions.push(sub);
 
         // --- Quick action panel ---
@@ -171,6 +178,15 @@ impl ZedraApp {
                 self.set_screen(AppScreen::Home, cx);
             }
         }
+    }
+
+    fn on_theme_changed(
+        &mut self,
+        _: Entity<ThemeState>,
+        _: &ThemeStateEvent,
+        cx: &mut Context<Self>,
+    ) {
+        cx.notify();
     }
 
     fn on_quick_action_event(

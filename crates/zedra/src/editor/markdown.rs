@@ -231,7 +231,8 @@ impl InlineRenderBuffer {
 }
 
 impl Render for MarkdownView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _theme = theme::palette(cx);
         let blocks = Arc::clone(&self.document.blocks);
         let block_count = blocks.len();
         let bottom_inset = f32::max(
@@ -240,7 +241,7 @@ impl Render for MarkdownView {
         );
         let focus_handle = self
             .focus_handle
-            .get_or_insert_with(|| _cx.focus_handle())
+            .get_or_insert_with(|| cx.focus_handle())
             .clone();
         let press_focus_handle = focus_handle.clone();
         // Keep each top-level markdown block as one variable-height list row.
@@ -1102,21 +1103,21 @@ fn parse_inline_event(events: &[Event<'_>], cursor: &mut usize) -> Vec<Inline> {
 
 fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -> AnyElement {
     match block {
-        Block::Paragraph(content) => render_inline_block(content, InlineBlockStyle::Body, key),
+        Block::Paragraph(content) => render_inline_block(content, InlineBlockStyle::Body, key, cx),
         Block::Heading { level, content } => {
             let style = match level {
                 HeadingLevel::H1 => InlineBlockStyle::Title,
                 HeadingLevel::H2 => InlineBlockStyle::Section,
                 _ => InlineBlockStyle::Heading,
             };
-            render_inline_block(content, style, key)
+            render_inline_block(content, style, key, cx)
         }
         Block::BlockQuote(children) => {
             div()
                 .w_full()
                 .pl(px(theme::SPACING_MD))
                 .border_l_1()
-                .border_color(rgb(theme::BORDER_DEFAULT))
+                .border_color(rgb(theme::border_default(cx)))
                 .flex()
                 .flex_col()
                 .gap(px(10.0))
@@ -1149,7 +1150,7 @@ fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -
                         div()
                             .flex_shrink_0()
                             .min_w(px(16.0))
-                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_color(rgb(theme::text_muted(cx)))
                             .text_size(px(theme::FONT_BODY))
                             .line_height(px(theme::FONT_BODY + 6.0))
                             .font_family(fonts::MONO_FONT_FAMILY)
@@ -1190,7 +1191,7 @@ fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -
                     };
                     div()
                         .w_full()
-                        .text_color(rgb(theme::TEXT_PRIMARY))
+                        .text_color(rgb(theme::text_primary(cx)))
                         .text_size(px(CODE_BLOCK_FONT_SIZE))
                         .line_height(px(CODE_BLOCK_LINE_HEIGHT))
                         .font_family(fonts::MONO_FONT_FAMILY)
@@ -1201,9 +1202,9 @@ fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -
             let mut container = div()
                 .id(format!("{key}-code-scroll"))
                 .w_full()
-                .bg(rgb(theme::BG_CARD))
+                .bg(rgb(theme::bg_card(cx)))
                 .border_1()
-                .border_color(rgb(theme::BORDER_DEFAULT))
+                .border_color(rgb(theme::border_default(cx)))
                 .rounded(px(6.0))
                 .overflow_x_scroll()
                 .child(code_lines);
@@ -1211,14 +1212,17 @@ fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -
 
             container.into_any_element()
         }
-        Block::Table(table) => render_table(table, key),
-        Block::Html(text) => {
-            render_inline_block(&[Inline::Html(text.clone())], InlineBlockStyle::Html, key)
-        }
+        Block::Table(table) => render_table(table, key, cx),
+        Block::Html(text) => render_inline_block(
+            &[Inline::Html(text.clone())],
+            InlineBlockStyle::Html,
+            key,
+            cx,
+        ),
         Block::Rule => div()
             .w_full()
             .h(px(1.0))
-            .bg(rgb(theme::BORDER_SUBTLE))
+            .bg(rgb(theme::border_subtle(cx)))
             .into_any_element(),
     }
 }
@@ -1245,7 +1249,7 @@ fn code_block_display_columns(line: &str) -> usize {
     columns
 }
 
-fn render_table(table: &TableBlock, key: String) -> AnyElement {
+fn render_table(table: &TableBlock, key: String, cx: &App) -> AnyElement {
     let column_widths = table_column_widths(table);
     let table_width = column_widths.iter().sum::<f32>().max(TABLE_CELL_MIN_WIDTH);
     let rows = (!table.headers.is_empty())
@@ -1269,9 +1273,9 @@ fn render_table(table: &TableBlock, key: String) -> AnyElement {
                         .flex()
                         .border_b_1()
                         .when(is_last_row, |this| {
-                            this.border_color(rgb(theme::BORDER_SUBTLE))
+                            this.border_color(rgb(theme::border_subtle(cx)))
                         })
-                        .border_color(rgb(theme::BORDER_SUBTLE))
+                        .border_color(rgb(theme::border_subtle(cx)))
                         .children(row.iter().enumerate().map(|(cell_ix, cell)| {
                             let cell_width = column_widths
                                 .get(cell_ix)
@@ -1285,7 +1289,7 @@ fn render_table(table: &TableBlock, key: String) -> AnyElement {
                                 .px(px(TABLE_CELL_PADDING_X))
                                 .py(px(TABLE_CELL_PADDING_Y))
                                 .border_r_1()
-                                .border_color(rgb(theme::BORDER_SUBTLE))
+                                .border_color(rgb(theme::border_subtle(cx)))
                                 .child(render_inline_block(
                                     &cell,
                                     if is_header {
@@ -1294,6 +1298,7 @@ fn render_table(table: &TableBlock, key: String) -> AnyElement {
                                         InlineBlockStyle::TableCell
                                     },
                                     format!("{key}-row-{row_ix}-cell-{cell_ix}"),
+                                    cx,
                                 ))
                         }))
                 }),
@@ -1302,9 +1307,9 @@ fn render_table(table: &TableBlock, key: String) -> AnyElement {
     let mut container = div()
         .id(format!("{key}-table-scroll"))
         .w_full()
-        .bg(rgb(theme::BG_CARD))
+        .bg(rgb(theme::bg_card(cx)))
         .border_1()
-        .border_color(rgb(theme::BORDER_DEFAULT))
+        .border_color(rgb(theme::border_default(cx)))
         .rounded(px(6.0))
         .overflow_x_scroll()
         .child(table_body);
@@ -1405,11 +1410,16 @@ enum InlineBlockStyle {
     Html,
 }
 
-fn render_inline_block(content: &[Inline], style: InlineBlockStyle, key: String) -> AnyElement {
+fn render_inline_block(
+    content: &[Inline],
+    style: InlineBlockStyle,
+    key: String,
+    cx: &App,
+) -> AnyElement {
     let mut buffer = InlineRenderBuffer::default();
-    flatten_inlines(content, &mut buffer, InlineMarks::default());
+    flatten_inlines(content, &mut buffer, InlineMarks::default(), cx);
 
-    let base = block_style(style);
+    let base = block_style(style, cx);
     let styled = StyledText::new(buffer.text.clone()).with_highlights(merge_highlights(
         buffer
             .highlights
@@ -1464,47 +1474,47 @@ struct InlineMarks {
     html: bool,
 }
 
-fn flatten_inlines(content: &[Inline], out: &mut InlineRenderBuffer, marks: InlineMarks) {
+fn flatten_inlines(content: &[Inline], out: &mut InlineRenderBuffer, marks: InlineMarks, cx: &App) {
     for inline in content {
         match inline {
-            Inline::Text(text) => push_text_with_marks(out, text, marks),
+            Inline::Text(text) => push_text_with_marks(out, text, marks, cx),
             Inline::Code(text) => {
                 let mut next = marks;
                 next.code = true;
-                push_text_with_marks(out, text, next);
+                push_text_with_marks(out, text, next, cx);
             }
             Inline::Html(text) => {
                 let mut next = marks;
                 next.html = true;
-                push_text_with_marks(out, text, next);
+                push_text_with_marks(out, text, next, cx);
             }
             Inline::Emphasis(children) => {
                 let mut next = marks;
                 next.emphasis = true;
-                flatten_inlines(children, out, next);
+                flatten_inlines(children, out, next, cx);
             }
             Inline::Strong(children) => {
                 let mut next = marks;
                 next.strong = true;
-                flatten_inlines(children, out, next);
+                flatten_inlines(children, out, next, cx);
             }
             Inline::Strikethrough(children) => {
                 let mut next = marks;
                 next.strike = true;
-                flatten_inlines(children, out, next);
+                flatten_inlines(children, out, next, cx);
             }
             Inline::Link { url, content } => {
                 let start = out.text.len();
-                flatten_inlines(content, out, marks);
+                flatten_inlines(content, out, marks, cx);
                 let end = out.text.len();
                 if start != end {
                     let range = start..end;
                     out.highlights.push(StyledRun {
                         range: range.clone(),
                         style: HighlightStyle {
-                            color: Some(rgb(theme::ACCENT_BLUE).into()),
+                            color: Some(rgb(theme::accent_blue(cx)).into()),
                             underline: Some(UnderlineStyle {
-                                color: Some(rgb(theme::ACCENT_BLUE).into()),
+                                color: Some(rgb(theme::accent_blue(cx)).into()),
                                 thickness: px(1.0),
                                 wavy: false,
                             }),
@@ -1530,7 +1540,7 @@ fn flatten_inlines(content: &[Inline], out: &mut InlineRenderBuffer, marks: Inli
     }
 }
 
-fn push_text_with_marks(out: &mut InlineRenderBuffer, text: &str, marks: InlineMarks) {
+fn push_text_with_marks(out: &mut InlineRenderBuffer, text: &str, marks: InlineMarks, cx: &App) {
     if text.is_empty() {
         return;
     }
@@ -1548,19 +1558,19 @@ fn push_text_with_marks(out: &mut InlineRenderBuffer, text: &str, marks: InlineM
     }
     if marks.strike {
         style.strikethrough = Some(StrikethroughStyle {
-            color: Some(rgb(theme::TEXT_SECONDARY).into()),
+            color: Some(rgb(theme::text_secondary(cx)).into()),
             thickness: px(1.0),
         });
         has_style = true;
     }
     if marks.code {
-        style.background_color = Some(rgb(theme::BG_CARD).into());
-        style.color = Some(rgb(theme::TEXT_PRIMARY).into());
+        style.background_color = Some(rgb(theme::bg_card(cx)).into());
+        style.color = Some(rgb(theme::text_primary(cx)).into());
         has_style = true;
     }
     if marks.html {
-        style.background_color = Some(rgb(theme::BG_CARD).into());
-        style.color = Some(rgb(theme::TEXT_MUTED).into());
+        style.background_color = Some(rgb(theme::bg_card(cx)).into());
+        style.color = Some(rgb(theme::text_muted(cx)).into());
         has_style = true;
     }
 
@@ -1577,47 +1587,47 @@ struct BlockStyleSpec {
     weight: Option<FontWeight>,
 }
 
-fn block_style(style: InlineBlockStyle) -> BlockStyleSpec {
+fn block_style(style: InlineBlockStyle, cx: &App) -> BlockStyleSpec {
     match style {
         InlineBlockStyle::Title => BlockStyleSpec {
             size: theme::FONT_TITLE,
             line_height: theme::FONT_TITLE + 8.0,
-            color: rgb(theme::TEXT_PRIMARY).into(),
+            color: rgb(theme::text_primary(cx)).into(),
             font_family: fonts::HEADING_FONT_FAMILY,
             weight: Some(FontWeight::MEDIUM),
         },
         InlineBlockStyle::Section => BlockStyleSpec {
             size: theme::FONT_HEADING + 2.0,
             line_height: theme::FONT_HEADING + 8.0,
-            color: rgb(theme::TEXT_PRIMARY).into(),
+            color: rgb(theme::text_primary(cx)).into(),
             font_family: fonts::HEADING_FONT_FAMILY,
             weight: Some(FontWeight::MEDIUM),
         },
         InlineBlockStyle::Heading => BlockStyleSpec {
             size: theme::FONT_HEADING,
             line_height: theme::FONT_HEADING + 6.0,
-            color: rgb(theme::TEXT_PRIMARY).into(),
+            color: rgb(theme::text_primary(cx)).into(),
             font_family: fonts::HEADING_FONT_FAMILY,
             weight: Some(FontWeight::MEDIUM),
         },
         InlineBlockStyle::TableHeader => BlockStyleSpec {
             size: theme::FONT_BODY,
             line_height: theme::FONT_BODY + 6.0,
-            color: rgb(theme::TEXT_PRIMARY).into(),
+            color: rgb(theme::text_primary(cx)).into(),
             font_family: fonts::MONO_FONT_FAMILY,
             weight: Some(FontWeight::MEDIUM),
         },
         InlineBlockStyle::TableCell | InlineBlockStyle::Body => BlockStyleSpec {
             size: theme::FONT_BODY,
             line_height: theme::FONT_BODY + 6.0,
-            color: rgb(theme::TEXT_SECONDARY).into(),
+            color: rgb(theme::text_secondary(cx)).into(),
             font_family: fonts::MONO_FONT_FAMILY,
             weight: None,
         },
         InlineBlockStyle::Html => BlockStyleSpec {
             size: theme::FONT_DETAIL,
             line_height: theme::FONT_DETAIL + 5.0,
-            color: rgb(theme::TEXT_MUTED).into(),
+            color: rgb(theme::text_muted(cx)).into(),
             font_family: fonts::MONO_FONT_FAMILY,
             weight: None,
         },

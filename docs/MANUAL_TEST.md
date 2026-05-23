@@ -948,3 +948,16 @@ Expected:
 1. Install a **Release** build on device (not Xcode Run with debugger attached)
 2. Connect via **Scan QR**; optional: `scripts/log-ios.sh --grep connect`
 3. Expected: no burst of per-packet iroh/quinn trace lines (`tracing-subscriber` requires `debug-logs`)
+
+## 22. Terminal appearance (light/dark)
+
+1. Connect to a workspace and open a terminal running `ls` with color
+2. Open Settings → Appearance and tap the **sun** segment (light mode)
+3. Expected: terminal background is light; directory names and ANSI colors are readable (not washed out)
+4. Run `claude` (or another session already showing Claude output) and scroll to file-reference lines such as `L123 (file.rs):`
+5. Expected: highlighted paths are readable on the light background (not pale lavender)
+6. Open **Codex** in the same terminal (or a dedicated Codex session)
+7. Expected: the composer / user-message background pill matches the light theme (not missing or using a dark gray from stale palette)
+8. Toggle back to **Dark**
+9. Expected: terminal colors, Claude highlights, and Codex pill update without restarting the app
+10. Optional: from the host, run `printf '\e[10;?\e[11;?\e\\'` inside the Zedra session and confirm replies report the current fg/bg (light: `fafafa` background). Zedra answers OSC queries on the session PTY via `ColorRequest` and the active `TerminalTheme`; it does not inject palette setup bytes into scrollback on toggle.

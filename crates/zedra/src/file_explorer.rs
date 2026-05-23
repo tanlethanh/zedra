@@ -729,9 +729,9 @@ impl FileExplorer {
         let entry_depth = entry.depth;
         let indent = entry_depth as f32 * 16.0;
         let text_color = if entry.is_dir {
-            rgb(0xffffff)
+            rgb(theme::text_primary(cx))
         } else {
-            rgb(0xcacaca)
+            rgb(theme::text_secondary(cx))
         };
         let index_path = entry.index_path.clone();
         let is_dir = entry.is_dir;
@@ -760,7 +760,7 @@ impl FileExplorer {
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_color(rgb(theme::TEXT_MUTED))
+                        .text_color(rgb(theme::text_muted(cx)))
                         .text_size(px(theme::FONT_BODY))
                         .child(name),
                 )
@@ -769,7 +769,7 @@ impl FileExplorer {
 
         let icon_element: AnyElement = if loading {
             div()
-                .text_color(rgb(theme::TEXT_MUTED))
+                .text_color(rgb(theme::text_muted(cx)))
                 .text_size(px(theme::FONT_BODY))
                 .child("...")
                 .into_any_element()
@@ -782,13 +782,13 @@ impl FileExplorer {
             svg()
                 .path(icon_path)
                 .size(icon_size)
-                .text_color(rgb(theme::TEXT_MUTED))
+                .text_color(rgb(theme::text_muted(cx)))
                 .into_any_element()
         } else {
             svg()
                 .path("icons/file.svg")
                 .size(px(theme::ICON_FILE))
-                .text_color(rgb(theme::TEXT_MUTED))
+                .text_color(rgb(theme::text_muted(cx)))
                 .into_any_element()
         };
 
@@ -836,7 +836,7 @@ impl FileExplorer {
                     .child(name),
             );
         if is_selected {
-            row = row.bg(hsla(0.0, 0.0, 1.0, 0.10));
+            row = row.bg(theme::row_pressed_bg(cx));
         }
         row.into_any_element()
     }

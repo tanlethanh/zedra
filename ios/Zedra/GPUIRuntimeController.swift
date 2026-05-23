@@ -25,12 +25,15 @@ private func zedra_ios_send_key_input(_ key: UnsafePointer<CChar>)
 private func zedra_ios_app_will_terminate()
 
 final class GPUIRuntimeController: NSObject {
+    private static weak var activeController: GPUIRuntimeController?
+
     private var gpuiApp: UnsafeMutableRawPointer?
     private var gpuiWindow: UnsafeMutableRawPointer?
     private var displayLink: CADisplayLink?
     private let keyboardAccessoryController = KeyboardSupporter()
 
     func launch() {
+        Self.activeController = self
         zedra_firebase_initialize()
 
         gpuiApp = gpui_ios_initialize()
@@ -179,6 +182,12 @@ final class GPUIRuntimeController: NSObject {
             self?.sendKeyboardAccessoryKey(key)
         }
         gpui_ios_set_keyboard_accessory_view(Unmanaged.passUnretained(bar).toOpaque())
+    }
+
+    static func setKeyboardAccessoryTheme(isDark: Bool) {
+        DispatchQueue.main.async {
+            activeController?.keyboardAccessoryController.applyTheme(isDark: isDark)
+        }
     }
 
     private func startDisplayLink() {
