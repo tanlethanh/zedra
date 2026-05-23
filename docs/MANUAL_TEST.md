@@ -27,11 +27,13 @@
 
 ## 0b. Home Settings Button
 
-1. Run a Debug build and open the Home screen
+1. Run a Debug or Release build and open the Home screen
 2. Tap the top-right settings icon
-3. Expected: a light haptic feedback fires and the Settings screen opens
-4. Run a Release build and open the Home screen
-5. Expected: the settings icon is not visible and the developer Settings screen is not reachable from Home
+3. Expected: a light haptic feedback fires and the Settings screen opens with the Appearance section
+4. Run a Release build, open Settings from Home, and inspect the scroll content
+5. Expected: only the Appearance section is visible; the Developer section is absent
+6. Run a Debug build, open Settings from Home, and inspect the scroll content
+7. Expected: Appearance and Developer sections are both visible
 
 ## 0c. Developer Native Notification (iOS)
 
