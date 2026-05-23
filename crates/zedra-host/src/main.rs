@@ -702,6 +702,10 @@ async fn main() -> Result<()> {
                 workdir.clone(),
                 host_identity.clone(),
             ));
+            state
+                .agent_cache
+                .set_registry(Arc::downgrade(&registry))
+                .await;
             {
                 let cache = state.agent_cache.clone();
                 let preload_workdir = workdir.clone();

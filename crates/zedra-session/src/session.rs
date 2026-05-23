@@ -355,6 +355,9 @@ impl Session {
             HostEvent::FsChanged { path } => {
                 info!("HostEvent: fs changed path={path}");
             }
+            HostEvent::AgentInfoChanged { info } => {
+                info!("HostEvent: agent info changed {:?}", info.kind);
+            }
         }
 
         let _ = host_event_tx.send(event);

@@ -25,6 +25,20 @@
 7. Expected: native text selection handles appear, command and comment lines are selectable, and `Copy` copies the selected text
 8. Expected: switching tabs or scrolling the guide does not leave stale selection handles on screen
 
+## 0b-Status. Connection Status Indicator
+
+1. From Home, tap the status dot on a saved workspace card without tapping the card body
+2. Expected: light haptic, the app navigates to that workspace, and the connecting view opens
+3. Tap the card body outside the dot
+4. Expected: the workspace still opens, but the card tap path is unchanged from before
+5. In a connected workspace, tap the status dot beside the header title
+6. Expected: the connecting view opens and any open workspace drawer closes
+7. Open the workspace drawer and tap the status dot in the drawer header
+8. Expected: the connecting view opens and the drawer closes
+9. Open Quick Actions and tap the status dot on a workspace row, not the row body or `+` button
+10. Expected: Quick Actions closes, that workspace becomes active, and the connecting view opens
+11. While a workspace is idle or reconnecting, confirm the status dot pulses opacity and scale without shifting header layout
+
 ## 0b. Home Settings Button
 
 1. Run a Debug build and open the Home screen
@@ -958,8 +972,14 @@ Expected:
 19. Expected: lists load quickly from the host startup cache (default limit 50
     sessions per agent).
 20. Tap Refresh in either view.
-21. Expected: the host rescans agent metadata and session lists, then updates
-    the UI.
+21. Expected: the host rescans synchronous managed-agent metadata and session
+    lists immediately; CLI versions may arrive a moment later (one
+    `AgentInfoChanged` host event per agent) and update manage detail without
+    another refresh.
+22. In manage detail for an available agent, wait a few seconds after opening
+    or refreshing.
+23. Expected: the version line updates from `Checking…` to the real `--version`
+    string when the host finishes that agent’s async version probe.
 
 ## 19. Xcode Rust Build Target
 

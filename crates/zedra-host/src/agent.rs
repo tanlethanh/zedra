@@ -22,6 +22,12 @@ const SKILL_NAMES: &[&str] = &[
 const AGENT_SESSION_DEFAULT_LIMIT: u32 = 50;
 const AGENT_SESSION_MAX_LIMIT: u32 = 200;
 
+pub const MANAGED_AGENT_KINDS: [ManagedAgentKind; 3] = [
+    ManagedAgentKind::Claude,
+    ManagedAgentKind::Codex,
+    ManagedAgentKind::OpenCode,
+];
+
 pub fn default_agent_session_limit() -> usize {
     agent_session_limit(0)
 }
@@ -39,15 +45,50 @@ pub fn scan_installed_agents() -> AgentInstalledListResult {
     installed_agents::list_installed_agents()
 }
 
-pub fn scan_agent_list(workdir: &Path) -> AgentListResult {
-    const KINDS: [ManagedAgentKind; 3] = [
-        ManagedAgentKind::Claude,
-        ManagedAgentKind::Codex,
-        ManagedAgentKind::OpenCode,
-    ];
-    let mut agents = Vec::with_capacity(KINDS.len());
+pub fn scan_managed_agent_cli_versions() -> HashMap<ManagedAgentKind, AgentCliSummary> {
+    let mut versions = HashMap::with_capacity(MANAGED_AGENT_KINDS.len());
     std::thread::scope(|scope| {
-        let handles: Vec<_> = KINDS
+        let handles: Vec<_> = MANAGED_AGENT_KINDS
+            .iter()
+            .copied()
+            .map(|kind| (kind, scope.spawn(move || cli_version_summary(kind))))
+            .collect();
+        for (kind, handle) in handles {
+            match handle.join() {
+                Ok(summary) => {
+                    versions.insert(kind, summary);
+                }
+                Err(_) => {
+                    tracing::warn!("managed agent version probe panicked for {kind:?}");
+                }
+            }
+        }
+    });
+    versions
+}
+
+pub fn apply_cached_cli_versions(
+    agents: &mut [AgentSummary],
+    versions: &HashMap<ManagedAgentKind, AgentCliSummary>,
+) {
+    for agent in agents {
+        let Some(cached) = versions.get(&agent.kind) else {
+            continue;
+        };
+        if !agent.cli.available {
+            continue;
+        }
+        agent.cli.version = cached.version.clone();
+        if let Some(error) = cached.error.as_ref() {
+            agent.cli.error = Some(error.clone());
+        }
+    }
+}
+
+pub fn scan_agent_list(workdir: &Path) -> AgentListResult {
+    let mut agents = Vec::with_capacity(MANAGED_AGENT_KINDS.len());
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = MANAGED_AGENT_KINDS
             .iter()
             .copied()
             .map(|kind| (kind, scope.spawn(move || agent_summary_scan(kind, workdir))))
@@ -131,12 +172,15 @@ pub fn scan_agent_sessions(
     }
 }
 
-pub async fn list_installed_agents(cache: &AgentCache, refresh: bool) -> AgentInstalledListResult {
+pub async fn list_installed_agents(
+    cache: &Arc<AgentCache>,
+    refresh: bool,
+) -> AgentInstalledListResult {
     cache.installed(refresh).await
 }
 
 pub async fn list_agents(
-    cache: &AgentCache,
+    cache: &Arc<AgentCache>,
     workdir: &Path,
     session: Option<&Arc<ServerSession>>,
     refresh: bool,
@@ -145,7 +189,7 @@ pub async fn list_agents(
 }
 
 pub async fn list_agent_sessions(
-    cache: &AgentCache,
+    cache: &Arc<AgentCache>,
     kind: ManagedAgentKind,
     workdir: &Path,
     session: Option<&Arc<ServerSession>>,
@@ -490,7 +534,7 @@ fn sessions_for_kind_blocking(
 ) -> Result<(Vec<AgentSessionSummary>, u32), String> {
     let cli = match kind {
         ManagedAgentKind::OpenCode => opencode_session_cli_summary(),
-        _ => cli_summary(kind),
+        _ => agent_list_cli_summary(kind, workdir),
     };
     let mut sessions = match kind {
         ManagedAgentKind::Claude => claude_sessions(workdir, &cli, limit),
@@ -504,7 +548,7 @@ fn sessions_for_kind_blocking(
     Ok((sessions.0, total))
 }
 
-fn cli_summary(kind: ManagedAgentKind) -> AgentCliSummary {
+fn cli_version_summary(kind: ManagedAgentKind) -> AgentCliSummary {
     let program = program_name(kind);
     match Command::new(program).arg("--version").output() {
         Ok(output) if output.status.success() => {
@@ -1455,8 +1499,7 @@ fn opencode_sessions_from_json(
             continue;
         }
         let git = opencode_git_summary(&session, &mut git_branch_cache);
-        let transcript_size_bytes =
-            opencode_transcript_size_bytes(&session, &transcript_sizes);
+        let transcript_size_bytes = opencode_transcript_size_bytes(&session, &transcript_sizes);
         sessions.push(AgentSessionSummary {
             kind: ManagedAgentKind::OpenCode,
             session_id: session.id.clone(),
@@ -1755,12 +1798,6 @@ fn claude_account_fields() -> Vec<AgentInfoField> {
             &value,
             &["permissions", "defaultMode"],
         );
-        push_json_bool(
-            &mut fields,
-            "Onboarding complete",
-            &value,
-            &["hasCompletedOnboarding"],
-        );
     }
     let stats_path = home_path(&[".claude", "stats-cache.json"]);
     if let Ok(value) = read_json_file(&stats_path) {
@@ -2017,13 +2054,9 @@ mod tests {
             }}]"#
         );
 
-        let sessions = opencode_sessions_from_json(
-            workdir,
-            json.as_bytes(),
-            &cli("1.14.33"),
-            "test",
-        )
-        .expect("parse opencode sessions");
+        let sessions =
+            opencode_sessions_from_json(workdir, json.as_bytes(), &cli("1.14.33"), "test")
+                .expect("parse opencode sessions");
         assert_eq!(sessions.len(), 1);
         let session = &sessions[0];
         assert_eq!(session.transcript_size_bytes, Some(4096));

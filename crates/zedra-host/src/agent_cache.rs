@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use tokio::sync::Mutex;
 use zedra_rpc::proto::*;
 
 use crate::agent;
-use crate::session_registry::ServerSession;
+use crate::session_registry::{ServerSession, SessionRegistry};
 
 /// Cached session scan for one agent kind. `limit` is the effective (clamped)
 /// limit the scan was run with, so a later request for a larger limit can
@@ -21,29 +21,47 @@ struct CachedAgentData {
     workdir: Option<PathBuf>,
     installed: Option<AgentInstalledListResult>,
     agents: Option<AgentListResult>,
+    cli_versions: HashMap<ManagedAgentKind, AgentCliSummary>,
     sessions: HashMap<ManagedAgentKind, CachedSessions>,
+}
+
+#[derive(Default)]
+struct VersionRefreshCoordinator {
+    running: bool,
+    rerun: bool,
+    pending_sessions: HashMap<String, Arc<ServerSession>>,
 }
 
 pub struct AgentCache {
     inner: Mutex<CachedAgentData>,
+    version_refresh: Mutex<VersionRefreshCoordinator>,
+    registry: Mutex<Option<Weak<SessionRegistry>>>,
 }
 
 impl AgentCache {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(CachedAgentData::default()),
+            version_refresh: Mutex::new(VersionRefreshCoordinator::default()),
+            registry: Mutex::new(None),
         })
+    }
+
+    pub async fn set_registry(self: &Arc<Self>, registry: Weak<SessionRegistry>) {
+        *self.registry.lock().await = Some(registry);
     }
 
     pub async fn preload(self: &Arc<Self>, workdir: PathBuf) {
         let cache = Arc::clone(self);
-        let result = tokio::task::spawn_blocking(move || cache.refresh_all(&workdir)).await;
+        let scan_workdir = workdir.clone();
+        let result = tokio::task::spawn_blocking(move || cache.refresh_all(&scan_workdir)).await;
         if let Err(error) = result {
             tracing::warn!("agent cache preload task failed: {error}");
         }
+        self.request_version_refresh(None).await;
     }
 
-    pub async fn installed(&self, refresh: bool) -> AgentInstalledListResult {
+    pub async fn installed(self: &Arc<Self>, refresh: bool) -> AgentInstalledListResult {
         if refresh {
             self.refresh_installed().await;
         } else {
@@ -59,28 +77,25 @@ impl AgentCache {
     }
 
     pub async fn agents(
-        &self,
+        self: &Arc<Self>,
         workdir: &Path,
         session: Option<&Arc<ServerSession>>,
         refresh: bool,
     ) -> AgentListResult {
         if refresh {
             self.refresh_agents(workdir).await;
+            self.request_version_refresh(session.cloned()).await;
         } else {
             self.ensure_agents(workdir).await;
+            if self.needs_version_refresh().await {
+                self.request_version_refresh(session.cloned()).await;
+            }
         }
-        if let Some(mut result) = self.inner.lock().await.agents.clone() {
-            agent::merge_live_into_agent_list(&mut result.agents, session).await;
-            return result;
-        }
-        AgentListResult {
-            agents: Vec::new(),
-            error: Some("agent cache not ready".into()),
-        }
+        self.agent_list_result(session).await
     }
 
     pub async fn sessions(
-        &self,
+        self: &Arc<Self>,
         kind: ManagedAgentKind,
         workdir: &Path,
         session: Option<&Arc<ServerSession>>,
@@ -115,11 +130,7 @@ impl AgentCache {
         let agents = agent::scan_agent_list(workdir);
         let limit = agent::default_agent_session_limit() as u32;
         let mut sessions = HashMap::new();
-        for kind in [
-            ManagedAgentKind::Claude,
-            ManagedAgentKind::Codex,
-            ManagedAgentKind::OpenCode,
-        ] {
+        for kind in agent::MANAGED_AGENT_KINDS {
             sessions.insert(
                 kind,
                 CachedSessions {
@@ -231,6 +242,156 @@ impl AgentCache {
         self.refresh_sessions(kind, workdir, limit).await;
         self.inner.lock().await.sessions.contains_key(&kind)
     }
+
+    async fn needs_version_refresh(&self) -> bool {
+        let inner = self.inner.lock().await;
+        if inner.cli_versions.is_empty() {
+            return true;
+        }
+        inner.agents.as_ref().is_some_and(|list| {
+            list.agents
+                .iter()
+                .any(|agent| agent.cli.available && agent.cli.version.is_none())
+        })
+    }
+
+    async fn agent_list_result(
+        self: &Arc<Self>,
+        session: Option<&Arc<ServerSession>>,
+    ) -> AgentListResult {
+        let (result, versions) = {
+            let inner = self.inner.lock().await;
+            (inner.agents.clone(), inner.cli_versions.clone())
+        };
+        let Some(mut result) = result else {
+            return AgentListResult {
+                agents: Vec::new(),
+                error: Some("agent cache not ready".into()),
+            };
+        };
+        agent::apply_cached_cli_versions(&mut result.agents, &versions);
+        agent::merge_live_into_agent_list(&mut result.agents, session).await;
+        result
+    }
+
+    async fn cached_agent_summary(
+        self: &Arc<Self>,
+        kind: ManagedAgentKind,
+        session: Option<&Arc<ServerSession>>,
+    ) -> Option<AgentSummary> {
+        let (mut agents, versions) = {
+            let inner = self.inner.lock().await;
+            let agents = inner.agents.as_ref()?.agents.clone();
+            (agents, inner.cli_versions.clone())
+        };
+        agent::apply_cached_cli_versions(&mut agents, &versions);
+        let summary = agents.into_iter().find(|agent| agent.kind == kind)?;
+        let mut agents = [summary];
+        agent::merge_live_into_agent_list(&mut agents, session).await;
+        Some(agents.into_iter().next()?)
+    }
+
+    async fn request_version_refresh(self: &Arc<Self>, session: Option<Arc<ServerSession>>) {
+        let start = {
+            let mut coord = self.version_refresh.lock().await;
+            if let Some(session) = session {
+                coord.pending_sessions.insert(session.id.clone(), session);
+            }
+            if coord.running {
+                coord.rerun = true;
+                false
+            } else {
+                coord.running = true;
+                true
+            }
+        };
+        if !start {
+            return;
+        }
+
+        let cache = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                cache.run_version_refresh().await;
+                let rerun = {
+                    let mut coord = cache.version_refresh.lock().await;
+                    let rerun = coord.rerun;
+                    coord.rerun = false;
+                    if !rerun {
+                        coord.running = false;
+                    }
+                    rerun
+                };
+                if !rerun {
+                    break;
+                }
+            }
+        });
+    }
+
+    async fn run_version_refresh(self: &Arc<Self>) {
+        let versions = tokio::task::spawn_blocking(agent::scan_managed_agent_cli_versions)
+            .await
+            .unwrap_or_default();
+
+        {
+            let mut inner = self.inner.lock().await;
+            inner.cli_versions = versions.clone();
+            if let Some(agents) = inner.agents.as_mut() {
+                agent::apply_cached_cli_versions(&mut agents.agents, &versions);
+            }
+        }
+
+        tracing::debug!(
+            "managed agent cli versions refreshed: {}",
+            versions
+                .iter()
+                .map(|(kind, cli)| format!("{kind:?}={}", cli.version.as_deref().unwrap_or("?")))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
+        let sessions = self.collect_notify_sessions().await;
+        for session in sessions {
+            self.push_agent_info_changed(&session).await;
+        }
+    }
+
+    async fn collect_notify_sessions(&self) -> Vec<Arc<ServerSession>> {
+        let pending = {
+            let mut coord = self.version_refresh.lock().await;
+            coord.pending_sessions.drain().collect::<Vec<_>>()
+        };
+        let mut by_id: HashMap<String, Arc<ServerSession>> =
+            pending.into_iter().map(|(id, s)| (id, s)).collect();
+
+        if let Some(registry) = self.registry.lock().await.as_ref().and_then(Weak::upgrade) {
+            for session in registry.sessions_with_event_subscribers().await {
+                by_id.insert(session.id.clone(), session);
+            }
+        }
+
+        by_id.into_values().collect()
+    }
+
+    async fn push_agent_info_changed(self: &Arc<Self>, session: &Arc<ServerSession>) {
+        for kind in agent::MANAGED_AGENT_KINDS {
+            let Some(info) = self.cached_agent_summary(kind, Some(session)).await else {
+                continue;
+            };
+            if session
+                .push_event(HostEvent::AgentInfoChanged { info })
+                .await
+            {
+                continue;
+            }
+            tracing::debug!(
+                session_id = %session.id,
+                ?kind,
+                "AgentInfoChanged dropped (no subscriber or channel full)"
+            );
+        }
+    }
 }
 
 impl CachedAgentData {
@@ -241,6 +402,7 @@ impl CachedAgentData {
         if self.workdir.as_deref() != Some(workdir) {
             self.agents = None;
             self.sessions.clear();
+            self.cli_versions.clear();
         }
     }
 }

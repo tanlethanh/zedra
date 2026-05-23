@@ -159,13 +159,13 @@ fn section_header(label: &str, cx: &App) -> Div {
 
 fn empty_text(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
-        .flex()
-        .flex_1()
-        .items_center()
-        .justify_center()
+        .w_full()
+        .min_w_0()
         .px(px(theme::SPACING_MD))
+        .py(px(theme::SPACING_LG))
         .text_size(px(theme::FONT_BODY))
         .text_color(rgb(theme::text_muted(cx)))
+        .whitespace_normal()
         .child(text.into())
 }
 

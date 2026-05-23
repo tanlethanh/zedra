@@ -294,9 +294,11 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
 
 ### Managed agent conventions
 
-- `ManagedAgentKind` is intentionally narrower than the terminal AI-agent classifier. Current RPC-visible managed agents are `Claude`, `Codex`, and `OpenCode`.
-- `AgentListResult.agents` returns one `AgentSummary` for every supported managed agent, even when the CLI is missing or no sessions exist.
-- `AgentListReq.refresh` and `AgentInstalledListReq.refresh` default to `false`. When `false`, the host serves its startup cache; when `true`, the host rescans before responding.
+**Terminology:** A *managed agent* is one of `ManagedAgentKind`: Claude Code (`Claude`), Codex (`Codex`), and OpenCode (`OpenCode`). This is narrower than `AgentInstalledList`, which lists every terminal agent CLI the host can launch (Amp, Cline, Cursor, etc.).
+
+- `AgentListResult.agents` returns one `AgentSummary` for every managed agent, even when the CLI is missing or no sessions exist.
+- `AgentListReq.refresh` and `AgentInstalledListReq.refresh` default to `false`. When `false`, the host serves its startup cache; when `true`, the host rescans synchronous fields before responding.
+- `AgentInstalledList` is for `TermCreate` launch commands only, not manage-agent views.
 - `AgentSessionsResult.sessions` returns the latest workspace-matching sessions for one managed agent. `AgentSessionsResult.total` is the full match count before applying `limit`.
 - `AgentSessionsReq.limit` defaults to `0`, which uses the host default (`50`, overridable with `ZEDRA_AGENT_SESSION_LIMIT`, max `200`).
 - `AgentSessionsReq.refresh` follows the same cache rule as `AgentListReq.refresh`.
@@ -311,6 +313,16 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
 - Summaries must not expose prompt text, command arguments, tool input/output, transcript bodies, or last assistant messages. Allowed fields are safe labels, ids, timestamps, counts, paths already scoped to the workspace, and provider metadata such as model, source, permission mode, CLI version, git branch, and PR link metadata.
 - `AgentLifecycleStatus`, `AgentEventKind`, and `AgentActionKind` provide the cross-agent vocabulary for future hook-driven prompts and notifications.
 
+### Async managed-agent fetching
+
+CLI `--version` probes are slow and cached separately from the synchronous agent scan.
+
+1. **Daemon startup:** preload scans agents into cache, then probes versions in the background.
+2. **`AgentList` read:** returns cache with any known versions merged; live terminal bindings merged on the host for the response.
+3. **`AgentList` with `refresh: true`:** rescans synchronous fields immediately, then starts a background version refresh.
+4. **Background completion:** host pushes `HostEvent::AgentInfoChanged { info }` once per managed agent to every session with an active `Subscribe` stream. `info` is the full cached `AgentSummary` for that agent (including versions and live bindings for that session).
+5. **Client update:** replace the cached row for `info.kind` (do not treat the event as a partial patch).
+
 ---
 
 ## 6) Host Events
@@ -320,12 +332,14 @@ Current host event variants:
 - `TerminalCreated { id, launch_cmd }`
 - `GitChanged`
 - `FsChanged { path }`
+- `AgentInfoChanged { info }`
 
 Client rules:
 
 - `TerminalCreated`: attach/open terminal view if relevant.
 - `GitChanged`: invalidate cached git state and refresh when appropriate.
 - `FsChanged { path }`: invalidate cached file tree for the watched path and reload affected expanded nodes.
+- `AgentInfoChanged`: replace cached `AgentSummary` for `info.kind`. One event per managed agent per version refresh. Requires an active `Subscribe` stream.
 
 ---
 

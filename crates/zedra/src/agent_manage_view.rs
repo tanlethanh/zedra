@@ -1,11 +1,10 @@
-use gpui::prelude::FluentBuilder;
 use gpui::*;
 use tracing::error;
-use zedra_rpc::proto::{AgentSetupState, AgentSummary, ManagedAgentKind};
-use zedra_session::SessionHandle;
+use zedra_rpc::proto::{AgentSetupState, AgentSummary, HostEvent, ManagedAgentKind};
+use zedra_session::{Session, SessionHandle};
 
 use crate::agent_session_list::{
-    AgentSessionListProps, agent_icon, kind_slug, managed_agent_name, render_agent_session_list,
+    AgentSessionListProps, agent_icon, kind_slug, render_agent_session_list,
 };
 use crate::fonts;
 use crate::platform_bridge::{self, HapticFeedback};
@@ -37,7 +36,7 @@ pub struct AgentManageView {
 }
 
 impl AgentManageView {
-    pub fn new(session_handle: SessionHandle, cx: &mut Context<Self>) -> Self {
+    pub fn new(session_handle: SessionHandle, session: Session, cx: &mut Context<Self>) -> Self {
         let mut view = Self {
             session_handle,
             agents: Vec::new(),
@@ -48,8 +47,49 @@ impl AgentManageView {
             loading_epoch: 0,
             _tasks: Vec::new(),
         };
+        view.subscribe_agent_info(session, cx);
         view.load_agents(false, cx);
         view
+    }
+
+    fn subscribe_agent_info(&mut self, session: Session, cx: &mut Context<Self>) {
+        let mut host_event_rx = session.subscribe_host_events();
+        let task = cx.spawn(async move |this, cx| {
+            loop {
+                match host_event_rx.recv().await {
+                    Ok(HostEvent::AgentInfoChanged { info }) => {
+                        let should_break = this
+                            .update(cx, |this, cx| {
+                                if let Some(agent) =
+                                    this.agents.iter_mut().find(|agent| agent.kind == info.kind)
+                                {
+                                    *agent = info;
+                                } else {
+                                    this.agents.push(info);
+                                }
+                                this.agent_state = LoadState::Ready;
+                                cx.notify();
+                            })
+                            .is_err();
+                        if should_break {
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!("agent manage host event listener lagged by {}", skipped);
+                        let should_break = this
+                            .update(cx, |this, cx| this.load_agents(false, cx))
+                            .is_err();
+                        if should_break {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        self._tasks.push(task);
     }
 
     fn load_agents(&mut self, refresh: bool, cx: &mut Context<Self>) {
@@ -168,7 +208,7 @@ impl AgentManageView {
                 id_prefix: "agent-manage-detail",
                 back: ManageHeaderBack::List,
                 title: agent.display_name.clone().into(),
-                description: managed_agent_name(agent.kind).into(),
+                description: cli_version_display(agent).into(),
             },
         )
     }
@@ -194,8 +234,9 @@ impl AgentManageView {
         for agent in agents {
             let kind = agent.kind;
             let display_name = agent.display_name.clone();
-            let setup = agent.setup.state;
+            let version = cli_version_display(agent);
             let session_count = agent.sessions.resumable.max(agent.sessions.total);
+            let sessions_label = format!("{session_count} sessions");
             list = list.child(
                 div()
                     .id(SharedString::from(format!(
@@ -244,16 +285,28 @@ impl AgentManageView {
                                     )
                                     .child(
                                         div()
-                                            .min_w_0()
-                                            .overflow_hidden()
-                                            .whitespace_nowrap()
-                                            .text_size(px(theme::FONT_DETAIL))
-                                            .text_color(rgb(theme::text_muted(cx)))
-                                            .child(format!(
-                                                "{} · {} sessions",
-                                                setup_label(setup),
-                                                session_count
-                                            )),
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(theme::SPACING_SM))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .overflow_hidden()
+                                                    .whitespace_nowrap()
+                                                    .text_size(px(theme::FONT_DETAIL))
+                                                    .text_color(rgb(theme::text_muted(cx)))
+                                                    .child(version),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_shrink_0()
+                                                    .whitespace_nowrap()
+                                                    .text_size(px(theme::FONT_DETAIL))
+                                                    .text_color(rgb(theme::text_muted(cx)))
+                                                    .child(sessions_label),
+                                            ),
                                     ),
                             ),
                     ),
@@ -316,26 +369,21 @@ impl Render for AgentManageView {
         };
 
         let body: AnyElement = match agent_state {
-            LoadState::Loading => Self::render_padded_body(empty_text(
-                "Loading managed agents...",
+            LoadState::Loading => {
+                Self::render_padded_body(empty_text("Loading managed agents...", cx))
+                    .into_any_element()
+            }
+            LoadState::Error(message) => Self::render_padded_body(empty_text(
+                format!("Failed to load managed agents: {message}"),
                 cx,
             ))
-            .into_any_element(),
-            LoadState::Error(message) => Self::render_padded_body(empty_text(format!(
-                "Failed to load managed agents: {message}"
-            ), cx))
             .into_any_element(),
             LoadState::Ready => match screen {
                 Screen::List => Self::render_list_body(&agents, cx).into_any_element(),
                 Screen::Detail(_) => {
                     if let Some(agent) = detail_agent.as_ref() {
-                        Self::render_detail_body(
-                            agent,
-                            &sessions,
-                            &session_state,
-                            cx,
-                        )
-                        .into_any_element()
+                        Self::render_detail_body(agent, &sessions, &session_state, cx)
+                            .into_any_element()
                     } else {
                         Self::render_padded_body(empty_text("No agent selected.", cx))
                             .into_any_element()
@@ -414,7 +462,10 @@ fn render_manage_header(
         .pb(px(theme::SPACING_SM))
         .child(
             div()
-                .id(SharedString::from(format!("{}-header-inner", config.id_prefix)))
+                .id(SharedString::from(format!(
+                    "{}-header-inner",
+                    config.id_prefix
+                )))
                 .relative()
                 .w_full()
                 .child(
@@ -464,22 +515,8 @@ fn render_detail_summary(agent: &AgentSummary, cx: &App) -> Div {
         .flex_col()
         .gap(px(4.0));
 
-    let cli = if agent.cli.available {
-        agent
-            .cli
-            .version
-            .clone()
-            .unwrap_or_else(|| "available".to_string())
-    } else {
-        agent
-            .cli
-            .error
-            .clone()
-            .unwrap_or_else(|| "missing".to_string())
-    };
-
     summary = summary
-        .child(summary_line("CLI", cli, cx))
+        .child(summary_line("Version", cli_version_display(agent), cx))
         .child(summary_line(
             "Setup",
             setup_label(agent.setup.state).to_string(),
@@ -596,6 +633,22 @@ fn empty_text(text: impl Into<SharedString>, cx: &App) -> Div {
         .text_size(px(theme::FONT_BODY))
         .text_color(rgb(theme::text_muted(cx)))
         .child(text.into())
+}
+
+fn cli_version_display(agent: &AgentSummary) -> String {
+    if agent.cli.available {
+        agent
+            .cli
+            .version
+            .clone()
+            .unwrap_or_else(|| "Checking…".to_string())
+    } else {
+        agent
+            .cli
+            .error
+            .clone()
+            .unwrap_or_else(|| "Not installed".to_string())
+    }
 }
 
 fn setup_label(state: AgentSetupState) -> &'static str {

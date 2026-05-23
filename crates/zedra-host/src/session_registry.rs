@@ -882,7 +882,18 @@ impl SessionRegistry {
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => a.id.cmp(&b.id),
         });
+        result
+    }
 
+    /// All server sessions that currently have a host-event subscriber attached.
+    pub async fn sessions_with_event_subscribers(&self) -> Vec<Arc<ServerSession>> {
+        let sessions = self.sessions.lock().await;
+        let mut result = Vec::new();
+        for session in sessions.values() {
+            if session.has_event_subscriber().await {
+                result.push(Arc::clone(session));
+            }
+        }
         result
     }
 
@@ -1381,6 +1392,11 @@ impl ServerSession {
         let mut order = self.terminal_order.lock().await;
         *order = ordered_ids;
         Ok(())
+    }
+
+    /// Whether this session has an active `Subscribe` host-event stream.
+    pub async fn has_event_subscriber(&self) -> bool {
+        self.event_tx.lock().await.is_some()
     }
 
     /// Push a host-initiated event to the subscribed client, if any.

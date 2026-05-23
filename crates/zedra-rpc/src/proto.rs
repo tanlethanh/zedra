@@ -668,6 +668,8 @@ pub enum HostEvent {
     GitChanged,
     /// A watched directory path changed and the client should invalidate its cached tree.
     FsChanged { path: String },
+    /// Cached managed-agent summary updated after an async fetch (for example CLI version).
+    AgentInfoChanged { info: AgentSummary },
 }
 
 // ---------------------------------------------------------------------------

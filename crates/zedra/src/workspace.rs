@@ -1334,7 +1334,9 @@ impl Workspace {
                 view_telemetry::record(view_telemetry::WORKSPACE_AGENT_SESSIONS);
             }
             WorkspaceMainView::AgentManage => {
-                let view = cx.new(|cx| AgentManageView::new(self.session.handle().clone(), cx));
+                let view = cx.new(|cx| {
+                    AgentManageView::new(self.session.handle().clone(), self.session.clone(), cx)
+                });
                 self.content.update(cx, move |content, cx| {
                     content.clear_subtitle(cx);
                     content.set_main_view(view.into(), cx);
