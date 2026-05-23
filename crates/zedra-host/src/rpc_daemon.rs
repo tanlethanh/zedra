@@ -18,9 +18,9 @@ use crate::metrics;
 use crate::paths;
 use crate::pty::{ShellSession, SpawnOptions};
 use crate::session_registry::{
-    ActiveClientConnection, AttachResult, ConsumeSlotResult, HostShellState, HostTermMeta,
-    OutputSenderSlot, PairingSlotMode, ServerSession, SessionRegistry, TermBacklog, TermSession,
-    MAX_WATCHED_PATHS_PER_SESSION,
+    finish_host_connection, ActiveClientConnection, AttachResult, ConsumeSlotResult, HostShellState,
+    HostTermMeta, OutputSenderSlot, PairingSlotMode,
+    ServerSession, SessionRegistry, TermBacklog, TermSession, MAX_WATCHED_PATHS_PER_SESSION,
 };
 use crate::utils;
 use anyhow::Result;
@@ -550,10 +550,7 @@ pub async fn handle_connection(
                 path_type,
             });
             tracing::warn!("auth failed from {}: {}", remote.fmt_short(), e);
-            // Wait for the client to close the connection (up to 500ms) so any
-            // error response we sent has time to be delivered before CONNECTION_CLOSE.
-            let _ =
-                tokio::time::timeout(std::time::Duration::from_millis(500), conn.closed()).await;
+            finish_host_connection(&conn).await;
             return Ok(());
         }
     };
@@ -572,7 +569,7 @@ pub async fn handle_connection(
         &client_pubkey[..4],
         session.id,
     );
-    active_connection.spawn_monitor();
+    let monitor_task = active_connection.spawn_monitor();
     let metrics_connection_open = match metrics::record_connection_opened(&state.workdir) {
         Ok(()) => true,
         Err(e) => {
@@ -589,7 +586,7 @@ pub async fn handle_connection(
     let session_start = std::time::Instant::now();
 
     // Spawn bandwidth sampler: reads iroh path stats every 60s while connected.
-    {
+    let bandwidth_task = {
         use iroh::Watcher;
         let conn_for_bw = conn.clone();
         tokio::spawn(async move {
@@ -602,6 +599,9 @@ pub async fn handle_connection(
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
+                        if conn_for_bw.close_reason().is_some() {
+                            break;
+                        }
                         let path_list = paths.get();
                         let mut cur_tx = 0u64;
                         let mut cur_rx = 0u64;
@@ -640,8 +640,8 @@ pub async fn handle_connection(
                     _ = conn_for_bw.closed() => break,
                 }
             }
-        });
-    }
+        })
+    };
 
     // RPC dispatch loop
     loop {
@@ -693,6 +693,12 @@ pub async fn handle_connection(
             tracing::warn!("Failed to record connection metrics: {}", e);
         }
     }
+
+    if let Some(monitor_task) = monitor_task {
+        monitor_task.abort();
+    }
+    bandwidth_task.abort();
+    finish_host_connection(&conn).await;
 
     tracing::info!(
         "Connection closed: session={} (session stays alive in registry)",
