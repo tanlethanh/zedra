@@ -289,7 +289,7 @@ impl Render for TerminalPreviewView {
                 div()
                     .w_full()
                     .px(px(theme::SPACING_LG))
-                    .pt(px(8.0))
+                    .pt(px(if cfg!(target_os = "ios") { 18.0 } else { 8.0 }))
                     .pb(px(8.0))
                     .border_b_1()
                     .border_color(rgb(theme::border_subtle(cx)))

@@ -153,8 +153,6 @@ impl Render for SettingsView {
                     .flex_row()
                     .items_center()
                     .justify_between()
-                    .border_b_1()
-                    .border_color(rgb(theme::border_subtle(cx)))
                     .child(
                         div()
                             .flex()
@@ -190,7 +188,7 @@ impl Render for SettingsView {
             .child(
                 div()
                     .id("settings-scroll")
-                    .overflow_scroll()
+                    .overflow_y_scroll()
                     .flex_1()
                     .px(px(theme::SPACING_LG))
                     .pb(px(bottom_inset + 18.0))
@@ -198,7 +196,6 @@ impl Render for SettingsView {
                         div()
                             .w_full()
                             .max_w(px(520.0))
-                            .mx_auto()
                             .flex()
                             .flex_col()
                             .gap(px(theme::SPACING_MD))
@@ -213,13 +210,6 @@ impl Render for SettingsView {
                                     this.set_theme_preference(ThemePreference::Light, cx);
                                 }),
                             ))
-                            .child(
-                                div()
-                                    .text_color(rgb(theme::text_muted(cx)))
-                                    .text_size(px(theme::FONT_DETAIL))
-                                    .font_family(fonts::MONO_FONT_FAMILY)
-                                    .child("Custom themes will be supported in a future update."),
-                            )
                             .when(cfg!(debug_assertions), |section| {
                                 section
                                     .child(section_header(cx, "Developer"))
@@ -309,14 +299,12 @@ fn appearance_theme_toggle(
 
     div()
         .id("settings-appearance-toggle")
-        .w_full()
         .min_w_0()
         .min_h(px(32.0))
         .py(px(2.0))
         .flex()
         .flex_row()
         .items_center()
-        .justify_between()
         .gap(px(theme::SPACING_MD))
         .child(
             div()
@@ -408,14 +396,12 @@ fn action_row(
 ) -> Stateful<Div> {
     div()
         .id(id)
-        .w_full()
         .min_w_0()
         .min_h(px(56.0))
         .py(px(10.0))
         .flex()
         .flex_row()
         .items_center()
-        .justify_between()
         .gap(px(theme::SPACING_MD))
         .cursor_pointer()
         .child(
