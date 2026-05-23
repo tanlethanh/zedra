@@ -1,9 +1,11 @@
 /// Transport badge: connection type indicator (P2P / Relay / Reconnecting).
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::*;
 use zedra_session::{ConnectPhase, TransportSnapshot};
 
+use crate::platform_bridge::{self, HapticFeedback};
 use crate::theme::{self, ThemePalette};
 
 /// Compute badge label and dot color from phase and transport.
@@ -86,6 +88,10 @@ fn phase_indicator_blinks(palette: &ThemePalette, phase: &ConnectPhase) -> bool 
 
 const STATUS_PULSE_MS: u64 = 1800;
 const STATUS_PULSE_MIN_OPACITY: f32 = 0.35;
+const STATUS_PULSE_MAX_SCALE: f32 = 1.3;
+const STATUS_HIT_SLOP: f32 = 20.0;
+
+type ConnectionStatusPressHandler = Arc<dyn Fn(&PressEvent, &mut Window, &mut App) + 'static>;
 
 #[derive(Clone, IntoElement)]
 pub(crate) struct ConnectionStatusIndicator {
@@ -93,6 +99,7 @@ pub(crate) struct ConnectionStatusIndicator {
     color: u32,
     size: f32,
     blink: bool,
+    on_press: Option<ConnectionStatusPressHandler>,
 }
 
 impl ConnectionStatusIndicator {
@@ -113,6 +120,7 @@ impl ConnectionStatusIndicator {
             color,
             size: theme::ICON_STATUS,
             blink,
+            on_press: None,
         }
     }
 
@@ -120,31 +128,70 @@ impl ConnectionStatusIndicator {
         self.size = size;
         self
     }
+
+    /// Press handler compatible with [`Context::listener`].
+    pub(crate) fn on_press(
+        mut self,
+        handler: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_press = Some(Arc::new(handler));
+        self
+    }
+}
+
+fn status_pulse_wave(delta: f32) -> f32 {
+    0.5 - 0.5 * (delta * std::f32::consts::TAU).cos()
+}
+
+fn render_status_dot(id: ElementId, color: u32, dot_size: f32, blink: bool) -> AnyElement {
+    let dot = svg()
+        .path("icons/dot.svg")
+        .size(px(dot_size))
+        .flex_shrink_0()
+        .text_color(rgb(color));
+
+    if blink {
+        dot.with_animation(
+            id,
+            Animation::new(Duration::from_millis(STATUS_PULSE_MS)).repeat(),
+            move |dot, delta| {
+                let wave = status_pulse_wave(delta);
+                let opacity = STATUS_PULSE_MIN_OPACITY + wave * (1.0 - STATUS_PULSE_MIN_OPACITY);
+                let scale = 1.0 + wave * (STATUS_PULSE_MAX_SCALE - 1.0);
+                dot.opacity(opacity)
+                    .with_transformation(Transformation::scale(gpui::size(scale, scale)))
+            },
+        )
+        .into_any_element()
+    } else {
+        dot.into_any_element()
+    }
 }
 
 impl RenderOnce for ConnectionStatusIndicator {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let dot = div()
-            .w(px(self.size))
-            .h(px(self.size))
-            .rounded(px(self.size / 2.0))
-            .flex_shrink_0()
-            .bg(rgb(self.color));
+        let indicator = render_status_dot(self.id.clone(), self.color, self.size, self.blink);
 
-        if self.blink {
-            dot.with_animation(
-                self.id,
-                Animation::new(Duration::from_millis(STATUS_PULSE_MS)).repeat(),
-                |dot, delta| {
-                    let wave = 0.5 - 0.5 * (delta * std::f32::consts::TAU).cos();
-                    let opacity =
-                        STATUS_PULSE_MIN_OPACITY + wave * (1.0 - STATUS_PULSE_MIN_OPACITY);
-                    dot.opacity(opacity)
-                },
-            )
-            .into_any_element()
+        if let Some(on_press) = self.on_press {
+            let button_id = (self.id, "press");
+            div()
+                .id(button_id)
+                .flex()
+                .items_center()
+                .justify_center()
+                .flex_shrink_0()
+                .cursor_pointer()
+                .hit_slop(px(STATUS_HIT_SLOP))
+                .on_pointer_down(|_, _, cx| cx.stop_propagation())
+                .on_press(move |event, window, cx| {
+                    cx.stop_propagation();
+                    platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+                    on_press(event, window, cx);
+                })
+                .child(indicator)
+                .into_any_element()
         } else {
-            dot.into_any_element()
+            indicator
         }
     }
 }

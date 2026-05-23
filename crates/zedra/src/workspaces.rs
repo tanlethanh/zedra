@@ -23,6 +23,13 @@ pub enum WorkspacesEvent {
 
 impl EventEmitter<WorkspacesEvent> for Workspaces {}
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OpenConnectingForState {
+    ActiveEntry,
+    StartedConnect,
+    InvalidState,
+}
+
 pub struct Workspaces {
     /// Workspace entries, one per state.
     /// The entry is lazily loaded from the state when first opened,
@@ -115,6 +122,44 @@ impl Workspaces {
             cx.notify();
         } else {
             warn!("Index {index} out of range. Cannot switch to workspace.");
+        }
+    }
+
+    pub fn open_connecting_for_entry(
+        &mut self,
+        entry_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if entry_index >= self.entries.len() {
+            warn!("Index {entry_index} out of range. Cannot open connecting view.");
+            return;
+        }
+        self.switch_to(entry_index, cx);
+        let Some(workspace) = self.entries.get(entry_index).cloned() else {
+            return;
+        };
+        workspace.update(cx, |ws, cx| ws.reveal_connecting_view(window, cx));
+    }
+
+    pub fn open_connecting_for_state(
+        &mut self,
+        state_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> OpenConnectingForState {
+        let Some(state) = self.states.get(state_index) else {
+            warn!("Index {state_index} out of range. Cannot open connecting view.");
+            return OpenConnectingForState::InvalidState;
+        };
+
+        let endpoint_addr = state.read(cx).endpoint_addr.clone();
+        if let Some(entry_index) = self.entry_index_by_endpoint_addr(&endpoint_addr, cx) {
+            self.open_connecting_for_entry(entry_index, window, cx);
+            OpenConnectingForState::ActiveEntry
+        } else {
+            self.connect_saved(state_index, window, cx);
+            OpenConnectingForState::StartedConnect
         }
     }
 

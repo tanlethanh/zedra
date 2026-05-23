@@ -1148,8 +1148,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         info!("handle ShowConnecting from workspace");
+        self.reveal_connecting_view(window, cx);
+    }
+
+    pub(crate) fn reveal_connecting_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.drawer_host
-            .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
+            .update(cx, |host, cx| host.close_with_window(window, cx));
         self.content.update(cx, |c, cx| c.show_connecting_view(cx));
         self.record_current_view(cx);
     }
@@ -2520,6 +2524,10 @@ impl WorkspaceContent {
         self.show_connecting
     }
 
+    fn open_connecting_view(&self, window: &mut Window, cx: &mut Context<Self>) {
+        window.dispatch_action(workspace_action::ShowConnecting.boxed_clone(), cx);
+    }
+
     fn render_subtitle(&self, default_subtitle: &str, cx: &mut Context<Self>) -> AnyElement {
         match &self.subtitle {
             WorkspaceSubtitle::Default => render_subtitle(cx, default_subtitle.to_owned()),
@@ -2667,7 +2675,12 @@ impl Render for WorkspaceContent {
                                                     connect_phase.as_ref(),
                                                     &theme::palette(cx),
                                                 )
-                                                .size(6.0),
+                                                .size(6.0)
+                                                .on_press(cx.listener(
+                                                    |this, _event, window, cx| {
+                                                        this.open_connecting_view(window, cx);
+                                                    },
+                                                )),
                                             )
                                             .child(
                                                 div()
