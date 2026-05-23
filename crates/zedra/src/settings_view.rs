@@ -153,8 +153,6 @@ impl Render for SettingsView {
                     .flex_row()
                     .items_center()
                     .justify_between()
-                    .border_b_1()
-                    .border_color(rgb(theme::border_subtle(cx)))
                     .child(
                         div()
                             .flex()
@@ -212,13 +210,6 @@ impl Render for SettingsView {
                                     this.set_theme_preference(ThemePreference::Light, cx);
                                 }),
                             ))
-                            .child(
-                                div()
-                                    .text_color(rgb(theme::text_muted(cx)))
-                                    .text_size(px(theme::FONT_DETAIL))
-                                    .font_family(fonts::MONO_FONT_FAMILY)
-                                    .child("Custom themes will be supported in a future update."),
-                            )
                             .when(cfg!(debug_assertions), |section| {
                                 section
                                     .child(section_header(cx, "Developer"))
