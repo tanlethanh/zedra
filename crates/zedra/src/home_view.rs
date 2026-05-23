@@ -10,7 +10,7 @@ use crate::fonts;
 use crate::platform_bridge::{self, AlertButton, HapticFeedback};
 use crate::theme;
 use crate::transport_badge::{ConnectionStatusIndicator, phase_indicator_color};
-use crate::workspaces::Workspaces;
+use crate::workspaces::{OpenConnectingForState, Workspaces};
 
 const WEBSITE_URL: &str = "https://www.zedra.dev";
 const GITHUB_URL: &str = "https://github.com/tanlethanh/zedra";
@@ -114,6 +114,28 @@ impl HomeView {
             });
         }
         cx.emit(HomeEvent::NavigateToWorkspace);
+    }
+
+    fn show_connecting_for_state(
+        &self,
+        state_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let outcome = self.workspaces.update(cx, |ws, cx| {
+            ws.open_connecting_for_state(state_index, window, cx)
+        });
+        match outcome {
+            OpenConnectingForState::ActiveEntry => {
+                zedra_telemetry::send(Event::WorkspaceSelected { source: "active" });
+                cx.emit(HomeEvent::NavigateToWorkspace);
+            }
+            OpenConnectingForState::StartedConnect => {
+                zedra_telemetry::send(Event::WorkspaceSelected { source: "saved" });
+                cx.emit(HomeEvent::NavigateToWorkspace);
+            }
+            OpenConnectingForState::InvalidState => {}
+        }
     }
 
     fn handle_workspace_long_press(&self, item_idx: usize, cx: &mut Context<Self>) {
@@ -868,11 +890,16 @@ fn workspace_card(
                 .flex_row()
                 .items_center()
                 .gap(px(6.0))
-                .child(ConnectionStatusIndicator::from_phase(
-                    ("home-connect-status", index),
-                    connect_phase.as_ref(),
-                    &theme::palette(cx),
-                ))
+                .child(
+                    ConnectionStatusIndicator::from_phase(
+                        ("home-connect-status", index),
+                        connect_phase.as_ref(),
+                        &theme::palette(cx),
+                    )
+                    .on_press(cx.listener(move |this, _event, window, cx| {
+                        this.show_connecting_for_state(index, window, cx);
+                    })),
+                )
                 .child(
                     div()
                         .flex_1()

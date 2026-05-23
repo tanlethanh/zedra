@@ -21,7 +21,8 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 use zedra_osc::{OscEvent, OscScanner};
 use zedra_rpc::proto::{
-    BacklogEntry, FsDocsTreeError, FsDocsTreeResult, HostEvent, TermOutput, TerminalSyncEntry,
+    BacklogEntry, FsDocsTreeError, FsDocsTreeResult, HostEvent, SessionCloseReason, TermOutput,
+    TerminalSyncEntry,
 };
 use zedra_rpc::verify_registration_hmac;
 
@@ -84,6 +85,45 @@ const MAX_SUPERSEDED_PAIRING_SLOTS_PER_SESSION: usize = 8;
 
 static NEXT_ACTIVE_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Close the QUIC connection if it is still open.
+///
+/// iroh-quinn's driver panics if the last handle drops while the connection is
+/// drained but `State::error` was never set. Always call this before releasing
+/// the final `Connection` clone in a handler task.
+pub fn close_connection_if_open(
+    conn: &iroh::endpoint::Connection,
+    reason: SessionCloseReason,
+    detail: &[u8],
+) {
+    if conn.close_reason().is_none() {
+        conn.close((reason as u32).into(), detail);
+    }
+}
+
+/// Wait for the QUIC driver to finish after a close.
+pub async fn wait_connection_drained(conn: &iroh::endpoint::Connection) {
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), conn.closed()).await;
+}
+
+/// Close a handler-owned connection and wait for the QUIC driver to drain.
+pub async fn finish_host_connection(conn: &iroh::endpoint::Connection) {
+    if conn.close_reason().is_none() {
+        conn.close(0u32.into(), b"");
+    }
+    wait_connection_drained(conn).await;
+}
+
+/// Tear down a connection after auth failed.
+///
+/// Wait briefly for the client to close first so any typed auth error response
+/// can be delivered before we send CONNECTION_CLOSE. If the client is still
+/// connected, close explicitly so iroh-quinn always sees a close reason before
+/// the handler drops its last handle.
+pub async fn finish_auth_failed_connection(conn: &iroh::endpoint::Connection) {
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(500), conn.closed()).await;
+    finish_host_connection(conn).await;
+}
+
 /// Host-side lease for the active client connection.
 #[derive(Clone)]
 pub struct ActiveClientConnection {
@@ -128,15 +168,15 @@ impl ActiveClientConnection {
         self.client_pubkey
     }
 
-    pub fn spawn_monitor(&self) {
+    pub fn spawn_monitor(&self) -> Option<tokio::task::JoinHandle<()>> {
         let Some(conn) = self.conn.clone() else {
-            return;
+            return None;
         };
         let last_rx_bytes = self.last_rx_bytes.clone();
         let last_rx_at = self.last_rx_at.clone();
         let closed = self.closed.clone();
 
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             let mut interval = tokio::time::interval(ACTIVE_CLIENT_PROBE_INTERVAL);
             loop {
                 tokio::select! {
@@ -160,7 +200,7 @@ impl ActiveClientConnection {
                     }
                 }
             }
-        });
+        }))
     }
 
     pub fn is_stale(&self, now: Instant) -> bool {
@@ -181,7 +221,11 @@ impl ActiveClientConnection {
 
     pub fn close_for_takeover(&self) {
         if let Some(conn) = &self.conn {
-            conn.close(0u32.into(), b"replaced by new client");
+            close_connection_if_open(
+                conn,
+                SessionCloseReason::SessionTakenOver,
+                b"replaced by new client",
+            );
         }
         self.closed.store(true, Ordering::Release);
     }
@@ -1098,7 +1142,10 @@ impl SessionRegistry {
     pub async fn force_detach(&self, session_id: &str) -> bool {
         let sessions = self.sessions.lock().await;
         if let Some(session) = sessions.get(session_id) {
-            *session.active_client.lock().await = None;
+            let previous = session.active_client.lock().await.take();
+            if let Some(previous) = previous {
+                previous.close_for_takeover();
+            }
             true
         } else {
             false

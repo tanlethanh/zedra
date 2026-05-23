@@ -156,6 +156,19 @@ impl QuickActionPanel {
         cx.emit(QuickActionEvent::NavigateToWorkspace);
     }
 
+    fn show_connecting_for_entry(
+        &self,
+        entry_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspaces.update(cx, |ws, cx| {
+            ws.open_connecting_for_entry(entry_index, window, cx);
+        });
+        cx.emit(QuickActionEvent::Close);
+        cx.emit(QuickActionEvent::NavigateToWorkspace);
+    }
+
     fn handle_switch_terminal(&self, ws_index: usize, tid: String, cx: &mut Context<Self>) {
         self.workspaces
             .update(cx, |ws, cx| ws.switch_to(ws_index, cx));
@@ -302,11 +315,18 @@ impl Render for QuickActionPanel {
                                     .flex_row()
                                     .items_center()
                                     .gap(px(6.0))
-                                    .child(ConnectionStatusIndicator::from_phase(
-                                        ("quick-action-connect-status", index),
-                                        connect_phase.as_ref(),
-                                        &theme::palette(cx),
-                                    ))
+                                    .child(
+                                        ConnectionStatusIndicator::from_phase(
+                                            ("quick-action-connect-status", index),
+                                            connect_phase.as_ref(),
+                                            &theme::palette(cx),
+                                        )
+                                        .on_press(
+                                            cx.listener(move |this, _event, window, cx| {
+                                                this.show_connecting_for_entry(index, window, cx);
+                                            }),
+                                        ),
+                                    )
                                     .child(
                                         div()
                                             .flex_1()
