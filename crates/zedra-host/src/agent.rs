@@ -2,6 +2,7 @@ use crate::agent_cache::AgentCache;
 use crate::claude;
 use crate::installed_agents;
 use crate::session_registry::{HostShellState, HostTermMeta, ServerSession};
+use crate::sqlite_readonly;
 use crate::utils;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -962,22 +963,11 @@ fn fetch_codex_threads_from_db(workdir: &Path) -> Result<Vec<CodexThreadRow>, St
         ORDER BY updated_at_ms DESC
     "#
     );
-    let output = Command::new("sqlite3")
-        .args(["-readonly", "-json"])
-        .arg(&db_path)
-        .arg(&query)
-        .output()
-        .map_err(|error| format!("failed to run sqlite3: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "sqlite3 query failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    if output.stdout.is_empty() {
+    let stdout = sqlite_readonly::query_json(&db_path, &query)?;
+    if stdout.is_empty() {
         return Ok(Vec::new());
     }
-    serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())
+    serde_json::from_slice(&stdout).map_err(|error| error.to_string())
 }
 
 fn codex_threads_for_workdir(workdir: &Path) -> Result<Vec<CodexThreadRow>, String> {
@@ -1265,22 +1255,7 @@ fn fetch_opencode_sessions_json_from_db() -> Result<Vec<u8>, String> {
         ORDER BY s.time_updated DESC
     "#;
 
-    let output = Command::new("sqlite3")
-        .args(["-readonly", "-json"])
-        .arg(&db_path)
-        .arg(QUERY)
-        .output()
-        .map_err(|error| format!("failed to run sqlite3: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "sqlite3 query failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    if output.stdout.is_empty() {
-        return Ok(b"[]".to_vec());
-    }
-    Ok(output.stdout)
+    sqlite_readonly::query_json(&db_path, QUERY)
 }
 
 fn opencode_workdir_matches(
@@ -1377,16 +1352,11 @@ fn opencode_transcript_sizes_from_db() -> HashMap<String, u64> {
         GROUP BY session_id
     "#;
 
-    let output = match Command::new("sqlite3")
-        .args(["-readonly", "-json"])
-        .arg(&db_path)
-        .arg(QUERY)
-        .output()
-    {
-        Ok(output) if output.status.success() => output,
-        _ => return HashMap::new(),
+    let stdout = match sqlite_readonly::query_json(&db_path, QUERY) {
+        Ok(stdout) => stdout,
+        Err(_) => return HashMap::new(),
     };
-    if output.stdout.is_empty() {
+    if stdout.is_empty() {
         return HashMap::new();
     }
 
@@ -1396,7 +1366,7 @@ fn opencode_transcript_sizes_from_db() -> HashMap<String, u64> {
         bytes: i64,
     }
 
-    serde_json::from_slice::<Vec<Row>>(&output.stdout)
+    serde_json::from_slice::<Vec<Row>>(&stdout)
         .map(|rows| {
             rows.into_iter()
                 .filter_map(|row| {

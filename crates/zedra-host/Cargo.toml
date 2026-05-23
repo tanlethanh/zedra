@@ -67,6 +67,9 @@ sysinfo = "0.31.4"
 # Error handling
 anyhow.workspace = true
 
+# Read-only queries against Codex/OpenCode WAL SQLite databases
+rusqlite = { version = "0.32", features = ["bundled"] }
+
 # P2P networking
 iroh.workspace = true
 iroh-relay = { workspace = true, features = ["server"] }
