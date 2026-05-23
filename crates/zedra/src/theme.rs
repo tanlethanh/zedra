@@ -22,6 +22,8 @@ pub const HEADER_HEIGHT: f32 = 48.0;
 pub const HOME_CARD_WIDTH: f32 = 300.0;
 pub const HOME_GUIDE_WIDTH: f32 = 300.0;
 pub const CONNECT_DETAIL_WIDTH: f32 = 300.0;
+/// Max width for centered panel content on large screens (e.g. iPad).
+pub const CONTENT_MAX_WIDTH: f32 = 520.0;
 pub const HEADER_BUTTON_SIZE: f32 = 42.0;
 pub const DRAWER_ICON_ZONE: f32 = 38.0;
 pub const TERMINAL_LINE_HEIGHT: f32 = 16.0;

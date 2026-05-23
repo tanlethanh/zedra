@@ -60,6 +60,18 @@ pub struct ShowConnecting;
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
+pub struct ShowWorkspaceConnecting {
+    pub entry_index: usize,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct ShowHomeWorkspaceConnecting {
+    pub state_index: usize,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
 pub struct HideConnecting;
 
 #[derive(Clone, PartialEq, Action)]
@@ -73,6 +85,10 @@ pub struct RequestDisconnect;
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
 pub struct CreateNewTerminal;
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct NavigateBack;
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]

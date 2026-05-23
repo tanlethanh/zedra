@@ -1,3 +1,4 @@
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use tracing::error;
 use zedra_rpc::proto::{AgentSetupState, AgentSummary, ManagedAgentKind};
@@ -6,10 +7,12 @@ use zedra_session::SessionHandle;
 use crate::agent_session_list::{
     AgentSessionListProps, agent_icon, kind_slug, managed_agent_name, render_agent_session_list,
 };
+use crate::fonts;
 use crate::platform_bridge::{self, HapticFeedback};
 use crate::theme;
+use crate::workspace_action;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum LoadState {
     Loading,
     Ready,
@@ -146,27 +149,53 @@ impl AgentManageView {
         self._tasks.push(task);
     }
 
-    fn selected_agent(&self) -> Option<&AgentSummary> {
-        let Screen::Detail(kind) = self.screen else {
-            return None;
-        };
-        self.agents.iter().find(|agent| agent.kind == kind)
+    fn render_list_header(cx: &mut Context<Self>) -> impl IntoElement {
+        render_manage_header(
+            cx,
+            ManageHeaderConfig {
+                id_prefix: "agent-manage-list",
+                back: ManageHeaderBack::Workspace,
+                title: "Manage agents".into(),
+                description: "Agents installed on this host.".into(),
+            },
+        )
     }
 
-    fn render_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut list = div()
-            .id("agent-manage-list")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
+    fn render_detail_header(agent: &AgentSummary, cx: &mut Context<Self>) -> impl IntoElement {
+        render_manage_header(
+            cx,
+            ManageHeaderConfig {
+                id_prefix: "agent-manage-detail",
+                back: ManageHeaderBack::List,
+                title: agent.display_name.clone().into(),
+                description: managed_agent_name(agent.kind).into(),
+            },
+        )
+    }
+
+    fn render_padded_body(body: impl IntoElement) -> Div {
+        div()
+            .w_full()
             .px(px(theme::SPACING_MD))
             .pb(px(theme::SPACING_MD))
             .flex()
             .flex_col()
+            .gap(px(theme::SPACING_SM))
+            .child(body)
+    }
+
+    fn render_list_body(agents: &[AgentSummary], cx: &mut Context<Self>) -> impl IntoElement {
+        let mut list = div()
+            .id("agent-manage-list")
+            .flex()
+            .flex_col()
             .gap(px(theme::SPACING_SM));
 
-        for agent in self.agents.clone() {
+        for agent in agents {
             let kind = agent.kind;
+            let display_name = agent.display_name.clone();
+            let setup = agent.setup.state;
+            let session_count = agent.sessions.resumable.max(agent.sessions.total);
             list = list.child(
                 div()
                     .id(SharedString::from(format!(
@@ -189,140 +218,242 @@ impl AgentManageView {
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap(px(8.0))
+                            .gap(px(10.0))
                             .child(
                                 svg()
                                     .path(agent_icon(kind))
-                                    .size(px(theme::ICON_SM))
+                                    .size(px(theme::ICON_MD))
+                                    .flex_shrink_0()
                                     .text_color(rgb(theme::text_muted(cx))),
                             )
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.0))
                                     .child(
                                         div()
-                                            .truncate()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
                                             .text_size(px(theme::FONT_BODY))
                                             .text_color(rgb(theme::text_primary(cx)))
-                                            .child(agent.display_name.clone()),
+                                            .child(display_name),
                                     )
                                     .child(
                                         div()
-                                            .truncate()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
                                             .text_size(px(theme::FONT_DETAIL))
                                             .text_color(rgb(theme::text_muted(cx)))
                                             .child(format!(
                                                 "{} · {} sessions",
-                                                setup_label(agent.setup.state),
-                                                agent.sessions.resumable.max(agent.sessions.total)
+                                                setup_label(setup),
+                                                session_count
                                             )),
                                     ),
                             ),
                     ),
             );
         }
-        list
+        Self::render_padded_body(list)
     }
 
-    fn render_detail(&self, cx: &mut Context<Self>) -> Div {
-        let Some(agent) = self.selected_agent() else {
-            return empty_text("No agent selected.", cx);
-        };
-        let kind = agent.kind;
-
-        div()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .px(px(theme::SPACING_MD))
-                    .pt(px(theme::SPACING_SM))
-                    .pb(px(theme::SPACING_SM))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(theme::SPACING_SM))
-                    .child(back_button(cx))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(theme::FONT_BODY))
-                                    .text_color(rgb(theme::text_primary(cx)))
-                                    .child(agent.display_name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(theme::FONT_DETAIL))
-                                    .text_color(rgb(theme::text_muted(cx)))
-                                    .child(managed_agent_name(kind)),
-                            ),
-                    )
-                    .child(refresh_button(cx)),
-            )
-            .child(render_detail_summary(agent, cx))
-            .child(section_header("Sessions", cx))
-            .child(render_agent_session_list(
-                AgentSessionListProps {
-                    sections: crate::agent_session_list::group_sessions_by_day(
-                        self.sessions.clone(),
-                    ),
-                    loading: matches!(self.session_state, LoadState::Loading),
-                    error: match &self.session_state {
-                        LoadState::Error(message) => Some(message.clone()),
-                        _ => None,
+    fn render_detail_body(
+        agent: &AgentSummary,
+        sessions: &[zedra_rpc::proto::AgentSessionSummary],
+        session_state: &LoadState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        Self::render_padded_body(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(theme::SPACING_SM))
+                .child(render_detail_summary(agent, cx))
+                .child(section_header("Sessions", cx))
+                .child(render_agent_session_list(
+                    AgentSessionListProps {
+                        sections: crate::agent_session_list::group_sessions_by_day(
+                            sessions.to_vec(),
+                        ),
+                        loading: matches!(session_state, LoadState::Loading),
+                        error: match session_state {
+                            LoadState::Error(message) => Some(message.clone()),
+                            _ => None,
+                        },
+                        empty_message: "No sessions found for this agent.",
+                        resume_on_tap: true,
+                        scroll_container: false,
+                        horizontal_padding: false,
                     },
-                    empty_message: "No sessions found for this agent.",
-                    resume_on_tap: true,
-                },
-                cx,
-            ))
+                    cx,
+                )),
+        )
     }
 }
 
 impl Render for AgentManageView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut root = div()
+        let screen = self.screen;
+        let agent_state = self.agent_state.clone();
+        let agents = self.agents.clone();
+        let sessions = self.sessions.clone();
+        let session_state = self.session_state.clone();
+        let detail_agent = match screen {
+            Screen::Detail(kind) => agents.iter().find(|agent| agent.kind == kind).cloned(),
+            Screen::List => None,
+        };
+
+        let header: AnyElement = match (&agent_state, screen, detail_agent.as_ref()) {
+            (LoadState::Ready, Screen::Detail(_), Some(agent)) => {
+                Self::render_detail_header(agent, cx).into_any_element()
+            }
+            _ => Self::render_list_header(cx).into_any_element(),
+        };
+
+        let body: AnyElement = match agent_state {
+            LoadState::Loading => Self::render_padded_body(empty_text(
+                "Loading managed agents...",
+                cx,
+            ))
+            .into_any_element(),
+            LoadState::Error(message) => Self::render_padded_body(empty_text(format!(
+                "Failed to load managed agents: {message}"
+            ), cx))
+            .into_any_element(),
+            LoadState::Ready => match screen {
+                Screen::List => Self::render_list_body(&agents, cx).into_any_element(),
+                Screen::Detail(_) => {
+                    if let Some(agent) = detail_agent.as_ref() {
+                        Self::render_detail_body(
+                            agent,
+                            &sessions,
+                            &session_state,
+                            cx,
+                        )
+                        .into_any_element()
+                    } else {
+                        Self::render_padded_body(empty_text("No agent selected.", cx))
+                            .into_any_element()
+                    }
+                }
+            },
+        };
+
+        div()
             .id("agent-manage-view")
             .size_full()
             .min_h_0()
             .bg(rgb(theme::bg_primary(cx)))
             .flex()
-            .flex_col();
-
-        match &self.agent_state {
-            LoadState::Loading => {
-                root = root.child(empty_text("Loading managed agents...", cx));
-            }
-            LoadState::Error(message) => {
-                root = root
-                    .child(empty_text(format!(
-                        "Failed to load managed agents: {message}"
-                    ), cx))
-                    .child(refresh_button(cx));
-            }
-            LoadState::Ready => {
-                root = match self.screen {
-                    Screen::List => root.child(self.render_list(cx)),
-                    Screen::Detail(_) => root.child(self.render_detail(cx)),
-                };
-            }
-        }
-        root
+            .flex_col()
+            .child(
+                div()
+                    .id("agent-manage-header-shell")
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(px(theme::CONTENT_MAX_WIDTH))
+                            .min_w_0()
+                            .child(header),
+                    ),
+            )
+            .child(render_scroll_body(body))
     }
+}
+
+fn render_scroll_body(body: AnyElement) -> impl IntoElement {
+    div()
+        .id("agent-manage-scroll")
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scroll()
+        .w_full()
+        .child(
+            div()
+                .id("agent-manage-content")
+                .w_full()
+                .max_w(px(theme::CONTENT_MAX_WIDTH))
+                .mx_auto()
+                .min_w_0()
+                .pb(px(30.0))
+                .child(body),
+        )
+}
+
+#[derive(Clone, Copy)]
+enum ManageHeaderBack {
+    Workspace,
+    List,
+}
+
+struct ManageHeaderConfig {
+    id_prefix: &'static str,
+    back: ManageHeaderBack,
+    title: SharedString,
+    description: SharedString,
+}
+
+fn render_manage_header(
+    cx: &mut Context<AgentManageView>,
+    config: ManageHeaderConfig,
+) -> impl IntoElement {
+    div()
+        .id(SharedString::from(format!("{}-header", config.id_prefix)))
+        .w_full()
+        .px(px(theme::SPACING_MD))
+        .pt(px(theme::SPACING_XS))
+        .pb(px(theme::SPACING_SM))
+        .child(
+            div()
+                .id(SharedString::from(format!("{}-header-inner", config.id_prefix)))
+                .relative()
+                .w_full()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(theme::SPACING_MD))
+                        .child(back_button(cx, config.back))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(0.0))
+                                .child(
+                                    div()
+                                        .text_size(px(theme::FONT_HEADING))
+                                        .font_family(fonts::HEADING_FONT_FAMILY)
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(rgb(theme::text_primary(cx)))
+                                        .child(config.title),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(theme::FONT_BODY))
+                                        .text_color(rgb(theme::text_muted(cx)))
+                                        .child(config.description),
+                                ),
+                        ),
+                )
+                .child(refresh_button(cx)),
+        )
 }
 
 fn render_detail_summary(agent: &AgentSummary, cx: &App) -> Div {
     let mut summary = div()
-        .mx(px(theme::SPACING_MD))
-        .mb(px(theme::SPACING_SM))
+        .w_full()
         .px(px(theme::SPACING_MD))
         .py(px(theme::SPACING_SM))
         .rounded(px(6.0))
@@ -382,50 +513,51 @@ fn render_detail_summary(agent: &AgentSummary, cx: &App) -> Div {
     summary
 }
 
-fn back_button(cx: &mut Context<AgentManageView>) -> Stateful<Div> {
+fn back_button(cx: &mut Context<AgentManageView>, back: ManageHeaderBack) -> Stateful<Div> {
     div()
         .id("agent-manage-back-btn")
-        .px(px(8.0))
-        .py(px(6.0))
-        .rounded(px(6.0))
-        .border_1()
-        .border_color(rgb(theme::border_subtle(cx)))
+        .flex_shrink_0()
         .cursor_pointer()
-        .on_press(cx.listener(|this, _event, _window, cx| {
+        .hit_slop(px(32.0))
+        .on_press(cx.listener(move |this, _event, window, cx| {
             platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-            this.back_to_list(cx);
+            match back {
+                ManageHeaderBack::Workspace => {
+                    window.dispatch_action(workspace_action::NavigateBack.boxed_clone(), cx);
+                }
+                ManageHeaderBack::List => this.back_to_list(cx),
+            }
         }))
         .child(
             svg()
                 .path("icons/chevron-left.svg")
-                .size(px(theme::ICON_SM))
-                .text_color(rgb(theme::text_secondary(cx))),
+                .size(px(theme::ICON_MD))
+                .text_color(rgb(theme::text_muted(cx))),
         )
 }
 
 fn refresh_button(cx: &mut Context<AgentManageView>) -> Stateful<Div> {
     div()
         .id("agent-manage-refresh-btn")
-        .px(px(10.0))
-        .py(px(6.0))
-        .rounded(px(6.0))
-        .border_1()
-        .border_color(rgb(theme::border_subtle(cx)))
+        .absolute()
+        .top_2()
+        .right_0()
         .cursor_pointer()
+        .hit_slop(px(28.0))
         .on_press(cx.listener(|this, _event, _window, cx| {
+            platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
             this.load_agents(true, cx);
         }))
         .child(
-            div()
-                .text_size(px(theme::FONT_DETAIL))
-                .text_color(rgb(theme::text_secondary(cx)))
-                .child("Refresh"),
+            svg()
+                .path("icons/refresh-ccw.svg")
+                .size(px(14.0))
+                .text_color(rgb(theme::text_muted(cx))),
         )
 }
 
 fn section_header(label: &'static str, cx: &App) -> Div {
     div()
-        .px(px(theme::SPACING_MD))
         .pt(px(theme::SPACING_SM))
         .pb(px(4.0))
         .text_size(px(theme::FONT_DETAIL))
@@ -459,11 +591,8 @@ fn summary_line(label: &str, value: String, cx: &App) -> Div {
 
 fn empty_text(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
-        .flex()
-        .flex_1()
-        .items_center()
-        .justify_center()
         .px(px(theme::SPACING_MD))
+        .py(px(theme::SPACING_LG))
         .text_size(px(theme::FONT_BODY))
         .text_color(rgb(theme::text_muted(cx)))
         .child(text.into())

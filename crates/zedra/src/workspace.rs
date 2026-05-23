@@ -33,9 +33,9 @@ use crate::ui::{DrawerEvent, DrawerHost, DrawerSide};
 use crate::workspace_action::{self, GoHome, OpenQuickAction, RequestDisconnect};
 use crate::workspace_action::{
     AddSelectionToChat, CloseDrawer, CloseTerminal, CreateAgent, CreateNewTerminal, GitCommit,
-    GitShowItemActions, GitStage, GitUnstage, HideConnecting, OpenAgentManage, OpenAgentSessions,
-    OpenFile, OpenGitDiff, OpenTerminal, RestartConnection, ResumeAgentSession, ShowConnecting,
-    SpawnAgentTerminal, ToggleDrawer,
+    GitShowItemActions, GitStage, GitUnstage, HideConnecting, NavigateBack, OpenAgentManage,
+    OpenAgentSessions, OpenFile, OpenGitDiff, OpenTerminal, RestartConnection, ResumeAgentSession,
+    ShowConnecting, SpawnAgentTerminal, ToggleDrawer,
 };
 use crate::workspace_connecting::WorkspaceConnecting;
 use crate::workspace_drawer::WorkspaceDrawer;
@@ -1177,8 +1177,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         info!("handle ShowConnecting from workspace");
+        self.reveal_connecting_view(window, cx);
+    }
+
+    pub(crate) fn reveal_connecting_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.drawer_host
-            .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
+            .update(cx, |host, cx| host.close_with_window(window, cx));
         self.content.update(cx, |c, cx| c.show_connecting_view(cx));
         self.record_current_view(cx);
     }
@@ -1323,7 +1327,7 @@ impl Workspace {
             WorkspaceMainView::AgentSessions => {
                 let view = cx.new(|cx| AgentSessionView::new(self.session.handle().clone(), cx));
                 self.content.update(cx, move |content, cx| {
-                    content.set_text_subtitle("Agent sessions", cx);
+                    content.clear_subtitle(cx);
                     content.set_main_view(view.into(), cx);
                     content.hide_connecting_view(cx);
                 });
@@ -1332,7 +1336,7 @@ impl Workspace {
             WorkspaceMainView::AgentManage => {
                 let view = cx.new(|cx| AgentManageView::new(self.session.handle().clone(), cx));
                 self.content.update(cx, move |content, cx| {
-                    content.set_text_subtitle("Manage agents", cx);
+                    content.clear_subtitle(cx);
                     content.set_main_view(view.into(), cx);
                     content.hide_connecting_view(cx);
                 });
@@ -1665,6 +1669,15 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.spawn_terminal(telemetry_source, None, window, cx);
+    }
+
+    fn handle_navigate_back(
+        &mut self,
+        _action: &NavigateBack,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.navigate_back(cx);
     }
 
     fn handle_open_agent_sessions(
@@ -2114,6 +2127,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_create_new_terminal))
             .on_action(cx.listener(Self::handle_create_agent))
             .on_action(cx.listener(Self::handle_spawn_agent_terminal))
+            .on_action(cx.listener(Self::handle_navigate_back))
             .on_action(cx.listener(Self::handle_open_agent_sessions))
             .on_action(cx.listener(Self::handle_open_agent_manage))
             .on_action(cx.listener(Self::handle_resume_agent_session))

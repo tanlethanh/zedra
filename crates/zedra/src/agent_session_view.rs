@@ -6,7 +6,10 @@ use zedra_session::SessionHandle;
 use crate::agent_session_list::{
     AgentSessionListProps, group_sessions_by_day, render_agent_session_list,
 };
+use crate::fonts;
+use crate::platform_bridge::{self, HapticFeedback};
 use crate::theme;
+use crate::workspace_action;
 
 #[derive(Clone, Debug)]
 enum LoadState {
@@ -98,53 +101,134 @@ impl Render for AgentSessionView {
             .flex_col()
             .child(
                 div()
-                    .px(px(theme::SPACING_MD))
-                    .pt(px(theme::SPACING_MD))
-                    .pb(px(theme::SPACING_SM))
+                    .id("agent-session-header-shell")
+                    .w_full()
                     .flex()
-                    .flex_row()
+                    .flex_col()
                     .items_center()
-                    .justify_between()
                     .child(
                         div()
-                            .text_size(px(theme::FONT_BODY))
-                            .text_color(rgb(theme::text_secondary(cx)))
-                            .child("All managed agent sessions in this workspace."),
-                    )
-                    .child(refresh_button(cx)),
+                            .w_full()
+                            .max_w(px(theme::CONTENT_MAX_WIDTH))
+                            .min_w_0()
+                            .child(render_session_header(cx)),
+                    ),
             )
-            .child(render_agent_session_list(
-                AgentSessionListProps {
-                    sections: self.sections.clone(),
-                    loading: matches!(self.load_state, LoadState::Loading),
-                    error: match &self.load_state {
-                        LoadState::Error(message) => Some(message.clone()),
-                        _ => None,
-                    },
-                    empty_message: "No sessions found for this workspace.",
-                    resume_on_tap: true,
-                },
-                cx,
-            ))
+            .child(
+                div()
+                    .id("agent-session-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .w_full()
+                    .child(
+                        div()
+                            .id("agent-session-content")
+                            .w_full()
+                            .max_w(px(theme::CONTENT_MAX_WIDTH))
+                            .mx_auto()
+                            .min_w_0()
+                            .pb(px(30.0))
+                            .child(render_agent_session_list(
+                                AgentSessionListProps {
+                                    sections: self.sections.clone(),
+                                    loading: matches!(self.load_state, LoadState::Loading),
+                                    error: match &self.load_state {
+                                        LoadState::Error(message) => Some(message.clone()),
+                                        _ => None,
+                                    },
+                                    empty_message: "No sessions found for this workspace.",
+                                    resume_on_tap: true,
+                                    scroll_container: false,
+                                    horizontal_padding: true,
+                                },
+                                cx,
+                            )),
+                    ),
+            )
     }
+}
+
+fn render_session_header(cx: &mut Context<AgentSessionView>) -> impl IntoElement {
+    div()
+        .id("agent-session-header")
+        .w_full()
+        .px(px(theme::SPACING_MD))
+        .pt(px(theme::SPACING_XS))
+        .pb(px(theme::SPACING_SM))
+        .child(
+            div()
+                .id("agent-session-header-inner")
+                .relative()
+                .w_full()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(theme::SPACING_MD))
+                        .child(back_button(cx))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(0.0))
+                                .child(
+                                    div()
+                                        .text_size(px(theme::FONT_HEADING))
+                                        .font_family(fonts::HEADING_FONT_FAMILY)
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(rgb(theme::text_primary(cx)))
+                                        .child("Agent history"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(theme::FONT_BODY))
+                                        .text_color(rgb(theme::text_muted(cx)))
+                                        .child("Sessions across agents. Press to resume"),
+                                ),
+                        ),
+                )
+                .child(refresh_button(cx)),
+        )
+}
+
+fn back_button(cx: &mut Context<AgentSessionView>) -> Stateful<Div> {
+    div()
+        .id("agent-session-back-btn")
+        .flex_shrink_0()
+        .cursor_pointer()
+        .hit_slop(px(32.0))
+        .on_press(cx.listener(|_this, _event, window, cx| {
+            platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+            window.dispatch_action(workspace_action::NavigateBack.boxed_clone(), cx);
+        }))
+        .child(
+            svg()
+                .path("icons/chevron-left.svg")
+                .size(px(theme::ICON_MD))
+                .text_color(rgb(theme::text_muted(cx))),
+        )
 }
 
 fn refresh_button(cx: &mut Context<AgentSessionView>) -> Stateful<Div> {
     div()
         .id("agent-session-refresh-btn")
-        .px(px(10.0))
-        .py(px(6.0))
-        .rounded(px(6.0))
-        .border_1()
-        .border_color(rgb(theme::border_subtle(cx)))
+        .absolute()
+        .top_2()
+        .right_0()
         .cursor_pointer()
+        .hit_slop(px(28.0))
         .on_press(cx.listener(|this, _event, _window, cx| {
+            platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
             this.load(true, cx);
         }))
         .child(
-            div()
-                .text_size(px(theme::FONT_DETAIL))
-                .text_color(rgb(theme::text_secondary(cx)))
-                .child("Refresh"),
+            svg()
+                .path("icons/refresh-ccw.svg")
+                .size(px(14.0))
+                .text_color(rgb(theme::text_muted(cx))),
         )
 }

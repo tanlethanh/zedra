@@ -49,22 +49,24 @@ pub struct AgentSessionListProps {
     pub error: Option<String>,
     pub empty_message: &'static str,
     pub resume_on_tap: bool,
+    /// When true, the list fills remaining height and scrolls internally.
+    pub scroll_container: bool,
+    /// When true, applies horizontal padding on the list container.
+    pub horizontal_padding: bool,
 }
 
 pub fn render_agent_session_list<C: 'static>(
     props: AgentSessionListProps,
     cx: &mut Context<C>,
 ) -> impl IntoElement {
-    let mut list = div()
-        .id("agent-session-list")
-        .flex_1()
-        .min_h_0()
-        .overflow_y_scroll()
-        .px(px(theme::SPACING_MD))
-        .pb(px(theme::SPACING_MD))
-        .flex()
-        .flex_col()
-        .gap(px(theme::SPACING_SM));
+    let mut list = div().id("agent-session-list").pb(px(theme::SPACING_MD));
+    if props.horizontal_padding {
+        list = list.px(px(theme::SPACING_MD));
+    }
+    if props.scroll_container {
+        list = list.flex_1().min_h_0().overflow_y_scroll();
+    }
+    list = list.flex().flex_col().gap(px(theme::SPACING_SM));
 
     if props.loading {
         return list.child(empty_text("Loading sessions...", cx));
@@ -107,8 +109,9 @@ pub fn render_agent_session_item<C: 'static>(
         .border_color(rgb(theme::border_subtle(cx)))
         .bg(rgb(theme::bg_card(cx)))
         .flex()
-        .flex_col()
-        .gap(px(6.0))
+        .flex_row()
+        .items_center()
+        .gap(px(10.0))
         .when(resume_on_tap && can_resume, |el| {
             el.cursor_pointer().on_press(cx.listener({
                 let session_id = session_id.clone();
@@ -127,43 +130,22 @@ pub fn render_agent_session_item<C: 'static>(
         })
         .id(item_id)
         .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_start()
-                .gap(px(8.0))
-                .child(
-                    svg()
-                        .path(agent_icon(kind))
-                        .size(px(theme::ICON_SM))
-                        .text_color(rgb(theme::text_muted(cx))),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.0))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(theme::FONT_BODY))
-                                .text_color(rgb(theme::text_primary(cx)))
-                                .child(session_title(&session)),
-                        )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(theme::FONT_DETAIL))
-                                .text_color(rgb(theme::text_muted(cx)))
-                                .child(session_subtitle(&session)),
-                        ),
-                ),
+            svg()
+                .path(agent_icon(kind))
+                .size(px(theme::ICON_MD))
+                .flex_shrink_0()
+                .text_color(rgb(theme::text_muted(cx))),
         )
-        .child(session_meta_row(&session, cx))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .child(session_title_row(&session, cx))
+                .child(session_meta_row(&session, cx)),
+        )
 }
 
 fn section_header(label: &str, cx: &App) -> Div {
@@ -187,39 +169,100 @@ fn empty_text(text: impl Into<SharedString>, cx: &App) -> Div {
         .child(text.into())
 }
 
-fn session_meta_row(session: &AgentSessionSummary, cx: &App) -> Div {
-    let mut parts = Vec::new();
+fn session_title_row(session: &AgentSessionSummary, cx: &App) -> Div {
+    let mut row = div()
+        .w_full()
+        .min_w_0()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_size(px(theme::FONT_BODY))
+                .text_color(rgb(theme::text_primary(cx)))
+                .child(session_title(session)),
+        );
+
     if let Some(at) = session.last_activity_at.or(session.created_at) {
-        parts.push(format_session_time(at));
-    }
-    if let Some(git) = session.git.as_ref() {
-        if let Some(branch) = git.branch.as_deref().filter(|value| !value.is_empty()) {
-            parts.push(branch.to_string());
-        }
-        if let Some(worktree) = git.worktree.as_deref().filter(|value| !value.is_empty()) {
-            parts.push(format!("worktree:{worktree}"));
-        }
-    }
-    if let Some(size) = session.transcript_size_bytes {
-        parts.push(format_size(size));
-    }
-    if let Some(model) = session.provider.model.as_deref() {
-        parts.push(model.to_string());
-    }
-    if session.flags.live_bound {
-        parts.push("live".to_string());
+        row = row.child(
+            div()
+                .flex_shrink_0()
+                .text_size(px(theme::FONT_DETAIL))
+                .text_color(rgb(theme::text_muted(cx)))
+                .child(format_session_time(at)),
+        );
     }
 
+    row
+}
+
+fn session_meta_row(session: &AgentSessionSummary, cx: &App) -> impl IntoElement {
+    let branch = session
+        .git
+        .as_ref()
+        .and_then(|git| git.branch.clone())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    let right = session_meta_tail(session);
+
     div()
+        .id(SharedString::from(format!(
+            "agent-session-meta-{}",
+            short_id(&session.session_id)
+        )))
+        .w_full()
         .min_w_0()
-        .truncate()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
         .text_size(px(theme::FONT_DETAIL))
         .text_color(rgb(theme::text_muted(cx)))
-        .child(if parts.is_empty() {
-            short_id(&session.session_id)
-        } else {
-            parts.join(" · ")
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(4.0))
+                .overflow_hidden()
+                .child(
+                    svg()
+                        .path("icons/git-branch.svg")
+                        .size(px(theme::ICON_XS))
+                        .flex_shrink_0()
+                        .text_color(rgb(theme::text_muted(cx))),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .child(branch),
+                ),
+        )
+        .when(!right.is_empty(), |el| {
+            el.child(
+                div()
+                    .flex_shrink_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(right),
+            )
         })
+}
+
+fn session_meta_tail(session: &AgentSessionSummary) -> String {
+    session
+        .transcript_size_bytes
+        .map(format_size)
+        .unwrap_or_default()
 }
 
 pub fn session_title(session: &AgentSessionSummary) -> String {
@@ -230,14 +273,8 @@ pub fn session_title(session: &AgentSessionSummary) -> String {
         .unwrap_or_else(|| "Unknown".to_string())
 }
 
-fn session_subtitle(session: &AgentSessionSummary) -> String {
-    let mut parts = vec![managed_agent_name(session.kind).to_string()];
-    parts.push(short_id(&session.session_id));
-    parts.join(" · ")
-}
-
 fn format_session_time(at: DateTime<Utc>) -> String {
-    at.format("%b %d · %H:%M").to_string()
+    at.format("%H:%M").to_string()
 }
 
 fn day_label(at: Option<DateTime<Utc>>) -> String {
@@ -268,7 +305,7 @@ fn format_size(bytes: u64) -> String {
 pub fn agent_icon(kind: ManagedAgentKind) -> &'static str {
     match kind {
         ManagedAgentKind::Claude => "icons/claude.svg",
-        ManagedAgentKind::Codex => "icons/codex.svg",
+        ManagedAgentKind::Codex => "icons/openai.svg",
         ManagedAgentKind::OpenCode => "icons/opencode.svg",
     }
 }
