@@ -1,6 +1,7 @@
 package dev.zedra.app
 
 import android.app.Activity
+import android.content.res.Configuration
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -229,6 +230,19 @@ class MainActivity : AppCompatActivity() {
             val activity = sActivity ?: return
             activity.runOnUiThread {
                 activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            }
+        }
+
+        /** Returns 1 for dark, 0 for light, -1 when unavailable. */
+        @JvmStatic
+        fun systemInDarkTheme(): Int {
+            val activity = sActivity ?: return -1
+            val nightMode =
+                activity.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
+            return when (nightMode) {
+                Configuration.UI_MODE_NIGHT_YES -> 1
+                Configuration.UI_MODE_NIGHT_NO -> 0
+                else -> -1
             }
         }
 

@@ -152,7 +152,17 @@ Always `platform_bridge::bridge()`. Never call platform APIs directly from UI co
 Read `docs/DESIGN.md` before creating or redesigning UI.
 
 - Treat it as the visual source of truth for tone, density, spacing, typography, and component styling.
-- New product UI should match the repo's dark, flat, quiet, tool-like direction.
+- New product UI should match the repo's flat, quiet, tool-like direction in both dark and light appearance.
+
+## Theming
+
+Read `docs/THEMING.md` before adding or changing product UI colors.
+
+- **Workspace GPUI**: use `theme::palette(cx)` or `theme::bg_primary(cx)` (and related accessors) in `render()`. Layout sizes use constants in `theme.rs` (`SPACING_*`, `FONT_*`, `ICON_*`).
+- **Editor**: sync `theme::bundle(cx).editor` into editor entities on create and on `ThemeStateEvent::Changed`.
+- **Terminal**: sync `theme::bundle(cx).terminal` through `WorkspaceTerminal` / `TerminalView::set_terminal_theme`; do not map terminal ANSI colors from `ThemePalette`.
+- **Do not** hardcode `0xRRGGBB` or inline light/dark branches in views. Add tokens in `crates/zedra/src/theme.rs` or `crates/zedra-terminal/src/theme.rs` when a new color is needed.
+- Subscribe to `ThemeStateEvent::Changed` on the owning entity when the subtree is not refreshed by a parent that already notifies on theme change.
 
 ## Swift Native Integration
 

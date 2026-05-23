@@ -10,9 +10,8 @@ use gpui::*;
 use tracing::info;
 
 use super::syntax_highlighter::Highlighter;
-use super::syntax_theme::SyntaxTheme;
 use crate::platform_bridge;
-use crate::theme;
+use crate::theme::{self, EditorTheme};
 
 // ── Diff data types ─────────────────────────────────────────────────────────
 
@@ -217,7 +216,7 @@ struct CachedDiffLine {
 pub struct GitDiffView {
     diff: FileDiff,
     highlighter: Highlighter,
-    theme: SyntaxTheme,
+    editor_theme: EditorTheme,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
     cached_lines: Rc<Vec<CachedDiffLine>>,
@@ -245,7 +244,7 @@ impl GitDiffView {
         Self {
             diff,
             highlighter,
-            theme: SyntaxTheme::default_dark(),
+            editor_theme: EditorTheme::dark(),
             scroll_handle: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             cached_lines: Rc::new(Vec::new()),
@@ -263,6 +262,14 @@ impl GitDiffView {
         self.highlighter = Highlighter::from_filename(&filename);
         self.rebuild_line_cache();
         cx.notify();
+    }
+
+    fn sync_editor_theme(&mut self, editor_theme: &EditorTheme) {
+        if self.editor_theme == *editor_theme {
+            return;
+        }
+        self.editor_theme = editor_theme.clone();
+        self.lines_dirty = true;
     }
 
     fn rebuild_line_cache(&mut self) {
@@ -334,7 +341,7 @@ impl GitDiffView {
         let mut result: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
 
         for (span_range, capture_name) in &raw_highlights {
-            if let Some(style) = self.theme.get(capture_name) {
+            if let Some(style) = self.editor_theme.syntax.get(capture_name) {
                 let start = span_range.start.min(content_len);
                 let end = span_range.end.min(content_len);
                 if start < end {
@@ -357,6 +364,8 @@ impl Focusable for GitDiffView {
 
 impl Render for GitDiffView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_editor_theme(&theme::bundle(cx).editor);
+
         if self.lines_dirty {
             info!("rebuilding gitdiff line cache by lines_dirty flag");
             self.rebuild_line_cache();
@@ -369,9 +378,11 @@ impl Render for GitDiffView {
         let h_scroll_offset = self.h_scroll_offset;
         let scroll_y_lock = self.scroll_handle.0.borrow().base_handle.offset().y;
 
+        let editor_theme = self.editor_theme.clone();
+        let diff = editor_theme.diff.clone();
         let text_style = {
             let mut style = window.text_style();
-            style.color = rgb(0xcacaca).into();
+            style.color = rgb(diff.body_text).into();
             style.font_size = px(FONT_SIZE).into();
             style
         };
@@ -380,7 +391,7 @@ impl Render for GitDiffView {
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0x0e0c0c))
+            .bg(rgb(editor_theme.background))
             .track_focus(&self.focus_handle)
             .on_scroll_wheel(
                 cx.listener(move |this, event: &ScrollWheelEvent, _window, cx| {
@@ -410,6 +421,8 @@ impl Render for GitDiffView {
             .child(
                 uniform_list("git-diff-view-lines", line_count + extra_items, {
                     let text_style = text_style.clone();
+                    let diff = diff.clone();
+                    let editor_theme = editor_theme.clone();
                     move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
                         range
                             .map(|i| {
@@ -423,27 +436,27 @@ impl Render for GitDiffView {
                                 };
 
                                 let (bg_color, gutter_text) = match line.kind {
-                                    DiffLineKind::Header => (rgb(0x131313), "".to_string()),
+                                    DiffLineKind::Header => (rgb(diff.header_bg), "".to_string()),
                                     DiffLineKind::Added => {
                                         let num = line
                                             .new_line_num
                                             .map(|n| format!("{:>3}", n))
                                             .unwrap_or_default();
-                                        (rgb(0x162016), num)
+                                        (rgb(diff.added_bg), num)
                                     }
                                     DiffLineKind::Removed => {
                                         let num = line
                                             .old_line_num
                                             .map(|n| format!("{:>3}", n))
                                             .unwrap_or_default();
-                                        (rgb(0x201616), num)
+                                        (rgb(diff.removed_bg), num)
                                     }
                                     DiffLineKind::Unchanged => {
                                         let num = line
                                             .new_line_num
                                             .map(|n| format!("{:>3}", n))
                                             .unwrap_or_default();
-                                        (rgb(0x0e0c0c), num)
+                                        (rgb(editor_theme.background), num)
                                     }
                                 };
 
@@ -460,7 +473,7 @@ impl Render for GitDiffView {
                                         .items_center()
                                         .child(
                                             div()
-                                                .text_color(rgb(0x61afef))
+                                                .text_color(rgb(diff.header_text))
                                                 .text_size(px(FONT_SIZE))
                                                 .child(content.clone()),
                                         )
@@ -491,7 +504,7 @@ impl Render for GitDiffView {
                                             .items_center()
                                             .justify_end()
                                             .pr_2()
-                                            .text_color(rgb(0x404040))
+                                            .text_color(rgb(diff.gutter_text))
                                             .text_size(px(GUTTER_FONT_SIZE))
                                             .child(gutter_text),
                                     )

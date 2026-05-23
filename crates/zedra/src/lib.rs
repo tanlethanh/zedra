@@ -18,6 +18,7 @@ pub mod docs_tree;
 pub mod editor;
 pub mod fonts;
 pub mod placeholder;
+pub mod settings;
 pub mod theme;
 pub mod ui;
 

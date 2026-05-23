@@ -121,11 +121,11 @@ impl WorkspaceGitdiff {
 }
 
 impl Render for WorkspaceGitdiff {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         match self.state.clone() {
-            GitdiffState::Loading => render_placeholder("Loading ..."),
-            GitdiffState::TooLarge => render_placeholder("Diff too large (>200 KB)"),
-            GitdiffState::Error { error } => render_placeholder(&format!("Error: {}", error)),
+            GitdiffState::Loading => render_placeholder(cx, "Loading ..."),
+            GitdiffState::TooLarge => render_placeholder(cx, "Diff too large (>200 KB)"),
+            GitdiffState::Error { error } => render_placeholder(cx, &format!("Error: {}", error)),
             GitdiffState::Loaded => div().size_full().child(self.diff_view.clone()),
         }
     }

@@ -6,7 +6,7 @@ use crate::deeplink;
 use crate::platform_bridge::{
     self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback, ListPickerItem,
     NativeDictationPreviewOptions, NativeEditMenuItem, NativeFloatingButtonOptions,
-    NativeNotificationOptions, PlatformBridge,
+    NativeNotificationOptions, PlatformBridge, SystemTheme,
 };
 
 /// Screen scale factor (e.g. 3.0 for @3x), stored as f32 bits.
@@ -166,6 +166,10 @@ unsafe extern "C" {
         placeholder: *const std::ffi::c_char,
         initial_value: *const std::ffi::c_char,
     );
+    /// Returns 1 for dark, 0 for light, -1 when unavailable.
+    fn ios_system_prefers_dark_theme() -> i32;
+    /// Apply the app appearance to the native keyboard accessory bar.
+    fn ios_set_keyboard_accessory_theme(is_dark: bool);
 }
 
 impl PlatformBridge for IosBridge {
@@ -499,6 +503,20 @@ impl PlatformBridge for IosBridge {
                 placeholder.as_ptr(),
                 initial_value.as_ptr(),
             );
+        }
+    }
+
+    fn system_prefers_theme(&self) -> SystemTheme {
+        match unsafe { ios_system_prefers_dark_theme() } {
+            1 => SystemTheme::Dark,
+            0 => SystemTheme::Light,
+            _ => SystemTheme::Unknown,
+        }
+    }
+
+    fn set_keyboard_accessory_theme(&self, is_dark: bool) {
+        unsafe {
+            ios_set_keyboard_accessory_theme(is_dark);
         }
     }
 }

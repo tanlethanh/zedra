@@ -51,7 +51,7 @@ impl Render for SessionPanel {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_color(rgb(theme::TEXT_MUTED))
+                .text_color(rgb(theme::text_muted(cx)))
                 .text_size(px(theme::FONT_BODY))
                 .child("No active session");
         }
@@ -63,35 +63,36 @@ impl Render for SessionPanel {
 
         if !snap.username.is_empty() && !snap.hostname.is_empty() {
             let host = format!("{}@{}", snap.username, snap.hostname);
-            info = info.child(info_row("Host", host));
+            info = info.child(info_row(cx, "Host", host));
         }
 
         if let Some(os) = snap.os_version.as_deref()
             && let Some(arch) = snap.arch.as_deref()
         {
             let platform = format!("{} / {}", os, arch,);
-            info = info.child(info_row("Platform", platform));
+            info = info.child(info_row(cx, "Platform", platform));
         }
 
         if let Some(host_info) = host_info.as_ref() {
-            info = info.child(render_host_info(host_info));
+            info = info.child(render_host_info(cx, host_info));
         }
 
         if !snap.strip_path.is_empty() {
-            info = info.child(info_row("Directory", snap.strip_path.clone()));
+            info = info.child(info_row(cx, "Directory", snap.strip_path.clone()));
         }
 
         if let Some(alpn) = snap.alpn.clone() {
-            info = info.child(info_row("Protocol", alpn));
+            info = info.child(info_row(cx, "Protocol", alpn));
         }
 
         if let Some(version) = snap.host_version.as_deref() {
             let daemon_version = format!("v{}", version);
-            info = info.child(info_row("Daemon version", daemon_version));
+            info = info.child(info_row(cx, "Daemon version", daemon_version));
         }
 
         // --- Connection badge ---
-        let (badge_label, badge_color) = transport_badge(&phase, snap.transport.as_ref());
+        let (badge_label, badge_color) =
+            transport_badge(&theme::palette(cx), &phase, snap.transport.as_ref());
         info = info.child(
             div()
                 .id("session-connection-section")
@@ -116,7 +117,7 @@ impl Render for SessionPanel {
                         .flex_col()
                         .child(
                             div()
-                                .text_color(rgb(theme::TEXT_MUTED))
+                                .text_color(rgb(theme::text_muted(cx)))
                                 .text_size(px(theme::FONT_DETAIL))
                                 .child("Connection"),
                         )
@@ -132,7 +133,7 @@ impl Render for SessionPanel {
                         svg()
                             .path("icons/chevron-right.svg")
                             .size(px(theme::ICON_SM))
-                            .text_color(rgb(theme::TEXT_MUTED)),
+                            .text_color(rgb(theme::text_muted(cx))),
                     ),
                 ),
         );
@@ -140,9 +141,10 @@ impl Render for SessionPanel {
         // --- Transport details ---
         if let Some(t) = &snap.transport {
             let remote_addr_label = format!("{} ({})", t.remote_addr, t.num_paths);
-            info = info.child(info_row("Remote Address", remote_addr_label));
+            info = info.child(info_row(cx, "Remote Address", remote_addr_label));
 
             info = info.child(info_row(
+                cx,
                 "Data",
                 format!(
                     "{} sent / {} recv",
@@ -154,11 +156,11 @@ impl Render for SessionPanel {
 
         // --- Session section ---
         if let Some(sid) = &snap.session_id {
-            info = info.child(info_row("Session ID", sid.clone()));
+            info = info.child(info_row(cx, "Session ID", sid.clone()));
         }
 
         // --- Phase timing section ---
-        info = info.child(render_timing(&snap));
+        info = info.child(render_timing(cx, &snap));
 
         // --- Disconnect button ---
         let disconnect_button = div()
@@ -168,8 +170,8 @@ impl Render for SessionPanel {
             .py(px(8.0))
             .rounded(px(6.0))
             .border_1()
-            .border_color(rgb(theme::ACCENT_RED))
-            .text_color(rgb(theme::ACCENT_RED))
+            .border_color(rgb(theme::accent_red(cx)))
+            .text_color(rgb(theme::accent_red(cx)))
             .text_size(px(theme::FONT_BODY))
             .cursor_pointer()
             .on_press(cx.listener(|_this, _event, window, cx| {
@@ -181,7 +183,7 @@ impl Render for SessionPanel {
     }
 }
 
-fn render_host_info(host_info: &HostInfoSnapshot) -> Div {
+fn render_host_info(cx: &App, host_info: &HostInfoSnapshot) -> Div {
     let mut parts = vec![
         format!("CPU {:.0}%", host_info.cpu_usage_percent),
         format!(
@@ -194,7 +196,7 @@ fn render_host_info(host_info: &HostInfoSnapshot) -> Div {
         parts.push(format!("Batteries {batteries}"));
     }
 
-    info_row("System Stats", parts.join(" \u{00b7} "))
+    info_row(cx, "System Stats", parts.join(" \u{00b7} "))
 }
 
 fn format_percent(used: u64, total: u64) -> String {
@@ -222,7 +224,7 @@ fn format_batteries(batteries: &[HostBatteryInfo]) -> Option<String> {
 }
 
 /// Render phase timing summary row.
-fn render_timing(snap: &zedra_session::ConnectSnapshot) -> Div {
+fn render_timing(cx: &App, snap: &zedra_session::ConnectSnapshot) -> Div {
     let mut timing_parts: Vec<String> = Vec::new();
     if let Some(ms) = snap.binding_ms {
         timing_parts.push(format!("Bind {ms}ms"));
@@ -249,40 +251,40 @@ fn render_timing(snap: &zedra_session::ConnectSnapshot) -> Div {
         return div();
     }
 
-    muted_info_row("Timing", timing_parts.join(" \u{00b7} "))
+    muted_info_row(cx, "Timing", timing_parts.join(" \u{00b7} "))
 }
 
-fn info_row(label: &'static str, value: String) -> Div {
+fn info_row(cx: &App, label: &'static str, value: String) -> Div {
     div()
         .py(px(4.0))
         .child(
             div()
-                .text_color(rgb(theme::TEXT_MUTED))
+                .text_color(rgb(theme::text_muted(cx)))
                 .text_size(px(theme::FONT_DETAIL))
                 .child(label),
         )
         .child(
             div()
                 .mt(px(1.0))
-                .text_color(rgb(theme::TEXT_SECONDARY))
+                .text_color(rgb(theme::text_secondary(cx)))
                 .text_size(px(theme::FONT_BODY))
                 .child(value),
         )
 }
 
-fn muted_info_row(label: &'static str, value: String) -> Div {
+fn muted_info_row(cx: &App, label: &'static str, value: String) -> Div {
     div()
         .py(px(4.0))
         .child(
             div()
-                .text_color(rgb(theme::TEXT_MUTED))
+                .text_color(rgb(theme::text_muted(cx)))
                 .text_size(px(theme::FONT_DETAIL))
                 .child(label),
         )
         .child(
             div()
                 .mt(px(1.0))
-                .text_color(rgb(theme::TEXT_MUTED))
+                .text_color(rgb(theme::text_muted(cx)))
                 .text_size(px(theme::FONT_BODY))
                 .child(value),
         )

@@ -4,7 +4,7 @@
 use crate::android::jni;
 use crate::platform_bridge::{
     AlertButton, CustomSheetOptions, HapticFeedback, ListPickerItem, NativeDictationPreviewOptions,
-    NativeFloatingButtonOptions, NativeNotificationOptions, PlatformBridge,
+    NativeFloatingButtonOptions, NativeNotificationOptions, PlatformBridge, SystemTheme,
 };
 
 pub struct AndroidBridge;
@@ -103,5 +103,9 @@ impl PlatformBridge for AndroidBridge {
 
     fn present_text_input(&self, id: u32, title: &str, placeholder: &str, initial_value: &str) {
         jni::show_text_input(id, title, placeholder, initial_value);
+    }
+
+    fn system_prefers_theme(&self) -> SystemTheme {
+        jni::system_prefers_theme()
     }
 }
