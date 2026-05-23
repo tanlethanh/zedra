@@ -59,9 +59,13 @@ pub fn render_agent_session_list<C: 'static>(
     props: AgentSessionListProps,
     cx: &mut Context<C>,
 ) -> impl IntoElement {
-    let mut list = div().id("agent-session-list").pb(px(theme::SPACING_MD));
+    let mut list = div()
+        .id("agent-session-list")
+        .w_full()
+        .min_w_0()
+        .pb(px(theme::SPACING_MD));
     if props.horizontal_padding {
-        list = list.px(px(theme::SPACING_MD));
+        list = list.px(px(theme::SUBSCREEN_PADDING_X));
     }
     if props.scroll_container {
         list = list.flex_1().min_h_0().overflow_y_scroll();
@@ -102,6 +106,8 @@ pub fn render_agent_session_item<C: 'static>(
     ));
 
     div()
+        .w_full()
+        .min_w_0()
         .px(px(theme::SPACING_MD))
         .py(px(theme::SPACING_SM))
         .rounded(px(6.0))
@@ -150,6 +156,8 @@ pub fn render_agent_session_item<C: 'static>(
 
 fn section_header(label: &str, cx: &App) -> Div {
     div()
+        .w_full()
+        .min_w_0()
         .pt(px(theme::SPACING_SM))
         .pb(px(4.0))
         .text_size(px(theme::FONT_DETAIL))
@@ -161,7 +169,6 @@ fn empty_text(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
         .w_full()
         .min_w_0()
-        .px(px(theme::SPACING_MD))
         .py(px(theme::SPACING_LG))
         .text_size(px(theme::FONT_BODY))
         .text_color(rgb(theme::text_muted(cx)))

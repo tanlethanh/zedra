@@ -37,6 +37,7 @@ qrcode = "0.14"
 clap = { version = "4", features = ["derive"] }
 
 # Serialization
+base64-url.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["std"] }
 chrono.workspace = true

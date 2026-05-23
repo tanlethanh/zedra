@@ -31,7 +31,8 @@ theme::*    EditorTheme   TerminalTheme
 **Required**
 
 - Read **UI colors** from `theme::palette(cx)` or the `theme::bg_primary(cx)`-style accessors in `crates/zedra/src/theme.rs`. Wrap hex tokens with `rgb(...)` (or `Hsla` fields on the palette) in `render()`.
-- Use **layout and typography constants** from `theme.rs` (`SPACING_*`, `FONT_*`, `ICON_*`, `DRAWER_*`, etc.). Those are appearance-independent; do not duplicate magic numbers in views.
+- Use **layout and typography constants** from `theme.rs` (`SPACING_*`, `SUBSCREEN_PADDING_X`, `FONT_*`, `ICON_*`, `DRAWER_*`, etc.). Those are appearance-independent; do not duplicate magic numbers in views.
+- Subscreen pages (manage agents, agent history): horizontal gutter `SUBSCREEN_PADDING_X` on header and `subscreen_padded_body`; `SPACING_MD` between back and title. Manage detail metadata row spacing: `AGENT_METADATA_ROW_PY`.
 - Use **semantic accents** only for meaning (connected, warning, destructive, focus)—see `docs/DESIGN.md`.
 - If a surface must react to a theme toggle, subscribe to `ThemeStateEvent::Changed` and call `cx.notify()` on the owning entity (see `ZedraApp::on_theme_changed` and `WorkspaceTerminal`).
 

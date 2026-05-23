@@ -1,3 +1,4 @@
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use tracing::error;
 use zedra_rpc::proto::{AgentSetupState, AgentSummary, HostEvent, ManagedAgentKind};
@@ -9,6 +10,9 @@ use crate::agent_session_list::{
 use crate::fonts;
 use crate::platform_bridge::{self, HapticFeedback};
 use crate::theme;
+use crate::ui::{
+    chevron_back_button, subscreen_padded_body, subscreen_page, subscreen_refresh_button,
+};
 use crate::workspace_action;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -213,20 +217,11 @@ impl AgentManageView {
         )
     }
 
-    fn render_padded_body(body: impl IntoElement) -> Div {
-        div()
-            .w_full()
-            .px(px(theme::SPACING_MD))
-            .pb(px(theme::SPACING_MD))
-            .flex()
-            .flex_col()
-            .gap(px(theme::SPACING_SM))
-            .child(body)
-    }
-
     fn render_list_body(agents: &[AgentSummary], cx: &mut Context<Self>) -> impl IntoElement {
         let mut list = div()
             .id("agent-manage-list")
+            .w_full()
+            .min_w_0()
             .flex()
             .flex_col()
             .gap(px(theme::SPACING_SM));
@@ -243,6 +238,8 @@ impl AgentManageView {
                         "agent-manage-row-{}",
                         kind_slug(kind)
                     )))
+                    .w_full()
+                    .min_w_0()
                     .px(px(theme::SPACING_MD))
                     .py(px(theme::SPACING_SM))
                     .rounded(px(6.0))
@@ -312,7 +309,7 @@ impl AgentManageView {
                     ),
             );
         }
-        Self::render_padded_body(list)
+        subscreen_padded_body(list)
     }
 
     fn render_detail_body(
@@ -321,13 +318,14 @@ impl AgentManageView {
         session_state: &LoadState,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        Self::render_padded_body(
+        subscreen_padded_body(
             div()
+                .w_full()
+                .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(theme::SPACING_SM))
+                .gap(px(theme::SPACING_MD))
                 .child(render_detail_summary(agent, cx))
-                .child(section_header("Sessions", cx))
                 .child(render_agent_session_list(
                     AgentSessionListProps {
                         sections: crate::agent_session_list::group_sessions_by_day(
@@ -370,10 +368,10 @@ impl Render for AgentManageView {
 
         let body: AnyElement = match agent_state {
             LoadState::Loading => {
-                Self::render_padded_body(empty_text("Loading managed agents...", cx))
+                subscreen_padded_body(empty_text("Loading managed agents...", cx))
                     .into_any_element()
             }
-            LoadState::Error(message) => Self::render_padded_body(empty_text(
+            LoadState::Error(message) => subscreen_padded_body(empty_text(
                 format!("Failed to load managed agents: {message}"),
                 cx,
             ))
@@ -385,56 +383,20 @@ impl Render for AgentManageView {
                         Self::render_detail_body(agent, &sessions, &session_state, cx)
                             .into_any_element()
                     } else {
-                        Self::render_padded_body(empty_text("No agent selected.", cx))
+                        subscreen_padded_body(empty_text("No agent selected.", cx))
                             .into_any_element()
                     }
                 }
             },
         };
 
-        div()
-            .id("agent-manage-view")
-            .size_full()
-            .min_h_0()
-            .bg(rgb(theme::bg_primary(cx)))
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .id("agent-manage-header-shell")
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .child(
-                        div()
-                            .w_full()
-                            .max_w(px(theme::CONTENT_MAX_WIDTH))
-                            .min_w_0()
-                            .child(header),
-                    ),
-            )
-            .child(render_scroll_body(body))
-    }
-}
-
-fn render_scroll_body(body: AnyElement) -> impl IntoElement {
-    div()
-        .id("agent-manage-scroll")
-        .flex_1()
-        .min_h_0()
-        .overflow_y_scroll()
-        .w_full()
-        .child(
-            div()
-                .id("agent-manage-content")
-                .w_full()
-                .max_w(px(theme::CONTENT_MAX_WIDTH))
-                .mx_auto()
-                .min_w_0()
-                .pb(px(30.0))
-                .child(body),
+        subscreen_page(
+            "agent-manage-view",
+            rgb(theme::bg_primary(cx)),
+            header,
+            body,
         )
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -456,8 +418,8 @@ fn render_manage_header(
 ) -> impl IntoElement {
     div()
         .id(SharedString::from(format!("{}-header", config.id_prefix)))
-        .w_full()
-        .px(px(theme::SPACING_MD))
+        .min_w_0()
+        .px(px(theme::SUBSCREEN_PADDING_X))
         .pt(px(theme::SPACING_XS))
         .pb(px(theme::SPACING_SM))
         .child(
@@ -467,14 +429,15 @@ fn render_manage_header(
                     config.id_prefix
                 )))
                 .relative()
-                .w_full()
+                .min_w_0()
                 .child(
                     div()
+                        .min_w_0()
                         .flex()
                         .flex_row()
                         .items_center()
                         .gap(px(theme::SPACING_MD))
-                        .child(back_button(cx, config.back))
+                        .child(manage_back_button(cx, config.back))
                         .child(
                             div()
                                 .flex_1()
@@ -498,65 +461,63 @@ fn render_manage_header(
                                 ),
                         ),
                 )
-                .child(refresh_button(cx)),
+                .child(subscreen_refresh_button(
+                    "agent-manage-refresh-btn",
+                    cx,
+                    |this, _event, _window, cx| this.load_agents(true, cx),
+                )),
         )
 }
 
-fn render_detail_summary(agent: &AgentSummary, cx: &App) -> Div {
-    let mut summary = div()
-        .w_full()
-        .px(px(theme::SPACING_MD))
-        .py(px(theme::SPACING_SM))
-        .rounded(px(6.0))
-        .border_1()
-        .border_color(rgb(theme::border_subtle(cx)))
-        .bg(rgb(theme::bg_card(cx)))
-        .flex()
-        .flex_col()
-        .gap(px(4.0));
-
-    summary = summary
-        .child(summary_line("Version", cli_version_display(agent), cx))
-        .child(summary_line(
-            "Setup",
-            setup_label(agent.setup.state).to_string(),
-            cx,
-        ))
-        .child(summary_line(
-            "Sessions",
+fn render_detail_summary(agent: &AgentSummary, cx: &App) -> impl IntoElement {
+    let mut rows: Vec<(SharedString, String)> = vec![
+        ("Version".into(), cli_version_display(agent)),
+        ("Setup".into(), setup_label(agent.setup.state).to_string()),
+        (
+            "Sessions".into(),
             format!(
                 "{} resumable / {} total",
                 agent.sessions.resumable, agent.sessions.total
             ),
-            cx,
-        ));
-
+        ),
+    ];
     for field in &agent.account.fields {
-        summary = summary.child(summary_line(&field.label, field.value.clone(), cx));
+        rows.push((field.label.clone().into(), field.value.clone()));
     }
-
     if !agent.warnings.is_empty() {
-        summary = summary.child(summary_line(
-            "Warnings",
+        rows.push((
+            "Warnings".into(),
             agent
                 .warnings
                 .iter()
                 .map(|warning| warning.code.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
-            cx,
         ));
+    }
+
+    let last = rows.len().saturating_sub(1);
+    let mut summary = div()
+        .id("agent-manage-detail-metadata")
+        .w_full()
+        .min_w_0()
+        .pb(px(theme::SPACING_XS))
+        .border_b_1()
+        .border_color(rgb(theme::border_subtle(cx)))
+        .flex()
+        .flex_col();
+
+    for (index, (label, value)) in rows.into_iter().enumerate() {
+        summary = summary.child(summary_line(label, value, cx, index < last));
     }
     summary
 }
 
-fn back_button(cx: &mut Context<AgentManageView>, back: ManageHeaderBack) -> Stateful<Div> {
-    div()
-        .id("agent-manage-back-btn")
-        .flex_shrink_0()
-        .cursor_pointer()
-        .hit_slop(px(32.0))
-        .on_press(cx.listener(move |this, _event, window, cx| {
+fn manage_back_button(cx: &mut Context<AgentManageView>, back: ManageHeaderBack) -> Stateful<Div> {
+    chevron_back_button(
+        "agent-manage-back-btn",
+        cx,
+        move |this, _event, window, cx| {
             platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
             match back {
                 ManageHeaderBack::Workspace => {
@@ -564,60 +525,32 @@ fn back_button(cx: &mut Context<AgentManageView>, back: ManageHeaderBack) -> Sta
                 }
                 ManageHeaderBack::List => this.back_to_list(cx),
             }
-        }))
-        .child(
-            svg()
-                .path("icons/chevron-left.svg")
-                .size(px(theme::ICON_MD))
-                .text_color(rgb(theme::text_muted(cx))),
-        )
+        },
+    )
 }
 
-fn refresh_button(cx: &mut Context<AgentManageView>) -> Stateful<Div> {
+fn summary_line(label: SharedString, value: String, cx: &App, show_divider: bool) -> Div {
     div()
-        .id("agent-manage-refresh-btn")
-        .absolute()
-        .top_2()
-        .right_0()
-        .cursor_pointer()
-        .hit_slop(px(28.0))
-        .on_press(cx.listener(|this, _event, _window, cx| {
-            platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-            this.load_agents(true, cx);
-        }))
-        .child(
-            svg()
-                .path("icons/refresh-ccw.svg")
-                .size(px(14.0))
-                .text_color(rgb(theme::text_muted(cx))),
-        )
-}
-
-fn section_header(label: &'static str, cx: &App) -> Div {
-    div()
-        .pt(px(theme::SPACING_SM))
-        .pb(px(4.0))
-        .text_size(px(theme::FONT_DETAIL))
-        .text_color(rgb(theme::text_muted(cx)))
-        .child(label)
-}
-
-fn summary_line(label: &str, value: String, cx: &App) -> Div {
-    div()
+        .min_w_0()
         .flex()
         .flex_row()
-        .items_center()
+        .items_baseline()
         .gap(px(theme::SPACING_SM))
+        .py(px(theme::AGENT_METADATA_ROW_PY))
+        .when(show_divider, |row| {
+            row.border_b_1().border_color(rgb(theme::border_subtle(cx)))
+        })
         .child(
             div()
-                .w(px(120.0))
+                .w(px(theme::AGENT_METADATA_LABEL_WIDTH))
                 .flex_shrink_0()
                 .text_size(px(theme::FONT_DETAIL))
                 .text_color(rgb(theme::text_muted(cx)))
-                .child(label.to_string()),
+                .child(label),
         )
         .child(
             div()
+                .flex_1()
                 .min_w_0()
                 .truncate()
                 .text_size(px(theme::FONT_DETAIL))
@@ -628,10 +561,12 @@ fn summary_line(label: &str, value: String, cx: &App) -> Div {
 
 fn empty_text(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
-        .px(px(theme::SPACING_MD))
+        .w_full()
+        .min_w_0()
         .py(px(theme::SPACING_LG))
         .text_size(px(theme::FONT_BODY))
         .text_color(rgb(theme::text_muted(cx)))
+        .whitespace_normal()
         .child(text.into())
 }
 

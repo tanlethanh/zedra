@@ -1030,6 +1030,8 @@ pub struct AgentSummary {
     pub data_sources: Vec<AgentDataSource>,
     pub warnings: Vec<AgentWarning>,
     pub account: AgentAccountSummary,
+    /// Live rate-limit snapshot fetched from the provider's API.
+    pub usage: Option<AgentUsageSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1522,6 +1524,7 @@ mod tests {
                     message: "fixture warning".into(),
                 }],
                 account: AgentAccountSummary::default(),
+                usage: None,
             }],
             error: None,
         };

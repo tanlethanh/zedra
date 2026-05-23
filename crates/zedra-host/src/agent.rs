@@ -150,6 +150,7 @@ fn degraded_agent_summary(kind: ManagedAgentKind, workdir: &Path) -> AgentSummar
             message: "agent session scan crashed; counts unavailable".to_string(),
         }],
         account: account_summary(kind),
+        usage: None,
     }
 }
 
@@ -427,6 +428,7 @@ fn agent_summary_scan(kind: ManagedAgentKind, workdir: &Path) -> AgentSummary {
         data_sources,
         warnings,
         account: account_summary(kind),
+        usage: None,
     }
 }
 
@@ -1771,32 +1773,110 @@ fn claude_account_fields() -> Vec<AgentInfoField> {
     }
     let stats_path = home_path(&[".claude", "stats-cache.json"]);
     if let Ok(value) = read_json_file(&stats_path) {
-        push_json_u64(&mut fields, "Total sessions", &value, &["totalSessions"]);
-        push_json_u64(&mut fields, "Total messages", &value, &["totalMessages"]);
         if let Some(total_cost) = claude_total_cost_usd(&value) {
             fields.push(AgentInfoField {
                 label: "Total cost (USD)".to_string(),
                 value: format!("{total_cost:.4}"),
             });
         }
+        if let Some((today, week)) = claude_daily_usage(&value) {
+            let today_str = Utc::now().format("%Y-%m-%d").to_string();
+            if let Some(last) = value.get("lastComputedDate").and_then(Value::as_str) {
+                if last == today_str {
+                    fields.push(AgentInfoField {
+                        label: "Today msgs".to_string(),
+                        value: today.messages.to_string(),
+                    });
+                }
+            }
+            fields.push(AgentInfoField {
+                label: "Week msgs".to_string(),
+                value: week.messages.to_string(),
+            });
+            fields.push(AgentInfoField {
+                label: "Week sessions".to_string(),
+                value: week.sessions.to_string(),
+            });
+            fields.push(AgentInfoField {
+                label: "Week tools".to_string(),
+                value: week.tools.to_string(),
+            });
+        }
     }
     fields
+}
+
+#[derive(Default)]
+struct DailyTotals {
+    messages: u64,
+    sessions: u64,
+    tools: u64,
+}
+
+fn claude_daily_usage(value: &Value) -> Option<(DailyTotals, DailyTotals)> {
+    let activity = value.get("dailyActivity")?.as_array()?;
+    let today_str = Utc::now().format("%Y-%m-%d").to_string();
+    let week_start = (Utc::now() - chrono::Duration::days(7))
+        .format("%Y-%m-%d")
+        .to_string();
+    let mut today = DailyTotals::default();
+    let mut week = DailyTotals::default();
+    for entry in activity {
+        let date = entry.get("date")?.as_str()?;
+        let msgs = entry
+            .get("messageCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let sessions = entry
+            .get("sessionCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let tools = entry
+            .get("toolCallCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if date == today_str {
+            today.messages += msgs;
+            today.sessions += sessions;
+            today.tools += tools;
+        }
+        if date >= week_start.as_str() {
+            week.messages += msgs;
+            week.sessions += sessions;
+            week.tools += tools;
+        }
+    }
+    Some((today, week))
 }
 
 fn codex_account_fields() -> Vec<AgentInfoField> {
     let mut fields = Vec::new();
     let auth_path = home_path(&[".codex", "auth.json"]);
+    let logged_in = auth_path.is_file();
     fields.push(AgentInfoField {
         label: "Logged in".to_string(),
-        value: if auth_path.is_file() {
-            "yes".to_string()
-        } else {
-            "no".to_string()
-        },
+        value: if logged_in { "yes" } else { "no" }.to_string(),
     });
-    if let Ok(contents) = std::fs::read_to_string(&auth_path) {
-        if let Ok(value) = serde_json::from_str::<Value>(&contents) {
-            push_json_string(&mut fields, "Last refresh", &value, &["last_refresh"]);
+    if logged_in {
+        if let Ok(contents) = std::fs::read_to_string(&auth_path) {
+            if let Ok(value) = serde_json::from_str::<Value>(&contents) {
+                if let Some(profile) = codex_jwt_profile(&value) {
+                    fields.push(AgentInfoField {
+                        label: "Account".to_string(),
+                        value: profile.name,
+                    });
+                    fields.push(AgentInfoField {
+                        label: "Plan".to_string(),
+                        value: profile.plan,
+                    });
+                    if !profile.plan_until.is_empty() {
+                        fields.push(AgentInfoField {
+                            label: "Plan until".to_string(),
+                            value: profile.plan_until,
+                        });
+                    }
+                }
+            }
         }
     }
     let config_path = home_path(&[".codex", "config.toml"]);
@@ -1821,7 +1901,88 @@ fn codex_account_fields() -> Vec<AgentInfoField> {
             }
         }
     }
+    if let Some(counts) = codex_thread_counts() {
+        fields.push(AgentInfoField {
+            label: "Week threads".to_string(),
+            value: counts.week.to_string(),
+        });
+        fields.push(AgentInfoField {
+            label: "Total threads".to_string(),
+            value: counts.total.to_string(),
+        });
+    }
     fields
+}
+
+struct CodexProfile {
+    name: String,
+    plan: String,
+    plan_until: String,
+}
+
+fn codex_jwt_profile(auth: &Value) -> Option<CodexProfile> {
+    let token = auth
+        .get("tokens")
+        .and_then(|t| t.get("id_token"))
+        .and_then(Value::as_str)?;
+    let payload_seg = token.split('.').nth(1)?;
+    // base64url decode without padding
+    let bytes = base64_url::decode(payload_seg).ok()?;
+    let payload: Value = serde_json::from_slice(&bytes).ok()?;
+    let openai = payload.get("https://api.openai.com/auth")?;
+    let name = payload
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let plan = openai
+        .get("chatgpt_plan_type")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    // e.g. "2026-06-23T03:09:46+00:00" → take first 10 chars
+    let plan_until = openai
+        .get("chatgpt_subscription_active_until")
+        .and_then(Value::as_str)
+        .map(|s| s.get(..10).unwrap_or(s).to_string())
+        .unwrap_or_default();
+    Some(CodexProfile {
+        name,
+        plan,
+        plan_until,
+    })
+}
+
+struct CodexThreadCounts {
+    week: u64,
+    total: u64,
+}
+
+fn codex_thread_counts() -> Option<CodexThreadCounts> {
+    let db_path = home_path(&[".codex", "state_5.sqlite"]);
+    if !db_path.is_file() {
+        return None;
+    }
+    let week_start = (Utc::now() - chrono::Duration::days(7))
+        .format("%Y-%m-%d")
+        .to_string();
+    // created_at is stored as unix millis in this DB
+    let week_ts = chrono::NaiveDate::parse_from_str(&week_start, "%Y-%m-%d")
+        .ok()?
+        .and_hms_opt(0, 0, 0)?
+        .and_utc()
+        .timestamp();
+    let query = format!(
+        "SELECT \
+            (SELECT COUNT(*) FROM threads) AS total, \
+            (SELECT COUNT(*) FROM threads WHERE created_at/1000 >= {week_ts}) AS week;"
+    );
+    let bytes = sqlite_readonly::query_json(&db_path, &query).ok()?;
+    let rows: Vec<Value> = serde_json::from_slice(&bytes).ok()?;
+    let row = rows.first()?;
+    let total = row.get("total").and_then(Value::as_u64).unwrap_or(0);
+    let week = row.get("week").and_then(Value::as_u64).unwrap_or(0);
+    Some(CodexThreadCounts { week, total })
 }
 
 fn opencode_account_fields() -> Vec<AgentInfoField> {
@@ -1923,6 +2084,167 @@ fn program_name(kind: ManagedAgentKind) -> &'static str {
         ManagedAgentKind::Codex => "codex",
         ManagedAgentKind::OpenCode => "opencode",
     }
+}
+
+// ---------------------------------------------------------------------------
+// Account-level usage probes (async, calls provider APIs)
+// ---------------------------------------------------------------------------
+
+/// Fetch live rate-limit snapshots for all managed agents that have credentials.
+pub async fn scan_account_usage() -> HashMap<ManagedAgentKind, AgentUsageSnapshot> {
+    let claude = tokio::spawn(fetch_claude_account_usage());
+    let codex = tokio::spawn(fetch_codex_account_usage());
+
+    let mut out = HashMap::new();
+    if let Ok(Some(snap)) = claude.await {
+        out.insert(ManagedAgentKind::Claude, snap);
+    }
+    if let Ok(Some(snap)) = codex.await {
+        out.insert(ManagedAgentKind::Codex, snap);
+    }
+    out
+}
+
+/// Apply previously fetched usage snapshots onto cached agent summaries.
+pub fn apply_cached_account_usage(
+    agents: &mut Vec<AgentSummary>,
+    snapshots: &HashMap<ManagedAgentKind, AgentUsageSnapshot>,
+) {
+    for agent in agents {
+        if let Some(snap) = snapshots.get(&agent.kind) {
+            agent.usage = Some(snap.clone());
+        }
+    }
+}
+
+async fn fetch_claude_account_usage() -> Option<AgentUsageSnapshot> {
+    let token = read_claude_oauth_token()?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .ok()?;
+    let resp = client
+        .get("https://api.anthropic.com/api/oauth/usage")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        tracing::debug!("claude usage API returned {}", resp.status());
+        return None;
+    }
+    let body: Value = resp.json().await.ok()?;
+    let five_hour = body
+        .get("five_hour")
+        .and_then(|w| w.get("utilization"))
+        .and_then(Value::as_f64)
+        .map(|v| v as f32);
+    let seven_day = body
+        .get("seven_day")
+        .and_then(|w| w.get("utilization"))
+        .and_then(Value::as_f64)
+        .map(|v| v as f32);
+    // extra_usage spend credit utilization (Claude Max / extra)
+    let extra = body.get("extra_usage");
+    let extra_used = extra
+        .and_then(|e| e.get("used_credits"))
+        .and_then(Value::as_f64);
+    let extra_limit = extra
+        .and_then(|e| e.get("monthly_limit"))
+        .and_then(Value::as_f64);
+    let extra_util = extra_used.zip(extra_limit).and_then(|(used, limit)| {
+        if limit > 0.0 {
+            Some((used / limit * 100.0) as f32)
+        } else {
+            None
+        }
+    });
+    Some(AgentUsageSnapshot {
+        context_used_percent: extra_util,
+        total_cost_usd: extra_used,
+        total_duration_ms: None,
+        total_api_duration_ms: None,
+        lines_added: None,
+        lines_removed: None,
+        rate_limit_five_hour_used_percent: five_hour,
+        rate_limit_seven_day_used_percent: seven_day,
+    })
+}
+
+async fn fetch_codex_account_usage() -> Option<AgentUsageSnapshot> {
+    let auth_path = home_path(&[".codex", "auth.json"]);
+    let contents = std::fs::read_to_string(&auth_path).ok()?;
+    let auth: Value = serde_json::from_str(&contents).ok()?;
+    let access_token = auth
+        .get("tokens")
+        .and_then(|t| t.get("access_token"))
+        .and_then(Value::as_str)?
+        .to_string();
+    let account_id = auth
+        .get("account_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .ok()?;
+    let mut req = client
+        .get("https://chatgpt.com/backend-api/wham/usage")
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("Accept", "application/json")
+        .header("User-Agent", "Zedra");
+    if let Some(ref id) = account_id {
+        req = req.header("ChatGPT-Account-Id", id.as_str());
+    }
+    let resp = req.send().await.ok()?;
+    if !resp.status().is_success() {
+        tracing::debug!("codex usage API returned {}", resp.status());
+        return None;
+    }
+    let body: Value = resp.json().await.ok()?;
+    let rl = body.get("rate_limit");
+    let five_hour = rl
+        .and_then(|r| r.get("primary_window"))
+        .and_then(|w| w.get("used_percent"))
+        .and_then(Value::as_f64)
+        .map(|v| v as f32);
+    let seven_day = rl
+        .and_then(|r| r.get("secondary_window"))
+        .and_then(|w| w.get("used_percent"))
+        .and_then(Value::as_f64)
+        .map(|v| v as f32);
+    Some(AgentUsageSnapshot {
+        context_used_percent: None,
+        total_cost_usd: None,
+        total_duration_ms: None,
+        total_api_duration_ms: None,
+        lines_added: None,
+        lines_removed: None,
+        rate_limit_five_hour_used_percent: five_hour,
+        rate_limit_seven_day_used_percent: seven_day,
+    })
+}
+
+/// Read the Claude OAuth access token from `~/.claude/.credentials.json`.
+/// Returns `None` if the file is missing, malformed, or the token is expired.
+fn read_claude_oauth_token() -> Option<String> {
+    let path = home_path(&[".claude", ".credentials.json"]);
+    let contents = std::fs::read_to_string(&path).ok()?;
+    let root: Value = serde_json::from_str(&contents).ok()?;
+    let oauth = root.get("claudeAiOauth")?;
+    if let Some(expires_ms) = oauth.get("expiresAt").and_then(Value::as_f64) {
+        let expires = std::time::UNIX_EPOCH + std::time::Duration::from_millis(expires_ms as u64);
+        if std::time::SystemTime::now() > expires {
+            tracing::debug!("claude oauth token expired; skipping usage probe");
+            return None;
+        }
+    }
+    oauth
+        .get("accessToken")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 pub fn kind_slug(kind: ManagedAgentKind) -> &'static str {

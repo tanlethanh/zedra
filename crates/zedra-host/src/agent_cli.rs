@@ -67,6 +67,8 @@ pub enum AgentScanCommand {
     Sessions(AgentScanSessionsArgs),
     /// Run all local scans and print benchmark timings
     Bench(AgentScanBenchArgs),
+    /// Fetch live rate-limit usage from provider APIs (Claude + Codex)
+    Usage(AgentScanCommonArgs),
 }
 
 #[derive(Debug, Args)]
@@ -270,7 +272,7 @@ pub async fn run(command: AgentCommand) -> Result<()> {
         AgentCommand::Sessions(args) => list_sessions(args).await,
         AgentCommand::Resume(args) => resume_session(args).await,
         AgentCommand::Listen(args) => listen_events(args).await,
-        AgentCommand::Scan { command } => run_scan(command),
+        AgentCommand::Scan { command } => run_scan(command).await,
         AgentCommand::Hook { command } => run_hook(command).await,
     }
 }
@@ -298,12 +300,13 @@ async fn list_sessions(args: AgentSessionsArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_scan(command: AgentScanCommand) -> Result<()> {
+async fn run_scan(command: AgentScanCommand) -> Result<()> {
     match command {
         AgentScanCommand::Installed(args) => scan_installed(args),
         AgentScanCommand::List(args) => scan_list(args),
         AgentScanCommand::Sessions(args) => scan_sessions(args),
         AgentScanCommand::Bench(args) => scan_bench(args),
+        AgentScanCommand::Usage(args) => scan_usage(args).await,
     }
 }
 
@@ -478,6 +481,50 @@ fn scan_bench(args: AgentScanBenchArgs) -> Result<()> {
         println!();
         if let Some(result) = sessions.get(&format!("{kind:?}")) {
             println!("{}", render_agent_sessions(kind, result));
+        }
+    }
+    Ok(())
+}
+
+async fn scan_usage(args: AgentScanCommonArgs) -> Result<()> {
+    let started = Instant::now();
+    let snapshots = agent::scan_account_usage().await;
+    let elapsed = started.elapsed();
+    if !args.quiet {
+        writeln!(
+            stderr(),
+            "scan usage completed in {}ms",
+            elapsed.as_millis()
+        )?;
+    }
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&snapshots)?);
+    } else {
+        use zedra_rpc::proto::ManagedAgentKind::*;
+        for kind in [Claude, Codex] {
+            let label = match kind {
+                Claude => "Claude",
+                Codex => "Codex",
+                _ => "?",
+            };
+            match snapshots.get(&kind) {
+                None => println!("{label}: no credentials / fetch failed"),
+                Some(snap) => {
+                    println!("{label}:");
+                    if let Some(v) = snap.rate_limit_five_hour_used_percent {
+                        println!("  5h rate limit:  {v:.1}%");
+                    }
+                    if let Some(v) = snap.rate_limit_seven_day_used_percent {
+                        println!("  7d rate limit:  {v:.1}%");
+                    }
+                    if let Some(v) = snap.total_cost_usd {
+                        println!("  Extra spend:    ${v:.2}");
+                    }
+                    if let Some(v) = snap.context_used_percent {
+                        println!("  Spend util:     {v:.1}%");
+                    }
+                }
+            }
         }
     }
     Ok(())

@@ -980,6 +980,12 @@ Expected:
     or refreshing.
 23. Expected: the version line updates from `Checking…` to the real `--version`
     string when the host finishes that agent’s async version probe.
+24. Open manage detail for an agent with zero sessions or a session-list error
+    (for example Codex when the host scan fails).
+25. Expected: the header (back, title, refresh) stays full content width and
+    lines up with the metadata column; narrow error text must not shrink-wrap
+    the header (see `docs/CONVENTIONS.md` GPUI flex width rules and
+    `ui::subscreen_layout`).
 
 ## 19. Xcode Rust Build Target
 

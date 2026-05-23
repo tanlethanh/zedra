@@ -21,9 +21,7 @@ use crate::agent_session_view::AgentSessionView;
 use crate::editor::git_sidebar::GitFileSection;
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
 use crate::placeholder::render_placeholder;
-use crate::platform_bridge::{
-    self, AlertButton, HapticFeedback, status_bar_inset,
-};
+use crate::platform_bridge::{self, AlertButton, HapticFeedback, status_bar_inset};
 use crate::telemetry::view_telemetry;
 use crate::terminal_card::strip_ps1_prefix;
 use crate::terminal_state::TerminalState;
@@ -742,9 +740,8 @@ impl Workspace {
 
         let pending_platform_action: SharedPendingSlot<PendingWorkspaceAction> =
             shared_pending_slot();
-        let agent_picker = cx.new(|_cx| {
-            AgentPicker::new(session.handle().clone(), pending_platform_action.clone())
-        });
+        let agent_picker = cx
+            .new(|_cx| AgentPicker::new(session.handle().clone(), pending_platform_action.clone()));
         let platform_action_slot = pending_platform_action.clone();
         let pending_platform_action_task =
             spawn_periodic_task(cx, Duration::from_millis(50), move |this, cx| {
@@ -1067,7 +1064,8 @@ impl Workspace {
     }
 
     pub fn create_agent_from_quick_action(&mut self, cx: &mut Context<Self>) {
-        self.agent_picker.update(cx, |picker, cx| picker.trigger(cx));
+        self.agent_picker
+            .update(cx, |picker, cx| picker.trigger(cx));
     }
 
     pub fn open_agent_sessions_from_quick_action(&mut self, cx: &mut Context<Self>) {
@@ -2939,6 +2937,8 @@ impl Render for WorkspaceContent {
                     .relative()
                     .flex_1()
                     .min_h_0()
+                    .min_w_0()
+                    .w_full()
                     .child(mainview_measure)
                     .when_else(
                         self.show_connecting,

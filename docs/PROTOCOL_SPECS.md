@@ -304,7 +304,14 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
 - `AgentSessionsReq.refresh` follows the same cache rule as `AgentListReq.refresh`.
 - `AgentResume` creates a new terminal and starts the provider-specific resume command on the host. Clients must not build provider shell commands from summary fields.
 - `AgentInstalledList` returns all supported terminal agent slugs with host-owned `launch_cmd` values for available CLIs. Clients create agents through `TermCreate` with that launch command.
-- `AgentSummary.account.fields` exposes locally discovered account/setup metadata for manage-agent detail views. Values must remain privacy-safe.
+- `AgentSummary.usage` carries a live `AgentUsageSnapshot` fetched asynchronously from the provider's API at daemon start and on `AgentListReq{refresh:true}`. Fields populated per agent:
+  - **Claude**: `rate_limit_five_hour_used_percent` (`five_hour.utilization`), `rate_limit_seven_day_used_percent` (`seven_day.utilization`), `total_cost_usd` / `context_used_percent` (extra credit spend) — from `api.anthropic.com/api/oauth/usage` using `~/.claude/.credentials.json`.
+  - **Codex**: `rate_limit_five_hour_used_percent` (primary window), `rate_limit_seven_day_used_percent` (secondary window) — from `chatgpt.com/backend-api/wham/usage` using `~/.codex/auth.json`.
+  - `None` when credentials are missing/expired or the API call fails.
+- `AgentSummary.account.fields` exposes locally discovered account/setup metadata for manage-agent detail views. Values must remain privacy-safe. Current fields per agent kind:
+  - **Claude**: Model, Effort, Permission mode (from `~/.claude/settings.json`); Total cost (USD), Week msgs/sessions/tools, Today msgs (from `~/.claude/stats-cache.json` `dailyActivity`).
+  - **Codex**: Logged in, Account (name from JWT), Plan, Plan until (from `~/.codex/auth.json` `id_token` payload); Model, Personality, Reasoning effort (from `~/.codex/config.toml`); Week threads, Total threads (from `~/.codex/state_5.sqlite`).
+  - **OpenCode**: Config dir presence (from `~/.config/opencode`).
 - `AgentSessionSummary.title` uses provider-stored titles when available, otherwise `"Unknown"`.
 - `AgentSessionSummary.transcript_size_bytes` reports transcript file size when the host scan has a local file path.
 - `AgentGitSummary.worktree` is populated for Claude when the encoded project path includes `--claude-worktrees-<name>`.

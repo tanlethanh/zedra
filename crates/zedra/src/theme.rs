@@ -18,6 +18,11 @@ pub const SPACING_SM: f32 = 8.0;
 pub const SPACING_MD: f32 = 12.0;
 pub const SPACING_LG: f32 = 16.0;
 
+/// Horizontal padding for subscreen pages (manage agents, agent history).
+/// `SPACING_MD + SPACING_XS` (~4px extra) lines scroll content up with the workspace
+/// header menu/package icons and subscreen back control edges.
+pub const SUBSCREEN_PADDING_X: f32 = SPACING_MD + SPACING_XS;
+
 pub const HEADER_HEIGHT: f32 = 48.0;
 pub const HOME_CARD_WIDTH: f32 = 300.0;
 pub const HOME_GUIDE_WIDTH: f32 = 300.0;
@@ -55,6 +60,11 @@ pub const ICON_FILE: f32 = 12.0;
 pub const ICON_FILE_DIR: f32 = 14.0;
 pub const ICON_STATUS: f32 = 6.0;
 pub const ICON_TERMINAL: f32 = 16.0;
+
+/// Metadata label column width in manage-agent detail rows.
+pub const AGENT_METADATA_LABEL_WIDTH: f32 = 140.0;
+/// Vertical padding per metadata row in manage-agent detail.
+pub const AGENT_METADATA_ROW_PY: f32 = 4.0;
 
 pub const EDITOR_FONT_SIZE: f32 = 12.0;
 pub const EDITOR_GUTTER_FONT_SIZE: f32 = 11.0;
