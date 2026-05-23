@@ -93,7 +93,7 @@ impl Render for AgentSessionView {
             .id("agent-session-view")
             .size_full()
             .min_h_0()
-            .bg(rgb(theme::BG_PRIMARY))
+            .bg(rgb(theme::bg_primary(cx)))
             .flex()
             .flex_col()
             .child(
@@ -108,7 +108,7 @@ impl Render for AgentSessionView {
                     .child(
                         div()
                             .text_size(px(theme::FONT_BODY))
-                            .text_color(rgb(theme::TEXT_SECONDARY))
+                            .text_color(rgb(theme::text_secondary(cx)))
                             .child("All managed agent sessions in this workspace."),
                     )
                     .child(refresh_button(cx)),
@@ -136,7 +136,7 @@ fn refresh_button(cx: &mut Context<AgentSessionView>) -> Stateful<Div> {
         .py(px(6.0))
         .rounded(px(6.0))
         .border_1()
-        .border_color(rgb(theme::BORDER_SUBTLE))
+        .border_color(rgb(theme::border_subtle(cx)))
         .cursor_pointer()
         .on_press(cx.listener(|this, _event, _window, cx| {
             this.load(true, cx);
@@ -144,7 +144,7 @@ fn refresh_button(cx: &mut Context<AgentSessionView>) -> Stateful<Div> {
         .child(
             div()
                 .text_size(px(theme::FONT_DETAIL))
-                .text_color(rgb(theme::TEXT_SECONDARY))
+                .text_color(rgb(theme::text_secondary(cx)))
                 .child("Refresh"),
         )
 }

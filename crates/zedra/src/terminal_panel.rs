@@ -166,7 +166,7 @@ fn toolbar_button<A: Action>(
         .py(px(8.0))
         .rounded(px(6.0))
         .border_1()
-        .border_color(rgb(theme::BORDER_SUBTLE))
+        .border_color(rgb(theme::border_subtle(cx)))
         .flex()
         .flex_col()
         .items_center()
@@ -181,12 +181,12 @@ fn toolbar_button<A: Action>(
             svg()
                 .path(icon)
                 .size(px(theme::ICON_SM))
-                .text_color(rgb(theme::TEXT_MUTED)),
+                .text_color(rgb(theme::text_muted(cx))),
         )
         .child(
             div()
                 .text_size(px(10.0))
-                .text_color(rgb(theme::TEXT_MUTED))
+                .text_color(rgb(theme::text_muted(cx)))
                 .text_center()
                 .child(label),
         )
