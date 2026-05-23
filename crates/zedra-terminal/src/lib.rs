@@ -3,12 +3,14 @@ pub mod input;
 pub mod keys;
 mod selection;
 pub mod terminal;
+pub mod theme;
 pub mod view;
 
-pub use element::*;
+pub use element::{TerminalElement, TerminalElementLayout};
 pub use input::*;
 pub use keys::*;
 pub use terminal::*;
+pub use theme::{AnsiPalette, TerminalTheme};
 pub use view::*;
 
 use gpui::*;

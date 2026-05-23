@@ -10,7 +10,8 @@ use crate::editor::merge_highlights;
 use crate::editor::mermaid::{self, MermaidDiagram};
 use crate::fonts;
 use crate::platform_bridge;
-use crate::theme;
+use crate::settings::{ThemeStateEvent, theme_state};
+use crate::theme::{self, ThemePreference};
 use crate::workspace_action::AddSelectionToChat;
 
 // Enough offscreen content to keep fast mobile scrolls smooth without
@@ -30,7 +31,10 @@ const TABLE_CELL_CHAR_WIDTH_FACTOR: f32 = 0.62;
 const TABLE_CELL_PADDING_X: f32 = CODE_BLOCK_PADDING_X;
 const TABLE_CELL_PADDING_Y: f32 = CODE_BLOCK_PADDING_Y;
 const MERMAID_PENDING_HEIGHT: f32 = 120.0;
-const MERMAID_CONTENT_WIDTH: f32 = 360.0;
+const MERMAID_DISPLAY_SCALE: f32 = 0.5;
+const MERMAID_MIN_DISPLAY_HEIGHT: f32 = 80.0;
+const MERMAID_MAX_DISPLAY_WIDTH: f32 = 2400.0;
+const MERMAID_MAX_DISPLAY_HEIGHT: f32 = 1600.0;
 pub const MARKDOWN_SELECTION_AREA_ID: &str = "markdown-preview-selection";
 
 #[derive(Clone, Debug)]
@@ -47,10 +51,11 @@ pub struct MarkdownView {
     mermaid_states: HashMap<usize, MermaidBlockState>,
     mermaid_show_source: HashSet<usize>,
     mermaid_generation: u64,
+    _theme_subscription: Vec<Subscription>,
 }
 
 impl MarkdownView {
-    pub fn new(source: impl Into<SharedString>) -> Self {
+    pub fn new(source: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         let source = source.into();
         let document = parse_document(source.as_ref());
         let list_state = ListState::new(
@@ -58,14 +63,37 @@ impl MarkdownView {
             ListAlignment::Top,
             px(MARKDOWN_LIST_OVERDRAW_PX),
         );
-        Self {
+        let mut subscriptions = Vec::new();
+        if let Some(theme_state) = theme_state(cx) {
+            subscriptions.push(cx.subscribe(&theme_state, |this, _, _: &ThemeStateEvent, cx| {
+                this.on_theme_changed(cx);
+            }));
+        }
+        let mut view = Self {
             document,
             list_state,
             focus_handle: None,
             mermaid_states: HashMap::new(),
             mermaid_show_source: HashSet::new(),
             mermaid_generation: 0,
+            _theme_subscription: subscriptions,
+        };
+        view.schedule_mermaid_renders(cx);
+        view
+    }
+
+    fn on_theme_changed(&mut self, cx: &mut Context<Self>) {
+        let has_mermaid = self
+            .document
+            .blocks
+            .iter()
+            .any(|block| matches!(block, Block::Mermaid { .. }));
+        if has_mermaid {
+            mermaid::clear_mermaid_svg_cache();
+            self.mermaid_generation = self.mermaid_generation.wrapping_add(1);
+            self.schedule_mermaid_renders(cx);
         }
+        cx.notify();
     }
 
     pub fn set_source(&mut self, source: impl Into<SharedString>, cx: &mut Context<Self>) {
@@ -106,6 +134,9 @@ impl MarkdownView {
     fn schedule_mermaid_renders(&mut self, cx: &mut Context<Self>) {
         self.mermaid_states.clear();
         let generation = self.mermaid_generation;
+        let preference = theme_state(cx)
+            .map(|entity| entity.read(cx).preference())
+            .unwrap_or(ThemePreference::Dark);
         for (block_ix, block) in self.document.blocks.iter().enumerate() {
             let Block::Mermaid { text } = block else {
                 continue;
@@ -116,9 +147,9 @@ impl MarkdownView {
             let block_ix = block_ix;
             cx.spawn(async move |this, cx| {
                 let rendered = cx
-                    .background_spawn(
-                        async move { mermaid::render_mermaid_diagram(block_ix, &source) },
-                    )
+                    .background_spawn(async move {
+                        mermaid::render_mermaid_diagram(block_ix, &source, preference)
+                    })
                     .await;
                 let _ = this.update(cx, |view, cx| {
                     if view.mermaid_generation != generation {
@@ -1194,7 +1225,7 @@ fn parse_inline_event(events: &[Event<'_>], cursor: &mut usize) -> Vec<Inline> {
     }
 }
 
-fn render_code_block_content(text: &str, key: &str) -> AnyElement {
+fn render_code_block_content(text: &str, key: &str, cx: &App) -> AnyElement {
     let code_width = code_block_content_min_width(text);
     let code_lines = div()
         .min_w(px(code_width))
@@ -1210,7 +1241,7 @@ fn render_code_block_content(text: &str, key: &str) -> AnyElement {
             };
             div()
                 .w_full()
-                .text_color(rgb(theme::TEXT_PRIMARY))
+                .text_color(rgb(theme::text_primary(cx)))
                 .text_size(px(CODE_BLOCK_FONT_SIZE))
                 .line_height(px(CODE_BLOCK_LINE_HEIGHT))
                 .font_family(fonts::MONO_FONT_FAMILY)
@@ -1221,9 +1252,9 @@ fn render_code_block_content(text: &str, key: &str) -> AnyElement {
     let mut container = div()
         .id(format!("{key}-code-scroll"))
         .w_full()
-        .bg(rgb(theme::BG_CARD))
+        .bg(rgb(theme::bg_card(cx)))
         .border_1()
-        .border_color(rgb(theme::BORDER_DEFAULT))
+        .border_color(rgb(theme::border_default(cx)))
         .rounded(px(6.0))
         .overflow_x_scroll()
         .child(code_lines);
@@ -1232,10 +1263,40 @@ fn render_code_block_content(text: &str, key: &str) -> AnyElement {
     container.into_any_element()
 }
 
-fn mermaid_display_height(diagram: &MermaidDiagram) -> f32 {
-    let width = diagram.intrinsic_width.max(1.0);
-    let height = diagram.intrinsic_height.max(1.0);
-    (MERMAID_CONTENT_WIDTH * (height / width)).clamp(80.0, 2000.0)
+fn mermaid_layout_size(diagram: &MermaidDiagram) -> (f32, f32) {
+    let width = (diagram.intrinsic_width.max(1.0) * MERMAID_DISPLAY_SCALE)
+        .min(MERMAID_MAX_DISPLAY_WIDTH);
+    let height = (diagram.intrinsic_height.max(1.0) * MERMAID_DISPLAY_SCALE)
+        .min(MERMAID_MAX_DISPLAY_HEIGHT)
+        .max(MERMAID_MIN_DISPLAY_HEIGHT);
+    (width, height)
+}
+
+fn render_mermaid_diagram_card(diagram: &MermaidDiagram, key: &str, cx: &App) -> AnyElement {
+    let (diagram_width, diagram_height) = mermaid_layout_size(diagram);
+    let diagram_body = div()
+        .flex_none()
+        .min_w(px(diagram_width))
+        .w(px(diagram_width))
+        .h(px(diagram_height))
+        .child(
+            img(diagram.asset_path.clone())
+                .w(px(diagram_width))
+                .h(px(diagram_height)),
+        );
+
+    let mut container = div()
+        .id(format!("{key}-mermaid-scroll"))
+        .w_full()
+        .bg(rgb(theme::bg_card(cx)))
+        .border_1()
+        .border_color(rgb(theme::border_default(cx)))
+        .rounded(px(6.0))
+        .overflow_x_scroll()
+        .child(diagram_body);
+    container.style().restrict_scroll_to_axis = Some(true);
+
+    container.into_any_element()
 }
 
 fn render_block(
@@ -1249,20 +1310,20 @@ fn render_block(
     cx: &mut App,
 ) -> AnyElement {
     match block {
-        Block::Paragraph(content) => render_inline_block(content, InlineBlockStyle::Body, key),
+        Block::Paragraph(content) => render_inline_block(content, InlineBlockStyle::Body, key, cx),
         Block::Heading { level, content } => {
             let style = match level {
                 HeadingLevel::H1 => InlineBlockStyle::Title,
                 HeadingLevel::H2 => InlineBlockStyle::Section,
                 _ => InlineBlockStyle::Heading,
             };
-            render_inline_block(content, style, key)
+            render_inline_block(content, style, key, cx)
         }
         Block::BlockQuote(children) => div()
             .w_full()
             .pl(px(theme::SPACING_MD))
             .border_l_1()
-            .border_color(rgb(theme::BORDER_DEFAULT))
+            .border_color(rgb(theme::border_default(cx)))
             .flex()
             .flex_col()
             .gap(px(10.0))
@@ -1303,7 +1364,7 @@ fn render_block(
                         div()
                             .flex_shrink_0()
                             .min_w(px(16.0))
-                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_color(rgb(theme::text_muted(cx)))
                             .text_size(px(theme::FONT_BODY))
                             .line_height(px(theme::FONT_BODY + 6.0))
                             .font_family(fonts::MONO_FONT_FAMILY)
@@ -1339,26 +1400,7 @@ fn render_block(
 
             match state {
                 Some(MermaidBlockState::Ready(diagram)) => {
-                    let display_height = mermaid_display_height(diagram);
-                    let asset_path = diagram.asset_path.clone();
-                    body.push(
-                        div()
-                            .id(format!("{key}-mermaid"))
-                            .w_full()
-                            .h(px(display_height))
-                            .bg(rgb(theme::BG_CARD))
-                            .border_1()
-                            .border_color(rgb(theme::BORDER_DEFAULT))
-                            .rounded(px(6.0))
-                            .overflow_hidden()
-                            .child(
-                                img(asset_path)
-                                    .w_full()
-                                    .h_full()
-                                    .object_fit(ObjectFit::Contain),
-                            )
-                            .into_any_element(),
-                    );
+                    body.push(render_mermaid_diagram_card(diagram, &key, cx));
                 }
                 Some(MermaidBlockState::Pending) => {
                     body.push(
@@ -1368,11 +1410,11 @@ fn render_block(
                             .flex()
                             .items_center()
                             .justify_center()
-                            .bg(rgb(theme::BG_CARD))
+                            .bg(rgb(theme::bg_card(cx)))
                             .border_1()
-                            .border_color(rgb(theme::BORDER_DEFAULT))
+                            .border_color(rgb(theme::border_default(cx)))
                             .rounded(px(6.0))
-                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_color(rgb(theme::text_muted(cx)))
                             .text_size(px(theme::FONT_DETAIL))
                             .font_family(fonts::MONO_FONT_FAMILY)
                             .child("Rendering diagram…")
@@ -1383,11 +1425,12 @@ fn render_block(
                     body.push(render_code_block_content(
                         text,
                         &format!("{key}-mermaid-fallback"),
+                        cx,
                     ));
                     body.push(
                         div()
                             .mt(px(6.0))
-                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_color(rgb(theme::text_muted(cx)))
                             .text_size(px(theme::FONT_DETAIL))
                             .font_family(fonts::MONO_FONT_FAMILY)
                             .child("Diagram could not be rendered.")
@@ -1411,7 +1454,7 @@ fn render_block(
                         .id(format!("{key}-mermaid-source-toggle"))
                         .mt(px(6.0))
                         .cursor_pointer()
-                        .text_color(rgb(theme::ACCENT_BLUE))
+                        .text_color(rgb(theme::accent_blue(cx)))
                         .text_size(px(theme::FONT_DETAIL))
                         .font_family(fonts::MONO_FONT_FAMILY)
                         .on_click(move |_, _window, cx| {
@@ -1433,6 +1476,7 @@ fn render_block(
                 body.push(render_code_block_content(
                     text,
                     &format!("{key}-mermaid-source"),
+                    cx,
                 ));
             }
 
@@ -1444,15 +1488,18 @@ fn render_block(
                 .children(body)
                 .into_any_element()
         }
-        Block::CodeBlock { text, .. } => render_code_block_content(text, &key),
-        Block::Table(table) => render_table(table, key),
-        Block::Html(text) => {
-            render_inline_block(&[Inline::Html(text.clone())], InlineBlockStyle::Html, key)
-        }
+        Block::CodeBlock { text, .. } => render_code_block_content(text, &key, cx),
+        Block::Table(table) => render_table(table, key, cx),
+        Block::Html(text) => render_inline_block(
+            &[Inline::Html(text.clone())],
+            InlineBlockStyle::Html,
+            key,
+            cx,
+        ),
         Block::Rule => div()
             .w_full()
             .h(px(1.0))
-            .bg(rgb(theme::BORDER_SUBTLE))
+            .bg(rgb(theme::border_subtle(cx)))
             .into_any_element(),
     }
 }
@@ -1479,7 +1526,7 @@ fn code_block_display_columns(line: &str) -> usize {
     columns
 }
 
-fn render_table(table: &TableBlock, key: String) -> AnyElement {
+fn render_table(table: &TableBlock, key: String, cx: &App) -> AnyElement {
     let column_widths = table_column_widths(table);
     let table_width = column_widths.iter().sum::<f32>().max(TABLE_CELL_MIN_WIDTH);
     let rows = (!table.headers.is_empty())
@@ -1503,9 +1550,9 @@ fn render_table(table: &TableBlock, key: String) -> AnyElement {
                         .flex()
                         .border_b_1()
                         .when(is_last_row, |this| {
-                            this.border_color(rgb(theme::BORDER_SUBTLE))
+                            this.border_color(rgb(theme::border_subtle(cx)))
                         })
-                        .border_color(rgb(theme::BORDER_SUBTLE))
+                        .border_color(rgb(theme::border_subtle(cx)))
                         .children(row.iter().enumerate().map(|(cell_ix, cell)| {
                             let cell_width = column_widths
                                 .get(cell_ix)
@@ -1519,7 +1566,7 @@ fn render_table(table: &TableBlock, key: String) -> AnyElement {
                                 .px(px(TABLE_CELL_PADDING_X))
                                 .py(px(TABLE_CELL_PADDING_Y))
                                 .border_r_1()
-                                .border_color(rgb(theme::BORDER_SUBTLE))
+                                .border_color(rgb(theme::border_subtle(cx)))
                                 .child(render_inline_block(
                                     &cell,
                                     if is_header {
@@ -1528,6 +1575,7 @@ fn render_table(table: &TableBlock, key: String) -> AnyElement {
                                         InlineBlockStyle::TableCell
                                     },
                                     format!("{key}-row-{row_ix}-cell-{cell_ix}"),
+                                    cx,
                                 ))
                         }))
                 }),
@@ -1536,9 +1584,9 @@ fn render_table(table: &TableBlock, key: String) -> AnyElement {
     let mut container = div()
         .id(format!("{key}-table-scroll"))
         .w_full()
-        .bg(rgb(theme::BG_CARD))
+        .bg(rgb(theme::bg_card(cx)))
         .border_1()
-        .border_color(rgb(theme::BORDER_DEFAULT))
+        .border_color(rgb(theme::border_default(cx)))
         .rounded(px(6.0))
         .overflow_x_scroll()
         .child(table_body);
@@ -1639,11 +1687,16 @@ enum InlineBlockStyle {
     Html,
 }
 
-fn render_inline_block(content: &[Inline], style: InlineBlockStyle, key: String) -> AnyElement {
+fn render_inline_block(
+    content: &[Inline],
+    style: InlineBlockStyle,
+    key: String,
+    cx: &App,
+) -> AnyElement {
     let mut buffer = InlineRenderBuffer::default();
-    flatten_inlines(content, &mut buffer, InlineMarks::default());
+    flatten_inlines(content, &mut buffer, InlineMarks::default(), cx);
 
-    let base = block_style(style);
+    let base = block_style(style, cx);
     let styled = StyledText::new(buffer.text.clone()).with_highlights(merge_highlights(
         buffer
             .highlights
@@ -1698,47 +1751,47 @@ struct InlineMarks {
     html: bool,
 }
 
-fn flatten_inlines(content: &[Inline], out: &mut InlineRenderBuffer, marks: InlineMarks) {
+fn flatten_inlines(content: &[Inline], out: &mut InlineRenderBuffer, marks: InlineMarks, cx: &App) {
     for inline in content {
         match inline {
-            Inline::Text(text) => push_text_with_marks(out, text, marks),
+            Inline::Text(text) => push_text_with_marks(out, text, marks, cx),
             Inline::Code(text) => {
                 let mut next = marks;
                 next.code = true;
-                push_text_with_marks(out, text, next);
+                push_text_with_marks(out, text, next, cx);
             }
             Inline::Html(text) => {
                 let mut next = marks;
                 next.html = true;
-                push_text_with_marks(out, text, next);
+                push_text_with_marks(out, text, next, cx);
             }
             Inline::Emphasis(children) => {
                 let mut next = marks;
                 next.emphasis = true;
-                flatten_inlines(children, out, next);
+                flatten_inlines(children, out, next, cx);
             }
             Inline::Strong(children) => {
                 let mut next = marks;
                 next.strong = true;
-                flatten_inlines(children, out, next);
+                flatten_inlines(children, out, next, cx);
             }
             Inline::Strikethrough(children) => {
                 let mut next = marks;
                 next.strike = true;
-                flatten_inlines(children, out, next);
+                flatten_inlines(children, out, next, cx);
             }
             Inline::Link { url, content } => {
                 let start = out.text.len();
-                flatten_inlines(content, out, marks);
+                flatten_inlines(content, out, marks, cx);
                 let end = out.text.len();
                 if start != end {
                     let range = start..end;
                     out.highlights.push(StyledRun {
                         range: range.clone(),
                         style: HighlightStyle {
-                            color: Some(rgb(theme::ACCENT_BLUE).into()),
+                            color: Some(rgb(theme::accent_blue(cx)).into()),
                             underline: Some(UnderlineStyle {
-                                color: Some(rgb(theme::ACCENT_BLUE).into()),
+                                color: Some(rgb(theme::accent_blue(cx)).into()),
                                 thickness: px(1.0),
                                 wavy: false,
                             }),
@@ -1764,7 +1817,7 @@ fn flatten_inlines(content: &[Inline], out: &mut InlineRenderBuffer, marks: Inli
     }
 }
 
-fn push_text_with_marks(out: &mut InlineRenderBuffer, text: &str, marks: InlineMarks) {
+fn push_text_with_marks(out: &mut InlineRenderBuffer, text: &str, marks: InlineMarks, cx: &App) {
     if text.is_empty() {
         return;
     }
@@ -1782,19 +1835,19 @@ fn push_text_with_marks(out: &mut InlineRenderBuffer, text: &str, marks: InlineM
     }
     if marks.strike {
         style.strikethrough = Some(StrikethroughStyle {
-            color: Some(rgb(theme::TEXT_SECONDARY).into()),
+            color: Some(rgb(theme::text_secondary(cx)).into()),
             thickness: px(1.0),
         });
         has_style = true;
     }
     if marks.code {
-        style.background_color = Some(rgb(theme::BG_CARD).into());
-        style.color = Some(rgb(theme::TEXT_PRIMARY).into());
+        style.background_color = Some(rgb(theme::bg_card(cx)).into());
+        style.color = Some(rgb(theme::text_primary(cx)).into());
         has_style = true;
     }
     if marks.html {
-        style.background_color = Some(rgb(theme::BG_CARD).into());
-        style.color = Some(rgb(theme::TEXT_MUTED).into());
+        style.background_color = Some(rgb(theme::bg_card(cx)).into());
+        style.color = Some(rgb(theme::text_muted(cx)).into());
         has_style = true;
     }
 
@@ -1811,47 +1864,47 @@ struct BlockStyleSpec {
     weight: Option<FontWeight>,
 }
 
-fn block_style(style: InlineBlockStyle) -> BlockStyleSpec {
+fn block_style(style: InlineBlockStyle, cx: &App) -> BlockStyleSpec {
     match style {
         InlineBlockStyle::Title => BlockStyleSpec {
             size: theme::FONT_TITLE,
             line_height: theme::FONT_TITLE + 8.0,
-            color: rgb(theme::TEXT_PRIMARY).into(),
+            color: rgb(theme::text_primary(cx)).into(),
             font_family: fonts::HEADING_FONT_FAMILY,
             weight: Some(FontWeight::MEDIUM),
         },
         InlineBlockStyle::Section => BlockStyleSpec {
             size: theme::FONT_HEADING + 2.0,
             line_height: theme::FONT_HEADING + 8.0,
-            color: rgb(theme::TEXT_PRIMARY).into(),
+            color: rgb(theme::text_primary(cx)).into(),
             font_family: fonts::HEADING_FONT_FAMILY,
             weight: Some(FontWeight::MEDIUM),
         },
         InlineBlockStyle::Heading => BlockStyleSpec {
             size: theme::FONT_HEADING,
             line_height: theme::FONT_HEADING + 6.0,
-            color: rgb(theme::TEXT_PRIMARY).into(),
+            color: rgb(theme::text_primary(cx)).into(),
             font_family: fonts::HEADING_FONT_FAMILY,
             weight: Some(FontWeight::MEDIUM),
         },
         InlineBlockStyle::TableHeader => BlockStyleSpec {
             size: theme::FONT_BODY,
             line_height: theme::FONT_BODY + 6.0,
-            color: rgb(theme::TEXT_PRIMARY).into(),
+            color: rgb(theme::text_primary(cx)).into(),
             font_family: fonts::MONO_FONT_FAMILY,
             weight: Some(FontWeight::MEDIUM),
         },
         InlineBlockStyle::TableCell | InlineBlockStyle::Body => BlockStyleSpec {
             size: theme::FONT_BODY,
             line_height: theme::FONT_BODY + 6.0,
-            color: rgb(theme::TEXT_SECONDARY).into(),
+            color: rgb(theme::text_secondary(cx)).into(),
             font_family: fonts::MONO_FONT_FAMILY,
             weight: None,
         },
         InlineBlockStyle::Html => BlockStyleSpec {
             size: theme::FONT_DETAIL,
             line_height: theme::FONT_DETAIL + 5.0,
-            color: rgb(theme::TEXT_MUTED).into(),
+            color: rgb(theme::text_muted(cx)).into(),
             font_family: fonts::MONO_FONT_FAMILY,
             weight: None,
         },
@@ -2010,6 +2063,37 @@ fn main() {}
     }
 
     #[test]
+    fn mermaid_layout_size_uses_intrinsic_dimensions_with_caps() {
+        use super::{MERMAID_MAX_DISPLAY_WIDTH, mermaid_layout_size};
+        use crate::editor::mermaid::MermaidDiagram;
+
+        let diagram = MermaidDiagram {
+            asset_path: "mermaid/0-0.svg".into(),
+            intrinsic_width: 800.0,
+            intrinsic_height: 450.0,
+        };
+        let (width, height) = mermaid_layout_size(&diagram);
+        assert_eq!(width, 400.0);
+        assert_eq!(height, 225.0);
+
+        let wide = MermaidDiagram {
+            asset_path: "mermaid/0-1.svg".into(),
+            intrinsic_width: 4000.0,
+            intrinsic_height: 200.0,
+        };
+        let (width, _) = mermaid_layout_size(&wide);
+        assert_eq!(width, 2000.0);
+
+        let huge = MermaidDiagram {
+            asset_path: "mermaid/0-2.svg".into(),
+            intrinsic_width: 20_000.0,
+            intrinsic_height: 100.0,
+        };
+        let (width, _) = mermaid_layout_size(&huge);
+        assert_eq!(width, MERMAID_MAX_DISPLAY_WIDTH);
+    }
+
+    #[test]
     fn parses_mermaid_fence_into_mermaid_block() {
         let document = parse_document("```mermaid\nflowchart LR\n  A --> B\n```\n");
         assert_eq!(document.blocks.len(), 1);
@@ -2030,7 +2114,9 @@ fn main() {}
         use gpui::{AppContext as _, TestAppContext};
 
         let mut cx = TestAppContext::single();
-        let view = cx.update(|cx| cx.new(|_cx| MarkdownView::new("# Title\n\nBody paragraph.")));
+        let view = cx.update(|cx| {
+            cx.new(|cx| MarkdownView::new("# Title\n\nBody paragraph.", cx))
+        });
 
         view.update(&mut cx, |view, _cx| {
             assert_eq!(

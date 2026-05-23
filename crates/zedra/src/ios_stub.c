@@ -79,6 +79,8 @@ __attribute__((weak)) void ios_present_text_input(
     const char *title,
     const char *placeholder,
     const char *initial_value) {}
+__attribute__((weak)) int ios_system_prefers_dark_theme(void) { return -1; }
+__attribute__((weak)) void ios_set_keyboard_accessory_theme(_Bool is_dark) {}
 
 // Firebase Analytics + Crashlytics stubs.
 // Real implementations live in ios/Zedra/ZedraFirebase.m and override at Xcode link time.

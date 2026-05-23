@@ -50,7 +50,7 @@ impl TerminalPreviewView {
             session_handle,
             workspace_state,
             editor_view: cx.new(|cx| EditorView::new(cx)),
-            markdown_view: cx.new(|_cx| MarkdownView::new(SharedString::default())),
+            markdown_view: cx.new(|cx| MarkdownView::new(SharedString::default(), cx)),
             state: PreviewState::Idle,
             content: PreviewContent::Editor,
             title: "Terminal Link".into(),
@@ -254,17 +254,17 @@ fn preview_content_for_path(path: &str) -> PreviewContent {
 }
 
 impl Render for TerminalPreviewView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let body: AnyElement = match &self.state {
             PreviewState::Idle => {
-                render_placeholder("Tap a file path in the terminal").into_any_element()
+                render_placeholder(cx, "Tap a file path in the terminal").into_any_element()
             }
-            PreviewState::Loading => render_placeholder("Loading ...").into_any_element(),
+            PreviewState::Loading => render_placeholder(cx, "Loading ...").into_any_element(),
             PreviewState::TooLarge => {
-                render_placeholder("File too large (>500 KB)").into_any_element()
+                render_placeholder(cx, "File too large (>500 KB)").into_any_element()
             }
             PreviewState::Error(error) => {
-                render_placeholder(format!("Error: {error}")).into_any_element()
+                render_placeholder(cx, format!("Error: {error}")).into_any_element()
             }
             PreviewState::Loaded => match self.content {
                 PreviewContent::Editor => self.editor_view.clone().into_any_element(),
@@ -282,7 +282,7 @@ impl Render for TerminalPreviewView {
         div()
             .id("terminal-preview-sheet")
             .size_full()
-            .bg(rgb(theme::BG_PRIMARY))
+            .bg(rgb(theme::bg_primary(cx)))
             .flex()
             .flex_col()
             .child(
@@ -292,13 +292,13 @@ impl Render for TerminalPreviewView {
                     .pt(px(8.0))
                     .pb(px(8.0))
                     .border_b_1()
-                    .border_color(rgb(theme::BORDER_SUBTLE))
+                    .border_color(rgb(theme::border_subtle(cx)))
                     .flex()
                     .flex_col()
                     .gap(px(2.0))
                     .child(
                         div()
-                            .text_color(rgb(theme::TEXT_PRIMARY))
+                            .text_color(rgb(theme::text_primary(cx)))
                             .text_size(px(theme::FONT_HEADING))
                             .font_family(fonts::HEADING_FONT_FAMILY)
                             .font_weight(FontWeight::MEDIUM)
@@ -306,7 +306,7 @@ impl Render for TerminalPreviewView {
                     )
                     .child(
                         div()
-                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_color(rgb(theme::text_muted(cx)))
                             .text_size(px(theme::FONT_DETAIL))
                             .font_family(fonts::MONO_FONT_FAMILY)
                             .child(self.subtitle.clone()),
@@ -321,7 +321,7 @@ impl Render for TerminalPreviewView {
                     .flex_col()
                     // The custom sheet owns native handoff state; the active
                     // content view only reports whether its scroll is at top.
-                    .on_scroll_wheel(_cx.listener(|this, _event, _window, cx| {
+                    .on_scroll_wheel(cx.listener(|this, _event, _window, cx| {
                         this.update_sheet_scroll_boundary(cx);
                     }))
                     .child(body),

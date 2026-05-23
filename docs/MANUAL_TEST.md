@@ -744,12 +744,17 @@ printf '/tmp/zedra-markdown-mermaid.md:1\n'
 
 3. Tap `/tmp/zedra-markdown-mermaid.md:1`
 4. Expected: the preview opens in markdown mode
-5. Expected: a rendered flowchart appears in a card instead of raw `flowchart LR` source
-6. Expected: invalid mermaid syntax falls back to monospace source with a muted error line
-7. Tap `Show source` below a rendered diagram
-8. Expected: the fenced mermaid source appears and remains selectable for Add to Chat
-9. Open the same file from the workspace docs tree or editor
-10. Expected: the main workspace markdown view renders the diagram the same way
+5. Expected: a rendered flowchart appears in a card at intrinsic SVG scale (not shrunk to viewport width)
+6. Expected: wide diagrams scroll horizontally inside the card, like markdown tables
+7. Expected: invalid mermaid syntax falls back to monospace source with a muted error line
+8. Tap `Show source` below a rendered diagram
+9. Expected: the fenced mermaid source appears and remains selectable for Add to Chat
+10. Open the same file from the workspace docs tree or editor
+11. Expected: the main workspace markdown view renders the diagram the same way
+12. Open `examples/markdown-mermaid/diagrams.md` (or copy its ER and pie sections to `/tmp`)
+13. Expected: diagram canvas, nodes, and ER entity boxes use dark fills with visible borders (not white boxes on a dark card)
+14. Expected: ER attribute rows, pie legend labels, and edge relationship labels use light text on dark surfaces
+15. Expected: flowchart connectors and arrowheads use accent blue (`#61afef`), not dim gray, with mostly straight vertical/horizontal segments
 
 ## 15d. Markdown Bottom Padding And Link Hit Slop
 
@@ -967,3 +972,16 @@ Expected:
 1. Install a **Release** build on device (not Xcode Run with debugger attached)
 2. Connect via **Scan QR**; optional: `scripts/log-ios.sh --grep connect`
 3. Expected: no burst of per-packet iroh/quinn trace lines (`tracing-subscriber` requires `debug-logs`)
+
+## 22. Terminal appearance (light/dark)
+
+1. Connect to a workspace and open a terminal running `ls` with color
+2. Open Settings → Appearance and tap the **sun** segment (light mode)
+3. Expected: terminal background is light; directory names and ANSI colors are readable (not washed out)
+4. Run `claude` (or another session already showing Claude output) and scroll to file-reference lines such as `L123 (file.rs):`
+5. Expected: highlighted paths are readable on the light background (not pale lavender)
+6. Open **Codex** in the same terminal (or a dedicated Codex session)
+7. Expected: the composer / user-message background pill matches the light theme (not missing or using a dark gray from stale palette)
+8. Toggle back to **Dark**
+9. Expected: terminal colors, Claude highlights, and Codex pill update without restarting the app
+10. Optional: from the host, run `printf '\e[10;?\e[11;?\e\\'` inside the Zedra session and confirm replies report the current fg/bg (light: `fafafa` background). Zedra answers OSC queries on the session PTY via `ColorRequest` and the active `TerminalTheme`; it does not inject palette setup bytes into scrollback on toggle.
