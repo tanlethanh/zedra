@@ -5,10 +5,10 @@ use crate::platform_bridge::{
     self, AlertButton, CustomSheetDetent, CustomSheetOptions, HapticFeedback,
     NativeNotificationKind, NativeNotificationOptions,
 };
+use crate::settings::ThemeState;
 use crate::sheet_demo_state::SheetDemoState;
 use crate::telemetry::view_telemetry;
 use crate::theme::{self, ThemePreference};
-use crate::theme_state::ThemeState;
 
 #[derive(Clone, Debug)]
 pub enum SettingsEvent {
@@ -138,6 +138,8 @@ impl Render for SettingsView {
             .id("settings-view")
             .track_focus(&self.focus_handle)
             .size_full()
+            .min_h_0()
+            .min_w_0()
             .bg(rgb(theme::bg_primary(cx)))
             .flex()
             .flex_col()
@@ -201,49 +203,16 @@ impl Render for SettingsView {
                             .flex_col()
                             .gap(px(theme::SPACING_MD))
                             .child(section_header(cx, "Appearance"))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(8.0))
-                                    .child(
-                                        div()
-                                            .text_color(rgb(theme::text_secondary(cx)))
-                                            .text_size(px(theme::FONT_BODY))
-                                            .font_family(fonts::MONO_FONT_FAMILY)
-                                            .child("Theme"),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_row()
-                                            .gap(px(8.0))
-                                            .child(theme_option_button(
-                                                cx,
-                                                "settings-theme-dark",
-                                                ThemePreference::Dark,
-                                                preference == ThemePreference::Dark,
-                                                cx.listener(|this, _event, _window, cx| {
-                                                    this.set_theme_preference(
-                                                        ThemePreference::Dark,
-                                                        cx,
-                                                    );
-                                                }),
-                                            ))
-                                            .child(theme_option_button(
-                                                cx,
-                                                "settings-theme-light",
-                                                ThemePreference::Light,
-                                                preference == ThemePreference::Light,
-                                                cx.listener(|this, _event, _window, cx| {
-                                                    this.set_theme_preference(
-                                                        ThemePreference::Light,
-                                                        cx,
-                                                    );
-                                                }),
-                                            )),
-                                    ),
-                            )
+                            .child(appearance_theme_toggle(
+                                cx,
+                                preference,
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.set_theme_preference(ThemePreference::Dark, cx);
+                                }),
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.set_theme_preference(ThemePreference::Light, cx);
+                                }),
+                            ))
                             .child(
                                 div()
                                     .text_color(rgb(theme::text_muted(cx)))
@@ -329,42 +298,106 @@ fn section_header(cx: &App, title: &'static str) -> Div {
         )
 }
 
-fn theme_option_button(
+/// Settings row with a compact segmented appearance control.
+fn appearance_theme_toggle(
+    cx: &App,
+    preference: ThemePreference,
+    on_dark: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
+    on_light: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let is_dark = preference == ThemePreference::Dark;
+
+    div()
+        .id("settings-appearance-toggle")
+        .w_full()
+        .min_w_0()
+        .min_h(px(32.0))
+        .py(px(2.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(theme::SPACING_MD))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_row()
+                .items_center()
+                .child(
+                    div()
+                        .text_color(rgb(theme::text_secondary(cx)))
+                        .text_size(px(theme::FONT_BODY))
+                        .font_family(fonts::MONO_FONT_FAMILY)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child("Theme"),
+                ),
+        )
+        .child(
+            div()
+                .flex_none()
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(rgb(theme::border_default(cx)))
+                .bg(rgb(theme::bg_surface(cx)))
+                .flex()
+                .flex_row()
+                .child(theme_toggle_segment(
+                    cx,
+                    "settings-theme-dark",
+                    "icons/moon.svg",
+                    is_dark,
+                    on_dark,
+                ))
+                .child(
+                    div()
+                        .w(px(1.0))
+                        .h(px(22.0))
+                        .bg(rgb(theme::border_subtle(cx))),
+                )
+                .child(theme_toggle_segment(
+                    cx,
+                    "settings-theme-light",
+                    "icons/sun.svg",
+                    !is_dark,
+                    on_light,
+                )),
+        )
+}
+
+fn theme_toggle_segment(
     cx: &App,
     id: &'static str,
-    preference: ThemePreference,
+    icon_path: &'static str,
     selected: bool,
     on_press: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
-    div()
+    let mut segment = div()
         .id(id)
-        .flex_1()
-        .h(px(36.0))
+        .min_w(px(42.0))
+        .h(px(24.0))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(8.0))
-        .border_1()
-        .border_color(rgb(if selected {
-            theme::border_highlight(cx)
-        } else {
-            theme::border_default(cx)
-        }))
-        .bg(rgb(if selected {
-            theme::bg_card(cx)
-        } else {
-            theme::bg_primary(cx)
-        }))
         .cursor_pointer()
-        .text_color(rgb(if selected {
-            theme::text_primary(cx)
-        } else {
-            theme::text_secondary(cx)
-        }))
-        .text_size(px(theme::FONT_BODY))
-        .font_family(fonts::MONO_FONT_FAMILY)
-        .on_press(on_press)
-        .child(preference.label())
+        .hit_slop(px(6.0))
+        .on_press(on_press);
+
+    if selected {
+        segment = segment.bg(rgb(theme::bg_card(cx)));
+    }
+
+    segment.child(
+        svg()
+            .path(icon_path)
+            .size(px(theme::ICON_XS))
+            .text_color(rgb(if selected {
+                theme::text_primary(cx)
+            } else {
+                theme::text_muted(cx)
+            })),
+    )
 }
 
 fn action_row(

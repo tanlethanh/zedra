@@ -13,157 +13,8 @@ use crate::MONO_FONT_FAMILY;
 use crate::input::TerminalInputHandler;
 use crate::selection::TerminalSelectionDocument;
 use crate::terminal::*;
+use crate::theme::TerminalTheme;
 use crate::view::TerminalView;
-
-/// Per-terminal color palette.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TerminalTheme {
-    pub background: u32,
-    pub foreground: u32,
-    pub cursor: u32,
-    pub black: u32,
-    pub red: u32,
-    pub green: u32,
-    pub yellow: u32,
-    pub blue: u32,
-    pub magenta: u32,
-    pub cyan: u32,
-    pub white: u32,
-    pub bright_black: u32,
-    pub bright_red: u32,
-    pub bright_green: u32,
-    pub bright_yellow: u32,
-    pub bright_blue: u32,
-    pub bright_magenta: u32,
-    pub bright_cyan: u32,
-    pub bright_white: u32,
-}
-
-impl TerminalTheme {
-    pub fn dark() -> Self {
-        Self {
-            background: 0x0e0c0c,
-            foreground: 0xabb2bf,
-            cursor: 0x528bff,
-            black: 0x282c34,
-            red: 0xe06c75,
-            green: 0x98c379,
-            yellow: 0xe5c07b,
-            blue: 0x61afef,
-            magenta: 0xc678dd,
-            cyan: 0x56b6c2,
-            white: 0xabb2bf,
-            bright_black: 0x5c6370,
-            bright_red: 0xe06c75,
-            bright_green: 0x98c379,
-            bright_yellow: 0xe5c07b,
-            bright_blue: 0x61afef,
-            bright_magenta: 0xc678dd,
-            bright_cyan: 0x56b6c2,
-            bright_white: 0xffffff,
-        }
-    }
-
-    pub fn light() -> Self {
-        Self {
-            background: 0xfafafa,
-            foreground: 0x24292f,
-            cursor: 0x0969da,
-            black: 0x24292f,
-            red: 0xcf222e,
-            green: 0x116329,
-            yellow: 0x953800,
-            blue: 0x0550ae,
-            magenta: 0x8250df,
-            cyan: 0x116329,
-            white: 0x24292f,
-            bright_black: 0x57606a,
-            bright_red: 0xcf222e,
-            bright_green: 0x116329,
-            bright_yellow: 0x953800,
-            bright_blue: 0x0550ae,
-            bright_magenta: 0x8250df,
-            bright_cyan: 0x116329,
-            bright_white: 0x1a1a1a,
-        }
-    }
-
-    pub fn one_dark() -> Self {
-        Self::dark()
-    }
-
-    fn named_color(&self, color: NamedColor) -> Hsla {
-        let hex = match color {
-            NamedColor::Black => self.black,
-            NamedColor::Red => self.red,
-            NamedColor::Green => self.green,
-            NamedColor::Yellow => self.yellow,
-            NamedColor::Blue => self.blue,
-            NamedColor::Magenta => self.magenta,
-            NamedColor::Cyan => self.cyan,
-            NamedColor::White => self.white,
-            NamedColor::BrightBlack => self.bright_black,
-            NamedColor::BrightRed => self.bright_red,
-            NamedColor::BrightGreen => self.bright_green,
-            NamedColor::BrightYellow => self.bright_yellow,
-            NamedColor::BrightBlue => self.bright_blue,
-            NamedColor::BrightMagenta => self.bright_magenta,
-            NamedColor::BrightCyan => self.bright_cyan,
-            NamedColor::BrightWhite => self.bright_white,
-            NamedColor::Foreground => self.foreground,
-            NamedColor::Background => self.background,
-            _ => self.foreground,
-        };
-        rgb(hex).into()
-    }
-
-    pub fn convert_color(&self, color: &AlacColor) -> Hsla {
-        match color {
-            AlacColor::Named(named) => self.named_color(*named),
-            AlacColor::Spec(rgb_color) => {
-                let r = rgb_color.r as u32;
-                let g = rgb_color.g as u32;
-                let b = rgb_color.b as u32;
-                rgb((r << 16) | (g << 8) | b).into()
-            }
-            AlacColor::Indexed(index) => {
-                if *index < 16 {
-                    let named = match index {
-                        0 => NamedColor::Black,
-                        1 => NamedColor::Red,
-                        2 => NamedColor::Green,
-                        3 => NamedColor::Yellow,
-                        4 => NamedColor::Blue,
-                        5 => NamedColor::Magenta,
-                        6 => NamedColor::Cyan,
-                        7 => NamedColor::White,
-                        8 => NamedColor::BrightBlack,
-                        9 => NamedColor::BrightRed,
-                        10 => NamedColor::BrightGreen,
-                        11 => NamedColor::BrightYellow,
-                        12 => NamedColor::BrightBlue,
-                        13 => NamedColor::BrightMagenta,
-                        14 => NamedColor::BrightCyan,
-                        15 => NamedColor::BrightWhite,
-                        _ => NamedColor::Foreground,
-                    };
-                    self.named_color(named)
-                } else if *index < 232 {
-                    // 216-color cube (indices 16-231)
-                    let idx = *index as u32 - 16;
-                    let r = (idx / 36) * 51;
-                    let g = ((idx / 6) % 6) * 51;
-                    let b = (idx % 6) * 51;
-                    rgb((r << 16) | (g << 8) | b).into()
-                } else {
-                    // Grayscale (indices 232-255)
-                    let level = (*index as u32 - 232) * 10 + 8;
-                    rgb((level << 16) | (level << 8) | level).into()
-                }
-            }
-        }
-    }
-}
 
 /// A batched text run that combines multiple adjacent cells with the same style
 #[derive(Debug)]
@@ -423,10 +274,11 @@ impl TerminalElement {
                     mem::swap(&mut fg, &mut bg);
                 }
 
-                let fg_color = theme.convert_color(&fg);
+                let mut fg_color = theme.convert_color(&fg);
+                if cell.cell.flags.contains(CellFlags::DIM) {
+                    fg_color = theme.apply_dim(fg_color, true);
+                }
                 let bg_color = theme.convert_color(&bg);
-
-                // Collect background rectangles (skip default background)
                 if !matches!(bg, AlacColor::Named(NamedColor::Background)) {
                     // Try to extend the last rect if it's adjacent and same color
                     if let Some(last_rect) = rects.last_mut() {
@@ -571,7 +423,7 @@ impl TerminalElement {
 
             let mut fg_color = theme.convert_color(&fg);
             if flags.contains(CellFlags::DIM) {
-                fg_color.a *= 0.7;
+                fg_color = theme.apply_dim(fg_color, true);
             }
 
             token_cells.push(TokenCell {
@@ -666,7 +518,7 @@ impl TerminalElement {
                 };
                 let mut color = theme.convert_color(&display_fg);
                 if flags.contains(CellFlags::DIM) {
-                    color.a *= 0.7;
+                    color = theme.apply_dim(color, true);
                 }
                 color.a = (color.a * 0.55).clamp(0.0, 1.0);
 
@@ -907,8 +759,9 @@ impl Element for TerminalElement {
 mod tests {
     use gpui::px;
 
-    use super::{LayoutUnderline, TerminalElement, TerminalTheme};
+    use super::{LayoutUnderline, TerminalElement};
     use crate::Terminal;
+    use crate::TerminalTheme;
 
     fn underline_spans(output: &[u8]) -> Vec<LayoutUnderline> {
         let mut terminal = Terminal::new(160, 8, px(10.0), px(20.0));
@@ -1050,8 +903,11 @@ fn paint_cursor(
         return;
     }
 
-    // Focused: full opacity. Unfocused: dim ghost cursor at 30%.
-    let opacity = if focused { 1.0f32 } else { 0.3f32 };
+    let opacity = if focused {
+        theme.cursor_focused_alpha()
+    } else {
+        0.3
+    };
 
     // Cursor uses floor for position (following Zed's shape_cursor)
     let cursor_origin = point(

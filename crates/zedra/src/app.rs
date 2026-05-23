@@ -9,9 +9,9 @@ use crate::fonts;
 use crate::home_view::{HomeEvent, HomeView};
 use crate::platform_bridge;
 use crate::quick_action_panel::{QuickActionEvent, QuickActionPanel};
+use crate::settings::{ThemeState, ThemeStateEvent};
 use crate::settings_view::{SettingsEvent, SettingsView};
 use crate::telemetry::view_telemetry::{self, ViewDescriptor};
-use crate::theme_state::{ThemeState, ThemeStateEvent};
 use crate::ui::{DrawerHost, DrawerSide};
 use crate::workspaces::{Workspaces, WorkspacesEvent};
 

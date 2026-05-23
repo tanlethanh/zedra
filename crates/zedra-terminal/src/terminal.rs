@@ -12,9 +12,7 @@ use alacritty_terminal::term::Config;
 use alacritty_terminal::term::cell::{Cell, Flags as CellFlags};
 use alacritty_terminal::term::color::COUNT as ALACRITTY_COLOR_COUNT;
 use alacritty_terminal::term::{Term, TermMode};
-use alacritty_terminal::vte::ansi::{
-    Color as AlacColor, CursorShape, NamedColor, Processor, Rgb as AlacRgb,
-};
+use alacritty_terminal::vte::ansi::{Color as AlacColor, CursorShape, NamedColor, Processor};
 use gpui::{
     Context, Keystroke, Pixels, Point as GpuiPoint, ScrollDelta, ScrollWheelEvent, Task, px,
 };
@@ -24,6 +22,7 @@ use zedra_osc::{OscEvent, OscScanner};
 const REMOTE_TOUCH_SCROLL_STEP_PX: f32 = 12.0;
 
 use crate::keys::to_esc_str;
+use crate::theme::TerminalTheme;
 /// Events emitted by the terminal to observers.
 #[derive(Debug, Clone)]
 pub enum TerminalEvent {
@@ -62,67 +61,6 @@ pub enum TerminalHyperlinkTarget {
         line: Option<u32>,
         column: Option<u32>,
     },
-}
-
-const DEFAULT_TERMINAL_BACKGROUND: u32 = 0x0e0c0c;
-const DEFAULT_TERMINAL_FOREGROUND: u32 = 0xabb2bf;
-const DEFAULT_TERMINAL_CURSOR: u32 = 0x528bff;
-const DEFAULT_TERMINAL_ANSI_COLORS: [u32; 16] = [
-    0x282c34, 0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xabb2bf, 0x5c6370,
-    0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xffffff,
-];
-
-fn default_color_for_index(index: usize) -> AlacRgb {
-    match index {
-        0..=15 => rgb_from_hex(DEFAULT_TERMINAL_ANSI_COLORS[index]),
-        16..=231 => {
-            let color = index - 16;
-            AlacRgb {
-                r: xterm_cube_component(color / 36),
-                g: xterm_cube_component((color / 6) % 6),
-                b: xterm_cube_component(color % 6),
-            }
-        }
-        232..=255 => {
-            let value = ((index - 232) * 10 + 8) as u8;
-            AlacRgb {
-                r: value,
-                g: value,
-                b: value,
-            }
-        }
-        256 => rgb_from_hex(DEFAULT_TERMINAL_FOREGROUND),
-        257 => rgb_from_hex(DEFAULT_TERMINAL_BACKGROUND),
-        258 => rgb_from_hex(DEFAULT_TERMINAL_CURSOR),
-        259..=266 => dim_rgb(rgb_from_hex(DEFAULT_TERMINAL_ANSI_COLORS[index - 259])),
-        267 => rgb_from_hex(DEFAULT_TERMINAL_FOREGROUND),
-        268 => dim_rgb(rgb_from_hex(DEFAULT_TERMINAL_FOREGROUND)),
-        _ => rgb_from_hex(DEFAULT_TERMINAL_FOREGROUND),
-    }
-}
-
-fn rgb_from_hex(hex: u32) -> AlacRgb {
-    AlacRgb {
-        r: ((hex >> 16) & 0xff) as u8,
-        g: ((hex >> 8) & 0xff) as u8,
-        b: (hex & 0xff) as u8,
-    }
-}
-
-fn dim_rgb(color: AlacRgb) -> AlacRgb {
-    AlacRgb {
-        r: color.r / 2,
-        g: color.g / 2,
-        b: color.b / 2,
-    }
-}
-
-fn xterm_cube_component(value: usize) -> u8 {
-    if value == 0 {
-        0
-    } else {
-        (value * 40 + 55) as u8
-    }
 }
 
 /// Event listener that queues alacritty events for Terminal to process after VTE parsing.
@@ -269,6 +207,7 @@ pub struct Terminal {
     input_tx: Option<mpsc::Sender<Vec<u8>>>,
     output_task: Option<Task<()>>,
     selection_range: Option<Range<usize>>,
+    theme: TerminalTheme,
 }
 
 impl Terminal {
@@ -286,7 +225,8 @@ impl Terminal {
         };
         let term = Term::new(config, &term_size, listener);
 
-        Self {
+        let theme = TerminalTheme::dark();
+        let terminal = Self {
             term,
             processor: Processor::new(),
             mode: TermMode::empty(),
@@ -303,7 +243,16 @@ impl Terminal {
             input_tx: None,
             output_task: None,
             selection_range: None,
-        }
+            theme,
+        };
+        terminal
+    }
+
+    /// Store the active render/query palette. GPUI paint and OSC color queries use
+    /// `theme` directly; we do not feed setup sequences through `advance_bytes` so
+    /// theme toggles cannot dirty the grid or scrollback.
+    pub fn apply_theme(&mut self, theme: TerminalTheme) {
+        self.theme = theme;
     }
 
     pub fn is_channel_attached(&self) -> bool {
@@ -403,7 +352,7 @@ impl Terminal {
                 } else {
                     None
                 }
-                .unwrap_or_else(|| default_color_for_index(index));
+                .unwrap_or_else(|| self.theme.color_at_index(index));
                 self.send_bytes_sync(format(color).into_bytes());
             }
             _ => {}
@@ -2573,6 +2522,7 @@ pub fn is_blank(cell: &IndexedCell) -> bool {
 mod tests {
     use std::path::Path;
 
+    use crate::TerminalTheme;
     use alacritty_terminal::index::{Column, Line, Point};
     use alacritty_terminal::term::TermMode;
     use gpui::px;
@@ -2701,6 +2651,21 @@ mod tests {
 
         let background = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
         assert_eq!(background, "\x1b]11;rgb:1111/2222/3333\x1b\\");
+    }
+
+    #[test]
+    fn responds_to_osc_queries_with_light_theme_palette() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let (input_tx, mut input_rx) = mpsc::channel(8);
+        terminal.input_tx = Some(input_tx);
+        terminal.apply_theme(TerminalTheme::light());
+
+        terminal.advance_bytes(b"\x1b]10;?\x07\x1b]11;?\x1b\\");
+
+        let foreground = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
+        let background = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
+        assert_eq!(foreground, "\x1b]10;rgb:1f1f/2323/2828\x07");
+        assert_eq!(background, "\x1b]11;rgb:fafa/fafa/fafa\x1b\\");
     }
 
     #[test]

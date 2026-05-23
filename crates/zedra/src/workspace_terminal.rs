@@ -16,10 +16,10 @@ use crate::platform_bridge::{
     self, CustomSheetDetent, CustomSheetOptions, HapticFeedback, NativeDictationPreviewOptions,
     NativeEditMenuItem,
 };
+use crate::settings::{ThemeStateEvent, theme_state as theme_entity};
 use crate::telemetry::view_telemetry;
 use crate::terminal_preview_view::TerminalPreviewView;
 use crate::terminal_state::TerminalState;
-use crate::theme_state::{ThemeStateEvent, entity as theme_entity};
 use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
 
 pub const TERMINAL_PENDING_ID: &str = "___PENDING___";

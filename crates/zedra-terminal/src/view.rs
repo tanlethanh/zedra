@@ -11,7 +11,8 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::*;
 use zedra_osc::OscEvent;
 
-use crate::element::{TerminalElement, TerminalTheme};
+use crate::TerminalTheme;
+use crate::element::TerminalElement;
 use crate::selection::TerminalSelectionDocument;
 use crate::terminal::{Terminal, TerminalContent, TerminalEvent};
 
@@ -115,7 +116,7 @@ pub struct TerminalView {
     /// Cached from terminal mode; updated each render so parent views can read without
     /// creating a GPUI dependency on the inner terminal entity.
     pub is_alt_screen: bool,
-    terminal_theme: crate::element::TerminalTheme,
+    terminal_theme: TerminalTheme,
     _event_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -196,6 +197,9 @@ impl TerminalView {
             return;
         }
         self.terminal_theme = theme;
+        self.terminal.update(cx, |terminal, _| {
+            terminal.apply_theme(theme);
+        });
         cx.notify();
     }
 

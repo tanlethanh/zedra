@@ -11,8 +11,9 @@ const SETTINGS_FILE: &str = "settings.json";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct AppSettings {
-    #[serde(default)]
-    theme_preference: ThemePreference,
+    /// Set when the user picks a theme in Settings; `None` follows the system on next launch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    theme_preference: Option<ThemePreference>,
 }
 
 pub enum ThemeStateEvent {
@@ -62,19 +63,29 @@ impl ThemeState {
 
     fn load_preference() -> ThemePreference {
         match read_settings() {
-            Ok(settings) => settings.theme_preference,
+            Ok(settings) => settings
+                .theme_preference
+                .unwrap_or_else(Self::preference_from_system),
             Err(err) => {
-                debug!(err = %err, "theme: using default preference");
-                ThemePreference::default()
+                debug!(err = %err, "settings: using system theme preference");
+                Self::preference_from_system()
             }
+        }
+    }
+
+    pub(crate) fn preference_from_system() -> ThemePreference {
+        match crate::platform_bridge::bridge().system_prefers_theme() {
+            crate::platform_bridge::SystemTheme::Dark => ThemePreference::Dark,
+            crate::platform_bridge::SystemTheme::Light => ThemePreference::Light,
+            crate::platform_bridge::SystemTheme::Unknown => ThemePreference::default(),
         }
     }
 
     fn save_preference(preference: ThemePreference) {
         let mut settings = read_settings().unwrap_or_default();
-        settings.theme_preference = preference;
+        settings.theme_preference = Some(preference);
         if let Err(err) = write_settings(&settings) {
-            warn!(err = %err, "theme: failed to save preference");
+            warn!(err = %err, "settings: failed to save theme preference");
         }
     }
 }
@@ -84,19 +95,19 @@ pub struct ThemeStateHandle(WeakEntity<ThemeState>);
 
 impl Global for ThemeStateHandle {}
 
-pub fn entity(cx: &App) -> Option<Entity<ThemeState>> {
+pub fn theme_state(cx: &App) -> Option<Entity<ThemeState>> {
     cx.try_global::<ThemeStateHandle>()
         .and_then(|handle| handle.0.upgrade())
 }
 
 pub fn palette(cx: &App) -> crate::theme::ThemePalette {
-    entity(cx)
+    theme_state(cx)
         .map(|theme| theme.read(cx).palette().clone())
         .unwrap_or_else(|| ThemeBundle::dark().ui)
 }
 
 pub fn bundle(cx: &App) -> ThemeBundle {
-    entity(cx)
+    theme_state(cx)
         .map(|theme| theme.read(cx).bundle().clone())
         .unwrap_or_else(ThemeBundle::dark)
 }
@@ -132,11 +143,18 @@ fn write_settings(settings: &AppSettings) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use super::ThemeState;
     use crate::theme::{ThemeBundle, ThemePalette, ThemePreference};
 
     #[test]
     fn default_preference_is_dark() {
         assert_eq!(ThemePreference::default(), ThemePreference::Dark);
+    }
+
+    #[test]
+    fn preference_from_system_falls_back_to_dark_when_unknown() {
+        // StubBridge returns Unknown for system_prefers_theme.
+        assert_eq!(ThemeState::preference_from_system(), ThemePreference::Dark);
     }
 
     #[test]

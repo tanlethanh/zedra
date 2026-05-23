@@ -1,5 +1,10 @@
+//! Theme tokens for Zedra UI, editor, and terminal.
+//!
+//! New product UI must use these tokens (via `theme::palette(cx)` and accessors below),
+//! not hardcoded colors in views. See `docs/THEMING.md`.
+
 use gpui::Hsla;
-use zedra_terminal::element::TerminalTheme;
+use zedra_terminal::TerminalTheme;
 
 use crate::editor::syntax_theme::SyntaxTheme;
 
@@ -253,11 +258,11 @@ impl ThemeBundle {
 }
 
 pub fn palette(cx: &gpui::App) -> ThemePalette {
-    crate::theme_state::palette(cx)
+    crate::settings::palette(cx)
 }
 
 pub fn bundle(cx: &gpui::App) -> ThemeBundle {
-    crate::theme_state::bundle(cx)
+    crate::settings::bundle(cx)
 }
 
 macro_rules! palette_accessor {
