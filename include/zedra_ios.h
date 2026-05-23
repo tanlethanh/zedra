@@ -6,10 +6,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-
-typedef struct AgentCaps AgentCaps;
-
-
 extern void gpui_ios_set_next_embedded_parent(void *parent_view_ptr,
                                               float width_pts,
                                               float height_pts);

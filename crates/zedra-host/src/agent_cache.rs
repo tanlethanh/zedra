@@ -46,10 +46,11 @@ impl AgentCache {
     pub async fn installed(&self, refresh: bool) -> AgentInstalledListResult {
         if refresh {
             self.refresh_installed().await;
-        } else if self.ensure_installed().await {
-            if let Some(result) = self.inner.lock().await.installed.clone() {
-                return result;
-            }
+        } else {
+            self.ensure_installed().await;
+        }
+        if let Some(result) = self.inner.lock().await.installed.clone() {
+            return result;
         }
         AgentInstalledListResult {
             agents: Vec::new(),
@@ -65,11 +66,12 @@ impl AgentCache {
     ) -> AgentListResult {
         if refresh {
             self.refresh_agents(workdir).await;
-        } else if self.ensure_agents(workdir).await {
-            if let Some(mut result) = self.inner.lock().await.agents.clone() {
-                agent::merge_live_into_agent_list(&mut result.agents, session).await;
-                return result;
-            }
+        } else {
+            self.ensure_agents(workdir).await;
+        }
+        if let Some(mut result) = self.inner.lock().await.agents.clone() {
+            agent::merge_live_into_agent_list(&mut result.agents, session).await;
+            return result;
         }
         AgentListResult {
             agents: Vec::new(),
@@ -87,18 +89,19 @@ impl AgentCache {
     ) -> AgentSessionsResult {
         if refresh {
             self.refresh_sessions(kind, workdir, limit).await;
-        } else if self.ensure_sessions(kind, workdir, limit).await {
-            if let Some(mut result) = self
-                .inner
-                .lock()
-                .await
-                .sessions
-                .get(&kind)
-                .map(|cached| cached.result.clone())
-            {
-                agent::merge_live_into_sessions(&mut result.sessions, kind, session).await;
-                return result;
-            }
+        } else {
+            self.ensure_sessions(kind, workdir, limit).await;
+        }
+        if let Some(mut result) = self
+            .inner
+            .lock()
+            .await
+            .sessions
+            .get(&kind)
+            .map(|cached| cached.result.clone())
+        {
+            agent::merge_live_into_sessions(&mut result.sessions, kind, session).await;
+            return result;
         }
         AgentSessionsResult {
             sessions: Vec::new(),

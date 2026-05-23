@@ -146,8 +146,6 @@ private final class AgentListPickerViewController: UITableViewController {
     private let itemLabels: [String]
     private let itemSubtitles: [String?]
     private let itemImageNames: [String?]
-    private var dismissed = false
-
     init(
         callbackID: UInt32,
         title: String?,
@@ -172,33 +170,43 @@ private final class AgentListPickerViewController: UITableViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = pickerTitle
         navigationItem.leftBarButtonItem = UIBarButtonItem(
             barButtonSystemItem: .cancel,
             target: self,
             action: #selector(cancelTapped)
         )
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "AgentListPickerCell")
-        if let message = pickerMessage, !message.isEmpty {
-            let header = UILabel(frame: CGRect(x: 0, y: 0, width: view.bounds.width, height: 44))
-            header.text = message
-            header.font = .preferredFont(forTextStyle: .footnote)
-            header.textColor = .secondaryLabel
-            header.numberOfLines = 0
-            header.textAlignment = .center
-            tableView.tableHeaderView = header
+        if #available(iOS 15.0, *) {
+            tableView.sectionHeaderTopPadding = 0
         }
-    }
+        // Suppress the default top gap insetGrouped adds before the first section.
+        tableView.tableHeaderView = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: CGFloat.leastNormalMagnitude))
 
-    override func viewDidDisappear(_ animated: Bool) {
-        super.viewDidDisappear(animated)
-        guard !dismissed, presentingViewController == nil || isBeingDismissed else { return }
-        dismissed = true
-        zedra_ios_selection_dismiss(callbackID)
+        let stack = UIStackView()
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 2
+
+        let titleLabel = UILabel()
+        titleLabel.text = pickerTitle
+        titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
+        titleLabel.textColor = .label
+        stack.addArrangedSubview(titleLabel)
+
+        if let message = pickerMessage, !message.isEmpty {
+            let subtitleLabel = UILabel()
+            subtitleLabel.text = message
+            subtitleLabel.font = .systemFont(ofSize: 12, weight: .regular)
+            subtitleLabel.textColor = .secondaryLabel
+            subtitleLabel.numberOfLines = 1
+            stack.addArrangedSubview(subtitleLabel)
+        }
+
+        stack.sizeToFit()
+        navigationItem.titleView = stack
     }
 
     @objc private func cancelTapped() {
-        dismissed = true
         dismiss(animated: true) {
             zedra_ios_selection_dismiss(self.callbackID)
         }
@@ -227,7 +235,6 @@ private final class AgentListPickerViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        dismissed = true
         dismiss(animated: true) {
             zedra_ios_selection_result(self.callbackID, Int32(indexPath.row))
         }
@@ -1573,6 +1580,9 @@ private enum PresentationCoordinator {
                 sheet.detents = [.medium(), .large()]
                 sheet.prefersGrabberVisible = true
             }
+            let delegate = PresentationDismissDelegate(callbackID: callbackID, isSelection: true)
+            navigation.presentationController?.delegate = delegate
+            objc_setAssociatedObject(navigation, dismissAssociationKey, delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
             presenter.present(navigation, animated: true)
         }
     }

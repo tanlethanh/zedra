@@ -6,95 +6,9 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#define DRAWER_PADDING 12.0
-
-#define SPACING_XS 4.0
-
-#define SPACING_SM 8.0
-
-#define SPACING_MD 12.0
-
-#define SPACING_LG 16.0
-
-#define HEADER_HEIGHT 48.0
-
-#define HOME_CARD_WIDTH 300.0
-
-#define HOME_GUIDE_WIDTH 300.0
-
-#define CONNECT_DETAIL_WIDTH 300.0
-
-#define HEADER_BUTTON_SIZE 42.0
-
-#define DRAWER_ICON_ZONE 38.0
-
-#define TERMINAL_LINE_HEIGHT 16.0
-
-#define PANEL_ITEM_HEIGHT 28.0
-
-#define DRAWER_EDGE_ZONE 72.0
-
-#define DRAWER_EDGE_ZONE 56.0
-
-#define DRAWER_VELOCITY_THRESHOLD 12.0
-
-#define DRAWER_BACKDROP_OPACITY 0.4
-
-#define DRAWER_DEFAULT_WIDTH 295.0
-
-#define DRAWER_OPEN_ANIMATION_DURATION_MS 160
-
-#define DRAWER_CLOSE_ANIMATION_DURATION_MS 100
-
-#define FONT_APP_TITLE 28.0
-
-#define FONT_TITLE 20.0
-
-#define FONT_HEADING 13.0
-
-#define FONT_BODY 12.0
-
-#define FONT_DETAIL 12.0
-
-#define ICON_LOGO 20.0
-
-#define ICON_LG 24.0
-
-#define ICON_MD 18.0
-
-#define ICON_SM 16.0
-
-#define ICON_XS 14.0
-
-#define ICON_FILE 12.0
-
-#define ICON_FILE_DIR 14.0
-
-#define ICON_STATUS 6.0
-
-#define ICON_TERMINAL 16.0
-
-#define EDITOR_FONT_SIZE 12.0
-
-#define EDITOR_GUTTER_FONT_SIZE 11.0
-
-#define EDITOR_LINE_HEIGHT 15.0
-
-#define EDITOR_GUTTER_WIDTH 36.0
-
-typedef struct AgentCaps AgentCaps;
-
-
-
-
-
-
-
 extern void gpui_ios_set_next_embedded_parent(void *parent_view_ptr,
                                               float width_pts,
                                               float height_pts);
-
-extern void *gpui_ios_get_window(void);
 
 extern void gpui_ios_attach_embedded_view(void *window_ptr,
                                           void *parent_view_ptr,
@@ -157,16 +71,7 @@ void zedra_ios_set_keyboard_height(uint32_t height_px);
  */
 void zedra_ios_set_safe_area_insets(float top, float bottom, float _left, float _right);
 
-extern void *gpui_ios_get_window(void);
-
 extern bool gpui_ios_is_keyboard_visible(void *window_ptr);
-
-extern void gpui_ios_hide_keyboard(void *window_ptr);
-
-/**
- * Present the AVFoundation QR scanner (defined in QRScanner.swift).
- */
-extern void ios_present_qr_scanner(void);
 
 /**
  * Returns the app's Documents directory path (from NSSearchPathForDirectoriesInDomains).
@@ -381,8 +286,6 @@ void zedra_deeplink_received(const char *url);
  * Routes through the unified deeplink path (same as system URL intents).
  */
 void zedra_qr_scanner_result(const char *qr_string);
-
-extern void zedra_nslog(const char *msg);
 
 extern void zedra_log_event(const char *name,
                             const char *const *keys,
