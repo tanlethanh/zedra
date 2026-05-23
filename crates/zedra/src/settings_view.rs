@@ -190,7 +190,7 @@ impl Render for SettingsView {
             .child(
                 div()
                     .id("settings-scroll")
-                    .overflow_scroll()
+                    .overflow_y_scroll()
                     .flex_1()
                     .px(px(theme::SPACING_LG))
                     .pb(px(bottom_inset + 18.0))
@@ -198,7 +198,6 @@ impl Render for SettingsView {
                         div()
                             .w_full()
                             .max_w(px(520.0))
-                            .mx_auto()
                             .flex()
                             .flex_col()
                             .gap(px(theme::SPACING_MD))
@@ -309,14 +308,12 @@ fn appearance_theme_toggle(
 
     div()
         .id("settings-appearance-toggle")
-        .w_full()
         .min_w_0()
         .min_h(px(32.0))
         .py(px(2.0))
         .flex()
         .flex_row()
         .items_center()
-        .justify_between()
         .gap(px(theme::SPACING_MD))
         .child(
             div()
@@ -408,14 +405,12 @@ fn action_row(
 ) -> Stateful<Div> {
     div()
         .id(id)
-        .w_full()
         .min_w_0()
         .min_h(px(56.0))
         .py(px(10.0))
         .flex()
         .flex_row()
         .items_center()
-        .justify_between()
         .gap(px(theme::SPACING_MD))
         .cursor_pointer()
         .child(

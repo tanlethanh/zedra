@@ -21,7 +21,8 @@ impl Render for SheetDemoView {
             .size_full()
             .bg(rgb(theme::bg_primary(cx)))
             .flex()
-            .justify_center()
+            .flex_col()
+            .items_center()
             .px(px(18.0))
             .py(px(20.0))
             .child(
