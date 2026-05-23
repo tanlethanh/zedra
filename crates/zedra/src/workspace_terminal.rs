@@ -16,6 +16,7 @@ use crate::platform_bridge::{
     self, CustomSheetDetent, CustomSheetOptions, HapticFeedback, NativeDictationPreviewOptions,
     NativeEditMenuItem,
 };
+use crate::settings::{ThemeStateEvent, theme_state as theme_entity};
 use crate::telemetry::view_telemetry;
 use crate::terminal_preview_view::TerminalPreviewView;
 use crate::terminal_state::TerminalState;
@@ -55,6 +56,13 @@ pub struct WorkspaceTerminal {
 }
 
 impl WorkspaceTerminal {
+    fn sync_terminal_theme(&mut self, cx: &mut Context<Self>) {
+        let terminal_theme = crate::theme::bundle(cx).terminal;
+        self.terminal_view.update(cx, |terminal_view, cx| {
+            terminal_view.set_terminal_theme(terminal_theme, cx);
+        });
+    }
+
     fn keyboard_inset() -> Pixels {
         let bridge = platform_bridge::bridge();
         let density = bridge.density();
@@ -378,7 +386,16 @@ impl WorkspaceTerminal {
             },
         );
 
-        Self {
+        let mut subscriptions = vec![attach_sub, terminal_events_sub, keyboard_offset_hook];
+        if let Some(theme_state) = theme_entity(cx) {
+            subscriptions.push(
+                cx.subscribe(&theme_state, |this, _, _: &ThemeStateEvent, cx| {
+                    this.sync_terminal_theme(cx);
+                }),
+            );
+        }
+
+        let mut this = Self {
             terminal_id,
             workspace_state,
             terminal_state,
@@ -392,8 +409,10 @@ impl WorkspaceTerminal {
             scroll_to_bottom_button_visible: false,
             scroll_to_bottom_button_hide_pending: false,
             scroll_to_bottom_button_hide_generation: 0,
-            _subscriptions: vec![attach_sub, terminal_events_sub, keyboard_offset_hook],
-        }
+            _subscriptions: subscriptions,
+        };
+        this.sync_terminal_theme(cx);
+        this
     }
 
     pub fn register_as_active_input(&mut self, cx: &mut Context<Self>) {

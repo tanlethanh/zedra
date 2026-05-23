@@ -609,6 +609,14 @@ pub fn trigger_haptic(feedback: HapticFeedback) {
     bridge().trigger_haptic(feedback);
 }
 
+/// OS color scheme reported by the platform bridge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SystemTheme {
+    Dark,
+    Light,
+    Unknown,
+}
+
 // ---------------------------------------------------------------------------
 // PlatformBridge trait
 // ---------------------------------------------------------------------------
@@ -672,6 +680,12 @@ pub trait PlatformBridge: Send + Sync + 'static {
     /// or `dispatch_text_input_dismiss(id)` on cancel.
     fn present_text_input(&self, _id: u32, _title: &str, _placeholder: &str, _initial_value: &str) {
     }
+    /// OS appearance: `dark`, `light`, or `unknown` when unavailable.
+    fn system_prefers_theme(&self) -> SystemTheme {
+        SystemTheme::Unknown
+    }
+    /// Sync native keyboard accessory chrome with the selected app appearance.
+    fn set_keyboard_accessory_theme(&self, _is_dark: bool) {}
 }
 
 static BRIDGE: OnceLock<Box<dyn PlatformBridge>> = OnceLock::new();

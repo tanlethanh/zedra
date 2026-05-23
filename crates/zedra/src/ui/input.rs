@@ -94,7 +94,7 @@ impl Element for MultilineInputText {
         };
         let caret = fill(
             Bounds::new(origin, size(px(2.0), line_height)),
-            rgb(theme::TEXT_SECONDARY),
+            rgb(theme::text_secondary(cx)),
         );
         window.paint_quad(caret);
     }
@@ -694,7 +694,7 @@ impl Input {
         div()
             .w(px(2.0))
             .h(px(if self.compact { 14.0 } else { 18.0 }))
-            .bg(rgb(theme::TEXT_SECONDARY))
+            .bg(rgb(theme::text_secondary(cx)))
             .rounded(px(1.0))
             .with_animation(
                 cursor_id,
@@ -1143,15 +1143,15 @@ impl Render for Input {
         let show_placeholder = self.value.is_empty() && !is_focused;
 
         let text_color = if show_placeholder {
-            rgb(theme::TEXT_MUTED)
+            rgb(theme::text_muted(cx))
         } else {
-            rgb(theme::TEXT_SECONDARY)
+            rgb(theme::text_secondary(cx))
         };
 
         let border_color = if is_focused {
-            rgb(theme::BORDER_ACTIVE)
+            rgb(theme::border_active(cx))
         } else {
-            rgb(theme::BORDER_DEFAULT)
+            rgb(theme::border_default(cx))
         };
         let text_size = if self.compact {
             theme::FONT_DETAIL
@@ -1189,7 +1189,7 @@ impl Render for Input {
             .py(px(vertical_padding))
             .w_full()
             .min_h(px(min_height))
-            .bg(rgb(theme::BG_SURFACE))
+            .bg(rgb(theme::bg_surface(cx)))
             .rounded(px(6.0))
             .border_1()
             .border_color(border_color)

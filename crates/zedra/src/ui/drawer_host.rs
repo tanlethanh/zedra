@@ -445,6 +445,7 @@ impl Render for DrawerHost {
         let animating = self.is_snap_animating() && !is_dragging;
         let side = self.drawer_side;
         let edge_inset = self.edge_inset;
+        let backdrop_base_color = theme::overlay_backdrop(cx);
 
         let show_overlay = drawer_offset > 0.0 || snap_target.is_some() || is_dragging;
 
@@ -492,7 +493,7 @@ impl Render for DrawerHost {
                         .top_0()
                         .bottom_0()
                         .w(px(drawer_width))
-                        .bg(rgb(0x0e0c0c))
+                        .bg(rgb(theme::bg_primary(cx)))
                         .flex()
                         .flex_col()
                         .overflow_hidden()
@@ -523,10 +524,8 @@ impl Render for DrawerHost {
                                 ),
                                 anim.clone(),
                                 move |el, delta| {
-                                    el.bg(hsla(
-                                        0.0,
-                                        0.0,
-                                        0.0,
+                                    el.bg(theme::overlay_backdrop_with_opacity(
+                                        backdrop_base_color,
                                         from_opacity + (target_opacity - from_opacity) * delta,
                                     ))
                                 },
@@ -550,7 +549,10 @@ impl Render for DrawerHost {
                     let opacity = (drawer_offset / drawer_width).clamp(0.0, 1.0) * max_opacity;
                     (
                         backdrop_base
-                            .bg(hsla(0.0, 0.0, 0.0, opacity))
+                            .bg(theme::overlay_backdrop_with_opacity(
+                                backdrop_base_color,
+                                opacity,
+                            ))
                             .into_any_element(),
                         match side {
                             DrawerSide::Left => panel_base

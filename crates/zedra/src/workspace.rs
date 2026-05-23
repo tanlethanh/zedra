@@ -2376,20 +2376,25 @@ enum WorkspaceSubtitle {
     },
 }
 
-fn render_subtitle(text: impl IntoElement) -> AnyElement {
+fn render_subtitle(cx: &App, text: impl IntoElement) -> AnyElement {
     div()
         .w_full()
         .min_w_0()
         .truncate()
         .text_center()
-        .text_color(rgb(theme::TEXT_SECONDARY))
+        .text_color(rgb(theme::text_secondary(cx)))
         .text_size(px(theme::FONT_BODY))
         .font_weight(FontWeight::MEDIUM)
         .child(text)
         .into_any_element()
 }
 
-fn render_gitdiff_subtitle(filename: SharedString, added: usize, removed: usize) -> AnyElement {
+fn render_gitdiff_subtitle(
+    cx: &App,
+    filename: SharedString,
+    added: usize,
+    removed: usize,
+) -> AnyElement {
     div()
         .w_full()
         .min_w_0()
@@ -2407,14 +2412,14 @@ fn render_gitdiff_subtitle(filename: SharedString, added: usize, removed: usize)
                 .flex_shrink()
                 .truncate()
                 .text_center()
-                .text_color(rgb(theme::TEXT_SECONDARY))
+                .text_color(rgb(theme::text_secondary(cx)))
                 .child(filename),
         )
         .when(added > 0, |this| {
             this.child(
                 div()
                     .flex_shrink_0()
-                    .text_color(rgb(0x6fc17a))
+                    .text_color(rgb(theme::git_added(cx)))
                     .child(format!("+{}", added)),
             )
         })
@@ -2422,7 +2427,7 @@ fn render_gitdiff_subtitle(filename: SharedString, added: usize, removed: usize)
             this.child(
                 div()
                     .flex_shrink_0()
-                    .text_color(rgb(0xd57a7a))
+                    .text_color(rgb(theme::git_removed(cx)))
                     .child(format!("-{}", removed)),
             )
         })
@@ -2517,8 +2522,8 @@ impl WorkspaceContent {
 
     fn render_subtitle(&self, default_subtitle: &str, cx: &mut Context<Self>) -> AnyElement {
         match &self.subtitle {
-            WorkspaceSubtitle::Default => render_subtitle(default_subtitle.to_owned()),
-            WorkspaceSubtitle::File { path } => render_subtitle(path.clone()),
+            WorkspaceSubtitle::Default => render_subtitle(cx, default_subtitle.to_owned()),
+            WorkspaceSubtitle::File { path } => render_subtitle(cx, path.clone()),
             WorkspaceSubtitle::Terminal { id } => {
                 let meta = self.terminal_state.read(cx).meta(id);
                 let subtitle = meta
@@ -2528,13 +2533,13 @@ impl WorkspaceContent {
                     .filter(|title| !title.is_empty())
                     .unwrap_or(default_subtitle)
                     .to_owned();
-                render_subtitle(subtitle)
+                render_subtitle(cx, subtitle)
             }
             WorkspaceSubtitle::GitDiff {
                 filename,
                 added,
                 removed,
-            } => render_gitdiff_subtitle(filename.clone(), *added, *removed),
+            } => render_gitdiff_subtitle(cx, filename.clone(), *added, *removed),
         }
     }
 
@@ -2564,7 +2569,7 @@ struct NoActiveTerminalView;
 
 impl Render for NoActiveTerminalView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        render_placeholder("No active terminal")
+        render_placeholder(_cx, "No active terminal")
     }
 }
 
@@ -2600,7 +2605,7 @@ impl Render for WorkspaceContent {
             .flex()
             .flex_col()
             .min_h_0()
-            .bg(rgb(theme::BG_PRIMARY))
+            .bg(rgb(theme::bg_primary(cx)))
             .child(div().h(px(top_inset)))
             .child(
                 div()
@@ -2609,7 +2614,7 @@ impl Render for WorkspaceContent {
                     .flex_row()
                     .items_center()
                     .border_b_1()
-                    .border_color(rgb(theme::BORDER_SUBTLE))
+                    .border_color(rgb(theme::border_subtle(cx)))
                     .child(
                         div()
                             .id("drawer-toggle-btn")
@@ -2631,7 +2636,7 @@ impl Render for WorkspaceContent {
                                 svg()
                                     .path("icons/menu.svg")
                                     .size(px(16.0))
-                                    .text_color(rgb(theme::TEXT_SECONDARY)),
+                                    .text_color(rgb(theme::text_secondary(cx))),
                             ),
                     )
                     .child(
@@ -2660,6 +2665,7 @@ impl Render for WorkspaceContent {
                                                 ConnectionStatusIndicator::from_phase(
                                                     "workspace-connect-status",
                                                     connect_phase.as_ref(),
+                                                    &theme::palette(cx),
                                                 )
                                                 .size(6.0),
                                             )
@@ -2667,7 +2673,7 @@ impl Render for WorkspaceContent {
                                                 div()
                                                     .min_w_0()
                                                     .truncate()
-                                                    .text_color(rgb(theme::TEXT_MUTED))
+                                                    .text_color(rgb(theme::text_muted(cx)))
                                                     .text_size(px(theme::FONT_DETAIL))
                                                     .child(title),
                                             ),
@@ -2696,7 +2702,7 @@ impl Render for WorkspaceContent {
                                 svg()
                                     .path("icons/package.svg")
                                     .size(px(16.0))
-                                    .text_color(rgb(theme::TEXT_SECONDARY)),
+                                    .text_color(rgb(theme::text_secondary(cx))),
                             ),
                     ),
             )

@@ -21,6 +21,7 @@ Main mobile app crate. Owns GPUI application flow, workspace orchestration, plat
 
 - `WorkspaceState` remains the display source of truth. Views should read workspace display fields from `WorkspaceState`, not from `SessionHandle` directly during render.
 - Keep `render()` pure. Mutations belong in event handlers, subscriptions, `cx.spawn`, `cx.spawn_in`, or platform callbacks.
+- **Theming**: follow `docs/THEMING.md`. GPUI views use `theme::palette(cx)` / `theme::bg_primary(cx)` (and related accessors) for colors; editor and terminal use `theme::bundle(cx)` sub-themes. No hardcoded hex in view `render()`. Subscribe to `ThemeStateEvent::Changed` when the view must refresh on appearance toggle.
 - `Workspace` is the orchestrator between `Session`, `SessionState`, `WorkspaceState`, terminal entities, and action handling. Avoid pushing app-level orchestration down into leaf views.
 - `Workspaces` manages the list of active workspace entities and saved workspace state. Preserve the distinction between persisted state and live workspace entries.
 

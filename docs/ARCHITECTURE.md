@@ -135,6 +135,10 @@ and git status are refreshed before the initial terminal is opened or created.
 On reconnect, the same drawer refresh is triggered in the background so terminal
 reattach and user interaction are not blocked by file/git refresh latency.
 
+### Appearance / theming
+
+App settings live in `crates/zedra/src/settings.rs`. `ThemeState` is the appearance-specific part of those settings: it owns the user’s `ThemePreference` and a `ThemeBundle` (UI palette, editor theme, terminal theme). GPUI views read tokens through `theme::palette(cx)`; editor and terminal entities sync their sub-bundles on `ThemeStateEvent::Changed`. New UI must follow `docs/THEMING.md`—do not hardcode colors in views.
+
 ## Security
 
 | Layer | Mechanism |
