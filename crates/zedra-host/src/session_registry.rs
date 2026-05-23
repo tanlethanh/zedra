@@ -113,6 +113,17 @@ pub async fn finish_host_connection(conn: &iroh::endpoint::Connection) {
     wait_connection_drained(conn).await;
 }
 
+/// Tear down a connection after auth failed.
+///
+/// Wait briefly for the client to close first so any typed auth error response
+/// can be delivered before we send CONNECTION_CLOSE. If the client is still
+/// connected, close explicitly so iroh-quinn always sees a close reason before
+/// the handler drops its last handle.
+pub async fn finish_auth_failed_connection(conn: &iroh::endpoint::Connection) {
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(500), conn.closed()).await;
+    finish_host_connection(conn).await;
+}
+
 /// Host-side lease for the active client connection.
 #[derive(Clone)]
 pub struct ActiveClientConnection {

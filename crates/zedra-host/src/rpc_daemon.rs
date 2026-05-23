@@ -18,8 +18,8 @@ use crate::metrics;
 use crate::paths;
 use crate::pty::{ShellSession, SpawnOptions};
 use crate::session_registry::{
-    finish_host_connection, ActiveClientConnection, AttachResult, ConsumeSlotResult, HostShellState,
-    HostTermMeta, OutputSenderSlot, PairingSlotMode,
+    finish_auth_failed_connection, finish_host_connection, ActiveClientConnection, AttachResult,
+    ConsumeSlotResult, HostShellState, HostTermMeta, OutputSenderSlot, PairingSlotMode,
     ServerSession, SessionRegistry, TermBacklog, TermSession, MAX_WATCHED_PATHS_PER_SESSION,
 };
 use crate::utils;
@@ -550,7 +550,7 @@ pub async fn handle_connection(
                 path_type,
             });
             tracing::warn!("auth failed from {}: {}", remote.fmt_short(), e);
-            finish_host_connection(&conn).await;
+            finish_auth_failed_connection(&conn).await;
             return Ok(());
         }
     };
