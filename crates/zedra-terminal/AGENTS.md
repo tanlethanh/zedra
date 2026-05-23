@@ -16,6 +16,12 @@ Reusable terminal emulator and GPUI renderer. Owns alacritty terminal state, ter
 - Preserve packet-safe parsing. `Processor` and `OscScanner` are intentionally stateful so escape sequences can span network chunks.
 - Keep replay semantics intact. The terminal model expects ordered output bytes and tracks state such as `last_seq`, selection, title, and OSC-derived metadata.
 
+## Theming
+
+- Terminal colors live in `src/theme.rs` (`TerminalTheme`). The app passes the active bundle via `TerminalView::set_terminal_theme`; painting uses `TerminalTheme::convert_color` in `element.rs`.
+- Do not tune ANSI, indexed, or truecolor contrast in `element.rs` or `terminal.rs` render paths—adjust tokens and derived tables in `theme.rs` only. See `docs/THEMING.md`.
+- `apply_theme` stores the palette for GPUI paint and OSC `ColorRequest` replies; it does not inject setup sequences into scrollback.
+
 ## Rendering And Sizing
 
 - `TerminalView` is responsible for converting viewport size into terminal grid size and emitting `TerminalEvent::RequestResize` when the remote PTY should change size.

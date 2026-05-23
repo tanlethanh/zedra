@@ -684,6 +684,8 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn system_prefers_theme(&self) -> SystemTheme {
         SystemTheme::Unknown
     }
+    /// Sync native keyboard accessory chrome with the selected app appearance.
+    fn set_keyboard_accessory_theme(&self, _is_dark: bool) {}
 }
 
 static BRIDGE: OnceLock<Box<dyn PlatformBridge>> = OnceLock::new();

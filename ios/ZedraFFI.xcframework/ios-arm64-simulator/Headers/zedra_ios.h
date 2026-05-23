@@ -6,38 +6,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#define BG_PRIMARY 920588
-
-#define BG_CARD 1250067
-
-#define BG_OVERLAY 1250067
-
-#define BG_SURFACE 920588
-
-#define TEXT_PRIMARY 16777215
-
-#define TEXT_SECONDARY 13290186
-
-#define TEXT_MUTED 5263440
-
-#define BORDER_HIGHLIGHT 13290186
-
-#define BORDER_DEFAULT 2894892
-
-#define BORDER_ACTIVE 5263440
-
-#define BORDER_SUBTLE 1710618
-
-#define ACCENT_GREEN 10011513
-
-#define ACCENT_BLUE 6402031
-
-#define ACCENT_YELLOW 15057019
-
-#define ACCENT_RED 14707829
-
-#define ACCENT_DIM 5263440
-
 #define DRAWER_PADDING 12.0
 
 #define SPACING_XS 4.0
@@ -63,6 +31,8 @@
 #define TERMINAL_LINE_HEIGHT 16.0
 
 #define PANEL_ITEM_HEIGHT 28.0
+
+#define DRAWER_EDGE_ZONE 72.0
 
 #define DRAWER_EDGE_ZONE 56.0
 
@@ -321,6 +291,16 @@ extern void ios_present_text_input(uint32_t callback_id,
                                    const char *title,
                                    const char *placeholder,
                                    const char *initial_value);
+
+/**
+ * Returns 1 for dark, 0 for light, -1 when unavailable.
+ */
+extern int32_t ios_system_prefers_dark_theme(void);
+
+/**
+ * Apply the app appearance to the native keyboard accessory bar.
+ */
+extern void ios_set_keyboard_accessory_theme(bool is_dark);
 
 /**
  * Called from the native alert handler after the user taps a button.

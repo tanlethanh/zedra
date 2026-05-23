@@ -952,7 +952,7 @@ Expected:
 ## 22. Terminal appearance (light/dark)
 
 1. Connect to a workspace and open a terminal running `ls` with color
-2. Open Settings → Appearance → **Light**
+2. Open Settings → Appearance and tap the **sun** segment (light mode)
 3. Expected: terminal background is light; directory names and ANSI colors are readable (not washed out)
 4. Run `claude` (or another session already showing Claude output) and scroll to file-reference lines such as `L123 (file.rs):`
 5. Expected: highlighted paths are readable on the light background (not pale lavender)

@@ -31,6 +31,7 @@ impl ThemeState {
     pub fn new(_cx: &mut Context<Self>) -> Self {
         let preference = Self::load_preference();
         let bundle = ThemeBundle::for_preference(preference);
+        Self::sync_native_theme(preference);
         Self { preference, bundle }
     }
 
@@ -52,6 +53,7 @@ impl ThemeState {
         }
         self.preference = preference;
         self.bundle = ThemeBundle::for_preference(preference);
+        Self::sync_native_theme(preference);
         Self::save_preference(preference);
         cx.emit(ThemeStateEvent::Changed);
         cx.notify();
@@ -87,6 +89,11 @@ impl ThemeState {
         if let Err(err) = write_settings(&settings) {
             warn!(err = %err, "settings: failed to save theme preference");
         }
+    }
+
+    fn sync_native_theme(preference: ThemePreference) {
+        crate::platform_bridge::bridge()
+            .set_keyboard_accessory_theme(preference == ThemePreference::Dark);
     }
 }
 
