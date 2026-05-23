@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -5,7 +6,7 @@ use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const LIST_HEAD_SCAN_MAX_LINES: usize = 64;
@@ -67,6 +68,28 @@ struct TranscriptCandidate {
     sort_mtime_unix_secs: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct SessionsIndexFile {
+    entries: Vec<SessionsIndexEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionsIndexEntry {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    summary: Option<String>,
+    created: Option<String>,
+    modified: Option<String>,
+    #[serde(rename = "gitBranch")]
+    git_branch: Option<String>,
+    #[serde(rename = "projectPath")]
+    project_path: Option<String>,
+    #[serde(rename = "isSidechain")]
+    is_sidechain: Option<bool>,
+    #[serde(rename = "messageCount")]
+    message_count: Option<usize>,
+}
+
 pub fn list_sessions_limited(workdir: &Path, limit: usize) -> Result<ClaudeSessionList> {
     let config_dir = claude_config_dir()?;
     list_sessions_in_config_with_mode(workdir, &config_dir, Some(limit), TranscriptScanMode::List)
@@ -100,11 +123,16 @@ fn session_count_summary_in_config(
     let latest = candidates
         .first()
         .map(|candidate| {
-            read_transcript_list_metadata(
+            let mut metadata = read_transcript_list_metadata(
                 &candidate.path,
                 candidate.worktree.as_deref(),
                 TranscriptScanMode::List,
-            )
+            )?;
+            if let Some(project_dir) = candidate.path.parent() {
+                let index = load_sessions_index(project_dir);
+                apply_sessions_index(&mut metadata, &index);
+            }
+            Ok::<_, anyhow::Error>(metadata)
         })
         .transpose()?;
     Ok((total, latest))
@@ -121,11 +149,23 @@ fn list_sessions_in_config_with_mode(
     let total = candidates.len();
 
     let read_limit = limit.unwrap_or(total);
+    let mut index_cache: HashMap<PathBuf, HashMap<String, SessionsIndexEntry>> = HashMap::new();
     let mut sessions = candidates
         .into_iter()
         .take(read_limit)
         .map(|candidate| {
-            read_transcript_list_metadata(&candidate.path, candidate.worktree.as_deref(), scan_mode)
+            let mut metadata = read_transcript_list_metadata(
+                &candidate.path,
+                candidate.worktree.as_deref(),
+                scan_mode,
+            )?;
+            if let Some(project_dir) = candidate.path.parent() {
+                let index = index_cache
+                    .entry(project_dir.to_path_buf())
+                    .or_insert_with(|| load_sessions_index(project_dir));
+                apply_sessions_index(&mut metadata, index);
+            }
+            Ok::<_, anyhow::Error>(metadata)
         })
         .collect::<Result<Vec<_>>>()?;
 
@@ -390,7 +430,132 @@ fn read_transcript_list_metadata(
         });
     }
 
+    if scan_mode == TranscriptScanMode::List && metadata.title.is_none() {
+        fill_title_from_transcript_remainder(path, &mut metadata)?;
+    }
+
     Ok(metadata)
+}
+
+fn fill_title_from_transcript_remainder(
+    path: &Path,
+    metadata: &mut ClaudeSessionMetadata,
+) -> Result<()> {
+    let file = File::open(path)
+        .with_context(|| format!("failed to read transcript {}", path.display()))?;
+    let mut last_prompt = None;
+    let mut slug = None;
+    let mut first_user = None;
+
+    for line in BufReader::new(file).lines() {
+        let line =
+            line.with_context(|| format!("failed to read transcript line in {}", path.display()))?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let needs_parse = trimmed.contains("aiTitle")
+            || trimmed.contains("ai_title")
+            || trimmed.contains("lastPrompt")
+            || trimmed.contains("last_prompt")
+            || trimmed.contains("\"slug\"")
+            || (first_user.is_none() && trimmed.contains("\"type\":\"user\""));
+        if !needs_parse {
+            continue;
+        }
+
+        let record = match serde_json::from_str::<Value>(trimmed) {
+            Ok(Value::Object(record)) => Value::Object(record),
+            Ok(_) | Err(_) => continue,
+        };
+
+        if let Some(title) = string_field(&record, &["aiTitle", "ai_title"]) {
+            metadata.title = Some(title.to_string());
+        }
+        if string_field(&record, &["type"]) == Some("last-prompt") {
+            set_latest_string(
+                &mut last_prompt,
+                string_field(&record, &["lastPrompt", "last_prompt"]),
+            );
+        }
+        set_latest_string(&mut slug, string_field(&record, &["slug"]));
+        if first_user.is_none() {
+            if let Some(title) = user_message_title(&record) {
+                first_user = Some(title);
+            }
+        }
+    }
+
+    if metadata.title.is_none() {
+        metadata.title = last_prompt
+            .filter(|title| is_usable_fallback_title(title))
+            .or_else(|| {
+                slug.filter(|slug| is_usable_fallback_title(slug))
+                    .map(|slug| humanize_slug(&slug))
+            })
+            .or(first_user.filter(|title| is_usable_fallback_title(title)));
+    }
+
+    Ok(())
+}
+
+fn is_usable_fallback_title(title: &str) -> bool {
+    let title = title.trim();
+    !title.is_empty() && !title.eq_ignore_ascii_case("no prompt")
+}
+
+fn user_message_title(record: &Value) -> Option<String> {
+    if string_field(record, &["type"]) != Some("user") {
+        return None;
+    }
+    let message = record.get("message")?;
+    let content = message.get("content")?;
+    let text = if let Some(text) = content.as_str() {
+        text
+    } else {
+        content.as_array()?.iter().find_map(|part| {
+            if string_field(part, &["type"]) == Some("text") {
+                string_field(part, &["text"])
+            } else {
+                None
+            }
+        })?
+    };
+    let text = text.trim();
+    if text.starts_with('<') || text.starts_with('[') {
+        return None;
+    }
+    Some(truncate_title(text))
+}
+
+fn truncate_title(text: &str) -> String {
+    const MAX_LEN: usize = 80;
+    if text.chars().count() <= MAX_LEN {
+        return text.to_string();
+    }
+    let mut end = 0;
+    for (index, _) in text.char_indices().take(MAX_LEN) {
+        end = index;
+    }
+    format!("{}…", &text[..end])
+}
+
+fn humanize_slug(slug: &str) -> String {
+    slug.split('-')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            let mut chars = segment.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => {
+                    let mut word = first.to_uppercase().to_string();
+                    word.push_str(chars.as_str());
+                    word
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn string_field<'a>(record: &'a Value, names: &[&str]) -> Option<&'a str> {
@@ -512,10 +677,57 @@ fn transcript_mtime_unix_secs(path: &Path) -> Option<u64> {
         .map(|duration| duration.as_secs())
 }
 
-fn list_head_scan_complete(metadata: &ClaudeSessionMetadata, scanned_lines: usize) -> bool {
+fn list_head_scan_complete(metadata: &ClaudeSessionMetadata, _scanned_lines: usize) -> bool {
     let core_metadata =
         !metadata.session_id.is_empty() && metadata.cwd.is_some() && metadata.created_at.is_some();
-    core_metadata && (metadata.title.is_some() || scanned_lines >= 8)
+    // Do not stop after N lines without a title: ai-title records often appear after
+    // large hook/system preamble lines in newer Claude Code transcripts.
+    core_metadata && metadata.title.is_some()
+}
+
+fn load_sessions_index(project_dir: &Path) -> HashMap<String, SessionsIndexEntry> {
+    let path = project_dir.join("sessions-index.json");
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        return HashMap::new();
+    };
+    let Ok(index) = serde_json::from_str::<SessionsIndexFile>(&contents) else {
+        return HashMap::new();
+    };
+    index
+        .entries
+        .into_iter()
+        .map(|entry| (entry.session_id.clone(), entry))
+        .collect()
+}
+
+fn apply_sessions_index(
+    metadata: &mut ClaudeSessionMetadata,
+    index: &HashMap<String, SessionsIndexEntry>,
+) {
+    let Some(entry) = index.get(&metadata.session_id) else {
+        return;
+    };
+    if let Some(summary) = entry.summary.as_deref().filter(|title| !title.is_empty()) {
+        metadata.title = Some(summary.to_string());
+    }
+    if metadata.created_at.is_none() {
+        metadata.created_at = entry.created.clone();
+    }
+    if metadata.last_activity_at.is_none() {
+        metadata.last_activity_at = entry.modified.clone();
+    }
+    if metadata.git_branch.is_none() {
+        metadata.git_branch = entry.git_branch.clone();
+    }
+    if metadata.cwd.is_none() {
+        metadata.cwd = entry.project_path.clone();
+    }
+    if let Some(is_sidechain) = entry.is_sidechain {
+        metadata.is_sidechain = is_sidechain;
+    }
+    if metadata.message_count == 0 {
+        metadata.message_count = entry.message_count.unwrap_or(0);
+    }
 }
 
 #[cfg(test)]
@@ -679,6 +891,142 @@ mod tests {
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.contains("--claude-worktrees-feature-a"))
         }));
+    }
+
+    #[test]
+    fn list_sessions_reads_late_ai_title_after_hook_preamble() {
+        let config = tempfile::tempdir().unwrap();
+        let workdir = Path::new("/Users/me/project");
+        let project_dir = project_dir_for_workdir(config.path(), workdir);
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let mut contents = String::new();
+        for index in 0..9 {
+            contents.push_str(&format!(
+                r#"{{"sessionId":"session","cwd":"/Users/me/project","timestamp":"2026-05-09T10:00:{index:02}Z","type":"attachment"}}
+"#
+            ));
+        }
+        contents.push_str(
+            r#"{"type":"ai-title","aiTitle":"Update terminal actions UI design","sessionId":"session"}
+"#,
+        );
+        std::fs::write(project_dir.join("session.jsonl"), contents).unwrap();
+
+        let session = read_transcript_list_metadata(
+            &project_dir.join("session.jsonl"),
+            None,
+            TranscriptScanMode::List,
+        )
+        .unwrap();
+        assert_eq!(
+            session.title.as_deref(),
+            Some("Update terminal actions UI design")
+        );
+    }
+
+    #[test]
+    fn list_sessions_reads_sessions_index_summary() {
+        let config = tempfile::tempdir().unwrap();
+        let workdir = Path::new("/Users/me/project");
+        let project_dir = project_dir_for_workdir(config.path(), workdir);
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(
+            project_dir.join("session.jsonl"),
+            r#"{"sessionId":"session","cwd":"/Users/me/project","timestamp":"2026-05-09T10:00:00Z"}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project_dir.join("sessions-index.json"),
+            r#"{
+  "version": 1,
+  "entries": [
+    {
+      "sessionId": "session",
+      "summary": "Agent session history titles",
+      "created": "2026-05-09T10:00:00Z",
+      "modified": "2026-05-09T11:00:00Z",
+      "gitBranch": "main",
+      "messageCount": 12
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let list = list_sessions_in_config_with_mode(
+            workdir,
+            config.path(),
+            Some(10),
+            TranscriptScanMode::List,
+        )
+        .unwrap();
+        let session = &list.sessions[0];
+        assert_eq!(
+            session.title.as_deref(),
+            Some("Agent session history titles")
+        );
+        assert_eq!(session.git_branch.as_deref(), Some("main"));
+        assert_eq!(session.message_count, 12);
+    }
+
+    #[test]
+    fn list_sessions_reads_ai_title_beyond_head_byte_limit() {
+        let config = tempfile::tempdir().unwrap();
+        let workdir = Path::new("/Users/me/project");
+        let project_dir = project_dir_for_workdir(config.path(), workdir);
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let mut contents = String::from(
+            r#"{"sessionId":"session","cwd":"/Users/me/project","timestamp":"2026-05-09T10:00:00Z"}"#,
+        );
+        for index in 0..12 {
+            contents.push('\n');
+            contents.push_str(&format!(
+                r#"{{"sessionId":"session","cwd":"/Users/me/project","timestamp":"2026-05-09T10:00:{index:02}Z","attachment":{{"content":"{padding}"}}}}"#,
+                padding = "x".repeat(3_000)
+            ));
+        }
+        contents.push_str(
+            r#"
+{"type":"ai-title","aiTitle":"Plan commit without coauthor","sessionId":"session"}
+"#,
+        );
+        std::fs::write(project_dir.join("session.jsonl"), contents).unwrap();
+
+        let session = read_transcript_list_metadata(
+            &project_dir.join("session.jsonl"),
+            None,
+            TranscriptScanMode::List,
+        )
+        .unwrap();
+        assert_eq!(
+            session.title.as_deref(),
+            Some("Plan commit without coauthor")
+        );
+    }
+
+    #[test]
+    fn list_sessions_falls_back_to_last_prompt() {
+        let config = tempfile::tempdir().unwrap();
+        let workdir = Path::new("/Users/me/project");
+        let project_dir = project_dir_for_workdir(config.path(), workdir);
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(
+            project_dir.join("session.jsonl"),
+            r#"{"sessionId":"session","cwd":"/Users/me/project","timestamp":"2026-05-09T10:00:00Z"}
+{"type":"user","message":{"role":"user","content":"clear"},"timestamp":"2026-05-09T10:00:01Z","sessionId":"session","cwd":"/Users/me/project"}
+{"type":"last-prompt","lastPrompt":"clear","sessionId":"session"}
+"#,
+        )
+        .unwrap();
+
+        let session = read_transcript_list_metadata(
+            &project_dir.join("session.jsonl"),
+            None,
+            TranscriptScanMode::List,
+        )
+        .unwrap();
+        assert_eq!(session.title.as_deref(), Some("clear"));
     }
 
     #[test]
