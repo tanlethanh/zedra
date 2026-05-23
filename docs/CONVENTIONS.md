@@ -240,6 +240,28 @@ When the scroll area lives inside nested flex layouts, the parent chain must als
 
 See `docs/GPUI_NATIVE_PRESENTATIONS.md` for the native sheet gesture bridge and ownership split.
 
+## GPUI Flex Layout — Width Resolution in Column Containers
+
+Do not use `w_full()` (`width: 100%`) on flex items inside a `flex_col()` container to make them fill the container's width. Taffy only resolves percentage widths against a definite size. When a flex container's width comes from cross-axis stretch (the default), it is not considered definite for percentage resolution, so `width: 100%` on children resolves against a higher ancestor and produces wrong widths.
+
+**Use instead**: omit the explicit width and let the default `align-self: stretch` fill the cross axis.
+
+```rust
+// Wrong — w_full() resolves against the wrong ancestor
+div().flex_col()
+    .child(div().w_full().flex().flex_row()...)
+
+// Correct — stretch is the default and uses the definite container width
+div().flex_col()
+    .child(div().min_w_0().flex().flex_row()...)
+```
+
+Keep `min_w_0()` on flex items that contain truncated text or overflow content to prevent them from overflowing their container.
+
+For the column container itself to have a definite width (so its children can use stretch reliably), give it an explicit `w_full()` or absolute pixel width. Do not rely solely on cross-axis stretch being inherited transitively through multiple flex levels.
+
+Do not combine `justify_between()` with `flex_1()` on a sibling to push a right-hand element to the far edge. With `flex_1()` consuming all free space, `justify-content: space-between` has no remaining space to distribute and behaves identically to `flex-start`. Use `flex_1()` on the left child alone — it naturally pushes the right child to the far edge without `justify_between`.
+
 ## WorkspaceState as Single Source of Truth
 
 All display reads from `WorkspaceState`, never `SessionHandle`.
