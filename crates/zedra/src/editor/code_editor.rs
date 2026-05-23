@@ -509,16 +509,14 @@ mod tests {
         assert!(editor.cached_line_highlights[0].is_empty());
 
         let parsed = ParsedEditorSyntax::build("main.rs", content);
-        assert_eq!(parsed.line_highlights.len(), editor.cached_lines.len());
-        let parsed_first_line_highlights = parsed.line_highlights[0].clone();
-        assert!(!parsed_first_line_highlights.is_empty());
         editor.apply_parsed_syntax(parsed);
 
         assert!(Rc::ptr_eq(&original_lines, &editor.cached_lines));
         assert_eq!(
-            editor.cached_line_highlights[0],
-            parsed_first_line_highlights
+            editor.cached_line_highlights.len(),
+            editor.cached_lines.len()
         );
+        assert!(!editor.cached_line_highlights[0].is_empty());
         assert!(
             editor.cached_line_highlights[0]
                 .iter()

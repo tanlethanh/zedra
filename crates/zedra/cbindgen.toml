@@ -4,7 +4,9 @@ include_guard = "ZEDRA_IOS_H"
 # Exclude symbols that cbindgen picks up from Rust `unsafe extern "C"` import
 # blocks. These are declarations of ObjC functions that Rust *calls*, not
 # functions that Rust *exports* to ObjC. They don't belong in the public header.
+# Layout tokens live in Rust only; the iOS header should expose FFI functions.
 [export]
+item_types = ["functions"]
 exclude = [
     "zedra_nslog",
     "gpui_ios_initialize",

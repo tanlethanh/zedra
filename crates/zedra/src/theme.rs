@@ -27,10 +27,11 @@ pub const DRAWER_ICON_ZONE: f32 = 38.0;
 pub const TERMINAL_LINE_HEIGHT: f32 = 16.0;
 pub const PANEL_ITEM_HEIGHT: f32 = 28.0;
 
-#[cfg(target_os = "android")]
-pub const DRAWER_EDGE_ZONE: f32 = 72.0;
-#[cfg(not(target_os = "android"))]
-pub const DRAWER_EDGE_ZONE: f32 = 56.0;
+pub const DRAWER_EDGE_ZONE: f32 = if cfg!(target_os = "android") {
+    72.0
+} else {
+    56.0
+};
 pub const DRAWER_VELOCITY_THRESHOLD: f32 = 12.0;
 pub const DRAWER_BACKDROP_OPACITY: f32 = 0.4;
 pub const DRAWER_DEFAULT_WIDTH: f32 = 295.0;

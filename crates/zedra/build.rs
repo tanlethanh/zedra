@@ -46,10 +46,11 @@ fn main() {
             .compile("nslog_bridge");
 
         let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+        let config = cbindgen::Config::from_file(format!("{crate_dir}/cbindgen.toml"))
+            .expect("read cbindgen.toml");
         cbindgen::Builder::new()
             .with_crate(crate_dir)
-            .with_language(cbindgen::Language::C)
-            .with_include_guard("ZEDRA_IOS_H")
+            .with_config(config)
             .generate()
             .expect("Unable to generate bindings")
             .write_to_file("../../include/zedra_ios.h");
