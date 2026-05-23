@@ -1103,9 +1103,21 @@ struct OpenCodeSessionJson {
     updated: Option<i64>,
     created: Option<i64>,
     project_id: Option<String>,
+    /// Per-session working directory (OpenCode `session.directory`).
     directory: Option<String>,
+    /// Project root worktree (`project.worktree`), used for workdir matching only.
+    #[serde(default, alias = "worktree")]
+    project_worktree: Option<String>,
     #[serde(default)]
-    worktree: Option<String>,
+    workspace_id: Option<String>,
+    #[serde(default)]
+    workspace_branch: Option<String>,
+    #[serde(default)]
+    workspace_directory: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    transcript_size_bytes: Option<i64>,
 }
 
 struct OpenCodeSessionCountSummary {
@@ -1189,12 +1201,22 @@ fn fetch_opencode_sessions_json_from_db() -> Result<Vec<u8>, String> {
             s.id AS id,
             s.title AS title,
             s.directory AS directory,
+            s.path AS path,
+            s.workspace_id AS workspaceId,
+            w.branch AS workspaceBranch,
+            w.directory AS workspaceDirectory,
             s.time_created AS created,
             s.time_updated AS updated,
             s.project_id AS projectId,
-            p.worktree AS worktree
+            p.worktree AS projectWorktree,
+            (
+                SELECT CAST(COALESCE(SUM(LENGTH(m.data)), 0) AS INTEGER)
+                FROM message m
+                WHERE m.session_id = s.id
+            ) AS transcriptSizeBytes
         FROM session s
         JOIN project p ON p.id = s.project_id
+        LEFT JOIN workspace w ON w.id = s.workspace_id
         WHERE s.time_archived IS NULL
         ORDER BY s.time_updated DESC
     "#;
@@ -1222,7 +1244,11 @@ fn opencode_workdir_matches(
     session: &OpenCodeSessionJson,
     git_cache: &mut HashMap<PathBuf, Option<PathBuf>>,
 ) -> bool {
-    let candidates = [session.directory.as_deref(), session.worktree.as_deref()];
+    let candidates = [
+        session.directory.as_deref(),
+        session.workspace_directory.as_deref(),
+        session.project_worktree.as_deref(),
+    ];
     for candidate in candidates.into_iter().flatten() {
         if cwd_matches(workdir, Some(candidate)) {
             return true;
@@ -1295,6 +1321,123 @@ fn opencode_sessions_limited(
     Ok((sessions, total))
 }
 
+fn opencode_transcript_sizes_from_db() -> HashMap<String, u64> {
+    let db_path = opencode_db_path();
+    if !db_path.is_file() {
+        return HashMap::new();
+    }
+
+    const QUERY: &str = r#"
+        SELECT session_id, CAST(COALESCE(SUM(LENGTH(data)), 0) AS INTEGER) AS bytes
+        FROM message
+        GROUP BY session_id
+    "#;
+
+    let output = match Command::new("sqlite3")
+        .args(["-readonly", "-json"])
+        .arg(&db_path)
+        .arg(QUERY)
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return HashMap::new(),
+    };
+    if output.stdout.is_empty() {
+        return HashMap::new();
+    }
+
+    #[derive(Deserialize)]
+    struct Row {
+        session_id: String,
+        bytes: i64,
+    }
+
+    serde_json::from_slice::<Vec<Row>>(&output.stdout)
+        .map(|rows| {
+            rows.into_iter()
+                .filter_map(|row| {
+                    let bytes = row.bytes.max(0) as u64;
+                    (bytes > 0).then_some((row.session_id, bytes))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn git_branch_at(path: &Path, cache: &mut HashMap<PathBuf, Option<String>>) -> Option<String> {
+    let key = normalize_path(path);
+    if let Some(cached) = cache.get(&key) {
+        return cached.clone();
+    }
+    let branch = resolve_git_branch(path);
+    cache.insert(key, branch.clone());
+    branch
+}
+
+fn resolve_git_branch(path: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(path)
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !branch.is_empty() {
+            return Some(branch);
+        }
+    }
+
+    let output = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!branch.is_empty() && branch != "HEAD").then_some(branch)
+}
+
+fn opencode_git_summary(
+    session: &OpenCodeSessionJson,
+    branch_cache: &mut HashMap<PathBuf, Option<String>>,
+) -> Option<AgentGitSummary> {
+    let directory = session.directory.as_deref()?;
+    let branch = session
+        .workspace_branch
+        .clone()
+        .filter(|value| !value.is_empty())
+        .or_else(|| git_branch_at(Path::new(directory), branch_cache));
+    Some(AgentGitSummary {
+        branch,
+        worktree: Some(directory.to_string()),
+        commit_hash: None,
+        repository_url: None,
+        pr_number: None,
+        pr_url: None,
+        pr_repository: None,
+    })
+}
+
+fn opencode_transcript_size_bytes(
+    session: &OpenCodeSessionJson,
+    transcript_sizes: &HashMap<String, u64>,
+) -> Option<u64> {
+    session
+        .transcript_size_bytes
+        .and_then(|size| (size > 0).then_some(size as u64))
+        .or_else(|| {
+            session
+                .path
+                .as_deref()
+                .map(Path::new)
+                .and_then(file_size_bytes)
+        })
+        .or_else(|| transcript_sizes.get(&session.id).copied())
+        .filter(|size| *size > 0)
+}
+
 fn opencode_sessions_from_json(
     workdir: &Path,
     json: &[u8],
@@ -1303,17 +1446,26 @@ fn opencode_sessions_from_json(
 ) -> Result<Vec<AgentSessionSummary>, String> {
     let raw: Vec<OpenCodeSessionJson> =
         serde_json::from_slice(json).map_err(|error| error.to_string())?;
-    let mut git_cache = HashMap::new();
+    let transcript_sizes = opencode_transcript_sizes_from_db();
+    let mut git_common_cache = HashMap::new();
+    let mut git_branch_cache = HashMap::new();
     let mut sessions = Vec::new();
     for session in raw {
-        if !opencode_workdir_matches(workdir, &session, &mut git_cache) {
+        if !opencode_workdir_matches(workdir, &session, &mut git_common_cache) {
             continue;
         }
+        let git = opencode_git_summary(&session, &mut git_branch_cache);
+        let transcript_size_bytes =
+            opencode_transcript_size_bytes(&session, &transcript_sizes);
         sessions.push(AgentSessionSummary {
             kind: ManagedAgentKind::OpenCode,
             session_id: session.id.clone(),
             title: session_title(session.title.clone()),
-            cwd: session.directory.clone().or(session.worktree.clone()),
+            cwd: session
+                .directory
+                .clone()
+                .or(session.workspace_directory.clone())
+                .or(session.project_worktree.clone()),
             created_at: session
                 .created
                 .and_then(DateTime::<Utc>::from_timestamp_millis),
@@ -1332,7 +1484,7 @@ fn opencode_sessions_from_json(
                 native_project_id: session.project_id,
                 model_provider: None,
             },
-            git: None,
+            git,
             usage: None,
             counters: AgentSessionCounters {
                 record_count: 0,
@@ -1353,7 +1505,7 @@ fn opencode_sessions_from_json(
             },
             data_sources: vec![AgentDataSource::ProviderCli],
             warnings: Vec::new(),
-            transcript_size_bytes: None,
+            transcript_size_bytes,
         });
     }
     sessions.sort_by(|left, right| right.last_activity_at.cmp(&left.last_activity_at));
@@ -1814,7 +1966,8 @@ mod tests {
             "updated": 1777805877635,
             "created": 1777805707332,
             "projectId": "project-hash",
-            "directory": "/repo"
+            "directory": "/repo",
+            "transcriptSizeBytes": 8192
           }
         ]"#;
 
@@ -1841,6 +1994,45 @@ mod tests {
             session.resume.action_id.as_deref(),
             Some("opencode:ses_123")
         );
+        assert_eq!(session.transcript_size_bytes, Some(8192));
+        assert!(session.git.is_some());
+    }
+
+    #[test]
+    fn opencode_session_summary_resolves_git_branch_and_transcript_size() {
+        let workdir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("repo root");
+        let directory = workdir.display().to_string();
+        let json = format!(
+            r#"[{{
+              "id": "ses_git",
+              "title": "Branch test",
+              "directory": "{directory}",
+              "projectWorktree": "{directory}",
+              "transcriptSizeBytes": 4096,
+              "updated": 1777805877635,
+              "created": 1777805707332
+            }}]"#
+        );
+
+        let sessions = opencode_sessions_from_json(
+            workdir,
+            json.as_bytes(),
+            &cli("1.14.33"),
+            "test",
+        )
+        .expect("parse opencode sessions");
+        assert_eq!(sessions.len(), 1);
+        let session = &sessions[0];
+        assert_eq!(session.transcript_size_bytes, Some(4096));
+        let branch = session
+            .git
+            .as_ref()
+            .and_then(|git| git.branch.as_deref())
+            .unwrap_or_default();
+        assert!(!branch.is_empty());
     }
 
     #[test]
@@ -1855,7 +2047,12 @@ mod tests {
             created: Some(1777805707332),
             project_id: Some("project-hash".into()),
             directory: Some(linked.display().to_string()),
-            worktree: Some(linked.display().to_string()),
+            project_worktree: Some(linked.display().to_string()),
+            workspace_id: None,
+            workspace_branch: None,
+            workspace_directory: None,
+            path: None,
+            transcript_size_bytes: None,
         };
 
         let mut git_cache = HashMap::new();
@@ -1875,7 +2072,9 @@ mod tests {
             "created": 1777805707332,
             "updated": 1777805877635,
             "projectId": "project-hash",
-            "worktree": "/repo"
+            "projectWorktree": "/repo",
+            "workspaceBranch": "feature/opencode",
+            "transcriptSizeBytes": 2048
           }
         ]"#;
         let sessions = opencode_sessions_from_json(
@@ -1887,6 +2086,37 @@ mod tests {
         .expect("parse");
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].title.as_deref(), Some("From sqlite"));
+        assert_eq!(sessions[0].transcript_size_bytes, Some(2048));
+        assert_eq!(
+            sessions[0]
+                .git
+                .as_ref()
+                .and_then(|git| git.branch.as_deref()),
+            Some("feature/opencode")
+        );
+    }
+
+    #[test]
+    fn opencode_git_summary_prefers_workspace_branch_over_live_git() {
+        let session = OpenCodeSessionJson {
+            id: "ses_ws".into(),
+            title: Some("Workspace branch".into()),
+            updated: None,
+            created: None,
+            project_id: None,
+            directory: Some(env!("CARGO_MANIFEST_DIR").to_string()),
+            project_worktree: None,
+            workspace_id: Some("ws_1".into()),
+            workspace_branch: Some("stored-branch".into()),
+            workspace_directory: Some("/repo/worktree".into()),
+            path: None,
+            transcript_size_bytes: None,
+        };
+        let mut branch_cache = HashMap::new();
+        let git = opencode_git_summary(&session, &mut branch_cache).expect("git summary");
+        assert_eq!(git.branch.as_deref(), Some("stored-branch"));
+        assert_eq!(git.worktree.as_deref(), Some(env!("CARGO_MANIFEST_DIR")));
+        assert!(branch_cache.is_empty());
     }
 
     #[test]
