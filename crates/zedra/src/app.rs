@@ -38,7 +38,6 @@ fn should_update_drawer_content(current: AppScreen, next: AppScreen) -> bool {
 
 pub struct ZedraApp {
     screen: AppScreen,
-    theme_state: Entity<ThemeState>,
     home_view: Entity<HomeView>,
     settings_view: Entity<SettingsView>,
     workspaces: Entity<Workspaces>,
@@ -103,7 +102,6 @@ impl ZedraApp {
 
         let app = Self {
             screen: AppScreen::Home,
-            theme_state,
             home_view,
             settings_view,
             workspaces,

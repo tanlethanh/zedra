@@ -6,7 +6,6 @@ use crate::editor::markdown::{
     MARKDOWN_SELECTION_AREA_ID, MarkdownView, is_markdown_path, parse_markdown_source,
 };
 use crate::placeholder::render_placeholder;
-use crate::theme;
 
 #[derive(Clone, Debug)]
 enum FileState {

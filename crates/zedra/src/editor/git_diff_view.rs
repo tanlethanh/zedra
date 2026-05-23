@@ -10,7 +10,6 @@ use gpui::*;
 use tracing::info;
 
 use super::syntax_highlighter::Highlighter;
-use super::syntax_theme::SyntaxTheme;
 use crate::platform_bridge;
 use crate::theme::{self, EditorTheme};
 

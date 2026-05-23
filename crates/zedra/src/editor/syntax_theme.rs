@@ -1,5 +1,4 @@
 use gpui::HighlightStyle;
-use serde::{Deserialize, Serialize};
 
 /// Maps tree-sitter capture names to highlight styles.
 /// Lookup uses longest prefix match so e.g. `"function.method"` matches `"function"`.
