@@ -13,6 +13,7 @@ use crate::settings::{ThemeState, ThemeStateEvent};
 use crate::settings_view::{SettingsEvent, SettingsView};
 use crate::telemetry::view_telemetry::{self, ViewDescriptor};
 use crate::ui::{DrawerHost, DrawerSide};
+use crate::workspace_action::ShowConnecting;
 use crate::workspaces::{Workspaces, WorkspacesEvent};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -215,6 +216,24 @@ impl ZedraApp {
         }
     }
 
+    fn close_quick_action_drawer(&self, cx: &mut Context<Self>) {
+        self.quick_action_drawer.update(cx, |host, cx| host.close(cx));
+    }
+
+    fn handle_show_connecting(
+        &mut self,
+        _: &ShowConnecting,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(entry_index) = self.workspaces.read(cx).active_index() {
+            self.workspaces.update(cx, |ws, cx| {
+                ws.open_connecting_for_entry(entry_index, window, cx);
+            });
+        }
+        self.close_quick_action_drawer(cx);
+    }
+
     fn open_terminal_from_quick_action(
         &self,
         ws_index: usize,
@@ -405,6 +424,7 @@ impl Render for ZedraApp {
         div()
             .size_full()
             .on_action(cx.listener(Self::handle_system_back_action))
+            .on_action(cx.listener(Self::handle_show_connecting))
             .font_family(fonts::MONO_FONT_FAMILY)
             .child(self.quick_action_drawer.clone())
     }
