@@ -99,6 +99,12 @@ enum Commands {
         /// Intended only for testing and store review.
         #[arg(long = "static-qr")]
         static_qr: bool,
+
+        /// How often (in seconds) to re-fetch live agent usage from provider APIs.
+        /// Set to 0 to disable periodic refresh (initial fetch at startup still runs).
+        /// Default: 300 (5 minutes).
+        #[arg(long = "usage-refresh-secs", default_value = "300")]
+        usage_refresh_secs: u64,
     },
     /// Connect to a daemon and measure connection RTT
     Client {
@@ -275,6 +281,7 @@ struct DetachedStartOptions {
     debug_telemetry: bool,
     relay_only: bool,
     static_qr: bool,
+    usage_refresh_secs: u64,
 }
 
 struct DetachedStartResult {
@@ -306,6 +313,12 @@ fn detached_start_child_args(options: &DetachedStartOptions) -> Vec<String> {
     }
     if options.static_qr {
         args.push("--static-qr".to_string());
+    }
+    if options.usage_refresh_secs != 300 {
+        args.extend([
+            "--usage-refresh-secs".to_string(),
+            options.usage_refresh_secs.to_string(),
+        ]);
     }
     args
 }
@@ -584,6 +597,7 @@ async fn main() -> Result<()> {
             debug_telemetry,
             relay_only,
             static_qr,
+            usage_refresh_secs,
         } => {
             let workdir = resolve_workdir(workdir);
             let pairing_mode = if static_qr {
@@ -600,6 +614,7 @@ async fn main() -> Result<()> {
                     debug_telemetry,
                     relay_only,
                     static_qr,
+                    usage_refresh_secs,
                 })?;
                 match wait_for_detached_pairing_qr(&detached.workdir, detached.pid, pairing_mode)
                     .await
@@ -711,6 +726,19 @@ async fn main() -> Result<()> {
                 let preload_workdir = workdir.clone();
                 tokio::spawn(async move {
                     cache.preload(preload_workdir).await;
+                });
+            }
+            if usage_refresh_secs > 0 {
+                let cache = state.agent_cache.clone();
+                tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(
+                        std::time::Duration::from_secs(usage_refresh_secs),
+                    );
+                    interval.tick().await; // skip immediate first tick — preload covers it
+                    loop {
+                        interval.tick().await;
+                        cache.refresh_usage().await;
+                    }
                 });
             }
 
@@ -2019,6 +2047,7 @@ mod tests {
             debug_telemetry: true,
             relay_only: true,
             static_qr: true,
+            usage_refresh_secs: 300,
         });
 
         assert_eq!(

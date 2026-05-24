@@ -61,6 +61,12 @@ impl AgentCache {
         *self.registry.lock().await = Some(registry);
     }
 
+    /// Trigger a background usage refresh (coordinator-deduplicated).
+    /// Called by the periodic refresh task; safe to call concurrently.
+    pub async fn refresh_usage(self: &Arc<Self>) {
+        self.request_usage_refresh(None).await;
+    }
+
     pub async fn preload(self: &Arc<Self>, workdir: PathBuf) {
         let cache = Arc::clone(self);
         let scan_workdir = workdir.clone();

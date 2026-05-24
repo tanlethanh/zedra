@@ -2118,6 +2118,14 @@ pub fn apply_cached_account_usage(
 }
 
 async fn fetch_claude_account_usage() -> Option<AgentUsageSnapshot> {
+    if let Some(snap) = fetch_claude_oauth_usage().await {
+        return Some(snap);
+    }
+    // OAuth token not available (e.g. stored in macOS Keychain) — fall back to PTY probe.
+    fetch_claude_cli_usage().await
+}
+
+async fn fetch_claude_oauth_usage() -> Option<AgentUsageSnapshot> {
     let token = read_claude_oauth_token()?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
@@ -2171,6 +2179,421 @@ async fn fetch_claude_account_usage() -> Option<AgentUsageSnapshot> {
         rate_limit_five_hour_used_percent: five_hour,
         rate_limit_seven_day_used_percent: seven_day,
     })
+}
+
+/// PTY-based fallback for machines where the Claude OAuth token lives in the
+/// macOS Keychain rather than `~/.claude/.credentials.json`.
+///
+/// Mirrors the codexbar `ClaudeCLISession` approach:
+/// - Open a 50×160 PTY, spawn `claude --allowed-tools ""`
+/// - After startup noise settles, send `/usage\r`
+/// - Auto-confirm any "Show plan" command-palette entry with `\r`
+/// - Tick `\r` every 0.8s to keep the TUI rendering
+/// - Stop once "currentsession" + a digit + `%` appears in the normalized output
+/// - Kill the child, parse rate-limit and credit fields
+///
+/// The entire PTY probe runs in a `spawn_blocking` thread because `tokio::fs::File`
+/// does not integrate PTY fds with kqueue/epoll on macOS — reads EAGAIN-spin rather
+/// than yielding. Blocking `poll(2)` with a short timeout gives correct behaviour.
+#[cfg(unix)]
+async fn fetch_claude_cli_usage() -> Option<AgentUsageSnapshot> {
+    let claude_bin = which_claude()?;
+    tokio::task::spawn_blocking(move || claude_cli_usage_blocking(&claude_bin))
+        .await
+        .ok()
+        .flatten()
+}
+
+#[cfg(unix)]
+fn claude_cli_usage_blocking(claude_bin: &std::path::Path) -> Option<AgentUsageSnapshot> {
+    use std::io::{Read, Write};
+    use std::os::unix::io::FromRawFd;
+    use std::os::unix::process::CommandExt;
+
+    // Open PTY pair (50 rows × 160 cols, matching codexbar).
+    let (master_fd, slave_fd) = unsafe {
+        let mut master: libc::c_int = -1;
+        let mut slave: libc::c_int = -1;
+        let mut ws: libc::winsize = std::mem::zeroed();
+        ws.ws_row = 50;
+        ws.ws_col = 160;
+        let rc = libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut ws as *mut libc::winsize,
+        );
+        if rc != 0 {
+            tracing::debug!("claude cli usage: openpty failed");
+            return None;
+        }
+        (master, slave)
+    };
+
+    // Duplicate slave_fd so each Stdio wrapper owns a separate fd — the
+    // `from_raw_fd` contract transfers ownership, so we must not reuse the same fd.
+    let (slave_stdin, slave_stdout, slave_stderr) = unsafe {
+        let out = libc::dup(slave_fd);
+        let err = libc::dup(slave_fd);
+        if out < 0 || err < 0 {
+            // Close any fd that succeeded before returning — partial dup leaks otherwise.
+            if out >= 0 {
+                libc::close(out);
+            }
+            if err >= 0 {
+                libc::close(err);
+            }
+            libc::close(slave_fd);
+            libc::close(master_fd);
+            return None;
+        }
+        (slave_fd, out, err)
+    };
+
+    // Keep master blocking — we poll(2) ourselves for timeout control.
+    // (tokio::fs::File spins on EAGAIN for PTY fds on macOS; blocking + poll is correct.)
+
+    // Spawn `claude --allowed-tools ""`.
+    let mut cmd = std::process::Command::new(claude_bin);
+    cmd.args(["--allowed-tools", ""]);
+    unsafe {
+        cmd.stdin(std::process::Stdio::from_raw_fd(slave_stdin))
+            .stdout(std::process::Stdio::from_raw_fd(slave_stdout))
+            .stderr(std::process::Stdio::from_raw_fd(slave_stderr))
+            .pre_exec(|| {
+                libc::setsid();
+                libc::ioctl(0, libc::TIOCSCTTY as _, 0i32);
+                Ok(())
+            });
+    }
+    let child = cmd.spawn();
+
+    // slave fds are owned by the child — close the parent's copies.
+    // (from_raw_fd took ownership; the Stdio wrappers will close them when cmd drops,
+    //  but the child fork has already dup2'd them, so closing here is safe.)
+    // `cmd` drops below; don't double-close manually.
+
+    let mut child: std::process::Child = match child {
+        Ok(c) => c,
+        Err(err) => {
+            unsafe { libc::close(master_fd) };
+            tracing::debug!("claude cli usage: spawn failed: {err}");
+            return None;
+        }
+    };
+
+    // After spawn, `cmd` is dropped here, closing the slave fds in the parent.
+    drop(cmd);
+
+    // Wrap the master fd in a File for read/write; it owns the fd from here.
+    let mut master = unsafe { std::fs::File::from_raw_fd(master_fd) };
+
+    let global_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut accumulated = String::new();
+
+    // ── helper: poll(2) the master fd for readability with a ms timeout ───────
+    let poll_readable = |timeout_ms: i32| -> bool {
+        let mut pfd = libc::pollfd {
+            fd: master_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        unsafe { libc::poll(&mut pfd, 1, timeout_ms) > 0 && pfd.revents & libc::POLLIN != 0 }
+    };
+
+    // Drain startup noise for 2s.
+    let drain_deadline = std::time::Instant::now() + std::time::Duration::from_millis(2000);
+    let mut buf = vec![0u8; 4096];
+    while std::time::Instant::now() < drain_deadline {
+        let ms = drain_deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .as_millis()
+            .min(200) as i32;
+        if poll_readable(ms) {
+            match master.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+    }
+
+    // Send `/usage` command.
+    if master.write_all(b"/usage\r").is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    }
+
+    // Read loop — collect output until usage panel is detected.
+    let mut last_tick = std::time::Instant::now();
+    let tick_interval = std::time::Duration::from_millis(800);
+    let mut found_at: Option<std::time::Instant> = None;
+    let settle = std::time::Duration::from_millis(2000);
+    // Running whitespace-free lowercase view of accumulated — appended incrementally
+    // so pattern checks never rebuild from the full string (avoids O(n²) per read).
+    let mut norm = String::new();
+
+    loop {
+        if std::time::Instant::now() >= global_deadline {
+            tracing::debug!("claude cli usage: timed out");
+            break;
+        }
+        if let Some(found) = found_at {
+            if found.elapsed() >= settle {
+                break;
+            }
+        }
+        // Periodic Enter to keep TUI rendering.
+        if last_tick.elapsed() >= tick_interval {
+            let _ = master.write_all(b"\r");
+            last_tick = std::time::Instant::now();
+        }
+
+        if poll_readable(100) {
+            match master.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let chunk = strip_ansi(&buf[..n]);
+                    accumulated.push_str(&chunk);
+
+                    // Normalize only the new chunk and append to running norm —
+                    // avoids O(n²) rebuild of the full accumulated string each iteration.
+                    let new_norm: String = chunk
+                        .chars()
+                        .filter(|c| !c.is_whitespace())
+                        .map(|c| c.to_ascii_lowercase())
+                        .collect();
+                    norm.push_str(&new_norm);
+
+                    // Auto-confirm "Show plan" command palette.
+                    if norm.contains("showplan") || norm.contains("showplanusagelimits") {
+                        let _ = master.write_all(b"\r");
+                    }
+
+                    if found_at.is_none()
+                        && norm.contains("currentsession")
+                        && norm.contains('%')
+                        && norm.chars().any(|c| c.is_ascii_digit())
+                    {
+                        found_at = Some(std::time::Instant::now());
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+    // master drops here, closing master_fd.
+
+    if found_at.is_none() {
+        tracing::debug!("claude cli usage: panel not found in output");
+        return None;
+    }
+
+    parse_claude_cli_usage_output(&accumulated)
+}
+
+#[cfg(not(unix))]
+async fn fetch_claude_cli_usage() -> Option<AgentUsageSnapshot> {
+    None
+}
+
+fn which_claude() -> Option<std::path::PathBuf> {
+    std::env::var_os("PATH")
+        .as_deref()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .split(':')
+        .map(|dir| std::path::Path::new(dir).join("claude"))
+        .find(|p| p.is_file())
+}
+
+/// Strip ANSI escape sequences from a byte slice, returning plain text.
+///
+/// Multi-byte UTF-8 characters are handled correctly: the leading byte determines
+/// the character length and all continuation bytes are consumed together.
+/// Truncated sequences at the end of the buffer (split across read boundaries)
+/// are dropped rather than emitting replacement characters.
+fn strip_ansi(input: &[u8]) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] == b'\x1b' {
+            i += 1;
+            if i < input.len() && input[i] == b'[' {
+                // CSI sequence: skip until a byte in 0x40–0x7E
+                i += 1;
+                while i < input.len() && !(0x40..=0x7e).contains(&input[i]) {
+                    i += 1;
+                }
+                i += 1; // skip final byte
+            } else {
+                // Other escape: skip one more byte
+                i += 1;
+            }
+        } else if input[i] < 0x20 && input[i] != b'\n' && input[i] != b'\r' && input[i] != b'\t' {
+            // Skip other control bytes (e.g. cursor movement OSC)
+            i += 1;
+        } else {
+            // Determine the UTF-8 character width from the leading byte, then
+            // validate and push the whole character. This handles multi-byte
+            // sequences correctly instead of processing one byte at a time.
+            let char_len = utf8_char_len(input[i]);
+            if i + char_len <= input.len() {
+                if let Ok(s) = std::str::from_utf8(&input[i..i + char_len]) {
+                    out.push_str(s);
+                }
+                // Skip all bytes of this character even if invalid — avoids
+                // treating continuation bytes as independent characters.
+                i += char_len;
+            } else {
+                // Truncated sequence at end of buffer — skip remaining bytes.
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Returns the expected byte length of a UTF-8 character given its leading byte.
+fn utf8_char_len(b: u8) -> usize {
+    if b < 0x80 {
+        1
+    } else if b < 0xE0 {
+        2
+    } else if b < 0xF0 {
+        3
+    } else {
+        4
+    }
+}
+
+/// Parse the plain-text output of the Claude `/usage` panel.
+///
+/// Looks for lines containing:
+/// - "Current session" + a percentage  → `rate_limit_five_hour_used_percent`
+/// - "Current week" + a percentage     → `rate_limit_seven_day_used_percent`
+/// - "Usage credits" + "$used/$limit"  → `total_cost_usd` + `context_used_percent`
+///
+/// The TUI renders the label and percentage on separate lines (cursor positioning),
+/// so we look at the label line AND the following line for a percentage:
+///
+/// ```text
+/// Currentsession
+///                    45%used
+/// ```
+fn parse_claude_cli_usage_output(text: &str) -> Option<AgentUsageSnapshot> {
+    let mut session_pct: Option<f32> = None;
+    let mut week_pct: Option<f32> = None;
+    let mut credits_used: Option<f64> = None;
+    let mut credits_limit: Option<f64> = None;
+
+    let lines: Vec<&str> = text.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let lower = line.to_ascii_lowercase();
+        let next = lines.get(i + 1).copied().unwrap_or("");
+
+        // "Current session" — percentage may be on the same line or the next.
+        if lower.contains("current session") || lower.contains("currentsession") {
+            let pct = extract_first_percent(line).or_else(|| extract_first_percent(next));
+            if pct.is_some() {
+                session_pct = pct;
+            }
+        }
+        // "Current week (all models)" — same pattern.
+        if lower.contains("current week") || lower.contains("currentweek") {
+            let pct = extract_first_percent(line).or_else(|| extract_first_percent(next));
+            if pct.is_some() {
+                week_pct = pct;
+            }
+        }
+        // "Usage credits  $0.21 / $50.00 spent" — usually all on one line.
+        if lower.contains("usage credits") || lower.contains("usagecredits") {
+            let (u, l) = extract_dollar_fraction(line);
+            if u.is_some() {
+                credits_used = u;
+                credits_limit = l;
+            }
+        }
+        i += 1;
+    }
+
+    if session_pct.is_none() && week_pct.is_none() && credits_used.is_none() {
+        return None;
+    }
+
+    let context_used = credits_used.zip(credits_limit).and_then(|(u, l)| {
+        if l > 0.0 {
+            Some((u / l * 100.0) as f32)
+        } else {
+            None
+        }
+    });
+
+    Some(AgentUsageSnapshot {
+        rate_limit_five_hour_used_percent: session_pct,
+        rate_limit_seven_day_used_percent: week_pct,
+        context_used_percent: context_used,
+        total_cost_usd: credits_used,
+        total_duration_ms: None,
+        total_api_duration_ms: None,
+        lines_added: None,
+        lines_removed: None,
+    })
+}
+
+/// Extract the first `NN%` value from a line of text. Returns the number as f32.
+fn extract_first_percent(line: &str) -> Option<f32> {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            // Walk backwards over digits (and optional `.`)
+            let mut j = i;
+            while j > 0 && (bytes[j - 1].is_ascii_digit() || bytes[j - 1] == b'.') {
+                j -= 1;
+            }
+            if j < i {
+                if let Ok(s) = std::str::from_utf8(&bytes[j..i]) {
+                    if let Ok(v) = s.parse::<f32>() {
+                        return Some(v);
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Extract `$used/$limit` from a line. Returns `(used, limit)` as `Option<f64>` pair.
+fn extract_dollar_fraction(line: &str) -> (Option<f64>, Option<f64>) {
+    let mut values: Vec<f64> = Vec::new();
+    let mut i = 0;
+    let bytes = line.as_bytes();
+    while i < bytes.len() {
+        if bytes[i] == b'$' {
+            i += 1;
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                i += 1;
+            }
+            if i > start {
+                if let Ok(s) = std::str::from_utf8(&bytes[start..i]) {
+                    if let Ok(v) = s.parse::<f64>() {
+                        values.push(v);
+                    }
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    (values.first().copied(), values.get(1).copied())
 }
 
 async fn fetch_codex_account_usage() -> Option<AgentUsageSnapshot> {
@@ -2756,5 +3179,90 @@ mod tests {
             normalize_event(ManagedAgentKind::OpenCode, "session.error"),
             Some((AgentEventKind::TurnFailed, AgentLifecycleStatus::Failed))
         );
+    }
+
+    // ── strip_ansi ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn strip_ansi_ascii_passthrough() {
+        assert_eq!(strip_ansi(b"hello world\n"), "hello world\n");
+    }
+
+    #[test]
+    fn strip_ansi_removes_csi_sequences() {
+        // Bold on + text + reset
+        assert_eq!(strip_ansi(b"\x1b[1mBold\x1b[0m"), "Bold");
+        // Cursor move (ESC[2;5H) — parameters before final byte
+        assert_eq!(strip_ansi(b"\x1b[2;5Htext"), "text");
+    }
+
+    #[test]
+    fn strip_ansi_multibyte_utf8_preserved() {
+        // '€' = 0xE2 0x82 0xAC (3 bytes)
+        let euro = "€";
+        assert_eq!(strip_ansi(euro.as_bytes()), euro);
+        // '😀' = 4 bytes
+        let emoji = "😀";
+        assert_eq!(strip_ansi(emoji.as_bytes()), emoji);
+        // Mixed: ASCII + multi-byte + ANSI escape
+        let mixed = "hi\x1b[32m€\x1b[0m!";
+        assert_eq!(strip_ansi(mixed.as_bytes()), "hi€!");
+    }
+
+    #[test]
+    fn strip_ansi_truncated_multibyte_dropped() {
+        // First two bytes of a 3-byte sequence with the third byte missing
+        let truncated = &[0xE2u8, 0x82]; // incomplete '€'
+        assert_eq!(strip_ansi(truncated), "");
+    }
+
+    // ── parse_claude_cli_usage_output ─────────────────────────────────────────
+
+    #[test]
+    fn parse_usage_inline_percentages() {
+        let text = "Current session 45% used\nCurrent week (all models) 18% used\n";
+        let snap = parse_claude_cli_usage_output(text).unwrap();
+        assert_eq!(snap.rate_limit_five_hour_used_percent, Some(45.0));
+        assert_eq!(snap.rate_limit_seven_day_used_percent, Some(18.0));
+    }
+
+    #[test]
+    fn parse_usage_percent_on_next_line() {
+        // TUI renders label and value on separate lines via cursor positioning.
+        let text = "Currentsession\n  45%used\nCurrentweek\n  18%used\n";
+        let snap = parse_claude_cli_usage_output(text).unwrap();
+        assert_eq!(snap.rate_limit_five_hour_used_percent, Some(45.0));
+        assert_eq!(snap.rate_limit_seven_day_used_percent, Some(18.0));
+    }
+
+    #[test]
+    fn parse_usage_credits() {
+        let text = "Usage credits $0.21 / $50.00 spent\n";
+        let snap = parse_claude_cli_usage_output(text).unwrap();
+        assert!((snap.total_cost_usd.unwrap() - 0.21).abs() < 1e-6);
+        // context_used_percent = 0.21/50.00 * 100 ≈ 0.42
+        let pct = snap.context_used_percent.unwrap();
+        assert!((pct - 0.42).abs() < 0.01, "pct={pct}");
+    }
+
+    #[test]
+    fn parse_usage_returns_none_when_no_fields() {
+        assert!(parse_claude_cli_usage_output("no relevant data here\n").is_none());
+    }
+
+    // ── extract_first_percent / extract_dollar_fraction ───────────────────────
+
+    #[test]
+    fn extract_percent_finds_first_value() {
+        assert_eq!(extract_first_percent("  30% used"), Some(30.0));
+        assert_eq!(extract_first_percent("100%"), Some(100.0));
+        assert_eq!(extract_first_percent("no percent here"), None);
+    }
+
+    #[test]
+    fn extract_dollar_fraction_two_values() {
+        let (used, limit) = extract_dollar_fraction("$0.21 / $50.00 spent");
+        assert!((used.unwrap() - 0.21).abs() < 1e-6);
+        assert!((limit.unwrap() - 50.0).abs() < 1e-6);
     }
 }
