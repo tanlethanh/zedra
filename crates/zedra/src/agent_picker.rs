@@ -52,8 +52,8 @@ impl AgentPicker {
     fn fetch(&mut self, cx: &mut Context<Self>) {
         self.state = State::Loading;
         let handle = self.session_handle.clone();
-        let task = cx.spawn(async move |this, cx| {
-            match handle.agent_installed_list(false).await {
+        let task = cx.spawn(
+            async move |this, cx| match handle.agent_installed_list(false).await {
                 Ok(agents) => {
                     let _ = this.update(cx, |this, cx| {
                         let available: Vec<_> =
@@ -86,8 +86,8 @@ impl AgentPicker {
                         );
                     });
                 }
-            }
-        });
+            },
+        );
         self._task = Some(task);
     }
 

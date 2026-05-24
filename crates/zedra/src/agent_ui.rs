@@ -2,7 +2,9 @@
 use chrono::{DateTime, Utc};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use zedra_rpc::proto::{AgentSessionSummary, AgentSetupState, AgentSummary, ManagedAgentKind};
+use zedra_rpc::proto::{
+    AgentSessionSummary, AgentSetupState, AgentSummary, AgentUsageSnapshot, ManagedAgentKind,
+};
 
 use crate::platform_bridge::{self, HapticFeedback};
 use crate::{theme, workspace_action};
@@ -80,6 +82,7 @@ pub fn render_agent_card(cx: &App, props: AgentCardProps<'_>) -> Stateful<Div> {
     let version = cli_version_display(agent);
     let session_count = agent.sessions.resumable.max(agent.sessions.total);
     let sessions_label = format!("{session_count} sessions");
+    let usage = agent.usage.clone();
 
     div()
         .id(SharedString::from(format!(
@@ -147,9 +150,122 @@ pub fn render_agent_card(cx: &App, props: AgentCardProps<'_>) -> Stateful<Div> {
                                         .text_color(rgb(theme::text_muted(cx)))
                                         .child(sessions_label),
                                 ),
-                        ),
+                        )
+                        .when_some(usage, |el, snap| {
+                            el.child(render_usage_row(kind, &snap, cx))
+                        }),
                 ),
         )
+}
+
+/// Compact usage row shown inside the agent card when live usage data is available.
+/// Renders rate-limit gauges (5h / 7d) and optional credit spend.
+fn render_usage_row(kind: ManagedAgentKind, snap: &AgentUsageSnapshot, cx: &App) -> impl IntoElement {
+    div()
+        .id(SharedString::from(format!("agent-card-usage-{}", kind_slug(kind))))
+        .w_full()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(px(3.0))
+        .when(
+            snap.rate_limit_five_hour_used_percent.is_some()
+                || snap.rate_limit_seven_day_used_percent.is_some(),
+            |el| {
+                el.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(theme::SPACING_SM))
+                        .when_some(snap.rate_limit_five_hour_used_percent, |row, pct| {
+                            row.child(usage_gauge("5h", pct, cx))
+                        })
+                        .when_some(snap.rate_limit_seven_day_used_percent, |row, pct| {
+                            row.child(usage_gauge("7d", pct, cx))
+                        }),
+                )
+            },
+        )
+        .when_some(snap.total_cost_usd, |el, usd| {
+            let text = if let Some(pct) = snap.context_used_percent {
+                format!("${usd:.2} spent · {pct:.0}% of limit")
+            } else {
+                format!("${usd:.2} extra spend")
+            };
+            el.child(
+                div()
+                    .text_size(px(theme::FONT_DETAIL))
+                    .text_color(rgb(theme::text_muted(cx)))
+                    .child(text),
+            )
+        })
+}
+
+// Fixed widths keep all gauges visually aligned regardless of digit count.
+const GAUGE_LABEL_W: f32 = 22.0; // "5h" / "7d" — 2 chars at FONT_DETAIL
+const GAUGE_PCT_W: f32 = 30.0; // "100%" worst case at FONT_DETAIL
+const GAUGE_BAR_W: f32 = 48.0;
+
+/// A labelled mini gauge: "5h [████░░░░] 45%"
+/// Fixed-width columns so multiple gauges always align.
+fn usage_gauge(label: &'static str, pct: f32, cx: &App) -> impl IntoElement {
+    let pct_clamped = pct.clamp(0.0, 100.0);
+    let bar_color = usage_bar_color(pct_clamped, cx);
+    let pct_text = format!("{pct:.0}%");
+
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(4.0))
+        .child(
+            // period label: "5h" / "7d"
+            div()
+                .w(px(GAUGE_LABEL_W))
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .text_size(px(theme::FONT_DETAIL))
+                .text_color(rgb(theme::text_muted(cx)))
+                .child(label),
+        )
+        .child(
+            // track
+            div()
+                .w(px(GAUGE_BAR_W))
+                .h(px(3.0))
+                .flex_shrink_0()
+                .rounded_full()
+                .bg(rgb(theme::border_subtle(cx)))
+                .child(
+                    // fill
+                    div()
+                        .h_full()
+                        .rounded_full()
+                        .w(px(GAUGE_BAR_W * pct_clamped / 100.0))
+                        .bg(rgb(bar_color)),
+                ),
+        )
+        .child(
+            // percentage value
+            div()
+                .w(px(GAUGE_PCT_W))
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .text_size(px(theme::FONT_DETAIL))
+                .text_color(rgb(bar_color))
+                .child(pct_text),
+        )
+}
+
+fn usage_bar_color(pct: f32, cx: &App) -> u32 {
+    if pct >= 80.0 {
+        theme::accent_red(cx)
+    } else if pct >= 50.0 {
+        theme::accent_yellow(cx)
+    } else {
+        theme::accent_green(cx)
+    }
 }
 
 // ---------------------------------------------------------------------------

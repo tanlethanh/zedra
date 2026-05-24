@@ -75,10 +75,16 @@ impl QuickActionPanel {
             | QuickActionPickerPending::ViewSessions { ws_index }
             | QuickActionPickerPending::ManageAgents { ws_index } => ws_index,
         };
-        self.workspaces.update(cx, |ws, cx| ws.switch_to(ws_index, cx));
+        self.workspaces
+            .update(cx, |ws, cx| ws.switch_to(ws_index, cx));
         cx.emit(QuickActionEvent::Close);
         cx.emit(QuickActionEvent::NavigateToWorkspace);
-        let Some(ws) = self.workspaces.read(cx).workspace_by_index(ws_index).cloned() else {
+        let Some(ws) = self
+            .workspaces
+            .read(cx)
+            .workspace_by_index(ws_index)
+            .cloned()
+        else {
             return;
         };
         match action {
