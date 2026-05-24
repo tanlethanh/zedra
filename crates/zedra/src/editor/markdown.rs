@@ -65,9 +65,11 @@ impl MarkdownView {
         );
         let mut subscriptions = Vec::new();
         if let Some(theme_state) = theme_state(cx) {
-            subscriptions.push(cx.subscribe(&theme_state, |this, _, _: &ThemeStateEvent, cx| {
-                this.on_theme_changed(cx);
-            }));
+            subscriptions.push(
+                cx.subscribe(&theme_state, |this, _, _: &ThemeStateEvent, cx| {
+                    this.on_theme_changed(cx);
+                }),
+            );
         }
         let mut view = Self {
             document,
@@ -1264,8 +1266,8 @@ fn render_code_block_content(text: &str, key: &str, cx: &App) -> AnyElement {
 }
 
 fn mermaid_layout_size(diagram: &MermaidDiagram) -> (f32, f32) {
-    let width = (diagram.intrinsic_width.max(1.0) * MERMAID_DISPLAY_SCALE)
-        .min(MERMAID_MAX_DISPLAY_WIDTH);
+    let width =
+        (diagram.intrinsic_width.max(1.0) * MERMAID_DISPLAY_SCALE).min(MERMAID_MAX_DISPLAY_WIDTH);
     let height = (diagram.intrinsic_height.max(1.0) * MERMAID_DISPLAY_SCALE)
         .min(MERMAID_MAX_DISPLAY_HEIGHT)
         .max(MERMAID_MIN_DISPLAY_HEIGHT);
@@ -2114,9 +2116,7 @@ fn main() {}
         use gpui::{AppContext as _, TestAppContext};
 
         let mut cx = TestAppContext::single();
-        let view = cx.update(|cx| {
-            cx.new(|cx| MarkdownView::new("# Title\n\nBody paragraph.", cx))
-        });
+        let view = cx.update(|cx| cx.new(|cx| MarkdownView::new("# Title\n\nBody paragraph.", cx)));
 
         view.update(&mut cx, |view, _cx| {
             assert_eq!(

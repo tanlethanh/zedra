@@ -116,11 +116,9 @@ pub fn render_mermaid_diagram(
     let svg = match kind {
         DiagramKind::Timeline => render_zedra_timeline_svg(source, preference)?,
         _ => {
-            let mut svg = render_with_options(
-                source,
-                mermaid_render_options_for(kind, source, preference),
-            )
-            .ok()?;
+            let mut svg =
+                render_with_options(source, mermaid_render_options_for(kind, source, preference))
+                    .ok()?;
             if kind == DiagramKind::Quadrant {
                 svg = post_process_quadrant_svg(&svg, preference);
             }
@@ -324,7 +322,11 @@ fn configure_gitgraph_layout(layout: &mut LayoutConfig) {
     git.highlight_inner_size = 7.0;
 }
 
-fn configure_mindmap_layout(layout: &mut LayoutConfig, ui: &ThemePalette, preference: ThemePreference) {
+fn configure_mindmap_layout(
+    layout: &mut LayoutConfig,
+    ui: &ThemePalette,
+    preference: ThemePreference,
+) {
     let mindmap = &mut layout.mindmap;
     mindmap.padding = 20.0;
     mindmap.max_node_width = 170.0;
@@ -362,7 +364,10 @@ fn configure_journey_layout(options: &mut RenderOptions) {
     options.layout.preferred_aspect_ratio = Some(2.2);
 }
 
-pub(crate) fn mermaid_theme_for_preference(ui: &ThemePalette, preference: ThemePreference) -> Theme {
+pub(crate) fn mermaid_theme_for_preference(
+    ui: &ThemePalette,
+    preference: ThemePreference,
+) -> Theme {
     let palette = MermaidPalette::from_ui(ui, preference);
     let canvas = hex_color(palette.canvas);
     let node = hex_color(palette.node_fill);
@@ -611,7 +616,16 @@ fn render_zedra_timeline_svg(source: &str, preference: ThemePreference) -> Optio
     );
 
     if let Some(title) = data.title.as_deref() {
-        write_svg_text(&mut svg, width / 2.0, 24.0, title, title_size, &ink, "middle", Some("600"));
+        write_svg_text(
+            &mut svg,
+            width / 2.0,
+            24.0,
+            title,
+            title_size,
+            &ink,
+            "middle",
+            Some("600"),
+        );
     }
 
     let _ = write!(
@@ -648,12 +662,23 @@ fn render_zedra_timeline_svg(source: &str, preference: ThemePreference) -> Optio
             r#"<rect x="{x:.2}" y="{card_y:.2}" width="{card_width:.2}" height="26" rx="6" ry="6" fill="{}" fill-opacity="0.35"/>"#,
             escape_xml(color)
         );
-        write_svg_text(&mut svg, center_x, card_y + 18.0, &entry.time, time_size, &ink, "middle", Some("600"));
+        write_svg_text(
+            &mut svg,
+            center_x,
+            card_y + 18.0,
+            &entry.time,
+            time_size,
+            &ink,
+            "middle",
+            Some("600"),
+        );
 
         let mut y = card_y + 43.0;
         for event in &entry.events {
             for line in wrap_text_words(event, 18).into_iter().take(3) {
-                write_svg_text(&mut svg, center_x, y, &line, label_size, &muted, "middle", None);
+                write_svg_text(
+                    &mut svg, center_x, y, &line, label_size, &muted, "middle", None,
+                );
                 y += label_size * 1.2;
             }
         }
@@ -776,20 +801,10 @@ fn write_svg_text(
 fn timeline_colors_for_preference(preference: ThemePreference) -> [&'static str; 6] {
     match preference {
         ThemePreference::Dark => [
-            "#4f84b8",
-            "#8a8a52",
-            "#6f8f62",
-            "#8a6aa1",
-            "#9b6f6f",
-            "#69918b",
+            "#4f84b8", "#8a8a52", "#6f8f62", "#8a6aa1", "#9b6f6f", "#69918b",
         ],
         ThemePreference::Light => [
-            "#d7e5f5",
-            "#ebe4d6",
-            "#dce8d2",
-            "#e8ddf0",
-            "#f0dddd",
-            "#d9e9e5",
+            "#d7e5f5", "#ebe4d6", "#dce8d2", "#e8ddf0", "#f0dddd", "#d9e9e5",
         ],
     }
 }
@@ -948,7 +963,8 @@ mod tests {
   section Share
     Long-press diagram source: 4: Alex
     Add selection to chat with agent: 5: Alex"#;
-        let options = mermaid_render_options_for(DiagramKind::Journey, source, ThemePreference::Dark);
+        let options =
+            mermaid_render_options_for(DiagramKind::Journey, source, ThemePreference::Dark);
         assert_eq!(options.layout.max_label_width_chars, 12);
         assert_eq!(options.layout.label_line_height, 1.25);
         assert_eq!(options.layout.preferred_aspect_ratio, Some(2.2));
