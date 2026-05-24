@@ -13,7 +13,7 @@ An experimental remote code editor on mobile with GPU-accelerated rendering powe
 
 Note: Zedra uses direct P2P connections when possible, but may fallback to relays if blocked by `Symmetric NAT` or `CGNAT` (common in home networks). Works best on LANs and supported relay regions. For high latency issues, please reach out. Learn more: [How NAT traversal works](https://tailscale.com/blog/how-nat-traversal-works)
 
-**Manual**
+**MacOS/Linux**
 ```shell
 # Install Zedra CLI
 curl -fsSL zedra.dev/install.sh | sh
@@ -23,7 +23,7 @@ zedra start
 zedra start --detach
 ```
 
-Windows:
+**Windows**
 
 ```powershell
 powershell -c "irm https://zedra.dev/install.ps1 | iex"
