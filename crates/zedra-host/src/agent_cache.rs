@@ -23,6 +23,7 @@ struct CachedAgentData {
     agents: Option<AgentListResult>,
     cli_versions: HashMap<ManagedAgentKind, AgentCliSummary>,
     account_usage: HashMap<ManagedAgentKind, AgentUsageSnapshot>,
+    account_plans: HashMap<ManagedAgentKind, Vec<AgentInfoField>>,
     sessions: HashMap<ManagedAgentKind, CachedSessions>,
 }
 
@@ -277,19 +278,21 @@ impl AgentCache {
     }
 
     async fn needs_usage_refresh(&self) -> bool {
-        self.inner.lock().await.account_usage.is_empty()
+        let inner = self.inner.lock().await;
+        inner.account_usage.is_empty() || inner.account_plans.is_empty()
     }
 
     async fn agent_list_result(
         self: &Arc<Self>,
         session: Option<&Arc<ServerSession>>,
     ) -> AgentListResult {
-        let (result, versions, usage) = {
+        let (result, versions, usage, plans) = {
             let inner = self.inner.lock().await;
             (
                 inner.agents.clone(),
                 inner.cli_versions.clone(),
                 inner.account_usage.clone(),
+                inner.account_plans.clone(),
             )
         };
         let Some(mut result) = result else {
@@ -300,6 +303,7 @@ impl AgentCache {
         };
         agent::apply_cached_cli_versions(&mut result.agents, &versions);
         agent::apply_cached_account_usage(&mut result.agents, &usage);
+        agent::apply_cached_account_plans(&mut result.agents, &plans);
         agent::merge_live_into_agent_list(&mut result.agents, session).await;
         result
     }
@@ -309,17 +313,19 @@ impl AgentCache {
         kind: ManagedAgentKind,
         session: Option<&Arc<ServerSession>>,
     ) -> Option<AgentSummary> {
-        let (mut agents, versions, usage) = {
+        let (mut agents, versions, usage, plans) = {
             let inner = self.inner.lock().await;
             let agents = inner.agents.as_ref()?.agents.clone();
             (
                 agents,
                 inner.cli_versions.clone(),
                 inner.account_usage.clone(),
+                inner.account_plans.clone(),
             )
         };
         agent::apply_cached_cli_versions(&mut agents, &versions);
         agent::apply_cached_account_usage(&mut agents, &usage);
+        agent::apply_cached_account_plans(&mut agents, &plans);
         let summary = agents.into_iter().find(|agent| agent.kind == kind)?;
         let mut agents = [summary];
         agent::merge_live_into_agent_list(&mut agents, session).await;
@@ -430,12 +436,15 @@ impl AgentCache {
     }
 
     async fn run_usage_refresh(self: &Arc<Self>) {
-        let snapshots = agent::scan_account_usage().await;
+        let (snapshots, plans) =
+            tokio::join!(agent::scan_account_usage(), agent::scan_account_plans(),);
         {
             let mut inner = self.inner.lock().await;
             inner.account_usage = snapshots.clone();
+            inner.account_plans = plans.clone();
             if let Some(agents) = inner.agents.as_mut() {
                 agent::apply_cached_account_usage(&mut agents.agents, &snapshots);
+                agent::apply_cached_account_plans(&mut agents.agents, &plans);
             }
         }
         tracing::debug!(
@@ -447,6 +456,19 @@ impl AgentCache {
                     snap.rate_limit_five_hour_used_percent.unwrap_or(0.0),
                     snap.rate_limit_seven_day_used_percent.unwrap_or(0.0),
                 ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        tracing::debug!(
+            "agent subscription plans refreshed: {}",
+            plans
+                .iter()
+                .filter_map(|(kind, fields)| {
+                    fields
+                        .iter()
+                        .find(|field| field.label == "Plan")
+                        .map(|field| format!("{kind:?}={}", field.value))
+                })
                 .collect::<Vec<_>>()
                 .join(", ")
         );

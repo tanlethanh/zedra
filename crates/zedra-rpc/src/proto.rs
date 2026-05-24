@@ -1173,6 +1173,10 @@ pub struct AgentUsageSnapshot {
     pub lines_removed: Option<i64>,
     pub rate_limit_five_hour_used_percent: Option<f32>,
     pub rate_limit_seven_day_used_percent: Option<f32>,
+    /// Unix seconds at which the 5-hour rate-limit window resets. None when not provided by the API.
+    pub rate_limit_five_hour_resets_at: Option<i64>,
+    /// Unix seconds at which the 7-day rate-limit window resets. None when not provided by the API.
+    pub rate_limit_seven_day_resets_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1584,6 +1588,8 @@ mod tests {
                 lines_removed: Some(1),
                 rate_limit_five_hour_used_percent: None,
                 rate_limit_seven_day_used_percent: None,
+                rate_limit_five_hour_resets_at: None,
+                rate_limit_seven_day_resets_at: None,
             }),
             counters: AgentSessionCounters {
                 record_count: 3,

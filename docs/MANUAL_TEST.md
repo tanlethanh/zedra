@@ -959,12 +959,20 @@ Expected:
     it as the active main view.
 13. Tap `Manage agents`.
 14. Expected: the main view shows managed agents as a list with setup/session
-    counts. Tapping an agent opens detail with CLI/setup/account fields and a
-    session list below.
+    counts and usage gauges when live usage is available. Tapping an agent opens
+    detail with metadata, usage gauges (5h / 7d and extra spend when present),
+    account fields, and a session list below.
 15. In manage detail, verify discovered account fields:
-    - Claude: model, effort, permission mode, total sessions/messages/cost when
-      `stats-cache.json` exists
-    - Codex: logged in, last refresh, model/personality from `config.toml`
+    - Claude: logged in, plan (Pro/Max/Team/Enterprise when OAuth, credentials
+      file, or CLI PTY is available), model, effort, permission mode, today msgs
+      and total cost when `stats-cache.json` exists; no week msgs/sessions/tools
+      rows. Usage gauges: with a valid `~/.claude/.credentials.json` token,
+      limits come from the OAuth usage API; with Keychain-only CLI auth or an
+      expired file token while the CLI still works, from PTY `/usage` scrape
+      (percents should match the CLI panel; inline reset duration may be missing
+      if parsing fails). Host check: `zedra agent scan usage --json`.
+    - Codex: logged in, plan, plan until, account name from `auth.json`, model/
+      personality from `config.toml`
     - OpenCode: config dir presence
 16. Tap `Resume` on a session from manage detail.
 17. Expected: same immediate resume behavior as the unified sessions view.

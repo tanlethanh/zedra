@@ -731,9 +731,8 @@ async fn main() -> Result<()> {
             if usage_refresh_secs > 0 {
                 let cache = state.agent_cache.clone();
                 tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(
-                        std::time::Duration::from_secs(usage_refresh_secs),
-                    );
+                    let mut interval =
+                        tokio::time::interval(std::time::Duration::from_secs(usage_refresh_secs));
                     interval.tick().await; // skip immediate first tick — preload covers it
                     loop {
                         interval.tick().await;

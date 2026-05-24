@@ -3,13 +3,15 @@ use chrono::{DateTime, Utc};
 use clap::{Args, Subcommand, ValueEnum};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::io::{stderr, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use zedra_host::{agent, identity, utils};
 use zedra_rpc::proto::{
-    AgentInstalledListResult, AgentListResult, AgentResumeResult, AgentSessionSummary,
-    AgentSessionsResult, AgentSummary, InstalledAgentEntry, ManagedAgentKind,
+    AgentInfoField, AgentInstalledListResult, AgentListResult, AgentResumeResult,
+    AgentSessionSummary, AgentSessionsResult, AgentSummary, AgentUsageSnapshot,
+    InstalledAgentEntry, ManagedAgentKind,
 };
 
 #[derive(Debug, Subcommand)]
@@ -488,7 +490,8 @@ fn scan_bench(args: AgentScanBenchArgs) -> Result<()> {
 
 async fn scan_usage(args: AgentScanCommonArgs) -> Result<()> {
     let started = Instant::now();
-    let snapshots = agent::scan_account_usage().await;
+    let (snapshots, plans) =
+        tokio::join!(agent::scan_account_usage(), agent::scan_account_plans(),);
     let elapsed = started.elapsed();
     if !args.quiet {
         writeln!(
@@ -498,19 +501,40 @@ async fn scan_usage(args: AgentScanCommonArgs) -> Result<()> {
         )?;
     }
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&snapshots)?);
+        #[derive(serde::Serialize)]
+        struct ScanUsageOutput<'a> {
+            usage: &'a HashMap<ManagedAgentKind, AgentUsageSnapshot>,
+            plans: &'a HashMap<ManagedAgentKind, Vec<AgentInfoField>>,
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&ScanUsageOutput {
+                usage: &snapshots,
+                plans: &plans,
+            })?
+        );
     } else {
         use zedra_rpc::proto::ManagedAgentKind::*;
-        for kind in [Claude, Codex] {
+        for kind in [Claude, Codex, OpenCode] {
             let label = match kind {
                 Claude => "Claude",
                 Codex => "Codex",
-                _ => "?",
+                OpenCode => "OpenCode",
             };
             match snapshots.get(&kind) {
                 None => println!("{label}: no credentials / fetch failed"),
                 Some(snap) => {
                     println!("{label}:");
+                    if let Some(fields) = plans.get(&kind) {
+                        for field in fields {
+                            if matches!(
+                                field.label.as_str(),
+                                "Plan" | "Plan until" | "Account" | "Organization" | "Logged in"
+                            ) {
+                                println!("  {}: {}", field.label, field.value);
+                            }
+                        }
+                    }
                     if let Some(v) = snap.rate_limit_five_hour_used_percent {
                         println!("  5h rate limit:  {v:.1}%");
                     }
@@ -518,10 +542,16 @@ async fn scan_usage(args: AgentScanCommonArgs) -> Result<()> {
                         println!("  7d rate limit:  {v:.1}%");
                     }
                     if let Some(v) = snap.total_cost_usd {
-                        println!("  Extra spend:    ${v:.2}");
+                        println!("  Total cost:     ${v:.2}");
                     }
                     if let Some(v) = snap.context_used_percent {
                         println!("  Spend util:     {v:.1}%");
+                    }
+                    if let Some(v) = snap.lines_added {
+                        println!("  Lines added:    {v}");
+                    }
+                    if let Some(v) = snap.lines_removed {
+                        println!("  Lines removed:  {v}");
                     }
                 }
             }
