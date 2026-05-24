@@ -6,7 +6,7 @@ use zedra_session::{Session, SessionHandle};
 
 use crate::agent_ui::{
     AgentSessionListProps, cli_version_display, group_sessions_by_day, managed_agent_name,
-    render_agent_session_list, setup_label,
+    render_agent_session_list, render_agent_usage_row, setup_label,
 };
 use crate::fonts;
 use crate::platform_bridge::{self, HapticFeedback};
@@ -188,6 +188,9 @@ impl Render for AgentDetail {
                         .flex_col()
                         .gap(px(theme::SPACING_MD))
                         .child(render_detail_metadata(agent, cx))
+                        .when_some(agent.usage.as_ref(), |col, usage| {
+                            col.child(render_agent_usage_row(agent.kind, usage, cx))
+                        })
                         .child(render_agent_session_list(
                             AgentSessionListProps {
                                 sections: group_sessions_by_day(sessions),

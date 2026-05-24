@@ -48,6 +48,8 @@ pub const DRAWER_CLOSE_ANIMATION_DURATION_MS: u64 = 100;
 pub const FONT_APP_TITLE: f32 = 28.0;
 pub const FONT_TITLE: f32 = 20.0;
 pub const FONT_HEADING: f32 = 13.0;
+/// Agent manage card title (Lora), slightly larger than body.
+pub const FONT_AGENT_CARD_TITLE: f32 = 14.0;
 pub const FONT_BODY: f32 = 12.0;
 pub const FONT_DETAIL: f32 = 12.0;
 
@@ -65,6 +67,10 @@ pub const ICON_TERMINAL: f32 = 16.0;
 pub const AGENT_METADATA_LABEL_WIDTH: f32 = 140.0;
 /// Vertical padding per metadata row in manage-agent detail.
 pub const AGENT_METADATA_ROW_PY: f32 = 4.0;
+/// Inline pill badges (plan tags, status chips) — rounder than card surfaces (`6`).
+pub const BADGE_RADIUS: f32 = 10.0;
+pub const BADGE_PX: f32 = 6.0;
+pub const BADGE_PY: f32 = 0.0;
 
 pub const EDITOR_FONT_SIZE: f32 = 12.0;
 pub const EDITOR_GUTTER_FONT_SIZE: f32 = 11.0;
