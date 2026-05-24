@@ -590,6 +590,7 @@ async fn test_rpc_terminal_over_relay() {
             cols: 80,
             rows: 24,
             launch_cmd: None,
+            color_scheme: None,
         })
         .await
         .unwrap();
@@ -671,6 +672,7 @@ async fn test_terminal_reorder_updates_host_list_and_sync_order() {
                 cols: 80,
                 rows: 24,
                 launch_cmd: None,
+                color_scheme: None,
             })
             .await
             .unwrap();

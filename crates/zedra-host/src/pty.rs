@@ -5,6 +5,7 @@ use crate::paths;
 use anyhow::Result;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
+use zedra_rpc::proto::TerminalColorScheme;
 
 /// A spawned shell session with PTY
 pub struct ShellSession {
@@ -22,6 +23,8 @@ pub struct SpawnOptions {
     /// Shell command to run when the PTY starts.
     /// Example: `"claude --resume"` to drop straight into a Claude session.
     pub launch_cmd: Option<String>,
+    /// Terminal appearance used for host-side OSC color query replies.
+    pub color_scheme: Option<TerminalColorScheme>,
     /// Extra environment variables set on the spawned shell after sanitization.
     pub env: Vec<(String, String)>,
 }
@@ -428,6 +431,7 @@ mod tests {
             SpawnOptions {
                 workdir: None,
                 launch_cmd: Some("printf 'ZEDRA_LAUNCH_OK\\n'; exit".to_string()),
+                color_scheme: None,
                 env: Vec::new(),
             },
         )

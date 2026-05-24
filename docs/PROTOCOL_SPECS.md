@@ -227,6 +227,9 @@ Types that use non-string status fields or enum variants instead:
 - `TermReorder(TermReorderReq) -> TermReorderResult`
 - `SyncSessionResult.terminals -> Vec<TerminalSyncEntry>`
 - Terminal ids are opaque host-generated UUID strings.
+- `TermCreateReq.color_scheme` is optional. New clients send `Dark` or `Light`
+  so the host can answer startup OSC 10/11/12 color queries immediately for
+  launch-command TUIs before a client terminal view attaches.
 
 ### TermAttach conventions
 

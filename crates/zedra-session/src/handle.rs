@@ -514,7 +514,7 @@ impl SessionHandle {
     // ─── RPC: terminals ──────────────────────────────────────────────────────
 
     pub async fn terminal_create(&self, cols: u16, rows: u16) -> Result<String> {
-        self.terminal_create_with_cmd(cols, rows, None).await
+        self.terminal_create_with_cmd(cols, rows, None, None).await
     }
 
     pub async fn terminal_create_with_cmd(
@@ -522,6 +522,7 @@ impl SessionHandle {
         cols: u16,
         rows: u16,
         launch_cmd: Option<String>,
+        color_scheme: Option<TerminalColorScheme>,
     ) -> Result<String> {
         let client = self.client()?;
         let result: TermCreateResult = client
@@ -529,6 +530,7 @@ impl SessionHandle {
                 cols,
                 rows,
                 launch_cmd,
+                color_scheme,
             })
             .await?;
         if let Some(e) = result.error {

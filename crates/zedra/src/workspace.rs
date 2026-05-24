@@ -1636,9 +1636,15 @@ impl Workspace {
             self.create_terminal_entity(TERMINAL_PENDING_ID.to_string(), window, cx);
         let pending_entity_id = workspace_terminal.entity_id();
 
+        let color_scheme = if crate::theme::bundle(cx).terminal.is_light() {
+            zedra_rpc::proto::TerminalColorScheme::Light
+        } else {
+            zedra_rpc::proto::TerminalColorScheme::Dark
+        };
+
         cx.spawn(async move |workspace, cx| {
             let terminal_id = match session_handle
-                .terminal_create_with_cmd(cols as u16, rows as u16, launch_cmd)
+                .terminal_create_with_cmd(cols as u16, rows as u16, launch_cmd, Some(color_scheme))
                 .await
             {
                 Ok(id) => id,

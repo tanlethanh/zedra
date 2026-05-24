@@ -1033,6 +1033,8 @@ Expected:
 5. Expected: highlighted paths are readable on the light background (not pale lavender)
 6. Open **Codex** in the same terminal (or a dedicated Codex session)
 7. Expected: the composer / user-message background pill matches the light theme (not missing or using a dark gray from stale palette)
-8. Toggle back to **Dark**
-9. Expected: terminal colors, Claude highlights, and Codex pill update without restarting the app
-10. Optional: from the host, run `printf '\e[10;?\e[11;?\e\\'` inside the Zedra session and confirm replies report the current fg/bg (light: `fafafa` background). Zedra answers OSC queries on the session PTY via `ColorRequest` and the active `TerminalTheme`; it does not inject palette setup bytes into scrollback on toggle.
+8. From the agent picker or quick action panel, open a fresh Codex launch-command terminal
+9. Expected: Codex's first rendered composer / user-message background pill is visible without waiting for terminal reattach or focus changes
+10. Toggle back to **Dark**
+11. Expected: terminal colors, Claude highlights, and Codex pill update without restarting the app
+12. Optional: from the host, run `printf '\e[10;?\e[11;?\e\\'` inside the Zedra session and confirm replies report the current fg/bg (light: `fafafa` background). Zedra answers OSC queries on the session PTY via `ColorRequest` and the active `TerminalTheme`; it does not inject palette setup bytes into scrollback on toggle.

@@ -727,6 +727,9 @@ pub struct TermCreateReq {
     /// If `None`, the host's default launch command (if any) is used.
     /// Example: `"claude --resume"` to drop straight into a Claude session.
     pub launch_cmd: Option<String>,
+    /// Client appearance used for host-side terminal color query replies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_scheme: Option<TerminalColorScheme>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -734,6 +737,12 @@ pub struct TermCreateResult {
     /// Opaque host-generated UUID string.
     pub id: String,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TerminalColorScheme {
+    Dark,
+    Light,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

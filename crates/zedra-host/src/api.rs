@@ -36,7 +36,9 @@ use crate::qr;
 use crate::rpc_daemon::{create_terminal, AgentHookEventRecord, AgentHookProviderIds, DaemonState};
 use crate::session_registry::{PairingSlotMode, ServerSession, SessionRegistry};
 use chrono::Utc;
-use zedra_rpc::proto::{AgentEventSummary, AgentResumeResult, HostEvent, ManagedAgentKind};
+use zedra_rpc::proto::{
+    AgentEventSummary, AgentResumeResult, HostEvent, ManagedAgentKind, TerminalColorScheme,
+};
 use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
 
@@ -233,6 +235,8 @@ pub struct CreateTerminalReq {
     pub session_id: Option<String>,
     /// Command run on startup (e.g. "claude --resume").
     pub launch_cmd: Option<String>,
+    /// Terminal appearance used for host-side color query replies.
+    pub color_scheme: Option<TerminalColorScheme>,
     #[serde(default = "default_cols")]
     pub cols: u16,
     #[serde(default = "default_rows")]
@@ -288,6 +292,7 @@ async fn create_terminal_handler(
     let opts = SpawnOptions {
         workdir,
         launch_cmd: launch_cmd.clone(),
+        color_scheme: req.color_scheme,
         env: Vec::new(),
     };
 
@@ -445,6 +450,7 @@ async fn resume_agent_handler(
         SpawnOptions {
             workdir: Some(workdir),
             launch_cmd: Some(launch_cmd.clone()),
+            color_scheme: None,
             env: Vec::new(),
         },
     )
