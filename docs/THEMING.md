@@ -71,7 +71,8 @@ When several fields are needed together (e.g. badges), take `let palette = theme
 | Field | Typical use |
 |-------|-------------|
 | `bg_primary`, `bg_surface` | Full-height shells, workspace background |
-| `bg_card`, `bg_overlay` | Raised panels, sheets, overlays |
+| `bg_card`, `bg_overlay` | Raised panels, terminal cards, sheets |
+| `bg_card_dim` | Lower-contrast card fill (closer to `bg_primary` than `bg_card`) |
 | `text_primary`, `text_secondary`, `text_muted` | Labels, body, metadata |
 | `border_subtle`, `border_default`, `border_active`, `border_highlight` | 1px separators and control edges |
 | `accent_green`, `accent_blue`, `accent_yellow`, `accent_red`, `accent_dim` | Status and semantic emphasis only |

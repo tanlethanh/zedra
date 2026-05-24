@@ -15,9 +15,10 @@ use zedra_session::{
 
 use crate::active_terminal;
 use crate::agent;
-use crate::agent_manage_view::AgentManageView;
+use crate::agent_detail::AgentDetail;
+use crate::agent_manage::AgentManage;
 use crate::agent_picker::AgentPicker;
-use crate::agent_session_view::AgentSessionView;
+use crate::agent_sessions::AgentSessions;
 use crate::editor::git_sidebar::GitFileSection;
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
 use crate::placeholder::render_placeholder;
@@ -31,9 +32,9 @@ use crate::ui::{DrawerEvent, DrawerHost, DrawerSide};
 use crate::workspace_action::{self, GoHome, OpenQuickAction, RequestDisconnect};
 use crate::workspace_action::{
     AddSelectionToChat, CloseDrawer, CloseTerminal, CreateAgent, CreateNewTerminal, GitCommit,
-    GitShowItemActions, GitStage, GitUnstage, HideConnecting, NavigateBack, OpenAgentManage,
-    OpenAgentSessions, OpenFile, OpenGitDiff, OpenTerminal, RestartConnection, ResumeAgentSession,
-    ShowConnecting, SpawnAgentTerminal, ToggleDrawer,
+    GitShowItemActions, GitStage, GitUnstage, HideConnecting, NavigateBack, OpenAgentDetail,
+    OpenAgentManage, OpenAgentSessions, OpenFile, OpenGitDiff, OpenTerminal, RestartConnection,
+    ResumeAgentSession, ShowConnecting, SpawnAgentTerminal, ToggleDrawer,
 };
 use crate::workspace_connecting::WorkspaceConnecting;
 use crate::workspace_drawer::WorkspaceDrawer;
@@ -1323,7 +1324,7 @@ impl Workspace {
                 }
             }
             WorkspaceMainView::AgentSessions => {
-                let view = cx.new(|cx| AgentSessionView::new(self.session.handle().clone(), cx));
+                let view = cx.new(|cx| AgentSessions::new(self.session.handle().clone(), cx));
                 self.content.update(cx, move |content, cx| {
                     content.clear_subtitle(cx);
                     content.set_main_view(view.into(), cx);
@@ -1333,7 +1334,7 @@ impl Workspace {
             }
             WorkspaceMainView::AgentManage => {
                 let view = cx.new(|cx| {
-                    AgentManageView::new(self.session.handle().clone(), self.session.clone(), cx)
+                    AgentManage::new(self.session.handle().clone(), self.session.clone(), cx)
                 });
                 self.content.update(cx, move |content, cx| {
                     content.clear_subtitle(cx);
@@ -1341,6 +1342,22 @@ impl Workspace {
                     content.hide_connecting_view(cx);
                 });
                 view_telemetry::record(view_telemetry::WORKSPACE_AGENT_MANAGE);
+            }
+            WorkspaceMainView::AgentDetail { kind } => {
+                let view = cx.new(|cx| {
+                    AgentDetail::new(
+                        self.session.handle().clone(),
+                        self.session.clone(),
+                        kind,
+                        cx,
+                    )
+                });
+                self.content.update(cx, move |content, cx| {
+                    content.clear_subtitle(cx);
+                    content.set_main_view(view.into(), cx);
+                    content.hide_connecting_view(cx);
+                });
+                view_telemetry::record(view_telemetry::WORKSPACE_AGENT_DETAIL);
             }
         }
     }
@@ -1702,6 +1719,18 @@ impl Workspace {
         self.drawer_host
             .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
         self.navigate_to(WorkspaceMainView::AgentManage, cx);
+    }
+
+    fn handle_open_agent_detail(
+        &mut self,
+        action: &OpenAgentDetail,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!(?action.kind, "handle OpenAgentDetail from workspace");
+        self.drawer_host
+            .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
+        self.navigate_to(WorkspaceMainView::AgentDetail { kind: action.kind }, cx);
     }
 
     fn handle_resume_agent_session(
@@ -2130,6 +2159,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_navigate_back))
             .on_action(cx.listener(Self::handle_open_agent_sessions))
             .on_action(cx.listener(Self::handle_open_agent_manage))
+            .on_action(cx.listener(Self::handle_open_agent_detail))
             .on_action(cx.listener(Self::handle_resume_agent_session))
             .on_action(cx.listener(Self::handle_open_terminal))
             .on_action(cx.listener(Self::handle_close_terminal))

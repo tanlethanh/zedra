@@ -100,6 +100,8 @@ impl ThemePreference {
 pub struct ThemePalette {
     pub bg_primary: u32,
     pub bg_card: u32,
+    /// Lower-contrast card fill than `bg_card`; blends into `bg_primary` on dense lists.
+    pub bg_card_dim: u32,
     pub bg_overlay: u32,
     pub bg_surface: u32,
     pub text_primary: u32,
@@ -125,6 +127,7 @@ impl ThemePalette {
         Self {
             bg_primary: 0x0e0c0c,
             bg_card: 0x131313,
+            bg_card_dim: 0x100f0f,
             bg_overlay: 0x131313,
             bg_surface: 0x0e0c0c,
             text_primary: 0xffffff,
@@ -150,6 +153,7 @@ impl ThemePalette {
         Self {
             bg_primary: 0xf5f5f5,
             bg_card: 0xffffff,
+            bg_card_dim: 0xececec,
             bg_overlay: 0xffffff,
             bg_surface: 0xffffff,
             text_primary: 0x1a1a1a,
@@ -288,6 +292,7 @@ macro_rules! palette_accessor {
 
 palette_accessor!(bg_primary, bg_primary);
 palette_accessor!(bg_card, bg_card);
+palette_accessor!(bg_card_dim, bg_card_dim);
 palette_accessor!(bg_overlay, bg_overlay);
 palette_accessor!(bg_surface, bg_surface);
 palette_accessor!(text_primary, text_primary);

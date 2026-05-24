@@ -3,8 +3,8 @@ use tracing::error;
 use zedra_rpc::proto::ManagedAgentKind;
 use zedra_session::SessionHandle;
 
-use crate::agent_session_list::{
-    AgentSessionListProps, group_sessions_by_day, render_agent_session_list,
+use crate::agent_ui::{
+    AgentSessionListProps, AgentSessionSection, group_sessions_by_day, render_agent_session_list,
 };
 use crate::fonts;
 use crate::platform_bridge::{self, HapticFeedback};
@@ -19,15 +19,15 @@ enum LoadState {
     Error(String),
 }
 
-pub struct AgentSessionView {
+pub struct AgentSessions {
     session_handle: SessionHandle,
-    sections: Vec<crate::agent_session_list::AgentSessionSection>,
+    sections: Vec<AgentSessionSection>,
     load_state: LoadState,
     loading_epoch: u64,
     _tasks: Vec<Task<()>>,
 }
 
-impl AgentSessionView {
+impl AgentSessions {
     pub fn new(session_handle: SessionHandle, cx: &mut Context<Self>) -> Self {
         let mut view = Self {
             session_handle,
@@ -86,7 +86,7 @@ impl AgentSessionView {
     }
 }
 
-impl Render for AgentSessionView {
+impl Render for AgentSessions {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let body = render_agent_session_list(
             AgentSessionListProps {
@@ -105,25 +105,20 @@ impl Render for AgentSessionView {
         )
         .into_any_element();
         let header = render_session_header(cx).into_any_element();
-        subscreen_page(
-            "agent-session-view",
-            rgb(theme::bg_primary(cx)),
-            header,
-            body,
-        )
+        subscreen_page("agent-sessions", rgb(theme::bg_primary(cx)), header, body)
     }
 }
 
-fn render_session_header(cx: &mut Context<AgentSessionView>) -> impl IntoElement {
+fn render_session_header(cx: &mut Context<AgentSessions>) -> impl IntoElement {
     div()
-        .id("agent-session-header")
+        .id("agent-sessions-header")
         .min_w_0()
         .px(px(theme::SUBSCREEN_PADDING_X))
         .pt(px(theme::SPACING_XS))
         .pb(px(theme::SPACING_SM))
         .child(
             div()
-                .id("agent-session-header-inner")
+                .id("agent-sessions-header-inner")
                 .relative()
                 .min_w_0()
                 .child(
@@ -158,16 +153,20 @@ fn render_session_header(cx: &mut Context<AgentSessionView>) -> impl IntoElement
                         ),
                 )
                 .child(subscreen_refresh_button(
-                    "agent-session-refresh-btn",
+                    "agent-sessions-refresh-btn",
                     cx,
                     |this, _event, _window, cx| this.load(true, cx),
                 )),
         )
 }
 
-fn back_button(cx: &mut Context<AgentSessionView>) -> Stateful<Div> {
-    chevron_back_button("agent-session-back-btn", cx, |_this, _event, window, cx| {
-        platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-        window.dispatch_action(workspace_action::NavigateBack.boxed_clone(), cx);
-    })
+fn back_button(cx: &mut Context<AgentSessions>) -> Stateful<Div> {
+    chevron_back_button(
+        "agent-sessions-back-btn",
+        cx,
+        |_this, _event, window, cx| {
+            platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+            window.dispatch_action(workspace_action::NavigateBack.boxed_clone(), cx);
+        },
+    )
 }

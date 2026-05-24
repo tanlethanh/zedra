@@ -100,6 +100,12 @@ pub struct OpenAgentManage;
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
+pub struct OpenAgentDetail {
+    pub kind: ManagedAgentKind,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
 pub struct CreateAgent;
 
 #[derive(Clone, PartialEq, Action)]

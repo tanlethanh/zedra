@@ -144,12 +144,17 @@ pub mod view_telemetry {
     pub const WORKSPACE_AGENT_SESSIONS: ViewDescriptor = ViewDescriptor::new(
         "workspace_agent_sessions",
         "Workspace Agent Sessions",
-        "AgentSessionView",
+        "AgentSessions",
     );
     pub const WORKSPACE_AGENT_MANAGE: ViewDescriptor = ViewDescriptor::new(
         "workspace_agent_manage",
         "Workspace Agent Manage",
-        "AgentManageView",
+        "AgentManage",
+    );
+    pub const WORKSPACE_AGENT_DETAIL: ViewDescriptor = ViewDescriptor::new(
+        "workspace_agent_detail",
+        "Workspace Agent Detail",
+        "AgentDetail",
     );
     pub const WORKSPACE_NO_ACTIVE_TERMINAL: ViewDescriptor = ViewDescriptor::new(
         "workspace_no_active_terminal",
@@ -205,6 +210,7 @@ pub mod view_telemetry {
             WorkspaceMainView::Terminal { .. } => Some(WORKSPACE_TERMINAL),
             WorkspaceMainView::AgentSessions => Some(WORKSPACE_AGENT_SESSIONS),
             WorkspaceMainView::AgentManage => Some(WORKSPACE_AGENT_MANAGE),
+            WorkspaceMainView::AgentDetail { .. } => Some(WORKSPACE_AGENT_DETAIL),
             WorkspaceMainView::NoActiveTerminal => Some(WORKSPACE_NO_ACTIVE_TERMINAL),
         }
     }
