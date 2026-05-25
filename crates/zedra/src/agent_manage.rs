@@ -182,7 +182,7 @@ fn render_list_header(cx: &mut Context<AgentManage>) -> impl IntoElement {
                                     div()
                                         .text_size(px(theme::FONT_BODY))
                                         .text_color(rgb(theme::text_muted(cx)))
-                                        .child("Agents installed on this host."),
+                                        .child("View agent data, usage and sessions"),
                                 ),
                         ),
                 )
