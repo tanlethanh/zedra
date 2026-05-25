@@ -2,7 +2,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use tracing::error;
 use zedra_rpc::proto::{AgentSummary, HostEvent, ManagedAgentKind};
-use zedra_session::{Session, SessionHandle};
+use zedra_session::{AGENT_MGMT_UNSUPPORTED_MSG, Session, SessionHandle};
 
 use crate::agent_ui::{
     AgentSessionListProps, cli_version_display, group_sessions_by_day, managed_agent_name,
@@ -93,6 +93,12 @@ impl AgentDetail {
     fn reload(&mut self, refresh: bool, cx: &mut Context<Self>) {
         self.loading_epoch = self.loading_epoch.wrapping_add(1);
         let epoch = self.loading_epoch;
+        if !self.session_handle.supports_agent_mgmt() {
+            self.agent_state = LoadState::Error(AGENT_MGMT_UNSUPPORTED_MSG.into());
+            self.session_state = LoadState::Error(AGENT_MGMT_UNSUPPORTED_MSG.into());
+            cx.notify();
+            return;
+        }
         self.agent_state = LoadState::Loading;
         self.session_state = LoadState::Loading;
         cx.notify();
@@ -168,11 +174,10 @@ impl Render for AgentDetail {
 
         let body: AnyElement = match (&agent_state, agent.as_ref()) {
             (LoadState::Loading, _) => {
-                subscreen_padded_body(empty_text("Loading agent…", cx)).into_any_element()
+                subscreen_padded_body(empty_text("Loading…", cx)).into_any_element()
             }
             (LoadState::Error(message), _) => {
-                subscreen_padded_body(empty_text(format!("Failed to load agent: {message}"), cx))
-                    .into_any_element()
+                subscreen_padded_body(empty_text(message.clone(), cx)).into_any_element()
             }
             (LoadState::Ready, Some(agent)) => {
                 let (sessions_loading, sessions_error) = match &session_state {

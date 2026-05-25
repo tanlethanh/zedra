@@ -682,13 +682,10 @@ pub fn render_agent_session_list<C: 'static>(
     list = list.flex().flex_col().gap(px(theme::SPACING_SM));
 
     if props.loading {
-        return list.child(list_empty_text("Loading sessions...", cx));
+        return list.child(list_empty_text("Loading…", cx));
     }
     if let Some(error) = props.error {
-        return list.child(list_empty_text(
-            format!("Failed to load sessions: {error}"),
-            cx,
-        ));
+        return list.child(list_empty_text(error, cx));
     }
     if props.sections.is_empty() {
         return list.child(list_empty_text(props.empty_message, cx));

@@ -1,7 +1,7 @@
 use gpui::*;
 use tracing::error;
 use zedra_rpc::proto::ManagedAgentKind;
-use zedra_session::SessionHandle;
+use zedra_session::{AGENT_MGMT_UNSUPPORTED_MSG, SessionHandle};
 
 use crate::agent_ui::{
     AgentSessionListProps, AgentSessionSection, group_sessions_by_day, render_agent_session_list,
@@ -43,8 +43,13 @@ impl AgentSessions {
     fn load(&mut self, refresh: bool, cx: &mut Context<Self>) {
         self.loading_epoch = self.loading_epoch.wrapping_add(1);
         let epoch = self.loading_epoch;
-        self.load_state = LoadState::Loading;
         self.sections.clear();
+        if !self.session_handle.supports_agent_mgmt() {
+            self.load_state = LoadState::Error(AGENT_MGMT_UNSUPPORTED_MSG.into());
+            cx.notify();
+            return;
+        }
+        self.load_state = LoadState::Loading;
         cx.notify();
 
         let handle = self.session_handle.clone();

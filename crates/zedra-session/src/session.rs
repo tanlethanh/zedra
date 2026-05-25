@@ -173,6 +173,7 @@ impl Session {
                         handle.set_rpc_client(client.clone());
                         handle.set_session_id(Some(sync.session_id.clone()));
                         handle.set_session_token(Some(sync.session_token));
+                        handle.set_host_version(sync.host_version.clone());
                         handle.set_terminals(terminals);
                         on_connected(&handle);
 

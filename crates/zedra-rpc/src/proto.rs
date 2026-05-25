@@ -184,6 +184,12 @@ pub enum ZedraProto {
     /// Kept at enum tail because protocol variants are append-only.
     #[rpc(tx = oneshot::Sender<AgentInstalledListResult>)]
     AgentInstalledList(AgentInstalledListReq),
+
+    /// `TermCreate` + client appearance. Separate variant (not a tail field
+    /// on `TermCreateReq`) so old hosts can still decode the legacy shape;
+    /// gated on the client by `host_version`.
+    #[rpc(tx = oneshot::Sender<TermCreateResult>)]
+    TermCreateV2(TermCreateReqV2),
 }
 
 // ---------------------------------------------------------------------------
@@ -727,8 +733,14 @@ pub struct TermCreateReq {
     /// If `None`, the host's default launch command (if any) is used.
     /// Example: `"claude --resume"` to drop straight into a Claude session.
     pub launch_cmd: Option<String>,
-    /// Client appearance used for host-side terminal color query replies.
-    #[serde(default)]
+}
+
+/// `TermCreateReq` + `color_scheme` for host-side OSC 10/11/12 replies.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TermCreateReqV2 {
+    pub cols: u16,
+    pub rows: u16,
+    pub launch_cmd: Option<String>,
     pub color_scheme: Option<TerminalColorScheme>,
 }
 
