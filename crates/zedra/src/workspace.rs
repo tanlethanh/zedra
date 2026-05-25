@@ -1009,6 +1009,47 @@ impl Workspace {
         self.record_current_view(cx);
     }
 
+    /// Restart this workspace's connection with a fresh pairing ticket
+    /// (e.g. QR rescan). Aborts any in-flight attempt, clears stale auth
+    /// material on the SessionHandle, and starts a new connect with the
+    /// new ticket. The entry stays alive across the restart.
+    pub fn restart_with_ticket(
+        &mut self,
+        addr: iroh::EndpointAddr,
+        ticket: ZedraPairingTicket,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(signer) = self.connection_request.as_ref().map(|r| r.signer.clone()) else {
+            warn!("restart_with_ticket called without a prior signer");
+            return;
+        };
+
+        // Stop the current connect loop; the new spawn will await its exit
+        // before running, so no two loops race on the same handle/event_tx.
+        self.session.abort_in_flight();
+
+        // Drop stale auth material so the new ticket drives a fresh Register/Auth.
+        let handle = self.session.handle();
+        handle.set_session_token(None);
+        handle.set_session_id(Some(ticket.session_id.clone()));
+
+        let session_id = Some(ticket.session_id.clone());
+        let request = ConnectionRequest {
+            addr,
+            ticket: Some(ticket),
+            signer,
+            session_id,
+        };
+        self.connection_request = Some(request.clone());
+        self.seen_reconnect = false;
+        self.active_reconnect_reason = None;
+        self.latency_sampler.reset();
+        self.start_connection(request);
+        self.content.update(cx, |c, cx| c.show_connecting_view(cx));
+        self.record_current_view(cx);
+        info!("restarted workspace connection with fresh ticket");
+    }
+
     pub fn session_handle(&self) -> &SessionHandle {
         self.session.handle()
     }

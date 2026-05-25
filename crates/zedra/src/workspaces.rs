@@ -179,9 +179,11 @@ impl Workspaces {
             }
         };
 
-        // Existing entry just needs to switch into, triggers reconnect if it's failed/disconencted
+        // Existing entry: if healthy (Connected/Idle), just switch to it.
+        // Otherwise (Failed, Disconnected, or any in-flight phase) restart
+        // with the fresh ticket so a rescan always overrides stale auth.
         if let Some(index) = self.entry_index_by_endpoint_addr(&encoded_addr, cx) {
-            self.open_existing_entry(index, cx);
+            self.open_existing_entry_with_ticket(index, addr, ticket, cx);
             return;
         }
 
@@ -249,20 +251,27 @@ impl Workspaces {
         }
     }
 
-    fn open_existing_entry(&mut self, index: usize, cx: &mut Context<Self>) {
+    fn open_existing_entry_with_ticket(
+        &mut self,
+        index: usize,
+        addr: iroh::EndpointAddr,
+        ticket: ZedraPairingTicket,
+        cx: &mut Context<Self>,
+    ) {
         let Some(entry) = self.entries.get(index).cloned() else {
             return;
         };
 
         let phase = entry.read(cx).workspace_state(cx).connect_phase.clone();
-        if matches!(
+        let healthy = matches!(
             phase,
-            Some(ConnectPhase::Disconnected) | Some(ConnectPhase::Failed(_))
-        ) {
-            info!("Reconnecting existing workspace for endpoint.");
-            entry.update(cx, |ws, cx| ws.restart_connection(cx));
+            Some(ConnectPhase::Connected) | Some(ConnectPhase::Idle { .. })
+        );
+        if healthy {
+            info!("Workspace for this endpoint already connected; switching to it.");
         } else {
-            info!("Workspace for this endpoint already exists; switching to it.");
+            info!("Restarting existing workspace for endpoint with fresh ticket.");
+            entry.update(cx, |ws, cx| ws.restart_with_ticket(addr, ticket, cx));
         }
 
         self.activate_entry(index, cx);
