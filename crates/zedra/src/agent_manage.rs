@@ -1,7 +1,7 @@
 use gpui::*;
 use tracing::error;
 use zedra_rpc::proto::{AgentSummary, HostEvent};
-use zedra_session::{Session, SessionHandle};
+use zedra_session::{AGENT_MGMT_UNSUPPORTED_MSG, Session, SessionHandle};
 
 use crate::agent_ui::{AgentCardProps, render_agent_card};
 use crate::fonts;
@@ -84,6 +84,11 @@ impl AgentManage {
     fn load_agents(&mut self, refresh: bool, cx: &mut Context<Self>) {
         self.loading_epoch = self.loading_epoch.wrapping_add(1);
         let epoch = self.loading_epoch;
+        if !self.session_handle.supports_agent_mgmt() {
+            self.agent_state = LoadState::Error(AGENT_MGMT_UNSUPPORTED_MSG.into());
+            cx.notify();
+            return;
+        }
         self.agent_state = LoadState::Loading;
         cx.notify();
 
@@ -123,14 +128,11 @@ impl Render for AgentManage {
 
         let body: AnyElement = match agent_state {
             LoadState::Loading => {
-                subscreen_padded_body(empty_text("Loading managed agents...", cx))
-                    .into_any_element()
+                subscreen_padded_body(empty_text("Loading…", cx)).into_any_element()
             }
-            LoadState::Error(message) => subscreen_padded_body(empty_text(
-                format!("Failed to load managed agents: {message}"),
-                cx,
-            ))
-            .into_any_element(),
+            LoadState::Error(message) => {
+                subscreen_padded_body(empty_text(message, cx)).into_any_element()
+            }
             LoadState::Ready => render_list_body(&agents, cx).into_any_element(),
         };
 

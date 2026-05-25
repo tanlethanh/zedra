@@ -1,10 +1,10 @@
 use gpui::*;
 use tracing::error;
 use zedra_rpc::proto::InstalledAgentEntry;
-use zedra_session::SessionHandle;
+use zedra_session::{AGENT_MGMT_UNSUPPORTED_MSG, SessionHandle};
 
 use crate::pending::SharedPendingSlot;
-use crate::platform_bridge::{self, AlertButton, ListPickerItem};
+use crate::platform_bridge::{self, ListPickerItem};
 use crate::workspace::PendingWorkspaceAction;
 
 enum State {
@@ -36,6 +36,10 @@ impl AgentPicker {
     /// Called when the user taps "Create Agent". Shows the native picker
     /// immediately with cached items if available, otherwise fetches first.
     pub fn trigger(&mut self, cx: &mut Context<Self>) {
+        if !self.session_handle.supports_agent_mgmt() {
+            self.present_placeholder(AGENT_MGMT_UNSUPPORTED_MSG);
+            return;
+        }
         match &self.state {
             State::Ready(agents) => {
                 self.present(agents.clone());
@@ -55,19 +59,12 @@ impl AgentPicker {
         let task = cx.spawn(
             async move |this, cx| match handle.agent_installed_list(false).await {
                 Ok(agents) => {
-                    let _ = this.update(cx, |this, cx| {
+                    let _ = this.update(cx, |this, _cx| {
                         let available: Vec<_> =
                             agents.into_iter().filter(|a| a.available).collect();
                         if available.is_empty() {
+                            this.present_placeholder("No agents installed on the host.");
                             this.state = State::Idle;
-                            cx.defer(|_| {
-                                platform_bridge::show_alert(
-                                    "Create Agent",
-                                    "No supported agent CLIs are installed on the host.",
-                                    vec![AlertButton::default("OK")],
-                                    |_| {},
-                                );
-                            });
                         } else {
                             this.present(available.clone());
                             this.state = State::Ready(available);
@@ -78,12 +75,7 @@ impl AgentPicker {
                     error!("agent picker: fetch failed: {}", err);
                     let _ = this.update(cx, |this, _cx| {
                         this.state = State::Idle;
-                        platform_bridge::show_alert(
-                            "Create Agent",
-                            "Failed to load installed agents.",
-                            vec![AlertButton::default("OK")],
-                            |_| {},
-                        );
+                        this.present_placeholder(&err.to_string());
                     });
                 }
             },
@@ -116,6 +108,23 @@ impl AgentPicker {
                 };
                 pending.set(PendingWorkspaceAction::SpawnAgentTerminal { launch_cmd: cmd });
             },
+        );
+    }
+
+    /// Picker with one "Dismiss" row carrying the reason in its subtitle.
+    /// `show_list_picker` has no disabled-row affordance, so naming the
+    /// label "Dismiss" keeps the tap unambiguous.
+    fn present_placeholder(&self, message: &str) {
+        let items = vec![ListPickerItem {
+            label: "Dismiss".to_string(),
+            subtitle: Some(message.to_string()),
+            image_name: None,
+        }];
+        platform_bridge::show_list_picker(
+            "Create Agent",
+            "Agent management is unavailable right now.",
+            items,
+            move |_selection| {},
         );
     }
 }

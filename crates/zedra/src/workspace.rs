@@ -1650,11 +1650,12 @@ impl Workspace {
                 Ok(id) => id,
                 Err(e) => {
                     tracing::error!("terminal_create failed: {}", e);
+                    let message = e.to_string();
                     let _ = workspace.update(cx, |ws, _cx| {
                         ws.terminals.retain(|t| t.entity_id() != pending_entity_id);
                         platform_bridge::show_alert(
                             "Open Terminal",
-                            "Failed to create the terminal.",
+                            &message,
                             vec![AlertButton::default("OK")],
                             |_| {},
                         );

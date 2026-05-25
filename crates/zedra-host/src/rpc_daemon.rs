@@ -897,7 +897,9 @@ pub async fn handle_connection(
         })
     };
 
-    // RPC dispatch loop
+    // RPC dispatch loop. Treat decode failures (newer-client variant /
+    // extended struct) as per-stream, not connection-level: breaking here
+    // would brick every other in-flight RPC on the same QUIC connection.
     loop {
         match irpc_iroh::read_request::<ZedraProto>(&conn).await {
             Ok(Some(msg)) => {
@@ -913,6 +915,10 @@ pub async fn handle_connection(
                 });
             }
             Ok(None) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                tracing::warn!("ignoring undecodable request: {}", e);
+                continue;
+            }
             Err(e) => {
                 tracing::debug!("read_request error: {}", e);
                 break;
@@ -2210,7 +2216,7 @@ async fn dispatch(
                 SpawnOptions {
                     workdir,
                     launch_cmd,
-                    color_scheme: msg.color_scheme,
+                    color_scheme: None,
                     env: Vec::new(),
                 },
             )
@@ -2227,6 +2233,49 @@ async fn dispatch(
                 }
                 Err(e) => {
                     tracing::warn!("TermCreate failed: {}", e);
+                    let _ = msg
+                        .tx
+                        .send(TermCreateResult {
+                            id: String::new(),
+                            error: Some(e.to_string()),
+                        })
+                        .await;
+                }
+            }
+        }
+
+        ZedraMessage::TermCreateV2(msg) => {
+            session.touch().await;
+            let workdir = session
+                .workdir
+                .clone()
+                .or_else(|| Some(state.workdir.clone()));
+            let has_launch_cmd = msg.launch_cmd.is_some();
+            let launch_cmd = msg.launch_cmd.clone();
+            match create_terminal(
+                &session,
+                msg.cols,
+                msg.rows,
+                SpawnOptions {
+                    workdir,
+                    launch_cmd,
+                    color_scheme: msg.color_scheme,
+                    env: Vec::new(),
+                },
+            )
+            .await
+            {
+                Ok(id) => {
+                    zedra_telemetry::send(Event::HostTerminalOpen { has_launch_cmd });
+                    let terminal_count = session.terminals.lock().await.len();
+                    if let Err(e) = metrics::record_terminal_created(&state.workdir, terminal_count)
+                    {
+                        tracing::warn!("Failed to record terminal metrics: {}", e);
+                    }
+                    let _ = msg.tx.send(TermCreateResult { id, error: None }).await;
+                }
+                Err(e) => {
+                    tracing::warn!("TermCreateV2 failed: {}", e);
                     let _ = msg
                         .tx
                         .send(TermCreateResult {
