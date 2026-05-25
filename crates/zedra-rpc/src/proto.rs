@@ -728,7 +728,7 @@ pub struct TermCreateReq {
     /// Example: `"claude --resume"` to drop straight into a Claude session.
     pub launch_cmd: Option<String>,
     /// Client appearance used for host-side terminal color query replies.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub color_scheme: Option<TerminalColorScheme>,
 }
 
