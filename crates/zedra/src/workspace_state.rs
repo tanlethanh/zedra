@@ -130,6 +130,10 @@ impl WorkspaceNavigationStack {
                 .is_none_or(|id| terminal_ids.iter().any(|terminal_id| terminal_id == id))
         });
     }
+
+    pub fn remove_terminal(&mut self, id: &str) {
+        self.routes.retain(|route| route.terminal_id() != Some(id));
+    }
 }
 
 /// Shareable workspace state. Clone copies the Arc only. Read via methods (non-blocking).
@@ -355,6 +359,10 @@ impl WorkspaceState {
         cx.notify();
     }
 
+    pub fn active_main_view_terminal_id(&self) -> Option<&str> {
+        self.active_main_view.terminal_id()
+    }
+
     pub fn navigate(&mut self, route: WorkspaceMainView, cx: &mut Context<Self>) {
         self.main_view_stack.open(route.clone());
         if let WorkspaceMainView::Terminal { ref id } = route {
@@ -362,6 +370,20 @@ impl WorkspaceState {
             cx.emit(WorkspaceStateEvent::TerminalOpened { id: id.clone() });
         }
         self.set_active_main_view(route, cx);
+    }
+
+    pub fn replace_current_route(&mut self, route: WorkspaceMainView, cx: &mut Context<Self>) {
+        self.main_view_stack.replace(route.clone());
+        if let WorkspaceMainView::Terminal { ref id } = route {
+            self.active_terminal_id = Some(id.clone());
+            cx.emit(WorkspaceStateEvent::TerminalOpened { id: id.clone() });
+        }
+        self.set_active_main_view(route, cx);
+    }
+
+    pub fn remove_terminal_route(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.main_view_stack.remove_terminal(id);
+        cx.notify();
     }
 
     pub fn go_back(&mut self, cx: &mut Context<Self>) -> Option<WorkspaceMainView> {
@@ -656,6 +678,42 @@ mod tests {
                 id: "terminal-1".into()
             })
         );
+    }
+
+    #[test]
+    fn navigation_stack_removes_buried_terminal_route() {
+        let mut stack = WorkspaceNavigationStack::default();
+        let file = WorkspaceMainView::File {
+            path: "src/main.rs".into(),
+        };
+        let diff = WorkspaceMainView::GitDiff {
+            path: "src/lib.rs".into(),
+            section: 0,
+        };
+
+        stack.open(WorkspaceMainView::Terminal {
+            id: "terminal-pending".into(),
+        });
+        stack.open(file.clone());
+        stack.open(diff.clone());
+
+        stack.remove_terminal("terminal-pending");
+
+        assert_eq!(stack.active(), diff);
+        assert_eq!(stack.go_back(), Some(file));
+        assert_eq!(stack.go_back(), None);
+    }
+
+    #[test]
+    fn active_main_view_terminal_id_ignores_last_active_terminal() {
+        let mut state = WorkspaceState::default();
+        state.active_terminal_id = Some("terminal-pending".into());
+        state.active_main_view = WorkspaceMainView::GitDiff {
+            path: "src/lib.rs".into(),
+            section: 0,
+        };
+
+        assert_eq!(state.active_main_view_terminal_id(), None);
     }
 
     #[test]

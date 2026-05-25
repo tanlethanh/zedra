@@ -19,6 +19,7 @@ use crate::agent_detail::AgentDetail;
 use crate::agent_manage::AgentManage;
 use crate::agent_picker::AgentPicker;
 use crate::agent_sessions::AgentSessions;
+use crate::agent_ui::managed_agent_name;
 use crate::editor::git_sidebar::GitFileSection;
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
 use crate::placeholder::render_placeholder;
@@ -96,6 +97,7 @@ pub(crate) enum PendingWorkspaceAction {
     },
     SpawnAgentTerminal {
         launch_cmd: String,
+        initial_title: String,
     },
 }
 
@@ -576,6 +578,27 @@ fn seed_host_created_terminal_meta(
     }
 
     changed
+}
+
+fn seed_pending_launch_terminal_meta(
+    terminal_state: &mut TerminalState,
+    terminal_id: &str,
+    title: String,
+    launch_cmd: Option<&str>,
+) {
+    terminal_state.set_title(terminal_id, Some(title));
+    if let Some(command) = launch_cmd.filter(|command| !command.is_empty()) {
+        terminal_state.set_current_command(terminal_id, command.to_owned());
+        terminal_state.set_shell_running(terminal_id);
+    }
+}
+
+fn managed_agent_command_hint(kind: ManagedAgentKind) -> &'static str {
+    match kind {
+        ManagedAgentKind::Claude => "claude",
+        ManagedAgentKind::Codex => "codex",
+        ManagedAgentKind::OpenCode => "opencode",
+    }
 }
 
 fn terminal_ids_after_close(closed_id: &str, terminal_ids: &[String]) -> Vec<String> {
@@ -1242,6 +1265,23 @@ impl Workspace {
         self.apply_route(route, prev_terminal_id, cx);
     }
 
+    fn replace_current_route(&mut self, route: WorkspaceMainView, cx: &mut Context<Self>) {
+        let prev_terminal_id = self.workspace_state.read(cx).active_terminal_id.clone();
+        self.workspace_state.update(cx, |state, cx| {
+            state.replace_current_route(route.clone(), cx);
+        });
+        self.apply_route(route, prev_terminal_id, cx);
+    }
+
+    fn remove_terminal_route(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.workspace_state
+            .update(cx, |state, cx| state.remove_terminal_route(id, cx));
+    }
+
+    fn active_route_is_pending_terminal(&self, cx: &App) -> bool {
+        self.workspace_state.read(cx).active_main_view_terminal_id() == Some(TERMINAL_PENDING_ID)
+    }
+
     /// Back navigation: pop the nav stack and apply the revealed route. Returns false if
     /// already at the bottom of the stack.
     fn navigate_back(&mut self, cx: &mut Context<Self>) -> bool {
@@ -1590,7 +1630,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.spawn_terminal("user_action", None, window, cx);
+        self.spawn_terminal("user_action", None, None, window, cx);
     }
 
     fn handle_create_agent(
@@ -1612,13 +1652,20 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.spawn_terminal("create_agent", Some(action.launch_cmd.clone()), window, cx);
+        self.spawn_terminal(
+            "create_agent",
+            Some(action.launch_cmd.clone()),
+            Some(action.initial_title.clone()),
+            window,
+            cx,
+        );
     }
 
     fn spawn_terminal(
         &mut self,
         telemetry_source: &'static str,
         launch_cmd: Option<String>,
+        initial_title: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1635,6 +1682,23 @@ impl Workspace {
         let workspace_terminal =
             self.create_terminal_entity(TERMINAL_PENDING_ID.to_string(), window, cx);
         let pending_entity_id = workspace_terminal.entity_id();
+        if let Some(title) = initial_title.clone() {
+            self.terminal_state.update(cx, |state, cx| {
+                seed_pending_launch_terminal_meta(
+                    state,
+                    TERMINAL_PENDING_ID,
+                    title,
+                    launch_cmd.as_deref(),
+                );
+                cx.notify();
+            });
+            self.navigate_to(
+                WorkspaceMainView::Terminal {
+                    id: TERMINAL_PENDING_ID.to_string(),
+                },
+                cx,
+            );
+        }
 
         let color_scheme = if crate::theme::bundle(cx).terminal.is_light() {
             zedra_rpc::proto::TerminalColorScheme::Light
@@ -1643,6 +1707,7 @@ impl Workspace {
         };
 
         cx.spawn(async move |workspace, cx| {
+            let launch_cmd_for_meta = launch_cmd.clone();
             let terminal_id = match session_handle
                 .terminal_create_with_cmd(cols as u16, rows as u16, launch_cmd, Some(color_scheme))
                 .await
@@ -1651,8 +1716,17 @@ impl Workspace {
                 Err(e) => {
                     tracing::error!("terminal_create failed: {}", e);
                     let message = e.to_string();
-                    let _ = workspace.update(cx, |ws, _cx| {
+                    let _ = workspace.update(cx, |ws, cx| {
                         ws.terminals.retain(|t| t.entity_id() != pending_entity_id);
+                        ws.terminal_state.update(cx, |state, cx| {
+                            state.remove(TERMINAL_PENDING_ID);
+                            cx.notify();
+                        });
+                        if ws.active_route_is_pending_terminal(cx) {
+                            ws.navigate_to(WorkspaceMainView::Default, cx);
+                        } else {
+                            ws.remove_terminal_route(TERMINAL_PENDING_ID, cx);
+                        }
                         platform_bridge::show_alert(
                             "Open Terminal",
                             &message,
@@ -1665,6 +1739,18 @@ impl Workspace {
             };
 
             let _ = workspace.update(cx, |ws, cx| {
+                if let Some(title) = initial_title {
+                    ws.terminal_state.update(cx, |state, cx| {
+                        seed_pending_launch_terminal_meta(
+                            state,
+                            &terminal_id,
+                            title,
+                            launch_cmd_for_meta.as_deref(),
+                        );
+                        state.remove(TERMINAL_PENDING_ID);
+                        cx.notify();
+                    });
+                }
                 workspace_terminal.update(cx, |terminal, cx| {
                     terminal.set_terminal_id(terminal_id.clone(), cx);
                 });
@@ -1675,7 +1761,12 @@ impl Workspace {
                     });
                 });
 
-                ws.navigate_to(WorkspaceMainView::Terminal { id: terminal_id }, cx);
+                if ws.active_route_is_pending_terminal(cx) {
+                    ws.replace_current_route(WorkspaceMainView::Terminal { id: terminal_id }, cx);
+                } else {
+                    ws.remove_terminal_route(TERMINAL_PENDING_ID, cx);
+                    ws.navigate_to(WorkspaceMainView::Terminal { id: terminal_id }, cx);
+                }
                 let terminal_count = ws.workspace_state.read(cx).terminal_ids.len();
                 zedra_telemetry::send(zedra_telemetry::Event::TerminalOpened {
                     source: telemetry_source,
@@ -1692,7 +1783,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.spawn_terminal(telemetry_source, None, window, cx);
+        self.spawn_terminal(telemetry_source, None, None, window, cx);
     }
 
     fn handle_navigate_back(
@@ -1769,6 +1860,23 @@ impl Workspace {
         let workspace_terminal =
             self.create_terminal_entity(TERMINAL_PENDING_ID.to_string(), window, cx);
         let pending_entity_id = workspace_terminal.entity_id();
+        let pending_title = format!("Resuming {}...", managed_agent_name(kind));
+        let command_hint = managed_agent_command_hint(kind);
+        self.terminal_state.update(cx, |state, cx| {
+            seed_pending_launch_terminal_meta(
+                state,
+                TERMINAL_PENDING_ID,
+                pending_title.clone(),
+                Some(command_hint),
+            );
+            cx.notify();
+        });
+        self.navigate_to(
+            WorkspaceMainView::Terminal {
+                id: TERMINAL_PENDING_ID.to_string(),
+            },
+            cx,
+        );
 
         cx.spawn(async move |workspace, cx| {
             let terminal_id = match session_handle
@@ -1778,8 +1886,17 @@ impl Workspace {
                 Ok(id) => id,
                 Err(e) => {
                     tracing::error!(?kind, "agent session resume failed: {}", e);
-                    let _ = workspace.update(cx, |ws, _cx| {
+                    let _ = workspace.update(cx, |ws, cx| {
                         ws.terminals.retain(|t| t.entity_id() != pending_entity_id);
+                        ws.terminal_state.update(cx, |state, cx| {
+                            state.remove(TERMINAL_PENDING_ID);
+                            cx.notify();
+                        });
+                        if ws.active_route_is_pending_terminal(cx) {
+                            ws.navigate_to(WorkspaceMainView::Default, cx);
+                        } else {
+                            ws.remove_terminal_route(TERMINAL_PENDING_ID, cx);
+                        }
                         platform_bridge::show_alert(
                             "Resume Agent",
                             "Failed to resume the agent session.",
@@ -1792,6 +1909,16 @@ impl Workspace {
             };
 
             let _ = workspace.update(cx, |ws, cx| {
+                ws.terminal_state.update(cx, |state, cx| {
+                    seed_pending_launch_terminal_meta(
+                        state,
+                        &terminal_id,
+                        pending_title,
+                        Some(command_hint),
+                    );
+                    state.remove(TERMINAL_PENDING_ID);
+                    cx.notify();
+                });
                 workspace_terminal.update(cx, |terminal, cx| {
                     terminal.set_terminal_id(terminal_id.clone(), cx);
                 });
@@ -1800,7 +1927,12 @@ impl Workspace {
                         id: terminal_id.clone(),
                     });
                 });
-                ws.navigate_to(WorkspaceMainView::Terminal { id: terminal_id }, cx);
+                if ws.active_route_is_pending_terminal(cx) {
+                    ws.replace_current_route(WorkspaceMainView::Terminal { id: terminal_id }, cx);
+                } else {
+                    ws.remove_terminal_route(TERMINAL_PENDING_ID, cx);
+                    ws.navigate_to(WorkspaceMainView::Terminal { id: terminal_id }, cx);
+                }
                 let terminal_count = ws.workspace_state.read(cx).terminal_ids.len();
                 zedra_telemetry::send(zedra_telemetry::Event::TerminalOpened {
                     source: "resume_agent",
@@ -1993,10 +2125,19 @@ impl Workspace {
                 self.activate_existing_terminal(target.terminal_id.clone(), cx);
                 self.schedule_add_to_chat_after_activation(target, input, cx);
             }
-            PendingWorkspaceAction::SpawnAgentTerminal { launch_cmd } => {
+            PendingWorkspaceAction::SpawnAgentTerminal {
+                launch_cmd,
+                initial_title,
+            } => {
                 cx.spawn(async move |this, cx| {
                     let _ = this.update_in(cx, |workspace, window, cx| {
-                        workspace.spawn_terminal("create_agent", Some(launch_cmd), window, cx);
+                        workspace.spawn_terminal(
+                            "create_agent",
+                            Some(launch_cmd),
+                            Some(initial_title),
+                            window,
+                            cx,
+                        );
                     });
                 })
                 .detach();
@@ -2366,6 +2507,24 @@ mod tests {
             meta.current_command.as_deref(),
             Some("claude --resume session")
         );
+    }
+
+    #[::core::prelude::v1::test]
+    fn pending_launch_terminal_seeds_title_and_agent_icon() {
+        let mut terminal_state = TerminalState::new();
+
+        seed_pending_launch_terminal_meta(
+            &mut terminal_state,
+            TERMINAL_PENDING_ID,
+            "Launching Codex...".to_string(),
+            Some("codex"),
+        );
+
+        let meta = terminal_state.meta(TERMINAL_PENDING_ID);
+        assert_eq!(meta.title.as_deref(), Some("Launching Codex..."));
+        assert_eq!(meta.agent_icon, Some("icons/openai.svg"));
+        assert_eq!(meta.agent_kind, Some(agent::Kind::Codex));
+        assert_eq!(meta.shell_state, crate::terminal_state::ShellState::Running);
     }
 
     #[::core::prelude::v1::test]
