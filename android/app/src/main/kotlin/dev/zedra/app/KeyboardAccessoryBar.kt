@@ -11,7 +11,6 @@ import android.view.View
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.core.content.ContextCompat
 
 class KeyboardAccessoryBar(
     context: Context,
@@ -45,6 +44,7 @@ class KeyboardAccessoryBar(
     private val repeatIntervalMs = 60L
     private val handler = Handler(Looper.getMainLooper())
     private var repeatingKey: String? = null
+    private var isDarkTheme = true
 
     private val repeatRunnable =
         object : Runnable {
@@ -61,7 +61,7 @@ class KeyboardAccessoryBar(
         isFocusable = false
         isFocusableInTouchMode = false
         setWillNotDraw(false)
-        setBackgroundColor(0xF50E0C0C.toInt())
+        applyTheme(isDark = true)
         visibility = GONE
 
         keySpecs.forEach { spec ->
@@ -84,12 +84,27 @@ class KeyboardAccessoryBar(
         handler.removeCallbacks(repeatRunnable)
     }
 
+    fun applyTheme(isDark: Boolean) {
+        isDarkTheme = isDark
+        val foreground = if (isDark) 0xFFFFFFFF.toInt() else 0xFF1A1A1A.toInt()
+        setBackgroundColor(if (isDark) 0xF50E0C0C.toInt() else 0xF5FFFFFF.toInt())
+        topBorderPaint.color = if (isDark) 0x33FFFFFF else 0x22000000
+        for (index in 0 until childCount) {
+            when (val child = getChildAt(index)) {
+                is ImageView -> child.imageTintList = android.content.res.ColorStateList.valueOf(foreground)
+                is TextView -> child.setTextColor(foreground)
+            }
+        }
+        invalidate()
+    }
+
     private fun makeButton(spec: KeySpec): View {
+        val foreground = if (isDarkTheme) 0xFFFFFFFF.toInt() else 0xFF1A1A1A.toInt()
         val view =
             if (spec.iconRes != null) {
                 ImageView(context).apply {
                     setImageResource(spec.iconRes)
-                    imageTintList = ContextCompat.getColorStateList(context, android.R.color.white)
+                    imageTintList = android.content.res.ColorStateList.valueOf(foreground)
                     scaleType = ImageView.ScaleType.CENTER
                     contentDescription = spec.label
                 }
@@ -98,7 +113,7 @@ class KeyboardAccessoryBar(
                     text = spec.label
                     textSize = 16f
                     gravity = Gravity.CENTER
-                    setTextColor(ContextCompat.getColor(context, android.R.color.white))
+                    setTextColor(foreground)
                 }
             }
 

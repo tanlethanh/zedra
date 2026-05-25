@@ -34,7 +34,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var keyboardAccessoryBar: KeyboardAccessoryBar
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
         installSplashScreen()
         super.onCreate(savedInstanceState)
 
@@ -61,6 +60,11 @@ class MainActivity : AppCompatActivity() {
         sSurfaceView = surfaceView
         sActivity = this
         NativePresentations.register(this, rootView)
+        pendingNativeIsDark?.let { isDark ->
+            keyboardAccessoryBar.applyTheme(isDark)
+            NativePresentations.setDarkTheme(isDark)
+            pendingNativeIsDark = null
+        }
 
         setContentView(rootView)
 
@@ -167,6 +171,9 @@ class MainActivity : AppCompatActivity() {
 
         private var sSurfaceView: GpuiSurfaceView? = null
         private var sActivity: Activity? = null
+        // Set when Rust calls setNativeTheme before the activity / accessory bar exists.
+        // Applied once onCreate finishes wiring views.
+        private var pendingNativeIsDark: Boolean? = null
 
         // ===== Native (downstream) =====
         @JvmStatic external fun bootstrap(
@@ -243,6 +250,26 @@ class MainActivity : AppCompatActivity() {
                 Configuration.UI_MODE_NIGHT_YES -> 1
                 Configuration.UI_MODE_NIGHT_NO -> 0
                 else -> -1
+            }
+        }
+
+        @JvmStatic
+        fun setNativeTheme(isDark: Boolean) {
+            AppCompatDelegate.setDefaultNightMode(
+                if (isDark) AppCompatDelegate.MODE_NIGHT_YES else AppCompatDelegate.MODE_NIGHT_NO
+            )
+            val activity = sActivity as? MainActivity
+            if (activity == null) {
+                pendingNativeIsDark = isDark
+                return
+            }
+            activity.runOnUiThread {
+                if (activity::keyboardAccessoryBar.isInitialized) {
+                    activity.keyboardAccessoryBar.applyTheme(isDark)
+                } else {
+                    pendingNativeIsDark = isDark
+                }
+                NativePresentations.setDarkTheme(isDark)
             }
         }
 
