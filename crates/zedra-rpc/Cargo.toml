@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 serde.workspace = true
+chrono.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 iroh.workspace = true

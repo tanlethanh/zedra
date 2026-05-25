@@ -9,7 +9,6 @@ use zedra_host::utils;
 const PLUGIN_REPO: &str = "tanlethanh/zedra-plugin";
 const CLAUDE_MARKETPLACE: &str = "zedra";
 const CLAUDE_PLUGIN: &str = "zedra@zedra";
-const PLUGIN_GIT_URL: &str = "https://github.com/tanlethanh/zedra-plugin.git";
 const PLUGIN_RAW_BASE: &str = "https://raw.githubusercontent.com/tanlethanh/zedra-plugin/main";
 const SKILL_NAMES: &[&str] = &[
     "zedra-start",

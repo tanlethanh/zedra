@@ -1,4 +1,5 @@
 use gpui::Action;
+use zedra_rpc::proto::ManagedAgentKind;
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
@@ -59,6 +60,18 @@ pub struct ShowConnecting;
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
+pub struct ShowWorkspaceConnecting {
+    pub entry_index: usize,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct ShowHomeWorkspaceConnecting {
+    pub state_index: usize,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
 pub struct HideConnecting;
 
 #[derive(Clone, PartialEq, Action)]
@@ -72,6 +85,41 @@ pub struct RequestDisconnect;
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
 pub struct CreateNewTerminal;
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct NavigateBack;
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct OpenAgentSessions;
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct OpenAgentManage;
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct OpenAgentDetail {
+    pub kind: ManagedAgentKind,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct CreateAgent;
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct SpawnAgentTerminal {
+    pub launch_cmd: String,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct ResumeAgentSession {
+    pub kind: ManagedAgentKind,
+    pub session_id: String,
+}
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]

@@ -184,6 +184,17 @@ pub fn format_duration(secs: u64) -> String {
     }
 }
 
+pub fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut end = max_chars;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &text[..end])
+}
+
 pub fn shell_arg_path(path: &Path) -> String {
     shell_arg(&path.display().to_string())
 }
@@ -263,5 +274,11 @@ mod tests {
         assert_eq!(format_duration(59), "59s");
         assert_eq!(format_duration(65), "1m5s");
         assert_eq!(format_duration(3661), "1h1m");
+    }
+
+    #[test]
+    fn truncate_chars_respects_char_boundary() {
+        assert_eq!(truncate_chars("hello", 10), "hello");
+        assert_eq!(truncate_chars("abcdef", 3), "abc…");
     }
 }

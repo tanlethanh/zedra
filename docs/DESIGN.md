@@ -22,6 +22,7 @@ New UI must read colors from `theme::palette(cx)` or the `theme::bg_primary(cx)`
 |------|------------------------|
 | Base background | `bg_primary`, `bg_surface` |
 | Raised surface | `bg_card`, `bg_overlay` |
+| Quiet card fill | `bg_card_dim` |
 | Quiet structure | `border_subtle` |
 | Control edge | `border_default`, `border_active` |
 | Primary text | `text_primary` |

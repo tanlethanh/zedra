@@ -139,6 +139,108 @@ private final class PresentationDismissDelegate: NSObject, UIAdaptivePresentatio
     }
 }
 
+private final class AgentListPickerViewController: UITableViewController {
+    private let callbackID: UInt32
+    private let pickerTitle: String?
+    private let pickerMessage: String?
+    private let itemLabels: [String]
+    private let itemSubtitles: [String?]
+    private let itemImageNames: [String?]
+    init(
+        callbackID: UInt32,
+        title: String?,
+        message: String?,
+        itemLabels: [String],
+        itemSubtitles: [String?],
+        itemImageNames: [String?]
+    ) {
+        self.callbackID = callbackID
+        self.pickerTitle = title
+        self.pickerMessage = message
+        self.itemLabels = itemLabels
+        self.itemSubtitles = itemSubtitles
+        self.itemImageNames = itemImageNames
+        super.init(style: .insetGrouped)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .cancel,
+            target: self,
+            action: #selector(cancelTapped)
+        )
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "AgentListPickerCell")
+        if #available(iOS 15.0, *) {
+            tableView.sectionHeaderTopPadding = 0
+        }
+        // Suppress the default top gap insetGrouped adds before the first section.
+        tableView.tableHeaderView = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: CGFloat.leastNormalMagnitude))
+
+        let stack = UIStackView()
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 2
+
+        let titleLabel = UILabel()
+        titleLabel.text = pickerTitle
+        titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
+        titleLabel.textColor = .label
+        stack.addArrangedSubview(titleLabel)
+
+        if let message = pickerMessage, !message.isEmpty {
+            let subtitleLabel = UILabel()
+            subtitleLabel.text = message
+            subtitleLabel.font = .systemFont(ofSize: 12, weight: .regular)
+            subtitleLabel.textColor = .secondaryLabel
+            subtitleLabel.numberOfLines = 1
+            stack.addArrangedSubview(subtitleLabel)
+        }
+
+        stack.sizeToFit()
+        navigationItem.titleView = stack
+    }
+
+    @objc private func cancelTapped() {
+        dismiss(animated: true) {
+            zedra_ios_selection_dismiss(self.callbackID)
+        }
+    }
+
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        itemLabels.count
+    }
+
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "AgentListPickerCell", for: indexPath)
+        var content = UIListContentConfiguration.subtitleCell()
+        content.text = itemLabels[indexPath.row]
+        if let subtitle = itemSubtitles[safe: indexPath.row].flatMap({ $0 }), !subtitle.isEmpty {
+            content.secondaryText = subtitle
+        }
+        if let imageName = itemImageNames[safe: indexPath.row].flatMap({ $0 }),
+           let image = NativePresentationBridge.actionListImage(named: imageName) {
+            content.image = image
+            content.imageProperties.reservedLayoutSize = CGSize(width: 28, height: 28)
+        }
+        cell.contentConfiguration = content
+        cell.selectionStyle = .default
+        return cell
+    }
+
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        dismiss(animated: true) {
+            zedra_ios_selection_result(self.callbackID, Int32(indexPath.row))
+        }
+    }
+}
+
 private final class AlertOutsideTapDismissHandler: NSObject, UIGestureRecognizerDelegate {
     private let callbackID: UInt32
     private weak var alert: UIAlertController?
@@ -255,6 +357,21 @@ enum NativePresentationBridge {
     static func actionImage(named imageName: String) -> UIImage? {
         let image = UIImage(named: imageName) ?? UIImage(systemName: imageName)
         return image?.withRenderingMode(.alwaysTemplate)
+    }
+
+    private static let actionListIconPointSize: CGFloat = 22
+    private static let actionListIconTint = UIColor(white: 1.0, alpha: 0.92)
+
+    static func actionListImage(named imageName: String) -> UIImage? {
+        guard let image = actionImage(named: imageName) else { return nil }
+        let size = CGSize(width: actionListIconPointSize, height: actionListIconPointSize)
+        let tinted = image.withTintColor(actionListIconTint, renderingMode: .alwaysTemplate)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = UIScreen.main.scale
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        return renderer.image { _ in
+            tinted.draw(in: CGRect(origin: .zero, size: size))
+        }.withRenderingMode(.alwaysOriginal)
     }
 
     static func notificationImage(named imageName: String) -> UIImage? {
@@ -1431,6 +1548,45 @@ private enum PresentationCoordinator {
         }
     }
 
+    static func presentListPicker(
+        callbackID: UInt32,
+        title: String?,
+        message: String?,
+        itemLabels: [String],
+        itemSubtitles: [String?],
+        itemImageNames: [String?]
+    ) {
+        DispatchQueue.main.async {
+            guard !itemLabels.isEmpty else {
+                zedra_ios_selection_dismiss(callbackID)
+                return
+            }
+            guard let presenter = NativePresentationBridge.topViewController() else {
+                zedra_ios_selection_dismiss(callbackID)
+                return
+            }
+
+            let controller = AgentListPickerViewController(
+                callbackID: callbackID,
+                title: title,
+                message: message,
+                itemLabels: itemLabels,
+                itemSubtitles: itemSubtitles,
+                itemImageNames: itemImageNames
+            )
+            let navigation = UINavigationController(rootViewController: controller)
+            navigation.modalPresentationStyle = .formSheet
+            if let sheet = navigation.sheetPresentationController {
+                sheet.detents = [.medium(), .large()]
+                sheet.prefersGrabberVisible = true
+            }
+            let delegate = PresentationDismissDelegate(callbackID: callbackID, isSelection: true)
+            navigation.presentationController?.delegate = delegate
+            objc_setAssociatedObject(navigation, dismissAssociationKey, delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+            presenter.present(navigation, animated: true)
+        }
+    }
+
     static func presentNativeEditMenu(
         callbackID: UInt32,
         sourcePoint: CGPoint,
@@ -1846,6 +2002,32 @@ func ios_present_alert(
         message: NativePresentationBridge.string(message),
         buttonLabels: NativePresentationBridge.strings(count: buttonCount, labels: labels),
         buttonStyles: NativePresentationBridge.styles(count: buttonCount, styles: styles)
+    )
+}
+
+@_cdecl("ios_present_list_picker")
+func ios_present_list_picker(
+    _ callbackID: UInt32,
+    _ title: UnsafePointer<CChar>?,
+    _ message: UnsafePointer<CChar>?,
+    _ itemCount: Int32,
+    _ labels: UnsafePointer<UnsafePointer<CChar>?>?,
+    _ subtitles: UnsafePointer<UnsafePointer<CChar>?>?,
+    _ imageNames: UnsafePointer<UnsafePointer<CChar>?>?
+) {
+    PresentationCoordinator.presentListPicker(
+        callbackID: callbackID,
+        title: NativePresentationBridge.string(title),
+        message: NativePresentationBridge.string(message),
+        itemLabels: NativePresentationBridge.strings(count: itemCount, labels: labels),
+        itemSubtitles: NativePresentationBridge.optionalStrings(
+            count: itemCount,
+            labels: subtitles
+        ),
+        itemImageNames: NativePresentationBridge.optionalStrings(
+            count: itemCount,
+            labels: imageNames
+        )
     )
 }
 

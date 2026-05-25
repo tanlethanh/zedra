@@ -5,6 +5,7 @@ use std::sync::{Mutex, OnceLock};
 use tracing::*;
 use zedra_rpc::proto::HostInfoSnapshot;
 
+use zedra_rpc::proto::ManagedAgentKind;
 use zedra_session::*;
 
 use crate::platform_bridge;
@@ -38,6 +39,11 @@ pub enum WorkspaceMainView {
     },
     Terminal {
         id: String,
+    },
+    AgentSessions,
+    AgentManage,
+    AgentDetail {
+        kind: ManagedAgentKind,
     },
     NoActiveTerminal,
 }

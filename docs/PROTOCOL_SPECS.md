@@ -174,7 +174,8 @@ Most result structs carry `error: Option<String>`. When set, the operation faile
 Result types that carry `error: Option<String>`:
 `FsListResult`, `FsReadResult`, `FsStatResult`, `SessionSwitchResult`, `TermCreateResult`,
 `GitStatusResult`, `GitDiffResult`, `GitLogResult`, `GitCommitResult`, `GitStageResult`,
-`GitUnstageResult`, `GitBranchesResult`, `LspDiagnosticsResult`.
+`GitUnstageResult`, `GitBranchesResult`, `AgentListResult`, `AgentSessionsResult`,
+`AgentResumeResult`, `LspDiagnosticsResult`.
 
 Types that use non-string status fields or enum variants instead:
 `FsWriteResult` (`ok: bool`), `GitCheckoutResult` (`ok: bool`), `FsWatchResult`/`FsUnwatchResult` (enum),
@@ -226,6 +227,9 @@ Types that use non-string status fields or enum variants instead:
 - `TermReorder(TermReorderReq) -> TermReorderResult`
 - `SyncSessionResult.terminals -> Vec<TerminalSyncEntry>`
 - Terminal ids are opaque host-generated UUID strings.
+- `TermCreateReq.color_scheme` is optional. New clients send `Dark` or `Light`
+  so the host can answer startup OSC 10/11/12 color queries immediately for
+  launch-command TUIs before a client terminal view attaches.
 
 ### TermAttach conventions
 
@@ -281,11 +285,54 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
 - `GitStage` stages the provided paths with `git add -- <paths>`.
 - `GitUnstage` removes the provided paths from the index while preserving working tree contents.
 
-## 5.7 AI and LSP
+## 5.7 AI, Managed Agents, and LSP
 
 - `AiPrompt(AiPromptReq) -> AiPromptResult`
+- `AgentList(AgentListReq) -> AgentListResult`
+- `AgentSessions(AgentSessionsReq) -> AgentSessionsResult`
+- `AgentResume(AgentResumeReq) -> AgentResumeResult`
+- `AgentInstalledList(AgentInstalledListReq) -> AgentInstalledListResult`
 - `LspDiagnostics(LspDiagnosticsReq) -> LspDiagnosticsResult`
 - `LspHover(LspHoverReq) -> LspHoverResult`
+
+### Managed agent conventions
+
+**Terminology:** A *managed agent* is one of `ManagedAgentKind`: Claude Code (`Claude`), Codex (`Codex`), and OpenCode (`OpenCode`). This is narrower than `AgentInstalledList`, which lists every terminal agent CLI the host can launch (Amp, Cline, Cursor, etc.).
+
+- `AgentListResult.agents` returns one `AgentSummary` for every managed agent, even when the CLI is missing or no sessions exist.
+- `AgentListReq.refresh` and `AgentInstalledListReq.refresh` default to `false`. When `false`, the host serves its startup cache; when `true`, the host rescans synchronous fields before responding.
+- `AgentInstalledList` is for `TermCreate` launch commands only, not manage-agent views.
+- `AgentSessionsResult.sessions` returns the latest workspace-matching sessions for one managed agent. `AgentSessionsResult.total` is the full match count before applying `limit`.
+- `AgentSessionsReq.limit` defaults to `0`, which uses the host default (`50`, overridable with `ZEDRA_AGENT_SESSION_LIMIT`, max `200`).
+- `AgentSessionsReq.refresh` follows the same cache rule as `AgentListReq.refresh`.
+- `AgentResume` creates a new terminal and starts the provider-specific resume command on the host. Clients must not build provider shell commands from summary fields.
+- `AgentInstalledList` returns all supported terminal agent slugs with host-owned `launch_cmd` values for available CLIs. Clients create agents through `TermCreate` with that launch command.
+- `AgentSummary.usage` carries a live `AgentUsageSnapshot` fetched asynchronously from the provider's API at daemon start and on `AgentListReq{refresh:true}`. Fields populated per agent:
+  - **Claude** (preferred): `rate_limit_*_used_percent`, `rate_limit_*_resets_at`, `total_cost_usd` / `context_used_percent` (extra credit spend) — from `api.anthropic.com/api/oauth/usage` when `~/.claude/.credentials.json` has a valid OAuth token (structured JSON; same reliability model as Codex).
+  - **Claude** (PTY fallback, unix host only): when there is no readable credentials file (typical Keychain-only CLI login). The host spawns `claude`, captures `/usage` text, and scrapes percentages and optional `resets_at`. This path is **best-effort**: Claude’s TUI layout is not a protocol contract; reset timestamps may be absent or approximate (host local time). Zedra does not read the macOS Keychain for Claude tokens. One PTY probe is cached ~60s and shared by usage + plan scans.
+  - **Codex**: `rate_limit_five_hour_used_percent` (primary window), `rate_limit_seven_day_used_percent` (secondary window) — from `chatgpt.com/backend-api/wham/usage` using `~/.codex/auth.json`.
+  - `None` when credentials are missing and the CLI PTY probe fails. When a credentials file token is present but the OAuth usage/profile call fails, the host falls back to the CLI PTY probe (still no Keychain read).
+- `AgentSummary.account.fields` exposes locally discovered account/setup metadata for manage-agent detail views. Values must remain privacy-safe. Current fields per agent kind:
+  - **Claude**: Logged in, Plan (from `~/.claude/.credentials.json` `subscriptionType` / `rateLimitTier`, refreshed from `api.anthropic.com/api/oauth/profile` when OAuth is available, or CLI PTY when the token lives in Keychain); Organization (OAuth profile only); Model, Effort, Permission mode (from `~/.claude/settings.json`); Total cost (USD), Today msgs (from `~/.claude/stats-cache.json` `dailyActivity`). Live rate limits and extra spend come from `AgentUsageSnapshot` on the summary (OAuth API or CLI PTY), not account fields.
+  - **Codex**: Logged in, Account (name from JWT), Plan, Plan until (from `~/.codex/auth.json` `id_token` payload, re-read on async refresh); Model, Personality, Reasoning effort (from `~/.codex/config.toml`); Week threads, Total threads (from `~/.codex/state_5.sqlite`).
+  - **OpenCode**: Config dir presence (from `~/.config/opencode`).
+- `AgentSessionSummary.title` uses provider-stored titles when available, otherwise `"Unknown"`.
+- `AgentSessionSummary.transcript_size_bytes` reports transcript file size when the host scan has a local file path.
+- `AgentGitSummary.worktree` is populated for Claude when the encoded project path includes `--claude-worktrees-<name>`.
+- Summary timestamps use `DateTime<Utc>` serialization through serde/postcard.
+- Data sources are explicit through `AgentDataSource` so clients can distinguish CLI/setup checks, historical scans, terminal metadata, hook state, status lines, and provider CLI output.
+- Summaries must not expose prompt text, command arguments, tool input/output, transcript bodies, or last assistant messages. Allowed fields are safe labels, ids, timestamps, counts, paths already scoped to the workspace, and provider metadata such as model, source, permission mode, CLI version, git branch, and PR link metadata.
+- `AgentLifecycleStatus`, `AgentEventKind`, and `AgentActionKind` provide the cross-agent vocabulary for future hook-driven prompts and notifications.
+
+### Async managed-agent fetching
+
+CLI `--version` probes are slow and cached separately from the synchronous agent scan.
+
+1. **Daemon startup:** preload scans agents into cache, then probes versions in the background.
+2. **`AgentList` read:** returns cache with any known versions merged; live terminal bindings merged on the host for the response.
+3. **`AgentList` with `refresh: true`:** rescans synchronous fields immediately, then starts a background version refresh.
+4. **Background completion:** host pushes `HostEvent::AgentInfoChanged { info }` once per managed agent to every session with an active `Subscribe` stream. `info` is the full cached `AgentSummary` for that agent (including versions and live bindings for that session).
+5. **Client update:** replace the cached row for `info.kind` (do not treat the event as a partial patch).
 
 ---
 
@@ -296,12 +343,14 @@ Current host event variants:
 - `TerminalCreated { id, launch_cmd }`
 - `GitChanged`
 - `FsChanged { path }`
+- `AgentInfoChanged { info }`
 
 Client rules:
 
 - `TerminalCreated`: attach/open terminal view if relevant.
 - `GitChanged`: invalidate cached git state and refresh when appropriate.
 - `FsChanged { path }`: invalidate cached file tree for the watched path and reload affected expanded nodes.
+- `AgentInfoChanged`: replace cached `AgentSummary` for `info.kind`. One event per managed agent per version refresh. Requires an active `Subscribe` stream.
 
 ---
 

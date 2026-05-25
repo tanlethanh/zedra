@@ -597,6 +597,8 @@ pub struct SessionInfo {
 pub struct TerminalInfo {
     pub id: String,
     pub title: Option<String>,
+    pub cwd: Option<String>,
+    pub icon_name: Option<String>,
     pub created_at_unix_secs: u64,
     pub created_at_elapsed_secs: u64,
     pub uptime_secs: u64,
@@ -882,10 +884,20 @@ impl SessionRegistry {
         self.sessions.lock().await.len()
     }
 
-    /// Return the first session (arbitrary order), if any.
-    /// Used by the REST API when no session_id is specified.
-    pub async fn first_session(&self) -> Option<Arc<ServerSession>> {
-        self.sessions.lock().await.values().next().cloned()
+    /// Return the most recently active session, if any.
+    /// Used by the REST API when no session_id is specified, so the request
+    /// targets the session a user is actually working in rather than an
+    /// arbitrary entry in `HashMap` iteration order.
+    pub async fn most_recent_session(&self) -> Option<Arc<ServerSession>> {
+        let sessions = self.sessions.lock().await;
+        let mut best: Option<(Instant, &Arc<ServerSession>)> = None;
+        for session in sessions.values() {
+            let last = *session.last_activity.lock().await;
+            if best.map(|(t, _)| last > t).unwrap_or(true) {
+                best = Some((last, session));
+            }
+        }
+        best.map(|(_, session)| Arc::clone(session))
     }
 
     /// List all active sessions with summary info.
@@ -914,7 +926,18 @@ impl SessionRegistry {
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => a.id.cmp(&b.id),
         });
+        result
+    }
 
+    /// All server sessions that currently have a host-event subscriber attached.
+    pub async fn sessions_with_event_subscribers(&self) -> Vec<Arc<ServerSession>> {
+        let sessions = self.sessions.lock().await;
+        let mut result = Vec::new();
+        for session in sessions.values() {
+            if session.has_event_subscriber().await {
+                result.push(Arc::clone(session));
+            }
+        }
         result
     }
 
@@ -971,6 +994,15 @@ impl SessionRegistry {
     /// Check if a client pubkey is in the global authorized list.
     pub async fn is_globally_authorized(&self, client_pubkey: &[u8; 32]) -> bool {
         self.authorized_clients.lock().await.contains(client_pubkey)
+    }
+
+    /// Check if a client pubkey is already in a session's ACL.
+    pub async fn is_in_session_acl(&self, session_id: &str, client_pubkey: &[u8; 32]) -> bool {
+        let sessions = self.sessions.lock().await;
+        match sessions.get(session_id) {
+            Some(session) => session.acl.lock().await.contains(client_pubkey),
+            None => false,
+        }
     }
 
     /// Add a client pubkey to the global authorized list and the session ACL.
@@ -1353,11 +1385,12 @@ impl ServerSession {
             let Some(term) = terms.get(&id) else {
                 continue;
             };
-            let title = term
+            let (title, cwd, icon_name) = term
                 .host_meta
                 .lock()
                 .ok()
-                .and_then(|meta| meta.title.clone());
+                .map(|meta| (meta.title.clone(), meta.cwd.clone(), meta.icon_name.clone()))
+                .unwrap_or((None, None, None));
             let created_at_unix_secs = term
                 .created_at
                 .duration_since(UNIX_EPOCH)
@@ -1367,6 +1400,8 @@ impl ServerSession {
             entries.push(TerminalInfo {
                 id,
                 title,
+                cwd,
+                icon_name,
                 created_at_unix_secs,
                 created_at_elapsed_secs: uptime_secs,
                 uptime_secs,
@@ -1404,6 +1439,11 @@ impl ServerSession {
         let mut order = self.terminal_order.lock().await;
         *order = ordered_ids;
         Ok(())
+    }
+
+    /// Whether this session has an active `Subscribe` host-event stream.
+    pub async fn has_event_subscriber(&self) -> bool {
+        self.event_tx.lock().await.is_some()
     }
 
     /// Push a host-initiated event to the subscribed client, if any.

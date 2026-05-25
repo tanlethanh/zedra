@@ -1,8 +1,11 @@
 // QuickActionPanel — right-side overlay for workspace switching.
 
+use std::time::Duration;
+
 use gpui::*;
 
-use crate::platform_bridge::{self, HapticFeedback};
+use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
+use crate::platform_bridge::{self, AlertButton, HapticFeedback};
 use crate::terminal_card::{TerminalCardProps, render_terminal_card};
 use crate::terminal_state::TerminalState;
 use crate::theme;
@@ -29,17 +32,123 @@ fn is_active_terminal_card(
     active_workspace_index == Some(workspace_index) && active_terminal_id == Some(terminal_id)
 }
 
+enum QuickActionPickerPending {
+    CreateAgent { ws_index: usize },
+    NewTerminal { ws_index: usize },
+    ViewSessions { ws_index: usize },
+    ManageAgents { ws_index: usize },
+}
+
 pub struct QuickActionPanel {
     workspaces: Entity<Workspaces>,
     focus_handle: FocusHandle,
+    pending_picker: SharedPendingSlot<QuickActionPickerPending>,
+    _pending_picker_task: Task<()>,
 }
 
 impl QuickActionPanel {
     pub fn new(workspaces: Entity<Workspaces>, cx: &mut Context<Self>) -> Self {
+        let pending_picker = shared_pending_slot();
+        let pending_slot = pending_picker.clone();
+        let _pending_picker_task =
+            spawn_periodic_task(cx, Duration::from_millis(50), move |this, cx| {
+                if let Some(action) = pending_slot.take() {
+                    this.process_pending_picker_action(action, cx);
+                }
+            });
         Self {
             workspaces,
             focus_handle: cx.focus_handle(),
+            pending_picker,
+            _pending_picker_task,
         }
+    }
+
+    fn process_pending_picker_action(
+        &mut self,
+        action: QuickActionPickerPending,
+        cx: &mut Context<Self>,
+    ) {
+        let ws_index = match action {
+            QuickActionPickerPending::CreateAgent { ws_index }
+            | QuickActionPickerPending::NewTerminal { ws_index }
+            | QuickActionPickerPending::ViewSessions { ws_index }
+            | QuickActionPickerPending::ManageAgents { ws_index } => ws_index,
+        };
+        self.workspaces
+            .update(cx, |ws, cx| ws.switch_to(ws_index, cx));
+        cx.emit(QuickActionEvent::Close);
+        cx.emit(QuickActionEvent::NavigateToWorkspace);
+        let Some(ws) = self
+            .workspaces
+            .read(cx)
+            .workspace_by_index(ws_index)
+            .cloned()
+        else {
+            return;
+        };
+        match action {
+            QuickActionPickerPending::CreateAgent { .. } => {
+                ws.update(cx, |w, cx| w.create_agent_from_quick_action(cx));
+            }
+            QuickActionPickerPending::NewTerminal { .. } => {
+                let ws_weak = ws.downgrade();
+                cx.spawn(async move |_this, cx| {
+                    let _ = ws_weak.update_in(cx, |w, window, cx| {
+                        w.create_terminal_from_quick_action(window, cx);
+                    });
+                })
+                .detach();
+            }
+            QuickActionPickerPending::ViewSessions { .. } => {
+                ws.update(cx, |w, cx| w.open_agent_sessions_from_quick_action(cx));
+            }
+            QuickActionPickerPending::ManageAgents { .. } => {
+                ws.update(cx, |w, cx| w.open_agent_manage_from_quick_action(cx));
+            }
+        }
+    }
+
+    fn handle_show_quick_action_picker(&mut self, ws_index: usize, _cx: &mut Context<Self>) {
+        let buttons = vec![
+            AlertButton {
+                label: "Create Agent".into(),
+                style: platform_bridge::AlertButtonStyle::Default,
+                image_name: Some("icons/plus.svg".into()),
+            },
+            AlertButton {
+                label: "New Terminal".into(),
+                style: platform_bridge::AlertButtonStyle::Default,
+                image_name: Some("icons/terminal.svg".into()),
+            },
+            AlertButton {
+                label: "View Sessions".into(),
+                style: platform_bridge::AlertButtonStyle::Default,
+                image_name: Some("icons/history.svg".into()),
+            },
+            AlertButton {
+                label: "Manage Agents".into(),
+                style: platform_bridge::AlertButtonStyle::Default,
+                image_name: Some("icons/layers-2.svg".into()),
+            },
+            AlertButton {
+                label: "Cancel".into(),
+                style: platform_bridge::AlertButtonStyle::Cancel,
+                image_name: None,
+            },
+        ];
+        let pending = self.pending_picker.clone();
+        platform_bridge::show_selection("", "", buttons, move |selection| {
+            let Some(idx) = selection else { return };
+            let action = match idx {
+                0 => QuickActionPickerPending::CreateAgent { ws_index },
+                1 => QuickActionPickerPending::NewTerminal { ws_index },
+                2 => QuickActionPickerPending::ViewSessions { ws_index },
+                3 => QuickActionPickerPending::ManageAgents { ws_index },
+                _ => return,
+            };
+            pending.set(action);
+        });
     }
 
     fn handle_scan_qr(&self, cx: &mut Context<Self>) {
@@ -72,29 +181,6 @@ impl QuickActionPanel {
         cx.emit(QuickActionEvent::Close);
         cx.emit(QuickActionEvent::NavigateToWorkspace);
         cx.emit(QuickActionEvent::OpenTerminal { tid, ws_index });
-    }
-
-    fn handle_create_terminal(&self, ws_index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.workspaces
-            .update(cx, |ws, cx| ws.switch_to(ws_index, cx));
-        cx.emit(QuickActionEvent::Close);
-        cx.emit(QuickActionEvent::NavigateToWorkspace);
-
-        if let Some(workspace) = self
-            .workspaces
-            .read(cx)
-            .workspace_by_index(ws_index)
-            .cloned()
-        {
-            workspace.update(cx, |ws, cx| {
-                ws.create_terminal_from_quick_action(window, cx);
-            });
-        } else {
-            tracing::warn!(
-                "workspace not found for index {} to create terminal from quick action",
-                ws_index
-            );
-        }
     }
 
     fn handle_terminal_delete(&self, ws_index: usize, tid: String, cx: &mut Context<Self>) {
@@ -281,9 +367,9 @@ impl Render for QuickActionPanel {
                             .justify_center()
                             .hit_slop(px(10.0))
                             .on_pointer_down(|_, _, cx| cx.stop_propagation())
-                            .on_press(cx.listener(move |this, _event, window, cx| {
+                            .on_press(cx.listener(move |this, _event, _window, cx| {
                                 platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-                                this.handle_create_terminal(index, window, cx);
+                                this.handle_show_quick_action_picker(index, cx);
                                 cx.stop_propagation();
                             }))
                             .child(

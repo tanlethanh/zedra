@@ -12,7 +12,7 @@ use crate::platform_bridge;
 use crate::platform_bridge::HapticFeedback;
 use crate::session_panel::SessionPanel;
 use crate::telemetry::view_telemetry::{self, ViewDescriptor};
-use crate::terminal_panel::TerminalPanel;
+use crate::terminal_panel::{TerminalPanel, divider, toolbar_button};
 use crate::terminal_state::TerminalState;
 use crate::theme;
 use crate::transport_badge::ConnectionStatusIndicator;
@@ -450,6 +450,48 @@ impl Render for WorkspaceDrawer {
                         el.child(self.render_file_mode_toggle(cx))
                     }),
             )
+            // Terminal action bar — only on Terminals tab, flush with the footer
+            .when(self.current_tab == DrawerTab::Terminals, |el| {
+                el.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .rounded_t(px(8.0))
+                        .border_1()
+                        .border_b_0()
+                        .border_color(rgb(theme::border_subtle(cx)))
+                        .mx(px(theme::DRAWER_PADDING))
+                        .overflow_hidden()
+                        .child(toolbar_button(
+                            "terminal-manage-agents-btn",
+                            "icons/layers-2.svg",
+                            cx,
+                            workspace_action::OpenAgentManage,
+                        ))
+                        .child(divider(cx))
+                        .child(toolbar_button(
+                            "terminal-view-sessions-btn",
+                            "icons/history.svg",
+                            cx,
+                            workspace_action::OpenAgentSessions,
+                        ))
+                        .child(divider(cx))
+                        .child(toolbar_button(
+                            "terminal-create-terminal-btn",
+                            "icons/terminal.svg",
+                            cx,
+                            workspace_action::CreateNewTerminal,
+                        ))
+                        .child(divider(cx))
+                        .child(toolbar_button(
+                            "terminal-create-agent-btn",
+                            "icons/plus.svg",
+                            cx,
+                            workspace_action::CreateAgent,
+                        )),
+                )
+            })
             // Footer nav bar
             .child(
                 div()

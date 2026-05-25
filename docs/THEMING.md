@@ -31,7 +31,8 @@ theme::*    EditorTheme   TerminalTheme
 **Required**
 
 - Read **UI colors** from `theme::palette(cx)` or the `theme::bg_primary(cx)`-style accessors in `crates/zedra/src/theme.rs`. Wrap hex tokens with `rgb(...)` (or `Hsla` fields on the palette) in `render()`.
-- Use **layout and typography constants** from `theme.rs` (`SPACING_*`, `FONT_*`, `ICON_*`, `DRAWER_*`, etc.). Those are appearance-independent; do not duplicate magic numbers in views.
+- Use **layout and typography constants** from `theme.rs` (`SPACING_*`, `SUBSCREEN_PADDING_X`, `FONT_*`, `ICON_*`, `DRAWER_*`, etc.). Those are appearance-independent; do not duplicate magic numbers in views.
+- Subscreen pages (manage agents, agent history): horizontal gutter `SUBSCREEN_PADDING_X` on header and `subscreen_padded_body`; `SPACING_MD` between back and title. Manage detail metadata row spacing: `AGENT_METADATA_ROW_PY`.
 - Use **semantic accents** only for meaning (connected, warning, destructive, focus)—see `docs/DESIGN.md`.
 - If a surface must react to a theme toggle, subscribe to `ThemeStateEvent::Changed` and call `cx.notify()` on the owning entity (see `ZedraApp::on_theme_changed` and `WorkspaceTerminal`).
 
@@ -70,7 +71,8 @@ When several fields are needed together (e.g. badges), take `let palette = theme
 | Field | Typical use |
 |-------|-------------|
 | `bg_primary`, `bg_surface` | Full-height shells, workspace background |
-| `bg_card`, `bg_overlay` | Raised panels, sheets, overlays |
+| `bg_card`, `bg_overlay` | Raised panels, terminal cards, sheets |
+| `bg_card_dim` | Lower-contrast card fill (closer to `bg_primary` than `bg_card`) |
 | `text_primary`, `text_secondary`, `text_muted` | Labels, body, metadata |
 | `border_subtle`, `border_default`, `border_active`, `border_highlight` | 1px separators and control edges |
 | `accent_green`, `accent_blue`, `accent_yellow`, `accent_red`, `accent_dim` | Status and semantic emphasis only |

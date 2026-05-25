@@ -37,8 +37,10 @@ qrcode = "0.14"
 clap = { version = "4", features = ["derive"] }
 
 # Serialization
+base64-url.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["std"] }
+chrono.workspace = true
 
 # Random/crypto
 rand.workspace = true
@@ -65,6 +67,9 @@ sysinfo = "0.31.4"
 
 # Error handling
 anyhow.workspace = true
+
+# Read-only queries against Codex/OpenCode WAL SQLite databases
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 # P2P networking
 iroh.workspace = true
@@ -93,6 +98,7 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 tempfile = "3"
+filetime = "0.2"
 serde_json.workspace = true
 iroh = { workspace = true, features = ["test-utils"] }
 iroh-relay = { workspace = true, features = ["test-utils"] }

@@ -175,6 +175,73 @@ object NativePresentations {
     }
 
     @JvmStatic
+    fun showListPicker(
+        callbackId: Int,
+        title: String?,
+        message: String?,
+        labels: Array<String>?,
+        subtitles: Array<String?>?,
+        imageNames: Array<String?>?,
+    ) = onUi {
+        val safeLabels = labels?.takeIf { it.isNotEmpty() } ?: run {
+            MainActivity.nativeSelectionDismiss(callbackId)
+            return@onUi
+        }
+        val activity = requireActivity()
+        val sheet = BottomSheetDialog(activity)
+        val content = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16f), dp(12f), dp(16f), dp(12f))
+            if (!title.isNullOrBlank()) {
+                addView(selectionHeader(title, primary = true))
+            }
+            if (!message.isNullOrBlank()) {
+                addView(selectionHeader(message, primary = title.isNullOrBlank()))
+            }
+            val scroll = android.widget.ScrollView(activity).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    dp(420f),
+                )
+                val list = LinearLayout(activity).apply {
+                    orientation = LinearLayout.VERTICAL
+                }
+                safeLabels.forEachIndexed { index, label ->
+                    val subtitle = subtitles?.getOrNull(index)?.orEmpty().orEmpty()
+                    list.addView(TextView(activity).apply {
+                        text = if (subtitle.isBlank()) label else "$label\n$subtitle"
+                        textSize = 16f
+                        setLineSpacing(0f, 1.1f)
+                        gravity = Gravity.CENTER_VERTICAL
+                        minHeight = dp(56f)
+                        setPadding(dp(8f), dp(10f), dp(8f), dp(10f))
+                        setTextColor(Color.WHITE)
+                        setSelectableItemBackground(this)
+                        setOnClickListener {
+                            MainActivity.nativeSelectionResult(callbackId, index)
+                            sheet.dismiss()
+                        }
+                    }, LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ))
+                    if (index + 1 < safeLabels.size) {
+                        list.addView(MaterialDivider(activity), LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ))
+                    }
+                }
+                addView(list)
+            }
+            addView(scroll)
+        }
+        sheet.setContentView(content)
+        sheet.setOnCancelListener { MainActivity.nativeSelectionDismiss(callbackId) }
+        sheet.show()
+    }
+
+    @JvmStatic
     fun showTextInput(
         callbackId: Int,
         title: String?,

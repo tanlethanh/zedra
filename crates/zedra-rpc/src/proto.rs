@@ -8,6 +8,7 @@
 //   PKI reconnect:   Connect(None) → Challenge → AuthProve → Ok(SyncSessionResult) → (RPC calls)
 //   Health:          Ping → Pong (every 2s, foreground only)
 
+use chrono::{DateTime, Utc};
 use irpc::channel::{mpsc, oneshot};
 use irpc::rpc_requests;
 use serde::{Deserialize, Serialize};
@@ -163,6 +164,26 @@ pub enum ZedraProto {
     /// Kept at enum tail because protocol variants are append-only.
     #[rpc(tx = oneshot::Sender<FsDocsTreeResult>)]
     FsDocsTree(FsDocsTreeReq),
+
+    /// List supported managed AI agents for the active workspace.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<AgentListResult>)]
+    AgentList(AgentListReq),
+
+    /// List known sessions for one managed AI agent.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<AgentSessionsResult>)]
+    AgentSessions(AgentSessionsReq),
+
+    /// Resume a managed-agent session by creating a new terminal.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<AgentResumeResult>)]
+    AgentResume(AgentResumeReq),
+
+    /// List installed terminal AI agents with host-owned launch commands.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<AgentInstalledListResult>)]
+    AgentInstalledList(AgentInstalledListReq),
 }
 
 // ---------------------------------------------------------------------------
@@ -647,6 +668,8 @@ pub enum HostEvent {
     GitChanged,
     /// A watched directory path changed and the client should invalidate its cached tree.
     FsChanged { path: String },
+    /// Cached managed-agent summary updated after an async fetch (for example CLI version).
+    AgentInfoChanged { info: AgentSummary },
 }
 
 // ---------------------------------------------------------------------------
@@ -704,6 +727,9 @@ pub struct TermCreateReq {
     /// If `None`, the host's default launch command (if any) is used.
     /// Example: `"claude --resume"` to drop straight into a Claude session.
     pub launch_cmd: Option<String>,
+    /// Client appearance used for host-side terminal color query replies.
+    #[serde(default)]
+    pub color_scheme: Option<TerminalColorScheme>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -711,6 +737,12 @@ pub struct TermCreateResult {
     /// Opaque host-generated UUID string.
     pub id: String,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TerminalColorScheme {
+    Dark,
+    Light,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -915,6 +947,333 @@ pub struct AiPromptResult {
 }
 
 // ---------------------------------------------------------------------------
+// Managed AI agent types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum ManagedAgentKind {
+    Claude,
+    Codex,
+    OpenCode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentListReq {
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentListResult {
+    pub agents: Vec<AgentSummary>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentSessionsReq {
+    pub kind: ManagedAgentKind,
+    /// When false, return the host cache populated at daemon start unless missing.
+    #[serde(default)]
+    pub refresh: bool,
+    /// Maximum sessions to return. `0` uses the host default (`50`).
+    #[serde(default)]
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentSessionsResult {
+    pub sessions: Vec<AgentSessionSummary>,
+    /// Total workspace-matching sessions before applying `limit`.
+    pub total: u32,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentResumeReq {
+    pub kind: ManagedAgentKind,
+    pub session_id: String,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentResumeResult {
+    pub terminal_id: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentInstalledListReq {
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentInstalledListResult {
+    pub agents: Vec<InstalledAgentEntry>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InstalledAgentEntry {
+    pub slug: String,
+    pub display_name: String,
+    pub icon_name: String,
+    pub available: bool,
+    pub version: Option<String>,
+    pub launch_cmd: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentSummary {
+    pub kind: ManagedAgentKind,
+    pub display_name: String,
+    pub cli: AgentCliSummary,
+    pub setup: AgentSetupSummary,
+    pub capabilities: AgentCapabilities,
+    pub workspace: AgentWorkspaceSummary,
+    pub sessions: AgentSessionCounts,
+    pub live: AgentLiveSummary,
+    pub last_activity_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
+    pub data_sources: Vec<AgentDataSource>,
+    pub warnings: Vec<AgentWarning>,
+    pub account: AgentAccountSummary,
+    /// Live rate-limit snapshot fetched from the provider's API.
+    pub usage: Option<AgentUsageSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct AgentAccountSummary {
+    pub fields: Vec<AgentInfoField>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentInfoField {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentCliSummary {
+    pub available: bool,
+    pub version: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentSetupSummary {
+    pub state: AgentSetupState,
+    pub skills_installed: bool,
+    pub plugin_installed: bool,
+    pub hooks_installed: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AgentSetupState {
+    MissingCli,
+    NotConfigured,
+    SkillsOnly,
+    HooksReady,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentCapabilities {
+    pub list_sessions: bool,
+    pub resume_session: bool,
+    pub live_binding: bool,
+    pub confirm_action: bool,
+    pub select_action: bool,
+    pub lifecycle_events: bool,
+    pub usage_snapshot: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentWorkspaceSummary {
+    pub workdir: String,
+    pub provider_project_id: Option<String>,
+    pub provider_project_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentSessionCounts {
+    pub total: usize,
+    pub resumable: usize,
+    pub active_live: usize,
+    pub latest_session_id: Option<String>,
+    pub latest_session_title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentLiveSummary {
+    pub active_terminal_ids: Vec<String>,
+    pub pending_action_count: usize,
+    pub latest_event: Option<AgentEventSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentSessionSummary {
+    pub kind: ManagedAgentKind,
+    pub session_id: String,
+    pub title: Option<String>,
+    pub cwd: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub last_activity_at: Option<DateTime<Utc>>,
+    pub resume: AgentResumeSummary,
+    pub live: AgentSessionLiveSummary,
+    pub provider: AgentProviderSessionInfo,
+    pub git: Option<AgentGitSummary>,
+    pub usage: Option<AgentUsageSnapshot>,
+    pub counters: AgentSessionCounters,
+    pub flags: AgentSessionFlags,
+    pub data_sources: Vec<AgentDataSource>,
+    pub warnings: Vec<AgentWarning>,
+    pub transcript_size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentResumeSummary {
+    pub available: bool,
+    pub unavailable_reason: Option<String>,
+    pub action_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentSessionLiveSummary {
+    pub terminal_id: Option<String>,
+    pub status: AgentLifecycleStatus,
+    pub pending_action_count: usize,
+    pub current_turn_id: Option<String>,
+    pub latest_event: Option<AgentEventSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentProviderSessionInfo {
+    pub model: Option<String>,
+    pub permission_mode: Option<String>,
+    pub cli_version: Option<String>,
+    pub origin: Option<String>,
+    pub source: Option<String>,
+    pub entrypoint: Option<String>,
+    pub native_project_id: Option<String>,
+    pub model_provider: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentGitSummary {
+    pub branch: Option<String>,
+    pub worktree: Option<String>,
+    pub commit_hash: Option<String>,
+    pub repository_url: Option<String>,
+    pub pr_number: Option<u64>,
+    pub pr_url: Option<String>,
+    pub pr_repository: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentUsageSnapshot {
+    pub context_used_percent: Option<f32>,
+    pub total_cost_usd: Option<f64>,
+    pub total_duration_ms: Option<u64>,
+    pub total_api_duration_ms: Option<u64>,
+    pub lines_added: Option<i64>,
+    pub lines_removed: Option<i64>,
+    pub rate_limit_five_hour_used_percent: Option<f32>,
+    pub rate_limit_seven_day_used_percent: Option<f32>,
+    /// Unix seconds at which the 5-hour rate-limit window resets. None when not provided by the API.
+    pub rate_limit_five_hour_resets_at: Option<i64>,
+    /// Unix seconds at which the 7-day rate-limit window resets. None when not provided by the API.
+    pub rate_limit_seven_day_resets_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentSessionCounters {
+    pub record_count: u64,
+    pub message_count: u64,
+    pub turn_count: u64,
+    pub tool_count: u64,
+    pub tool_failure_count: u64,
+    pub hook_success_count: u64,
+    pub hook_failure_count: u64,
+    pub malformed_record_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentSessionFlags {
+    pub is_sidechain: bool,
+    pub is_subagent: bool,
+    pub is_archived: bool,
+    pub historical_only: bool,
+    pub live_bound: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentEventSummary {
+    pub kind: AgentEventKind,
+    pub status: AgentLifecycleStatus,
+    pub at: Option<DateTime<Utc>>,
+    pub terminal_id: Option<String>,
+    pub session_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub tool_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AgentLifecycleStatus {
+    Unknown,
+    Starting,
+    Running,
+    WaitingForUser,
+    WaitingForPermission,
+    Idle,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AgentEventKind {
+    SessionStarted,
+    SessionUpdated,
+    TurnStarted,
+    TurnCompleted,
+    TurnFailed,
+    TaskCreated,
+    TaskCompleted,
+    TaskFailed,
+    ToolStarted,
+    ToolCompleted,
+    ToolFailed,
+    PermissionRequested,
+    PermissionResolved,
+    Notification,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AgentActionKind {
+    Confirm,
+    Select,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AgentDataSource {
+    Cli,
+    Setup,
+    HistoricalScan,
+    TerminalMetadata,
+    HookState,
+    StatusLine,
+    ProviderCli,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentWarning {
+    pub code: String,
+    pub message: String,
+}
+
+// ---------------------------------------------------------------------------
 // LSP types
 // ---------------------------------------------------------------------------
 
@@ -1115,5 +1474,156 @@ mod tests {
         let encoded = postcard::to_allocvec(&snapshot).unwrap();
         let decoded: HostInfoSnapshot = postcard::from_bytes(&encoded).unwrap();
         assert_eq!(decoded, snapshot);
+    }
+
+    #[test]
+    fn agent_summary_roundtrip() {
+        let now = Utc::now();
+        let result = AgentListResult {
+            agents: vec![AgentSummary {
+                kind: ManagedAgentKind::Claude,
+                display_name: "Claude".into(),
+                cli: AgentCliSummary {
+                    available: true,
+                    version: Some("2.1.138".into()),
+                    error: None,
+                },
+                setup: AgentSetupSummary {
+                    state: AgentSetupState::HooksReady,
+                    skills_installed: false,
+                    plugin_installed: true,
+                    hooks_installed: true,
+                    error: None,
+                },
+                capabilities: AgentCapabilities {
+                    list_sessions: true,
+                    resume_session: true,
+                    live_binding: true,
+                    confirm_action: true,
+                    select_action: true,
+                    lifecycle_events: true,
+                    usage_snapshot: true,
+                },
+                workspace: AgentWorkspaceSummary {
+                    workdir: "/repo".into(),
+                    provider_project_id: None,
+                    provider_project_key: None,
+                },
+                sessions: AgentSessionCounts {
+                    total: 1,
+                    resumable: 1,
+                    active_live: 0,
+                    latest_session_id: Some("session".into()),
+                    latest_session_title: None,
+                },
+                live: AgentLiveSummary {
+                    active_terminal_ids: vec!["term".into()],
+                    pending_action_count: 1,
+                    latest_event: Some(AgentEventSummary {
+                        kind: AgentEventKind::PermissionRequested,
+                        status: AgentLifecycleStatus::WaitingForPermission,
+                        at: Some(now),
+                        terminal_id: Some("term".into()),
+                        session_id: Some("session".into()),
+                        turn_id: Some("turn".into()),
+                        tool_name: Some("Bash".into()),
+                    }),
+                },
+                last_activity_at: Some(now),
+                updated_at: now,
+                data_sources: vec![AgentDataSource::HistoricalScan],
+                warnings: vec![AgentWarning {
+                    code: "fixture".into(),
+                    message: "fixture warning".into(),
+                }],
+                account: AgentAccountSummary::default(),
+                usage: None,
+            }],
+            error: None,
+        };
+
+        let encoded = postcard::to_allocvec(&result).unwrap();
+        let decoded: AgentListResult = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded, result);
+    }
+
+    #[test]
+    fn agent_session_summary_roundtrip() {
+        let now = Utc::now();
+        let session = AgentSessionSummary {
+            kind: ManagedAgentKind::Codex,
+            session_id: "019e".into(),
+            title: Some("Work session".into()),
+            cwd: Some("/repo".into()),
+            created_at: Some(now),
+            last_activity_at: Some(now),
+            resume: AgentResumeSummary {
+                available: true,
+                unavailable_reason: None,
+                action_id: Some("codex:019e".into()),
+            },
+            live: AgentSessionLiveSummary {
+                terminal_id: Some("term".into()),
+                status: AgentLifecycleStatus::Running,
+                pending_action_count: 0,
+                current_turn_id: Some("turn".into()),
+                latest_event: None,
+            },
+            provider: AgentProviderSessionInfo {
+                model: Some("gpt-5.3-codex".into()),
+                permission_mode: Some("on-request".into()),
+                cli_version: Some("0.130.0".into()),
+                origin: Some("codex_cli".into()),
+                source: Some("cli".into()),
+                entrypoint: None,
+                native_project_id: None,
+                model_provider: Some("openai".into()),
+            },
+            git: Some(AgentGitSummary {
+                branch: Some("main".into()),
+                worktree: None,
+                commit_hash: Some("abc".into()),
+                repository_url: Some("https://example.com/repo.git".into()),
+                pr_number: None,
+                pr_url: None,
+                pr_repository: None,
+            }),
+            usage: Some(AgentUsageSnapshot {
+                context_used_percent: Some(50.0),
+                total_cost_usd: Some(0.1),
+                total_duration_ms: Some(1000),
+                total_api_duration_ms: Some(900),
+                lines_added: Some(3),
+                lines_removed: Some(1),
+                rate_limit_five_hour_used_percent: None,
+                rate_limit_seven_day_used_percent: None,
+                rate_limit_five_hour_resets_at: None,
+                rate_limit_seven_day_resets_at: None,
+            }),
+            counters: AgentSessionCounters {
+                record_count: 3,
+                message_count: 0,
+                turn_count: 1,
+                tool_count: 0,
+                tool_failure_count: 0,
+                hook_success_count: 0,
+                hook_failure_count: 0,
+                malformed_record_count: 0,
+            },
+            flags: AgentSessionFlags {
+                is_sidechain: false,
+                is_subagent: false,
+                is_archived: false,
+                historical_only: true,
+                live_bound: false,
+            },
+            data_sources: vec![AgentDataSource::HistoricalScan],
+            warnings: vec![],
+            transcript_size_bytes: Some(4096),
+        };
+
+        let encoded = postcard::to_allocvec(&session).unwrap();
+        let decoded: AgentSessionSummary = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded, session);
     }
 }

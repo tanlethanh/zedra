@@ -983,12 +983,20 @@ Expected:
     it as the active main view.
 13. Tap `Manage agents`.
 14. Expected: the main view shows managed agents as a list with setup/session
-    counts. Tapping an agent opens detail with CLI/setup/account fields and a
-    session list below.
+    counts and usage gauges when live usage is available. Tapping an agent opens
+    detail with metadata, usage gauges (5h / 7d and extra spend when present),
+    account fields, and a session list below.
 15. In manage detail, verify discovered account fields:
-    - Claude: model, effort, permission mode, total sessions/messages/cost when
-      `stats-cache.json` exists
-    - Codex: logged in, last refresh, model/personality from `config.toml`
+    - Claude: logged in, plan (Pro/Max/Team/Enterprise when OAuth, credentials
+      file, or CLI PTY is available), model, effort, permission mode, today msgs
+      and total cost when `stats-cache.json` exists; no week msgs/sessions/tools
+      rows. Usage gauges: with a valid `~/.claude/.credentials.json` token,
+      limits come from the OAuth usage API; with Keychain-only CLI auth or an
+      expired file token while the CLI still works, from PTY `/usage` scrape
+      (percents should match the CLI panel; inline reset duration may be missing
+      if parsing fails). Host check: `zedra agent scan usage --json`.
+    - Codex: logged in, plan, plan until, account name from `auth.json`, model/
+      personality from `config.toml`
     - OpenCode: config dir presence
 16. Tap `Resume` on a session from manage detail.
 17. Expected: same immediate resume behavior as the unified sessions view.
@@ -1004,6 +1012,12 @@ Expected:
     or refreshing.
 23. Expected: the version line updates from `Checking…` to the real `--version`
     string when the host finishes that agent’s async version probe.
+24. Open manage detail for an agent with zero sessions or a session-list error
+    (for example Codex when the host scan fails).
+25. Expected: the header (back, title, refresh) stays full content width and
+    lines up with the metadata column; narrow error text must not shrink-wrap
+    the header (see `docs/CONVENTIONS.md` GPUI flex width rules and
+    `ui::subscreen_layout`).
 
 ## 19. Xcode Rust Build Target
 
@@ -1043,6 +1057,8 @@ Expected:
 5. Expected: highlighted paths are readable on the light background (not pale lavender)
 6. Open **Codex** in the same terminal (or a dedicated Codex session)
 7. Expected: the composer / user-message background pill matches the light theme (not missing or using a dark gray from stale palette)
-8. Toggle back to **Dark**
-9. Expected: terminal colors, Claude highlights, and Codex pill update without restarting the app
-10. Optional: from the host, run `printf '\e[10;?\e[11;?\e\\'` inside the Zedra session and confirm replies report the current fg/bg (light: `fafafa` background). Zedra answers OSC queries on the session PTY via `ColorRequest` and the active `TerminalTheme`; it does not inject palette setup bytes into scrollback on toggle.
+8. From the agent picker or quick action panel, open a fresh Codex launch-command terminal
+9. Expected: Codex's first rendered composer / user-message background pill is visible without waiting for terminal reattach or focus changes
+10. Toggle back to **Dark**
+11. Expected: terminal colors, Claude highlights, and Codex pill update without restarting the app
+12. Optional: from the host, run `printf '\e[10;?\e[11;?\e\\'` inside the Zedra session and confirm replies report the current fg/bg (light: `fafafa` background). Zedra answers OSC queries on the session PTY via `ColorRequest` and the active `TerminalTheme`; it does not inject palette setup bytes into scrollback on toggle.

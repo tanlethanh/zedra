@@ -7,7 +7,7 @@ use gpui::{prelude::FluentBuilder as _, *};
 use tokio::sync::{broadcast, mpsc};
 use tracing::*;
 use zedra_rpc::ZedraPairingTicket;
-use zedra_rpc::proto::{HostEvent, SyncSessionResult};
+use zedra_rpc::proto::{HostEvent, ManagedAgentKind, SyncSessionResult};
 use zedra_session::{
     ConnectEvent, ConnectPhase, ConnectSnapshot, ReconnectReason, Session, SessionHandle,
     SessionState, signer::ClientSigner,
@@ -15,6 +15,10 @@ use zedra_session::{
 
 use crate::active_terminal;
 use crate::agent;
+use crate::agent_detail::AgentDetail;
+use crate::agent_manage::AgentManage;
+use crate::agent_picker::AgentPicker;
+use crate::agent_sessions::AgentSessions;
 use crate::editor::git_sidebar::GitFileSection;
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
 use crate::placeholder::render_placeholder;
@@ -27,9 +31,10 @@ use crate::transport_badge::ConnectionStatusIndicator;
 use crate::ui::{DrawerEvent, DrawerHost, DrawerSide};
 use crate::workspace_action::{self, GoHome, OpenQuickAction, RequestDisconnect};
 use crate::workspace_action::{
-    AddSelectionToChat, CloseDrawer, CloseTerminal, CreateNewTerminal, GitCommit,
-    GitShowItemActions, GitStage, GitUnstage, HideConnecting, OpenFile, OpenGitDiff, OpenTerminal,
-    RestartConnection, ShowConnecting, ToggleDrawer,
+    AddSelectionToChat, CloseDrawer, CloseTerminal, CreateAgent, CreateNewTerminal, GitCommit,
+    GitShowItemActions, GitStage, GitUnstage, HideConnecting, NavigateBack, OpenAgentDetail,
+    OpenAgentManage, OpenAgentSessions, OpenFile, OpenGitDiff, OpenTerminal, RestartConnection,
+    ResumeAgentSession, ShowConnecting, SpawnAgentTerminal, ToggleDrawer,
 };
 use crate::workspace_connecting::WorkspaceConnecting;
 use crate::workspace_drawer::WorkspaceDrawer;
@@ -74,12 +79,13 @@ pub struct Workspace {
     _host_event_listener: Option<Task<()>>,
     /// Listens for periodic host resource snapshots.
     _host_info_listener: Option<Task<()>>,
+    agent_picker: Entity<AgentPicker>,
     pending_platform_action: SharedPendingSlot<PendingWorkspaceAction>,
     _pending_platform_action_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
-enum PendingWorkspaceAction {
+pub(crate) enum PendingWorkspaceAction {
     DisconnectSession,
     DeleteTerminal {
         id: String,
@@ -87,6 +93,9 @@ enum PendingWorkspaceAction {
     AddSelectionToChat {
         target: AddToChatTarget,
         input: agent::AddToChat,
+    },
+    SpawnAgentTerminal {
+        launch_cmd: String,
     },
 }
 
@@ -593,7 +602,7 @@ fn replacement_terminal_id_after_close(closed_id: &str, terminal_ids: &[String])
 impl Workspace {
     pub fn new(
         workspace_state: Entity<WorkspaceState>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let session = Session::new();
@@ -614,7 +623,7 @@ impl Workspace {
         });
         let drawer = cx.new(|cx| {
             WorkspaceDrawer::new(
-                _window,
+                window,
                 cx,
                 workspace_state.clone(),
                 terminal_state.clone(),
@@ -730,7 +739,10 @@ impl Workspace {
             }
         });
 
-        let pending_platform_action = shared_pending_slot();
+        let pending_platform_action: SharedPendingSlot<PendingWorkspaceAction> =
+            shared_pending_slot();
+        let agent_picker = cx
+            .new(|_cx| AgentPicker::new(session.handle().clone(), pending_platform_action.clone()));
         let platform_action_slot = pending_platform_action.clone();
         let pending_platform_action_task =
             spawn_periodic_task(cx, Duration::from_millis(50), move |this, cx| {
@@ -759,6 +771,7 @@ impl Workspace {
             _connect_listener: None,
             _host_event_listener: Some(host_event_listener),
             _host_info_listener: Some(host_info_listener),
+            agent_picker,
             pending_platform_action,
             _pending_platform_action_task: pending_platform_action_task,
             _subscriptions: vec![
@@ -956,9 +969,11 @@ impl Workspace {
             return;
         };
 
-        // Ticket is only needed for initial registration. Once we have a session_id
-        // the ticket has already been consumed on the host and must not be reused.
-        if request.session_id.is_some() {
+        // Drop the one-time pairing ticket once registration has been
+        // attempted: it is consumed host-side and resending it would be
+        // rejected. `register_attempted` (not `register_ms`) is the guard so a
+        // connection that dropped before `RegisterComplete` still clears it.
+        if self.session_state.read(cx).snapshot.register_attempted {
             request.ticket = None;
         }
 
@@ -1047,6 +1062,19 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.handle_create_new_terminal(&CreateNewTerminal, window, cx);
+    }
+
+    pub fn create_agent_from_quick_action(&mut self, cx: &mut Context<Self>) {
+        self.agent_picker
+            .update(cx, |picker, cx| picker.trigger(cx));
+    }
+
+    pub fn open_agent_sessions_from_quick_action(&mut self, cx: &mut Context<Self>) {
+        self.navigate_to(WorkspaceMainView::AgentSessions, cx);
+    }
+
+    pub fn open_agent_manage_from_quick_action(&mut self, cx: &mut Context<Self>) {
+        self.navigate_to(WorkspaceMainView::AgentManage, cx);
     }
 
     pub fn close_terminal_from_quick_action(&mut self, id: String, _cx: &mut Context<Self>) {
@@ -1295,6 +1323,42 @@ impl Workspace {
                     self.apply_route(WorkspaceMainView::Default, None, cx);
                 }
             }
+            WorkspaceMainView::AgentSessions => {
+                let view = cx.new(|cx| AgentSessions::new(self.session.handle().clone(), cx));
+                self.content.update(cx, move |content, cx| {
+                    content.clear_subtitle(cx);
+                    content.set_main_view(view.into(), cx);
+                    content.hide_connecting_view(cx);
+                });
+                view_telemetry::record(view_telemetry::WORKSPACE_AGENT_SESSIONS);
+            }
+            WorkspaceMainView::AgentManage => {
+                let view = cx.new(|cx| {
+                    AgentManage::new(self.session.handle().clone(), self.session.clone(), cx)
+                });
+                self.content.update(cx, move |content, cx| {
+                    content.clear_subtitle(cx);
+                    content.set_main_view(view.into(), cx);
+                    content.hide_connecting_view(cx);
+                });
+                view_telemetry::record(view_telemetry::WORKSPACE_AGENT_MANAGE);
+            }
+            WorkspaceMainView::AgentDetail { kind } => {
+                let view = cx.new(|cx| {
+                    AgentDetail::new(
+                        self.session.handle().clone(),
+                        self.session.clone(),
+                        kind,
+                        cx,
+                    )
+                });
+                self.content.update(cx, move |content, cx| {
+                    content.clear_subtitle(cx);
+                    content.set_main_view(view.into(), cx);
+                    content.hide_connecting_view(cx);
+                });
+                view_telemetry::record(view_telemetry::WORKSPACE_AGENT_DETAIL);
+            }
         }
     }
 
@@ -1526,16 +1590,39 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.create_new_terminal("user_action", window, cx);
+        self.spawn_terminal("user_action", None, window, cx);
     }
 
-    fn create_new_terminal(
+    fn handle_create_agent(
         &mut self,
-        telemetry_source: &'static str,
+        _action: &CreateAgent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        info!("handle CreateNewTerminal from workspace");
+        info!("handle CreateAgent from workspace");
+        self.drawer_host
+            .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
+        self.agent_picker
+            .update(cx, |picker, cx| picker.trigger(cx));
+    }
+
+    fn handle_spawn_agent_terminal(
+        &mut self,
+        action: &SpawnAgentTerminal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.spawn_terminal("create_agent", Some(action.launch_cmd.clone()), window, cx);
+    }
+
+    fn spawn_terminal(
+        &mut self,
+        telemetry_source: &'static str,
+        launch_cmd: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!(?launch_cmd, "spawn_terminal");
         self.drawer_host
             .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
 
@@ -1545,19 +1632,33 @@ impl Workspace {
         let cols = initial_grid_size.columns;
         let rows = initial_grid_size.rows;
 
-        // Pre-create a workspace terminal entity with a placeholder terminal ID.
-        // This is required due to the terminal view requires `window` to be available from main thread.
         let workspace_terminal =
             self.create_terminal_entity(TERMINAL_PENDING_ID.to_string(), window, cx);
+        let pending_entity_id = workspace_terminal.entity_id();
+
+        let color_scheme = if crate::theme::bundle(cx).terminal.is_light() {
+            zedra_rpc::proto::TerminalColorScheme::Light
+        } else {
+            zedra_rpc::proto::TerminalColorScheme::Dark
+        };
 
         cx.spawn(async move |workspace, cx| {
             let terminal_id = match session_handle
-                .terminal_create(cols as u16, rows as u16)
+                .terminal_create_with_cmd(cols as u16, rows as u16, launch_cmd, Some(color_scheme))
                 .await
             {
                 Ok(id) => id,
                 Err(e) => {
                     tracing::error!("terminal_create failed: {}", e);
+                    let _ = workspace.update(cx, |ws, _cx| {
+                        ws.terminals.retain(|t| t.entity_id() != pending_entity_id);
+                        platform_bridge::show_alert(
+                            "Open Terminal",
+                            "Failed to create the terminal.",
+                            vec![AlertButton::default("OK")],
+                            |_| {},
+                        );
+                    });
                     return;
                 }
             };
@@ -1568,7 +1669,6 @@ impl Workspace {
                 });
 
                 ws.workspace_state.update(cx, |_state, cx| {
-                    // The WorkspaceTerminal will need this subscription to attach the input/output channel.
                     cx.emit(WorkspaceStateEvent::TerminalCreated {
                         id: terminal_id.clone(),
                     });
@@ -1578,6 +1678,131 @@ impl Workspace {
                 let terminal_count = ws.workspace_state.read(cx).terminal_ids.len();
                 zedra_telemetry::send(zedra_telemetry::Event::TerminalOpened {
                     source: telemetry_source,
+                    terminal_count,
+                });
+            });
+        })
+        .detach();
+    }
+
+    fn create_new_terminal(
+        &mut self,
+        telemetry_source: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.spawn_terminal(telemetry_source, None, window, cx);
+    }
+
+    fn handle_navigate_back(
+        &mut self,
+        _action: &NavigateBack,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.navigate_back(cx);
+    }
+
+    fn handle_open_agent_sessions(
+        &mut self,
+        _action: &OpenAgentSessions,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!("handle OpenAgentSessions from workspace");
+        self.drawer_host
+            .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
+        self.navigate_to(WorkspaceMainView::AgentSessions, cx);
+    }
+
+    fn handle_open_agent_manage(
+        &mut self,
+        _action: &OpenAgentManage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!("handle OpenAgentManage from workspace");
+        self.drawer_host
+            .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
+        self.navigate_to(WorkspaceMainView::AgentManage, cx);
+    }
+
+    fn handle_open_agent_detail(
+        &mut self,
+        action: &OpenAgentDetail,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!(?action.kind, "handle OpenAgentDetail from workspace");
+        self.drawer_host
+            .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
+        self.navigate_to(WorkspaceMainView::AgentDetail { kind: action.kind }, cx);
+    }
+
+    fn handle_resume_agent_session(
+        &mut self,
+        action: &ResumeAgentSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!(
+            ?action.kind,
+            session_id = %action.session_id,
+            "handle ResumeAgentSession from workspace"
+        );
+        self.resume_agent_session(action.kind, action.session_id.clone(), window, cx);
+    }
+
+    fn resume_agent_session(
+        &mut self,
+        kind: ManagedAgentKind,
+        session_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let session_handle = self.session.handle().clone();
+        let initial_viewport = self.mainview_viewport(window, cx);
+        let initial_grid_size = TerminalView::compute_grid_size(window, initial_viewport);
+        let cols = initial_grid_size.columns;
+        let rows = initial_grid_size.rows;
+        let workspace_terminal =
+            self.create_terminal_entity(TERMINAL_PENDING_ID.to_string(), window, cx);
+        let pending_entity_id = workspace_terminal.entity_id();
+
+        cx.spawn(async move |workspace, cx| {
+            let terminal_id = match session_handle
+                .agent_resume_session(kind, session_id, cols as u16, rows as u16)
+                .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::error!(?kind, "agent session resume failed: {}", e);
+                    let _ = workspace.update(cx, |ws, _cx| {
+                        ws.terminals.retain(|t| t.entity_id() != pending_entity_id);
+                        platform_bridge::show_alert(
+                            "Resume Agent",
+                            "Failed to resume the agent session.",
+                            vec![AlertButton::default("OK")],
+                            |_| {},
+                        );
+                    });
+                    return;
+                }
+            };
+
+            let _ = workspace.update(cx, |ws, cx| {
+                workspace_terminal.update(cx, |terminal, cx| {
+                    terminal.set_terminal_id(terminal_id.clone(), cx);
+                });
+                ws.workspace_state.update(cx, |_state, cx| {
+                    cx.emit(WorkspaceStateEvent::TerminalCreated {
+                        id: terminal_id.clone(),
+                    });
+                });
+                ws.navigate_to(WorkspaceMainView::Terminal { id: terminal_id }, cx);
+                let terminal_count = ws.workspace_state.read(cx).terminal_ids.len();
+                zedra_telemetry::send(zedra_telemetry::Event::TerminalOpened {
+                    source: "resume_agent",
                     terminal_count,
                 });
             });
@@ -1767,6 +1992,14 @@ impl Workspace {
                 self.activate_existing_terminal(target.terminal_id.clone(), cx);
                 self.schedule_add_to_chat_after_activation(target, input, cx);
             }
+            PendingWorkspaceAction::SpawnAgentTerminal { launch_cmd } => {
+                cx.spawn(async move |this, cx| {
+                    let _ = this.update_in(cx, |workspace, window, cx| {
+                        workspace.spawn_terminal("create_agent", Some(launch_cmd), window, cx);
+                    });
+                })
+                .detach();
+            }
         }
     }
 
@@ -1927,6 +2160,13 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_git_item_long_press))
             .on_action(cx.listener(Self::handle_git_commit))
             .on_action(cx.listener(Self::handle_create_new_terminal))
+            .on_action(cx.listener(Self::handle_create_agent))
+            .on_action(cx.listener(Self::handle_spawn_agent_terminal))
+            .on_action(cx.listener(Self::handle_navigate_back))
+            .on_action(cx.listener(Self::handle_open_agent_sessions))
+            .on_action(cx.listener(Self::handle_open_agent_manage))
+            .on_action(cx.listener(Self::handle_open_agent_detail))
+            .on_action(cx.listener(Self::handle_resume_agent_session))
             .on_action(cx.listener(Self::handle_open_terminal))
             .on_action(cx.listener(Self::handle_close_terminal))
             .size_full()
@@ -2367,6 +2607,9 @@ pub struct WorkspaceContent {
 
 enum WorkspaceSubtitle {
     Default,
+    Text {
+        text: SharedString,
+    },
     File {
         path: SharedString,
     },
@@ -2482,6 +2725,11 @@ impl WorkspaceContent {
         cx.notify();
     }
 
+    pub fn set_text_subtitle(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.subtitle = WorkspaceSubtitle::Text { text: text.into() };
+        cx.notify();
+    }
+
     pub fn set_terminal_subtitle(&mut self, id: String, cx: &mut Context<Self>) {
         self.subtitle = WorkspaceSubtitle::Terminal { id };
         cx.notify();
@@ -2531,6 +2779,7 @@ impl WorkspaceContent {
     fn render_subtitle(&self, default_subtitle: &str, cx: &mut Context<Self>) -> AnyElement {
         match &self.subtitle {
             WorkspaceSubtitle::Default => render_subtitle(cx, default_subtitle.to_owned()),
+            WorkspaceSubtitle::Text { text } => render_subtitle(cx, text.clone()),
             WorkspaceSubtitle::File { path } => render_subtitle(cx, path.clone()),
             WorkspaceSubtitle::Terminal { id } => {
                 let meta = self.terminal_state.read(cx).meta(id);
@@ -2724,6 +2973,8 @@ impl Render for WorkspaceContent {
                     .relative()
                     .flex_1()
                     .min_h_0()
+                    .min_w_0()
+                    .w_full()
                     .child(mainview_measure)
                     .when_else(
                         self.show_connecting,

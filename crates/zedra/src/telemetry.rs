@@ -141,6 +141,21 @@ pub mod view_telemetry {
         "Workspace Git Diff",
         "WorkspaceGitdiff",
     );
+    pub const WORKSPACE_AGENT_SESSIONS: ViewDescriptor = ViewDescriptor::new(
+        "workspace_agent_sessions",
+        "Workspace Agent Sessions",
+        "AgentSessions",
+    );
+    pub const WORKSPACE_AGENT_MANAGE: ViewDescriptor = ViewDescriptor::new(
+        "workspace_agent_manage",
+        "Workspace Agent Manage",
+        "AgentManage",
+    );
+    pub const WORKSPACE_AGENT_DETAIL: ViewDescriptor = ViewDescriptor::new(
+        "workspace_agent_detail",
+        "Workspace Agent Detail",
+        "AgentDetail",
+    );
     pub const WORKSPACE_NO_ACTIVE_TERMINAL: ViewDescriptor = ViewDescriptor::new(
         "workspace_no_active_terminal",
         "Workspace No Active Terminal",
@@ -193,6 +208,9 @@ pub mod view_telemetry {
             WorkspaceMainView::File { path } => Some(workspace_file(path)),
             WorkspaceMainView::GitDiff { .. } => Some(WORKSPACE_GIT_DIFF),
             WorkspaceMainView::Terminal { .. } => Some(WORKSPACE_TERMINAL),
+            WorkspaceMainView::AgentSessions => Some(WORKSPACE_AGENT_SESSIONS),
+            WorkspaceMainView::AgentManage => Some(WORKSPACE_AGENT_MANAGE),
+            WorkspaceMainView::AgentDetail { .. } => Some(WORKSPACE_AGENT_DETAIL),
             WorkspaceMainView::NoActiveTerminal => Some(WORKSPACE_NO_ACTIVE_TERMINAL),
         }
     }
@@ -240,6 +258,10 @@ pub mod view_telemetry {
             assert_eq!(
                 workspace_main_view(&WorkspaceMainView::NoActiveTerminal),
                 Some(WORKSPACE_NO_ACTIVE_TERMINAL)
+            );
+            assert_eq!(
+                workspace_main_view(&WorkspaceMainView::AgentManage),
+                Some(WORKSPACE_AGENT_MANAGE)
             );
             assert_eq!(workspace_main_view(&WorkspaceMainView::Default), None);
         }

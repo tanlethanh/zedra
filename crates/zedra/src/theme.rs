@@ -18,10 +18,17 @@ pub const SPACING_SM: f32 = 8.0;
 pub const SPACING_MD: f32 = 12.0;
 pub const SPACING_LG: f32 = 16.0;
 
+/// Horizontal padding for subscreen pages (manage agents, agent history).
+/// `SPACING_MD + SPACING_XS` (~4px extra) lines scroll content up with the workspace
+/// header menu/package icons and subscreen back control edges.
+pub const SUBSCREEN_PADDING_X: f32 = SPACING_MD + SPACING_XS;
+
 pub const HEADER_HEIGHT: f32 = 48.0;
 pub const HOME_CARD_WIDTH: f32 = 300.0;
 pub const HOME_GUIDE_WIDTH: f32 = 300.0;
 pub const CONNECT_DETAIL_WIDTH: f32 = 300.0;
+/// Max width for centered panel content on large screens (e.g. iPad).
+pub const CONTENT_MAX_WIDTH: f32 = 520.0;
 pub const HEADER_BUTTON_SIZE: f32 = 42.0;
 pub const DRAWER_ICON_ZONE: f32 = 38.0;
 pub const TERMINAL_LINE_HEIGHT: f32 = 16.0;
@@ -41,6 +48,8 @@ pub const DRAWER_CLOSE_ANIMATION_DURATION_MS: u64 = 100;
 pub const FONT_APP_TITLE: f32 = 28.0;
 pub const FONT_TITLE: f32 = 20.0;
 pub const FONT_HEADING: f32 = 13.0;
+/// Agent manage card title (Lora), slightly larger than body.
+pub const FONT_AGENT_CARD_TITLE: f32 = 14.0;
 pub const FONT_BODY: f32 = 12.0;
 pub const FONT_DETAIL: f32 = 12.0;
 
@@ -53,6 +62,15 @@ pub const ICON_FILE: f32 = 12.0;
 pub const ICON_FILE_DIR: f32 = 14.0;
 pub const ICON_STATUS: f32 = 6.0;
 pub const ICON_TERMINAL: f32 = 16.0;
+
+/// Metadata label column width in manage-agent detail rows.
+pub const AGENT_METADATA_LABEL_WIDTH: f32 = 140.0;
+/// Vertical padding per metadata row in manage-agent detail.
+pub const AGENT_METADATA_ROW_PY: f32 = 4.0;
+/// Inline pill badges (plan tags, status chips) — rounder than card surfaces (`6`).
+pub const BADGE_RADIUS: f32 = 10.0;
+pub const BADGE_PX: f32 = 6.0;
+pub const BADGE_PY: f32 = 0.0;
 
 pub const EDITOR_FONT_SIZE: f32 = 12.0;
 pub const EDITOR_GUTTER_FONT_SIZE: f32 = 11.0;
@@ -88,6 +106,8 @@ impl ThemePreference {
 pub struct ThemePalette {
     pub bg_primary: u32,
     pub bg_card: u32,
+    /// Lower-contrast card fill than `bg_card`; blends into `bg_primary` on dense lists.
+    pub bg_card_dim: u32,
     pub bg_overlay: u32,
     pub bg_surface: u32,
     pub text_primary: u32,
@@ -113,6 +133,7 @@ impl ThemePalette {
         Self {
             bg_primary: 0x0e0c0c,
             bg_card: 0x131313,
+            bg_card_dim: 0x100f0f,
             bg_overlay: 0x131313,
             bg_surface: 0x0e0c0c,
             text_primary: 0xffffff,
@@ -138,6 +159,7 @@ impl ThemePalette {
         Self {
             bg_primary: 0xf5f5f5,
             bg_card: 0xffffff,
+            bg_card_dim: 0xececec,
             bg_overlay: 0xffffff,
             bg_surface: 0xffffff,
             text_primary: 0x1a1a1a,
@@ -276,6 +298,7 @@ macro_rules! palette_accessor {
 
 palette_accessor!(bg_primary, bg_primary);
 palette_accessor!(bg_card, bg_card);
+palette_accessor!(bg_card_dim, bg_card_dim);
 palette_accessor!(bg_overlay, bg_overlay);
 palette_accessor!(bg_surface, bg_surface);
 palette_accessor!(text_primary, text_primary);
