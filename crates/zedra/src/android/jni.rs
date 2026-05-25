@@ -15,7 +15,7 @@
 
 use jni::{
     JNIEnv, JavaVM,
-    objects::{GlobalRef, JClass, JObject},
+    objects::{GlobalRef, JClass, JObject, JValue},
     sys::{jboolean, jfloat, jint},
 };
 use ndk::native_window::NativeWindow;
@@ -629,7 +629,7 @@ pub fn show_list_picker(id: u32, title: &str, message: &str, items: &[ListPicker
             let message_value = env.new_string(&message).expect("message");
             let string_class = env.find_class("java/lang/String").expect("String");
             let label_array = env
-                .new_object_array(labels.len() as i32, string_class, JObject::null())
+                .new_object_array(labels.len() as i32, &string_class, JObject::null())
                 .expect("labels");
             for (index, label) in labels.iter().enumerate() {
                 let label_value = env.new_string(label).expect("label");
@@ -637,7 +637,7 @@ pub fn show_list_picker(id: u32, title: &str, message: &str, items: &[ListPicker
                     .expect("set label");
             }
             let subtitle_array = env
-                .new_object_array(subtitles.len() as i32, string_class, JObject::null())
+                .new_object_array(subtitles.len() as i32, &string_class, JObject::null())
                 .expect("subtitles");
             for (index, subtitle) in subtitles.iter().enumerate() {
                 let subtitle_value = env.new_string(subtitle).expect("subtitle");
@@ -645,7 +645,7 @@ pub fn show_list_picker(id: u32, title: &str, message: &str, items: &[ListPicker
                     .expect("set subtitle");
             }
             let image_array = env
-                .new_object_array(image_names.len() as i32, string_class, JObject::null())
+                .new_object_array(image_names.len() as i32, &string_class, JObject::null())
                 .expect("images");
             for (index, image) in image_names.iter().enumerate() {
                 let image_value = env.new_string(image).expect("image");
@@ -1011,22 +1011,38 @@ pub fn trigger_haptic(feedback: HapticFeedback) {
 
 pub fn system_prefers_theme() -> SystemTheme {
     let mut theme = SystemTheme::Unknown;
-    jni_call("system_prefers_theme", || {
-        with_main_activity_class("system_prefers_theme", |env, class| {
-            let Ok(value) = env.call_static_method(class, "systemInDarkTheme", "()I", &[]) else {
-                return;
-            };
-            let Ok(code) = value.i() else {
-                return;
-            };
-            theme = match code {
-                1 => SystemTheme::Dark,
-                0 => SystemTheme::Light,
-                _ => SystemTheme::Unknown,
-            };
+    jni_call(
+        "system_prefers_theme",
+        std::panic::AssertUnwindSafe(|| {
+            with_main_activity_class("system_prefers_theme", |env, class| {
+                let Ok(value) = env.call_static_method(class, "systemInDarkTheme", "()I", &[])
+                else {
+                    return;
+                };
+                let Ok(code) = value.i() else {
+                    return;
+                };
+                theme = match code {
+                    1 => SystemTheme::Dark,
+                    0 => SystemTheme::Light,
+                    _ => SystemTheme::Unknown,
+                };
+            });
+        }),
+    );
+    theme
+}
+
+pub fn set_native_theme(is_dark: bool) {
+    jni_call("set_native_theme", move || {
+        with_main_activity_class("set_native_theme", |env, class| {
+            if let Err(error) =
+                env.call_static_method(class, "setNativeTheme", "(Z)V", &[is_dark.into()])
+            {
+                tracing::error!(?error, "jni: setNativeTheme failed");
+            }
         });
     });
-    theme
 }
 
 // Suppress unused-import warning for GlobalRef, kept for potential future use.

@@ -108,4 +108,8 @@ impl PlatformBridge for AndroidBridge {
     fn system_prefers_theme(&self) -> SystemTheme {
         jni::system_prefers_theme()
     }
+
+    fn set_native_theme(&self, is_dark: bool) {
+        jni::set_native_theme(is_dark);
+    }
 }

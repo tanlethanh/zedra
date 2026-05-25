@@ -6,10 +6,7 @@
 use alacritty_terminal::vte::ansi::{Color as AlacColor, NamedColor, Rgb as AlacRgb};
 use gpui::{Hsla, rgb};
 
-/// Minimum relative-luminance gap between a foreground and the light background.
-const LIGHT_FG_LUMINANCE_DELTA: f32 = 0.35;
-
-/// Standard 16 ANSI terminal colors — edit these for contrast; the 256 table is derived.
+/// ANSI terminal colors from the theme. The 256-color cube/ramp is derived from xterm.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AnsiPalette {
     pub black: u32,
@@ -28,6 +25,14 @@ pub struct AnsiPalette {
     pub bright_magenta: u32,
     pub bright_cyan: u32,
     pub bright_white: u32,
+    pub dim_black: u32,
+    pub dim_red: u32,
+    pub dim_green: u32,
+    pub dim_yellow: u32,
+    pub dim_blue: u32,
+    pub dim_magenta: u32,
+    pub dim_cyan: u32,
+    pub dim_white: u32,
 }
 
 impl AnsiPalette {
@@ -52,6 +57,20 @@ impl AnsiPalette {
             _ => self.black,
         }
     }
+
+    pub fn dim_color(self, index: u8) -> u32 {
+        match index {
+            0 => self.dim_black,
+            1 => self.dim_red,
+            2 => self.dim_green,
+            3 => self.dim_yellow,
+            4 => self.dim_blue,
+            5 => self.dim_magenta,
+            6 => self.dim_cyan,
+            7 => self.dim_white,
+            _ => self.dim_black,
+        }
+    }
 }
 
 /// Terminal theme: tokens + precomputed xterm-256 table (built once per light/dark).
@@ -59,6 +78,8 @@ impl AnsiPalette {
 pub struct TerminalTheme {
     pub background: u32,
     pub foreground: u32,
+    pub bright_foreground: u32,
+    pub dim_foreground: u32,
     pub cursor: u32,
     pub ansi: AnsiPalette,
     pub dim_lightness_factor: f32,
@@ -70,6 +91,8 @@ impl TerminalTheme {
     pub fn dark() -> Self {
         let background = 0x0e0c0c;
         let foreground = 0xabb2bf;
+        let bright_foreground = 0xdce0e5;
+        let dim_foreground = 0x636d83;
         let cursor = 0x528bff;
         let ansi = AnsiPalette {
             black: 0x282c34,
@@ -88,33 +111,69 @@ impl TerminalTheme {
             bright_magenta: 0xc678dd,
             bright_cyan: 0x56b6c2,
             bright_white: 0xffffff,
+            dim_black: 0x3b3f4a,
+            dim_red: 0xa7545a,
+            dim_green: 0x6d8f59,
+            dim_yellow: 0xb8985b,
+            dim_blue: 0x457cad,
+            dim_magenta: 0x8d54a0,
+            dim_cyan: 0x3c818a,
+            dim_white: 0x8f969b,
         };
-        Self::from_parts(background, foreground, cursor, ansi, 1.0, 0.7, false)
+        Self::from_parts(
+            background,
+            foreground,
+            bright_foreground,
+            dim_foreground,
+            cursor,
+            ansi,
+            1.0,
+            0.7,
+        )
     }
 
     pub fn light() -> Self {
         let background = 0xfafafa;
-        let foreground = 0x1f2328;
-        let cursor = 0x0969da;
+        let foreground = 0x2a2c33;
+        let bright_foreground = 0x2a2c33;
+        let dim_foreground = 0xbbbbbb;
+        let cursor = 0x2f5af3;
         let ansi = AnsiPalette {
-            black: 0x1f2328,
-            red: 0xb62324,
-            green: 0x116329,
-            yellow: 0x633c01,
-            blue: 0x012f7a,
-            magenta: 0x512a93,
-            cyan: 0x024a6b,
-            white: 0x32383f,
-            bright_black: 0x32383f,
-            bright_red: 0x8c1921,
-            bright_green: 0x0a4d22,
-            bright_yellow: 0x573400,
-            bright_blue: 0x012152,
-            bright_magenta: 0x3f1f6e,
-            bright_cyan: 0x023b5a,
-            bright_white: 0x1f2328,
+            black: 0x000000,
+            red: 0xde3e35,
+            green: 0x3f953a,
+            yellow: 0xd2b67c,
+            blue: 0x2f5af3,
+            magenta: 0x950095,
+            cyan: 0x0997b3,
+            white: 0xbbbbbb,
+            bright_black: 0x000000,
+            bright_red: 0xde3e35,
+            bright_green: 0x3f953a,
+            bright_yellow: 0xd2b67c,
+            bright_blue: 0x2f5af3,
+            bright_magenta: 0xa00095,
+            bright_cyan: 0x0bbcd6,
+            bright_white: 0xffffff,
+            dim_black: 0x555555,
+            dim_red: 0x9c2b26,
+            dim_green: 0x2b6927,
+            dim_yellow: 0xa48c5a,
+            dim_blue: 0x2140ab,
+            dim_magenta: 0x6a006a,
+            dim_cyan: 0x0a7b92,
+            dim_white: 0x888888,
         };
-        Self::from_parts(background, foreground, cursor, ansi, 0.92, 0.85, true)
+        Self::from_parts(
+            background,
+            foreground,
+            bright_foreground,
+            dim_foreground,
+            cursor,
+            ansi,
+            0.92,
+            0.85,
+        )
     }
 
     pub fn one_dark() -> Self {
@@ -124,20 +183,23 @@ impl TerminalTheme {
     fn from_parts(
         background: u32,
         foreground: u32,
+        bright_foreground: u32,
+        dim_foreground: u32,
         cursor: u32,
         ansi: AnsiPalette,
         dim_lightness_factor: f32,
         dim_alpha_factor: f32,
-        light: bool,
     ) -> Self {
         Self {
             background,
             foreground,
+            bright_foreground,
+            dim_foreground,
             cursor,
             ansi,
             dim_lightness_factor,
             dim_alpha_factor,
-            indexed: build_indexed_table(background, ansi, light),
+            indexed: build_indexed_table(ansi),
         }
     }
 
@@ -161,9 +223,9 @@ impl TerminalTheme {
             256 => rgb_from_hex(self.foreground),
             257 => rgb_from_hex(self.background),
             258 => rgb_from_hex(self.cursor),
-            259..=266 => dim_rgb(rgb_from_hex(self.ansi.color((index - 259) as u8))),
-            267 => rgb_from_hex(self.foreground),
-            268 => dim_rgb(rgb_from_hex(self.foreground)),
+            259..=266 => rgb_from_hex(self.ansi.dim_color((index - 259) as u8)),
+            267 => rgb_from_hex(self.bright_foreground),
+            268 => rgb_from_hex(self.dim_foreground),
             _ => rgb_from_hex(self.foreground),
         }
     }
@@ -192,6 +254,10 @@ impl TerminalTheme {
     }
 
     pub fn convert_color(&self, color: &AlacColor) -> Hsla {
+        rgb(self.color_hex(color)).into()
+    }
+
+    fn color_hex(&self, color: &AlacColor) -> u32 {
         let hex = match color {
             AlacColor::Named(named) => self.named_hex(*named),
             AlacColor::Spec(rgb_color) => {
@@ -199,11 +265,7 @@ impl TerminalTheme {
             }
             AlacColor::Indexed(index) => self.indexed[usize::from(*index)],
         };
-        let mut hsla: Hsla = rgb(hex).into();
-        if matches!(color, AlacColor::Spec(_)) && self.is_light() {
-            hsla = mute_truecolor_on_light(hsla, self.foreground);
-        }
-        hsla
+        hex
     }
 
     fn named_hex(self, color: NamedColor) -> u32 {
@@ -212,7 +274,7 @@ impl TerminalTheme {
     }
 }
 
-fn build_indexed_table(background: u32, ansi: AnsiPalette, light: bool) -> [u32; 256] {
+fn build_indexed_table(ansi: AnsiPalette) -> [u32; 256] {
     let mut table = [0u32; 256];
     for index in 0..16 {
         table[index] = ansi.color(index as u8);
@@ -224,57 +286,14 @@ fn build_indexed_table(background: u32, ansi: AnsiPalette, light: bool) -> [u32;
             xterm_cube_channel((idx / 6) % 6),
             xterm_cube_channel(idx % 6),
         );
-        table[index] = if light {
-            ensure_readable_on_light(hex, background)
-        } else {
-            hex
-        };
+        table[index] = hex;
     }
     for index in 232..256 {
         let step = (index - 232) as u32;
-        let level = if light {
-            (96 + step * 4).min(176)
-        } else {
-            step * 10 + 8
-        };
+        let level = step * 10 + 8;
         table[index] = pack_rgb(level, level, level);
     }
     table
-}
-
-fn ensure_readable_on_light(fg: u32, bg: u32) -> u32 {
-    const MAX_PASSES: u8 = 8;
-    let bg_lum = relative_luminance(bg);
-    let mut current = fg;
-    for _ in 0..MAX_PASSES {
-        // On light backgrounds, readable indexed colors should be darker than the background.
-        if bg_lum - relative_luminance(current) >= LIGHT_FG_LUMINANCE_DELTA {
-            return current;
-        }
-        current = scale_rgb(current, 0.55);
-    }
-    current
-}
-
-fn scale_rgb(hex: u32, scale: f32) -> u32 {
-    let r = ((hex >> 16) as f32 * scale) as u32;
-    let g = (((hex >> 8) & 0xff) as f32 * scale) as u32;
-    let b = ((hex & 0xff) as f32 * scale) as u32;
-    pack_rgb(r, g, b)
-}
-
-/// Claude-style 24-bit pastels: softer than neon, separate from indexed-token contrast rules.
-fn mute_truecolor_on_light(color: Hsla, foreground: u32) -> Hsla {
-    let fg: Hsla = rgb(foreground).into();
-    let l = color.l;
-    let s = color.s;
-    if l <= 0.48 && s < 0.45 {
-        return gpui::hsla(color.h, s * 0.9, l, color.a);
-    }
-    let new_l = (l * 0.5 + 0.43).clamp(0.38, 0.48);
-    let new_s = (s * 0.68).clamp(0.22, 0.58);
-    let softened = gpui::hsla(color.h, new_s, new_l, color.a);
-    blend_rgb(softened, fg, 0.1)
 }
 
 fn relative_luminance(hex: u32) -> f32 {
@@ -290,19 +309,6 @@ fn relative_luminance(hex: u32) -> f32 {
     let g = channel((hex >> 8) & 0xff);
     let b = channel(hex & 0xff);
     0.2126 * r + 0.7152 * g + 0.0722 * b
-}
-
-fn blend_rgb(a: Hsla, b: Hsla, t: f32) -> Hsla {
-    let t = t.clamp(0.0, 1.0);
-    let a: gpui::Rgba = a.into();
-    let b: gpui::Rgba = b.into();
-    let channel = |x: f32, y: f32| ((x + (y - x) * t) * 255.0).round().clamp(0.0, 255.0) as u32;
-    rgb(pack_rgb(
-        channel(a.r, b.r),
-        channel(a.g, b.g),
-        channel(a.b, b.b),
-    ))
-    .into()
 }
 
 fn append_dynamic_color(buf: &mut Vec<u8>, kind: &[u8], hex: u32) {
@@ -352,14 +358,6 @@ pub(crate) fn rgb_from_hex(hex: u32) -> AlacRgb {
     }
 }
 
-fn dim_rgb(color: AlacRgb) -> AlacRgb {
-    AlacRgb {
-        r: color.r / 2,
-        g: color.g / 2,
-        b: color.b / 2,
-    }
-}
-
 fn xterm_cube_channel(component: usize) -> u32 {
     match component {
         0 => 0,
@@ -381,15 +379,27 @@ mod tests {
     use alacritty_terminal::vte::ansi::Color as AlacColor;
 
     #[test]
-    fn light_named_blue_uses_palette_token() {
+    fn light_named_blue_matches_one_light() {
         let theme = TerminalTheme::light();
-        let blue: Hsla = theme.convert_color(&AlacColor::Named(NamedColor::Blue));
-        assert_eq!(theme.ansi.blue, 0x012f7a);
-        assert!(
-            blue.l < 0.45,
-            "light blue token should be readable, got {}",
-            blue.l
+        assert_eq!(theme.background, 0xfafafa);
+        assert_eq!(theme.foreground, 0x2a2c33);
+        assert_eq!(theme.bright_foreground, 0x2a2c33);
+        assert_eq!(theme.dim_foreground, 0xbbbbbb);
+        assert_eq!(theme.ansi.blue, 0x2f5af3);
+        assert_eq!(theme.ansi.dim_blue, 0x2140ab);
+        assert_eq!(
+            theme.convert_color(&AlacColor::Named(NamedColor::Blue)),
+            rgb(0x2f5af3).into()
         );
+    }
+
+    #[test]
+    fn light_special_color_indexes_match_theme_tokens() {
+        let theme = TerminalTheme::light();
+        assert_eq!(theme.color_at_index(259), rgb_from_hex(0x555555));
+        assert_eq!(theme.color_at_index(263), rgb_from_hex(0x2140ab));
+        assert_eq!(theme.color_at_index(267), rgb_from_hex(0x2a2c33));
+        assert_eq!(theme.color_at_index(268), rgb_from_hex(0xbbbbbb));
     }
 
     #[test]
@@ -409,17 +419,28 @@ mod tests {
     }
 
     #[test]
-    fn light_truecolor_is_softened_not_neon() {
+    fn light_truecolor_foreground_is_unchanged() {
         let theme = TerminalTheme::light();
-        let raw: Hsla = rgb(pack_rgb(0x9c, 0xb8, 0xff)).into();
         let color = theme.convert_color(&AlacColor::Spec(alacritty_terminal::vte::ansi::Rgb {
             r: 0x9c,
             g: 0xb8,
             b: 0xff,
         }));
-        assert!(color.l < raw.l);
-        assert!(color.l >= 0.38 && color.l <= 0.48);
-        assert!(color.s < raw.s);
+        let expected: Hsla = rgb(pack_rgb(0x9c, 0xb8, 0xff)).into();
+        assert_eq!(color, expected);
+    }
+
+    #[test]
+    fn light_truecolor_background_is_unchanged() {
+        let theme = TerminalTheme::light();
+        let background =
+            theme.convert_color(&AlacColor::Spec(alacritty_terminal::vte::ansi::Rgb {
+                r: 0xf0,
+                g: 0xf0,
+                b: 0xf0,
+            }));
+        let expected: Hsla = rgb(pack_rgb(0xf0, 0xf0, 0xf0)).into();
+        assert_eq!(background, expected);
     }
 
     #[test]
@@ -435,23 +456,10 @@ mod tests {
     }
 
     #[test]
-    fn light_indexed_cube_meets_luminance_delta() {
+    fn light_indexed_grayscale_uses_standard_xterm_ramp() {
         let theme = TerminalTheme::light();
-        let bg_lum = relative_luminance(theme.background);
-        for index in 16..232 {
-            let hex = theme.color_at_index(index);
-            let packed = pack_rgb(hex.r as u32, hex.g as u32, hex.b as u32);
-            let fg_lum = relative_luminance(packed);
-            let delta = if fg_lum > bg_lum {
-                fg_lum - bg_lum
-            } else {
-                bg_lum - fg_lum
-            };
-            assert!(
-                delta >= LIGHT_FG_LUMINANCE_DELTA,
-                "indexed {index} too low contrast on light background"
-            );
-        }
+        let indexed = theme.color_at_index(255);
+        assert_eq!(indexed, rgb_from_hex(pack_rgb(238, 238, 238)));
     }
 
     #[test]

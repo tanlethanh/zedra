@@ -11,18 +11,20 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.EditText
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
+import androidx.core.content.res.ResourcesCompat
+import androidx.core.widget.NestedScrollView
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.divider.MaterialDivider
-import com.google.android.material.textfield.TextInputEditText
-import com.google.android.material.textfield.TextInputLayout
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -35,6 +37,48 @@ object NativePresentations {
     private val dictationPreviews = mutableMapOf<Int, TextView>()
     private val notifications = mutableMapOf<Int, View>()
     private var sheetDialog: BottomSheetDialog? = null
+    private var nativeTheme = NativeTheme.dark()
+
+    private data class NativeTheme(
+        val background: Int,
+        val card: Int,
+        val overlay: Int,
+        val textPrimary: Int,
+        val textSecondary: Int,
+        val textMuted: Int,
+        val border: Int,
+        val accentRed: Int,
+        val accentGreen: Int,
+        val accentYellow: Int,
+    ) {
+        companion object {
+            fun dark() = NativeTheme(
+                background = Color.rgb(14, 12, 12),
+                card = Color.rgb(19, 19, 19),
+                overlay = Color.rgb(19, 19, 19),
+                textPrimary = Color.WHITE,
+                textSecondary = Color.rgb(202, 202, 202),
+                textMuted = Color.rgb(80, 80, 80),
+                border = Color.rgb(44, 44, 44),
+                accentRed = Color.rgb(224, 108, 117),
+                accentGreen = Color.rgb(152, 195, 121),
+                accentYellow = Color.rgb(229, 192, 123),
+            )
+
+            fun light() = NativeTheme(
+                background = Color.rgb(245, 245, 245),
+                card = Color.WHITE,
+                overlay = Color.WHITE,
+                textPrimary = Color.rgb(26, 26, 26),
+                textSecondary = Color.rgb(74, 74, 74),
+                textMuted = Color.rgb(138, 138, 138),
+                border = Color.rgb(216, 216, 216),
+                accentRed = Color.rgb(207, 34, 46),
+                accentGreen = Color.rgb(26, 127, 55),
+                accentYellow = Color.rgb(154, 103, 0),
+            )
+        }
+    }
 
     @JvmStatic
     fun register(activity: MainActivity, rootView: FrameLayout) {
@@ -54,6 +98,16 @@ object NativePresentations {
         notifications.clear()
         rootView = null
         activity = null
+    }
+
+    @JvmStatic
+    fun setDarkTheme(isDark: Boolean) {
+        nativeTheme = if (isDark) NativeTheme.dark() else NativeTheme.light()
+        onUi {
+            floatingButtons.values.forEach { applyFloatingButtonTheme(it) }
+            dictationPreviews.values.forEach { applyDictationPreviewTheme(it) }
+            relayoutNotifications()
+        }
     }
 
     @JvmStatic
@@ -89,6 +143,7 @@ object NativePresentations {
             }
             .create()
         dialog.setOnShowListener {
+            applyDialogTheme(dialog)
             safeStyles.forEachIndexed { index, style ->
                 val which = when (index) {
                     0 -> android.content.DialogInterface.BUTTON_POSITIVE
@@ -120,6 +175,7 @@ object NativePresentations {
         lateinit var dialog: AlertDialog
         val content = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
+            setBackgroundColor(nativeTheme.overlay)
             if (!title.isNullOrBlank()) {
                 addView(selectionHeader(title, primary = true))
             }
@@ -135,9 +191,9 @@ object NativePresentations {
                     setPadding(dp(24f), 0, dp(24f), 0)
                     setTextColor(
                         if (safeStyles[index] == 2) {
-                            Color.rgb(244, 97, 97)
+                            nativeTheme.accentRed
                         } else {
-                            Color.WHITE
+                            nativeTheme.textPrimary
                         }
                     )
                     setSelectableItemBackground(this)
@@ -172,6 +228,7 @@ object NativePresentations {
             .create()
         dialog.setCanceledOnTouchOutside(true)
         dialog.show()
+        applyDialogTheme(dialog)
     }
 
     @JvmStatic
@@ -191,46 +248,76 @@ object NativePresentations {
         val sheet = BottomSheetDialog(activity)
         val content = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16f), dp(12f), dp(16f), dp(12f))
+            setBackgroundColor(nativeTheme.background)
+            setPadding(0, 0, 0, dp(8f))
+            addView(dragHandle())
             if (!title.isNullOrBlank()) {
-                addView(selectionHeader(title, primary = true))
+                addView(pickerHeader(title, message))
             }
-            if (!message.isNullOrBlank()) {
-                addView(selectionHeader(message, primary = title.isNullOrBlank()))
-            }
-            val scroll = android.widget.ScrollView(activity).apply {
+            val scroll = NestedScrollView(activity).apply {
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     dp(420f),
                 )
+                isNestedScrollingEnabled = true
                 val list = LinearLayout(activity).apply {
                     orientation = LinearLayout.VERTICAL
                 }
                 safeLabels.forEachIndexed { index, label ->
                     val subtitle = subtitles?.getOrNull(index)?.orEmpty().orEmpty()
-                    list.addView(TextView(activity).apply {
-                        text = if (subtitle.isBlank()) label else "$label\n$subtitle"
-                        textSize = 16f
-                        setLineSpacing(0f, 1.1f)
+                    val imageName = imageNames?.getOrNull(index)
+                    val row = LinearLayout(activity).apply {
+                        orientation = LinearLayout.HORIZONTAL
                         gravity = Gravity.CENTER_VERTICAL
-                        minHeight = dp(56f)
-                        setPadding(dp(8f), dp(10f), dp(8f), dp(10f))
-                        setTextColor(Color.WHITE)
+                        minimumHeight = dp(48f)
+                        setPadding(dp(20f), dp(8f), dp(20f), dp(8f))
                         setSelectableItemBackground(this)
                         setOnClickListener {
                             MainActivity.nativeSelectionResult(callbackId, index)
                             sheet.dismiss()
                         }
-                    }, LinearLayout.LayoutParams(
+                    }
+                    val iconRes = agentIconRes(imageName)
+                    val iconView = ImageView(activity).apply {
+                        layoutParams = LinearLayout.LayoutParams(dp(20f), dp(20f)).apply {
+                            marginEnd = dp(14f)
+                        }
+                        if (iconRes != 0) {
+                            setImageResource(iconRes)
+                            imageTintList = ColorStateList.valueOf(nativeTheme.textPrimary)
+                        }
+                    }
+                    row.addView(iconView)
+                    val textCol = LinearLayout(activity).apply {
+                        orientation = LinearLayout.VERTICAL
+                        layoutParams = LinearLayout.LayoutParams(
+                            0,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            1f,
+                        )
+                    }
+                    textCol.addView(TextView(activity).apply {
+                        text = label
+                        textSize = 15f
+                        setTextColor(nativeTheme.textPrimary)
+                        typeface = loraTypeface(activity)
+                        includeFontPadding = false
+                    })
+                    if (subtitle.isNotBlank()) {
+                        textCol.addView(TextView(activity).apply {
+                            text = subtitle
+                            textSize = 12f
+                            setTextColor(nativeTheme.textSecondary)
+                            typeface = loraTypeface(activity)
+                            includeFontPadding = false
+                            setPadding(0, dp(2f), 0, 0)
+                        })
+                    }
+                    row.addView(textCol)
+                    list.addView(row, LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT,
                     ))
-                    if (index + 1 < safeLabels.size) {
-                        list.addView(MaterialDivider(activity), LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ))
-                    }
                 }
                 addView(list)
             }
@@ -239,6 +326,9 @@ object NativePresentations {
         sheet.setContentView(content)
         sheet.setOnCancelListener { MainActivity.nativeSelectionDismiss(callbackId) }
         sheet.show()
+        sheet.findViewById<FrameLayout>(
+            com.google.android.material.R.id.design_bottom_sheet,
+        )?.background = roundedBackground(nativeTheme.background, 18f)
     }
 
     @JvmStatic
@@ -248,27 +338,25 @@ object NativePresentations {
         placeholder: String?,
         initialValue: String?,
     ) = onUi {
-        val input = TextInputEditText(requireActivity()).apply {
+        val input = EditText(requireActivity()).apply {
             setSingleLine(true)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
             setText(initialValue.orEmpty())
             setSelection(text?.length ?: 0)
-        }
-        val inputLayout = TextInputLayout(requireActivity()).apply {
+            setTextColor(nativeTheme.textPrimary)
+            setHintTextColor(nativeTheme.textMuted)
             hint = placeholder.orEmpty()
-            addView(input, LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ))
+            backgroundTintList = ColorStateList.valueOf(nativeTheme.border)
         }
         val container = FrameLayout(requireActivity()).apply {
+            setBackgroundColor(nativeTheme.overlay)
             setPadding(dp(20f), dp(8f), dp(20f), 0)
-            addView(inputLayout, FrameLayout.LayoutParams(
+            addView(input, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ))
         }
-        MaterialAlertDialogBuilder(requireActivity())
+        AlertDialog.Builder(requireActivity())
             .apply {
                 if (!title.isNullOrBlank()) setTitle(title)
                 setView(container)
@@ -281,6 +369,7 @@ object NativePresentations {
                 setOnCancelListener { MainActivity.nativeTextInputDismiss(callbackId) }
             }
             .show()
+            .also { applyDialogTheme(it) }
     }
 
     @JvmStatic
@@ -319,7 +408,7 @@ object NativePresentations {
 
         if (showsGrabber) {
             container.addView(View(activity).apply {
-                background = roundedBackground(Color.argb(150, 210, 214, 224), 2f)
+                background = roundedBackground(withAlpha(nativeTheme.textSecondary, 150), 2f)
                 layoutParams = LinearLayout.LayoutParams(dp(38f), dp(4f)).apply {
                     gravity = Gravity.CENTER_HORIZONTAL
                     topMargin = dp(8f)
@@ -397,8 +486,7 @@ object NativePresentations {
         val root = requireRoot()
         val button = floatingButtons.getOrPut(id) {
             ImageButton(requireActivity()).apply {
-                background = roundedBackground(Color.argb(230, 38, 42, 51), 999f)
-                imageTintList = ColorStateList.valueOf(Color.WHITE)
+                applyFloatingButtonTheme(this)
                 scaleType = ImageView.ScaleType.FIT_CENTER
                 elevation = dp(8f).toFloat()
                 setOnClickListener { MainActivity.nativeFloatingButtonPressed(id) }
@@ -434,11 +522,10 @@ object NativePresentations {
         val preview = dictationPreviews.getOrPut(id) {
             TextView(requireActivity()).apply {
                 gravity = Gravity.CENTER
-                setTextColor(Color.WHITE)
+                applyDictationPreviewTheme(this)
                 textSize = 15f
                 maxLines = 3
                 setPadding(dp(14f), dp(10f), dp(14f), dp(10f))
-                background = roundedBackground(Color.argb(238, 32, 36, 44), 18f)
                 elevation = dp(10f).toFloat()
                 setOnClickListener {
                     MainActivity.nativeDictationPreviewDismiss(id)
@@ -482,7 +569,7 @@ object NativePresentations {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(14f), dp(10f), dp(14f), dp(10f))
-            background = roundedBackground(Color.argb(242, 30, 34, 42), 16f)
+            background = roundedBackground(withAlpha(nativeTheme.overlay, 242), 16f)
             elevation = dp(12f).toFloat()
             alpha = 0f
             translationY = -dp(18f).toFloat()
@@ -500,7 +587,7 @@ object NativePresentations {
         })
         banner.addView(TextView(requireActivity()).apply {
             text = listOfNotNull(title, message?.takeIf { it.isNotBlank() }).joinToString("\n")
-            setTextColor(Color.WHITE)
+            setTextColor(nativeTheme.textPrimary)
             textSize = 14f
             setLineSpacing(0f, 1.08f)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
@@ -534,6 +621,7 @@ object NativePresentations {
 
     private fun relayoutNotifications() {
         notifications.values.forEachIndexed { index, view ->
+            view.background = roundedBackground(withAlpha(nativeTheme.overlay, 242), 16f)
             view.layoutParams = notificationLayoutParams(index)
             view.requestLayout()
         }
@@ -579,11 +667,114 @@ object NativePresentations {
         }
     }
 
+    private fun withAlpha(color: Int, alpha: Int): Int {
+        return Color.argb(
+            alpha.coerceIn(0, 255),
+            Color.red(color),
+            Color.green(color),
+            Color.blue(color),
+        )
+    }
+
+    private fun applyDialogTheme(dialog: AlertDialog) {
+        dialog.window?.setBackgroundDrawable(roundedBackground(nativeTheme.overlay, 28f))
+        dialog.getButton(android.content.DialogInterface.BUTTON_POSITIVE)
+            ?.setTextColor(nativeTheme.textSecondary)
+        dialog.getButton(android.content.DialogInterface.BUTTON_NEGATIVE)
+            ?.setTextColor(nativeTheme.textSecondary)
+        dialog.getButton(android.content.DialogInterface.BUTTON_NEUTRAL)
+            ?.setTextColor(nativeTheme.textSecondary)
+        dialog.window?.decorView?.let { applyTextColors(it) }
+    }
+
+    private fun applyTextColors(view: View) {
+        when (view) {
+            // Buttons keep the color set explicitly by the call site (positive/negative/neutral),
+            // and EditText keeps its own text/hint colors. Walking past them would re-tint
+            // user-typed content and override per-button colors.
+            is Button, is EditText -> {}
+            is TextView -> {
+                val text = view.text?.toString().orEmpty()
+                val color = when (text) {
+                    "✓" -> nativeTheme.accentGreen
+                    "!" -> nativeTheme.accentYellow
+                    else -> if (view.textSize <= 13f * view.resources.displayMetrics.scaledDensity) {
+                        nativeTheme.textSecondary
+                    } else {
+                        nativeTheme.textPrimary
+                    }
+                }
+                view.setTextColor(color)
+            }
+            is ImageView -> view.imageTintList = ColorStateList.valueOf(nativeTheme.textPrimary)
+        }
+        if (view is ViewGroup) {
+            for (index in 0 until view.childCount) {
+                applyTextColors(view.getChildAt(index))
+            }
+        }
+    }
+
+    private fun applyFloatingButtonTheme(button: ImageButton) {
+        button.background = roundedBackground(withAlpha(nativeTheme.overlay, 230), 999f)
+        button.imageTintList = ColorStateList.valueOf(nativeTheme.textPrimary)
+    }
+
+    private fun applyDictationPreviewTheme(preview: TextView) {
+        preview.setTextColor(nativeTheme.textPrimary)
+        preview.background = roundedBackground(withAlpha(nativeTheme.overlay, 238), 18f)
+    }
+
+    private fun dragHandle(): View {
+        val activity = requireActivity()
+        val handle = View(activity).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(2f).toFloat()
+                setColor(nativeTheme.textMuted)
+            }
+        }
+        val wrap = FrameLayout(activity).apply {
+            setPadding(0, dp(8f), 0, dp(8f))
+            addView(handle, FrameLayout.LayoutParams(dp(36f), dp(4f)).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+            })
+        }
+        return wrap
+    }
+
+    private fun pickerHeader(title: String, message: String?): LinearLayout {
+        val activity = requireActivity()
+        return LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20f), dp(12f), dp(20f), dp(12f))
+            addView(TextView(activity).apply {
+                text = title
+                textSize = 18f
+                setTextColor(nativeTheme.textPrimary)
+                typeface = loraTypeface(activity)
+                includeFontPadding = false
+            })
+            if (!message.isNullOrBlank()) {
+                addView(TextView(activity).apply {
+                    text = message
+                    textSize = 12f
+                    setTextColor(nativeTheme.textSecondary)
+                    typeface = loraTypeface(activity)
+                    includeFontPadding = false
+                    setPadding(0, dp(4f), 0, 0)
+                })
+            }
+        }
+    }
+
     private fun selectionHeader(text: String, primary: Boolean): TextView {
-        return TextView(requireActivity()).apply {
+        val activity = requireActivity()
+        return TextView(activity).apply {
             this.text = text
             textSize = if (primary) 20f else 14f
-            setTextColor(if (primary) Color.WHITE else Color.rgb(202, 209, 222))
+            setTextColor(if (primary) nativeTheme.textPrimary else nativeTheme.textSecondary)
+            typeface = loraTypeface(activity)
             setPadding(
                 dp(24f),
                 if (primary) dp(24f) else 0,
@@ -594,11 +785,26 @@ object NativePresentations {
         }
     }
 
+    private var cachedLora: android.graphics.Typeface? = null
+    private fun loraTypeface(ctx: android.content.Context): android.graphics.Typeface? {
+        cachedLora?.let { return it }
+        val tf = ResourcesCompat.getFont(ctx, R.font.lora)
+        cachedLora = tf
+        return tf
+    }
+
+    private fun agentIconRes(name: String?): Int {
+        if (name.isNullOrBlank() || !name.startsWith("Agent")) return 0
+        val snake = name.replace(Regex("(?<!^)(?=[A-Z])"), "_").lowercase()
+        val activity = activity ?: return 0
+        return activity.resources.getIdentifier(snake, "drawable", activity.packageName)
+    }
+
     private fun alertButtonColor(style: Int): Int {
         return if (style == 2) {
-            Color.rgb(244, 97, 97)
+            nativeTheme.accentRed
         } else {
-            Color.rgb(189, 189, 189)
+            nativeTheme.textSecondary
         }
     }
 
@@ -643,10 +849,10 @@ object NativePresentations {
 
     private fun kindColor(kind: Int): Int {
         return when (kind) {
-            1 -> Color.rgb(111, 221, 147)
-            2 -> Color.rgb(244, 188, 92)
-            3 -> Color.rgb(244, 97, 97)
-            else -> Color.rgb(202, 209, 222)
+            1 -> nativeTheme.accentGreen
+            2 -> nativeTheme.accentYellow
+            3 -> nativeTheme.accentRed
+            else -> nativeTheme.textSecondary
         }
     }
 }

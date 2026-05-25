@@ -92,8 +92,7 @@ impl ThemeState {
     }
 
     fn sync_native_theme(preference: ThemePreference) {
-        crate::platform_bridge::bridge()
-            .set_keyboard_accessory_theme(preference == ThemePreference::Dark);
+        crate::platform_bridge::bridge().set_native_theme(preference == ThemePreference::Dark);
     }
 }
 

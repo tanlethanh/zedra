@@ -10,7 +10,7 @@ Read `docs/DESIGN.md` for visual tone (density, typography, when to use accent c
 |-------|----------|------|
 | App settings + appearance | `crates/zedra/src/settings.rs` | Loads/saves app settings; `ThemeState` manages `ThemePreference`, builds `ThemeBundle`, emits `ThemeStateEvent::Changed` |
 | Token definitions | `crates/zedra/src/theme.rs` | `ThemePalette`, `EditorTheme`, `ThemeBundle`, layout constants, `theme::palette(cx)` accessors |
-| Terminal palette | `crates/zedra-terminal/src/theme.rs` | `TerminalTheme`, ANSI + xterm-256 table, truecolor rules for light mode |
+| Terminal palette | `crates/zedra-terminal/src/theme.rs` | `TerminalTheme`, ANSI + xterm-256 table, raw truecolor pass-through |
 | User control | Settings → Appearance | Calls `ThemeState::set_preference` |
 
 `ThemeState` is registered as a GPUI global at app startup (`ZedraApp` in `crates/zedra/src/app.rs`). It is the appearance-specific state inside the settings module. Views read the active bundle through `theme::palette(cx)` / `theme::bundle(cx)`, which delegate to the global entity.
@@ -100,7 +100,7 @@ Terminal colors are **not** `ThemePalette`. They flow through `ThemeBundle::term
 - GPUI painting uses `TerminalTheme::convert_color` in `zedra-terminal`’s element layer.
 - OSC 10/11/12 and palette queries are answered from `TerminalTheme` via `ColorRequest` (see `docs/MANUAL_TEST.md` §22).
 
-To tune light terminal contrast, edit tokens and derived tables in `crates/zedra-terminal/src/theme.rs` only—not in `element.rs` or `terminal.rs` render paths.
+To tune light terminal contrast, edit terminal tokens in `crates/zedra-terminal/src/theme.rs` only—not `element.rs` or `terminal.rs` render paths. Truecolor from terminal applications should pass through unchanged.
 
 ## Subscribing To Theme Changes
 
