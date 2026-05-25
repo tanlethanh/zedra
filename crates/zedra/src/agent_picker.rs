@@ -93,8 +93,15 @@ impl AgentPicker {
             })
             .collect();
 
-        let launch_cmds: Vec<Option<String>> =
-            agents.iter().map(|a| a.launch_cmd.clone()).collect();
+        let launch_targets: Vec<(String, Option<String>)> = agents
+            .iter()
+            .map(|a| {
+                (
+                    format!("Launching {}...", a.display_name),
+                    a.launch_cmd.clone(),
+                )
+            })
+            .collect();
 
         let pending = self.pending_action.clone();
         platform_bridge::show_list_picker(
@@ -103,10 +110,13 @@ impl AgentPicker {
             picker_items,
             move |selection| {
                 let Some(index) = selection else { return };
-                let Some(cmd) = launch_cmds.get(index).and_then(|c| c.clone()) else {
+                let Some((initial_title, Some(cmd))) = launch_targets.get(index).cloned() else {
                     return;
                 };
-                pending.set(PendingWorkspaceAction::SpawnAgentTerminal { launch_cmd: cmd });
+                pending.set(PendingWorkspaceAction::SpawnAgentTerminal {
+                    launch_cmd: cmd,
+                    initial_title,
+                });
             },
         );
     }

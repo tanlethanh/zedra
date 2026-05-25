@@ -112,6 +112,7 @@ pub struct CreateAgent;
 #[action(namespace = workspace, no_json)]
 pub struct SpawnAgentTerminal {
     pub launch_cmd: String,
+    pub initial_title: String,
 }
 
 #[derive(Clone, PartialEq, Action)]
