@@ -17,6 +17,8 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
+import androidx.core.content.res.ResourcesCompat
+import androidx.core.widget.NestedScrollView
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -191,46 +193,75 @@ object NativePresentations {
         val sheet = BottomSheetDialog(activity)
         val content = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16f), dp(12f), dp(16f), dp(12f))
+            setPadding(0, 0, 0, dp(8f))
+            addView(dragHandle())
             if (!title.isNullOrBlank()) {
-                addView(selectionHeader(title, primary = true))
+                addView(pickerHeader(title, message))
             }
-            if (!message.isNullOrBlank()) {
-                addView(selectionHeader(message, primary = title.isNullOrBlank()))
-            }
-            val scroll = android.widget.ScrollView(activity).apply {
+            val scroll = NestedScrollView(activity).apply {
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     dp(420f),
                 )
+                isNestedScrollingEnabled = true
                 val list = LinearLayout(activity).apply {
                     orientation = LinearLayout.VERTICAL
                 }
                 safeLabels.forEachIndexed { index, label ->
                     val subtitle = subtitles?.getOrNull(index)?.orEmpty().orEmpty()
-                    list.addView(TextView(activity).apply {
-                        text = if (subtitle.isBlank()) label else "$label\n$subtitle"
-                        textSize = 16f
-                        setLineSpacing(0f, 1.1f)
+                    val imageName = imageNames?.getOrNull(index)
+                    val row = LinearLayout(activity).apply {
+                        orientation = LinearLayout.HORIZONTAL
                         gravity = Gravity.CENTER_VERTICAL
-                        minHeight = dp(56f)
-                        setPadding(dp(8f), dp(10f), dp(8f), dp(10f))
-                        setTextColor(Color.WHITE)
+                        minimumHeight = dp(48f)
+                        setPadding(dp(20f), dp(8f), dp(20f), dp(8f))
                         setSelectableItemBackground(this)
                         setOnClickListener {
                             MainActivity.nativeSelectionResult(callbackId, index)
                             sheet.dismiss()
                         }
-                    }, LinearLayout.LayoutParams(
+                    }
+                    val iconRes = agentIconRes(imageName)
+                    val iconView = ImageView(activity).apply {
+                        layoutParams = LinearLayout.LayoutParams(dp(20f), dp(20f)).apply {
+                            marginEnd = dp(14f)
+                        }
+                        if (iconRes != 0) {
+                            setImageResource(iconRes)
+                            imageTintList = ColorStateList.valueOf(Color.WHITE)
+                        }
+                    }
+                    row.addView(iconView)
+                    val textCol = LinearLayout(activity).apply {
+                        orientation = LinearLayout.VERTICAL
+                        layoutParams = LinearLayout.LayoutParams(
+                            0,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            1f,
+                        )
+                    }
+                    textCol.addView(TextView(activity).apply {
+                        text = label
+                        textSize = 15f
+                        setTextColor(Color.WHITE)
+                        typeface = loraTypeface(activity)
+                        includeFontPadding = false
+                    })
+                    if (subtitle.isNotBlank()) {
+                        textCol.addView(TextView(activity).apply {
+                            text = subtitle
+                            textSize = 12f
+                            setTextColor(Color.rgb(160, 168, 184))
+                            typeface = loraTypeface(activity)
+                            includeFontPadding = false
+                            setPadding(0, dp(2f), 0, 0)
+                        })
+                    }
+                    row.addView(textCol)
+                    list.addView(row, LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT,
                     ))
-                    if (index + 1 < safeLabels.size) {
-                        list.addView(MaterialDivider(activity), LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ))
-                    }
                 }
                 addView(list)
             }
@@ -579,11 +610,56 @@ object NativePresentations {
         }
     }
 
+    private fun dragHandle(): View {
+        val activity = requireActivity()
+        val handle = View(activity).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(2f).toFloat()
+                setColor(Color.rgb(80, 86, 100))
+            }
+        }
+        val wrap = FrameLayout(activity).apply {
+            setPadding(0, dp(8f), 0, dp(8f))
+            addView(handle, FrameLayout.LayoutParams(dp(36f), dp(4f)).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+            })
+        }
+        return wrap
+    }
+
+    private fun pickerHeader(title: String, message: String?): LinearLayout {
+        val activity = requireActivity()
+        return LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20f), dp(12f), dp(20f), dp(12f))
+            addView(TextView(activity).apply {
+                text = title
+                textSize = 18f
+                setTextColor(Color.WHITE)
+                typeface = loraTypeface(activity)
+                includeFontPadding = false
+            })
+            if (!message.isNullOrBlank()) {
+                addView(TextView(activity).apply {
+                    text = message
+                    textSize = 12f
+                    setTextColor(Color.rgb(160, 168, 184))
+                    typeface = loraTypeface(activity)
+                    includeFontPadding = false
+                    setPadding(0, dp(4f), 0, 0)
+                })
+            }
+        }
+    }
+
     private fun selectionHeader(text: String, primary: Boolean): TextView {
-        return TextView(requireActivity()).apply {
+        val activity = requireActivity()
+        return TextView(activity).apply {
             this.text = text
             textSize = if (primary) 20f else 14f
             setTextColor(if (primary) Color.WHITE else Color.rgb(202, 209, 222))
+            typeface = loraTypeface(activity)
             setPadding(
                 dp(24f),
                 if (primary) dp(24f) else 0,
@@ -592,6 +668,21 @@ object NativePresentations {
             )
             maxLines = 2
         }
+    }
+
+    private var cachedLora: android.graphics.Typeface? = null
+    private fun loraTypeface(ctx: android.content.Context): android.graphics.Typeface? {
+        cachedLora?.let { return it }
+        val tf = ResourcesCompat.getFont(ctx, R.font.lora)
+        cachedLora = tf
+        return tf
+    }
+
+    private fun agentIconRes(name: String?): Int {
+        if (name.isNullOrBlank() || !name.startsWith("Agent")) return 0
+        val snake = name.replace(Regex("(?<!^)(?=[A-Z])"), "_").lowercase()
+        val activity = activity ?: return 0
+        return activity.resources.getIdentifier(snake, "drawable", activity.packageName)
     }
 
     private fun alertButtonColor(style: Int): Int {
