@@ -2664,7 +2664,7 @@ mod tests {
 
         let foreground = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
         let background = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
-        assert_eq!(foreground, "\x1b]10;rgb:1f1f/2323/2828\x07");
+        assert_eq!(foreground, "\x1b]10;rgb:2a2a/2c2c/3333\x07");
         assert_eq!(background, "\x1b]11;rgb:fafa/fafa/fafa\x1b\\");
     }
 
