@@ -1062,3 +1062,21 @@ Expected:
 10. Toggle back to **Dark**
 11. Expected: terminal colors, Claude highlights, and Codex pill update without restarting the app
 12. Optional: from the host, run `printf '\e[10;?\e[11;?\e\\'` inside the Zedra session and confirm replies report the current fg/bg (light: `fafafa` background). Zedra answers OSC queries on the session PTY via `ColorRequest` and the active `TerminalTheme`; it does not inject palette setup bytes into scrollback on toggle.
+
+## 22a. Android Native Presentations Follow Theme
+
+1. Install an Android build and open Settings.
+2. Toggle Appearance to **Light**.
+3. Open the agent picker, keyboard accessory bar, and a native text input or alert.
+4. Expected: native surfaces use light backgrounds and dark text/icons, matching the app theme.
+5. Toggle Appearance back to **Dark** and repeat the same presentations.
+6. Expected: native surfaces return to dark backgrounds and light text/icons without restarting the app.
+
+## 22b. iOS Native Presentations Follow Theme
+
+1. Install an iOS build and open Settings.
+2. Toggle Appearance to **Light**.
+3. Open an alert, action sheet, agent picker, keyboard accessory bar, native text input, custom sheet, and native notification.
+4. Expected: UIKit presentation chrome uses light backgrounds and dark text/icons, matching the app theme.
+5. Toggle Appearance back to **Dark** and repeat the same presentations.
+6. Expected: UIKit presentation chrome returns to dark backgrounds and light text/icons without restarting the app.
