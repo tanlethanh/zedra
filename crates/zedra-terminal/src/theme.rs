@@ -399,7 +399,7 @@ mod tests {
         assert_eq!(theme.color_at_index(259), rgb_from_hex(0x555555));
         assert_eq!(theme.color_at_index(263), rgb_from_hex(0x2140ab));
         assert_eq!(theme.color_at_index(267), rgb_from_hex(0x2a2c33));
-        assert_eq!(theme.color_at_index(268), rgb_from_hex(0x000000));
+        assert_eq!(theme.color_at_index(268), rgb_from_hex(0xbbbbbb));
     }
 
     #[test]
