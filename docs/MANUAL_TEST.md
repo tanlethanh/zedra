@@ -264,6 +264,28 @@
 8. Expected: the old static QR no longer works; the app says the QR expired or was replaced
 9. Restart the daemon and generate a fresh static QR if needed
 
+## 2b. QR Rescan Restarts Existing Entry
+
+Covers the rescan path through `Workspaces::connect_ticket` →
+`Workspace::restart_with_ticket`. Every scenario must end with the same
+entry index (no duplicate) and the entry transitioning into `BindingEndpoint`
+or beyond.
+
+1. Start host: `zedra start --workdir .`
+2. Scan QR, let StaleTimestamp or any auth failure land the entry in `Failed`
+3. Refresh the QR on the host, rescan from the same device
+4. Expected: existing entry restarts and reaches `Connected`; no new entry is created
+5. Repeat with a deliberately stuck Authenticating phase (e.g. pause network for
+   ~10s mid-auth, then rescan a fresh QR before the entry times out)
+6. Expected: in-flight attempt is aborted and the fresh ticket drives a new
+   Register/Authenticate round on the same entry
+7. While the entry is `Connected`, rescan a still-valid QR for the same endpoint
+8. Expected: just switches to the entry; no restart, no flicker of the connecting view
+9. Rescan twice in rapid succession (two fresh QRs back-to-back)
+10. Expected: only the last attempt is alive; no overlapping connect loops
+    (`grep` logs for `start connect to` — two entries are fine, but the first
+    one must be followed by abort/cancel before the second's `Connected`)
+
 ## 2a. Protocol Version Mismatch
 
 1. Run an app build and CLI/host build that use different `ZEDRA_ALPN` versions
