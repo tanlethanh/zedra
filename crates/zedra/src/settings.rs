@@ -65,12 +65,10 @@ impl ThemeState {
 
     fn load_preference() -> ThemePreference {
         match read_settings() {
-            Ok(settings) => settings
-                .theme_preference
-                .unwrap_or_else(Self::preference_from_system),
+            Ok(settings) => settings.theme_preference.unwrap_or_default(),
             Err(err) => {
-                debug!(err = %err, "settings: using system theme preference");
-                Self::preference_from_system()
+                debug!(err = %err, "settings: using default theme preference");
+                ThemePreference::default()
             }
         }
     }
