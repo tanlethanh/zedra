@@ -603,12 +603,11 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         let session = &sessions[0];
         assert_eq!(session.transcript_size_bytes, Some(4096));
-        let branch = session
-            .git
-            .as_ref()
-            .and_then(|git| git.branch.as_deref())
-            .unwrap_or_default();
-        assert!(!branch.is_empty());
+        // Branch comes from live `git`; CI checks out detached HEAD, so it may be None.
+        // Only assert non-empty when a branch was resolved.
+        if let Some(branch) = session.git.as_ref().and_then(|git| git.branch.as_deref()) {
+            assert!(!branch.is_empty());
+        }
     }
 
     #[test]
