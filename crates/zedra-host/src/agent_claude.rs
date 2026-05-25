@@ -1040,6 +1040,7 @@ pub async fn fetch_subscription_plan() -> Option<Vec<AgentInfoField>> {
             "claude oauth profile unavailable; trying cli pty"
         );
     }
+    #[cfg(unix)]
     if let Some(fields) = crate::agent_claude_probe::fetch_plan_fields().await {
         return Some(fields);
     }
@@ -1121,7 +1122,14 @@ pub async fn fetch_account_usage() -> Option<AgentUsageSnapshot> {
             "claude oauth usage unavailable; trying cli pty"
         );
     }
-    crate::agent_claude_probe::fetch_usage().await
+    #[cfg(unix)]
+    {
+        crate::agent_claude_probe::fetch_usage().await
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
 }
 
 async fn fetch_oauth_usage() -> Option<AgentUsageSnapshot> {
