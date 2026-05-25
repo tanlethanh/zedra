@@ -50,7 +50,7 @@ impl TerminalPreviewView {
             session_handle,
             workspace_state,
             editor_view: cx.new(|cx| EditorView::new(cx)),
-            markdown_view: cx.new(|_cx| MarkdownView::new(SharedString::default())),
+            markdown_view: cx.new(|cx| MarkdownView::new(SharedString::default(), cx)),
             state: PreviewState::Idle,
             content: PreviewContent::Editor,
             title: "Terminal Link".into(),
@@ -198,8 +198,8 @@ impl TerminalPreviewView {
                                     return;
                                 }
                                 this.state = PreviewState::Loaded;
-                                this.markdown_view.update(cx, |markdown_view, _cx| {
-                                    markdown_view.set_parsed_source(parsed);
+                                this.markdown_view.update(cx, |markdown_view, cx| {
+                                    markdown_view.set_parsed_source(parsed, cx);
                                 });
                                 this.update_sheet_scroll_boundary(cx);
                                 cx.notify();

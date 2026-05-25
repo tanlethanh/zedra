@@ -746,7 +746,31 @@ printf '/tmp/zedra-markdown-table.md:1\n'
 10. Swipe vertically starting inside the table
 11. Expected: the markdown preview scrolls vertically and the table does not drift horizontally
 
-## 15c. Markdown Bottom Padding And Link Hit Slop
+## 15c. Markdown Mermaid Diagram In Preview
+
+1. Connect to a session and open the terminal view
+2. Run:
+
+```bash
+printf '%s\n' '# Mermaid Test' '' '```mermaid' 'flowchart LR' '  A[Start] --> B[End]' '```' > /tmp/zedra-markdown-mermaid.md
+printf '/tmp/zedra-markdown-mermaid.md:1\n'
+```
+
+3. Tap `/tmp/zedra-markdown-mermaid.md:1`
+4. Expected: the preview opens in markdown mode
+5. Expected: a rendered flowchart appears in a card at intrinsic SVG scale (not shrunk to viewport width)
+6. Expected: wide diagrams scroll horizontally inside the card, like markdown tables
+7. Expected: invalid mermaid syntax falls back to monospace source with a muted error line
+8. Tap `Show source` below a rendered diagram
+9. Expected: the fenced mermaid source appears and remains selectable for Add to Chat
+10. Open the same file from the workspace docs tree or editor
+11. Expected: the main workspace markdown view renders the diagram the same way
+12. Open `examples/markdown-mermaid/diagrams.md` (or copy its ER and pie sections to `/tmp`)
+13. Expected: diagram canvas, nodes, and ER entity boxes use dark fills with visible borders (not white boxes on a dark card)
+14. Expected: ER attribute rows, pie legend labels, and edge relationship labels use light text on dark surfaces
+15. Expected: flowchart connectors and arrowheads use accent blue (`#61afef`), not dim gray, with mostly straight vertical/horizontal segments
+
+## 15d. Markdown Bottom Padding And Link Hit Slop
 
 1. Connect to a session and open the terminal view
 2. Run:

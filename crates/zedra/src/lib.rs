@@ -62,16 +62,34 @@ use rust_embed::RustEmbed;
 #[include = "icons/*.svg"]
 pub struct ZedraAssets;
 
+/// GPUI's SVG renderer loads these paths when rasterizing diagram labels.
+#[derive(RustEmbed)]
+#[folder = "../../vendor/zed/assets"]
+#[include = "fonts/**"]
+struct ZedraSvgFonts;
+
 impl gpui::AssetSource for ZedraAssets {
     fn load(&self, path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
-        Ok(Self::get(path).map(|f| f.data))
+        if let Some(bytes) = editor::mermaid::load_mermaid_svg(path) {
+            return Ok(Some(std::borrow::Cow::Owned(bytes.to_vec())));
+        }
+        if let Some(file) = Self::get(path) {
+            return Ok(Some(file.data));
+        }
+        Ok(ZedraSvgFonts::get(path).map(|file| file.data))
     }
 
     fn list(&self, path: &str) -> gpui::Result<Vec<gpui::SharedString>> {
-        Ok(Self::iter()
+        let mut names = Self::iter()
             .filter(|name| name.starts_with(path))
             .map(|name| name.into())
-            .collect())
+            .collect::<Vec<_>>();
+        names.extend(
+            ZedraSvgFonts::iter()
+                .filter(|name| name.starts_with(path))
+                .map(|name| name.into()),
+        );
+        Ok(names)
     }
 }
 

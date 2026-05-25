@@ -41,7 +41,7 @@ impl WorkspaceEditor {
             state: FileState::Loading,
             content: EditorContent::Code,
             editor_view: cx.new(|cx| EditorView::new(cx)),
-            markdown_view: cx.new(|_cx| MarkdownView::new(SharedString::default())),
+            markdown_view: cx.new(|cx| MarkdownView::new(SharedString::default(), cx)),
             session_handle,
             read_task: None,
             open_epoch: 0,
@@ -142,8 +142,8 @@ impl WorkspaceEditor {
                                 return;
                             }
                             this.state = FileState::Loaded;
-                            this.markdown_view.update(cx, |markdown_view, _cx| {
-                                markdown_view.set_parsed_source(parsed);
+                            this.markdown_view.update(cx, |markdown_view, cx| {
+                                markdown_view.set_parsed_source(parsed, cx);
                             });
                             cx.notify();
                         }) {
