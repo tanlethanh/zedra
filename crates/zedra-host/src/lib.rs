@@ -3,6 +3,7 @@
 pub mod account_usage;
 pub mod agent;
 pub mod agent_cache;
+pub mod agent_setup;
 pub mod api;
 pub mod claude;
 #[cfg(unix)]

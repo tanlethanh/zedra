@@ -1,11 +1,12 @@
 use crate::account_usage::parse_usage_window_resets_at;
 use crate::agent_cache::AgentCache;
+use crate::agent_setup::setup_summary;
 use crate::claude;
 use crate::installed_agents;
 use crate::session_registry::{HostShellState, HostTermMeta, ServerSession};
 use crate::sqlite_readonly;
 use crate::utils;
-use chrono::{DateTime, Datelike, Utc};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -13,13 +14,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use zedra_rpc::proto::*;
-
-const SKILL_NAMES: &[&str] = &[
-    "zedra-start",
-    "zedra-status",
-    "zedra-stop",
-    "zedra-terminal",
-];
 
 const AGENT_SESSION_DEFAULT_LIMIT: u32 = 50;
 const AGENT_SESSION_MAX_LIMIT: u32 = 200;
@@ -615,162 +609,6 @@ fn first_non_empty_line(text: &str) -> Option<String> {
         .map(str::trim)
         .find(|line| !line.is_empty())
         .map(str::to_string)
-}
-
-fn setup_summary(kind: ManagedAgentKind, cli_available: bool, workdir: &Path) -> AgentSetupSummary {
-    if !cli_available {
-        return AgentSetupSummary {
-            state: AgentSetupState::MissingCli,
-            skills_installed: false,
-            plugin_installed: false,
-            hooks_installed: false,
-            error: None,
-        };
-    }
-
-    let mut error = None;
-    let (skills_installed, plugin_installed, hooks_installed) = match kind {
-        ManagedAgentKind::Claude => {
-            let status = claude_plugin_status();
-            error = status.error;
-            (
-                false,
-                status.plugin_installed,
-                status.hooks_installed || claude_local_hooks_installed(workdir),
-            )
-        }
-        ManagedAgentKind::Codex => (
-            skills_installed_at(&home_path(&[".agents", "skills"])),
-            false,
-            codex_hooks_installed() || codex_local_hooks_installed(workdir),
-        ),
-        ManagedAgentKind::OpenCode => (
-            skills_installed_at(&home_path(&[".config", "opencode", "skills"])),
-            opencode_plugin_installed(),
-            opencode_hooks_installed() || opencode_local_hooks_installed(workdir),
-        ),
-    };
-    let state = if error.is_some() {
-        AgentSetupState::Error
-    } else if hooks_installed {
-        AgentSetupState::HooksReady
-    } else if skills_installed || plugin_installed {
-        AgentSetupState::SkillsOnly
-    } else {
-        AgentSetupState::NotConfigured
-    };
-
-    AgentSetupSummary {
-        state,
-        skills_installed,
-        plugin_installed,
-        hooks_installed,
-        error,
-    }
-}
-
-#[derive(Default)]
-struct ClaudePluginStatus {
-    plugin_installed: bool,
-    hooks_installed: bool,
-    error: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct ClaudeInstalledPluginsFile {
-    plugins: HashMap<String, Vec<ClaudeInstalledPluginEntry>>,
-}
-
-#[derive(Deserialize)]
-struct ClaudeInstalledPluginEntry {
-    #[serde(rename = "installPath")]
-    install_path: String,
-}
-
-const CLAUDE_ZEDRA_PLUGIN_ID: &str = "zedra@zedra";
-
-fn claude_plugin_status() -> ClaudePluginStatus {
-    let path = home_path(&[".claude", "plugins", "installed_plugins.json"]);
-    let contents = match std::fs::read_to_string(&path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return ClaudePluginStatus::default();
-        }
-        Err(error) => {
-            return ClaudePluginStatus {
-                error: Some(error.to_string()),
-                ..ClaudePluginStatus::default()
-            };
-        }
-    };
-    claude_plugin_status_from_installed_plugins(&contents)
-}
-
-fn claude_plugin_status_from_installed_plugins(contents: &str) -> ClaudePluginStatus {
-    let installed: ClaudeInstalledPluginsFile = match serde_json::from_str(contents) {
-        Ok(installed) => installed,
-        Err(error) => {
-            return ClaudePluginStatus {
-                error: Some(error.to_string()),
-                ..ClaudePluginStatus::default()
-            };
-        }
-    };
-    let Some(entry) = installed
-        .plugins
-        .get(CLAUDE_ZEDRA_PLUGIN_ID)
-        .and_then(|entries| entries.first())
-    else {
-        return ClaudePluginStatus::default();
-    };
-    let install_path = Path::new(&entry.install_path);
-    let hooks_installed = install_path.join("hooks").join("hooks.json").is_file();
-    ClaudePluginStatus {
-        plugin_installed: true,
-        hooks_installed,
-        error: None,
-    }
-}
-
-fn skills_installed_at(base: &Path) -> bool {
-    SKILL_NAMES
-        .iter()
-        .all(|skill| base.join(skill).join("SKILL.md").is_file())
-}
-
-fn codex_hooks_installed() -> bool {
-    std::fs::read_to_string(home_path(&[".codex", "config.toml"]))
-        .map(|contents| contents.contains("zedra") && contents.contains("hook"))
-        .unwrap_or(false)
-}
-
-fn claude_local_hooks_installed(workdir: &Path) -> bool {
-    hook_file_mentions_zedra(&workdir.join(".claude/settings.local.json"))
-}
-
-fn codex_local_hooks_installed(workdir: &Path) -> bool {
-    hook_file_mentions_zedra(&workdir.join(".codex/hooks.json"))
-}
-
-fn opencode_plugin_installed() -> bool {
-    let plugin_dir = home_path(&[".config", "opencode", "plugins"]);
-    ["zedra.js", "zedra.ts", "zedra.mjs"]
-        .iter()
-        .any(|name| plugin_dir.join(name).is_file())
-}
-
-fn opencode_hooks_installed() -> bool {
-    opencode_plugin_installed()
-}
-
-fn opencode_local_hooks_installed(workdir: &Path) -> bool {
-    hook_file_mentions_zedra(&workdir.join(".opencode/plugins/zedra.js"))
-}
-
-fn hook_file_mentions_zedra(path: &Path) -> bool {
-    std::fs::read_to_string(path)
-        .map(|contents| contents.contains("zedra-agent-hook") || contents.contains("agent hook"))
-        .unwrap_or(false)
 }
 
 fn capabilities(kind: ManagedAgentKind) -> AgentCapabilities {
@@ -1721,7 +1559,7 @@ fn normalize_path(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
-fn home_path(parts: &[&str]) -> PathBuf {
+pub fn home_path(parts: &[&str]) -> PathBuf {
     let mut path = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
@@ -3100,7 +2938,7 @@ mod tests {
             ]
           }
         }"#;
-        let status = claude_plugin_status_from_installed_plugins(json);
+        let status = crate::agent_setup::claude_plugin_status_from_installed_plugins(json);
         assert!(status.plugin_installed);
         assert!(!status.hooks_installed);
         assert!(status.error.is_none());
