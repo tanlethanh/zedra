@@ -217,7 +217,10 @@ fn render_usage_row(
     let gauges = render_usage_gauges(snap, five_reset.as_deref(), seven_reset.as_deref(), cx);
 
     div()
-        .id(SharedString::from(format!("agent-usage-{}", kind_slug(kind))))
+        .id(SharedString::from(format!(
+            "agent-usage-{}",
+            kind_slug(kind)
+        )))
         .w_full()
         .min_w_0()
         .flex()
@@ -281,15 +284,17 @@ fn render_usage_gauges(
         gauges.push(usage_gauge("7d", pct, seven_reset, cx).into_any_element());
     }
 
-    vec![div()
-        .w_full()
-        .min_w_0()
-        .flex()
-        .flex_row()
-        .items_center()
-        .justify_between()
-        .children(gauges)
-        .into_any_element()]
+    vec![
+        div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .children(gauges)
+            .into_any_element(),
+    ]
 }
 
 /// Label + bar + fixed `%` and reset columns: `5h [████] 45%  2h30m`
@@ -364,9 +369,7 @@ fn usage_gauge(
                         .whitespace_nowrap()
                         .text_size(px(theme::FONT_DETAIL))
                         .text_color(rgb(theme::text_muted(cx)))
-                        .child(SharedString::from(
-                            resets_in.unwrap_or("").to_string(),
-                        )),
+                        .child(SharedString::from(resets_in.unwrap_or("").to_string())),
                 ),
         )
 }
