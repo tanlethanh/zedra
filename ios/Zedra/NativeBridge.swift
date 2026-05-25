@@ -93,6 +93,7 @@ func ios_system_prefers_dark_theme() -> Int32 {
 @_cdecl("ios_set_keyboard_accessory_theme")
 func ios_set_keyboard_accessory_theme(_ isDark: Bool) {
     GPUIRuntimeController.setKeyboardAccessoryTheme(isDark: isDark)
+    NativePresentationTheme.setDark(isDark)
 }
 
 @_cdecl("zedra_firebase_initialize")
