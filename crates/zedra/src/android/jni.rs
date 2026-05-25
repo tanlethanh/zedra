@@ -1011,21 +1011,25 @@ pub fn trigger_haptic(feedback: HapticFeedback) {
 
 pub fn system_prefers_theme() -> SystemTheme {
     let mut theme = SystemTheme::Unknown;
-    jni_call("system_prefers_theme", std::panic::AssertUnwindSafe(|| {
-        with_main_activity_class("system_prefers_theme", |env, class| {
-            let Ok(value) = env.call_static_method(class, "systemInDarkTheme", "()I", &[]) else {
-                return;
-            };
-            let Ok(code) = value.i() else {
-                return;
-            };
-            theme = match code {
-                1 => SystemTheme::Dark,
-                0 => SystemTheme::Light,
-                _ => SystemTheme::Unknown,
-            };
-        });
-    }));
+    jni_call(
+        "system_prefers_theme",
+        std::panic::AssertUnwindSafe(|| {
+            with_main_activity_class("system_prefers_theme", |env, class| {
+                let Ok(value) = env.call_static_method(class, "systemInDarkTheme", "()I", &[])
+                else {
+                    return;
+                };
+                let Ok(code) = value.i() else {
+                    return;
+                };
+                theme = match code {
+                    1 => SystemTheme::Dark,
+                    0 => SystemTheme::Light,
+                    _ => SystemTheme::Unknown,
+                };
+            });
+        }),
+    );
     theme
 }
 
