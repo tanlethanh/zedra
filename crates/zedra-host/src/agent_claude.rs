@@ -730,6 +730,500 @@ fn apply_sessions_index(
     }
 }
 
+// ---------- agent dispatcher integration ----------
+
+use crate::agent_utils::{
+    empty_session_live, file_size_bytes, home_path, humanize_plan_token, parse_rfc3339,
+    parse_usage_window_resets_at, push_json_string, read_json_file, resume_summary, session_title,
+};
+use zedra_rpc::proto::*;
+
+pub struct SessionCounts {
+    pub total: usize,
+    pub resumable: usize,
+    pub latest_session_id: Option<String>,
+    pub latest_session_title: Option<String>,
+    pub last_activity_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+pub fn cli_available(workdir: &Path) -> bool {
+    crate::agent_utils::command_on_path("claude")
+        || project_dir_for_workdir(&home_path(&[".claude"]), workdir).is_dir()
+}
+
+pub fn normalize_event(event_name: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
+    Some(match event_name {
+        "Setup" | "InstructionsLoaded" => (
+            AgentEventKind::SessionUpdated,
+            AgentLifecycleStatus::Starting,
+        ),
+        "SessionStart" => (
+            AgentEventKind::SessionStarted,
+            AgentLifecycleStatus::Starting,
+        ),
+        "SessionEnd" => (AgentEventKind::SessionUpdated, AgentLifecycleStatus::Idle),
+        "UserPromptSubmit" | "UserPromptExpansion" => {
+            (AgentEventKind::TurnStarted, AgentLifecycleStatus::Running)
+        }
+        "PreToolUse" => (AgentEventKind::ToolStarted, AgentLifecycleStatus::Running),
+        "PermissionRequest" => (
+            AgentEventKind::PermissionRequested,
+            AgentLifecycleStatus::WaitingForPermission,
+        ),
+        "PermissionDenied" => (
+            AgentEventKind::PermissionResolved,
+            AgentLifecycleStatus::Failed,
+        ),
+        "TaskCreated" | "SubagentStart" => {
+            (AgentEventKind::TaskCreated, AgentLifecycleStatus::Running)
+        }
+        "TaskCompleted" | "SubagentStop" => (
+            AgentEventKind::TaskCompleted,
+            AgentLifecycleStatus::Completed,
+        ),
+        "PostToolUse" => (AgentEventKind::ToolCompleted, AgentLifecycleStatus::Running),
+        "PostToolUseFailure" => (AgentEventKind::ToolFailed, AgentLifecycleStatus::Failed),
+        "PostToolBatch" => (AgentEventKind::ToolCompleted, AgentLifecycleStatus::Running),
+        "Stop" => (
+            AgentEventKind::TurnCompleted,
+            AgentLifecycleStatus::Completed,
+        ),
+        "StopFailure" => (AgentEventKind::TurnFailed, AgentLifecycleStatus::Failed),
+        "TeammateIdle" => (AgentEventKind::SessionUpdated, AgentLifecycleStatus::Idle),
+        "PreCompact" => (
+            AgentEventKind::SessionUpdated,
+            AgentLifecycleStatus::Running,
+        ),
+        "PostCompact" => (AgentEventKind::SessionUpdated, AgentLifecycleStatus::Idle),
+        "ConfigChange" | "CwdChanged" | "WorktreeCreate" | "WorktreeRemove" => (
+            AgentEventKind::SessionUpdated,
+            AgentLifecycleStatus::Running,
+        ),
+        "Elicitation" => (
+            AgentEventKind::PermissionRequested,
+            AgentLifecycleStatus::WaitingForUser,
+        ),
+        "ElicitationResult" => (
+            AgentEventKind::PermissionResolved,
+            AgentLifecycleStatus::Running,
+        ),
+        "Notification" => (AgentEventKind::Notification, AgentLifecycleStatus::Idle),
+        _ => return None,
+    })
+}
+
+pub fn session_counts(workdir: &Path) -> Result<SessionCounts, String> {
+    let (total, latest) = session_count_summary(workdir).map_err(|e| e.to_string())?;
+    Ok(SessionCounts {
+        total,
+        resumable: total,
+        latest_session_id: latest.as_ref().map(|s| s.session_id.clone()),
+        latest_session_title: latest.as_ref().and_then(|s| s.title.clone()),
+        last_activity_at: latest.and_then(|s| parse_rfc3339(s.last_activity_at.as_deref())),
+    })
+}
+
+pub fn sessions(
+    workdir: &Path,
+    cli: &AgentCliSummary,
+    limit: usize,
+) -> Result<(Vec<AgentSessionSummary>, usize), String> {
+    let list = list_sessions_limited(workdir, limit).map_err(|e: anyhow::Error| e.to_string())?;
+    let sessions = list
+        .sessions
+        .iter()
+        .map(|session| session_summary(session, cli))
+        .collect();
+    Ok((sessions, list.total))
+}
+
+fn session_summary(session: &ClaudeSessionMetadata, cli: &AgentCliSummary) -> AgentSessionSummary {
+    let pr = session.pr_links.first();
+    AgentSessionSummary {
+        kind: ManagedAgentKind::Claude,
+        session_id: session.session_id.clone(),
+        title: session_title(session.title.clone()),
+        cwd: session.cwd.clone(),
+        created_at: parse_rfc3339(session.created_at.as_deref()),
+        last_activity_at: parse_rfc3339(session.last_activity_at.as_deref()),
+        resume: resume_summary(ManagedAgentKind::Claude, &session.session_id),
+        live: empty_session_live(),
+        provider: AgentProviderSessionInfo {
+            model: None,
+            permission_mode: session.permission_mode.clone(),
+            cli_version: session
+                .claude_version
+                .clone()
+                .or_else(|| cli.version.clone()),
+            origin: session.user_type.clone(),
+            source: None,
+            entrypoint: session.entrypoint.clone(),
+            native_project_id: None,
+            model_provider: Some("anthropic".to_string()),
+        },
+        git: Some(AgentGitSummary {
+            branch: session.git_branch.clone(),
+            worktree: session.worktree.clone(),
+            commit_hash: None,
+            repository_url: None,
+            pr_number: pr.and_then(|pr| pr.number),
+            pr_url: pr.and_then(|pr| pr.url.clone()),
+            pr_repository: pr.and_then(|pr| pr.repository.clone()),
+        }),
+        usage: None,
+        counters: AgentSessionCounters {
+            record_count: session.message_count as u64,
+            message_count: session.message_count as u64,
+            turn_count: 0,
+            tool_count: 0,
+            tool_failure_count: session.task_failed_count as u64,
+            hook_success_count: session.hook_success_count as u64,
+            hook_failure_count: session.hook_failure_count as u64,
+            malformed_record_count: session.malformed_line_count as u64,
+        },
+        flags: AgentSessionFlags {
+            is_sidechain: session.is_sidechain,
+            is_subagent: false,
+            is_archived: false,
+            historical_only: true,
+            live_bound: false,
+        },
+        data_sources: vec![AgentDataSource::HistoricalScan],
+        warnings: crate::agent_utils::malformed_warning(session.malformed_line_count),
+        transcript_size_bytes: file_size_bytes(&session.transcript_path),
+    }
+}
+
+// ---------- account / plan / usage ----------
+
+pub fn account_fields() -> Vec<AgentInfoField> {
+    let mut fields = Vec::new();
+    append_auth_plan_fields(&mut fields);
+    let settings_path = home_path(&[".claude", "settings.json"]);
+    if let Ok(value) = read_json_file(&settings_path) {
+        push_json_string(&mut fields, "Model", &value, &["model"]);
+        push_json_string(&mut fields, "Effort", &value, &["effortLevel"]);
+        push_json_string(
+            &mut fields,
+            "Permission mode",
+            &value,
+            &["permissions", "defaultMode"],
+        );
+    }
+    let stats_path = home_path(&[".claude", "stats-cache.json"]);
+    if let Ok(value) = read_json_file(&stats_path) {
+        if let Some(total_cost) = total_cost_usd(&value) {
+            fields.push(AgentInfoField {
+                label: "Total cost (USD)".to_string(),
+                value: format!("{total_cost:.4}"),
+            });
+        }
+        if let Some(today) = daily_usage_today(&value) {
+            let today_str = chrono::Utc::now().format("%Y-%m-%d").to_string();
+            if let Some(last) = value.get("lastComputedDate").and_then(|v| v.as_str()) {
+                if last == today_str {
+                    fields.push(AgentInfoField {
+                        label: "Today msgs".to_string(),
+                        value: today.messages.to_string(),
+                    });
+                }
+            }
+        }
+    }
+    fields
+}
+
+#[derive(Default)]
+struct DailyTotals {
+    messages: u64,
+    #[allow(dead_code)]
+    sessions: u64,
+    #[allow(dead_code)]
+    tools: u64,
+}
+
+fn daily_usage_today(value: &Value) -> Option<DailyTotals> {
+    let activity = value.get("dailyActivity")?.as_array()?;
+    let today_str = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let mut today = DailyTotals::default();
+    for entry in activity {
+        let date = entry.get("date")?.as_str()?;
+        if date != today_str {
+            continue;
+        }
+        today.messages += entry
+            .get("messageCount")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        today.sessions += entry
+            .get("sessionCount")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        today.tools += entry
+            .get("toolCallCount")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+    }
+    Some(today)
+}
+
+fn total_cost_usd(value: &Value) -> Option<f64> {
+    let usage = value.get("modelUsage")?.as_object()?;
+    let mut total = 0.0;
+    for model in usage.values() {
+        if let Some(cost) = model.get("costUSD").and_then(|v| v.as_f64()) {
+            total += cost;
+        }
+    }
+    (total > 0.0).then_some(total)
+}
+
+fn append_auth_plan_fields(fields: &mut Vec<AgentInfoField>) {
+    let logged_in = read_oauth_token().is_some();
+    fields.push(AgentInfoField {
+        label: "Logged in".to_string(),
+        value: if logged_in { "yes" } else { "no" }.to_string(),
+    });
+    if let Some(plan) = plan_from_credentials() {
+        fields.push(AgentInfoField {
+            label: "Plan".to_string(),
+            value: plan,
+        });
+    }
+}
+
+fn plan_from_credentials() -> Option<String> {
+    let path = home_path(&[".claude", ".credentials.json"]);
+    let contents = std::fs::read_to_string(&path).ok()?;
+    let root: Value = serde_json::from_str(&contents).ok()?;
+    let oauth = root.get("claudeAiOauth")?;
+    let subscription_type = oauth
+        .get("subscriptionType")
+        .or_else(|| oauth.get("subscription_type"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let rate_limit_tier = oauth
+        .get("rateLimitTier")
+        .or_else(|| oauth.get("rate_limit_tier"))
+        .and_then(|v| v.as_str());
+    format_plan_label(subscription_type, rate_limit_tier)
+}
+
+pub fn format_plan_label(subscription_type: &str, rate_limit_tier: Option<&str>) -> Option<String> {
+    let trimmed = subscription_type.trim();
+    if !trimmed.is_empty() {
+        return Some(humanize_plan_token(trimmed));
+    }
+    let tier = rate_limit_tier?.to_ascii_lowercase();
+    if tier.contains("enterprise") {
+        return Some("Enterprise".to_string());
+    }
+    if tier.contains("team") {
+        return Some("Team".to_string());
+    }
+    if tier.contains("max") {
+        return Some("Max".to_string());
+    }
+    if tier.contains("pro") {
+        return Some("Pro".to_string());
+    }
+    None
+}
+
+pub async fn fetch_subscription_plan() -> Option<Vec<AgentInfoField>> {
+    if read_oauth_token().is_some() {
+        if let Some(fields) = fetch_oauth_profile().await {
+            return Some(fields);
+        }
+        tracing::debug!(
+            target: "zedra_host::agent",
+            "claude oauth profile unavailable; trying cli pty"
+        );
+    }
+    if let Some(fields) = crate::agent_claude_probe::fetch_plan_fields().await {
+        return Some(fields);
+    }
+    tokio::task::spawn_blocking(subscription_plan_fields_from_disk)
+        .await
+        .ok()
+        .flatten()
+}
+
+async fn fetch_oauth_profile() -> Option<Vec<AgentInfoField>> {
+    let token = read_oauth_token()?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .ok()?;
+    let resp = client
+        .get("https://api.anthropic.com/api/oauth/profile")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        tracing::debug!("claude oauth profile returned {}", resp.status());
+        return None;
+    }
+    let body: Value = resp.json().await.ok()?;
+    let mut fields = Vec::new();
+    fields.push(AgentInfoField {
+        label: "Logged in".to_string(),
+        value: "yes".to_string(),
+    });
+    let subscription_type = body
+        .get("subscription_type")
+        .or_else(|| body.get("subscriptionType"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let rate_limit_tier = body
+        .get("rate_limit_tier")
+        .or_else(|| body.get("rateLimitTier"))
+        .and_then(|v| v.as_str());
+    if let Some(plan) = format_plan_label(subscription_type, rate_limit_tier) {
+        fields.push(AgentInfoField {
+            label: "Plan".to_string(),
+            value: plan,
+        });
+    }
+    if let Some(org) = body
+        .get("organization")
+        .and_then(|v| v.get("name"))
+        .and_then(|v| v.as_str())
+        .filter(|name| !name.is_empty())
+    {
+        fields.push(AgentInfoField {
+            label: "Organization".to_string(),
+            value: org.to_string(),
+        });
+    }
+    Some(fields)
+}
+
+fn subscription_plan_fields_from_disk() -> Option<Vec<AgentInfoField>> {
+    let mut fields = Vec::new();
+    append_auth_plan_fields(&mut fields);
+    if fields.len() == 1 && fields[0].label == "Logged in" && fields[0].value == "no" {
+        return None;
+    }
+    (!fields.is_empty()).then_some(fields)
+}
+
+pub async fn fetch_account_usage() -> Option<AgentUsageSnapshot> {
+    if read_oauth_token().is_some() {
+        if let Some(snap) = fetch_oauth_usage().await {
+            return Some(snap);
+        }
+        tracing::debug!(
+            target: "zedra_host::agent",
+            "claude oauth usage unavailable; trying cli pty"
+        );
+    }
+    crate::agent_claude_probe::fetch_usage().await
+}
+
+async fn fetch_oauth_usage() -> Option<AgentUsageSnapshot> {
+    let token = read_oauth_token()?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .ok()?;
+    let resp = client
+        .get("https://api.anthropic.com/api/oauth/usage")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        tracing::debug!("claude usage API returned {}", resp.status());
+        return None;
+    }
+    let body: Value = resp.json().await.ok()?;
+    let five_hour_obj = body.get("five_hour");
+    let seven_day_obj = body.get("seven_day");
+    let five_hour = five_hour_obj
+        .and_then(|w| w.get("utilization"))
+        .and_then(|v| v.as_f64())
+        .map(|v| v as f32);
+    let seven_day = seven_day_obj
+        .and_then(|w| w.get("utilization"))
+        .and_then(|v| v.as_f64())
+        .map(|v| v as f32);
+    let five_hour_resets_at = five_hour_obj.and_then(parse_usage_window_resets_at);
+    let seven_day_resets_at = seven_day_obj.and_then(parse_usage_window_resets_at);
+    let extra = body.get("extra_usage");
+    let extra_used = extra
+        .and_then(|e| e.get("used_credits"))
+        .and_then(|v| v.as_f64());
+    let extra_limit = extra
+        .and_then(|e| e.get("monthly_limit"))
+        .and_then(|v| v.as_f64());
+    let extra_util = extra_used.zip(extra_limit).and_then(|(used, limit)| {
+        if limit > 0.0 {
+            Some((used / limit * 100.0) as f32)
+        } else {
+            None
+        }
+    });
+    Some(AgentUsageSnapshot {
+        context_used_percent: extra_util,
+        total_cost_usd: extra_used,
+        total_duration_ms: None,
+        total_api_duration_ms: None,
+        lines_added: None,
+        lines_removed: None,
+        rate_limit_five_hour_used_percent: five_hour,
+        rate_limit_seven_day_used_percent: seven_day,
+        rate_limit_five_hour_resets_at: five_hour_resets_at,
+        rate_limit_seven_day_resets_at: seven_day_resets_at,
+    })
+}
+
+/// Read the Claude OAuth access token from `~/.claude/.credentials.json`.
+/// Returns `None` if the file is missing, malformed, or the token is expired.
+fn read_oauth_token() -> Option<String> {
+    let path = home_path(&[".claude", ".credentials.json"]);
+    let contents = std::fs::read_to_string(&path).ok()?;
+    let root: Value = serde_json::from_str(&contents).ok()?;
+    let oauth = root.get("claudeAiOauth")?;
+    if let Some(expires_ms) = oauth.get("expiresAt").and_then(|v| v.as_f64()) {
+        let expires = std::time::UNIX_EPOCH + std::time::Duration::from_millis(expires_ms as u64);
+        if std::time::SystemTime::now() > expires {
+            tracing::debug!("claude oauth token expired; skipping usage probe");
+            return None;
+        }
+    }
+    oauth
+        .get("accessToken")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+#[cfg(test)]
+mod account_tests {
+    use super::*;
+
+    #[test]
+    fn format_plan_prefers_subscription_type() {
+        assert_eq!(
+            format_plan_label("max", Some("default_claude_pro")),
+            Some("Max".to_string())
+        );
+        assert_eq!(
+            format_plan_label("claude_pro", None),
+            Some("Pro".to_string())
+        );
+        assert_eq!(
+            format_plan_label("", Some("default_claude_max_20x")),
+            Some("Max".to_string())
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

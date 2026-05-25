@@ -1,13 +1,16 @@
 // zedra-host library — re-exports for integration tests
 
-pub mod account_usage;
 pub mod agent;
 pub mod agent_cache;
-pub mod agent_setup;
-pub mod api;
-pub mod claude;
+pub mod agent_claude;
 #[cfg(unix)]
-mod claude_cli_probe;
+mod agent_claude_probe;
+pub mod agent_codex;
+pub mod agent_installed;
+pub mod agent_opencode;
+pub mod agent_setup;
+pub mod agent_utils;
+pub mod api;
 pub mod client;
 pub mod docs_tree;
 pub mod fs;
@@ -15,7 +18,6 @@ pub mod ga4;
 pub mod git;
 pub mod host_info;
 pub mod identity;
-pub mod installed_agents;
 pub mod iroh_listener;
 pub mod metrics;
 pub mod net_monitor;

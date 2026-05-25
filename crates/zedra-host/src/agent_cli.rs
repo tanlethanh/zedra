@@ -748,6 +748,9 @@ struct AgentHookForwardReq {
 }
 
 fn install_hooks(args: AgentHookInstallArgs) -> Result<()> {
+    if !zedra_host::agent_setup::hooks_enabled() {
+        anyhow::bail!("agent hook install is disabled in release builds");
+    }
     let workdir = resolve_workdir(&args.workdir);
     let providers = if args.providers.is_empty() {
         vec![

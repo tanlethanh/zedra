@@ -13,6 +13,12 @@ const SKILL_NAMES: &[&str] = &[
     "zedra-terminal",
 ];
 
+/// Temporary kill-switch for hooks setup/detection in release builds.
+/// Flip to `true` (or remove the gate) when re-enabling.
+pub const fn hooks_enabled() -> bool {
+    cfg!(debug_assertions)
+}
+
 pub fn setup_summary(
     kind: ManagedAgentKind,
     cli_available: bool,
@@ -36,18 +42,20 @@ pub fn setup_summary(
             (
                 false,
                 status.plugin_installed,
-                status.hooks_installed || claude_local_hooks_installed(workdir),
+                hooks_enabled()
+                    && (status.hooks_installed || claude_local_hooks_installed(workdir)),
             )
         }
         ManagedAgentKind::Codex => (
             skills_installed_at(&home_path(&[".agents", "skills"])),
             false,
-            codex_hooks_installed() || codex_local_hooks_installed(workdir),
+            hooks_enabled() && (codex_hooks_installed() || codex_local_hooks_installed(workdir)),
         ),
         ManagedAgentKind::OpenCode => (
             skills_installed_at(&home_path(&[".config", "opencode", "skills"])),
             opencode_plugin_installed(),
-            opencode_hooks_installed() || opencode_local_hooks_installed(workdir),
+            hooks_enabled()
+                && (opencode_hooks_installed() || opencode_local_hooks_installed(workdir)),
         ),
     };
     let state = if error.is_some() {
