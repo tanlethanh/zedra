@@ -1033,6 +1033,18 @@ pub fn system_prefers_theme() -> SystemTheme {
     theme
 }
 
+pub fn set_native_theme(is_dark: bool) {
+    jni_call("set_native_theme", move || {
+        with_main_activity_class("set_native_theme", |env, class| {
+            if let Err(error) =
+                env.call_static_method(class, "setNativeTheme", "(Z)V", &[is_dark.into()])
+            {
+                tracing::error!(?error, "jni: setNativeTheme failed");
+            }
+        });
+    });
+}
+
 // Suppress unused-import warning for GlobalRef, kept for potential future use.
 #[allow(dead_code)]
 fn _gref_marker(_: GlobalRef) {}

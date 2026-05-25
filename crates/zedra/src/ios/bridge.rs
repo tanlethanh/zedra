@@ -514,7 +514,7 @@ impl PlatformBridge for IosBridge {
         }
     }
 
-    fn set_keyboard_accessory_theme(&self, is_dark: bool) {
+    fn set_native_theme(&self, is_dark: bool) {
         unsafe {
             ios_set_keyboard_accessory_theme(is_dark);
         }
