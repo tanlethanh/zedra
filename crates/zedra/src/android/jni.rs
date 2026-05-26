@@ -430,6 +430,7 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeKeyboardAccessoryKe
     mut env: JNIEnv,
     _class: JClass,
     key: jni::objects::JString,
+    mods: jni::sys::jint,
 ) {
     let key_name: String = match env.get_string(&key) {
         Ok(key) => key.into(),
@@ -438,7 +439,7 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeKeyboardAccessoryKe
             return;
         }
     };
-    crate::active_terminal::send_named_key(&key_name);
+    crate::active_terminal::send_keystroke(&key_name, mods as u8);
 }
 
 #[unsafe(no_mangle)]

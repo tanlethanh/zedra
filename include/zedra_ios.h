@@ -265,10 +265,12 @@ void zedra_ios_native_notification_dismiss(uint32_t callback_id);
 /**
  * Called from the native keyboard accessory bar when a shortcut key button is tapped.
  *
- * `key` is one of: "escape", "tab", "left", "down", "up", "right", "enter", "shift_enter".
- * Maps the name to the corresponding terminal escape sequence and sends it via the active session.
+ * `key` is one of the wire names accepted by `key_encoding::Key::parse`
+ * ("escape", "tab", "left", ... or `char:<c>` for single-character keys),
+ * plus the iOS-only sentinel "dismiss_keyboard". `mods` packs Shift/Alt/Ctrl
+ * per `key_encoding::Mods` (bit 0 / 1 / 2).
  */
-void zedra_ios_send_key_input(const char *key);
+void zedra_ios_send_key_input(const char *key, uint8_t mods);
 
 /**
  * Called from the native terminal composer to send finalized text to the active terminal.

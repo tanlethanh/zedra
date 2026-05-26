@@ -45,17 +45,22 @@ class MainActivity : AppCompatActivity() {
 
         rootView = FrameLayout(this)
         surfaceView = runtime.attach(rootView)
-        keyboardAccessoryBar = KeyboardAccessoryBar(this) { key ->
-            nativeKeyboardAccessoryKey(key)
+        keyboardAccessoryBar = KeyboardAccessoryBar(this) { key, mods ->
+            nativeKeyboardAccessoryKey(key, mods)
         }
         rootView.addView(
             keyboardAccessoryBar,
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
-                (44 * resources.displayMetrics.density).toInt(),
+                keyboardAccessoryBar.currentHeightPx,
                 Gravity.BOTTOM,
             ),
         )
+        keyboardAccessoryBar.onHeightChanged = { heightPx ->
+            if (keyboardAccessoryBar.visibility == View.VISIBLE) {
+                surfaceView.setKeyboardAccessoryHeight(heightPx)
+            }
+        }
         installKeyboardAccessoryInsets()
         sSurfaceView = surfaceView
         sActivity = this
@@ -208,7 +213,7 @@ class MainActivity : AppCompatActivity() {
 
         @JvmStatic external fun nativeSheetContentIsAtTop(): Boolean
 
-        @JvmStatic external fun nativeKeyboardAccessoryKey(key: String)
+        @JvmStatic external fun nativeKeyboardAccessoryKey(key: String, mods: Int)
 
         @JvmStatic external fun nativeSystemBackPressed(): Boolean
 

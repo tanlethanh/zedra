@@ -19,7 +19,7 @@ private func gpui_ios_set_software_keyboard_visible(_ visible: Bool)
 private func zedra_firebase_initialize()
 
 @_silgen_name("zedra_ios_send_key_input")
-private func zedra_ios_send_key_input(_ key: UnsafePointer<CChar>)
+private func zedra_ios_send_key_input(_ key: UnsafePointer<CChar>, _ mods: UInt8)
 
 @_silgen_name("zedra_ios_app_will_terminate")
 private func zedra_ios_app_will_terminate()
@@ -153,8 +153,8 @@ final class GPUIRuntimeController: NSObject {
         pushWindowSize()
     }
 
-    private func sendKeyboardAccessoryKey(_ key: String) {
-        key.withCString { zedra_ios_send_key_input($0) }
+    private func sendKeyboardAccessoryKey(_ key: String, _ mods: UInt8) {
+        key.withCString { zedra_ios_send_key_input($0, mods) }
     }
 
     @objc
@@ -178,8 +178,8 @@ final class GPUIRuntimeController: NSObject {
         let width = UIScreen.main.bounds.width
         let bar = keyboardAccessoryController.makeAccessoryView(
             width: width
-        ) { [weak self] key in
-            self?.sendKeyboardAccessoryKey(key)
+        ) { [weak self] key, mods in
+            self?.sendKeyboardAccessoryKey(key, mods)
         }
         gpui_ios_set_keyboard_accessory_view(Unmanaged.passUnretained(bar).toOpaque())
     }

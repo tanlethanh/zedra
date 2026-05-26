@@ -595,10 +595,12 @@ pub extern "C" fn zedra_ios_native_notification_dismiss(callback_id: u32) {
 
 /// Called from the native keyboard accessory bar when a shortcut key button is tapped.
 ///
-/// `key` is one of: "escape", "tab", "left", "down", "up", "right", "enter", "shift_enter".
-/// Maps the name to the corresponding terminal escape sequence and sends it via the active session.
+/// `key` is one of the wire names accepted by `key_encoding::Key::parse`
+/// ("escape", "tab", "left", ... or `char:<c>` for single-character keys),
+/// plus the iOS-only sentinel "dismiss_keyboard". `mods` packs Shift/Alt/Ctrl
+/// per `key_encoding::Mods` (bit 0 / 1 / 2).
 #[unsafe(no_mangle)]
-pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
+pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char, mods: u8) {
     if key.is_null() {
         return;
     }
@@ -618,7 +620,7 @@ pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
         return;
     }
 
-    active_terminal::send_named_key(key_name);
+    active_terminal::send_keystroke(key_name, mods);
 }
 
 /// Called from the native terminal composer to send finalized text to the active terminal.
