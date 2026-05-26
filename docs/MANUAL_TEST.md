@@ -547,6 +547,10 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 13. Expected: repeat stops and does not resume when the keyboard or app returns
 14. Tap the already-focused terminal while the keyboard is visible
 15. Expected: the software keyboard dismisses and the next terminal tap reopens it
+16. Switch Android to a non-English QWERTY layout, such as Vietnamese, Spanish, or French
+17. Type a short terminal command, accept any active composition, then press enter
+18. Expected: composing text appears while typing, the accepted text reaches the PTY once, and
+    candidate suggestions do not leave the terminal blank
 
 ## 11a. Terminal Scroll To Bottom Native Button On iOS
 
