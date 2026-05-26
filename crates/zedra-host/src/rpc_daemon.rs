@@ -679,6 +679,10 @@ pub struct DaemonState {
     pub started_at: std::time::Instant,
     pub agent_hook_events: tokio::sync::Mutex<VecDeque<AgentHookEventRecord>>,
     pub agent_cache: Arc<agent_cache::AgentCache>,
+    /// Opt-in LSP control plane. Always present (so RPC handlers don't need to
+    /// branch on Option), but reports `enabled=false` until a language is
+    /// enabled for the workspace.
+    pub lsp: Arc<zedra_lsp::LspManager>,
     next_agent_hook_event_seq: AtomicU64,
 }
 
@@ -692,6 +696,14 @@ impl std::fmt::Debug for DaemonState {
 
 impl DaemonState {
     pub fn new(workdir: std::path::PathBuf, identity: SharedIdentity) -> Self {
+        Self::new_with_lsp(workdir, identity, zedra_lsp::LspManager::ephemeral())
+    }
+
+    pub fn new_with_lsp(
+        workdir: std::path::PathBuf,
+        identity: SharedIdentity,
+        lsp: Arc<zedra_lsp::LspManager>,
+    ) -> Self {
         Self {
             fs: Arc::new(LocalFs),
             workdir,
@@ -699,6 +711,7 @@ impl DaemonState {
             started_at: std::time::Instant::now(),
             agent_hook_events: tokio::sync::Mutex::new(VecDeque::new()),
             agent_cache: agent_cache::AgentCache::new(),
+            lsp,
             next_agent_hook_event_seq: AtomicU64::new(1),
         }
     }
@@ -2883,36 +2896,36 @@ async fn dispatch(
 
         // -- LSP control plane --
         ZedraMessage::LspStatus(msg) => {
-            let _ = msg
-                .tx
-                .send(LspStatusResult {
-                    enabled: false,
-                    servers: vec![],
-                    aggregate_rss_bytes: 0,
-                    aggregate_rss_cap_bytes: 0,
-                    concurrent_cap: 0,
-                })
-                .await;
+            let snapshot = state.lsp.status_snapshot().await;
+            let _ = msg.tx.send(snapshot).await;
         }
 
         ZedraMessage::LspEnable(msg) => {
-            let _ = msg
-                .tx
-                .send(LspEnableResult {
-                    enabled: false,
+            let result = match state.lsp.enable(msg.language).await {
+                Ok(()) => LspEnableResult {
+                    enabled: true,
                     error: None,
-                })
-                .await;
+                },
+                Err(e) => LspEnableResult {
+                    enabled: state.lsp.is_enabled(msg.language).await,
+                    error: Some(e.to_string()),
+                },
+            };
+            let _ = msg.tx.send(result).await;
         }
 
         ZedraMessage::LspDisable(msg) => {
-            let _ = msg
-                .tx
-                .send(LspDisableResult {
+            let result = match state.lsp.disable(msg.language).await {
+                Ok(()) => LspDisableResult {
                     enabled: false,
                     error: None,
-                })
-                .await;
+                },
+                Err(e) => LspDisableResult {
+                    enabled: state.lsp.is_enabled(msg.language).await,
+                    error: Some(e.to_string()),
+                },
+            };
+            let _ = msg.tx.send(result).await;
         }
 
         ZedraMessage::LspSubscribe(msg) => {

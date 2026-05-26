@@ -84,6 +84,7 @@ serde_bytes.workspace = true
 # Workspace crates
 zedra-osc = { path = "../zedra-osc" }
 zedra-rpc = { path = "../zedra-rpc" }
+zedra-lsp = { path = "../zedra-lsp" }
 zedra-telemetry.workspace = true
 
 # Unix process signaling (for workspace lock PID check)
