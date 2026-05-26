@@ -292,8 +292,35 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
 - `AgentSessions(AgentSessionsReq) -> AgentSessionsResult`
 - `AgentResume(AgentResumeReq) -> AgentResumeResult`
 - `AgentInstalledList(AgentInstalledListReq) -> AgentInstalledListResult`
-- `LspDiagnostics(LspDiagnosticsReq) -> LspDiagnosticsResult`
-- `LspHover(LspHoverReq) -> LspHoverResult`
+- `LspDiagnostics(LspDiagnosticsReq) -> LspDiagnosticsResult` *(legacy stub, returns empty; superseded by the LSP control plane below)*
+- `LspHover(LspHoverReq) -> LspHoverResult` *(legacy stub, returns empty; superseded by `LspHoverV2`)*
+
+### 5.7.1 LSP control plane (opt-in)
+
+The LSP subsystem on the host is **opt-in and may be entirely absent**. RPC and UI features are decoupled — clients must branch on the `enabled` flag in every result rather than checking `host_version`. When the host has no LSP subsystem (or the workspace has not enabled any language), all of the variants below return `enabled = false` with empty payloads and `error = None`.
+
+- `LspStatus(LspStatusReq) -> LspStatusResult` — running servers, RSS, kill reasons. Backs the `zedra status` LSP block and the in-app status pill.
+- `LspEnable(LspEnableReq) -> LspEnableResult` — mark a language as enabled for the active workspace. Persists across reconnect; does **not** eagerly spawn the server.
+- `LspDisable(LspDisableReq) -> LspDisableResult` — shut down a running server and clear the persisted opt-in.
+- `LspSubscribe(LspSubscribeReq) -> LspSubscribeResult` — register interest in paths so the host pushes `LspDiagnosticsPush` and `LspServerStateChanged` through `HostEvent`. Empty `paths` means "everything in the workspace"; the host may rate-limit.
+- `LspUnsubscribe(LspUnsubscribeReq) -> LspUnsubscribeResult` — drop a subscription handle.
+- `LspHoverV2(LspHoverV2Req) -> LspHoverV2Result` — hover details at a position.
+- `LspCodeAction(LspCodeActionReq) -> LspCodeActionResult` — list available actions in a range.
+- `LspApplyAction(LspApplyActionReq) -> LspApplyActionResult` — apply an action previously surfaced via `LspCodeAction`. The host performs the file edits; clients observe the result through normal filesystem watch events.
+- `LspGotoDef(LspGotoDefReq) -> LspGotoDefResult` — resolve symbol definitions.
+
+Wire conventions:
+
+- `LspLanguage` is the canonical language identifier across protocol, telemetry, and CLI surfaces. Add new variants at the tail.
+- `LspRange` and `LspPosition` use zero-based **UTF-16** code units, matching the LSP wire format. Clients converting to UTF-8 byte offsets must round-trip through the buffer they were displayed against.
+- `LspSeverity`, `LspServerState`, and `LspKillReason` are stable wire enums so telemetry labels stay consistent across versions.
+- `LspDiagnosticsPush` replaces the previous diagnostic set for `(language, path)` wholesale. Clients must not merge with stale entries. The `version` field is the buffer revision the diagnostics apply to; clients ignore the push when they hold a newer local revision.
+- `LspServerStateChange.reason` is populated only when `state` is `Failed` or `Killed`.
+
+Resource policy (host-side, observable through `LspStatusResult` and `LspServerStateChange`):
+
+- Per-server RSS cap, aggregate RSS cap, sustained-CPU watchdog, idle shutdown, spawn rate limit, and concurrent-server cap. The exact numbers are host-configurable and reported via `LspStatusResult.aggregate_rss_cap_bytes` / `concurrent_cap`.
+- A server killed by the guard surfaces `LspServerStateChange { state: Killed, reason: Some(...) }` and a corresponding telemetry event. Clients should treat killed servers as recoverable — operator (`zedra lsp enable`) or `LspEnable` reattempts a spawn subject to the rate limit.
 
 ### Managed agent conventions
 
@@ -344,6 +371,8 @@ Current host event variants:
 - `GitChanged`
 - `FsChanged { path }`
 - `AgentInfoChanged { info }`
+- `LspDiagnosticsPush(LspDiagnosticsPush)`
+- `LspServerStateChanged(LspServerStateChange)`
 
 Client rules:
 
@@ -351,6 +380,8 @@ Client rules:
 - `GitChanged`: invalidate cached git state and refresh when appropriate.
 - `FsChanged { path }`: invalidate cached file tree for the watched path and reload affected expanded nodes.
 - `AgentInfoChanged`: replace cached `AgentSummary` for `info.kind`. One event per managed agent per version refresh. Requires an active `Subscribe` stream.
+- `LspDiagnosticsPush`: replace the diagnostic set for `(language, path)` wholesale. Drop the push when the local buffer revision is newer than `version`. Requires an active `LspSubscribe`.
+- `LspServerStateChanged`: update cached server state for `language`. When `state` is `Killed` or `Failed`, surface the `reason` in the status pill and dim cached diagnostics for that language.
 
 ---
 
@@ -463,6 +494,25 @@ Any protocol-layer change must include all applicable steps:
 ---
 
 ## 11) Protocol Changelog
+
+### 2026-05-26
+
+- Added opt-in LSP control plane (decoupled from app features; clients branch on `enabled` flag in every result):
+  - `LspStatus(LspStatusReq) -> LspStatusResult`
+  - `LspEnable(LspEnableReq) -> LspEnableResult`
+  - `LspDisable(LspDisableReq) -> LspDisableResult`
+  - `LspSubscribe(LspSubscribeReq) -> LspSubscribeResult`
+  - `LspUnsubscribe(LspUnsubscribeReq) -> LspUnsubscribeResult`
+  - `LspHoverV2(LspHoverV2Req) -> LspHoverV2Result`
+  - `LspCodeAction(LspCodeActionReq) -> LspCodeActionResult`
+  - `LspApplyAction(LspApplyActionReq) -> LspApplyActionResult`
+  - `LspGotoDef(LspGotoDefReq) -> LspGotoDefResult`
+- Added LSP push events on `HostEvent`:
+  - `LspDiagnosticsPush(LspDiagnosticsPush)`
+  - `LspServerStateChanged(LspServerStateChange)`
+- Added wire types: `LspLanguage`, `LspServerState`, `LspKillReason`, `LspSeverity`, `LspRange`, `LspPosition`, `LspDiagnosticV2`, `LspRelated`, `LspServerInfo`, `LspCodeAction`, `LspLocation`.
+- Legacy `LspDiagnostics` / `LspHover` retained for binary compatibility but now return empty payloads. The previous host implementation shelled out to `cargo check` / `tsc` synchronously, which violated the resource-safety NFR; the new control plane will replace it with a guarded language-server subsystem in a follow-up commit.
+- No ALPN change.
 
 ### 2026-04-29
 

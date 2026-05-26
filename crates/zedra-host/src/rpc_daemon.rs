@@ -2855,33 +2855,18 @@ async fn dispatch(
             }
         }
 
-        // -- LSP --
+        // -- LSP (legacy stub variants) --
+        //
+        // The host LSP subsystem is opt-in and not yet wired. Until it lands,
+        // every LSP variant short-circuits to an inert response so clients
+        // built against newer protocol revisions degrade cleanly. The legacy
+        // `LspDiagnostics` / `LspHover` variants stay for binary compatibility
+        // but no longer shell out to compilers — that path was unsafe by NFR.
         ZedraMessage::LspDiagnostics(msg) => {
-            let full_path = match resolve_path(&state.workdir, &msg.path) {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!("LspDiagnostics: rejected path {:?}: {}", msg.path, e);
-                    let _ = msg
-                        .tx
-                        .send(LspDiagnosticsResult {
-                            diagnostics: vec![],
-                            error: Some(e.to_string()),
-                        })
-                        .await;
-                    return Ok(());
-                }
-            };
-            let diagnostics = run_lsp_check(&full_path)
-                .into_iter()
-                .map(|d| LspDiagnostic {
-                    message: d.message,
-                    severity: d.severity,
-                })
-                .collect();
             let _ = msg
                 .tx
                 .send(LspDiagnosticsResult {
-                    diagnostics,
+                    diagnostics: vec![],
                     error: None,
                 })
                 .await;
@@ -2891,64 +2876,104 @@ async fn dispatch(
             let _ = msg
                 .tx
                 .send(LspHoverResult {
-                    contents: "LSP hover not yet connected to a language server.".to_string(),
+                    contents: String::new(),
+                })
+                .await;
+        }
+
+        // -- LSP control plane --
+        ZedraMessage::LspStatus(msg) => {
+            let _ = msg
+                .tx
+                .send(LspStatusResult {
+                    enabled: false,
+                    servers: vec![],
+                    aggregate_rss_bytes: 0,
+                    aggregate_rss_cap_bytes: 0,
+                    concurrent_cap: 0,
+                })
+                .await;
+        }
+
+        ZedraMessage::LspEnable(msg) => {
+            let _ = msg
+                .tx
+                .send(LspEnableResult {
+                    enabled: false,
+                    error: None,
+                })
+                .await;
+        }
+
+        ZedraMessage::LspDisable(msg) => {
+            let _ = msg
+                .tx
+                .send(LspDisableResult {
+                    enabled: false,
+                    error: None,
+                })
+                .await;
+        }
+
+        ZedraMessage::LspSubscribe(msg) => {
+            let _ = msg
+                .tx
+                .send(LspSubscribeResult {
+                    enabled: false,
+                    subscription_id: String::new(),
+                    error: None,
+                })
+                .await;
+        }
+
+        ZedraMessage::LspUnsubscribe(msg) => {
+            let _ = msg.tx.send(LspUnsubscribeResult { enabled: false }).await;
+        }
+
+        ZedraMessage::LspHoverV2(msg) => {
+            let _ = msg
+                .tx
+                .send(LspHoverV2Result {
+                    enabled: false,
+                    contents: String::new(),
+                    range: None,
+                })
+                .await;
+        }
+
+        ZedraMessage::LspCodeAction(msg) => {
+            let _ = msg
+                .tx
+                .send(LspCodeActionResult {
+                    enabled: false,
+                    actions: vec![],
+                })
+                .await;
+        }
+
+        ZedraMessage::LspApplyAction(msg) => {
+            let _ = msg
+                .tx
+                .send(LspApplyActionResult {
+                    enabled: false,
+                    files_changed: 0,
+                    error: None,
+                })
+                .await;
+        }
+
+        ZedraMessage::LspGotoDef(msg) => {
+            let _ = msg
+                .tx
+                .send(LspGotoDefResult {
+                    enabled: false,
+                    locations: vec![],
                 })
                 .await;
         }
     }
 
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-struct DiagnosticEntry {
-    message: String,
-    severity: String,
-}
-
-fn run_lsp_check(path: &std::path::Path) -> Vec<DiagnosticEntry> {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-
-    let (cmd, args): (&str, Vec<&str>) = match ext {
-        "rs" => ("cargo", vec!["check", "--message-format=json"]),
-        "ts" | "tsx" | "js" | "jsx" => ("npx", vec!["tsc", "--noEmit"]),
-        "py" => (
-            "python3",
-            vec!["-m", "py_compile", path.to_str().unwrap_or("")],
-        ),
-        _ => return vec![],
-    };
-
-    let output = std::process::Command::new(cmd)
-        .args(&args)
-        .current_dir(path.parent().unwrap_or(std::path::Path::new(".")))
-        .output();
-
-    match output {
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            if stderr.is_empty() && out.status.success() {
-                vec![]
-            } else {
-                stderr
-                    .lines()
-                    .take(10)
-                    .filter(|l| !l.is_empty())
-                    .map(|line| DiagnosticEntry {
-                        message: line.to_string(),
-                        severity: "error".into(),
-                    })
-                    .collect()
-            }
-        }
-        Err(e) => {
-            tracing::warn!("LspDiagnostics: command {} failed: {}", cmd, e);
-            vec![]
-        }
-    }
 }
 
 fn os_version_string() -> Option<String> {

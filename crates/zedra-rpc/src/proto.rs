@@ -190,6 +190,61 @@ pub enum ZedraProto {
     /// gated on the client by `host_version`.
     #[rpc(tx = oneshot::Sender<TermCreateResult>)]
     TermCreateV2(TermCreateReqV2),
+
+    // -- LSP control plane (opt-in, decoupled) --
+    //
+    // The host LSP subsystem is opt-in and may be absent entirely. Every result
+    // carries `enabled` so clients branch on it without a host_version check.
+    // When the host has no LSP subsystem (or the workspace has not enabled any
+    // language), all of these return `enabled = false` with empty payloads and
+    // no error. Clients must treat that as "LSP not available" and hide LSP UI.
+    /// Report the current state of the LSP subsystem on the host, including
+    /// running language servers, resource usage, and last termination reason.
+    /// Backs both the `zedra status` CLI block and the in-app status pill.
+    #[rpc(tx = oneshot::Sender<LspStatusResult>)]
+    LspStatus(LspStatusReq),
+
+    /// Mark a language as enabled for the active workspace. Persists across
+    /// reconnect. Does not eagerly spawn the server — first `LspSubscribe`
+    /// triggers the spawn.
+    #[rpc(tx = oneshot::Sender<LspEnableResult>)]
+    LspEnable(LspEnableReq),
+
+    /// Mark a language as disabled for the active workspace. Shuts down a
+    /// running server for that language.
+    #[rpc(tx = oneshot::Sender<LspDisableResult>)]
+    LspDisable(LspDisableReq),
+
+    /// Subscribe to diagnostic and server-state push events. The host pushes
+    /// `LspDiagnosticsPush` and `LspServerStateChanged` through the existing
+    /// `HostEvent` stream; this request only registers paths of interest.
+    #[rpc(tx = oneshot::Sender<LspSubscribeResult>)]
+    LspSubscribe(LspSubscribeReq),
+
+    /// Drop a subscription created by `LspSubscribe`.
+    #[rpc(tx = oneshot::Sender<LspUnsubscribeResult>)]
+    LspUnsubscribe(LspUnsubscribeReq),
+
+    /// Fetch hover details (type signature, docs) at a buffer position.
+    /// Replaces the legacy `LspHover` stub. Distinct variant per append-only
+    /// rule.
+    #[rpc(tx = oneshot::Sender<LspHoverV2Result>)]
+    LspHoverV2(LspHoverV2Req),
+
+    /// List available LSP code actions in a buffer range. Quick-fixes are a
+    /// subset; the client decides which to surface.
+    #[rpc(tx = oneshot::Sender<LspCodeActionResult>)]
+    LspCodeAction(LspCodeActionReq),
+
+    /// Apply a code action previously surfaced via `LspCodeAction`. The host
+    /// performs the file edits; clients see the result through normal
+    /// filesystem watch events.
+    #[rpc(tx = oneshot::Sender<LspApplyActionResult>)]
+    LspApplyAction(LspApplyActionReq),
+
+    /// Resolve "go to definition" for a symbol at a buffer position.
+    #[rpc(tx = oneshot::Sender<LspGotoDefResult>)]
+    LspGotoDef(LspGotoDefReq),
 }
 
 // ---------------------------------------------------------------------------
@@ -676,6 +731,13 @@ pub enum HostEvent {
     FsChanged { path: String },
     /// Cached managed-agent summary updated after an async fetch (for example CLI version).
     AgentInfoChanged { info: AgentSummary },
+    /// LSP server pushed a fresh diagnostic set for a file. Replaces the
+    /// previous set for `(language, path)` wholesale — clients must not
+    /// merge with stale entries.
+    LspDiagnosticsPush(LspDiagnosticsPush),
+    /// Lifecycle change for one LSP server: started, became ready, failed,
+    /// or was killed by the resource guard.
+    LspServerStateChanged(LspServerStateChange),
 }
 
 // ---------------------------------------------------------------------------
@@ -1314,6 +1376,281 @@ pub struct LspHoverReq {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LspHoverResult {
     pub contents: String,
+}
+
+// ---------------------------------------------------------------------------
+// LSP control plane (opt-in, append-only)
+//
+// Every result carries `enabled` so clients can short-circuit when the host
+// has no LSP subsystem compiled in or no language is enabled for the active
+// workspace.
+// ---------------------------------------------------------------------------
+
+/// Language identifier for the LSP control plane. Stable enum so telemetry
+/// labels stay consistent across versions. Add new variants at the tail.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum LspLanguage {
+    Rust,
+    Go,
+    TypeScript,
+    JavaScript,
+    Python,
+}
+
+/// LSP server lifecycle phase.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum LspServerState {
+    /// Server enabled in config but not yet spawned.
+    Idle,
+    /// Process spawned; LSP `initialize` handshake in flight.
+    Starting,
+    /// `initialized` notification received; diagnostics flowing.
+    Ready,
+    /// Server crashed or `initialize` failed.
+    Failed,
+    /// Resource guard or operator killed the server.
+    Killed,
+    /// Language disabled for this workspace.
+    Disabled,
+}
+
+/// Reason an LSP server was terminated. `None` means it is still running or
+/// has never been spawned.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum LspKillReason {
+    /// Per-server RSS exceeded the configured cap.
+    Oom,
+    /// Aggregate RSS across all LSP servers exceeded the host cap.
+    AggregateOom,
+    /// Sustained CPU usage above the threshold.
+    Cpu,
+    /// No client subscriptions for the idle timeout window.
+    Idle,
+    /// Operator killed it via `zedra lsp kill` or `LspDisable`.
+    Manual,
+    /// Server exited non-zero on its own.
+    Crash,
+}
+
+/// Severity of a diagnostic. Mirrors LSP severity but kept independent to
+/// avoid leaking `lsp-types` into the wire schema.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum LspSeverity {
+    Error,
+    Warning,
+    Info,
+    Hint,
+}
+
+/// Zero-based buffer range. Lines and columns are UTF-16 code units, matching
+/// the LSP wire format; clients converting to UTF-8 byte offsets must round-
+/// trip through the buffer they were displayed against.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LspRange {
+    pub start_line: u32,
+    pub start_col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+}
+
+/// Position inside a buffer, encoded the same way as `LspRange` endpoints.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LspPosition {
+    pub line: u32,
+    pub col: u32,
+}
+
+/// A single diagnostic emitted by a language server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspDiagnosticV2 {
+    pub range: LspRange,
+    pub severity: LspSeverity,
+    /// Diagnostic code, e.g. `"E0502"` or `"2304"`.
+    pub code: Option<String>,
+    /// Tool that produced the diagnostic, e.g. `"rustc"`, `"tsc"`.
+    pub source: Option<String>,
+    pub message: String,
+    pub related: Vec<LspRelated>,
+}
+
+/// Additional location referenced by a diagnostic (e.g. "first borrow here").
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspRelated {
+    /// Workspace-relative path.
+    pub path: String,
+    pub range: LspRange,
+    pub message: String,
+}
+
+/// Snapshot of one LSP server. Mirrors what `zedra status` and the in-app
+/// status pill display.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspServerInfo {
+    pub language: LspLanguage,
+    pub state: LspServerState,
+    pub pid: Option<u32>,
+    pub rss_bytes: u64,
+    pub uptime_secs: u64,
+    pub diagnostic_errors: u32,
+    pub diagnostic_warnings: u32,
+    /// Last completed request latency in milliseconds. `None` if no requests
+    /// have completed since spawn.
+    pub last_request_ms: Option<u32>,
+    /// Populated when `state` is `Failed` or `Killed`.
+    pub last_kill_reason: Option<LspKillReason>,
+    /// Peak RSS observed during the most recent lifecycle.
+    pub peak_rss_bytes: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LspStatusReq {}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LspStatusResult {
+    /// `false` when the host was built without the LSP subsystem or no
+    /// language is enabled for this workspace.
+    pub enabled: bool,
+    pub servers: Vec<LspServerInfo>,
+    /// Sum of `rss_bytes` across all running servers.
+    pub aggregate_rss_bytes: u64,
+    /// Configured aggregate RSS cap. `0` means uncapped.
+    pub aggregate_rss_cap_bytes: u64,
+    /// Hard cap on concurrent running servers.
+    pub concurrent_cap: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LspEnableReq {
+    pub language: LspLanguage,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LspEnableResult {
+    pub enabled: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LspDisableReq {
+    pub language: LspLanguage,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LspDisableResult {
+    pub enabled: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LspSubscribeReq {
+    /// Workspace-relative paths the client wants diagnostics for. Empty list
+    /// means "all paths in the workspace" — the host may rate-limit those.
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LspSubscribeResult {
+    pub enabled: bool,
+    /// Opaque subscription handle. Empty when `enabled` is false.
+    pub subscription_id: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LspUnsubscribeReq {
+    pub subscription_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LspUnsubscribeResult {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LspHoverV2Req {
+    pub path: String,
+    pub position: LspPosition,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LspHoverV2Result {
+    pub enabled: bool,
+    /// Markdown body. Empty when no hover info is available.
+    pub contents: String,
+    pub range: Option<LspRange>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LspCodeActionReq {
+    pub path: String,
+    pub range: LspRange,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspCodeAction {
+    /// Opaque action handle resolved by `LspApplyAction`.
+    pub id: String,
+    pub title: String,
+    /// `true` when the server tagged this as a quick-fix.
+    pub is_quick_fix: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LspCodeActionResult {
+    pub enabled: bool,
+    pub actions: Vec<LspCodeAction>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LspApplyActionReq {
+    pub action_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LspApplyActionResult {
+    pub enabled: bool,
+    /// Number of files modified on disk.
+    pub files_changed: u32,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LspGotoDefReq {
+    pub path: String,
+    pub position: LspPosition,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspLocation {
+    pub path: String,
+    pub range: LspRange,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LspGotoDefResult {
+    pub enabled: bool,
+    pub locations: Vec<LspLocation>,
+}
+
+/// Diagnostic push event. Sent through `HostEvent` after the server emits
+/// `textDocument/publishDiagnostics`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspDiagnosticsPush {
+    pub language: LspLanguage,
+    pub path: String,
+    /// Buffer version the diagnostics apply to. Clients ignore the push when
+    /// they hold a newer version locally.
+    pub version: u64,
+    pub diagnostics: Vec<LspDiagnosticV2>,
+}
+
+/// Server lifecycle push event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspServerStateChange {
+    pub language: LspLanguage,
+    pub state: LspServerState,
+    /// Populated when `state` is `Failed` or `Killed`.
+    pub reason: Option<LspKillReason>,
 }
 
 // ---------------------------------------------------------------------------
