@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -194,8 +194,10 @@ pub fn project_dir_for_workdir(claude_config_dir: &Path, workdir: &Path) -> Path
 pub fn project_dirs_for_workdir(claude_config_dir: &Path, workdir: &Path) -> Vec<PathBuf> {
     let projects_root = claude_config_dir.join("projects");
     let mut dirs = Vec::new();
+    let mut seen = HashSet::new();
     let project_dir = project_dir_for_workdir(claude_config_dir, workdir);
     if project_dir.is_dir() {
+        seen.insert(project_dir.clone());
         dirs.push(project_dir);
     }
 
@@ -214,12 +216,77 @@ pub fn project_dirs_for_workdir(claude_config_dir: &Path, workdir: &Path) -> Vec
         else {
             continue;
         };
-        if name.starts_with(&claude_worktree_prefix) {
+        if seen.contains(&claude_worktree_dir) {
+            continue;
+        }
+        if name.starts_with(&claude_worktree_prefix)
+            || project_dir_metadata_matches_workdir(&claude_worktree_dir, workdir)
+        {
+            seen.insert(claude_worktree_dir.clone());
             dirs.push(claude_worktree_dir);
         }
     }
 
     dirs
+}
+
+fn project_dir_metadata_matches_workdir(project_dir: &Path, workdir: &Path) -> bool {
+    let index = load_sessions_index(project_dir);
+    if index.values().any(|entry| {
+        entry
+            .project_path
+            .as_deref()
+            .is_some_and(|path| workspace_path_matches(workdir, path))
+    }) {
+        return true;
+    }
+
+    let Ok(mut candidates) = collect_transcript_candidates(&[project_dir.to_path_buf()]) else {
+        return false;
+    };
+    candidates.sort_by(|a, b| {
+        b.sort_mtime_unix_secs
+            .cmp(&a.sort_mtime_unix_secs)
+            .then_with(|| b.path.cmp(&a.path))
+    });
+    candidates
+        .into_iter()
+        .any(|candidate| transcript_head_matches_workdir(&candidate.path, workdir).unwrap_or(false))
+}
+
+fn workspace_path_matches(workdir: &Path, candidate: &str) -> bool {
+    crate::agent_utils::cwd_matches(workdir, Some(candidate))
+}
+
+fn transcript_head_matches_workdir(path: &Path, workdir: &Path) -> Result<bool> {
+    let file = File::open(path)
+        .with_context(|| format!("failed to read transcript {}", path.display()))?;
+    let mut scanned_lines = 0usize;
+    let mut scanned_bytes = 0usize;
+
+    for line in BufReader::new(file).lines() {
+        let line =
+            line.with_context(|| format!("failed to read transcript line in {}", path.display()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        scanned_lines += 1;
+        scanned_bytes += line.len() + 1;
+
+        let record = match serde_json::from_str::<Value>(&line) {
+            Ok(Value::Object(record)) => Value::Object(record),
+            Ok(_) | Err(_) => continue,
+        };
+        if let Some(cwd) = string_field(&record, &["cwd"]) {
+            return Ok(workspace_path_matches(workdir, cwd));
+        }
+        if scanned_lines >= LIST_HEAD_SCAN_MAX_LINES || scanned_bytes >= LIST_HEAD_SCAN_MAX_BYTES {
+            break;
+        }
+    }
+
+    Ok(false)
 }
 
 fn collect_transcript_candidates(project_dirs: &[PathBuf]) -> Result<Vec<TranscriptCandidate>> {
@@ -1393,6 +1460,56 @@ mod tests {
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.contains("--claude-worktrees-feature-a"))
         }));
+    }
+
+    #[test]
+    fn project_dirs_include_metadata_matched_project_dirs() {
+        let config = tempfile::tempdir().unwrap();
+        let workdir = Path::new("/Users/me/project");
+        let projects_root = config.path().join("projects");
+        let alternate_dir = projects_root.join("-legacy-project-key");
+        let unrelated_dir = projects_root.join("-Users-me-other-project");
+        std::fs::create_dir_all(&alternate_dir).unwrap();
+        std::fs::create_dir_all(&unrelated_dir).unwrap();
+        std::fs::write(
+            alternate_dir.join("session.jsonl"),
+            r#"{"sessionId":"session","cwd":"/Users/me/project","timestamp":"2026-05-09T10:00:00Z"}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            unrelated_dir.join("session.jsonl"),
+            r#"{"sessionId":"other","cwd":"/Users/me/other-project","timestamp":"2026-05-09T10:00:00Z"}
+"#,
+        )
+        .unwrap();
+
+        let dirs = project_dirs_for_workdir(config.path(), workdir);
+        assert_eq!(dirs, vec![alternate_dir]);
+    }
+
+    #[test]
+    fn project_dirs_include_sessions_index_project_path_matches() {
+        let config = tempfile::tempdir().unwrap();
+        let workdir = Path::new("/Users/me/project");
+        let projects_root = config.path().join("projects");
+        let alternate_dir = projects_root.join("-legacy-project-key");
+        std::fs::create_dir_all(&alternate_dir).unwrap();
+        std::fs::write(
+            alternate_dir.join("sessions-index.json"),
+            r#"{
+  "entries": [
+    {
+      "sessionId": "session",
+      "projectPath": "/Users/me/project"
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let dirs = project_dirs_for_workdir(config.path(), workdir);
+        assert_eq!(dirs, vec![alternate_dir]);
     }
 
     #[test]
