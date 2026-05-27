@@ -53,6 +53,7 @@ pub mod workspace_state;
 pub mod workspace_terminal;
 pub mod workspaces;
 
+pub mod accessory_input;
 pub mod active_terminal;
 pub mod deeplink;
 pub mod key_encoding;

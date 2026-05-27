@@ -620,7 +620,7 @@ pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char, mods: u
         return;
     }
 
-    active_terminal::send_keystroke(key_name, mods);
+    crate::accessory_input::dispatch(key_name, mods);
 }
 
 /// Called from the native terminal composer to send finalized text to the active terminal.

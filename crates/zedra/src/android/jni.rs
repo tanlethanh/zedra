@@ -439,7 +439,7 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeKeyboardAccessoryKe
             return;
         }
     };
-    crate::active_terminal::send_keystroke(&key_name, mods as u8);
+    crate::accessory_input::dispatch(&key_name, mods as u8);
 }
 
 #[unsafe(no_mangle)]
