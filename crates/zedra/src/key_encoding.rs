@@ -112,6 +112,23 @@ impl Key {
 /// - Shift alone on a letter      -> uppercase byte; on other chars Shift is ignored
 ///   (legacy terminals can't distinguish Shift on punctuation).
 pub fn encode_legacy(key: &Key, mods: Mods) -> Vec<u8> {
+    // Navigation / editing keys encode every modifier as `n` in `CSI 1;n <final>`
+    // or `CSI <code>;n ~`. They must NOT take the ESC-prefix path for Alt, or
+    // apps that look for modified CSI sequences (Alt+Left → `\x1b[1;3D`) would
+    // see `\x1b\x1b[D` and treat it as Escape followed by an unmodified arrow.
+    match key {
+        Key::Delete => return csi_tilde(b'3', mods),
+        Key::Left => return csi_arrow(b'D', mods),
+        Key::Right => return csi_arrow(b'C', mods),
+        Key::Up => return csi_arrow(b'A', mods),
+        Key::Down => return csi_arrow(b'B', mods),
+        Key::Home => return csi_arrow(b'H', mods),
+        Key::End => return csi_arrow(b'F', mods),
+        Key::PgUp => return csi_tilde(b'5', mods),
+        Key::PgDn => return csi_tilde(b'6', mods),
+        _ => {}
+    }
+
     if mods.contains(Mods::ALT) {
         let without_alt = mods - Mods::ALT;
         let mut out = vec![0x1b];
@@ -137,15 +154,7 @@ pub fn encode_legacy(key: &Key, mods: Mods) -> Vec<u8> {
             }
         }
         Key::Backspace => vec![0x7f],
-        Key::Delete => csi_tilde(b'3', mods),
-        Key::Left => csi_arrow(b'D', mods),
-        Key::Right => csi_arrow(b'C', mods),
-        Key::Up => csi_arrow(b'A', mods),
-        Key::Down => csi_arrow(b'B', mods),
-        Key::Home => csi_arrow(b'H', mods),
-        Key::End => csi_arrow(b'F', mods),
-        Key::PgUp => csi_tilde(b'5', mods),
-        Key::PgDn => csi_tilde(b'6', mods),
+        _ => unreachable!("CSI keys handled above"),
     }
 }
 
@@ -296,6 +305,21 @@ mod tests {
     fn modified_tilde_keys_use_csi_code_n_tilde_form() {
         assert_eq!(encode_legacy(&Key::PgUp, Mods::CTRL), b"\x1b[5;5~");
         assert_eq!(encode_legacy(&Key::Delete, Mods::SHIFT), b"\x1b[3;2~");
+    }
+
+    #[test]
+    fn alt_on_csi_keys_uses_modified_csi_not_escape_prefix() {
+        // Alt must round-trip through the param number so editors / readline see
+        // a single modified sequence, not Escape + unmodified arrow/tilde key.
+        assert_eq!(encode_legacy(&Key::Left, Mods::ALT), b"\x1b[1;3D");
+        assert_eq!(encode_legacy(&Key::Right, Mods::ALT), b"\x1b[1;3C");
+        assert_eq!(encode_legacy(&Key::Home, Mods::ALT), b"\x1b[1;3H");
+        assert_eq!(encode_legacy(&Key::PgUp, Mods::ALT), b"\x1b[5;3~");
+        assert_eq!(encode_legacy(&Key::Delete, Mods::ALT), b"\x1b[3;3~");
+        assert_eq!(
+            encode_legacy(&Key::Down, Mods::ALT | Mods::SHIFT),
+            b"\x1b[1;4B"
+        );
     }
 
     #[test]
