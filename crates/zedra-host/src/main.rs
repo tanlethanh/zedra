@@ -730,20 +730,35 @@ async fn main() -> Result<()> {
                     lsp.restore_enabled().await;
                 });
             }
-            // Consume diagnostic updates so the channel does not block the
-            // reader task. The HostEvent fan-out to subscribed clients lands
-            // in a follow-up commit; until then we drop the payloads after
-            // logging so the supervisor + RSS guard stay live.
-            tokio::spawn(async move {
-                while let Some(update) = lsp_diag_rx.recv().await {
-                    tracing::debug!(
-                        language = ?update.language,
-                        path = %update.path.display(),
-                        diagnostics = update.diagnostics.len(),
-                        "LSP diagnostics update",
-                    );
-                }
-            });
+            // Fan diagnostic updates out to every session as
+            // HostEvent::LspDiagnosticsPush. Sessions without an active
+            // Subscribe stream drop the push at the per-session level, which
+            // is what we want — a UI that does not surface diagnostics
+            // should not pin the buffer in memory.
+            {
+                let registry = registry.clone();
+                let lsp_workdir = workdir.clone();
+                tokio::spawn(async move {
+                    use zedra_rpc::proto::{HostEvent, LspDiagnosticsPush};
+                    while let Some(update) = lsp_diag_rx.recv().await {
+                        let path = update
+                            .path
+                            .strip_prefix(&lsp_workdir)
+                            .unwrap_or(&update.path)
+                            .to_string_lossy()
+                            .into_owned();
+                        let push = HostEvent::LspDiagnosticsPush(LspDiagnosticsPush {
+                            language: update.language,
+                            path,
+                            version: 0,
+                            diagnostics: update.diagnostics,
+                        });
+                        for session in registry.all_sessions().await {
+                            session.push_event(push.clone()).await;
+                        }
+                    }
+                });
+            }
             let state = Arc::new(rpc_daemon::DaemonState::new_with_lsp(
                 workdir.clone(),
                 host_identity.clone(),

@@ -2945,18 +2945,34 @@ async fn dispatch(
         }
 
         ZedraMessage::LspSubscribe(msg) => {
+            // Diagnostics already fan out to every session via the host event
+            // stream from main.rs (`HostEvent::LspDiagnosticsPush`). The
+            // subscription is acknowledged here so clients see `enabled=true`
+            // when the workspace has any language enabled, and is otherwise
+            // a no-op — there is no per-path filtering yet.
+            let enabled = state.lsp.any_enabled().await;
+            let subscription_id = if enabled {
+                uuid::Uuid::new_v4().to_string()
+            } else {
+                String::new()
+            };
             let _ = msg
                 .tx
                 .send(LspSubscribeResult {
-                    enabled: false,
-                    subscription_id: String::new(),
+                    enabled,
+                    subscription_id,
                     error: None,
                 })
                 .await;
         }
 
         ZedraMessage::LspUnsubscribe(msg) => {
-            let _ = msg.tx.send(LspUnsubscribeResult { enabled: false }).await;
+            let _ = msg
+                .tx
+                .send(LspUnsubscribeResult {
+                    enabled: state.lsp.any_enabled().await,
+                })
+                .await;
         }
 
         ZedraMessage::LspHoverV2(msg) => {
