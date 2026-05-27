@@ -39,14 +39,19 @@ pub const SYMBOL_FONT_FAMILY: &str = "Noto Sans Symbols 2";
 /// across the app's lifetime (e.g. when the Android surface is destroyed and
 /// the platform is reinitialized), so a process-wide `Once` would leave the
 /// new text system without the embedded fonts and fall back to system fonts.
-/// We skip if the current text system already knows the embedded families.
+///
+/// We skip only when every embedded family is already present in the text
+/// system. Checking a single family is not enough: a device whose system
+/// font db happens to expose one of the names but not the others would
+/// short-circuit the load and leave the missing families resolving to
+/// system fallbacks.
 pub fn load_fonts(window: &mut gpui::Window) {
     let text_system = window.text_system();
-    if text_system
-        .all_font_names()
+    let names = text_system.all_font_names();
+    let already_loaded = [HEADING_FONT_FAMILY, MONO_FONT_FAMILY, SYMBOL_FONT_FAMILY]
         .iter()
-        .any(|name| name == MONO_FONT_FAMILY)
-    {
+        .all(|family| names.iter().any(|name| name == family));
+    if already_loaded {
         return;
     }
     let fonts: Vec<Cow<'static, [u8]>> = FONTS.iter().map(|&b| Cow::Borrowed(b)).collect();
