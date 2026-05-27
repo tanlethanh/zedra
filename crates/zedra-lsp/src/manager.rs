@@ -11,15 +11,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
-use zedra_rpc::proto::{LspLanguage, LspServerInfo, LspServerState, LspStatusResult};
+use zedra_rpc::proto::{
+    LspKillReason, LspLanguage, LspServerInfo, LspServerState, LspStatusResult,
+};
 
 use crate::guard::{GUARD_DEFAULTS, GuardConfig};
 use crate::persistence::{self, PersistedLspState};
+use crate::supervisor::Supervisor;
 
 pub struct LspManager {
     inner: Mutex<Inner>,
     storage_path: PathBuf,
     guard: GuardConfig,
+    supervisor: Arc<Supervisor>,
 }
 
 struct Inner {
@@ -33,22 +37,28 @@ impl LspManager {
     pub fn load(storage_path: PathBuf) -> Arc<Self> {
         let persisted = persistence::load(&storage_path);
         let enabled: HashSet<LspLanguage> = persisted.enabled_languages.into_iter().collect();
+        let guard = GUARD_DEFAULTS.with_env_overrides();
+        let supervisor = Supervisor::new(guard);
+        supervisor.spawn_watcher();
         Arc::new(Self {
             inner: Mutex::new(Inner { enabled }),
             storage_path,
-            guard: GUARD_DEFAULTS.with_env_overrides(),
+            guard,
+            supervisor,
         })
     }
 
-    /// In-memory manager with no persistence. Used by tests and ephemeral
-    /// daemons that have no workspace config dir.
+    /// In-memory manager with no persistence and no watcher task. Used by
+    /// tests and ephemeral daemons that have no workspace config dir.
     pub fn ephemeral() -> Arc<Self> {
+        let guard = GUARD_DEFAULTS.with_env_overrides();
         Arc::new(Self {
             inner: Mutex::new(Inner {
                 enabled: HashSet::new(),
             }),
             storage_path: PathBuf::new(),
-            guard: GUARD_DEFAULTS.with_env_overrides(),
+            guard,
+            supervisor: Supervisor::new(guard),
         })
     }
 
@@ -56,24 +66,29 @@ impl LspManager {
         self.guard
     }
 
-    /// Mark `language` as enabled for this workspace and persist the change.
-    /// Returns `Ok(())` on success. The supervisor will treat the language as
-    /// spawnable on the next subscription.
+    /// Mark `language` as enabled for this workspace, persist the change, and
+    /// spawn the language server. A spawn failure (binary missing, cap
+    /// reached) is returned to the caller but does not roll back the persisted
+    /// enablement — the server can be retried with the same flag set.
     pub async fn enable(&self, language: LspLanguage) -> anyhow::Result<()> {
-        let mut inner = self.inner.lock().await;
-        if inner.enabled.insert(language) {
-            self.persist_locked(&inner);
+        {
+            let mut inner = self.inner.lock().await;
+            if inner.enabled.insert(language) {
+                self.persist_locked(&inner);
+            }
         }
-        Ok(())
+        self.supervisor.start(language).await
     }
 
-    /// Mark `language` as disabled. Future commits will tear down a running
-    /// server here.
+    /// Mark `language` as disabled and shut down a running server.
     pub async fn disable(&self, language: LspLanguage) -> anyhow::Result<()> {
-        let mut inner = self.inner.lock().await;
-        if inner.enabled.remove(&language) {
-            self.persist_locked(&inner);
+        {
+            let mut inner = self.inner.lock().await;
+            if inner.enabled.remove(&language) {
+                self.persist_locked(&inner);
+            }
         }
+        self.supervisor.stop(language, LspKillReason::Manual).await;
         Ok(())
     }
 
@@ -89,33 +104,73 @@ impl LspManager {
     /// the `zedra status` CLI block. Single source of truth so the two views
     /// can never drift.
     pub async fn status_snapshot(&self) -> LspStatusResult {
-        let inner = self.inner.lock().await;
-        let mut servers: Vec<LspServerInfo> = inner
-            .enabled
-            .iter()
-            .copied()
-            .map(|language| LspServerInfo {
-                language,
-                state: LspServerState::Idle,
-                pid: None,
-                rss_bytes: 0,
-                uptime_secs: 0,
-                diagnostic_errors: 0,
-                diagnostic_warnings: 0,
-                last_request_ms: None,
-                last_kill_reason: None,
-                peak_rss_bytes: 0,
-            })
-            .collect();
-        // Stable ordering for CLI / UI render.
+        let enabled_langs: Vec<LspLanguage> = {
+            let inner = self.inner.lock().await;
+            inner.enabled.iter().copied().collect()
+        };
+        let mut servers: Vec<LspServerInfo> = Vec::with_capacity(enabled_langs.len());
+        let mut aggregate: u64 = 0;
+        for language in enabled_langs {
+            let live = self.supervisor.get(language).await;
+            let info = if let Some(server) = live {
+                let rss = server.peak_rss_bytes();
+                aggregate = aggregate.saturating_add(rss);
+                LspServerInfo {
+                    language,
+                    state: server.state().await,
+                    pid: server.pid(),
+                    rss_bytes: rss,
+                    uptime_secs: server.uptime_secs().await,
+                    diagnostic_errors: 0,
+                    diagnostic_warnings: 0,
+                    last_request_ms: None,
+                    last_kill_reason: server.last_kill_reason().await,
+                    peak_rss_bytes: rss,
+                }
+            } else {
+                LspServerInfo {
+                    language,
+                    state: LspServerState::Idle,
+                    pid: None,
+                    rss_bytes: 0,
+                    uptime_secs: 0,
+                    diagnostic_errors: 0,
+                    diagnostic_warnings: 0,
+                    last_request_ms: None,
+                    last_kill_reason: None,
+                    peak_rss_bytes: 0,
+                }
+            };
+            servers.push(info);
+        }
         servers.sort_by_key(|s| language_sort_key(s.language));
 
         LspStatusResult {
-            enabled: !inner.enabled.is_empty(),
+            enabled: !servers.is_empty(),
             servers,
-            aggregate_rss_bytes: 0,
+            aggregate_rss_bytes: aggregate,
             aggregate_rss_cap_bytes: self.guard.aggregate_rss_cap_bytes,
             concurrent_cap: self.guard.concurrent_cap,
+        }
+    }
+
+    /// Re-spawn servers for every persisted-enabled language. Called once at
+    /// daemon start so the watcher has servers to supervise. Failures are
+    /// logged, not propagated; a missing binary should not prevent the
+    /// daemon from starting other LSPs or the rest of zedra-host.
+    pub async fn restore_enabled(&self) {
+        let langs: Vec<LspLanguage> = {
+            let inner = self.inner.lock().await;
+            inner.enabled.iter().copied().collect()
+        };
+        for language in langs {
+            if let Err(e) = self.supervisor.start(language).await {
+                tracing::warn!(
+                    language = ?language,
+                    "Failed to start LSP server at daemon startup: {}",
+                    e,
+                );
+            }
         }
     }
 
@@ -148,37 +203,38 @@ fn language_sort_key(language: LspLanguage) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persistence;
+
+    // `enable()` tries to spawn the language server, which is unavailable in
+    // CI. These tests cover the persistence + bookkeeping seams without
+    // exercising the supervisor.
 
     #[tokio::test]
-    async fn enable_disable_roundtrip_persists() {
+    async fn persistence_roundtrip_independent_of_supervisor() {
         let dir = tempdir();
         let path = dir.join("lsp.json");
-        let m = LspManager::load(path.clone());
-        m.enable(LspLanguage::Rust).await.unwrap();
-        m.enable(LspLanguage::Go).await.unwrap();
-        drop(m);
-
+        persistence::save(
+            &path,
+            &PersistedLspState {
+                version: 1,
+                enabled_languages: vec![LspLanguage::Rust, LspLanguage::Go],
+            },
+        );
         let m = LspManager::load(path);
         assert!(m.is_enabled(LspLanguage::Rust).await);
         assert!(m.is_enabled(LspLanguage::Go).await);
         assert!(!m.is_enabled(LspLanguage::Python).await);
-
-        m.disable(LspLanguage::Rust).await.unwrap();
-        assert!(!m.is_enabled(LspLanguage::Rust).await);
     }
 
     #[tokio::test]
-    async fn ephemeral_manager_does_not_persist() {
+    async fn status_snapshot_reports_idle_for_enabled_but_unspawned() {
         let m = LspManager::ephemeral();
-        m.enable(LspLanguage::Rust).await.unwrap();
-        assert!(m.is_enabled(LspLanguage::Rust).await);
-    }
-
-    #[tokio::test]
-    async fn status_snapshot_lists_enabled_languages_as_idle() {
-        let m = LspManager::ephemeral();
-        m.enable(LspLanguage::Rust).await.unwrap();
-        m.enable(LspLanguage::TypeScript).await.unwrap();
+        // Seed enablement without going through enable() so we skip the spawn.
+        {
+            let mut inner = m.inner.lock().await;
+            inner.enabled.insert(LspLanguage::Rust);
+            inner.enabled.insert(LspLanguage::TypeScript);
+        }
         let snap = m.status_snapshot().await;
         assert!(snap.enabled);
         assert_eq!(snap.servers.len(), 2);
@@ -187,6 +243,15 @@ mod tests {
                 .iter()
                 .all(|s| matches!(s.state, LspServerState::Idle))
         );
+        assert_eq!(snap.concurrent_cap, m.guard.concurrent_cap);
+    }
+
+    #[tokio::test]
+    async fn empty_manager_reports_disabled() {
+        let m = LspManager::ephemeral();
+        let snap = m.status_snapshot().await;
+        assert!(!snap.enabled);
+        assert!(snap.servers.is_empty());
     }
 
     fn tempdir() -> PathBuf {

@@ -10173,11 +10173,14 @@ name = "zedra-lsp"
 version = "0.2.5"
 dependencies = [
  "anyhow",
+ "libc",
  "serde",
  "serde_json",
+ "sysinfo",
  "tokio",
  "tracing",
  "zedra-rpc",
+ "zedra-telemetry",
 ]
 
 [[package]]

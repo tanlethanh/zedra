@@ -721,6 +721,12 @@ async fn main() -> Result<()> {
                 Ok(dir) => zedra_lsp::LspManager::load(dir.join("lsp.json")),
                 Err(_) => zedra_lsp::LspManager::ephemeral(),
             };
+            {
+                let lsp = lsp_manager.clone();
+                tokio::spawn(async move {
+                    lsp.restore_enabled().await;
+                });
+            }
             let state = Arc::new(rpc_daemon::DaemonState::new_with_lsp(
                 workdir.clone(),
                 host_identity.clone(),
