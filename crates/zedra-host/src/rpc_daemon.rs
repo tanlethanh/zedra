@@ -2901,11 +2901,19 @@ async fn dispatch(
         }
 
         ZedraMessage::LspEnable(msg) => {
+            let was_enabled = state.lsp.is_enabled(msg.language).await;
             let result = match state.lsp.enable(msg.language).await {
-                Ok(()) => LspEnableResult {
-                    enabled: true,
-                    error: None,
-                },
+                Ok(()) => {
+                    if !was_enabled {
+                        zedra_telemetry::send(Event::LspEnabled {
+                            language: lsp_language_label(msg.language),
+                        });
+                    }
+                    LspEnableResult {
+                        enabled: true,
+                        error: None,
+                    }
+                }
                 Err(e) => LspEnableResult {
                     enabled: state.lsp.is_enabled(msg.language).await,
                     error: Some(e.to_string()),
@@ -2915,11 +2923,19 @@ async fn dispatch(
         }
 
         ZedraMessage::LspDisable(msg) => {
+            let was_enabled = state.lsp.is_enabled(msg.language).await;
             let result = match state.lsp.disable(msg.language).await {
-                Ok(()) => LspDisableResult {
-                    enabled: false,
-                    error: None,
-                },
+                Ok(()) => {
+                    if was_enabled {
+                        zedra_telemetry::send(Event::LspDisabled {
+                            language: lsp_language_label(msg.language),
+                        });
+                    }
+                    LspDisableResult {
+                        enabled: false,
+                        error: None,
+                    }
+                }
                 Err(e) => LspDisableResult {
                     enabled: state.lsp.is_enabled(msg.language).await,
                     error: Some(e.to_string()),
@@ -2987,6 +3003,18 @@ async fn dispatch(
     }
 
     Ok(())
+}
+
+/// Stable telemetry label for an `LspLanguage`. Mirrors the API JSON label so
+/// telemetry, the REST API, and the CLI all agree on the language name.
+fn lsp_language_label(language: LspLanguage) -> &'static str {
+    match language {
+        LspLanguage::Rust => "rust",
+        LspLanguage::Go => "go",
+        LspLanguage::TypeScript => "typescript",
+        LspLanguage::JavaScript => "javascript",
+        LspLanguage::Python => "python",
+    }
 }
 
 fn os_version_string() -> Option<String> {

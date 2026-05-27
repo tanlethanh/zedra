@@ -85,6 +85,15 @@ Emitted by `zedra-host` via the same `zedra_telemetry::send()` mechanism.
 | `terminal_open` | `has_launch_cmd` | `rpc_daemon.rs` — PTY spawned |
 | `bandwidth_sample` | `bytes_sent`, `bytes_recv`, `interval_secs` | `rpc_daemon.rs` — every 60s |
 | `connection_latency_sample` | `source`, `connection_type`, `network_type`, `rtt_ms`, `relay`, `relay_region`, `nearest_relay_region`, `path_count`, `interval_secs`, `sample_reason` | `rpc_daemon.rs` — every 60s while connected |
+| `lsp_enabled` | `language` | `rpc_daemon.rs` — `LspEnable` handler when state changes |
+| `lsp_disabled` | `language` | `rpc_daemon.rs` — `LspDisable` handler when state changes |
+| `lsp_spawn` | `language`, `cold_start_ms` | LSP supervisor — child PID assigned |
+| `lsp_ready` | `language`, `init_ms` | LSP supervisor — `initialized` received |
+| `lsp_killed` | `language`, `reason`, `uptime_secs`, `peak_rss_mb` | LSP supervisor — guard kill or crash |
+| `lsp_diagnostics_sample` | `language`, `error_count`, `warning_count`, `file_count` | LSP supervisor — every 60s while running |
+| `lsp_request_latency` | `language`, `method`, `latency_ms_p50`, `latency_ms_p95`, `sample_count` | LSP supervisor — hourly aggregate |
+
+LSP events carry **only** language enum labels (`"rust"`, `"go"`, `"typescript"`, `"javascript"`, `"python"`), durations, counts, and the kill `reason` enum (`"oom"`, `"aggregate_oom"`, `"cpu"`, `"idle"`, `"manual"`, `"crash"`). Diagnostic message text, file paths, codes, project names, and workspace identifiers are never included. The `lsp_spawn` / `lsp_ready` / `lsp_killed` / `lsp_diagnostics_sample` / `lsp_request_latency` events fire from the supervisor that lands in a follow-up commit; the typed variants are wired now so consumers can be built against the stable schema.
 
 Host events also carry `host_version`, `os`, and `arch` — injected automatically
 by `Ga4::build_payload()` before the GA4 HTTP POST.
