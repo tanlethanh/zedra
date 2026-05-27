@@ -7,6 +7,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import org.json.JSONObject
+import java.io.File
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
@@ -34,6 +36,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var keyboardAccessoryBar: KeyboardAccessoryBar
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Apply the persisted theme before super.onCreate so AppCompat picks up
+        // the correct night mode as its initial state. If we set it later (e.g.
+        // from a Rust JNI callback after the activity has attached), AppCompat
+        // treats it as a mode change and recreates the Activity — which tears
+        // down the SurfaceView and the GPUI text system, dropping our embedded
+        // fonts on cold launch.
+        AppCompatDelegate.setDefaultNightMode(
+            if (readPersistedThemeIsDark(this)) AppCompatDelegate.MODE_NIGHT_YES
+            else AppCompatDelegate.MODE_NIGHT_NO,
+        )
         installSplashScreen()
         super.onCreate(savedInstanceState)
 
@@ -171,6 +183,21 @@ class MainActivity : AppCompatActivity() {
 
         private var sSurfaceView: GpuiSurfaceView? = null
         private var sActivity: Activity? = null
+
+        // Mirrors crates/zedra/src/settings.rs: `<filesDir>/zedra/settings.json`
+        // with an optional `theme_preference` field of `"Dark"` or `"Light"`.
+        // Default is dark to match `ThemePreference::default()` on the Rust side.
+        private fun readPersistedThemeIsDark(activity: Activity): Boolean {
+            val file = File(activity.filesDir, "zedra/settings.json")
+            if (!file.exists()) return true
+            return try {
+                val pref = JSONObject(file.readText()).optString("theme_preference", "Dark")
+                !pref.equals("Light", ignoreCase = true)
+            } catch (e: Throwable) {
+                Log.w(TAG, "settings.json parse failed; defaulting to dark", e)
+                true
+            }
+        }
         // Set when Rust calls setNativeTheme before the activity / accessory bar exists.
         // Applied once onCreate finishes wiring views.
         private var pendingNativeIsDark: Boolean? = null
