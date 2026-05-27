@@ -24,6 +24,7 @@ use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
 
 mod agent_cli;
+mod lsp_cli;
 mod setup;
 mod terminal_cli;
 
@@ -187,6 +188,9 @@ enum Commands {
         #[command(subcommand)]
         command: agent_cli::AgentCommand,
     },
+
+    /// Manage the opt-in LSP control plane for a workspace
+    Lsp(lsp_cli::LspArgs),
 
     /// Install Zedra skills or plugins for an AI coding agent
     Setup {
@@ -1035,6 +1039,10 @@ async fn main() -> Result<()> {
 
         Commands::Agent { command } => {
             agent_cli::run(command).await?;
+        }
+
+        Commands::Lsp(args) => {
+            lsp_cli::run(args).await?;
         }
 
         Commands::Setup { yes, agent } => {

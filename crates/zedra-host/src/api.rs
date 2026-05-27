@@ -261,6 +261,91 @@ fn lsp_kill_reason_label(reason: zedra_rpc::proto::LspKillReason) -> &'static st
     }
 }
 
+fn parse_lsp_language(raw: &str) -> Option<zedra_rpc::proto::LspLanguage> {
+    use zedra_rpc::proto::LspLanguage::*;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "rust" | "rs" | "rust-analyzer" => Some(Rust),
+        "go" | "gopls" | "golang" => Some(Go),
+        "typescript" | "ts" => Some(TypeScript),
+        "javascript" | "js" => Some(JavaScript),
+        "python" | "py" => Some(Python),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct LspLanguageRequest {
+    language: String,
+}
+
+async fn lsp_enable_handler(
+    State(s): State<ApiState>,
+    headers: HeaderMap,
+    Json(body): Json<LspLanguageRequest>,
+) -> impl IntoResponse {
+    if !verify_token(&headers, &s.token) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        )
+            .into_response();
+    }
+    let Some(language) = parse_lsp_language(&body.language) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("unknown language: {}", body.language)})),
+        )
+            .into_response();
+    };
+    if let Err(e) = s.daemon_state.lsp.enable(language).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response();
+    }
+    Json(serde_json::json!({
+        "ok": true,
+        "language": lsp_language_label(language),
+        "enabled": true,
+    }))
+    .into_response()
+}
+
+async fn lsp_disable_handler(
+    State(s): State<ApiState>,
+    headers: HeaderMap,
+    Json(body): Json<LspLanguageRequest>,
+) -> impl IntoResponse {
+    if !verify_token(&headers, &s.token) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        )
+            .into_response();
+    }
+    let Some(language) = parse_lsp_language(&body.language) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("unknown language: {}", body.language)})),
+        )
+            .into_response();
+    };
+    if let Err(e) = s.daemon_state.lsp.disable(language).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response();
+    }
+    Json(serde_json::json!({
+        "ok": true,
+        "language": lsp_language_label(language),
+        "enabled": false,
+    }))
+    .into_response()
+}
+
 async fn create_pairing_qr_handler(
     State(s): State<ApiState>,
     headers: HeaderMap,
@@ -832,6 +917,8 @@ pub async fn start(state: ApiState) -> anyhow::Result<std::net::SocketAddr> {
             get(list_agent_hook_events_handler),
         )
         .route("/api/agent-hooks/:kind", post(receive_agent_hook_handler))
+        .route("/api/lsp/enable", post(lsp_enable_handler))
+        .route("/api/lsp/disable", post(lsp_disable_handler))
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
