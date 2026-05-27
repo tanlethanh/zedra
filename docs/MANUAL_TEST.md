@@ -1102,3 +1102,14 @@ Expected:
 4. Expected: UIKit presentation chrome uses light backgrounds and dark text/icons, matching the app theme.
 5. Toggle Appearance back to **Dark** and repeat the same presentations.
 6. Expected: UIKit presentation chrome returns to dark backgrounds and light text/icons without restarting the app.
+
+## 23. Pinch Gesture Dispatch (Foundation for #106)
+
+Verifies `PlatformInput::Pinch` reaches GPUI on mobile. No editor zoom UI yet — this is the platform-layer wiring only.
+
+1. Install an iOS build and open any file in the editor.
+2. Pinch in and out with two fingers on the editor area.
+3. Expected: no crash, no visual change yet, single-finger scrolling still works between pinches.
+4. Expected (developer check): a temporary `.on_pinch(...)` on any view receives `PinchEvent` with `phase` = Started/Moved/Ended and non-zero `delta` during Moved.
+5. Repeat on an Android build.
+6. Expected: pinch-in-progress suppresses pan/scroll (the document does not also scroll mid-pinch); release lets normal scrolling resume.
