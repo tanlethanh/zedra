@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::sync::Once;
 
 static FONTS: &[&[u8]] = &[
     include_bytes!("../assets/fonts/Lora-VariableFont_wght.ttf"),
@@ -34,19 +33,27 @@ pub const MONO_FONT_FAMILY: &str = "JetBrainsMonoNL Nerd Font Mono";
 /// The font family name for the symbol fallback font
 pub const SYMBOL_FONT_FAMILY: &str = "Noto Sans Symbols 2";
 
-static FONT_LOADED: Once = Once::new();
-
 /// Load all embedded fonts into GPUI's text system.
-/// This should be called once during app initialization.
+///
+/// Called on every window open. The platform text system can be recreated
+/// across the app's lifetime (e.g. when the Android surface is destroyed and
+/// the platform is reinitialized), so a process-wide `Once` would leave the
+/// new text system without the embedded fonts and fall back to system fonts.
+/// We skip if the current text system already knows the embedded families.
 pub fn load_fonts(window: &mut gpui::Window) {
-    FONT_LOADED.call_once(|| {
-        let text_system = window.text_system();
-        let fonts: Vec<Cow<'static, [u8]>> = FONTS.iter().map(|&b| Cow::Borrowed(b)).collect();
-        let count = fonts.len();
-        if let Err(e) = text_system.add_fonts(fonts) {
-            tracing::error!(err = %e, "fonts: load failed");
-        } else {
-            tracing::info!(count, "fonts: loaded");
-        }
-    });
+    let text_system = window.text_system();
+    if text_system
+        .all_font_names()
+        .iter()
+        .any(|name| name == MONO_FONT_FAMILY)
+    {
+        return;
+    }
+    let fonts: Vec<Cow<'static, [u8]>> = FONTS.iter().map(|&b| Cow::Borrowed(b)).collect();
+    let count = fonts.len();
+    if let Err(e) = text_system.add_fonts(fonts) {
+        tracing::error!(err = %e, "fonts: load failed");
+    } else {
+        tracing::info!(count, "fonts: loaded");
+    }
 }
