@@ -15,11 +15,12 @@ pub mod guard;
 pub mod manager;
 pub mod persistence;
 pub mod policy;
+pub mod protocol;
 pub mod server;
 pub mod supervisor;
 
 pub use guard::{GUARD_DEFAULTS, GuardConfig};
-pub use manager::LspManager;
+pub use manager::{DiagnosticReceiver, LspManager};
 pub use policy::{language_binary, supported_languages};
-pub use server::LspServer;
+pub use server::{DiagnosticUpdate, LspServer};
 pub use supervisor::Supervisor;

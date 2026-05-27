@@ -717,9 +717,12 @@ async fn main() -> Result<()> {
                 prev_hook(info);
             }));
 
-            let lsp_manager = match identity::workspace_config_dir(&workdir) {
-                Ok(dir) => zedra_lsp::LspManager::load(dir.join("lsp.json")),
-                Err(_) => zedra_lsp::LspManager::ephemeral(),
+            let (lsp_manager, mut lsp_diag_rx) = match identity::workspace_config_dir(&workdir) {
+                Ok(dir) => zedra_lsp::LspManager::load(dir.join("lsp.json"), workdir.clone()),
+                Err(_) => (
+                    zedra_lsp::LspManager::ephemeral(),
+                    tokio::sync::mpsc::channel(1).1,
+                ),
             };
             {
                 let lsp = lsp_manager.clone();
@@ -727,6 +730,20 @@ async fn main() -> Result<()> {
                     lsp.restore_enabled().await;
                 });
             }
+            // Consume diagnostic updates so the channel does not block the
+            // reader task. The HostEvent fan-out to subscribed clients lands
+            // in a follow-up commit; until then we drop the payloads after
+            // logging so the supervisor + RSS guard stay live.
+            tokio::spawn(async move {
+                while let Some(update) = lsp_diag_rx.recv().await {
+                    tracing::debug!(
+                        language = ?update.language,
+                        path = %update.path.display(),
+                        diagnostics = update.diagnostics.len(),
+                        "LSP diagnostics update",
+                    );
+                }
+            });
             let state = Arc::new(rpc_daemon::DaemonState::new_with_lsp(
                 workdir.clone(),
                 host_identity.clone(),

@@ -10,14 +10,19 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use zedra_rpc::proto::{
     LspKillReason, LspLanguage, LspServerInfo, LspServerState, LspStatusResult,
 };
 
 use crate::guard::{GUARD_DEFAULTS, GuardConfig};
 use crate::persistence::{self, PersistedLspState};
+use crate::server::DiagnosticUpdate;
 use crate::supervisor::Supervisor;
+
+/// Receiver end of the diagnostic-update channel. The host RPC daemon owns
+/// this and fans out to subscribed clients as `HostEvent::LspDiagnosticsPush`.
+pub type DiagnosticReceiver = mpsc::Receiver<DiagnosticUpdate>;
 
 pub struct LspManager {
     inner: Mutex<Inner>,
@@ -34,31 +39,38 @@ impl LspManager {
     /// Load persisted enablement from `storage_path` and return a manager. The
     /// supervisor is **not** started here — that arrives with the spawn
     /// commit.
-    pub fn load(storage_path: PathBuf) -> Arc<Self> {
+    /// Construct the manager, start the supervisor watcher, and return both
+    /// the manager handle and the diagnostic-update receiver. The caller owns
+    /// the receiver and fans diagnostics out to clients.
+    pub fn load(storage_path: PathBuf, workspace_root: PathBuf) -> (Arc<Self>, DiagnosticReceiver) {
         let persisted = persistence::load(&storage_path);
         let enabled: HashSet<LspLanguage> = persisted.enabled_languages.into_iter().collect();
         let guard = GUARD_DEFAULTS.with_env_overrides();
-        let supervisor = Supervisor::new(guard);
+        let (diag_tx, diag_rx) = mpsc::channel(256);
+        let supervisor = Supervisor::new(guard, workspace_root, diag_tx);
         supervisor.spawn_watcher();
-        Arc::new(Self {
+        let manager = Arc::new(Self {
             inner: Mutex::new(Inner { enabled }),
             storage_path,
             guard,
             supervisor,
-        })
+        });
+        (manager, diag_rx)
     }
 
-    /// In-memory manager with no persistence and no watcher task. Used by
-    /// tests and ephemeral daemons that have no workspace config dir.
+    /// In-memory manager with no persistence and no watcher task. The
+    /// returned receiver is never written to. Used by tests and ephemeral
+    /// daemons that have no workspace config dir.
     pub fn ephemeral() -> Arc<Self> {
         let guard = GUARD_DEFAULTS.with_env_overrides();
+        let (diag_tx, _diag_rx) = mpsc::channel(1);
         Arc::new(Self {
             inner: Mutex::new(Inner {
                 enabled: HashSet::new(),
             }),
             storage_path: PathBuf::new(),
             guard,
-            supervisor: Supervisor::new(guard),
+            supervisor: Supervisor::new(guard, PathBuf::from("."), diag_tx),
         })
     }
 
@@ -115,14 +127,15 @@ impl LspManager {
             let info = if let Some(server) = live {
                 let rss = server.peak_rss_bytes();
                 aggregate = aggregate.saturating_add(rss);
+                let (errors, warnings) = server.diagnostic_counts().await;
                 LspServerInfo {
                     language,
                     state: server.state().await,
                     pid: server.pid(),
                     rss_bytes: rss,
                     uptime_secs: server.uptime_secs().await,
-                    diagnostic_errors: 0,
-                    diagnostic_warnings: 0,
+                    diagnostic_errors: errors,
+                    diagnostic_warnings: warnings,
                     last_request_ms: None,
                     last_kill_reason: server.last_kill_reason().await,
                     peak_rss_bytes: rss,
@@ -220,7 +233,7 @@ mod tests {
                 enabled_languages: vec![LspLanguage::Rust, LspLanguage::Go],
             },
         );
-        let m = LspManager::load(path);
+        let (m, _rx) = LspManager::load(path, dir.clone());
         assert!(m.is_enabled(LspLanguage::Rust).await);
         assert!(m.is_enabled(LspLanguage::Go).await);
         assert!(!m.is_enabled(LspLanguage::Python).await);

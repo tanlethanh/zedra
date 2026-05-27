@@ -5,25 +5,34 @@
 //! evicting the highest-RSS server first.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use zedra_rpc::proto::{LspKillReason, LspLanguage};
 
 use crate::guard::GuardConfig;
-use crate::server::LspServer;
+use crate::server::{DiagnosticUpdate, LspServer};
 
 pub struct Supervisor {
     servers: Mutex<HashMap<LspLanguage, Arc<LspServer>>>,
     guard: GuardConfig,
+    workspace_root: PathBuf,
+    diag_tx: mpsc::Sender<DiagnosticUpdate>,
 }
 
 impl Supervisor {
-    pub fn new(guard: GuardConfig) -> Arc<Self> {
+    pub fn new(
+        guard: GuardConfig,
+        workspace_root: PathBuf,
+        diag_tx: mpsc::Sender<DiagnosticUpdate>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             servers: Mutex::new(HashMap::new()),
             guard,
+            workspace_root,
+            diag_tx,
         })
     }
 
@@ -66,7 +75,9 @@ impl Supervisor {
             );
         }
         let server = LspServer::new(language);
-        server.spawn().await?;
+        server
+            .spawn(&self.workspace_root, self.diag_tx.clone())
+            .await?;
         servers.insert(language, server);
         Ok(())
     }

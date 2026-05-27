@@ -11,6 +11,7 @@
 //! server in a request loop. This file is what gives the guard something to
 //! supervise.
 
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -19,10 +20,20 @@ use std::time::Instant;
 use anyhow::{Context, Result, anyhow};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
-use zedra_rpc::proto::{LspKillReason, LspLanguage, LspServerState};
+use tokio::sync::{Mutex, mpsc};
+use zedra_rpc::proto::{LspDiagnosticV2, LspKillReason, LspLanguage, LspServerState};
 
 use crate::policy::language_binary;
+use crate::protocol::{self, DiagnosticStore};
+
+/// One diagnostic-set update from a language server. Wholesale replacement
+/// for `(language, path)`. Empty `diagnostics` means "clear the file".
+#[derive(Debug, Clone)]
+pub struct DiagnosticUpdate {
+    pub language: LspLanguage,
+    pub path: PathBuf,
+    pub diagnostics: Vec<LspDiagnosticV2>,
+}
 
 /// Telemetry-stable language label. Kept here (mirrored in `zedra-host`) so
 /// `zedra-lsp` can emit telemetry without a back-dependency.
@@ -45,6 +56,7 @@ pub struct LspServer {
     started_at: Mutex<Option<Instant>>,
     peak_rss_bytes: AtomicRss,
     last_kill_reason: Mutex<Option<LspKillReason>>,
+    diagnostics: Arc<Mutex<DiagnosticStore>>,
 }
 
 impl LspServer {
@@ -57,7 +69,29 @@ impl LspServer {
             started_at: Mutex::new(None),
             peak_rss_bytes: AtomicRss::new(),
             last_kill_reason: Mutex::new(None),
+            diagnostics: Arc::new(Mutex::new(DiagnosticStore::new())),
         })
+    }
+
+    /// Snapshot of the diagnostic store for this server.
+    pub async fn diagnostics_snapshot(&self) -> DiagnosticStore {
+        self.diagnostics.lock().await.clone()
+    }
+
+    /// Aggregate diagnostic counts across all files. `(errors, warnings)`.
+    pub async fn diagnostic_counts(&self) -> (u32, u32) {
+        let mut errors = 0u32;
+        let mut warnings = 0u32;
+        for ds in self.diagnostics.lock().await.values() {
+            for d in ds {
+                match d.severity {
+                    zedra_rpc::proto::LspSeverity::Error => errors += 1,
+                    zedra_rpc::proto::LspSeverity::Warning => warnings += 1,
+                    _ => {}
+                }
+            }
+        }
+        (errors, warnings)
     }
 
     pub fn language(&self) -> LspLanguage {
@@ -93,9 +127,15 @@ impl LspServer {
         *self.last_kill_reason.lock().await
     }
 
-    /// Spawn the child if not already running. Returns the elapsed cold-start
-    /// time so the caller can emit `lsp_spawn` telemetry.
-    pub async fn spawn(&self) -> Result<u64> {
+    /// Spawn the child and drive the LSP initialize handshake. After
+    /// `initialized`, a background task reads `publishDiagnostics` and
+    /// forwards each update to `diag_tx`. `workspace_root` is the absolute
+    /// path the language server should index.
+    pub async fn spawn(
+        self: &Arc<Self>,
+        workspace_root: &Path,
+        diag_tx: mpsc::Sender<DiagnosticUpdate>,
+    ) -> Result<u64> {
         {
             let state = self.state.lock().await;
             if matches!(*state, LspServerState::Starting | LspServerState::Ready) {
@@ -111,6 +151,7 @@ impl LspServer {
 
         let mut cmd = Command::new(bin.command);
         cmd.args(bin.args)
+            .current_dir(workspace_root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -123,15 +164,15 @@ impl LspServer {
         let pid = child.id().unwrap_or(0);
         self.pid.store(pid, Ordering::Relaxed);
 
-        // Drain stdout / stderr so the child does not block on a full pipe.
-        // Until the LSP protocol commit lands, we discard all output. The
-        // drainers exit when the child closes its end.
-        if let Some(stdout) = child.stdout.take() {
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stdout).lines();
-                while let Ok(Some(_)) = lines.next_line().await {}
-            });
-        }
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("child stdin missing"))?;
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("child stdout missing"))?;
+        // Drain stderr so the child does not block on a full pipe.
         if let Some(stderr) = child.stderr.take() {
             let lang = self.language;
             tokio::spawn(async move {
@@ -146,9 +187,6 @@ impl LspServer {
 
         *self.child.lock().await = Some(child);
         *self.started_at.lock().await = Some(started);
-        // Without the LSP `initialized` handshake we cannot truthfully claim
-        // `Ready`. Hold at `Starting` until the protocol commit advances us.
-        *self.state.lock().await = LspServerState::Starting;
         *self.last_kill_reason.lock().await = None;
         self.peak_rss_bytes.reset();
 
@@ -163,6 +201,41 @@ impl LspServer {
             cold_start_ms = cold_start_ms,
             "LSP server spawned",
         );
+
+        // Drive the handshake on a background task so spawn() returns quickly.
+        let me = Arc::clone(self);
+        let workspace_root = workspace_root.to_path_buf();
+        tokio::spawn(async move {
+            if let Err(e) = protocol::handshake(&mut stdin, &mut stdout, &workspace_root).await {
+                tracing::warn!(language = ?me.language, "LSP handshake failed: {}", e);
+                *me.state.lock().await = LspServerState::Failed;
+                return;
+            }
+            let init_ms = me
+                .started_at
+                .lock()
+                .await
+                .map(|t| t.elapsed().as_millis() as u64)
+                .unwrap_or(0);
+            *me.state.lock().await = LspServerState::Ready;
+            zedra_telemetry::send(zedra_telemetry::Event::LspReady {
+                language: language_label(me.language),
+                init_ms,
+            });
+            tracing::info!(language = ?me.language, init_ms, "LSP server ready");
+            // Reader loop owns stdout for the rest of the server's lifetime.
+            let store = Arc::clone(&me.diagnostics);
+            let lang = me.language;
+            protocol::run_reader(stdout, store, move |path, diagnostics| {
+                let _ = diag_tx.try_send(DiagnosticUpdate {
+                    language: lang,
+                    path,
+                    diagnostics,
+                });
+            })
+            .await;
+        });
+
         Ok(cold_start_ms)
     }
 
