@@ -193,8 +193,9 @@ class MainActivity : AppCompatActivity() {
         val fallback = (280 * resources.displayMetrics.density).toInt()
         panelHeightPx = if (lastImeBottomPx > 0) lastImeBottomPx else fallback
 
+        val hostOs = HostOs.fromU8(nativeActiveHostOs())
         val panel =
-            FullKeyboardPanel(this) { key, mods ->
+            FullKeyboardPanel(this, hostOs) { key, mods ->
                 nativeKeyboardAccessoryKey(key, mods)
             }
         rootView.addView(
@@ -283,6 +284,8 @@ class MainActivity : AppCompatActivity() {
         @JvmStatic external fun nativeSheetContentIsAtTop(): Boolean
 
         @JvmStatic external fun nativeKeyboardAccessoryKey(key: String, mods: Int)
+
+        @JvmStatic external fun nativeActiveHostOs(): Int
 
         @JvmStatic external fun nativeSystemBackPressed(): Boolean
 

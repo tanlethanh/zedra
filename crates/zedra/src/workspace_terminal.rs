@@ -419,7 +419,15 @@ impl WorkspaceTerminal {
         match self.terminal_view.read(cx).input_sender(cx) {
             Some(sender) => {
                 let terminal_id = self.terminal_id.clone();
+                let host_os = self
+                    .workspace_state
+                    .read(cx)
+                    .os
+                    .as_deref()
+                    .map(crate::key_encoding::HostOs::parse)
+                    .unwrap_or(crate::key_encoding::HostOs::Unknown);
                 active_terminal::set_active_input(terminal_id, sender);
+                crate::accessory_input::set_active_host_os(host_os);
             }
             None => {
                 warn!(terminal_id = %self.terminal_id, "no input sender, skipping active input registration");

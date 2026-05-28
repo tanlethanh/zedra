@@ -148,6 +148,11 @@ pub struct WorkspaceState {
     pub workdir: String,
     pub homedir: String,
     pub hostname: String,
+    /// Host OS as reported by `SyncSessionResult.os` — `"macos"`, `"linux"`,
+    /// `"windows"`. Transient; not persisted. Used by the keyboard accessory
+    /// panel to pick a platform-appropriate layout.
+    #[serde(skip)]
+    pub os: Option<String>,
     // Workspace-relative docs tree directories hidden by the user.
     #[serde(default)]
     pub docs_tree_collapsed_dirs: Vec<String>,
@@ -176,6 +181,7 @@ struct WorkspaceStateSyncSnapshot {
     workdir: String,
     homedir: String,
     hostname: String,
+    os: Option<String>,
     connect_phase: Option<ConnectPhase>,
     active_terminal_id: Option<String>,
     terminal_ids: Vec<String>,
@@ -194,6 +200,7 @@ impl PartialEq for WorkspaceState {
             && self.workdir == other.workdir
             && self.homedir == other.homedir
             && self.hostname == other.hostname
+            && self.os == other.os
             && self.docs_tree_collapsed_dirs == other.docs_tree_collapsed_dirs
             && self.created_at == other.created_at
             && self.updated_at == other.updated_at
@@ -245,6 +252,7 @@ impl WorkspaceState {
             workdir: self.workdir.clone(),
             homedir: self.homedir.clone(),
             hostname: self.hostname.clone(),
+            os: self.os.clone(),
             connect_phase: self.connect_phase.clone(),
             active_terminal_id: self.active_terminal_id.clone(),
             terminal_ids: self.terminal_ids.clone(),
@@ -329,6 +337,9 @@ impl WorkspaceState {
         }
         if !snap.homedir.is_empty() {
             self.homedir = snap.homedir.clone();
+        }
+        if snap.os.is_some() {
+            self.os = snap.os.clone();
         }
         if let Some(session_id) = session_id {
             self.session_id = session_id.clone();

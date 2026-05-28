@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use tracing::warn;
 
-use crate::key_encoding::{Key, Mods};
+use crate::key_encoding::{HostOs, Key, Mods};
 
 /// Handler invoked for every accessory keystroke that targets the active focus.
 /// Returns `true` when the keystroke was consumed.
@@ -26,8 +26,35 @@ struct ActiveConsumer {
 
 static ACTIVE: OnceLock<Mutex<Option<ActiveConsumer>>> = OnceLock::new();
 
+/// Host OS associated with whichever focus claimed the active consumer slot.
+/// Read by the native keyboard panel so it can pick a layout for the host's
+/// shortcuts (Cmd vs Ctrl labels, mac-style Option keys, etc.).
+static ACTIVE_HOST_OS: OnceLock<Mutex<HostOs>> = OnceLock::new();
+
 fn slot() -> &'static Mutex<Option<ActiveConsumer>> {
     ACTIVE.get_or_init(|| Mutex::new(None))
+}
+
+fn host_os_slot() -> &'static Mutex<HostOs> {
+    ACTIVE_HOST_OS.get_or_init(|| Mutex::new(HostOs::Unknown))
+}
+
+/// Set the host OS associated with the active focus. Callers should refresh
+/// this whenever a different host becomes the active focus or whenever the
+/// host OS becomes known for the first time on a session.
+pub fn set_active_host_os(os: HostOs) {
+    if let Ok(mut slot) = host_os_slot().lock() {
+        *slot = os;
+    }
+}
+
+/// Current host OS. Returns `Unknown` when no host has claimed focus yet —
+/// callers should treat that as the macOS default per product direction.
+pub fn active_host_os() -> HostOs {
+    host_os_slot()
+        .lock()
+        .map(|guard| *guard)
+        .unwrap_or(HostOs::Unknown)
 }
 
 /// Install `consumer` as the active accessory handler. Replaces any prior one.

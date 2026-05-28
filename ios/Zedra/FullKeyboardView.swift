@@ -1,5 +1,24 @@
 import UIKit
 
+/// Host OS reported by `zedra_ios_active_host_os` — matches Rust
+/// `key_encoding::HostOs`. The panel uses it to label / pick a layout that
+/// matches the host the active terminal is talking to. `Unknown` is treated
+/// as macOS per product direction.
+enum HostOs: UInt8 {
+    case unknown = 0
+    case macOs = 1
+    case linux = 2
+    case windows = 3
+
+    var displayName: String {
+        switch self {
+        case .unknown, .macOs: return "macOS"
+        case .linux: return "Linux"
+        case .windows: return "Windows"
+        }
+    }
+}
+
 /// Desktop-only key panel that replaces the system keyboard while a terminal
 /// or agent session has focus. Surfaces keys / combos that the iOS soft
 /// keyboard either doesn't have at all or buries multiple layers deep. There
@@ -82,6 +101,8 @@ final class FullKeyboardView: UIView {
     ]
 
     private let sendKey: SendKey
+    private let hostOs: HostOs
+    private weak var hostBadge: UILabel?
     private var isDarkTheme = true
     private var armedMods: AccessoryMods = []
     private var rowsKeys: [[Key]] = []
@@ -92,14 +113,40 @@ final class FullKeyboardView: UIView {
     private let repeatInitialDelay: TimeInterval = 0.35
     private let repeatInterval: TimeInterval = 0.06
 
-    init(width: CGFloat, height: CGFloat, isDark: Bool, sendKey: @escaping SendKey) {
+    init(
+        width: CGFloat,
+        height: CGFloat,
+        isDark: Bool,
+        hostOs: HostOs,
+        sendKey: @escaping SendKey
+    ) {
         self.sendKey = sendKey
+        self.hostOs = hostOs
         self.isDarkTheme = isDark
         super.init(frame: CGRect(x: 0, y: 0, width: width, height: height))
         autoresizingMask = [.flexibleWidth]
         clipsToBounds = true
         applyTheme(isDark: isDark)
         build()
+        installHostBadge()
+    }
+
+    private func installHostBadge() {
+        let label = UILabel()
+        label.text = hostOs.displayName
+        label.font = .systemFont(ofSize: 10, weight: .medium)
+        label.textAlignment = .right
+        label.alpha = 0.55
+        addSubview(label)
+        hostBadge = label
+        applyHostBadgeColor()
+    }
+
+    private func applyHostBadgeColor() {
+        hostBadge?.textColor =
+            isDarkTheme
+            ? UIColor(white: 1.0, alpha: 1.0)
+            : UIColor(red: 0.07, green: 0.07, blue: 0.10, alpha: 1.0)
     }
 
     required init?(coder: NSCoder) {
@@ -115,6 +162,7 @@ final class FullKeyboardView: UIView {
         for (button, key) in keyButtons {
             styleButton(button, key: key)
         }
+        applyHostBadgeColor()
     }
 
     private func build() {
@@ -265,6 +313,15 @@ final class FullKeyboardView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        if let badge = hostBadge {
+            let badgeSize = badge.sizeThatFits(CGSize(width: 120, height: 14))
+            badge.frame = CGRect(
+                x: bounds.width - badgeSize.width - 8,
+                y: 2,
+                width: badgeSize.width,
+                height: badgeSize.height
+            )
+        }
         let rowCount = rowsKeys.count
         guard rowCount > 0, bounds.width > 0, bounds.height > 0 else {
             return

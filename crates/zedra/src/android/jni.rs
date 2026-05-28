@@ -426,6 +426,14 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeSheetContentIsAtTop
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeActiveHostOs(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jni::sys::jint {
+    crate::accessory_input::active_host_os().as_u8() as jni::sys::jint
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeKeyboardAccessoryKey(
     mut env: JNIEnv,
     _class: JClass,

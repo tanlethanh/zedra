@@ -11,6 +11,26 @@ import android.widget.LinearLayout
 import android.widget.TextView
 
 /**
+ * Host OS reported by `MainActivity.nativeActiveHostOs`. Matches Rust
+ * `key_encoding::HostOs`. `Unknown` is treated as macOS per product direction.
+ */
+enum class HostOs(val displayName: String) {
+    MacOs("macOS"),
+    Linux("Linux"),
+    Windows("Windows"),
+    ;
+
+    companion object {
+        fun fromU8(value: Int): HostOs =
+            when (value) {
+                2 -> Linux
+                3 -> Windows
+                else -> MacOs
+            }
+    }
+}
+
+/**
  * Desktop-only key panel that replaces the system IME while a terminal or
  * agent session has focus. Carries only the keys / combos that the soft
  * keyboard doesn't surface as a single tap. There is no QWERTY here — users
@@ -22,6 +42,7 @@ import android.widget.TextView
  */
 class FullKeyboardPanel(
     context: Context,
+    private val hostOs: HostOs,
     private val sendKey: (String, Int) -> Unit,
 ) : LinearLayout(context) {
     private object AccessoryMods {

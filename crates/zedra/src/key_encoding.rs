@@ -7,6 +7,33 @@
 ///
 /// Only the legacy xterm/VT encoding is implemented. CSI-u / kitty negotiation
 /// would replace `encode_legacy` with a per-PTY mode in a later change.
+/// Host operating system, parsed from `SyncSessionResult.os`. Crosses the
+/// FFI boundary as a `u8` so the native keyboard panel can pick a
+/// platform-appropriate layout without re-deriving the value.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum HostOs {
+    Unknown = 0,
+    MacOs = 1,
+    Linux = 2,
+    Windows = 3,
+}
+
+impl HostOs {
+    /// Map the `std::env::consts::OS` string the host sends over the wire.
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "macos" => Self::MacOs,
+            "linux" => Self::Linux,
+            "windows" => Self::Windows,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
 /// Active modifier keys for a keystroke.
 ///
 /// Stored as a `u8` so it crosses the FFI boundary as-is. Bits are deliberately

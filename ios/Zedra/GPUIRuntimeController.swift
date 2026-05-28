@@ -27,6 +27,9 @@ private func zedra_firebase_initialize()
 @_silgen_name("zedra_ios_send_key_input")
 private func zedra_ios_send_key_input(_ key: UnsafePointer<CChar>, _ mods: UInt8)
 
+@_silgen_name("zedra_ios_active_host_os")
+private func zedra_ios_active_host_os() -> UInt8
+
 @_silgen_name("zedra_ios_app_will_terminate")
 private func zedra_ios_app_will_terminate()
 
@@ -236,10 +239,12 @@ final class GPUIRuntimeController: NSObject {
         // Fall back to a sensible default if the keyboard frame hasn't been
         // observed yet (e.g. hardware keyboard attached on simulator).
         let panelHeight = lastKeyboardHeightPoints > 0 ? lastKeyboardHeightPoints : 280.0
+        let hostOs = HostOs(rawValue: zedra_ios_active_host_os()) ?? .macOs
         let panel = FullKeyboardView(
             width: width,
             height: panelHeight,
-            isDark: isDarkThemeForPanel
+            isDark: isDarkThemeForPanel,
+            hostOs: hostOs
         ) { [weak self] key, mods in
             self?.sendKeyboardAccessoryKey(key, mods)
         }

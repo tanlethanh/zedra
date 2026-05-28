@@ -623,6 +623,17 @@ pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char, mods: u
     crate::accessory_input::dispatch(key_name, mods);
 }
 
+/// Returns the host OS of the currently-focused session as a `u8`:
+/// 0 = unknown / no session, 1 = macOS, 2 = Linux, 3 = Windows.
+///
+/// The native keyboard panel calls this when opening the full-keyboard view
+/// so it can pick a platform-appropriate layout. Treat `Unknown` as macOS by
+/// default per product direction.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_active_host_os() -> u8 {
+    crate::accessory_input::active_host_os().as_u8()
+}
+
 /// Called from the native terminal composer to send finalized text to the active terminal.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_send_terminal_text(text: *const std::ffi::c_char) {
