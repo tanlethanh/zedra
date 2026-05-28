@@ -1094,6 +1094,27 @@ Expected:
 5. Toggle Appearance back to **Dark** and repeat the same presentations.
 6. Expected: native surfaces return to dark backgrounds and light text/icons without restarting the app.
 
+## 22c. Keyboard accessory detail row (Ctrl/Alt/Shift + agent keys)
+
+1. Connect to a workspace and focus a terminal so the keyboard accessory bar shows the primary row (Esc Tab ← ↓ ↑ → ⏎ •••).
+2. Tap **•••** on the right of the bar.
+3. Expected: a second row appears under the primary row with `Ctrl Alt Shift ⇧⇥ ⌃C ⌃D ⌃R Home End PgUp PgDn`. The bar height grows; the terminal view is pushed up so no content is hidden behind it.
+4. Tap **⌃C**.
+5. Expected: a foreground process in the terminal receives SIGINT (e.g. a running `sleep 30` returns to the prompt).
+6. Tap **Ctrl** so it highlights, then tap **D**-style key — in this build the closest equivalent is the dedicated **⌃D** button: tap **⌃D** at an empty prompt and confirm the shell sees EOF (e.g. `bash` exits / `cat` returns).
+7. Tap **Shift** so it highlights, then tap **Tab** in the primary row.
+8. Expected: the active program receives BackTab (`ESC [ Z`). In Claude Code, this toggles plan / accept-edits mode. The Shift highlight clears after the next key.
+9. Tap **Ctrl** (no extra key) then tap **Ctrl** again.
+10. Expected: the Ctrl highlight toggles on and off; no bytes are sent to the PTY for either tap.
+11. Tap **⇧⇥** (shift+tab one-shot button) in the detail row.
+12. Expected: BackTab is sent without needing to arm Shift first.
+13. Tap **PgUp** and hold; release after one second.
+14. Expected: PgUp repeats at the same cadence as the arrow keys (one immediate keystroke, then auto-repeat).
+15. Tap **•••** again to collapse.
+16. Expected: the detail row hides, the bar shrinks back to one row, any armed modifier is cleared.
+17. Repeat steps 1–3 on Android.
+18. Expected: same behavior as iOS — detail row appears, terminal area resizes to make room (no rows hidden), modifiers toggle/highlight, `⌃C` interrupts the foreground process.
+
 ## 22b. iOS Native Presentations Follow Theme
 
 1. Install an iOS build and open Settings.
