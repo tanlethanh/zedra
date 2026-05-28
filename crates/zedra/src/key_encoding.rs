@@ -44,12 +44,17 @@ pub struct Mods(pub u8);
 
 impl Mods {
     pub const NONE: Mods = Mods(0);
-    pub const SHIFT: Mods = Mods(0b001);
-    pub const ALT: Mods = Mods(0b010);
-    pub const CTRL: Mods = Mods(0b100);
+    pub const SHIFT: Mods = Mods(0b0001);
+    pub const ALT: Mods = Mods(0b0010);
+    pub const CTRL: Mods = Mods(0b0100);
+    /// Cmd / Super. The legacy xterm/VT encoder ignores it (no byte
+    /// representation in PTY), but it crosses the FFI so the native panel can
+    /// track an armed state and a future host-side RPC can route GUI-level
+    /// shortcuts.
+    pub const CMD: Mods = Mods(0b1000);
 
     pub fn from_bits(bits: u8) -> Self {
-        Self(bits & 0b111)
+        Self(bits & 0b1111)
     }
 
     pub fn contains(self, other: Mods) -> bool {
