@@ -16,7 +16,9 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import dev.zed.gpui.GpuiRuntimeController
 import dev.zed.gpui.GpuiSurfaceView
 
@@ -32,6 +34,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var rootView: FrameLayout
     private lateinit var surfaceView: GpuiSurfaceView
     private lateinit var keyboardAccessoryBar: KeyboardAccessoryBar
+    private var fullKeyboardPanel: FullKeyboardPanel? = null
+    private var lastImeBottomPx: Int = 0
+    private var panelHeightPx: Int = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
@@ -45,22 +50,20 @@ class MainActivity : AppCompatActivity() {
 
         rootView = FrameLayout(this)
         surfaceView = runtime.attach(rootView)
-        keyboardAccessoryBar = KeyboardAccessoryBar(this) { key, mods ->
-            nativeKeyboardAccessoryKey(key, mods)
-        }
+        keyboardAccessoryBar =
+            KeyboardAccessoryBar(
+                this,
+                sendKey = { key, mods -> nativeKeyboardAccessoryKey(key, mods) },
+                togglePanel = { toggleFullKeyboardPanel() },
+            )
         rootView.addView(
             keyboardAccessoryBar,
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
-                keyboardAccessoryBar.currentHeightPx,
+                (44 * resources.displayMetrics.density).toInt(),
                 Gravity.BOTTOM,
             ),
         )
-        keyboardAccessoryBar.onHeightChanged = { heightPx ->
-            if (keyboardAccessoryBar.visibility == View.VISIBLE) {
-                surfaceView.setKeyboardAccessoryHeight(heightPx)
-            }
-        }
         installKeyboardAccessoryInsets()
         sSurfaceView = surfaceView
         sActivity = this
@@ -142,21 +145,87 @@ class MainActivity : AppCompatActivity() {
     private fun installKeyboardAccessoryInsets() {
         ViewCompat.setOnApplyWindowInsetsListener(rootView) { _, insets ->
             val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-            val params = keyboardAccessoryBar.layoutParams as FrameLayout.LayoutParams
-            if (params.bottomMargin != imeBottom) {
-                params.bottomMargin = imeBottom
-                keyboardAccessoryBar.layoutParams = params
+            if (imeBottom > 0) {
+                lastImeBottomPx = imeBottom
             }
-            keyboardAccessoryBar.visibility = if (imeBottom > 0) View.VISIBLE else View.GONE
-            surfaceView.setKeyboardAccessoryHeight(
-                if (imeBottom > 0) keyboardAccessoryBar.layoutParams.height else 0,
-            )
-            if (imeBottom == 0) {
-                keyboardAccessoryBar.stopRepeating()
+            // The panel anchors the accessory bar instead of the IME while it's
+            // open, so ignore IME-driven repositioning during that window.
+            if (fullKeyboardPanel == null) {
+                anchorAccessoryBar(toBottom = imeBottom)
+                if (imeBottom == 0) {
+                    keyboardAccessoryBar.stopRepeating()
+                }
             }
             insets
         }
         ViewCompat.requestApplyInsets(rootView)
+    }
+
+    /**
+     * Pin the accessory bar so its bottom edge sits `toBottom` px above the
+     * window bottom, and tell the GPUI surface to leave that much room +
+     * the bar height for keyboard chrome.
+     */
+    private fun anchorAccessoryBar(toBottom: Int) {
+        val params = keyboardAccessoryBar.layoutParams as FrameLayout.LayoutParams
+        if (params.bottomMargin != toBottom) {
+            params.bottomMargin = toBottom
+            keyboardAccessoryBar.layoutParams = params
+        }
+        keyboardAccessoryBar.visibility = if (toBottom > 0) View.VISIBLE else View.GONE
+        surfaceView.setKeyboardAccessoryHeight(
+            if (toBottom > 0) toBottom + keyboardAccessoryBar.layoutParams.height else 0,
+        )
+    }
+
+    private fun toggleFullKeyboardPanel() {
+        if (fullKeyboardPanel != null) {
+            closeFullKeyboardPanel()
+        } else {
+            openFullKeyboardPanel()
+        }
+    }
+
+    private fun openFullKeyboardPanel() {
+        if (fullKeyboardPanel != null) return
+        // Fall back to ~280dp if the IME never reported a height yet (hardware
+        // keyboard, first-run before any input field focused).
+        val fallback = (280 * resources.displayMetrics.density).toInt()
+        panelHeightPx = if (lastImeBottomPx > 0) lastImeBottomPx else fallback
+
+        val panel =
+            FullKeyboardPanel(this) { key, mods ->
+                nativeKeyboardAccessoryKey(key, mods)
+            }
+        rootView.addView(
+            panel,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                panelHeightPx,
+                Gravity.BOTTOM,
+            ),
+        )
+        fullKeyboardPanel = panel
+        keyboardAccessoryBar.setPanelOpen(true)
+        anchorAccessoryBar(toBottom = panelHeightPx)
+
+        // Ask the system to hide the soft keyboard so it doesn't ghost behind
+        // our panel. The text field stays focused; users can re-open with ✕.
+        WindowCompat.getInsetsController(window, surfaceView)
+            ?.hide(WindowInsetsCompat.Type.ime())
+    }
+
+    private fun closeFullKeyboardPanel() {
+        val panel = fullKeyboardPanel ?: return
+        rootView.removeView(panel)
+        fullKeyboardPanel = null
+        keyboardAccessoryBar.setPanelOpen(false)
+        anchorAccessoryBar(toBottom = 0)
+        // Bring the system keyboard back so typing-heavy work (Vietnamese IME,
+        // dictation, swipe) is one tap away.
+        val controller: WindowInsetsControllerCompat? =
+            WindowCompat.getInsetsController(window, surfaceView)
+        controller?.show(WindowInsetsCompat.Type.ime())
     }
 
     companion object {

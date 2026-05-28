@@ -1094,26 +1094,23 @@ Expected:
 5. Toggle Appearance back to **Dark** and repeat the same presentations.
 6. Expected: native surfaces return to dark backgrounds and light text/icons without restarting the app.
 
-## 22c. Keyboard accessory detail row (Ctrl/Alt/Shift + agent keys)
+## 22c. Keyboard accessory full-keyboard toggle (replaces system keyboard)
 
 1. Connect to a workspace and focus a terminal so the keyboard accessory bar shows the primary row (Esc Tab ← ↓ ↑ → ⏎ •••).
 2. Tap **•••** on the right of the bar.
-3. Expected: a second row appears under the primary row with `Ctrl Alt Shift ⇧⇥ ⌃C ⌃D ⌃R Home End PgUp PgDn`. The bar height grows; the terminal view is pushed up so no content is hidden behind it.
-4. Tap **⌃C**.
-5. Expected: a foreground process in the terminal receives SIGINT (e.g. a running `sleep 30` returns to the prompt).
-6. Tap **Ctrl** so it highlights, then tap **D**-style key — in this build the closest equivalent is the dedicated **⌃D** button: tap **⌃D** at an empty prompt and confirm the shell sees EOF (e.g. `bash` exits / `cat` returns).
-7. Tap **Shift** so it highlights, then tap **Tab** in the primary row.
-8. Expected: the active program receives BackTab (`ESC [ Z`). In Claude Code, this toggles plan / accept-edits mode. The Shift highlight clears after the next key.
-9. Tap **Ctrl** (no extra key) then tap **Ctrl** again.
-10. Expected: the Ctrl highlight toggles on and off; no bytes are sent to the PTY for either tap.
-11. Tap **⇧⇥** (shift+tab one-shot button) in the detail row.
-12. Expected: BackTab is sent without needing to arm Shift first.
-13. Tap **PgUp** and hold; release after one second.
-14. Expected: PgUp repeats at the same cadence as the arrow keys (one immediate keystroke, then auto-repeat).
-15. Tap **•••** again to collapse.
-16. Expected: the detail row hides, the bar shrinks back to one row, any armed modifier is cleared.
-17. Repeat steps 1–3 on Android.
-18. Expected: same behavior as iOS — detail row appears, terminal area resizes to make room (no rows hidden), modifiers toggle/highlight, `⌃C` interrupts the foreground process.
+3. Expected: the system keyboard is replaced in place by an in-app QWERTY panel of the same height. The accessory bar stays anchored on top, but the toggle label now reads **✕**. The terminal view does not jump — the total keyboard slot height is unchanged.
+4. Type `ls` followed by **return** on the QWERTY panel.
+5. Expected: the terminal receives the characters and runs the command exactly as it would from the system keyboard.
+6. Tap **⇧** (single tap), then a letter key.
+7. Expected: the letter is sent as a capital and the shift indicator clears. Tap **⇧** twice quickly to lock; the indicator changes to **⇪** and stays on across multiple letters.
+8. Tap **123** then **#+=** to walk through the number and symbol layers; tap a key in each.
+9. Expected: each tap inserts the displayed character at the terminal cursor (`|`, `~`, `\`, etc.).
+10. Tap **✕** in the accessory bar.
+11. Expected: the QWERTY panel is replaced by the system keyboard at the same screen position. The toggle label returns to **•••**. Vietnamese / dictation / autocorrect work again.
+12. Tap **•••** again, then hide the keyboard via the dismiss gesture (drag down on iOS, back button on Android).
+13. Expected: both the panel and the accessory bar disappear with the keyboard. Re-focusing the terminal shows the system keyboard with **•••** in the bar (panel does not auto-restore).
+14. Repeat steps 1–11 on Android.
+15. Expected: same behavior as iOS — the panel replaces the IME at the same height; **✕** restores the IME; system back / dismiss tears down both surfaces.
 
 ## 22b. iOS Native Presentations Follow Theme
 

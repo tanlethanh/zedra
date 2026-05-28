@@ -15,6 +15,12 @@ private func gpui_ios_handle_view_resize(
 @_silgen_name("gpui_ios_set_software_keyboard_visible")
 private func gpui_ios_set_software_keyboard_visible(_ visible: Bool)
 
+@_silgen_name("gpui_ios_set_keyboard_input_view")
+private func gpui_ios_set_keyboard_input_view(_ viewPtr: UnsafeMutableRawPointer?)
+
+@_silgen_name("gpui_ios_reload_input_views")
+private func gpui_ios_reload_input_views(_ windowPtr: UnsafeMutableRawPointer?)
+
 @_silgen_name("zedra_firebase_initialize")
 private func zedra_firebase_initialize()
 
@@ -31,6 +37,11 @@ final class GPUIRuntimeController: NSObject {
     private var gpuiWindow: UnsafeMutableRawPointer?
     private var displayLink: CADisplayLink?
     private let keyboardAccessoryController = KeyboardSupporter()
+    /// Cached height (points) of the most recent system keyboard. Used to size
+    /// the in-app full keyboard so it occupies the same slot when installed.
+    private var lastKeyboardHeightPoints: CGFloat = 0
+    private var fullKeyboardView: FullKeyboardView?
+    private var isDarkThemeForPanel = true
 
     func launch() {
         Self.activeController = self
@@ -135,6 +146,12 @@ final class GPUIRuntimeController: NSObject {
             return
         }
 
+        // Subtract the accessory bar from the reported frame: when our in-app
+        // panel replaces the keyboard, UIKit still stacks the accessory bar on
+        // top, so the panel itself only occupies the keys area.
+        let accessoryHeight = keyboardAccessoryController.accessoryView?.frame.height ?? 0
+        lastKeyboardHeightPoints = max(0, endFrame.height - accessoryHeight)
+
         let heightPx = UInt32(endFrame.height * UIScreen.main.scale)
         zedra_ios_set_keyboard_height(heightPx)
         gpui_ios_set_software_keyboard_visible(heightPx > 0)
@@ -145,6 +162,12 @@ final class GPUIRuntimeController: NSObject {
         keyboardAccessoryController.stopRepeating()
         zedra_ios_set_keyboard_height(0)
         gpui_ios_set_software_keyboard_visible(false)
+        // Tear down the in-app panel along with the keyboard; if the user
+        // re-focuses the field, they should see the system keyboard again
+        // unless they explicitly request the panel.
+        if keyboardAccessoryController.isPanelOpen {
+            closeFullKeyboardPanel()
+        }
     }
 
     @objc
@@ -177,17 +200,60 @@ final class GPUIRuntimeController: NSObject {
     private func setupKeyboardAccessoryView() {
         let width = UIScreen.main.bounds.width
         let bar = keyboardAccessoryController.makeAccessoryView(
-            width: width
-        ) { [weak self] key, mods in
-            self?.sendKeyboardAccessoryKey(key, mods)
-        }
+            width: width,
+            sendKey: { [weak self] key, mods in
+                self?.sendKeyboardAccessoryKey(key, mods)
+            },
+            togglePanel: { [weak self] in
+                self?.toggleFullKeyboardPanel()
+            }
+        )
         gpui_ios_set_keyboard_accessory_view(Unmanaged.passUnretained(bar).toOpaque())
     }
 
     static func setKeyboardAccessoryTheme(isDark: Bool) {
         DispatchQueue.main.async {
-            activeController?.keyboardAccessoryController.applyTheme(isDark: isDark)
+            activeController?.applyKeyboardTheme(isDark: isDark)
         }
+    }
+
+    private func applyKeyboardTheme(isDark: Bool) {
+        isDarkThemeForPanel = isDark
+        keyboardAccessoryController.applyTheme(isDark: isDark)
+        fullKeyboardView?.applyTheme(isDark: isDark)
+    }
+
+    private func toggleFullKeyboardPanel() {
+        if keyboardAccessoryController.isPanelOpen {
+            closeFullKeyboardPanel()
+        } else {
+            openFullKeyboardPanel()
+        }
+    }
+
+    private func openFullKeyboardPanel() {
+        let width = UIScreen.main.bounds.width
+        // Fall back to a sensible default if the keyboard frame hasn't been
+        // observed yet (e.g. hardware keyboard attached on simulator).
+        let panelHeight = lastKeyboardHeightPoints > 0 ? lastKeyboardHeightPoints : 280.0
+        let panel = FullKeyboardView(
+            width: width,
+            height: panelHeight,
+            isDark: isDarkThemeForPanel
+        ) { [weak self] key, mods in
+            self?.sendKeyboardAccessoryKey(key, mods)
+        }
+        fullKeyboardView = panel
+        keyboardAccessoryController.setPanelOpen(true)
+        gpui_ios_set_keyboard_input_view(Unmanaged.passUnretained(panel).toOpaque())
+        gpui_ios_reload_input_views(gpuiWindow)
+    }
+
+    private func closeFullKeyboardPanel() {
+        keyboardAccessoryController.setPanelOpen(false)
+        gpui_ios_set_keyboard_input_view(nil)
+        gpui_ios_reload_input_views(gpuiWindow)
+        fullKeyboardView = nil
     }
 
     private func startDisplayLink() {

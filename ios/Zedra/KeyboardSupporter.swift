@@ -10,30 +10,15 @@ struct AccessoryMods: OptionSet {
     static let ctrl = AccessoryMods(rawValue: 0b100)
 }
 
-/// Resizing container for the keyboard accessory bar. Overriding
-/// `intrinsicContentSize` is what makes UIKit re-layout the keyboard when the
-/// detail row is toggled.
-private final class AccessoryContainer: UIView {
-    var contentHeight: CGFloat = 44.0 {
-        didSet {
-            invalidateIntrinsicContentSize()
-        }
-    }
-
-    override var intrinsicContentSize: CGSize {
-        CGSize(width: UIView.noIntrinsicMetric, height: contentHeight)
-    }
-}
-
+/// Accessory bar shown above whichever keyboard is active. The bar itself only
+/// owns the primary row (Esc / Tab / arrows / Enter) plus a `•••` toggle. When
+/// the toggle is tapped, the host swaps the system keyboard for `FullKeyboardView`
+/// and updates the toggle label to `✕`.
 @objcMembers
 final class KeyboardSupporter: NSObject {
     private enum KeySpecKind {
-        /// Plain key: sends `(name, armedMods | fixedMods)` and clears any armed sticky mods.
         case key(name: String, fixedMods: AccessoryMods = [])
-        /// Sticky modifier: toggles the armed state, never sends bytes.
-        case modifier(AccessoryMods)
-        /// Expands or collapses the detail row.
-        case toggleDetail
+        case togglePanel
     }
 
     private struct KeySpec {
@@ -50,21 +35,7 @@ final class KeyboardSupporter: NSObject {
         KeySpec(label: "↑", kind: .key(name: "up"), repeats: true),
         KeySpec(label: "→", kind: .key(name: "right"), repeats: true),
         KeySpec(label: "⏎", kind: .key(name: "enter"), repeats: false),
-        KeySpec(label: "•••", kind: .toggleDetail, repeats: false),
-    ]
-
-    private let detailRow: [KeySpec] = [
-        KeySpec(label: "Ctrl", kind: .modifier(.ctrl), repeats: false),
-        KeySpec(label: "Alt", kind: .modifier(.alt), repeats: false),
-        KeySpec(label: "Shift", kind: .modifier(.shift), repeats: false),
-        KeySpec(label: "⇧⇥", kind: .key(name: "tab", fixedMods: .shift), repeats: false),
-        KeySpec(label: "⌃C", kind: .key(name: "char:c", fixedMods: .ctrl), repeats: false),
-        KeySpec(label: "⌃D", kind: .key(name: "char:d", fixedMods: .ctrl), repeats: false),
-        KeySpec(label: "⌃R", kind: .key(name: "char:r", fixedMods: .ctrl), repeats: false),
-        KeySpec(label: "Home", kind: .key(name: "home"), repeats: false),
-        KeySpec(label: "End", kind: .key(name: "end"), repeats: false),
-        KeySpec(label: "PgUp", kind: .key(name: "page_up"), repeats: true),
-        KeySpec(label: "PgDn", kind: .key(name: "page_down"), repeats: true),
+        KeySpec(label: "•••", kind: .togglePanel, repeats: false),
     ]
 
     private let rowHeight: CGFloat = 44.0
@@ -72,42 +43,36 @@ final class KeyboardSupporter: NSObject {
     private let repeatInterval: TimeInterval = 0.06
 
     private(set) var accessoryView: UIView?
-    private weak var container: AccessoryContainer?
+    private weak var container: UIView?
     private weak var topBorder: UIView?
-    private weak var detailSeparator: UIView?
     private weak var leftKeyboardCornerFill: UIView?
     private weak var rightKeyboardCornerFill: UIView?
-    private weak var detailRowView: UIView?
-    private var primaryButtons: [(button: UIButton, spec: KeySpec)] = []
-    private var detailButtons: [(button: UIButton, spec: KeySpec)] = []
+    private var buttons: [(button: UIButton, spec: KeySpec)] = []
     private var sendKey: ((String, UInt8) -> Void)?
+    private var togglePanel: (() -> Void)?
     private var repeatTimer: Timer?
     private var repeatingKey: (name: String, mods: UInt8)?
     private var isDarkTheme = true
-    private var detailExpanded = false
-    private var armedMods: AccessoryMods = []
+    private(set) var isPanelOpen = false
 
-    func makeAccessoryView(width: CGFloat, sendKey: @escaping (String, UInt8) -> Void) -> UIView {
+    func makeAccessoryView(
+        width: CGFloat,
+        sendKey: @escaping (String, UInt8) -> Void,
+        togglePanel: @escaping () -> Void
+    ) -> UIView {
         stopRepeating()
         self.sendKey = sendKey
-        primaryButtons.removeAll()
-        detailButtons.removeAll()
-        armedMods = []
-        detailExpanded = false
+        self.togglePanel = togglePanel
+        buttons.removeAll()
 
-        let container = AccessoryContainer(
-            frame: CGRect(x: 0, y: 0, width: width, height: rowHeight)
-        )
+        let container = UIView(frame: CGRect(x: 0, y: 0, width: width, height: rowHeight))
         container.clipsToBounds = false
-        container.contentHeight = rowHeight
         self.container = container
 
         let border = UIView(frame: CGRect(x: 0, y: 0, width: width, height: 0.33))
         container.addSubview(border)
         topBorder = border
 
-        // The system keyboard has rounded top corners, which can expose the window
-        // background beside an inputAccessoryView. Fill only those side gaps.
         let cornerFillWidth: CGFloat = 18.0
         let cornerFillHeight: CGFloat = 12.0
         let leftFill = UIView(
@@ -126,22 +91,31 @@ final class KeyboardSupporter: NSObject {
         leftKeyboardCornerFill = leftFill
         rightKeyboardCornerFill = rightFill
 
-        layoutRow(primaryRow, into: container, atY: 0, width: width, storeIn: &primaryButtons)
-
-        let detail = UIView(frame: CGRect(x: 0, y: rowHeight, width: width, height: rowHeight))
-        detail.isHidden = true
-        container.addSubview(detail)
-        detailRowView = detail
-
-        let sep = UIView(frame: CGRect(x: 0, y: 0, width: width, height: 0.33))
-        detail.addSubview(sep)
-        detailSeparator = sep
-
-        layoutRow(detailRow, into: detail, atY: 0, width: width, storeIn: &detailButtons)
+        let buttonWidth = width / CGFloat(primaryRow.count)
+        for (index, spec) in primaryRow.enumerated() {
+            let button = UIButton(type: .system)
+            button.frame = CGRect(
+                x: buttonWidth * CGFloat(index),
+                y: 0,
+                width: buttonWidth,
+                height: rowHeight
+            )
+            button.setTitle(spec.label, for: .normal)
+            button.titleLabel?.font = .systemFont(ofSize: 16.0)
+            button.tag = index
+            button.layer.cornerRadius = 6.0
+            button.addTarget(self, action: #selector(buttonTouchDown(_:)), for: .touchDown)
+            button.addTarget(self, action: #selector(buttonTouchUpInside(_:)), for: .touchUpInside)
+            button.addTarget(self, action: #selector(stopRepeating), for: .touchUpOutside)
+            button.addTarget(self, action: #selector(stopRepeating), for: .touchCancel)
+            button.addTarget(self, action: #selector(stopRepeating), for: .touchDragExit)
+            container.addSubview(button)
+            buttons.append((button, spec))
+        }
 
         accessoryView = container
         applyTheme(isDark: isDarkTheme)
-        refreshModifierHighlights()
+        refreshToggleLabel()
         return container
     }
 
@@ -159,19 +133,43 @@ final class KeyboardSupporter: NSObject {
 
         container?.backgroundColor = backgroundColor
         topBorder?.backgroundColor = borderColor
-        detailSeparator?.backgroundColor = borderColor
         leftKeyboardCornerFill?.backgroundColor = backgroundColor
         rightKeyboardCornerFill?.backgroundColor = backgroundColor
 
         let interfaceStyle: UIUserInterfaceStyle = isDark ? .dark : .light
         if #available(iOS 13.0, *) {
             container?.overrideUserInterfaceStyle = interfaceStyle
-            detailRowView?.overrideUserInterfaceStyle = interfaceStyle
         }
-        for (button, _) in primaryButtons + detailButtons {
-            applyButtonTheme(button)
+        let foregroundColor =
+            isDark
+            ? UIColor(red: 0.96, green: 0.96, blue: 0.96, alpha: 1.0)
+            : UIColor(red: 0.102, green: 0.102, blue: 0.102, alpha: 1.0)
+        for (button, _) in buttons {
+            button.setTitleColor(foregroundColor, for: .normal)
+            button.tintColor = foregroundColor
+            if #available(iOS 13.0, *) {
+                button.overrideUserInterfaceStyle = interfaceStyle
+            }
         }
-        refreshModifierHighlights()
+    }
+
+    /// Set whether the host currently displays the in-app full keyboard. The
+    /// `•••` button flips to `✕` so users have a way back to the system
+    /// keyboard, and any pending key repeat is cancelled.
+    func setPanelOpen(_ open: Bool) {
+        isPanelOpen = open
+        refreshToggleLabel()
+        if open {
+            stopRepeating()
+        }
+    }
+
+    private func refreshToggleLabel() {
+        for (button, spec) in buttons {
+            if case .togglePanel = spec.kind {
+                button.setTitle(isPanelOpen ? "✕" : "•••", for: .normal)
+            }
+        }
     }
 
     @objc
@@ -181,107 +179,8 @@ final class KeyboardSupporter: NSObject {
         repeatingKey = nil
     }
 
-    private func layoutRow(
-        _ specs: [KeySpec],
-        into parent: UIView,
-        atY y: CGFloat,
-        width: CGFloat,
-        storeIn buttons: inout [(button: UIButton, spec: KeySpec)]
-    ) {
-        let buttonWidth = width / CGFloat(specs.count)
-        for (index, spec) in specs.enumerated() {
-            let button = UIButton(type: .system)
-            button.frame = CGRect(
-                x: buttonWidth * CGFloat(index),
-                y: y,
-                width: buttonWidth,
-                height: rowHeight
-            )
-            button.setTitle(spec.label, for: .normal)
-            button.titleLabel?.font = .systemFont(ofSize: 16.0)
-            button.tag = index
-            button.layer.cornerRadius = 6.0
-            button.addTarget(self, action: #selector(buttonTouchDown(_:)), for: .touchDown)
-            button.addTarget(self, action: #selector(buttonTouchUpInside(_:)), for: .touchUpInside)
-            button.addTarget(self, action: #selector(stopRepeating), for: .touchUpOutside)
-            button.addTarget(self, action: #selector(stopRepeating), for: .touchCancel)
-            button.addTarget(self, action: #selector(stopRepeating), for: .touchDragExit)
-            parent.addSubview(button)
-            buttons.append((button, spec))
-        }
-    }
-
-    private func applyButtonTheme(_ button: UIButton) {
-        let foregroundColor =
-            isDarkTheme
-            ? UIColor(red: 0.96, green: 0.96, blue: 0.96, alpha: 1.0)
-            : UIColor(red: 0.102, green: 0.102, blue: 0.102, alpha: 1.0)
-        let interfaceStyle: UIUserInterfaceStyle = isDarkTheme ? .dark : .light
-        button.setTitleColor(foregroundColor, for: .normal)
-        button.tintColor = foregroundColor
-        button.backgroundColor = .clear
-        if #available(iOS 13.0, *) {
-            button.overrideUserInterfaceStyle = interfaceStyle
-        }
-    }
-
-    private func refreshModifierHighlights() {
-        let highlight =
-            isDarkTheme
-            ? UIColor(white: 1.0, alpha: 0.18)
-            : UIColor(white: 0.0, alpha: 0.12)
-        for (button, spec) in detailButtons {
-            switch spec.kind {
-            case .modifier(let mod):
-                button.backgroundColor = armedMods.contains(mod) ? highlight : .clear
-            case .toggleDetail:
-                button.backgroundColor = detailExpanded ? highlight : .clear
-            case .key:
-                button.backgroundColor = .clear
-            }
-        }
-        for (button, spec) in primaryButtons {
-            if case .toggleDetail = spec.kind {
-                button.backgroundColor = detailExpanded ? highlight : .clear
-            }
-        }
-    }
-
-    private func setDetailExpanded(_ expanded: Bool) {
-        guard detailExpanded != expanded else {
-            return
-        }
-        detailExpanded = expanded
-        detailRowView?.isHidden = !expanded
-        container?.contentHeight = expanded ? rowHeight * 2 : rowHeight
-        if !expanded {
-            armedMods = []
-        }
-        refreshModifierHighlights()
-    }
-
-    private func handleSpec(_ spec: KeySpec) {
-        switch spec.kind {
-        case .toggleDetail:
-            setDetailExpanded(!detailExpanded)
-        case .modifier(let mod):
-            armedMods.formSymmetricDifference(mod)
-            refreshModifierHighlights()
-        case .key(let name, let fixedMods):
-            let mods = armedMods.union(fixedMods)
-            sendKey?(name, mods.rawValue)
-            if !armedMods.isEmpty {
-                armedMods = []
-                refreshModifierHighlights()
-            }
-        }
-    }
-
     private func spec(for sender: UIButton) -> KeySpec? {
-        for (button, spec) in primaryButtons where button === sender {
-            return spec
-        }
-        for (button, spec) in detailButtons where button === sender {
+        for (button, spec) in buttons where button === sender {
             return spec
         }
         return nil
@@ -293,14 +192,8 @@ final class KeyboardSupporter: NSObject {
             return
         }
         if case .key(let name, let fixedMods) = spec.kind {
-            let mods = armedMods.union(fixedMods)
-            sendKey?(name, mods.rawValue)
-            let cleared = !armedMods.isEmpty
-            if cleared {
-                armedMods = []
-                refreshModifierHighlights()
-            }
-            startRepeating(name: name, mods: mods.rawValue)
+            sendKey?(name, fixedMods.rawValue)
+            startRepeating(name: name, mods: fixedMods.rawValue)
         }
     }
 
@@ -312,8 +205,13 @@ final class KeyboardSupporter: NSObject {
         }
         if spec.repeats {
             stopRepeating()
-        } else {
-            handleSpec(spec)
+            return
+        }
+        switch spec.kind {
+        case .key(let name, let fixedMods):
+            sendKey?(name, fixedMods.rawValue)
+        case .togglePanel:
+            togglePanel?()
         }
     }
 
