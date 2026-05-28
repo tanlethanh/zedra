@@ -69,6 +69,7 @@ pub fn kind_slug(kind: ManagedAgentKind) -> &'static str {
         ManagedAgentKind::Claude => "claude",
         ManagedAgentKind::Codex => "codex",
         ManagedAgentKind::OpenCode => "opencode",
+        ManagedAgentKind::Pi => "pi",
     }
 }
 
@@ -77,6 +78,7 @@ pub fn program_name(kind: ManagedAgentKind) -> &'static str {
         ManagedAgentKind::Claude => "claude",
         ManagedAgentKind::Codex => "codex",
         ManagedAgentKind::OpenCode => "opencode",
+        ManagedAgentKind::Pi => "pi",
     }
 }
 
@@ -85,6 +87,7 @@ pub fn display_name(kind: ManagedAgentKind) -> &'static str {
         ManagedAgentKind::Claude => "Claude",
         ManagedAgentKind::Codex => "Codex",
         ManagedAgentKind::OpenCode => "OpenCode",
+        ManagedAgentKind::Pi => "Pi",
     }
 }
 

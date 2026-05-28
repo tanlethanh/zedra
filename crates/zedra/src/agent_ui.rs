@@ -45,6 +45,7 @@ pub fn managed_agent_icon(kind: ManagedAgentKind) -> &'static str {
         ManagedAgentKind::Claude => "icons/claude.svg",
         ManagedAgentKind::Codex => "icons/openai.svg",
         ManagedAgentKind::OpenCode => "icons/opencode.svg",
+        ManagedAgentKind::Pi => "icons/pi.svg",
     }
 }
 
@@ -53,6 +54,7 @@ pub fn kind_slug(kind: ManagedAgentKind) -> &'static str {
         ManagedAgentKind::Claude => "claude",
         ManagedAgentKind::Codex => "codex",
         ManagedAgentKind::OpenCode => "opencode",
+        ManagedAgentKind::Pi => "pi",
     }
 }
 
@@ -61,6 +63,7 @@ pub fn managed_agent_name(kind: ManagedAgentKind) -> &'static str {
         ManagedAgentKind::Claude => "Claude",
         ManagedAgentKind::Codex => "Codex",
         ManagedAgentKind::OpenCode => "OpenCode",
+        ManagedAgentKind::Pi => "Pi",
     }
 }
 
