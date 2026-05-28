@@ -103,7 +103,6 @@ final class FullKeyboardView: UIView {
     private let sendKey: SendKey
     private let hostOs: HostOs
     private weak var hostBadge: UILabel?
-    private weak var topBorder: UIView?
     private var isDarkTheme = true
     private var armedMods: AccessoryMods = []
     private var rowsKeys: [[Key]] = []
@@ -126,11 +125,9 @@ final class FullKeyboardView: UIView {
         autoresizingMask = [.flexibleWidth]
         clipsToBounds = false
 
-        let border = UIView(frame: CGRect(x: 0, y: 0, width: width, height: 0.33))
-        border.autoresizingMask = [.flexibleWidth]
-        addSubview(border)
-        topBorder = border
-
+        // No top border on the panel: the accessory bar above already draws
+        // its own bottom edge, and a second hairline read as a divider
+        // between bar and panel rather than one continuous surface.
         build()
         installHostBadge()
         applyTheme(isDark: isDark)
@@ -147,13 +144,8 @@ final class FullKeyboardView: UIView {
             isDark
             ? UIColor(red: 0.055, green: 0.047, blue: 0.047, alpha: 0.96)
             : UIColor(red: 0.961, green: 0.961, blue: 0.961, alpha: 0.98)
-        let borderColor =
-            isDark
-            ? UIColor(white: 1.0, alpha: 0.12)
-            : UIColor(white: 0.0, alpha: 0.10)
 
         self.backgroundColor = backgroundColor
-        topBorder?.backgroundColor = borderColor
 
         if #available(iOS 13.0, *) {
             overrideUserInterfaceStyle = isDark ? .dark : .light
@@ -330,8 +322,6 @@ final class FullKeyboardView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-
-        topBorder?.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 0.33)
 
         let rowCount = rowsKeys.count
         guard rowCount > 0, bounds.width > 0, bounds.height > 0 else {

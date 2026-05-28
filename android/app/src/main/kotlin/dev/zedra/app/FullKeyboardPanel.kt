@@ -2,8 +2,6 @@ package dev.zedra.app
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.graphics.Canvas
-import android.graphics.Paint
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
@@ -114,11 +112,6 @@ class FullKeyboardPanel(
     private val repeatInitialDelayMs = 350L
     private val repeatIntervalMs = 60L
     private val handler = Handler(Looper.getMainLooper())
-    private val topBorderPaint =
-        Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0x33FFFFFF
-            strokeWidth = density.coerceAtLeast(1f)
-        }
     private var repeatingKey: Pair<String, Int>? = null
     private var isDarkTheme = true
     private var armedMods: Int = 0
@@ -138,7 +131,9 @@ class FullKeyboardPanel(
     init {
         isFocusable = false
         isFocusableInTouchMode = false
-        setWillNotDraw(false)
+        // No top hairline: the accessory bar above already draws its own
+        // bottom edge, and a second separator reads as a divider between
+        // bar and panel rather than one continuous surface.
 
         rowsContainer =
             LinearLayout(context).apply {
@@ -167,15 +162,9 @@ class FullKeyboardPanel(
         applyTheme(isDark = true)
     }
 
-    override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-        canvas.drawLine(0f, 0f, width.toFloat(), 0f, topBorderPaint)
-    }
-
     fun applyTheme(isDark: Boolean) {
         isDarkTheme = isDark
         setBackgroundColor(if (isDark) 0xF50E0C0C.toInt() else 0xF5FFFFFF.toInt())
-        topBorderPaint.color = if (isDark) 0x33FFFFFF else 0x22000000
         val foreground = if (isDark) 0xFFFFFFFF.toInt() else 0xFF1A1A1A.toInt()
         hostBadge.setTextColor(foreground)
         for ((view, key) in keyViews) {
