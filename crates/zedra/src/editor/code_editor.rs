@@ -61,8 +61,28 @@ pub struct EditorView {
     /// True once a gesture has been committed to horizontal scroll.
     /// Stays true until a clearly vertical event overrides it.
     h_scroll_active: bool,
+    /// Pinch-to-zoom factor for the rendered editor surface. The layout still
+    /// runs at scale 1.0 — this scales the emitted geometry only via
+    /// [`paint_transform`] so text re-rasterizes sharp at any factor and no
+    /// reflow is triggered. Clamped to [`MIN_ZOOM`, `MAX_ZOOM`].
+    zoom_factor: f32,
+    /// Pinch focus in window-screen logical pixels, used as the scale pivot
+    /// while a gesture is active so the pinched point stays stationary as
+    /// `zoom_factor` changes.
+    pinch_focus: Option<Point<Pixels>>,
     on_scroll_boundary_changed: Option<Box<dyn FnMut(bool)>>,
 }
+
+/// Lower bound for [`EditorView::zoom_factor`]. Below this the gutter and
+/// caret targets become hard to hit on mobile.
+const MIN_ZOOM: f32 = 0.5;
+/// Upper bound. Past this the per-glyph atlas tile grows enough to be
+/// counter-productive for typical editor sessions.
+const MAX_ZOOM: f32 = 4.0;
+/// Maximum absolute `delta` accepted from any single pinch sample. Bounds the
+/// jitter from very fast pinches so the factor changes smoothly rather than
+/// jumping by multiple integer steps per frame.
+const ZOOM_DELTA_CLAMP: f32 = 0.25;
 
 impl EditorView {
     /// Create with automatic language detection from filename.
@@ -91,6 +111,8 @@ impl EditorView {
             h_scroll_offset: 0.0,
             max_line_chars: 0,
             h_scroll_active: false,
+            zoom_factor: 1.0,
+            pinch_focus: None,
             on_scroll_boundary_changed: None,
         }
     }
@@ -343,12 +365,40 @@ impl Render for EditorView {
             style
         };
 
+        let paint_xf = if (self.zoom_factor - 1.0).abs() < f32::EPSILON {
+            ScreenTransform::identity()
+        } else {
+            // The pivot is set to the most recent pinch focus so the user's
+            // finger stays anchored to the same pixel as the gesture zooms.
+            // Falling back to the editor origin keeps a sensible default if a
+            // pinch begins and ends before any Moved sample arrives.
+            let pivot = self.pinch_focus.unwrap_or(point(px(0.0), px(0.0)));
+            ScreenTransform::scale_around_pivot(self.zoom_factor, pivot)
+        };
+
         div()
             .flex()
             .flex_col()
             .size_full()
+            .overflow_hidden()
             .bg(rgb(editor_theme.background))
             .font_family(fonts::MONO_FONT_FAMILY)
+            .on_pinch(cx.listener(|this, event: &PinchEvent, _window, cx| {
+                if event.phase == TouchPhase::Started {
+                    this.pinch_focus = Some(event.position);
+                }
+                if event.phase != TouchPhase::Moved || event.delta == 0.0 {
+                    return;
+                }
+                this.pinch_focus = Some(event.position);
+                let delta = event.delta.clamp(-ZOOM_DELTA_CLAMP, ZOOM_DELTA_CLAMP);
+                let new_factor =
+                    (this.zoom_factor * (1.0 + delta)).clamp(MIN_ZOOM, MAX_ZOOM);
+                if (new_factor - this.zoom_factor).abs() > f32::EPSILON {
+                    this.zoom_factor = new_factor;
+                    cx.notify();
+                }
+            }))
             .on_scroll_wheel(
                 cx.listener(move |this, event: &ScrollWheelEvent, _window, cx| {
                     let (delta_x, delta_y) = match event.delta {
@@ -383,7 +433,8 @@ impl Render for EditorView {
                     this.notify_scroll_boundary_changed();
                 }),
             )
-            .child(
+            .child(paint_transform(
+                paint_xf,
                 selection_area(
                     uniform_list("editor-lines", line_count + extra_items, {
                         let text_style = text_style.clone();
@@ -465,7 +516,7 @@ impl Render for EditorView {
                 )
                 .id(CODE_EDITOR_SELECTION_AREA_ID)
                 .action_with_image("Add to Chat", "Zedra", AddSelectionToChat),
-            )
+            ))
     }
 }
 

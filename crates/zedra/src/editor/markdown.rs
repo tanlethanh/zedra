@@ -51,8 +51,19 @@ pub struct MarkdownView {
     mermaid_states: HashMap<usize, MermaidBlockState>,
     mermaid_show_source: HashSet<usize>,
     mermaid_generation: u64,
+    /// Pinch-to-zoom factor for the rendered markdown surface. Scales the
+    /// emitted geometry only via [`paint_transform`]; layout stays at scale
+    /// 1.0 so paragraph wrap and table widths do not reflow.
+    zoom_factor: f32,
+    /// Pinch focus in window-screen logical pixels, used as the scale pivot
+    /// while a gesture is active.
+    pinch_focus: Option<Point<Pixels>>,
     _theme_subscription: Vec<Subscription>,
 }
+
+const MIN_ZOOM: f32 = 0.5;
+const MAX_ZOOM: f32 = 4.0;
+const ZOOM_DELTA_CLAMP: f32 = 0.25;
 
 impl MarkdownView {
     pub fn new(source: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
@@ -78,6 +89,8 @@ impl MarkdownView {
             mermaid_states: HashMap::new(),
             mermaid_show_source: HashSet::new(),
             mermaid_generation: 0,
+            zoom_factor: 1.0,
+            pinch_focus: None,
             _theme_subscription: subscriptions,
         };
         view.schedule_mermaid_renders(cx);
@@ -375,10 +388,18 @@ impl Render for MarkdownView {
         .with_sizing_behavior(ListSizingBehavior::Auto)
         .size_full();
 
+        let paint_xf = if (self.zoom_factor - 1.0).abs() < f32::EPSILON {
+            ScreenTransform::identity()
+        } else {
+            let pivot = self.pinch_focus.unwrap_or(point(px(0.0), px(0.0)));
+            ScreenTransform::scale_around_pivot(self.zoom_factor, pivot)
+        };
+
         div()
             .id("markdown-preview-scroll")
             .size_full()
             .min_h_0()
+            .overflow_hidden()
             // Empty markdown taps should move focus and dismiss read-only selection.
             .track_focus(&focus_handle)
             .on_press(move |event, window, cx| {
@@ -387,12 +408,28 @@ impl Render for MarkdownView {
                     press_focus_handle.focus(window, cx);
                 }
             })
-            .child(
+            .on_pinch(cx.listener(|this, event: &PinchEvent, _window, cx| {
+                if event.phase == TouchPhase::Started {
+                    this.pinch_focus = Some(event.position);
+                }
+                if event.phase != TouchPhase::Moved || event.delta == 0.0 {
+                    return;
+                }
+                this.pinch_focus = Some(event.position);
+                let delta = event.delta.clamp(-ZOOM_DELTA_CLAMP, ZOOM_DELTA_CLAMP);
+                let new_factor =
+                    (this.zoom_factor * (1.0 + delta)).clamp(MIN_ZOOM, MAX_ZOOM);
+                if (new_factor - this.zoom_factor).abs() > f32::EPSILON {
+                    this.zoom_factor = new_factor;
+                    cx.notify();
+                }
+            }))
+            .child(paint_transform(
+                paint_xf,
                 selection_area(markdown_list)
                     .id(MARKDOWN_SELECTION_AREA_ID)
-                    .action_with_image("Add to Chat", "Zedra", AddSelectionToChat)
-                    .into_any_element(),
-            )
+                    .action_with_image("Add to Chat", "Zedra", AddSelectionToChat),
+            ))
     }
 }
 
