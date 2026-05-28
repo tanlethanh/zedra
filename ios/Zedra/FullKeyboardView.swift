@@ -20,15 +20,15 @@ enum HostOs: UInt8 {
 }
 
 /// Desktop-only key panel that replaces the system keyboard while a terminal
-/// or agent session has focus. Surfaces keys / combos the iOS soft keyboard
-/// doesn't expose as a single tap. There is no QWERTY here on purpose —
-/// `✕` hands focus back to the system IME for prose typing, dictation,
-/// Vietnamese / CJK input.
+/// or agent session has focus. Visual chrome (background, foreground, border,
+/// font size, row height) matches `KeyboardSupporter` so the panel reads as a
+/// natural extension of the accessory bar above it. The supplied design mock
+/// drives only position and the key set.
 ///
 /// Layout (top → bottom):
-///   Row 1 (chips):  Shift  Ctrl  Cmd   Home  End  PgUp  PgDn   ⌫
-///   Row 2 (flat):   ~  @  $  *  ^  %  =  `
-///   Row 3 (flat):   <  >  (  )  {  }  [  ]
+///   Row 1: shift  Ctrl  Cmd   Home  End  PgUp  PgD   ⌫
+///   Row 2: ~  @  $  *  ^  %  =  `
+///   Row 3: <  >  (  )  {  }  [  ]
 ///   Reserved space below the key rows is intentionally left blank for
 ///   future additions (clipboard, snippets, agent macros, …).
 final class FullKeyboardView: UIView {
@@ -47,69 +47,63 @@ final class FullKeyboardView: UIView {
     }
 
     private enum KeyKind {
-        /// Tap dispatches `(name, armedMods | fixedMods)`.
         case dispatch(name: String, fixedMods: AccessoryMods = [])
-        /// Sticky modifier — toggles `armedMods`, never sends bytes itself.
         case modifier(AccessoryMods)
-    }
-
-    private enum KeyStyle {
-        /// Raised pill / chip — modifiers, nav cluster, backspace.
-        case chip
-        /// Flat glyph — symbols. No background unless pressed.
-        case flat
     }
 
     private struct Key {
         let label: String
         let kind: KeyKind
-        let style: KeyStyle
         let repeats: Bool
 
-        init(label: String, kind: KeyKind, style: KeyStyle, repeats: Bool = false) {
+        init(label: String, kind: KeyKind, repeats: Bool = false) {
             self.label = label
             self.kind = kind
-            self.style = style
             self.repeats = repeats
         }
     }
 
-    private let chipRow: [Key] = [
-        Key(label: "shift", kind: .modifier(.shift), style: .chip),
-        Key(label: "Ctrl", kind: .modifier(.ctrl), style: .chip),
-        Key(label: "Cmd", kind: .modifier(.cmd), style: .chip),
-        Key(label: "Home", kind: .dispatch(name: "home"), style: .chip),
-        Key(label: "End", kind: .dispatch(name: "end"), style: .chip),
-        Key(label: "PgUp", kind: .dispatch(name: "page_up"), style: .chip, repeats: true),
-        Key(label: "PgD", kind: .dispatch(name: "page_down"), style: .chip, repeats: true),
-        Key(label: "⌫", kind: .dispatch(name: "backspace"), style: .chip, repeats: true),
+    private let modNavRow: [Key] = [
+        Key(label: "shift", kind: .modifier(.shift)),
+        Key(label: "Ctrl", kind: .modifier(.ctrl)),
+        Key(label: "Cmd", kind: .modifier(.cmd)),
+        Key(label: "Home", kind: .dispatch(name: "home")),
+        Key(label: "End", kind: .dispatch(name: "end")),
+        Key(label: "PgUp", kind: .dispatch(name: "page_up"), repeats: true),
+        Key(label: "PgD", kind: .dispatch(name: "page_down"), repeats: true),
+        Key(label: "⌫", kind: .dispatch(name: "backspace"), repeats: true),
     ]
 
     private let symbolRow1: [Key] = [
-        Key(label: "~", kind: .dispatch(name: "char:~"), style: .flat),
-        Key(label: "@", kind: .dispatch(name: "char:@"), style: .flat),
-        Key(label: "$", kind: .dispatch(name: "char:$"), style: .flat),
-        Key(label: "*", kind: .dispatch(name: "char:*"), style: .flat),
-        Key(label: "^", kind: .dispatch(name: "char:^"), style: .flat),
-        Key(label: "%", kind: .dispatch(name: "char:%"), style: .flat),
-        Key(label: "=", kind: .dispatch(name: "char:="), style: .flat),
-        Key(label: "`", kind: .dispatch(name: "char:`"), style: .flat),
+        Key(label: "~", kind: .dispatch(name: "char:~")),
+        Key(label: "@", kind: .dispatch(name: "char:@")),
+        Key(label: "$", kind: .dispatch(name: "char:$")),
+        Key(label: "*", kind: .dispatch(name: "char:*")),
+        Key(label: "^", kind: .dispatch(name: "char:^")),
+        Key(label: "%", kind: .dispatch(name: "char:%")),
+        Key(label: "=", kind: .dispatch(name: "char:=")),
+        Key(label: "`", kind: .dispatch(name: "char:`")),
     ]
 
     private let symbolRow2: [Key] = [
-        Key(label: "<", kind: .dispatch(name: "char:<"), style: .flat),
-        Key(label: ">", kind: .dispatch(name: "char:>"), style: .flat),
-        Key(label: "(", kind: .dispatch(name: "char:("), style: .flat),
-        Key(label: ")", kind: .dispatch(name: "char:)"), style: .flat),
-        Key(label: "{", kind: .dispatch(name: "char:{"), style: .flat),
-        Key(label: "}", kind: .dispatch(name: "char:}"), style: .flat),
-        Key(label: "[", kind: .dispatch(name: "char:["), style: .flat),
-        Key(label: "]", kind: .dispatch(name: "char:]"), style: .flat),
+        Key(label: "<", kind: .dispatch(name: "char:<")),
+        Key(label: ">", kind: .dispatch(name: "char:>")),
+        Key(label: "(", kind: .dispatch(name: "char:(")),
+        Key(label: ")", kind: .dispatch(name: "char:)")),
+        Key(label: "{", kind: .dispatch(name: "char:{")),
+        Key(label: "}", kind: .dispatch(name: "char:}")),
+        Key(label: "[", kind: .dispatch(name: "char:[")),
+        Key(label: "]", kind: .dispatch(name: "char:]")),
     ]
+
+    private let rowHeight: CGFloat = 44
+    private let repeatInitialDelay: TimeInterval = 0.35
+    private let repeatInterval: TimeInterval = 0.06
 
     private let sendKey: SendKey
     private let hostOs: HostOs
     private weak var hostBadge: UILabel?
+    private weak var topBorder: UIView?
     private var isDarkTheme = true
     private var armedMods: AccessoryMods = []
     private var rowsKeys: [[Key]] = []
@@ -117,8 +111,6 @@ final class FullKeyboardView: UIView {
     private var keyButtons: [(button: UIButton, key: Key)] = []
     private var repeatTimer: Timer?
     private var repeatingKey: (name: String, mods: UInt8)?
-    private let repeatInitialDelay: TimeInterval = 0.35
-    private let repeatInterval: TimeInterval = 0.06
 
     init(
         width: CGFloat,
@@ -132,10 +124,16 @@ final class FullKeyboardView: UIView {
         self.isDarkTheme = isDark
         super.init(frame: CGRect(x: 0, y: 0, width: width, height: height))
         autoresizingMask = [.flexibleWidth]
-        clipsToBounds = true
-        applyTheme(isDark: isDark)
+        clipsToBounds = false
+
+        let border = UIView(frame: CGRect(x: 0, y: 0, width: width, height: 0.33))
+        border.autoresizingMask = [.flexibleWidth]
+        addSubview(border)
+        topBorder = border
+
         build()
         installHostBadge()
+        applyTheme(isDark: isDark)
     }
 
     required init?(coder: NSCoder) {
@@ -144,10 +142,22 @@ final class FullKeyboardView: UIView {
 
     func applyTheme(isDark: Bool) {
         isDarkTheme = isDark
-        backgroundColor =
+
+        let backgroundColor =
             isDark
-            ? UIColor(red: 0.08, green: 0.08, blue: 0.10, alpha: 1.0)
-            : UIColor(red: 0.82, green: 0.83, blue: 0.85, alpha: 1.0)
+            ? UIColor(red: 0.055, green: 0.047, blue: 0.047, alpha: 0.96)
+            : UIColor(red: 0.961, green: 0.961, blue: 0.961, alpha: 0.98)
+        let borderColor =
+            isDark
+            ? UIColor(white: 1.0, alpha: 0.12)
+            : UIColor(white: 0.0, alpha: 0.10)
+
+        self.backgroundColor = backgroundColor
+        topBorder?.backgroundColor = borderColor
+
+        if #available(iOS 13.0, *) {
+            overrideUserInterfaceStyle = isDark ? .dark : .light
+        }
         for (button, key) in keyButtons {
             styleButton(button, key: key)
         }
@@ -168,8 +178,8 @@ final class FullKeyboardView: UIView {
     private func applyHostBadgeColor() {
         hostBadge?.textColor =
             isDarkTheme
-            ? UIColor(white: 1.0, alpha: 1.0)
-            : UIColor(red: 0.07, green: 0.07, blue: 0.10, alpha: 1.0)
+            ? UIColor(red: 0.96, green: 0.96, blue: 0.96, alpha: 1.0)
+            : UIColor(red: 0.102, green: 0.102, blue: 0.102, alpha: 1.0)
     }
 
     private func build() {
@@ -180,7 +190,7 @@ final class FullKeyboardView: UIView {
         rowsButtons.removeAll()
         keyButtons.removeAll()
 
-        for rowKeys in [chipRow, symbolRow1, symbolRow2] {
+        for rowKeys in [modNavRow, symbolRow1, symbolRow2] {
             var rowButtons: [UIButton] = []
             for key in rowKeys {
                 let button = makeButton(for: key)
@@ -196,10 +206,9 @@ final class FullKeyboardView: UIView {
 
     private func makeButton(for key: Key) -> UIButton {
         let button = UIButton(type: .system)
-        let fontSize: CGFloat = key.style == .chip ? 15 : 22
-        button.titleLabel?.font = .systemFont(ofSize: fontSize, weight: .regular)
+        button.titleLabel?.font = .systemFont(ofSize: 16)
         button.setTitle(key.label, for: .normal)
-        button.layer.cornerRadius = key.style == .chip ? 6 : 4
+        button.layer.cornerRadius = 6
         button.addTarget(self, action: #selector(buttonTouchDown(_:)), for: .touchDown)
         button.addTarget(self, action: #selector(buttonTouchUpInside(_:)), for: .touchUpInside)
         button.addTarget(self, action: #selector(stopRepeating), for: .touchUpOutside)
@@ -212,27 +221,21 @@ final class FullKeyboardView: UIView {
     private func styleButton(_ button: UIButton, key: Key) {
         let foreground =
             isDarkTheme
-            ? UIColor(white: 1.0, alpha: 1.0)
-            : UIColor(red: 0.07, green: 0.07, blue: 0.10, alpha: 1.0)
+            ? UIColor(red: 0.96, green: 0.96, blue: 0.96, alpha: 1.0)
+            : UIColor(red: 0.102, green: 0.102, blue: 0.102, alpha: 1.0)
         button.setTitleColor(foreground, for: .normal)
         button.tintColor = foreground
+        if #available(iOS 13.0, *) {
+            button.overrideUserInterfaceStyle = isDarkTheme ? .dark : .light
+        }
 
-        switch key.style {
-        case .chip:
-            let base =
-                isDarkTheme
-                ? UIColor(red: 0.30, green: 0.30, blue: 0.33, alpha: 1.0)
-                : UIColor(red: 0.65, green: 0.66, blue: 0.69, alpha: 1.0)
-            let armed =
-                isDarkTheme
-                ? UIColor(white: 1.0, alpha: 0.28)
-                : UIColor(white: 0.0, alpha: 0.22)
-            if case .modifier(let mod) = key.kind, armedMods.contains(mod) {
-                button.backgroundColor = armed
-            } else {
-                button.backgroundColor = base
-            }
-        case .flat:
+        let armed =
+            isDarkTheme
+            ? UIColor(white: 1.0, alpha: 0.18)
+            : UIColor(white: 0.0, alpha: 0.12)
+        if case .modifier(let mod) = key.kind, armedMods.contains(mod) {
+            button.backgroundColor = armed
+        } else {
             button.backgroundColor = .clear
         }
     }
@@ -319,6 +322,9 @@ final class FullKeyboardView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+
+        topBorder?.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 0.33)
+
         if let badge = hostBadge {
             let badgeSize = badge.sizeThatFits(CGSize(width: 120, height: 14))
             badge.frame = CGRect(
@@ -328,19 +334,15 @@ final class FullKeyboardView: UIView {
                 height: badgeSize.height
             )
         }
+
         let rowCount = rowsKeys.count
         guard rowCount > 0, bounds.width > 0, bounds.height > 0 else {
             return
         }
-        let horizontalInset: CGFloat = 6
-        let keyGap: CGFloat = 6
-        let topInset: CGFloat = 14
-        // Reserve roughly the bottom 40% of the panel for future content
-        // (clipboard, snippets, agent macros). Lay the key rows out in the
-        // upper region only.
-        let keysRegionHeight = bounds.height * 0.60
-        let rowGap: CGFloat = 8
-        let rowHeight = (keysRegionHeight - topInset - rowGap * CGFloat(rowCount - 1)) / CGFloat(rowCount)
+
+        let horizontalInset: CGFloat = 4
+        let keyGap: CGFloat = 2
+        let topInset: CGFloat = 18
         let availableWidth = bounds.width - horizontalInset * 2
 
         for (rowIndex, keys) in rowsKeys.enumerated() {
@@ -349,7 +351,7 @@ final class FullKeyboardView: UIView {
             let keyWidth = (availableWidth - totalGap) / CGFloat(max(1, keys.count))
 
             var x: CGFloat = horizontalInset
-            let y = topInset + CGFloat(rowIndex) * (rowHeight + rowGap)
+            let y = topInset + CGFloat(rowIndex) * rowHeight
             for (keyIndex, _) in keys.enumerated() {
                 buttons[keyIndex].frame = CGRect(
                     x: x,

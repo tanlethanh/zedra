@@ -2,11 +2,14 @@ package dev.zedra.app
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Paint
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 
@@ -32,21 +35,22 @@ enum class HostOs(val displayName: String) {
 
 /**
  * Desktop-only key panel that replaces the system IME while a terminal or
- * agent session has focus. Layout mirrors `FullKeyboardView` on iOS:
+ * agent session has focus. Visual chrome (background, foreground, border,
+ * font size, row height) mirrors `KeyboardAccessoryBar` so the panel reads
+ * as a natural extension of the bar above it. The mock drives only the key
+ * set and their position.
  *
- *   Row 1 (chips):  shift  Ctrl  Cmd  Home  End  PgUp  PgD  ⌫
- *   Row 2 (flat):   ~  @  $  *  ^  %  =  `
- *   Row 3 (flat):   <  >  (  )  {  }  [  ]
+ *   Row 1: shift  Ctrl  Cmd   Home  End  PgUp  PgD   ⌫
+ *   Row 2: ~  @  $  *  ^  %  =  `
+ *   Row 3: <  >  (  )  {  }  [  ]
  *   The lower ~40% of the panel is intentionally left blank for future
  *   additions (clipboard, snippets, agent macros).
- *
- * `✕` on the accessory bar hands focus back to the IME for prose typing.
  */
 class FullKeyboardPanel(
     context: Context,
     @Suppress("unused") private val hostOs: HostOs,
     private val sendKey: (String, Int) -> Unit,
-) : LinearLayout(context) {
+) : FrameLayout(context) {
     private object AccessoryMods {
         const val SHIFT = 0b0001
         const val ALT = 0b0010
@@ -63,61 +67,64 @@ class FullKeyboardPanel(
         data class Modifier(val bit: Int) : Kind()
     }
 
-    private enum class Style { CHIP, FLAT }
-
     private data class Key(
         val label: String,
         val kind: Kind,
-        val style: Style,
         val repeats: Boolean = false,
     )
 
-    private val chipRow =
+    private val modNavRow =
         listOf(
-            Key("shift", Kind.Modifier(AccessoryMods.SHIFT), Style.CHIP),
-            Key("Ctrl", Kind.Modifier(AccessoryMods.CTRL), Style.CHIP),
-            Key("Cmd", Kind.Modifier(AccessoryMods.CMD), Style.CHIP),
-            Key("Home", Kind.Dispatch("home"), Style.CHIP),
-            Key("End", Kind.Dispatch("end"), Style.CHIP),
-            Key("PgUp", Kind.Dispatch("page_up"), Style.CHIP, repeats = true),
-            Key("PgD", Kind.Dispatch("page_down"), Style.CHIP, repeats = true),
-            Key("⌫", Kind.Dispatch("backspace"), Style.CHIP, repeats = true),
+            Key("shift", Kind.Modifier(AccessoryMods.SHIFT)),
+            Key("Ctrl", Kind.Modifier(AccessoryMods.CTRL)),
+            Key("Cmd", Kind.Modifier(AccessoryMods.CMD)),
+            Key("Home", Kind.Dispatch("home")),
+            Key("End", Kind.Dispatch("end")),
+            Key("PgUp", Kind.Dispatch("page_up"), repeats = true),
+            Key("PgD", Kind.Dispatch("page_down"), repeats = true),
+            Key("⌫", Kind.Dispatch("backspace"), repeats = true),
         )
 
     private val symbolRow1 =
         listOf(
-            Key("~", Kind.Dispatch("char:~"), Style.FLAT),
-            Key("@", Kind.Dispatch("char:@"), Style.FLAT),
-            Key("$", Kind.Dispatch("char:$"), Style.FLAT),
-            Key("*", Kind.Dispatch("char:*"), Style.FLAT),
-            Key("^", Kind.Dispatch("char:^"), Style.FLAT),
-            Key("%", Kind.Dispatch("char:%"), Style.FLAT),
-            Key("=", Kind.Dispatch("char:="), Style.FLAT),
-            Key("`", Kind.Dispatch("char:`"), Style.FLAT),
+            Key("~", Kind.Dispatch("char:~")),
+            Key("@", Kind.Dispatch("char:@")),
+            Key("$", Kind.Dispatch("char:$")),
+            Key("*", Kind.Dispatch("char:*")),
+            Key("^", Kind.Dispatch("char:^")),
+            Key("%", Kind.Dispatch("char:%")),
+            Key("=", Kind.Dispatch("char:=")),
+            Key("`", Kind.Dispatch("char:`")),
         )
 
     private val symbolRow2 =
         listOf(
-            Key("<", Kind.Dispatch("char:<"), Style.FLAT),
-            Key(">", Kind.Dispatch("char:>"), Style.FLAT),
-            Key("(", Kind.Dispatch("char:("), Style.FLAT),
-            Key(")", Kind.Dispatch("char:)"), Style.FLAT),
-            Key("{", Kind.Dispatch("char:{"), Style.FLAT),
-            Key("}", Kind.Dispatch("char:}"), Style.FLAT),
-            Key("[", Kind.Dispatch("char:["), Style.FLAT),
-            Key("]", Kind.Dispatch("char:]"), Style.FLAT),
+            Key("<", Kind.Dispatch("char:<")),
+            Key(">", Kind.Dispatch("char:>")),
+            Key("(", Kind.Dispatch("char:(")),
+            Key(")", Kind.Dispatch("char:)")),
+            Key("{", Kind.Dispatch("char:{")),
+            Key("}", Kind.Dispatch("char:}")),
+            Key("[", Kind.Dispatch("char:[")),
+            Key("]", Kind.Dispatch("char:]")),
         )
 
     private val density = context.resources.displayMetrics.density
-    private val keyMargin = (3 * density).toInt()
-    private val rowGapPx = (4 * density).toInt()
+    private val rowHeightPx = (44 * density).toInt()
+    private val keyGapPx = (2 * density).toInt()
     private val repeatInitialDelayMs = 350L
     private val repeatIntervalMs = 60L
     private val handler = Handler(Looper.getMainLooper())
+    private val topBorderPaint =
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0x33FFFFFF
+            strokeWidth = density.coerceAtLeast(1f)
+        }
     private var repeatingKey: Pair<String, Int>? = null
     private var isDarkTheme = true
     private var armedMods: Int = 0
     private val keyViews = mutableListOf<Pair<View, Key>>()
+    private val rowsContainer: LinearLayout
 
     private val repeatRunnable =
         object : Runnable {
@@ -129,30 +136,47 @@ class FullKeyboardPanel(
         }
 
     init {
-        orientation = VERTICAL
-        setBaselineAligned(false)
         isFocusable = false
         isFocusableInTouchMode = false
-        applyTheme(isDark = true)
+        setWillNotDraw(false)
+
+        rowsContainer =
+            LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setBaselineAligned(false)
+            }
+        addView(
+            rowsContainer,
+            LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.TOP),
+        )
+
         build()
+        applyTheme(isDark = true)
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        canvas.drawLine(0f, 0f, width.toFloat(), 0f, topBorderPaint)
     }
 
     fun applyTheme(isDark: Boolean) {
         isDarkTheme = isDark
-        setBackgroundColor(if (isDark) 0xFF14141A.toInt() else 0xFFD1D3D8.toInt())
+        setBackgroundColor(if (isDark) 0xF50E0C0C.toInt() else 0xF5FFFFFF.toInt())
+        topBorderPaint.color = if (isDark) 0x33FFFFFF else 0x22000000
         for ((view, key) in keyViews) {
             applyKeyStyle(view, key)
         }
+        invalidate()
     }
 
     private fun build() {
-        removeAllViews()
+        rowsContainer.removeAllViews()
         keyViews.clear()
 
-        for (row in listOf(chipRow, symbolRow1, symbolRow2)) {
+        for (row in listOf(modNavRow, symbolRow1, symbolRow2)) {
             val rowView =
                 LinearLayout(context).apply {
-                    orientation = HORIZONTAL
+                    orientation = LinearLayout.HORIZONTAL
                     setBaselineAligned(false)
                 }
             for (key in row) {
@@ -160,17 +184,16 @@ class FullKeyboardPanel(
                 keyViews.add(view to key)
                 rowView.addView(
                     view,
-                    LayoutParams(0, LayoutParams.MATCH_PARENT, 1f).apply {
-                        setMargins(keyMargin, keyMargin, keyMargin, keyMargin)
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                        setMargins(keyGapPx, 0, keyGapPx, 0)
                     },
                 )
             }
-            addView(rowView, LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f))
+            rowsContainer.addView(
+                rowView,
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, rowHeightPx),
+            )
         }
-
-        // Reserve the bottom area for future content. A 2-weight blank view
-        // pushes the key rows up so they occupy roughly the top 60%.
-        addView(View(context), LayoutParams(LayoutParams.MATCH_PARENT, 0, 2f))
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -178,7 +201,7 @@ class FullKeyboardPanel(
         val view =
             TextView(context).apply {
                 text = key.label
-                textSize = if (key.style == Style.CHIP) 14f else 20f
+                textSize = 16f
                 gravity = Gravity.CENTER
                 isClickable = true
                 isFocusable = false
@@ -217,24 +240,18 @@ class FullKeyboardPanel(
     }
 
     private fun applyKeyStyle(view: View, key: Key) {
-        val foreground = if (isDarkTheme) 0xFFFFFFFF.toInt() else 0xFF101015.toInt()
+        val foreground = if (isDarkTheme) 0xFFFFFFFF.toInt() else 0xFF1A1A1A.toInt()
         if (view is TextView) {
             view.setTextColor(foreground)
         }
-        when (key.style) {
-            Style.CHIP -> {
-                val base = if (isDarkTheme) 0xFF4A4A52.toInt() else 0xFFA6A8AE.toInt()
-                val armed = if (isDarkTheme) 0x47FFFFFF.toInt() else 0x38000000.toInt()
-                val bg =
-                    if (key.kind is Kind.Modifier && (armedMods and key.kind.bit) != 0) {
-                        armed
-                    } else {
-                        base
-                    }
-                view.setBackgroundColor(bg)
+        val armed = if (isDarkTheme) 0x2EFFFFFF.toInt() else 0x1F000000.toInt()
+        val bg =
+            if (key.kind is Kind.Modifier && (armedMods and key.kind.bit) != 0) {
+                armed
+            } else {
+                0x00000000
             }
-            Style.FLAT -> view.setBackgroundColor(0x00000000)
-        }
+        view.setBackgroundColor(bg)
     }
 
     private fun refreshModifierHighlights() {
