@@ -44,6 +44,20 @@ struct SessionHandleInner {
     /// Parsed from `SyncSessionResult.host_version`; gates post-baseline
     /// RPCs so old hosts never receive an undecodable variant.
     host_version: Mutex<Option<(u32, u32, u32)>>,
+    /// Cached diagnostics keyed by `(language, workspace-relative path)`.
+    /// Refreshed wholesale per file on every `LspDiagnosticsPush` event.
+    /// Empty `Vec` means "the host explicitly cleared this file".
+    lsp_diagnostics: Mutex<
+        std::collections::HashMap<
+            (zedra_rpc::proto::LspLanguage, String),
+            Vec<zedra_rpc::proto::LspDiagnosticV2>,
+        >,
+    >,
+    /// Cached per-language server state, set by `LspServerStateChanged`.
+    /// UI dims diagnostics for languages whose state is `Killed`/`Failed`.
+    lsp_server_states: Mutex<
+        std::collections::HashMap<zedra_rpc::proto::LspLanguage, zedra_rpc::proto::LspServerState>,
+    >,
 }
 
 impl Drop for SessionHandleInner {
@@ -79,7 +93,93 @@ impl SessionHandle {
             observer_rpc_supported: AtomicBool::new(true),
             docs_tree_rpc_supported: AtomicBool::new(true),
             host_version: Mutex::new(None),
+            lsp_diagnostics: Mutex::new(std::collections::HashMap::new()),
+            lsp_server_states: Mutex::new(std::collections::HashMap::new()),
         }))
+    }
+
+    // ─── LSP diagnostic cache ───────────────────────────────────────────────
+    //
+    // The cache mirrors what the host pushes via `HostEvent::LspDiagnosticsPush`.
+    // It is wiped on disconnect (callers do that explicitly) and survives a
+    // reconnect — the host re-pushes its current diagnostic set on subscribe,
+    // overwriting per-file entries one by one.
+
+    pub fn apply_lsp_diagnostics_push(&self, push: zedra_rpc::proto::LspDiagnosticsPush) {
+        let key = (push.language, push.path);
+        let mut guard = match self.0.lsp_diagnostics.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if push.diagnostics.is_empty() {
+            guard.remove(&key);
+        } else {
+            guard.insert(key, push.diagnostics);
+        }
+    }
+
+    pub fn apply_lsp_server_state_changed(&self, change: &zedra_rpc::proto::LspServerStateChange) {
+        let mut guard = match self.0.lsp_server_states.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        guard.insert(change.language, change.state);
+    }
+
+    pub fn lsp_diagnostics_snapshot(
+        &self,
+    ) -> std::collections::HashMap<
+        (zedra_rpc::proto::LspLanguage, String),
+        Vec<zedra_rpc::proto::LspDiagnosticV2>,
+    > {
+        match self.0.lsp_diagnostics.lock() {
+            Ok(g) => g.clone(),
+            Err(p) => p.into_inner().clone(),
+        }
+    }
+
+    pub fn lsp_diagnostics_for_path(&self, path: &str) -> Vec<zedra_rpc::proto::LspDiagnosticV2> {
+        let guard = match self.0.lsp_diagnostics.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let mut out = Vec::new();
+        for ((_, p), diags) in guard.iter() {
+            if p == path {
+                out.extend(diags.iter().cloned());
+            }
+        }
+        out
+    }
+
+    /// Aggregate `(errors, warnings)` across all cached diagnostics. Used by
+    /// the workspace header LSP pill.
+    pub fn lsp_diagnostic_counts(&self) -> (u32, u32) {
+        let guard = match self.0.lsp_diagnostics.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let mut errors = 0u32;
+        let mut warnings = 0u32;
+        for diags in guard.values() {
+            for d in diags {
+                match d.severity {
+                    zedra_rpc::proto::LspSeverity::Error => errors += 1,
+                    zedra_rpc::proto::LspSeverity::Warning => warnings += 1,
+                    _ => {}
+                }
+            }
+        }
+        (errors, warnings)
+    }
+
+    pub fn clear_lsp_state(&self) {
+        if let Ok(mut g) = self.0.lsp_diagnostics.lock() {
+            g.clear();
+        }
+        if let Ok(mut g) = self.0.lsp_server_states.lock() {
+            g.clear();
+        }
     }
 
     // ─── Credentials ─────────────────────────────────────────────────────────
