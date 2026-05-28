@@ -43,7 +43,7 @@ final class FullKeyboardView: UIView {
 
     private let sendKey: SendKey
     private var shift: ShiftState = .off
-    private var layer: Layer = .letters
+    private var activeLayer: Layer = .letters
     private var isDarkTheme = true
     private var rows: [UIStackView] = []
     private var keyButtons: [(button: UIButton, key: Key)] = []
@@ -115,7 +115,7 @@ final class FullKeyboardView: UIView {
     }
 
     private func keyboardLayout() -> [[Key]] {
-        switch layer {
+        switch activeLayer {
         case .letters:
             let row1 = "qwertyuiop".map { Key(label: shiftedLetter(String($0)), kind: .char(String($0)), widthHint: 1.0) }
             let row2 = "asdfghjkl".map { Key(label: shiftedLetter(String($0)), kind: .char(String($0)), widthHint: 1.0) }
@@ -245,7 +245,7 @@ final class FullKeyboardView: UIView {
         case .backspace:
             sendKey("backspace", 0)
         case .toggleLayer(let target):
-            layer = target
+            activeLayer = target
             // Switching layers also resets shift; the system keyboard does the
             // same so the symbol layer doesn't capslock through letters.
             shift = .off
