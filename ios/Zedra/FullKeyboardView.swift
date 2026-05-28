@@ -64,7 +64,7 @@ final class FullKeyboardView: UIView {
     }
 
     private let modNavRow: [Key] = [
-        Key(label: "shift", kind: .modifier(.shift)),
+        Key(label: "Shift", kind: .modifier(.shift)),
         Key(label: "Ctrl", kind: .modifier(.ctrl)),
         Key(label: "Cmd", kind: .modifier(.cmd)),
         Key(label: "Home", kind: .dispatch(name: "home")),
@@ -206,7 +206,15 @@ final class FullKeyboardView: UIView {
 
     private func makeButton(for key: Key) -> UIButton {
         let button = UIButton(type: .system)
-        button.titleLabel?.font = .systemFont(ofSize: 16)
+        // Backspace glyph reads small at 16pt; bump it up while keeping the
+        // button width aligned with the rest of the row.
+        let fontSize: CGFloat
+        if case .dispatch(let name, _) = key.kind, name == "backspace" {
+            fontSize = 22
+        } else {
+            fontSize = 16
+        }
+        button.titleLabel?.font = .systemFont(ofSize: fontSize)
         button.setTitle(key.label, for: .normal)
         button.layer.cornerRadius = 6
         button.addTarget(self, action: #selector(buttonTouchDown(_:)), for: .touchDown)
@@ -325,42 +333,39 @@ final class FullKeyboardView: UIView {
 
         topBorder?.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 0.33)
 
-        if let badge = hostBadge {
-            let badgeSize = badge.sizeThatFits(CGSize(width: 120, height: 14))
-            badge.frame = CGRect(
-                x: bounds.width - badgeSize.width - 8,
-                y: 2,
-                width: badgeSize.width,
-                height: badgeSize.height
-            )
-        }
-
         let rowCount = rowsKeys.count
         guard rowCount > 0, bounds.width > 0, bounds.height > 0 else {
             return
         }
 
-        let horizontalInset: CGFloat = 4
-        let keyGap: CGFloat = 2
-        let topInset: CGFloat = 18
-        let availableWidth = bounds.width - horizontalInset * 2
-
+        // Match the accessory bar above: edge-to-edge columns, no horizontal
+        // inset or gap, so each panel key column lines up with the bar button
+        // directly above it.
         for (rowIndex, keys) in rowsKeys.enumerated() {
             let buttons = rowsButtons[rowIndex]
-            let totalGap = keyGap * CGFloat(max(0, keys.count - 1))
-            let keyWidth = (availableWidth - totalGap) / CGFloat(max(1, keys.count))
+            let keyWidth = bounds.width / CGFloat(max(1, keys.count))
 
-            var x: CGFloat = horizontalInset
-            let y = topInset + CGFloat(rowIndex) * rowHeight
+            let y = CGFloat(rowIndex) * rowHeight
             for (keyIndex, _) in keys.enumerated() {
                 buttons[keyIndex].frame = CGRect(
-                    x: x,
+                    x: CGFloat(keyIndex) * keyWidth,
                     y: y,
                     width: keyWidth,
                     height: rowHeight
                 )
-                x += keyWidth + keyGap
             }
+        }
+
+        // Pin the OS badge to the bottom of the panel (reserved region) so
+        // the keys read first and the diagnostic label is unobtrusive.
+        if let badge = hostBadge {
+            let badgeSize = badge.sizeThatFits(CGSize(width: 120, height: 14))
+            badge.frame = CGRect(
+                x: bounds.width - badgeSize.width - 8,
+                y: bounds.height - badgeSize.height - 4,
+                width: badgeSize.width,
+                height: badgeSize.height
+            )
         }
     }
 }

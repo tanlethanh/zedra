@@ -48,7 +48,7 @@ enum class HostOs(val displayName: String) {
  */
 class FullKeyboardPanel(
     context: Context,
-    @Suppress("unused") private val hostOs: HostOs,
+    private val hostOs: HostOs,
     private val sendKey: (String, Int) -> Unit,
 ) : FrameLayout(context) {
     private object AccessoryMods {
@@ -75,7 +75,7 @@ class FullKeyboardPanel(
 
     private val modNavRow =
         listOf(
-            Key("shift", Kind.Modifier(AccessoryMods.SHIFT)),
+            Key("Shift", Kind.Modifier(AccessoryMods.SHIFT)),
             Key("Ctrl", Kind.Modifier(AccessoryMods.CTRL)),
             Key("Cmd", Kind.Modifier(AccessoryMods.CMD)),
             Key("Home", Kind.Dispatch("home")),
@@ -111,7 +111,6 @@ class FullKeyboardPanel(
 
     private val density = context.resources.displayMetrics.density
     private val rowHeightPx = (44 * density).toInt()
-    private val keyGapPx = (2 * density).toInt()
     private val repeatInitialDelayMs = 350L
     private val repeatIntervalMs = 60L
     private val handler = Handler(Looper.getMainLooper())
@@ -125,6 +124,7 @@ class FullKeyboardPanel(
     private var armedMods: Int = 0
     private val keyViews = mutableListOf<Pair<View, Key>>()
     private val rowsContainer: LinearLayout
+    private val hostBadge: TextView
 
     private val repeatRunnable =
         object : Runnable {
@@ -150,6 +150,19 @@ class FullKeyboardPanel(
             LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.TOP),
         )
 
+        hostBadge =
+            TextView(context).apply {
+                text = hostOs.displayName
+                textSize = 10f
+                alpha = 0.55f
+                gravity = Gravity.END
+            }
+        addView(
+            hostBadge,
+            LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.END or Gravity.BOTTOM)
+                .apply { setMargins(0, 0, (8 * density).toInt(), (4 * density).toInt()) },
+        )
+
         build()
         applyTheme(isDark = true)
     }
@@ -163,6 +176,8 @@ class FullKeyboardPanel(
         isDarkTheme = isDark
         setBackgroundColor(if (isDark) 0xF50E0C0C.toInt() else 0xF5FFFFFF.toInt())
         topBorderPaint.color = if (isDark) 0x33FFFFFF else 0x22000000
+        val foreground = if (isDark) 0xFFFFFFFF.toInt() else 0xFF1A1A1A.toInt()
+        hostBadge.setTextColor(foreground)
         for ((view, key) in keyViews) {
             applyKeyStyle(view, key)
         }
@@ -182,11 +197,10 @@ class FullKeyboardPanel(
             for (key in row) {
                 val view = makeKeyView(key)
                 keyViews.add(view to key)
+                // Edge-to-edge columns matching the accessory bar above.
                 rowView.addView(
                     view,
-                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
-                        setMargins(keyGapPx, 0, keyGapPx, 0)
-                    },
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f),
                 )
             }
             rowsContainer.addView(
@@ -198,10 +212,13 @@ class FullKeyboardPanel(
 
     @SuppressLint("ClickableViewAccessibility")
     private fun makeKeyView(key: Key): View {
+        val isBackspace = key.kind is Kind.Dispatch && key.kind.name == "backspace"
         val view =
             TextView(context).apply {
                 text = key.label
-                textSize = 16f
+                // Backspace glyph reads small at 16sp; bump it while keeping the
+                // column width aligned with the rest of the row.
+                textSize = if (isBackspace) 22f else 16f
                 gravity = Gravity.CENTER
                 isClickable = true
                 isFocusable = false
