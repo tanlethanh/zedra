@@ -71,8 +71,8 @@ class FullKeyboardPanel(
         listOf(
             Key("Esc", Kind.Dispatch("escape")),
             Key("Tab", Kind.Dispatch("tab")),
-            Key("⇧⇥", Kind.Dispatch("tab", AccessoryMods.SHIFT)),
             Key("⇧⏎", Kind.Dispatch("enter", AccessoryMods.SHIFT)),
+            Key("Shift", Kind.Modifier(AccessoryMods.SHIFT)),
             Key("Ctrl", Kind.Modifier(AccessoryMods.CTRL)),
             Key("⌃C", Kind.Dispatch("char:c", AccessoryMods.CTRL)),
             Key("⌃D", Kind.Dispatch("char:d", AccessoryMods.CTRL)),

@@ -67,13 +67,14 @@ final class FullKeyboardView: UIView {
         Key(label: "→", kind: .dispatch(name: "right"), repeats: true),
     ]
 
-    /// Row 3 — agent / terminal control keys + a sticky `Ctrl` for ad-hoc
-    /// combos (e.g. Ctrl+\, Ctrl+PgUp).
+    /// Row 3 — agent / terminal control keys plus sticky `Shift` and `Ctrl`
+    /// modifiers so users can compose ad-hoc combos with any other panel
+    /// key (e.g. Shift+Home, Ctrl+\, Ctrl+PgUp).
     private let controlRow: [Key] = [
         Key(label: "Esc", kind: .dispatch(name: "escape")),
         Key(label: "Tab", kind: .dispatch(name: "tab")),
-        Key(label: "⇧⇥", kind: .dispatch(name: "tab", fixedMods: .shift)),
         Key(label: "⇧⏎", kind: .dispatch(name: "enter", fixedMods: .shift)),
+        Key(label: "Shift", kind: .modifier(.shift)),
         Key(label: "Ctrl", kind: .modifier(.ctrl)),
         Key(label: "⌃C", kind: .dispatch(name: "char:c", fixedMods: .ctrl)),
         Key(label: "⌃D", kind: .dispatch(name: "char:d", fixedMods: .ctrl)),

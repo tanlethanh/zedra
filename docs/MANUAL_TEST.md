@@ -1098,7 +1098,7 @@ Expected:
 
 1. Connect to a workspace and focus a terminal so the keyboard accessory bar shows the primary row (Esc Tab ← ↓ ↑ → ⏎ •••).
 2. Tap **•••** on the right of the bar.
-3. Expected: the system keyboard is replaced in place by a 3-row in-app panel of the same height containing the desktop-only keys (` ~ | \ < > { } [ ]; Home End PgUp PgDn ← ↓ ↑ →; Esc Tab ⇧⇥ ⇧⏎ Ctrl ⌃C ⌃D ⌃R). The accessory bar stays anchored on top, but the toggle label now reads **✕**.
+3. Expected: the system keyboard is replaced in place by a 3-row in-app panel of the same height containing the desktop-only keys (` ~ | \ < > { } [ ]; Home End PgUp PgDn ← ↓ ↑ →; Esc Tab ⇧⏎ Shift Ctrl ⌃C ⌃D ⌃R). The accessory bar stays anchored on top, but the toggle label now reads **✕**.
 4. Tap **`** then **|**.
 5. Expected: a backtick and a pipe character appear at the terminal prompt — no extra layer taps needed.
 6. Tap **PgUp** and hold for a second.
@@ -1107,8 +1107,8 @@ Expected:
 9. Expected: SIGINT is delivered (process returns to prompt). Same for **⌃D** (EOF at empty prompt) and **⌃R** (opens reverse history search in bash / zsh).
 10. Tap **Ctrl** so it highlights, then tap **\\**.
 11. Expected: SIGQUIT is delivered (`Ctrl+\`). The Ctrl highlight clears after one key. Tap **Ctrl** twice in a row to confirm it toggles on/off with no bytes sent.
-12. Tap **⇧⇥** in the panel.
-13. Expected: BackTab (`ESC [ Z`) is sent. In Claude Code this toggles plan / accept-edits mode.
+12. Tap **Shift** so it highlights, then tap **Tab** in the panel.
+13. Expected: BackTab (`ESC [ Z`) is sent and the Shift highlight clears. In Claude Code this toggles plan / accept-edits mode. Tap **Shift** twice quickly to confirm it toggles on/off independently of Ctrl.
 14. Tap **✕** in the accessory bar.
 15. Expected: the panel is replaced by the system keyboard at the same screen position. The toggle label returns to **•••**. Vietnamese / dictation / autocorrect work again.
 16. Tap **•••** again, then hide the keyboard via the dismiss gesture (drag down on iOS, back button on Android).
