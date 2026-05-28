@@ -1113,3 +1113,15 @@ Verifies `PlatformInput::Pinch` reaches GPUI on mobile. No editor zoom UI yet �
 4. Expected (developer check): a temporary `.on_pinch(...)` on any view receives `PinchEvent` with `phase` = Started/Moved/Ended and non-zero `delta` during Moved.
 5. Repeat on an Android build.
 6. Expected: pinch-in-progress suppresses pan/scroll (the document does not also scroll mid-pinch); release lets normal scrolling resume.
+
+## 24. Pinch Canvas Zoom in Editor and Markdown (#106)
+
+Verifies the canvas-zoom slice: editor + markdown views scale their entire visual tree under pinch.
+
+1. iOS — open a source file in the code editor. Pinch out; the editor surface scales up around the pinch focus point.
+2. Expected: text stays sharp at every zoom level (no blurry resampling); gutter line numbers scale with the text; bg fills the original viewport rect, not the zoomed extent.
+3. Pinch in below 1.0×; clamped at 0.5×. Pinch out past 4.0×; clamped at 4.0×.
+4. Open a Markdown preview (`README.md`). Repeat. Headings, paragraphs, code blocks, tables all scale together; no reflow (line breaks stay where they were at 1.0×).
+5. Repeat on Android.
+6. Expected: zoom factor is per-view (closing and reopening a file does not preserve the previous zoom; this is intentional for the first slice).
+7. Known gap: when zoomed in, single-finger pan does not yet scroll the zoomed canvas — the underlying list scrolls instead. Tracked as follow-up under issue #106.
