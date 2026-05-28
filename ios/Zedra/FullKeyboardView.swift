@@ -1,54 +1,95 @@
 import UIKit
 
-/// In-app QWERTY keyboard that replaces the system software keyboard while the
-/// user is driving a terminal / agent session. Each tap is forwarded to
-/// `sendKey(name, mods)` using the same wire format as the accessory bar
-/// (`char:<c>`, named keys, mod bitmask).
+/// Desktop-only key panel that replaces the system keyboard while a terminal
+/// or agent session has focus. Surfaces keys / combos that the iOS soft
+/// keyboard either doesn't have at all or buries multiple layers deep. There
+/// is no QWERTY here on purpose — users tap `✕` and go back to the system
+/// keyboard for prose typing, IME, dictation, autocorrect.
 ///
-/// The view is intended to be installed via `gpui_ios_set_keyboard_input_view`.
-/// UIKit reads `frame.size` for the keyboard slot, so callers must size this
-/// to the system keyboard's last known height before installing it.
+/// Every tap dispatches through `sendKey(name, mods)` using the same wire
+/// format as the accessory bar (`char:<c>` for single chars, named keys, and
+/// a Shift/Alt/Ctrl bitmask per `key_encoding::Mods`).
 final class FullKeyboardView: UIView {
-    /// Closure invoked for every keystroke. Matches the FFI used by
-    /// `KeyboardSupporter` so both surfaces share one transport.
     typealias SendKey = (String, UInt8) -> Void
 
-    private enum Layer {
-        case letters
-        case numbers
-        case symbols
-    }
+    private struct AccessoryMods: OptionSet {
+        let rawValue: UInt8
 
-    private enum ShiftState {
-        case off
-        case oneShot
-        case locked
+        static let shift = AccessoryMods(rawValue: 0b001)
+        static let alt = AccessoryMods(rawValue: 0b010)
+        static let ctrl = AccessoryMods(rawValue: 0b100)
     }
 
     private enum KeyKind {
-        case char(String)
-        case named(String)
-        case shift
-        case backspace
-        case toggleLayer(Layer)
-        case space
-        case enter
+        /// Tap dispatches `(name, armedMods | fixedMods)`. The single source
+        /// of truth for every non-modifier key.
+        case dispatch(name: String, fixedMods: AccessoryMods = [])
+        /// Sticky modifier — toggles `armedMods`, never sends bytes itself.
+        case modifier(AccessoryMods)
     }
 
     private struct Key {
         let label: String
         let kind: KeyKind
-        let widthHint: CGFloat
+        let repeats: Bool
+
+        init(label: String, kind: KeyKind, repeats: Bool = false) {
+            self.label = label
+            self.kind = kind
+            self.repeats = repeats
+        }
     }
 
+    /// Row 1 — symbols that exist on the iOS soft keyboard but are buried 1-2
+    /// layers deep. Surfacing them one-tap is the highest-value cheap win.
+    private let symbolRow: [Key] = [
+        Key(label: "`", kind: .dispatch(name: "char:`")),
+        Key(label: "~", kind: .dispatch(name: "char:~")),
+        Key(label: "|", kind: .dispatch(name: "char:|")),
+        Key(label: "\\", kind: .dispatch(name: "char:\\")),
+        Key(label: "<", kind: .dispatch(name: "char:<")),
+        Key(label: ">", kind: .dispatch(name: "char:>")),
+        Key(label: "{", kind: .dispatch(name: "char:{")),
+        Key(label: "}", kind: .dispatch(name: "char:}")),
+        Key(label: "[", kind: .dispatch(name: "char:[")),
+        Key(label: "]", kind: .dispatch(name: "char:]")),
+    ]
+
+    /// Row 2 — navigation cluster the soft keyboard has no concept of.
+    private let navRow: [Key] = [
+        Key(label: "Home", kind: .dispatch(name: "home")),
+        Key(label: "End", kind: .dispatch(name: "end")),
+        Key(label: "PgUp", kind: .dispatch(name: "page_up"), repeats: true),
+        Key(label: "PgDn", kind: .dispatch(name: "page_down"), repeats: true),
+        Key(label: "←", kind: .dispatch(name: "left"), repeats: true),
+        Key(label: "↓", kind: .dispatch(name: "down"), repeats: true),
+        Key(label: "↑", kind: .dispatch(name: "up"), repeats: true),
+        Key(label: "→", kind: .dispatch(name: "right"), repeats: true),
+    ]
+
+    /// Row 3 — agent / terminal control keys + a sticky `Ctrl` for ad-hoc
+    /// combos (e.g. Ctrl+\, Ctrl+PgUp).
+    private let controlRow: [Key] = [
+        Key(label: "Esc", kind: .dispatch(name: "escape")),
+        Key(label: "Tab", kind: .dispatch(name: "tab")),
+        Key(label: "⇧⇥", kind: .dispatch(name: "tab", fixedMods: .shift)),
+        Key(label: "⇧⏎", kind: .dispatch(name: "enter", fixedMods: .shift)),
+        Key(label: "Ctrl", kind: .modifier(.ctrl)),
+        Key(label: "⌃C", kind: .dispatch(name: "char:c", fixedMods: .ctrl)),
+        Key(label: "⌃D", kind: .dispatch(name: "char:d", fixedMods: .ctrl)),
+        Key(label: "⌃R", kind: .dispatch(name: "char:r", fixedMods: .ctrl)),
+    ]
+
     private let sendKey: SendKey
-    private var shift: ShiftState = .off
-    private var activeLayer: Layer = .letters
     private var isDarkTheme = true
+    private var armedMods: AccessoryMods = []
     private var rowsKeys: [[Key]] = []
     private var rowsButtons: [[UIButton]] = []
     private var keyButtons: [(button: UIButton, key: Key)] = []
-    private var lastShiftTapDate: Date?
+    private var repeatTimer: Timer?
+    private var repeatingKey: (name: String, mods: UInt8)?
+    private let repeatInitialDelay: TimeInterval = 0.35
+    private let repeatInterval: TimeInterval = 0.06
 
     init(width: CGFloat, height: CGFloat, isDark: Bool, sendKey: @escaping SendKey) {
         self.sendKey = sendKey
@@ -57,7 +98,7 @@ final class FullKeyboardView: UIView {
         autoresizingMask = [.flexibleWidth]
         clipsToBounds = true
         applyTheme(isDark: isDark)
-        rebuild()
+        build()
     }
 
     required init?(coder: NSCoder) {
@@ -75,11 +116,7 @@ final class FullKeyboardView: UIView {
         }
     }
 
-    /// Rebuild the button set for the current `activeLayer` + `shift` state.
-    /// Per-row frames are computed in `layoutSubviews` so this method stays
-    /// independent of the view's current size — the same code path runs on
-    /// first install, on rotation, and on every layer / shift toggle.
-    private func rebuild() {
+    private func build() {
         for (button, _) in keyButtons {
             button.removeFromSuperview()
         }
@@ -87,8 +124,7 @@ final class FullKeyboardView: UIView {
         rowsButtons.removeAll()
         keyButtons.removeAll()
 
-        let specs = keyboardLayout()
-        for rowKeys in specs {
+        for rowKeys in [symbolRow, navRow, controlRow] {
             var rowButtons: [UIButton] = []
             for key in rowKeys {
                 let button = makeButton(for: key)
@@ -102,87 +138,32 @@ final class FullKeyboardView: UIView {
         setNeedsLayout()
     }
 
-    private func keyboardLayout() -> [[Key]] {
-        switch activeLayer {
-        case .letters:
-            let row1 = "qwertyuiop".map { Key(label: shiftedLetter(String($0)), kind: .char(String($0)), widthHint: 1.0) }
-            let row2 = "asdfghjkl".map { Key(label: shiftedLetter(String($0)), kind: .char(String($0)), widthHint: 1.0) }
-            var row3: [Key] = [
-                Key(label: shiftLabel(), kind: .shift, widthHint: 1.5)
-            ]
-            row3.append(contentsOf: "zxcvbnm".map { Key(label: shiftedLetter(String($0)), kind: .char(String($0)), widthHint: 1.0) })
-            row3.append(Key(label: "⌫", kind: .backspace, widthHint: 1.5))
-            let row4: [Key] = [
-                Key(label: "123", kind: .toggleLayer(.numbers), widthHint: 1.5),
-                Key(label: "space", kind: .space, widthHint: 5.0),
-                Key(label: "return", kind: .enter, widthHint: 2.0),
-            ]
-            return [row1, row2, row3, row4]
-        case .numbers:
-            let row1 = "1234567890".map { Key(label: String($0), kind: .char(String($0)), widthHint: 1.0) }
-            let row2 = ["-", "/", ":", ";", "(", ")", "$", "&", "@", "\""].map { Key(label: $0, kind: .char($0), widthHint: 1.0) }
-            var row3: [Key] = [
-                Key(label: "#+=", kind: .toggleLayer(.symbols), widthHint: 1.5)
-            ]
-            row3.append(contentsOf: [".", ",", "?", "!", "'"].map { Key(label: $0, kind: .char($0), widthHint: 1.0) })
-            row3.append(Key(label: "⌫", kind: .backspace, widthHint: 1.5))
-            let row4: [Key] = [
-                Key(label: "ABC", kind: .toggleLayer(.letters), widthHint: 1.5),
-                Key(label: "space", kind: .space, widthHint: 5.0),
-                Key(label: "return", kind: .enter, widthHint: 2.0),
-            ]
-            return [row1, row2, row3, row4]
-        case .symbols:
-            let row1 = ["[", "]", "{", "}", "#", "%", "^", "*", "+", "="].map { Key(label: $0, kind: .char($0), widthHint: 1.0) }
-            let row2 = ["_", "\\", "|", "~", "<", ">", "€", "£", "¥", "•"].map { Key(label: $0, kind: .char($0), widthHint: 1.0) }
-            var row3: [Key] = [
-                Key(label: "123", kind: .toggleLayer(.numbers), widthHint: 1.5)
-            ]
-            row3.append(contentsOf: [".", ",", "?", "!", "'"].map { Key(label: $0, kind: .char($0), widthHint: 1.0) })
-            row3.append(Key(label: "⌫", kind: .backspace, widthHint: 1.5))
-            let row4: [Key] = [
-                Key(label: "ABC", kind: .toggleLayer(.letters), widthHint: 1.5),
-                Key(label: "space", kind: .space, widthHint: 5.0),
-                Key(label: "return", kind: .enter, widthHint: 2.0),
-            ]
-            return [row1, row2, row3, row4]
-        }
-    }
-
-    private func shiftedLetter(_ c: String) -> String {
-        return shift == .off ? c : c.uppercased()
-    }
-
-    private func shiftLabel() -> String {
-        switch shift {
-        case .off: return "⇧"
-        case .oneShot: return "⬆︎"
-        case .locked: return "⇪"
-        }
-    }
-
     private func makeButton(for key: Key) -> UIButton {
         let button = UIButton(type: .system)
         button.titleLabel?.font = .systemFont(ofSize: 18.0, weight: .regular)
         button.setTitle(key.label, for: .normal)
         button.layer.cornerRadius = 6.0
-        button.addTarget(self, action: #selector(keyTapped(_:)), for: .touchUpInside)
+        button.addTarget(self, action: #selector(buttonTouchDown(_:)), for: .touchDown)
+        button.addTarget(self, action: #selector(buttonTouchUpInside(_:)), for: .touchUpInside)
+        button.addTarget(self, action: #selector(stopRepeating), for: .touchUpOutside)
+        button.addTarget(self, action: #selector(stopRepeating), for: .touchCancel)
+        button.addTarget(self, action: #selector(stopRepeating), for: .touchDragExit)
         styleButton(button, key: key)
         return button
     }
 
     private func styleButton(_ button: UIButton, key: Key) {
-        let isSpecial: Bool
+        let isModifier: Bool
         switch key.kind {
-        case .char: isSpecial = false
-        default: isSpecial = true
+        case .modifier: isModifier = true
+        case .dispatch: isModifier = false
         }
         let baseBg =
             isDarkTheme
-            ? (isSpecial
+            ? (isModifier
                 ? UIColor(red: 0.20, green: 0.20, blue: 0.22, alpha: 1.0)
                 : UIColor(red: 0.30, green: 0.30, blue: 0.33, alpha: 1.0))
-            : (isSpecial
+            : (isModifier
                 ? UIColor(red: 0.65, green: 0.66, blue: 0.69, alpha: 1.0)
                 : UIColor.white)
         let foreground =
@@ -193,8 +174,7 @@ final class FullKeyboardView: UIView {
         button.setTitleColor(foreground, for: .normal)
         button.tintColor = foreground
 
-        // Highlight a locked / armed shift so the user can see the state.
-        if case .shift = key.kind, shift == .locked {
+        if case .modifier(let mod) = key.kind, armedMods.contains(mod) {
             button.backgroundColor =
                 isDarkTheme
                 ? UIColor(white: 1.0, alpha: 0.25)
@@ -202,54 +182,84 @@ final class FullKeyboardView: UIView {
         }
     }
 
-    @objc
-    private func keyTapped(_ sender: UIButton) {
-        guard let (_, key) = keyButtons.first(where: { $0.button === sender }) else {
-            return
-        }
-        switch key.kind {
-        case .char(let c):
-            let outgoing = shift == .off ? c : c.uppercased()
-            sendKey("char:\(outgoing)", 0)
-            if shift == .oneShot {
-                shift = .off
-                rebuild()
-            }
-        case .named(let name):
-            sendKey(name, 0)
-        case .shift:
-            handleShiftTap()
-        case .backspace:
-            sendKey("backspace", 0)
-        case .toggleLayer(let target):
-            activeLayer = target
-            // Switching layers also resets shift; the system keyboard does the
-            // same so the symbol layer doesn't capslock through letters.
-            shift = .off
-            rebuild()
-        case .space:
-            sendKey("char: ", 0)
-        case .enter:
-            sendKey("enter", 0)
+    private func refreshModifierHighlights() {
+        for (button, key) in keyButtons {
+            styleButton(button, key: key)
         }
     }
 
-    private func handleShiftTap() {
-        let now = Date()
-        let isDoubleTap =
-            lastShiftTapDate.map { now.timeIntervalSince($0) < 0.35 } ?? false
-        lastShiftTapDate = now
-
-        if isDoubleTap {
-            shift = .locked
-        } else {
-            switch shift {
-            case .off: shift = .oneShot
-            case .oneShot: shift = .off
-            case .locked: shift = .off
-            }
+    private func dispatchKey(name: String, fixedMods: AccessoryMods) {
+        let combined = armedMods.union(fixedMods)
+        sendKey(name, combined.rawValue)
+        if !armedMods.isEmpty {
+            armedMods = []
+            refreshModifierHighlights()
         }
-        rebuild()
+    }
+
+    private func key(for sender: UIButton) -> Key? {
+        for (button, key) in keyButtons where button === sender {
+            return key
+        }
+        return nil
+    }
+
+    @objc
+    private func buttonTouchDown(_ sender: UIButton) {
+        guard let key = key(for: sender), key.repeats else {
+            return
+        }
+        if case .dispatch(let name, let fixedMods) = key.kind {
+            let combined = armedMods.union(fixedMods)
+            sendKey(name, combined.rawValue)
+            if !armedMods.isEmpty {
+                armedMods = []
+                refreshModifierHighlights()
+            }
+            startRepeating(name: name, mods: combined.rawValue)
+        }
+    }
+
+    @objc
+    private func buttonTouchUpInside(_ sender: UIButton) {
+        guard let key = key(for: sender) else {
+            stopRepeating()
+            return
+        }
+        if key.repeats {
+            stopRepeating()
+            return
+        }
+        switch key.kind {
+        case .dispatch(let name, let fixedMods):
+            dispatchKey(name: name, fixedMods: fixedMods)
+        case .modifier(let mod):
+            armedMods.formSymmetricDifference(mod)
+            refreshModifierHighlights()
+        }
+    }
+
+    @objc
+    func stopRepeating() {
+        repeatTimer?.invalidate()
+        repeatTimer = nil
+        repeatingKey = nil
+    }
+
+    private func startRepeating(name: String, mods: UInt8) {
+        stopRepeating()
+        repeatingKey = (name, mods)
+        let timer = Timer(timeInterval: repeatInterval, repeats: true) { [weak self] _ in
+            guard let self, let target = self.repeatingKey,
+                target.name == name, target.mods == mods
+            else {
+                return
+            }
+            self.sendKey(name, mods)
+        }
+        timer.fireDate = Date(timeIntervalSinceNow: repeatInitialDelay)
+        repeatTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     override func layoutSubviews() {
@@ -267,21 +277,19 @@ final class FullKeyboardView: UIView {
 
         for (rowIndex, keys) in rowsKeys.enumerated() {
             let buttons = rowsButtons[rowIndex]
-            let totalWeight = keys.reduce(0.0 as CGFloat) { $0 + $1.widthHint }
             let totalGap = keyGap * CGFloat(max(0, keys.count - 1))
-            let unit = (availableWidth - totalGap) / max(0.0001, totalWeight)
+            let keyWidth = (availableWidth - totalGap) / CGFloat(max(1, keys.count))
 
             var x: CGFloat = horizontalInset
             let y = rowGap + CGFloat(rowIndex) * (rowHeight + rowGap)
-            for (keyIndex, key) in keys.enumerated() {
-                let width = unit * key.widthHint
+            for (keyIndex, _) in keys.enumerated() {
                 buttons[keyIndex].frame = CGRect(
                     x: x,
                     y: y,
-                    width: width,
+                    width: keyWidth,
                     height: rowHeight
                 )
-                x += width + keyGap
+                x += keyWidth + keyGap
             }
         }
     }
