@@ -45,7 +45,8 @@ final class FullKeyboardView: UIView {
     private var shift: ShiftState = .off
     private var activeLayer: Layer = .letters
     private var isDarkTheme = true
-    private var rows: [UIStackView] = []
+    private var rowsKeys: [[Key]] = []
+    private var rowsButtons: [[UIButton]] = []
     private var keyButtons: [(button: UIButton, key: Key)] = []
     private var lastShiftTapDate: Date?
 
@@ -74,44 +75,31 @@ final class FullKeyboardView: UIView {
         }
     }
 
-    /// Lay the keyboard out for the current `layer` + `shift` state. Builds
-    /// from scratch every time so cap state, layer switches, and width
-    /// changes all share the same code path.
+    /// Rebuild the button set for the current `activeLayer` + `shift` state.
+    /// Per-row frames are computed in `layoutSubviews` so this method stays
+    /// independent of the view's current size — the same code path runs on
+    /// first install, on rotation, and on every layer / shift toggle.
     private func rebuild() {
-        for row in rows {
-            row.removeFromSuperview()
+        for (button, _) in keyButtons {
+            button.removeFromSuperview()
         }
-        rows.removeAll()
+        rowsKeys.removeAll()
+        rowsButtons.removeAll()
         keyButtons.removeAll()
 
-        let rowsSpecs = keyboardLayout()
-        let rowCount = rowsSpecs.count
-        let rowHeight = bounds.height / CGFloat(rowCount)
-        let verticalPadding: CGFloat = 4.0
-
-        for (rowIndex, rowKeys) in rowsSpecs.enumerated() {
-            let stack = UIStackView()
-            stack.axis = .horizontal
-            stack.spacing = 4
-            stack.distribution = .fill
-            stack.alignment = .fill
-            stack.translatesAutoresizingMaskIntoConstraints = false
-            stack.frame = CGRect(
-                x: 4,
-                y: CGFloat(rowIndex) * rowHeight + verticalPadding / 2,
-                width: bounds.width - 8,
-                height: rowHeight - verticalPadding
-            )
-            stack.autoresizingMask = [.flexibleWidth]
-            addSubview(stack)
-            rows.append(stack)
-
+        let specs = keyboardLayout()
+        for rowKeys in specs {
+            var rowButtons: [UIButton] = []
             for key in rowKeys {
                 let button = makeButton(for: key)
-                stack.addArrangedSubview(button)
+                addSubview(button)
+                rowButtons.append(button)
                 keyButtons.append((button, key))
             }
+            rowsKeys.append(rowKeys)
+            rowsButtons.append(rowButtons)
         }
+        setNeedsLayout()
     }
 
     private func keyboardLayout() -> [[Key]] {
@@ -178,19 +166,8 @@ final class FullKeyboardView: UIView {
         button.titleLabel?.font = .systemFont(ofSize: 18.0, weight: .regular)
         button.setTitle(key.label, for: .normal)
         button.layer.cornerRadius = 6.0
-        button.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        button.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
-        button.translatesAutoresizingMaskIntoConstraints = false
         button.addTarget(self, action: #selector(keyTapped(_:)), for: .touchUpInside)
         styleButton(button, key: key)
-
-        // Constrain width by stretching one "unit" key as the baseline; non-1.0
-        // keys are multiples of that base via constraint priorities — UIStackView
-        // distributes remaining space proportionally when we set a width anchor
-        // referencing the first button.
-        if key.widthHint != 1.0, let anchor = keyButtons.first?.button.widthAnchor {
-            button.widthAnchor.constraint(equalTo: anchor, multiplier: key.widthHint).isActive = true
-        }
         return button
     }
 
@@ -277,20 +254,35 @@ final class FullKeyboardView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        // Re-layout rows when the host resizes us (rotation, split view).
-        let rowCount = rows.count
-        guard rowCount > 0 else {
+        let rowCount = rowsKeys.count
+        guard rowCount > 0, bounds.width > 0, bounds.height > 0 else {
             return
         }
-        let rowHeight = bounds.height / CGFloat(rowCount)
-        let verticalPadding: CGFloat = 4.0
-        for (index, row) in rows.enumerated() {
-            row.frame = CGRect(
-                x: 4,
-                y: CGFloat(index) * rowHeight + verticalPadding / 2,
-                width: bounds.width - 8,
-                height: rowHeight - verticalPadding
-            )
+        let horizontalInset: CGFloat = 4
+        let keyGap: CGFloat = 4
+        let rowGap: CGFloat = 4
+
+        let rowHeight = (bounds.height - rowGap * CGFloat(rowCount + 1)) / CGFloat(rowCount)
+        let availableWidth = bounds.width - horizontalInset * 2
+
+        for (rowIndex, keys) in rowsKeys.enumerated() {
+            let buttons = rowsButtons[rowIndex]
+            let totalWeight = keys.reduce(0.0 as CGFloat) { $0 + $1.widthHint }
+            let totalGap = keyGap * CGFloat(max(0, keys.count - 1))
+            let unit = (availableWidth - totalGap) / max(0.0001, totalWeight)
+
+            var x: CGFloat = horizontalInset
+            let y = rowGap + CGFloat(rowIndex) * (rowHeight + rowGap)
+            for (keyIndex, key) in keys.enumerated() {
+                let width = unit * key.widthHint
+                buttons[keyIndex].frame = CGRect(
+                    x: x,
+                    y: y,
+                    width: width,
+                    height: rowHeight
+                )
+                x += width + keyGap
+            }
         }
     }
 }
