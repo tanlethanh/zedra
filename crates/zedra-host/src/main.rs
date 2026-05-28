@@ -24,6 +24,7 @@ use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
 
 mod agent_cli;
+mod lsp_cli;
 mod setup;
 mod terminal_cli;
 
@@ -187,6 +188,9 @@ enum Commands {
         #[command(subcommand)]
         command: agent_cli::AgentCommand,
     },
+
+    /// Manage the opt-in LSP control plane for a workspace
+    Lsp(lsp_cli::LspArgs),
 
     /// Install Zedra skills or plugins for an AI coding agent
     Setup {
@@ -713,9 +717,52 @@ async fn main() -> Result<()> {
                 prev_hook(info);
             }));
 
-            let state = Arc::new(rpc_daemon::DaemonState::new(
+            let (lsp_manager, mut lsp_diag_rx) = match identity::workspace_config_dir(&workdir) {
+                Ok(dir) => zedra_lsp::LspManager::load(dir.join("lsp.json"), workdir.clone()),
+                Err(_) => (
+                    zedra_lsp::LspManager::ephemeral(),
+                    tokio::sync::mpsc::channel(1).1,
+                ),
+            };
+            {
+                let lsp = lsp_manager.clone();
+                tokio::spawn(async move {
+                    lsp.restore_enabled().await;
+                });
+            }
+            // Fan diagnostic updates out to every session as
+            // HostEvent::LspDiagnosticsPush. Sessions without an active
+            // Subscribe stream drop the push at the per-session level, which
+            // is what we want — a UI that does not surface diagnostics
+            // should not pin the buffer in memory.
+            {
+                let registry = registry.clone();
+                let lsp_workdir = workdir.clone();
+                tokio::spawn(async move {
+                    use zedra_rpc::proto::{HostEvent, LspDiagnosticsPush};
+                    while let Some(update) = lsp_diag_rx.recv().await {
+                        let path = update
+                            .path
+                            .strip_prefix(&lsp_workdir)
+                            .unwrap_or(&update.path)
+                            .to_string_lossy()
+                            .into_owned();
+                        let push = HostEvent::LspDiagnosticsPush(LspDiagnosticsPush {
+                            language: update.language,
+                            path,
+                            version: 0,
+                            diagnostics: update.diagnostics,
+                        });
+                        for session in registry.all_sessions().await {
+                            session.push_event(push.clone()).await;
+                        }
+                    }
+                });
+            }
+            let state = Arc::new(rpc_daemon::DaemonState::new_with_lsp(
                 workdir.clone(),
                 host_identity.clone(),
+                lsp_manager,
             ));
             state
                 .agent_cache
@@ -1030,6 +1077,10 @@ async fn main() -> Result<()> {
 
         Commands::Agent { command } => {
             agent_cli::run(command).await?;
+        }
+
+        Commands::Lsp(args) => {
+            lsp_cli::run(args).await?;
         }
 
         Commands::Setup { yes, agent } => {
@@ -1408,7 +1459,123 @@ fn render_status_output(status: &serde_json::Value) -> String {
         }
     }
 
+    if let Some(lsp_section) = render_lsp_status(&status["lsp"]) {
+        sections.push(String::new());
+        sections.push(lsp_section);
+    }
+
     sections.join("\n")
+}
+
+fn render_lsp_status(lsp: &serde_json::Value) -> Option<String> {
+    let enabled = lsp.get("enabled")?.as_bool().unwrap_or(false);
+    let servers = lsp.get("servers").and_then(|s| s.as_array());
+    let concurrent_cap = lsp
+        .get("concurrent_cap")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let agg_rss = lsp
+        .get("aggregate_rss_bytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let agg_cap = lsp
+        .get("aggregate_rss_cap_bytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    if !enabled || servers.map(|s| s.is_empty()).unwrap_or(true) {
+        return None;
+    }
+    let servers = servers?;
+    let running = servers
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.get("state").and_then(|v| v.as_str()),
+                Some("starting") | Some("ready")
+            )
+        })
+        .count();
+
+    let mut out = format!("LSP servers ({} running, cap {})", running, concurrent_cap);
+    out.push('\n');
+
+    let rows: Vec<Vec<String>> = servers.iter().map(lsp_server_row).collect();
+    out.push_str(&utils::render_table(
+        &["LANG", "STATE", "PID", "RSS", "UPTIME", "DIAGS", "LAST"],
+        &rows,
+    ));
+
+    if agg_cap > 0 {
+        let pct = if agg_cap == 0 {
+            0
+        } else {
+            ((agg_rss as f64 / agg_cap as f64) * 100.0).round() as u64
+        };
+        out.push('\n');
+        out.push_str(&format!(
+            "Aggregate RSS: {} / {} ({}%)",
+            format_bytes_mb(agg_rss),
+            format_bytes_mb(agg_cap),
+            pct,
+        ));
+    }
+    Some(out)
+}
+
+fn lsp_server_row(server: &serde_json::Value) -> Vec<String> {
+    let lang = server
+        .get("language")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?")
+        .to_string();
+    let state = server
+        .get("state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?")
+        .to_string();
+    let pid = server
+        .get("pid")
+        .and_then(|v| v.as_u64())
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let rss = server
+        .get("rss_bytes")
+        .and_then(|v| v.as_u64())
+        .map(format_bytes_mb)
+        .unwrap_or_else(|| "-".to_string());
+    let uptime = server
+        .get("uptime_secs")
+        .and_then(|v| v.as_u64())
+        .map(utils::format_duration)
+        .unwrap_or_else(|| "-".to_string());
+    let errors = server
+        .get("diagnostic_errors")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let warnings = server
+        .get("diagnostic_warnings")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let diags = format!("{}E {}W", errors, warnings);
+    let last = server
+        .get("last_request_ms")
+        .and_then(|v| v.as_u64())
+        .map(|ms| format!("{}ms", ms))
+        .unwrap_or_else(|| "-".to_string());
+    vec![lang, state, pid, rss, uptime, diags, last]
+}
+
+fn format_bytes_mb(bytes: u64) -> String {
+    if bytes == 0 {
+        return "-".to_string();
+    }
+    let mb = bytes as f64 / (1024.0 * 1024.0);
+    if mb >= 1024.0 {
+        format!("{:.1} GB", mb / 1024.0)
+    } else {
+        format!("{:.0} MB", mb)
+    }
 }
 
 fn render_metrics_output(

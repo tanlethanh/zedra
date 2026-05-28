@@ -1102,3 +1102,69 @@ Expected:
 4. Expected: UIKit presentation chrome uses light backgrounds and dark text/icons, matching the app theme.
 5. Toggle Appearance back to **Dark** and repeat the same presentations.
 6. Expected: UIKit presentation chrome returns to dark backgrounds and light text/icons without restarting the app.
+
+## 23. LSP Control Plane (CLI + Resource Guard)
+
+End-to-end verification of the opt-in LSP subsystem. The mobile UI lands in
+a follow-up PR; this scenario covers the host-side surface that the UI will
+sit on.
+
+**Prerequisites**
+
+- `rust-analyzer` on `PATH` (or another supported binary: `gopls`,
+  `typescript-language-server`, `pyright-langserver`).
+- A small workspace with at least one source file containing a known error
+  (e.g. a `let x: u32 = "hello";` in `src/lib.rs`).
+- Daemon running for that workspace (`zedra start`).
+
+**Smoke flow**
+
+1. `zedra lsp status` while no language is enabled.
+2. Expected: section reports "no languages enabled" with the hint to enable
+   one. No table rendered.
+3. `zedra lsp enable rust`.
+4. Expected: `Enabled LSP for rust` printed. The daemon logs a
+   `LSP server spawned` line and the `lsp_spawn` telemetry event fires.
+5. `zedra status`.
+6. Expected: an `LSP servers (1 running, cap 4)` section appears with the
+   row `rust | starting | <pid> | <rss> MB | <uptime> | 0E 0W | -`. After a
+   few seconds (rust-analyzer indexing), the state advances to `ready` and
+   the diagnostic counts populate.
+7. `zedra lsp status --json`.
+8. Expected: JSON shape matches the `lsp` block in `/api/status` —
+   `enabled`, `servers[]`, `aggregate_rss_bytes`, `aggregate_rss_cap_bytes`,
+   `concurrent_cap`.
+9. `zedra lsp disable rust`.
+10. Expected: `Disabled LSP for rust` printed. Daemon emits SIGTERM,
+    waits up to 3 s, then SIGKILL if needed. `lsp_killed` event fires with
+    `reason: manual` and the recorded `uptime_secs`, `peak_rss_mb`.
+
+**Resource guard (per-server cap)**
+
+1. Stop the daemon. Restart with `ZEDRA_LSP_MEM_CAP_MB=50 zedra start`.
+2. `zedra lsp enable rust`.
+3. Expected: within ~5 s of rust-analyzer warming up, the watcher hits the
+   50 MB cap and terminates the server. `lsp_killed` event fires with
+   `reason: oom`. `zedra status` shows the row with `state: killed` and
+   `last_kill_reason: oom`. Re-running `zedra lsp enable rust` immediately
+   should refuse with the spawn rate-limit message after the second
+   attempt within 30 s; allowing 30 s between attempts respawns it.
+
+**Persistence**
+
+1. `zedra lsp enable rust`. Stop the daemon.
+2. `zedra lsp status`.
+3. Expected: "Zedra daemon not running — showing persisted config." banner
+   plus the rust row in `idle` state (server-state fields zeroed since
+   nothing is supervising).
+4. Restart the daemon.
+5. Expected: rust-analyzer is auto-spawned on startup (visible in logs and
+   `zedra status`); no manual re-enable required.
+
+**Privacy spot check**
+
+1. With LSP running, run `zedra lsp status --json` and confirm no field
+   contains workspace file paths, diagnostic message text, project names,
+   user names, or hostnames. Only language enum labels, durations, counts,
+   and kill-reason enum strings should appear. The same property should
+   hold for any `lsp_*` events captured in telemetry logs.

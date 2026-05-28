@@ -1,0 +1,17 @@
+[package]
+name = "zedra-lsp"
+version.workspace = true
+edition.workspace = true
+description = "Opt-in LSP control plane for Zedra host. Owns per-workspace language enablement, the resource guard policy, and status snapshots. Process spawning is wired in a follow-up commit."
+
+[dependencies]
+anyhow.workspace = true
+libc = "0.2"
+serde.workspace = true
+serde_json.workspace = true
+sysinfo = "0.31.4"
+tokio = { workspace = true, features = ["process", "macros"] }
+tracing.workspace = true
+zedra-rpc = { path = "../zedra-rpc" }
+zedra-telemetry.workspace = true
+

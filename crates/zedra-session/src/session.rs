@@ -381,6 +381,21 @@ impl Session {
             HostEvent::AgentInfoChanged { info } => {
                 info!("HostEvent: agent info changed {:?}", info.kind);
             }
+            HostEvent::LspDiagnosticsPush(push) => {
+                info!(
+                    "HostEvent: lsp diagnostics path={} count={}",
+                    push.path,
+                    push.diagnostics.len()
+                );
+                handle.apply_lsp_diagnostics_push(push.clone());
+            }
+            HostEvent::LspServerStateChanged(change) => {
+                info!(
+                    "HostEvent: lsp server state {:?} -> {:?}",
+                    change.language, change.state
+                );
+                handle.apply_lsp_server_state_changed(change);
+            }
         }
 
         let _ = host_event_tx.send(event);

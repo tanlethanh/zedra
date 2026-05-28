@@ -98,6 +98,29 @@ struct StatusSession {
 }
 
 #[derive(Debug, Serialize)]
+struct StatusLspServer {
+    language: String,
+    state: String,
+    pid: Option<u32>,
+    rss_bytes: u64,
+    uptime_secs: u64,
+    diagnostic_errors: u32,
+    diagnostic_warnings: u32,
+    last_request_ms: Option<u32>,
+    last_kill_reason: Option<String>,
+    peak_rss_bytes: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct StatusLsp {
+    enabled: bool,
+    servers: Vec<StatusLspServer>,
+    aggregate_rss_bytes: u64,
+    aggregate_rss_cap_bytes: u64,
+    concurrent_cap: u32,
+}
+
+#[derive(Debug, Serialize)]
 struct StatusResp {
     ok: bool,
     version: &'static str,
@@ -106,6 +129,7 @@ struct StatusResp {
     uptime_secs: u64,
     sessions: Vec<StatusSession>,
     terminals: Vec<StatusTerminal>,
+    lsp: StatusLsp,
 }
 
 async fn status(State(s): State<ApiState>, headers: HeaderMap) -> impl IntoResponse {
@@ -159,6 +183,8 @@ async fn status(State(s): State<ApiState>, headers: HeaderMap) -> impl IntoRespo
         });
     }
 
+    let lsp = lsp_status_snapshot(&s).await;
+
     Json(StatusResp {
         ok: true,
         version,
@@ -167,7 +193,156 @@ async fn status(State(s): State<ApiState>, headers: HeaderMap) -> impl IntoRespo
         uptime_secs,
         sessions,
         terminals: all_terminals,
+        lsp,
     })
+    .into_response()
+}
+
+async fn lsp_status_snapshot(s: &ApiState) -> StatusLsp {
+    let snap = s.daemon_state.lsp.status_snapshot().await;
+    StatusLsp {
+        enabled: snap.enabled,
+        servers: snap
+            .servers
+            .into_iter()
+            .map(|server| StatusLspServer {
+                language: lsp_language_label(server.language).to_string(),
+                state: lsp_state_label(server.state).to_string(),
+                pid: server.pid,
+                rss_bytes: server.rss_bytes,
+                uptime_secs: server.uptime_secs,
+                diagnostic_errors: server.diagnostic_errors,
+                diagnostic_warnings: server.diagnostic_warnings,
+                last_request_ms: server.last_request_ms,
+                last_kill_reason: server
+                    .last_kill_reason
+                    .map(|r| lsp_kill_reason_label(r).to_string()),
+                peak_rss_bytes: server.peak_rss_bytes,
+            })
+            .collect(),
+        aggregate_rss_bytes: snap.aggregate_rss_bytes,
+        aggregate_rss_cap_bytes: snap.aggregate_rss_cap_bytes,
+        concurrent_cap: snap.concurrent_cap,
+    }
+}
+
+fn lsp_language_label(language: zedra_rpc::proto::LspLanguage) -> &'static str {
+    use zedra_rpc::proto::LspLanguage::*;
+    match language {
+        Rust => "rust",
+        Go => "go",
+        TypeScript => "typescript",
+        JavaScript => "javascript",
+        Python => "python",
+    }
+}
+
+fn lsp_state_label(state: zedra_rpc::proto::LspServerState) -> &'static str {
+    use zedra_rpc::proto::LspServerState::*;
+    match state {
+        Idle => "idle",
+        Starting => "starting",
+        Ready => "ready",
+        Failed => "failed",
+        Killed => "killed",
+        Disabled => "disabled",
+    }
+}
+
+fn lsp_kill_reason_label(reason: zedra_rpc::proto::LspKillReason) -> &'static str {
+    use zedra_rpc::proto::LspKillReason::*;
+    match reason {
+        Oom => "oom",
+        AggregateOom => "aggregate_oom",
+        Cpu => "cpu",
+        Idle => "idle",
+        Manual => "manual",
+        Crash => "crash",
+    }
+}
+
+fn parse_lsp_language(raw: &str) -> Option<zedra_rpc::proto::LspLanguage> {
+    use zedra_rpc::proto::LspLanguage::*;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "rust" | "rs" | "rust-analyzer" => Some(Rust),
+        "go" | "gopls" | "golang" => Some(Go),
+        "typescript" | "ts" => Some(TypeScript),
+        "javascript" | "js" => Some(JavaScript),
+        "python" | "py" => Some(Python),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct LspLanguageRequest {
+    language: String,
+}
+
+async fn lsp_enable_handler(
+    State(s): State<ApiState>,
+    headers: HeaderMap,
+    Json(body): Json<LspLanguageRequest>,
+) -> impl IntoResponse {
+    if !verify_token(&headers, &s.token) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        )
+            .into_response();
+    }
+    let Some(language) = parse_lsp_language(&body.language) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("unknown language: {}", body.language)})),
+        )
+            .into_response();
+    };
+    if let Err(e) = s.daemon_state.lsp.enable(language).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response();
+    }
+    Json(serde_json::json!({
+        "ok": true,
+        "language": lsp_language_label(language),
+        "enabled": true,
+    }))
+    .into_response()
+}
+
+async fn lsp_disable_handler(
+    State(s): State<ApiState>,
+    headers: HeaderMap,
+    Json(body): Json<LspLanguageRequest>,
+) -> impl IntoResponse {
+    if !verify_token(&headers, &s.token) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        )
+            .into_response();
+    }
+    let Some(language) = parse_lsp_language(&body.language) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("unknown language: {}", body.language)})),
+        )
+            .into_response();
+    };
+    if let Err(e) = s.daemon_state.lsp.disable(language).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response();
+    }
+    Json(serde_json::json!({
+        "ok": true,
+        "language": lsp_language_label(language),
+        "enabled": false,
+    }))
     .into_response()
 }
 
@@ -742,6 +917,8 @@ pub async fn start(state: ApiState) -> anyhow::Result<std::net::SocketAddr> {
             get(list_agent_hook_events_handler),
         )
         .route("/api/agent-hooks/:kind", post(receive_agent_hook_handler))
+        .route("/api/lsp/enable", post(lsp_enable_handler))
+        .route("/api/lsp/disable", post(lsp_disable_handler))
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;

@@ -679,6 +679,10 @@ pub struct DaemonState {
     pub started_at: std::time::Instant,
     pub agent_hook_events: tokio::sync::Mutex<VecDeque<AgentHookEventRecord>>,
     pub agent_cache: Arc<agent_cache::AgentCache>,
+    /// Opt-in LSP control plane. Always present (so RPC handlers don't need to
+    /// branch on Option), but reports `enabled=false` until a language is
+    /// enabled for the workspace.
+    pub lsp: Arc<zedra_lsp::LspManager>,
     next_agent_hook_event_seq: AtomicU64,
 }
 
@@ -692,6 +696,14 @@ impl std::fmt::Debug for DaemonState {
 
 impl DaemonState {
     pub fn new(workdir: std::path::PathBuf, identity: SharedIdentity) -> Self {
+        Self::new_with_lsp(workdir, identity, zedra_lsp::LspManager::ephemeral())
+    }
+
+    pub fn new_with_lsp(
+        workdir: std::path::PathBuf,
+        identity: SharedIdentity,
+        lsp: Arc<zedra_lsp::LspManager>,
+    ) -> Self {
         Self {
             fs: Arc::new(LocalFs),
             workdir,
@@ -699,6 +711,7 @@ impl DaemonState {
             started_at: std::time::Instant::now(),
             agent_hook_events: tokio::sync::Mutex::new(VecDeque::new()),
             agent_cache: agent_cache::AgentCache::new(),
+            lsp,
             next_agent_hook_event_seq: AtomicU64::new(1),
         }
     }
@@ -2855,33 +2868,18 @@ async fn dispatch(
             }
         }
 
-        // -- LSP --
+        // -- LSP (legacy stub variants) --
+        //
+        // The host LSP subsystem is opt-in and not yet wired. Until it lands,
+        // every LSP variant short-circuits to an inert response so clients
+        // built against newer protocol revisions degrade cleanly. The legacy
+        // `LspDiagnostics` / `LspHover` variants stay for binary compatibility
+        // but no longer shell out to compilers — that path was unsafe by NFR.
         ZedraMessage::LspDiagnostics(msg) => {
-            let full_path = match resolve_path(&state.workdir, &msg.path) {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!("LspDiagnostics: rejected path {:?}: {}", msg.path, e);
-                    let _ = msg
-                        .tx
-                        .send(LspDiagnosticsResult {
-                            diagnostics: vec![],
-                            error: Some(e.to_string()),
-                        })
-                        .await;
-                    return Ok(());
-                }
-            };
-            let diagnostics = run_lsp_check(&full_path)
-                .into_iter()
-                .map(|d| LspDiagnostic {
-                    message: d.message,
-                    severity: d.severity,
-                })
-                .collect();
             let _ = msg
                 .tx
                 .send(LspDiagnosticsResult {
-                    diagnostics,
+                    diagnostics: vec![],
                     error: None,
                 })
                 .await;
@@ -2891,7 +2889,130 @@ async fn dispatch(
             let _ = msg
                 .tx
                 .send(LspHoverResult {
-                    contents: "LSP hover not yet connected to a language server.".to_string(),
+                    contents: String::new(),
+                })
+                .await;
+        }
+
+        // -- LSP control plane --
+        ZedraMessage::LspStatus(msg) => {
+            let snapshot = state.lsp.status_snapshot().await;
+            let _ = msg.tx.send(snapshot).await;
+        }
+
+        ZedraMessage::LspEnable(msg) => {
+            let was_enabled = state.lsp.is_enabled(msg.language).await;
+            let result = match state.lsp.enable(msg.language).await {
+                Ok(()) => {
+                    if !was_enabled {
+                        zedra_telemetry::send(Event::LspEnabled {
+                            language: lsp_language_label(msg.language),
+                        });
+                    }
+                    LspEnableResult {
+                        enabled: true,
+                        error: None,
+                    }
+                }
+                Err(e) => LspEnableResult {
+                    enabled: state.lsp.is_enabled(msg.language).await,
+                    error: Some(e.to_string()),
+                },
+            };
+            let _ = msg.tx.send(result).await;
+        }
+
+        ZedraMessage::LspDisable(msg) => {
+            let was_enabled = state.lsp.is_enabled(msg.language).await;
+            let result = match state.lsp.disable(msg.language).await {
+                Ok(()) => {
+                    if was_enabled {
+                        zedra_telemetry::send(Event::LspDisabled {
+                            language: lsp_language_label(msg.language),
+                        });
+                    }
+                    LspDisableResult {
+                        enabled: false,
+                        error: None,
+                    }
+                }
+                Err(e) => LspDisableResult {
+                    enabled: state.lsp.is_enabled(msg.language).await,
+                    error: Some(e.to_string()),
+                },
+            };
+            let _ = msg.tx.send(result).await;
+        }
+
+        ZedraMessage::LspSubscribe(msg) => {
+            // Diagnostics already fan out to every session via the host event
+            // stream from main.rs (`HostEvent::LspDiagnosticsPush`). The
+            // subscription is acknowledged here so clients see `enabled=true`
+            // when the workspace has any language enabled, and is otherwise
+            // a no-op — there is no per-path filtering yet.
+            let enabled = state.lsp.any_enabled().await;
+            let subscription_id = if enabled {
+                uuid::Uuid::new_v4().to_string()
+            } else {
+                String::new()
+            };
+            let _ = msg
+                .tx
+                .send(LspSubscribeResult {
+                    enabled,
+                    subscription_id,
+                    error: None,
+                })
+                .await;
+        }
+
+        ZedraMessage::LspUnsubscribe(msg) => {
+            let _ = msg
+                .tx
+                .send(LspUnsubscribeResult {
+                    enabled: state.lsp.any_enabled().await,
+                })
+                .await;
+        }
+
+        ZedraMessage::LspHoverV2(msg) => {
+            let _ = msg
+                .tx
+                .send(LspHoverV2Result {
+                    enabled: false,
+                    contents: String::new(),
+                    range: None,
+                })
+                .await;
+        }
+
+        ZedraMessage::LspCodeAction(msg) => {
+            let _ = msg
+                .tx
+                .send(LspCodeActionResult {
+                    enabled: false,
+                    actions: vec![],
+                })
+                .await;
+        }
+
+        ZedraMessage::LspApplyAction(msg) => {
+            let _ = msg
+                .tx
+                .send(LspApplyActionResult {
+                    enabled: false,
+                    files_changed: 0,
+                    error: None,
+                })
+                .await;
+        }
+
+        ZedraMessage::LspGotoDef(msg) => {
+            let _ = msg
+                .tx
+                .send(LspGotoDefResult {
+                    enabled: false,
+                    locations: vec![],
                 })
                 .await;
         }
@@ -2900,54 +3021,15 @@ async fn dispatch(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-struct DiagnosticEntry {
-    message: String,
-    severity: String,
-}
-
-fn run_lsp_check(path: &std::path::Path) -> Vec<DiagnosticEntry> {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-
-    let (cmd, args): (&str, Vec<&str>) = match ext {
-        "rs" => ("cargo", vec!["check", "--message-format=json"]),
-        "ts" | "tsx" | "js" | "jsx" => ("npx", vec!["tsc", "--noEmit"]),
-        "py" => (
-            "python3",
-            vec!["-m", "py_compile", path.to_str().unwrap_or("")],
-        ),
-        _ => return vec![],
-    };
-
-    let output = std::process::Command::new(cmd)
-        .args(&args)
-        .current_dir(path.parent().unwrap_or(std::path::Path::new(".")))
-        .output();
-
-    match output {
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            if stderr.is_empty() && out.status.success() {
-                vec![]
-            } else {
-                stderr
-                    .lines()
-                    .take(10)
-                    .filter(|l| !l.is_empty())
-                    .map(|line| DiagnosticEntry {
-                        message: line.to_string(),
-                        severity: "error".into(),
-                    })
-                    .collect()
-            }
-        }
-        Err(e) => {
-            tracing::warn!("LspDiagnostics: command {} failed: {}", cmd, e);
-            vec![]
-        }
+/// Stable telemetry label for an `LspLanguage`. Mirrors the API JSON label so
+/// telemetry, the REST API, and the CLI all agree on the language name.
+fn lsp_language_label(language: LspLanguage) -> &'static str {
+    match language {
+        LspLanguage::Rust => "rust",
+        LspLanguage::Go => "go",
+        LspLanguage::TypeScript => "typescript",
+        LspLanguage::JavaScript => "javascript",
+        LspLanguage::Python => "python",
     }
 }
 

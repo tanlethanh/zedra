@@ -884,6 +884,13 @@ impl SessionRegistry {
         self.sessions.lock().await.len()
     }
 
+    /// Snapshot of every active session as `Arc` handles. Used by host-driven
+    /// event fan-out (e.g. LSP diagnostic pushes) where the caller wants to
+    /// iterate sessions without holding the registry lock across awaits.
+    pub async fn all_sessions(&self) -> Vec<Arc<ServerSession>> {
+        self.sessions.lock().await.values().cloned().collect()
+    }
+
     /// Return the most recently active session, if any.
     /// Used by the REST API when no session_id is specified, so the request
     /// targets the session a user is actually working in rather than an

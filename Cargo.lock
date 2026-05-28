@@ -10162,7 +10162,23 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "windows-sys 0.61.2",
+ "zedra-lsp",
  "zedra-osc",
+ "zedra-rpc",
+ "zedra-telemetry",
+]
+
+[[package]]
+name = "zedra-lsp"
+version = "0.2.5"
+dependencies = [
+ "anyhow",
+ "libc",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tokio",
+ "tracing",
  "zedra-rpc",
  "zedra-telemetry",
 ]

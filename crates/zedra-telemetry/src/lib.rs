@@ -326,6 +326,56 @@ pub enum Event {
         /// Current running version (e.g. "0.2.1").
         current_version: &'static str,
     },
+    // ── LSP (server-side, opt-in subsystem) ───────────────────────────────
+    //
+    // Privacy: every event carries only opaque enum-like `language` labels
+    // ("rust", "go", "typescript", ...), durations, and counts. Diagnostic
+    // message text, file paths, codes, and project names must not appear here.
+    //
+    /// Operator enabled a language for the active workspace
+    /// (`zedra lsp enable` / `LspEnable` RPC).
+    LspEnabled { language: &'static str },
+    /// Operator disabled a language.
+    LspDisabled { language: &'static str },
+    /// Language-server process spawned successfully.
+    LspSpawn {
+        language: &'static str,
+        /// Time from `spawn()` to first child PID assignment.
+        cold_start_ms: u64,
+    },
+    /// `initialize`/`initialized` handshake completed; diagnostics flowing.
+    LspReady {
+        language: &'static str,
+        /// Time from `spawn()` to `initialized` notification.
+        init_ms: u64,
+    },
+    /// Language-server terminated by the resource guard, the operator, or on
+    /// its own. `reason` matches `LspKillReason` enum labels: "oom",
+    /// "aggregate_oom", "cpu", "idle", "manual", "crash".
+    LspKilled {
+        language: &'static str,
+        reason: &'static str,
+        uptime_secs: u64,
+        peak_rss_mb: u64,
+    },
+    /// Periodic diagnostic-set sample (every 60 s while at least one server is
+    /// running). Counts only; never message text.
+    LspDiagnosticsSample {
+        language: &'static str,
+        error_count: u32,
+        warning_count: u32,
+        file_count: u32,
+    },
+    /// Hourly aggregate of LSP request latencies per method. `method` matches
+    /// the LSP wire name ("textDocument/hover", "textDocument/codeAction", ...).
+    LspRequestLatency {
+        language: &'static str,
+        method: &'static str,
+        latency_ms_p50: u32,
+        latency_ms_p95: u32,
+        sample_count: u32,
+    },
+
     /// `zedra update` ran to completion (success or failure).
     SelfUpdate {
         success: bool,
@@ -378,6 +428,13 @@ impl Event {
             Self::BandwidthSample { .. } => "bandwidth_sample",
             Self::UpdateChecked { .. } => "update_checked",
             Self::SelfUpdate { .. } => "self_update",
+            Self::LspEnabled { .. } => "lsp_enabled",
+            Self::LspDisabled { .. } => "lsp_disabled",
+            Self::LspSpawn { .. } => "lsp_spawn",
+            Self::LspReady { .. } => "lsp_ready",
+            Self::LspKilled { .. } => "lsp_killed",
+            Self::LspDiagnosticsSample { .. } => "lsp_diagnostics_sample",
+            Self::LspRequestLatency { .. } => "lsp_request_latency",
         }
     }
 
@@ -683,6 +740,55 @@ impl Event {
                 ("from_version", from_version.to_string()),
                 ("error", error.to_string()),
                 ("elapsed_ms", elapsed_ms.to_string()),
+            ],
+            Self::LspEnabled { language } | Self::LspDisabled { language } => {
+                vec![("language", language.to_string())]
+            }
+            Self::LspSpawn {
+                language,
+                cold_start_ms,
+            } => vec![
+                ("language", language.to_string()),
+                ("cold_start_ms", cold_start_ms.to_string()),
+            ],
+            Self::LspReady { language, init_ms } => vec![
+                ("language", language.to_string()),
+                ("init_ms", init_ms.to_string()),
+            ],
+            Self::LspKilled {
+                language,
+                reason,
+                uptime_secs,
+                peak_rss_mb,
+            } => vec![
+                ("language", language.to_string()),
+                ("reason", reason.to_string()),
+                ("uptime_secs", uptime_secs.to_string()),
+                ("peak_rss_mb", peak_rss_mb.to_string()),
+            ],
+            Self::LspDiagnosticsSample {
+                language,
+                error_count,
+                warning_count,
+                file_count,
+            } => vec![
+                ("language", language.to_string()),
+                ("error_count", error_count.to_string()),
+                ("warning_count", warning_count.to_string()),
+                ("file_count", file_count.to_string()),
+            ],
+            Self::LspRequestLatency {
+                language,
+                method,
+                latency_ms_p50,
+                latency_ms_p95,
+                sample_count,
+            } => vec![
+                ("language", language.to_string()),
+                ("method", method.to_string()),
+                ("latency_ms_p50", latency_ms_p50.to_string()),
+                ("latency_ms_p95", latency_ms_p95.to_string()),
+                ("sample_count", sample_count.to_string()),
             ],
         }
     }
