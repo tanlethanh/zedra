@@ -599,6 +599,7 @@ fn managed_agent_command_hint(kind: ManagedAgentKind) -> &'static str {
         ManagedAgentKind::Codex => "codex",
         ManagedAgentKind::OpenCode => "opencode",
         ManagedAgentKind::Pi => "pi",
+        ManagedAgentKind::Hermes => "hermes",
     }
 }
 

@@ -247,6 +247,7 @@ pub enum CliManagedAgentKind {
     #[value(name = "opencode", alias = "open-code", alias = "open_code")]
     OpenCode,
     Pi,
+    Hermes,
 }
 
 impl CliManagedAgentKind {
@@ -256,6 +257,7 @@ impl CliManagedAgentKind {
             Self::Codex => "codex",
             Self::OpenCode => "opencode",
             Self::Pi => "pi",
+            Self::Hermes => "hermes",
         }
     }
 }
@@ -267,6 +269,7 @@ impl From<CliManagedAgentKind> for ManagedAgentKind {
             CliManagedAgentKind::Codex => ManagedAgentKind::Codex,
             CliManagedAgentKind::OpenCode => ManagedAgentKind::OpenCode,
             CliManagedAgentKind::Pi => ManagedAgentKind::Pi,
+            CliManagedAgentKind::Hermes => ManagedAgentKind::Hermes,
         }
     }
 }
@@ -413,6 +416,7 @@ fn scan_bench(args: AgentScanBenchArgs) -> Result<()> {
         ManagedAgentKind::Codex,
         ManagedAgentKind::OpenCode,
         ManagedAgentKind::Pi,
+        ManagedAgentKind::Hermes,
     ] {
         let started = Instant::now();
         let result = agent::scan_agent_sessions(kind, &workdir, args.limit);
@@ -484,6 +488,7 @@ fn scan_bench(args: AgentScanBenchArgs) -> Result<()> {
         ManagedAgentKind::Codex,
         ManagedAgentKind::OpenCode,
         ManagedAgentKind::Pi,
+        ManagedAgentKind::Hermes,
     ] {
         println!();
         if let Some(result) = sessions.get(&format!("{kind:?}")) {
@@ -520,12 +525,13 @@ async fn scan_usage(args: AgentScanCommonArgs) -> Result<()> {
         );
     } else {
         use zedra_rpc::proto::ManagedAgentKind::*;
-        for kind in [Claude, Codex, OpenCode, Pi] {
+        for kind in [Claude, Codex, OpenCode, Pi, Hermes] {
             let label = match kind {
                 Claude => "Claude",
                 Codex => "Codex",
                 OpenCode => "OpenCode",
                 Pi => "Pi",
+                Hermes => "Hermes",
             };
             match snapshots.get(&kind) {
                 None => println!("{label}: no credentials / fetch failed"),
@@ -786,6 +792,9 @@ fn install_hooks(args: AgentHookInstallArgs) -> Result<()> {
             )?),
             CliManagedAgentKind::Pi => {
                 eprintln!("warning: Pi has no documented hook system; skipping");
+            }
+            CliManagedAgentKind::Hermes => {
+                eprintln!("warning: Zedra hook install for Hermes is not supported; skipping");
             }
         }
     }
@@ -1049,6 +1058,14 @@ fn synthetic_hook_payload(
             })
         }
         CliManagedAgentKind::Pi => {
+            let cwd = workdir.to_string_lossy();
+            serde_json::json!({
+                "event": event_name,
+                "sessionId": "zedra-test-session",
+                "cwd": cwd,
+            })
+        }
+        CliManagedAgentKind::Hermes => {
             let cwd = workdir.to_string_lossy();
             serde_json::json!({
                 "event": event_name,

@@ -1,7 +1,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use tracing::error;
-use zedra_rpc::proto::{AgentSummary, HostEvent, ManagedAgentKind};
+use zedra_rpc::proto::{AgentFile, AgentSummary, HostEvent, ManagedAgentKind};
 use zedra_session::{Session, SessionHandle};
 
 use crate::agent_ui::{
@@ -9,7 +9,7 @@ use crate::agent_ui::{
     render_agent_session_list, render_agent_usage_row, setup_label,
 };
 use crate::fonts;
-use crate::platform_bridge::{self, HapticFeedback};
+use crate::platform_bridge::{self, CustomSheetDetent, CustomSheetOptions, HapticFeedback};
 use crate::theme;
 use crate::ui::{
     chevron_back_button, subscreen_padded_body, subscreen_page, subscreen_refresh_button,
@@ -28,6 +28,10 @@ pub struct AgentDetail {
     kind: ManagedAgentKind,
     agent: Option<AgentSummary>,
     sessions: Vec<zedra_rpc::proto::AgentSessionSummary>,
+    /// Read-only config/memory files (Hermes). Empty for agents without a set.
+    files: Vec<AgentFile>,
+    /// Persistent body for the native file sheet; its content swaps per tap.
+    file_sheet: Entity<AgentFileSheet>,
     agent_state: LoadState,
     session_state: LoadState,
     loading_epoch: u64,
@@ -41,11 +45,14 @@ impl AgentDetail {
         kind: ManagedAgentKind,
         cx: &mut Context<Self>,
     ) -> Self {
+        let file_sheet = cx.new(|_| AgentFileSheet::default());
         let mut view = Self {
             session_handle,
             kind,
             agent: None,
             sessions: Vec::new(),
+            files: Vec::new(),
+            file_sheet,
             agent_state: LoadState::Loading,
             session_state: LoadState::Loading,
             loading_epoch: 0,
@@ -100,14 +107,17 @@ impl AgentDetail {
         let handle = self.session_handle.clone();
         let kind = self.kind;
         let task = cx.spawn(async move |this, cx| {
-            let (agents, sessions) = tokio::join!(
+            let (agents, sessions, files) = tokio::join!(
                 handle.agent_list(refresh),
                 handle.agent_sessions(kind, refresh, 0),
+                handle.agent_files(kind),
             );
             let _ = this.update(cx, |this, cx| {
                 if this.loading_epoch != epoch {
                     return;
                 }
+                // Files are a best-effort extra; a failure shouldn't blank the screen.
+                this.files = files.unwrap_or_default();
                 match agents {
                     Ok(agents) => {
                         this.agent = agents.into_iter().find(|agent| agent.kind == kind);
@@ -155,12 +165,103 @@ impl AgentDetail {
             _ => String::new(),
         }
     }
+
+    /// Read-only config/memory file list. Each present file is a tappable row
+    /// that opens its content in a native sheet (content is not rendered inline).
+    fn render_files_section(
+        &self,
+        files: &[AgentFile],
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let mut section = div()
+            .id("agent-detail-files")
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(theme::SPACING_XS))
+            .child(
+                div()
+                    .text_size(px(theme::FONT_DETAIL))
+                    .text_color(rgb(theme::text_muted(cx)))
+                    .child("Config & memory (read-only)"),
+            );
+        for file in files {
+            section = section.child(self.file_row(file, cx));
+        }
+        section
+    }
+
+    fn file_row(&self, file: &AgentFile, cx: &mut Context<Self>) -> Stateful<Div> {
+        let subtitle = if file.missing {
+            "not created yet".to_string()
+        } else if file.truncated {
+            format!("{} · truncated", file.path)
+        } else {
+            file.path.clone()
+        };
+        let mut row = div()
+            .id(SharedString::from(format!("agent-file-row-{}", file.label)))
+            .min_w_0()
+            .flex()
+            .flex_row()
+            .items_baseline()
+            .gap(px(theme::SPACING_SM))
+            .py(px(theme::AGENT_METADATA_ROW_PY))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(theme::FONT_DETAIL))
+                    .font_family(fonts::MONO_FONT_FAMILY)
+                    .text_color(rgb(theme::text_secondary(cx)))
+                    .child(file.label.clone()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(theme::FONT_DETAIL))
+                    .text_color(rgb(theme::text_muted(cx)))
+                    .child(subtitle),
+            );
+        // Only present files open a sheet; missing ones are inert.
+        if !file.missing {
+            let file = file.clone();
+            row = row
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+                    this.open_file_sheet(file.clone(), cx);
+                }));
+        }
+        row
+    }
+
+    fn open_file_sheet(&self, file: AgentFile, cx: &mut Context<Self>) {
+        self.file_sheet
+            .update(cx, |sheet, cx| sheet.set_file(file, cx));
+        platform_bridge::show_custom_sheet(
+            CustomSheetOptions {
+                detents: vec![CustomSheetDetent::Medium, CustomSheetDetent::Large],
+                initial_detent: CustomSheetDetent::Large,
+                shows_grabber: true,
+                expands_on_scroll_edge: true,
+                edge_attached_in_compact_height: false,
+                width_follows_preferred_content_size_when_edge_attached: false,
+                corner_radius: None,
+                modal_in_presentation: false,
+            },
+            self.file_sheet.clone(),
+        );
+    }
 }
 
 impl Render for AgentDetail {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let agent = self.agent.clone();
         let sessions = self.sessions.clone();
+        let files = self.files.clone();
         let agent_state = self.agent_state.clone();
         let session_state = self.session_state.clone();
         let title = self.header_title();
@@ -189,6 +290,9 @@ impl Render for AgentDetail {
                         .child(render_detail_metadata(agent, cx))
                         .when_some(agent.usage.as_ref(), |col, usage| {
                             col.child(render_agent_usage_row(agent.kind, usage, cx))
+                        })
+                        .when(!files.is_empty(), |col| {
+                            col.child(self.render_files_section(&files, cx))
                         })
                         .child(render_agent_session_list(
                             AgentSessionListProps {
@@ -353,6 +457,102 @@ fn metadata_line(label: SharedString, value: String, cx: &App, show_divider: boo
                 .text_color(rgb(theme::text_secondary(cx)))
                 .child(value),
         )
+}
+
+/// Read-only viewer for an agent's config/memory files (Hermes:
+/// SOUL.md/USER.md/MEMORY.md/config.yaml/.env). Content is host-capped; long
+/// files scroll within a bounded box.
+/// Body of the native file sheet: a mono, horizontally- and vertically-
+/// scrollable view of one file's content (GPUI text runs don't break on `\n`,
+/// so each line is its own element).
+#[derive(Default)]
+struct AgentFileSheet {
+    file: Option<AgentFile>,
+}
+
+impl AgentFileSheet {
+    fn set_file(&mut self, file: AgentFile, cx: &mut Context<Self>) {
+        self.file = Some(file);
+        cx.notify();
+    }
+}
+
+impl Render for AgentFileSheet {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut root = div()
+            .w_full()
+            .h_full()
+            .flex()
+            .flex_col()
+            .gap(px(theme::SPACING_SM))
+            .bg(rgb(theme::bg_primary(cx)))
+            .px(px(theme::SUBSCREEN_PADDING_X))
+            .pt(px(theme::SPACING_MD))
+            .pb(px(theme::SPACING_LG));
+        let Some(file) = self.file.clone() else {
+            return root;
+        };
+        root = root.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(
+                    div()
+                        .text_size(px(theme::FONT_HEADING))
+                        .font_family(fonts::HEADING_FONT_FAMILY)
+                        .text_color(rgb(theme::text_primary(cx)))
+                        .child(file.label.clone()),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(theme::FONT_DETAIL))
+                        .text_color(rgb(theme::text_muted(cx)))
+                        .child(if file.truncated {
+                            format!("{} · truncated", file.path)
+                        } else {
+                            file.path.clone()
+                        }),
+                ),
+        );
+
+        let mut body = div()
+            .id("agent-file-sheet-body")
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .min_w_0()
+            .overflow_scroll()
+            .p(px(theme::SPACING_SM))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(rgb(theme::border_subtle(cx)))
+            .bg(rgb(theme::bg_card_dim(cx)))
+            .flex()
+            .flex_col();
+        if file.content.trim().is_empty() {
+            body = body.child(
+                div()
+                    .text_size(px(theme::FONT_DETAIL))
+                    .text_color(rgb(theme::text_muted(cx)))
+                    .child("(empty)"),
+            );
+        } else {
+            for line in file.content.lines() {
+                body = body.child(
+                    div()
+                        .text_size(px(theme::FONT_DETAIL))
+                        .font_family(fonts::MONO_FONT_FAMILY)
+                        .text_color(rgb(theme::text_secondary(cx)))
+                        .whitespace_nowrap()
+                        .child(line.to_string()),
+                );
+            }
+        }
+        root.child(body)
+    }
 }
 
 fn empty_text(text: impl Into<SharedString>, cx: &App) -> Div {

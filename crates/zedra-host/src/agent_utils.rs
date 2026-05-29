@@ -42,6 +42,57 @@ pub fn file_size_bytes(path: &Path) -> Option<u64> {
     std::fs::metadata(path).ok().map(|meta| meta.len())
 }
 
+pub fn mtime_unix_secs(path: &Path) -> Option<u64> {
+    std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
+/// First non-empty string field on `record` matching any of `names`, in order.
+pub fn string_field<'a>(record: &'a Value, names: &[&str]) -> Option<&'a str> {
+    names
+        .iter()
+        .find_map(|name| record.get(*name)?.as_str())
+        .filter(|value| !value.is_empty())
+}
+
+/// Trimmed text of a chat `message` when its role is `user`, or `None`.
+///
+/// Handles both content shapes agents emit: a bare string, or an array of
+/// content parts where the first `type == "text"` part wins. Markup-only text
+/// (leading `<`) and empty text are rejected so it is suitable as a session
+/// title source. Callers pass the message object itself (the JSONL record or an
+/// element of a `messages` array), not the enclosing envelope.
+pub fn user_message_text(message: &Value) -> Option<String> {
+    if string_field(message, &["role"]) != Some("user") {
+        return None;
+    }
+    let content = message.get("content")?;
+    let text = if let Some(text) = content.as_str() {
+        text.to_string()
+    } else {
+        content.as_array()?.iter().find_map(|part| {
+            (string_field(part, &["type"]) == Some("text"))
+                .then(|| string_field(part, &["text"]))
+                .flatten()
+                .map(str::to_string)
+        })?
+    };
+    let text = text.trim();
+    (!text.is_empty() && !text.starts_with('<')).then(|| text.to_string())
+}
+
+pub fn info_field(label: &str, value: &str) -> AgentInfoField {
+    AgentInfoField {
+        label: label.to_string(),
+        value: value.to_string(),
+    }
+}
+
 pub fn cwd_matches(workdir: &Path, cwd: Option<&str>) -> bool {
     let Some(cwd) = cwd else {
         return false;
@@ -70,6 +121,7 @@ pub fn kind_slug(kind: ManagedAgentKind) -> &'static str {
         ManagedAgentKind::Codex => "codex",
         ManagedAgentKind::OpenCode => "opencode",
         ManagedAgentKind::Pi => "pi",
+        ManagedAgentKind::Hermes => "hermes",
     }
 }
 
@@ -79,6 +131,7 @@ pub fn program_name(kind: ManagedAgentKind) -> &'static str {
         ManagedAgentKind::Codex => "codex",
         ManagedAgentKind::OpenCode => "opencode",
         ManagedAgentKind::Pi => "pi",
+        ManagedAgentKind::Hermes => "hermes",
     }
 }
 
@@ -88,6 +141,7 @@ pub fn display_name(kind: ManagedAgentKind) -> &'static str {
         ManagedAgentKind::Codex => "Codex",
         ManagedAgentKind::OpenCode => "OpenCode",
         ManagedAgentKind::Pi => "Pi",
+        ManagedAgentKind::Hermes => "Hermes",
     }
 }
 
@@ -103,10 +157,17 @@ pub fn capabilities(kind: ManagedAgentKind) -> AgentCapabilities {
     }
 }
 
+/// Generous upper bound on a stored session title. This is an anti-abuse clamp
+/// on payload size, not a display limit — the client trims titles to the row
+/// width at render time. Applies to every managed agent, since they all route
+/// titles through [`session_title`].
+pub const SESSION_TITLE_MAX_CHARS: usize = 200;
+
 pub fn session_title(stored: Option<String>) -> Option<String> {
     stored
         .map(|title| title.trim().to_string())
         .filter(|title| !title.is_empty())
+        .map(|title| crate::utils::truncate_chars(&title, SESSION_TITLE_MAX_CHARS))
         .or_else(|| Some("Unknown".to_string()))
 }
 

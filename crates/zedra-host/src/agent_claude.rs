@@ -525,19 +525,8 @@ fn user_message_title(record: &Value) -> Option<String> {
     if text.starts_with('<') || text.starts_with('[') {
         return None;
     }
-    Some(truncate_title(text))
-}
-
-fn truncate_title(text: &str) -> String {
-    const MAX_LEN: usize = 80;
-    if text.chars().count() <= MAX_LEN {
-        return text.to_string();
-    }
-    let mut end = 0;
-    for (index, _) in text.char_indices().take(MAX_LEN) {
-        end = index;
-    }
-    format!("{}…", &text[..end])
+    // Length is clamped centrally in `session_title`; the UI trims for display.
+    Some(text.to_string())
 }
 
 fn humanize_slug(slug: &str) -> String {
@@ -556,13 +545,6 @@ fn humanize_slug(slug: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn string_field<'a>(record: &'a Value, names: &[&str]) -> Option<&'a str> {
-    names
-        .iter()
-        .find_map(|name| record.get(*name)?.as_str())
-        .filter(|value| !value.is_empty())
 }
 
 fn nested_string_field<'a>(
@@ -735,6 +717,7 @@ fn apply_sessions_index(
 use crate::agent_utils::{
     empty_session_live, file_size_bytes, home_path, humanize_plan_token, parse_rfc3339,
     parse_usage_window_resets_at, push_json_string, read_json_file, resume_summary, session_title,
+    string_field,
 };
 use zedra_rpc::proto::*;
 

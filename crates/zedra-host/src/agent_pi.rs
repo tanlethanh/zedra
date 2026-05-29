@@ -1,7 +1,6 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -9,8 +8,8 @@ use serde_json::Value;
 use zedra_rpc::proto::*;
 
 use crate::agent_utils::{
-    command_on_path, empty_session_live, file_size_bytes, home_path, read_json_file,
-    resume_summary, session_title,
+    command_on_path, empty_session_live, file_size_bytes, home_path, info_field, mtime_unix_secs,
+    parse_rfc3339, read_json_file, resume_summary, session_title, string_field, user_message_text,
 };
 
 const LIST_HEAD_SCAN_MAX_LINES: usize = 32;
@@ -236,9 +235,7 @@ fn read_session_file(
                     cwd = string_field(&record, &["cwd"]).map(str::to_string);
                 }
                 if created_at.is_none() {
-                    if let Some(ts) = string_field(&record, &["timestamp"]) {
-                        created_at = parse_timestamp(ts);
-                    }
+                    created_at = parse_rfc3339(string_field(&record, &["timestamp"]));
                 }
             }
             "session_info" => {
@@ -257,15 +254,15 @@ fn read_session_file(
             "message" => {
                 message_count += 1;
                 if title.is_none() {
-                    if let Some(text) = first_user_text(&record) {
-                        title = Some(truncate_title(&text));
-                    }
+                    // Length is clamped centrally in `session_title`; the UI trims
+                    // for display.
+                    title = first_user_text(&record);
                 }
             }
             _ => {}
         }
 
-        if let Some(ts) = string_field(&record, &["timestamp"]).and_then(parse_timestamp) {
+        if let Some(ts) = parse_rfc3339(string_field(&record, &["timestamp"])) {
             last_timestamp = match last_timestamp {
                 Some(current) if current >= ts => Some(current),
                 _ => Some(ts),
@@ -510,77 +507,12 @@ fn custom_providers() -> Vec<(String, usize)> {
     out
 }
 
-fn info_field(label: &str, value: &str) -> AgentInfoField {
-    AgentInfoField {
-        label: label.to_string(),
-        value: value.to_string(),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn string_field<'a>(record: &'a Value, names: &[&str]) -> Option<&'a str> {
-    names
-        .iter()
-        .find_map(|name| record.get(*name)?.as_str())
-        .filter(|value| !value.is_empty())
-}
-
 fn first_user_text(record: &Value) -> Option<String> {
-    let message = record.get("message").unwrap_or(record);
-    let role = string_field(message, &["role"]).unwrap_or("");
-    if role != "user" {
-        return None;
-    }
-    let content = message.get("content")?;
-    let text = if let Some(text) = content.as_str() {
-        text.to_string()
-    } else if let Some(array) = content.as_array() {
-        array.iter().find_map(|part| {
-            if string_field(part, &["type"]) == Some("text") {
-                string_field(part, &["text"]).map(str::to_string)
-            } else {
-                None
-            }
-        })?
-    } else {
-        return None;
-    };
-    let text = text.trim();
-    if text.is_empty() || text.starts_with('<') {
-        return None;
-    }
-    Some(text.to_string())
-}
-
-fn truncate_title(text: &str) -> String {
-    const MAX_LEN: usize = 80;
-    if text.chars().count() <= MAX_LEN {
-        return text.to_string();
-    }
-    let mut end = 0;
-    for (index, _) in text.char_indices().take(MAX_LEN) {
-        end = index;
-    }
-    format!("{}…", &text[..end])
-}
-
-fn parse_timestamp(value: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value)
-        .ok()
-        .map(|dt| dt.with_timezone(&Utc))
-}
-
-fn mtime_unix_secs(path: &Path) -> Option<u64> {
-    std::fs::metadata(path)
-        .ok()?
-        .modified()
-        .ok()?
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_secs())
+    user_message_text(record.get("message").unwrap_or(record))
 }
 
 #[cfg(test)]

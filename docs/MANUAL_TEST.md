@@ -997,9 +997,10 @@ Expected:
    agent icon once OSC metadata arrives.
 9. Tap `View sessions`.
 10. Expected: the drawer closes and the main view shows a unified session list
-    grouped by day across Claude, Codex, OpenCode, and Pi for the current
+    grouped by day across Claude, Codex, OpenCode, Pi, and Hermes for the current
     workspace. Each row shows agent icon, title, datetime, branch/worktree,
-    transcript size, and model when available.
+    transcript size, and model when available. Hermes is a global agent, so its
+    sessions appear in every workspace (not filtered by `cwd`).
 11. Tap a resumable session row.
 12. Expected: Zedra immediately resumes the session in a new terminal and opens
     it as the active main view.
@@ -1024,6 +1025,17 @@ Expected:
       @earendil-works/pi-coding-agent`; sessions live at
       `~/.pi/agent/sessions/--<workdir>--/<timestamp>_<uuid>.jsonl`. Resume
       should run `pi --session <id>` in a new terminal.
+    - Hermes: per-provider auth + active provider (`$HERMES_HOME/auth.json`,
+      default `~/.hermes`), Default model / Default provider (`config.yaml`),
+      Skills count, Total spend + Platforms (`state.db` rollups). Sessions are
+      global, read from `$HERMES_HOME/state.db` (curated titles, platform
+      `source`, tool counts, per-session cost; falls back to `sessions/*.json`
+      when the db is absent); resume should run `hermes --resume <session_id>`.
+      Manage detail shows a **read-only "Config & memory"** section listing
+      `SOUL.md`, `USER.md`, `MEMORY.md`, `config.yaml`, `.env`, `cron/jobs.json`.
+      Tapping a present file opens its content in a **native sheet** (mono,
+      scrollable); absent files show "not created yet" and are not tappable;
+      oversized files show "truncated". The client cannot edit these.
 16. Tap `Resume` on a session from manage detail.
 17. Expected: same immediate resume behavior as the unified sessions view.
 18. Re-open `View sessions` or `Manage agents` without tapping Refresh.
