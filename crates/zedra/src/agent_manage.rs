@@ -1,7 +1,7 @@
 use gpui::*;
 use tracing::error;
 use zedra_rpc::proto::{AgentSummary, HostEvent};
-use zedra_session::{AGENT_MGMT_UNSUPPORTED_MSG, Session, SessionHandle};
+use zedra_session::{Session, SessionHandle};
 
 use crate::agent_ui::{AgentCardProps, render_agent_card};
 use crate::fonts;
@@ -84,11 +84,6 @@ impl AgentManage {
     fn load_agents(&mut self, refresh: bool, cx: &mut Context<Self>) {
         self.loading_epoch = self.loading_epoch.wrapping_add(1);
         let epoch = self.loading_epoch;
-        if !self.session_handle.supports_agent_mgmt() {
-            self.agent_state = LoadState::Error(AGENT_MGMT_UNSUPPORTED_MSG.into());
-            cx.notify();
-            return;
-        }
         self.agent_state = LoadState::Loading;
         cx.notify();
 

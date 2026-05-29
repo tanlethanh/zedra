@@ -997,7 +997,7 @@ Expected:
    agent icon once OSC metadata arrives.
 9. Tap `View sessions`.
 10. Expected: the drawer closes and the main view shows a unified session list
-    grouped by day across Claude, Codex, and OpenCode for the current
+    grouped by day across Claude, Codex, OpenCode, and Pi for the current
     workspace. Each row shows agent icon, title, datetime, branch/worktree,
     transcript size, and model when available.
 11. Tap a resumable session row.
@@ -1020,6 +1020,10 @@ Expected:
     - Codex: logged in, plan, plan until, account name from `auth.json`, model/
       personality from `config.toml`
     - OpenCode: config dir presence
+    - Pi: logged in (sessions dir presence). Install with `npm install -g
+      @earendil-works/pi-coding-agent`; sessions live at
+      `~/.pi/agent/sessions/--<workdir>--/<timestamp>_<uuid>.jsonl`. Resume
+      should run `pi --session <id>` in a new terminal.
 16. Tap `Resume` on a session from manage detail.
 17. Expected: same immediate resume behavior as the unified sessions view.
 18. Re-open `View sessions` or `Manage agents` without tapping Refresh.

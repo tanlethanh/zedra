@@ -967,6 +967,7 @@ pub enum ManagedAgentKind {
     Claude,
     Codex,
     OpenCode,
+    Pi,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

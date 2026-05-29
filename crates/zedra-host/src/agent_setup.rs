@@ -57,6 +57,7 @@ pub fn setup_summary(
             hooks_enabled()
                 && (opencode_hooks_installed() || opencode_local_hooks_installed(workdir)),
         ),
+        ManagedAgentKind::Pi => (false, false, false),
     };
     let state = if error.is_some() {
         AgentSetupState::Error
