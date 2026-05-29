@@ -367,6 +367,22 @@ impl SessionHandle {
         Ok((result.entries, result.total, result.has_more))
     }
 
+    pub async fn fs_search(&self, path: &str, query: &str, limit: u32) -> Result<FsSearchResult> {
+        let result: FsSearchResult = self
+            .client()?
+            .rpc(FsSearchReq {
+                path: path.to_string(),
+                query: query.to_string(),
+                limit,
+            })
+            .await
+            .map_err(|error| self.map_rpc_error(error))?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
+        Ok(result)
+    }
+
     pub async fn fs_read(&self, path: &str) -> Result<FsReadResult> {
         Ok(self
             .client()?

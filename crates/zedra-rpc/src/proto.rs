@@ -190,6 +190,11 @@ pub enum ZedraProto {
     /// gated on the client by `host_version`.
     #[rpc(tx = oneshot::Sender<TermCreateResult>)]
     TermCreateV2(TermCreateReqV2),
+
+    /// Search files and directories by name under a workspace path.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<FsSearchResult>)]
+    FsSearch(FsSearchReq),
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +205,12 @@ pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/2";
 
 /// Default page size for `FsList` requests (host uses this when `limit == 0`).
 pub const FS_LIST_DEFAULT_LIMIT: u32 = 50;
+/// Default result cap for host-side file search.
+pub const FS_SEARCH_DEFAULT_LIMIT: u32 = 100;
+/// Maximum result cap for host-side file search.
+pub const FS_SEARCH_MAX_LIMIT: u32 = 200;
+/// Maximum filesystem entries visited for one host-side file search.
+pub const FS_SEARCH_MAX_VISITED_ENTRIES: u32 = 20_000;
 /// Default page size for host-built docs tree requests.
 pub const FS_DOCS_TREE_DEFAULT_LIMIT: u32 = 200;
 /// Maximum page size for host-built docs tree requests.
@@ -508,6 +519,20 @@ pub struct FsListResult {
     pub entries: Vec<FsEntry>,
     pub total: u32,
     pub has_more: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FsSearchReq {
+    pub path: String,
+    pub query: String,
+    pub limit: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FsSearchResult {
+    pub entries: Vec<FsEntry>,
+    pub truncated: bool,
     pub error: Option<String>,
 }
 

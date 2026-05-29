@@ -26,6 +26,8 @@ use crate::session_registry::{
 };
 use crate::utils;
 use anyhow::Result;
+use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo_matcher::{Config, Matcher, Utf32Str};
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
@@ -439,6 +441,48 @@ mod terminal_meta_preamble_tests {
     }
 }
 
+#[cfg(test)]
+mod file_search_tests {
+    use super::*;
+    use std::fs::{create_dir_all, write};
+
+    #[test]
+    fn file_search_finds_names_below_root_and_respects_gitignore() {
+        let temp = tempfile::tempdir().unwrap();
+        create_dir_all(temp.path().join(".git")).unwrap();
+        create_dir_all(temp.path().join("src/nested")).unwrap();
+        create_dir_all(temp.path().join("ignored")).unwrap();
+        write(temp.path().join(".gitignore"), "ignored/\n").unwrap();
+        write(temp.path().join("src/search_panel.rs"), "match").unwrap();
+        write(temp.path().join("src/nested/other.rs"), "skip").unwrap();
+        write(temp.path().join("ignored/search_hidden.rs"), "skip").unwrap();
+
+        let result = search_files(&temp.path().canonicalize().unwrap(), "SEARCH", 10).unwrap();
+
+        assert!(result
+            .entries
+            .iter()
+            .any(|entry| entry.path.ends_with("src/search_panel.rs")));
+        assert!(result
+            .entries
+            .iter()
+            .all(|entry| !entry.path.contains("ignored/search_hidden.rs")));
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn file_search_reports_truncation_when_limit_is_hit() {
+        let temp = tempfile::tempdir().unwrap();
+        write(temp.path().join("search_a.rs"), "a").unwrap();
+        write(temp.path().join("search_b.rs"), "b").unwrap();
+
+        let result = search_files(&temp.path().canonicalize().unwrap(), "search", 1).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert!(result.truncated);
+    }
+}
+
 #[allow(unused)]
 fn short_key(key: &[u8; 32]) -> String {
     key[..4].iter().map(|b| format!("{b:02x}")).collect()
@@ -588,6 +632,152 @@ fn fs_dir_fingerprint(workdir: &Path, rel_path: &str) -> Option<u64> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     rows.hash(&mut hasher);
     Some(hasher.finish())
+}
+
+fn fs_search_limit(limit: u32) -> usize {
+    (if limit == 0 {
+        FS_SEARCH_DEFAULT_LIMIT
+    } else {
+        limit.min(FS_SEARCH_MAX_LIMIT)
+    }) as usize
+}
+
+fn is_file_search_ignored(entry: &ignore::DirEntry) -> bool {
+    let Some(name) = entry.file_name().to_str() else {
+        return false;
+    };
+    if entry
+        .file_type()
+        .is_some_and(|file_type| file_type.is_dir())
+    {
+        matches!(
+            name,
+            ".git"
+                | ".hg"
+                | ".svn"
+                | "node_modules"
+                | "target"
+                | "dist"
+                | "build"
+                | ".next"
+                | ".zed"
+        )
+    } else {
+        false
+    }
+}
+
+struct FileSearchCandidate {
+    name: String,
+    path: PathBuf,
+    is_dir: bool,
+    match_path: String,
+}
+
+fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> {
+    let query = query.trim();
+    anyhow::ensure!(!query.is_empty(), "empty search query");
+    anyhow::ensure!(root.is_dir(), "search path must be a directory");
+
+    let limit = fs_search_limit(limit);
+    let mut candidates = Vec::new();
+    let mut visited = 0u32;
+    let mut truncated = false;
+
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder
+        .hidden(false)
+        .follow_links(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .parents(true)
+        .ignore(true);
+    builder.filter_entry(|entry| !is_file_search_ignored(entry));
+
+    for entry in builder.build() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                tracing::debug!("file search: skipping unreadable entry: {error}");
+                continue;
+            }
+        };
+        if entry.path() == root {
+            continue;
+        }
+
+        visited += 1;
+        if visited > FS_SEARCH_MAX_VISITED_ENTRIES {
+            truncated = true;
+            break;
+        }
+
+        let Some(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let path = entry.path().to_path_buf();
+        let match_path = path
+            .strip_prefix(root)
+            .unwrap_or(path.as_path())
+            .to_string_lossy()
+            .into_owned();
+        candidates.push(FileSearchCandidate {
+            name,
+            path,
+            is_dir: file_type.is_dir(),
+            match_path,
+        });
+    }
+
+    let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
+    let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
+    let mut match_buf = Vec::new();
+    let mut ranked = candidates
+        .iter()
+        .filter_map(|candidate| {
+            match_buf.clear();
+            let haystack = Utf32Str::new(candidate.match_path.as_str(), &mut match_buf);
+            pattern
+                .score(haystack, &mut matcher)
+                .map(|score| (score, candidate))
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|(left_score, left), (right_score, right)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| left.match_path.cmp(&right.match_path))
+    });
+
+    if ranked.len() > limit {
+        truncated = true;
+    }
+
+    let entries = ranked
+        .into_iter()
+        .take(limit)
+        .map(|(_, candidate)| FsEntry {
+            name: candidate.name.clone(),
+            path: candidate.path.to_string_lossy().into_owned(),
+            is_dir: candidate.is_dir,
+            size: candidate
+                .path
+                .metadata()
+                .map(|metadata| metadata.len())
+                .unwrap_or(0),
+        })
+        .collect();
+
+    Ok(FsSearchResult {
+        entries,
+        truncated,
+        error: None,
+    })
 }
 
 async fn run_observer(session: Arc<ServerSession>, workdir: PathBuf, my_gen: u64) {
@@ -1899,6 +2089,49 @@ async fn dispatch(
                             entries: vec![],
                             total: 0,
                             has_more: false,
+                            error: Some(e.to_string()),
+                        })
+                        .await;
+                }
+            }
+        }
+
+        ZedraMessage::FsSearch(msg) => {
+            let path = match resolve_path(&state.workdir, &msg.path) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("FsSearch: rejected path {:?}: {}", msg.path, e);
+                    let _ = msg
+                        .tx
+                        .send(FsSearchResult {
+                            entries: vec![],
+                            truncated: false,
+                            error: Some(e.to_string()),
+                        })
+                        .await;
+                    return Ok(());
+                }
+            };
+
+            let query = msg.query.clone();
+            let limit = msg.limit;
+            let search_result =
+                tokio::task::spawn_blocking(move || search_files(&path, &query, limit))
+                    .await
+                    .map_err(|error| anyhow::anyhow!("file search task failed: {error}"))
+                    .and_then(|result| result);
+
+            match search_result {
+                Ok(result) => {
+                    let _ = msg.tx.send(result).await;
+                }
+                Err(e) => {
+                    tracing::warn!("FsSearch: search failed for {:?}: {}", msg.path, e);
+                    let _ = msg
+                        .tx
+                        .send(FsSearchResult {
+                            entries: vec![],
+                            truncated: false,
                             error: Some(e.to_string()),
                         })
                         .await;

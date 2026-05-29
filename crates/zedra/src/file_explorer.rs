@@ -8,6 +8,8 @@ use zedra_rpc::proto::HostEvent;
 use zedra_session::{Session, SessionHandle, SessionState};
 
 use crate::theme;
+use crate::ui::InputChanged;
+use crate::ui::input::Input;
 use crate::workspace_action;
 use crate::workspace_state::WorkspaceState;
 
@@ -69,6 +71,13 @@ pub struct FileExplorer {
     entries: Vec<FileEntry>,
     focus_handle: FocusHandle,
     scroll_handle: UniformListScrollHandle,
+    search_input: Entity<Input>,
+    search_query: String,
+    search_entries: Vec<FlatEntry>,
+    search_loading: bool,
+    search_error: Option<String>,
+    search_truncated: bool,
+    search_epoch: u64,
     /// Whether entries were loaded from the remote host
     remote_loaded: bool,
     /// Total root entries on the server (may exceed `entries.len()` when paginated)
@@ -104,6 +113,20 @@ impl FileExplorer {
         let workdir = workspace_state.read(cx).workdir.to_string();
         let mut host_event_rx = session.subscribe_host_events();
         let workspace_state_subscription = cx.observe(&workspace_state, |_, _, cx| cx.notify());
+        let search_input = cx.new(|cx| {
+            Input::new(cx)
+                .compact(true)
+                .placeholder("Search files")
+                .trailing_gutter(32.0)
+        });
+        let search_subscription = cx.subscribe(
+            &search_input,
+            |this: &mut Self, _input, event: &InputChanged, cx| {
+                this.search_query = event.value.clone();
+                this.request_search(cx);
+                cx.notify();
+            },
+        );
         let host_event_task = cx.spawn(async move |this, cx| {
             loop {
                 match host_event_rx.recv().await {
@@ -130,6 +153,13 @@ impl FileExplorer {
             entries: Vec::new(),
             focus_handle: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
+            search_input,
+            search_query: String::new(),
+            search_entries: Vec::new(),
+            search_loading: false,
+            search_error: None,
+            search_truncated: false,
+            search_epoch: 0,
             remote_loaded: false,
             root_total: 0,
             workdir,
@@ -142,7 +172,7 @@ impl FileExplorer {
             workspace_state,
             session_state,
             session_handle,
-            _subscriptions: vec![workspace_state_subscription],
+            _subscriptions: vec![workspace_state_subscription, search_subscription],
         }
     }
 
@@ -360,6 +390,71 @@ impl FileExplorer {
 
     fn flatten(&self) -> Vec<FlatEntry> {
         flatten_entries(&self.entries, self.root_total)
+    }
+
+    fn clear_search(&mut self, cx: &mut Context<Self>) {
+        self.search_query.clear();
+        self.search_entries.clear();
+        self.search_loading = false;
+        self.search_error = None;
+        self.search_truncated = false;
+        self.search_epoch = self.search_epoch.wrapping_add(1);
+        self.search_input.update(cx, |input, _cx| {
+            input.set_value("");
+        });
+        cx.notify();
+    }
+
+    fn request_search(&mut self, cx: &mut Context<Self>) {
+        let query = self.search_query.trim().to_string();
+        self.search_epoch = self.search_epoch.wrapping_add(1);
+        let epoch = self.search_epoch;
+
+        self.search_entries.clear();
+        self.search_error = None;
+        self.search_truncated = false;
+        if query.is_empty() {
+            self.search_loading = false;
+            return;
+        }
+
+        self.search_loading = true;
+        let handle = self.session_handle.clone();
+        cx.spawn(async move |this, cx| {
+            tokio::time::sleep(Duration::from_millis(180)).await;
+            let should_search = this
+                .update(cx, |this, _cx| {
+                    this.search_epoch == epoch && !this.search_query.trim().is_empty()
+                })
+                .unwrap_or(false);
+            if !should_search {
+                return;
+            }
+
+            let result = handle
+                .fs_search(".", &query, zedra_rpc::proto::FS_SEARCH_DEFAULT_LIMIT)
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.search_epoch != epoch {
+                    return;
+                }
+                this.search_loading = false;
+                match result {
+                    Ok(result) => {
+                        this.search_entries = search_entries_to_flat_entries(result.entries);
+                        this.search_truncated = result.truncated;
+                        this.search_error = None;
+                    }
+                    Err(error) => {
+                        this.search_entries.clear();
+                        this.search_truncated = false;
+                        this.search_error = Some(error.to_string());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn toggle_dir(&mut self, index_path: &[usize], cx: &mut Context<Self>) {
@@ -598,6 +693,23 @@ fn flatten_entries(entries: &[FileEntry], root_total: u32) -> Vec<FlatEntry> {
     flat
 }
 
+fn search_entries_to_flat_entries(entries: Vec<zedra_rpc::proto::FsEntry>) -> Vec<FlatEntry> {
+    entries
+        .into_iter()
+        .map(|entry| FlatEntry {
+            name: entry.name,
+            path: entry.path,
+            is_dir: entry.is_dir,
+            depth: 0,
+            expanded: false,
+            loading: false,
+            index_path: Vec::new(),
+            is_load_more: false,
+            load_more_for: Vec::new(),
+        })
+        .collect()
+}
+
 fn normalize_watch_path(path: &str, workdir: &str) -> String {
     if path == "." {
         return ".".to_string();
@@ -687,7 +799,124 @@ impl Render for FileExplorer {
             self.flat_dirty = false;
         }
 
-        let flat_len = self.flat_entries.len();
+        let search_query = self.search_query.trim().to_string();
+        let is_searching = !search_query.is_empty();
+        let clear_button = is_searching.then(|| {
+            div()
+                .absolute()
+                .right(px(15.0))
+                .top(px(17.0))
+                .size(px(24.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .on_press(cx.listener(|this, _event, _window, cx| {
+                    this.clear_search(cx);
+                }))
+                .child(
+                    svg()
+                        .path("icons/x.svg")
+                        .size(px(theme::ICON_XS))
+                        .text_color(rgb(theme::text_muted(cx))),
+                )
+        });
+
+        let list_or_empty: AnyElement = if is_searching {
+            let display_entries = self.search_entries.clone();
+            let flat_len = display_entries.len();
+            if self.search_loading {
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .px(px(theme::SPACING_MD))
+                    .text_size(px(theme::FONT_BODY))
+                    .text_color(rgb(theme::text_muted(cx)))
+                    .child("Searching...")
+                    .into_any_element()
+            } else if let Some(error) = self.search_error.clone() {
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .px(px(theme::SPACING_MD))
+                    .text_size(px(theme::FONT_BODY))
+                    .text_color(rgb(theme::text_muted(cx)))
+                    .child(format!("Search failed: {error}"))
+                    .into_any_element()
+            } else if flat_len == 0 {
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .px(px(theme::SPACING_MD))
+                    .text_size(px(theme::FONT_BODY))
+                    .text_color(rgb(theme::text_muted(cx)))
+                    .child("No loaded files or folders match")
+                    .into_any_element()
+            } else {
+                let list = uniform_list(
+                    "file-list-search",
+                    flat_len,
+                    cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
+                        range
+                            .filter_map(|flat_idx| {
+                                display_entries.get(flat_idx).cloned().map(|entry| {
+                                    this.render_flat_entry(flat_idx, entry, window, cx)
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .track_scroll(&self.scroll_handle)
+                .size_full()
+                .flex_grow();
+                let footer = self.search_truncated.then(|| {
+                    div()
+                        .w_full()
+                        .px(px(theme::SPACING_MD))
+                        .py(px(theme::SPACING_SM))
+                        .border_t_1()
+                        .border_color(rgb(theme::border_subtle(cx)))
+                        .text_size(px(theme::FONT_DETAIL))
+                        .text_color(rgb(theme::text_muted(cx)))
+                        .child("Showing first matches")
+                });
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .min_h_0()
+                    .child(list)
+                    .children(footer)
+                    .into_any_element()
+            }
+        } else {
+            uniform_list(
+                "file-list",
+                self.flat_entries.len(),
+                cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
+                    range
+                        .filter_map(|flat_idx| {
+                            this.flat_entries
+                                .get(flat_idx)
+                                .cloned()
+                                .map(|entry| this.render_flat_entry(flat_idx, entry, window, cx))
+                        })
+                        .collect::<Vec<_>>()
+                }),
+            )
+            .track_scroll(&self.scroll_handle)
+            .size_full()
+            .flex_grow()
+            .into_any_element()
+        };
+
         div()
             .track_focus(&self.focus_handle)
             .id("file-list-container")
@@ -698,23 +927,16 @@ impl Render for FileExplorer {
             .overflow_hidden()
             .relative()
             .child(
-                uniform_list(
-                    "file-list",
-                    flat_len,
-                    cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
-                        range
-                            .filter_map(|flat_idx| {
-                                this.flat_entries.get(flat_idx).cloned().map(|entry| {
-                                    this.render_flat_entry(flat_idx, entry, window, cx)
-                                })
-                            })
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                .track_scroll(&self.scroll_handle)
-                .size_full()
-                .flex_grow(),
+                div()
+                    .relative()
+                    .px(px(theme::SPACING_SM))
+                    .py(px(theme::SPACING_SM))
+                    .border_b_1()
+                    .border_color(rgb(theme::border_subtle(cx)))
+                    .child(self.search_input.clone())
+                    .children(clear_button),
             )
+            .child(list_or_empty)
     }
 }
 
@@ -903,6 +1125,7 @@ mod tests {
     use super::{
         FileEntry, FileExplorer, FlatEntry, drain_watched_paths_for_unwatch,
         event_path_to_entry_path, find_index_path_by_path, flatten_entries, normalize_watch_path,
+        search_entries_to_flat_entries,
     };
 
     fn expanded(mut entry: FileEntry) -> FileEntry {
@@ -1006,6 +1229,22 @@ mod tests {
         assert_eq!(loading.path, "");
         assert_eq!(loading.index_path, Vec::<usize>::new());
         assert_eq!(loading.depth, 1);
+    }
+
+    #[test]
+    fn search_entries_to_flat_entries_preserves_remote_result_paths() {
+        let flat = search_entries_to_flat_entries(vec![zedra_rpc::proto::FsEntry {
+            name: "search_panel.rs".to_string(),
+            path: "/repo/src/tests/search_panel.rs".to_string(),
+            is_dir: false,
+            size: 7,
+        }]);
+
+        assert_eq!(names(&flat), vec!["search_panel.rs"]);
+        assert_eq!(flat[0].path, "/repo/src/tests/search_panel.rs");
+        assert_eq!(flat[0].index_path, Vec::<usize>::new());
+        assert_eq!(flat[0].depth, 0);
+        assert!(!flat[0].is_load_more);
     }
 
     #[test]
