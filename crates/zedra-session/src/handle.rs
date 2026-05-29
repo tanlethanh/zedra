@@ -4,6 +4,10 @@ use std::sync::{
 };
 
 use anyhow::Result;
+use irpc::{
+    Channels, RpcMessage, Service, WithChannels,
+    channel::{none::NoReceiver, oneshot},
+};
 use zedra_rpc::proto::*;
 
 use crate::{
@@ -163,6 +167,19 @@ impl SessionHandle {
             .ok_or_else(|| anyhow::anyhow!("not connected"))
     }
 
+    /// Single entry point for every unary RPC. Funneling all calls through here
+    /// keeps error mapping (`map_rpc_error`) in exactly one place instead of a
+    /// `.map_err(...)` at each call site. The bounds mirror `irpc::Client::rpc`.
+    async fn call<Req, Res>(&self, msg: Req) -> Result<Res>
+    where
+        ZedraProto: From<Req>,
+        <ZedraProto as Service>::Message: From<WithChannels<Req, ZedraProto>>,
+        Req: Channels<ZedraProto, Tx = oneshot::Sender<Res>, Rx = NoReceiver>,
+        Res: RpcMessage,
+    {
+        self.client()?.rpc(msg).await.map_err(map_rpc_error)
+    }
+
     pub fn user_disconnect(&self) -> bool {
         self.0.user_disconnect.load(Ordering::Acquire)
     }
@@ -271,8 +288,7 @@ impl SessionHandle {
         limit: u32,
     ) -> Result<(Vec<FsEntry>, u32, bool)> {
         let result: FsListResult = self
-            .client()?
-            .rpc(FsListReq {
+            .call(FsListReq {
                 path: path.to_string(),
                 offset,
                 limit,
@@ -286,8 +302,7 @@ impl SessionHandle {
 
     pub async fn fs_read(&self, path: &str) -> Result<FsReadResult> {
         Ok(self
-            .client()?
-            .rpc(FsReadReq {
+            .call(FsReadReq {
                 path: path.to_string(),
             })
             .await?)
@@ -295,8 +310,7 @@ impl SessionHandle {
 
     pub async fn fs_write(&self, path: &str, content: &str) -> Result<()> {
         let _: FsWriteResult = self
-            .client()?
-            .rpc(FsWriteReq {
+            .call(FsWriteReq {
                 path: path.to_string(),
                 content: content.to_string(),
             })
@@ -306,8 +320,7 @@ impl SessionHandle {
 
     pub async fn fs_stat(&self, path: &str) -> Result<FsStatResult> {
         let result = self
-            .client()?
-            .rpc(FsStatReq {
+            .call(FsStatReq {
                 path: path.to_string(),
             })
             .await?;
@@ -329,8 +342,7 @@ impl SessionHandle {
             return Ok(FsDocsTreeResult::unsupported());
         }
         match self
-            .client()?
-            .rpc(FsDocsTreeReq {
+            .call(FsDocsTreeReq {
                 path: path.to_string(),
                 offset,
                 limit,
@@ -344,7 +356,7 @@ impl SessionHandle {
                 if self.downgrade_docs_tree_rpc(&error.to_string()) {
                     return Ok(FsDocsTreeResult::unsupported());
                 }
-                Err(anyhow::anyhow!(error.to_string()))
+                Err(error)
             }
         }
     }
@@ -354,8 +366,7 @@ impl SessionHandle {
             return Ok(FsWatchResult::Unsupported);
         }
         match self
-            .client()?
-            .rpc(FsWatchReq {
+            .call(FsWatchReq {
                 path: path.to_string(),
             })
             .await
@@ -365,7 +376,7 @@ impl SessionHandle {
                 if self.downgrade_observer_rpc(&e.to_string()) {
                     return Ok(FsWatchResult::Unsupported);
                 }
-                Err(anyhow::anyhow!(e.to_string()))
+                Err(e)
             }
         }
     }
@@ -375,8 +386,7 @@ impl SessionHandle {
             return Ok(FsUnwatchResult::Unsupported);
         }
         match self
-            .client()?
-            .rpc(FsUnwatchReq {
+            .call(FsUnwatchReq {
                 path: path.to_string(),
             })
             .await
@@ -386,7 +396,7 @@ impl SessionHandle {
                 if self.downgrade_observer_rpc(&e.to_string()) {
                     return Ok(FsUnwatchResult::Unsupported);
                 }
-                Err(anyhow::anyhow!(e.to_string()))
+                Err(e)
             }
         }
     }
@@ -424,7 +434,7 @@ impl SessionHandle {
     // ─── RPC: git ────────────────────────────────────────────────────────────
 
     pub async fn git_status(&self) -> Result<GitStatusResult> {
-        let result: GitStatusResult = self.client()?.rpc(GitStatusReq {}).await?;
+        let result: GitStatusResult = self.call(GitStatusReq {}).await?;
         if let Some(e) = result.error {
             return Err(anyhow::anyhow!(e));
         }
@@ -433,8 +443,7 @@ impl SessionHandle {
 
     pub async fn git_diff(&self, path: Option<&str>, staged: bool) -> Result<String> {
         let result: GitDiffResult = self
-            .client()?
-            .rpc(GitDiffReq {
+            .call(GitDiffReq {
                 path: path.map(|s| s.to_string()),
                 staged,
             })
@@ -446,7 +455,7 @@ impl SessionHandle {
     }
 
     pub async fn git_log(&self, limit: Option<usize>) -> Result<Vec<GitLogEntry>> {
-        let result: GitLogResult = self.client()?.rpc(GitLogReq { limit }).await?;
+        let result: GitLogResult = self.call(GitLogReq { limit }).await?;
         if let Some(e) = result.error {
             return Err(anyhow::anyhow!(e));
         }
@@ -454,7 +463,7 @@ impl SessionHandle {
     }
 
     pub async fn git_branches(&self) -> Result<Vec<GitBranchEntry>> {
-        let result: GitBranchesResult = self.client()?.rpc(GitBranchesReq {}).await?;
+        let result: GitBranchesResult = self.call(GitBranchesReq {}).await?;
         if let Some(e) = result.error {
             return Err(anyhow::anyhow!(e));
         }
@@ -463,8 +472,7 @@ impl SessionHandle {
 
     pub async fn git_checkout(&self, branch: &str) -> Result<()> {
         let result: GitCheckoutResult = self
-            .client()?
-            .rpc(GitCheckoutReq {
+            .call(GitCheckoutReq {
                 branch: branch.to_string(),
             })
             .await?;
@@ -473,8 +481,7 @@ impl SessionHandle {
 
     pub async fn git_commit(&self, message: &str, paths: &[String]) -> Result<String> {
         let result: GitCommitResult = self
-            .client()?
-            .rpc(GitCommitReq {
+            .call(GitCommitReq {
                 message: message.to_string(),
                 paths: paths.to_vec(),
             })
@@ -487,8 +494,7 @@ impl SessionHandle {
 
     pub async fn git_stage(&self, paths: &[String]) -> Result<()> {
         let result: GitStageResult = self
-            .client()?
-            .rpc(GitStageReq {
+            .call(GitStageReq {
                 paths: paths.to_vec(),
             })
             .await?;
@@ -500,8 +506,7 @@ impl SessionHandle {
 
     pub async fn git_unstage(&self, paths: &[String]) -> Result<()> {
         let result: GitUnstageResult = self
-            .client()?
-            .rpc(GitUnstageReq {
+            .call(GitUnstageReq {
                 paths: paths.to_vec(),
             })
             .await?;
@@ -524,21 +529,20 @@ impl SessionHandle {
         launch_cmd: Option<String>,
         color_scheme: Option<TerminalColorScheme>,
     ) -> Result<String> {
-        let client = self.client()?;
-        let result: TermCreateResult = client
-            .rpc(TermCreateReqV2 {
+        let result: TermCreateResult = self
+            .call(TermCreateReqV2 {
                 cols,
                 rows,
                 launch_cmd,
                 color_scheme,
             })
-            .await
-            .map_err(map_rpc_error)?;
+            .await?;
         if let Some(e) = result.error {
             return Err(anyhow::anyhow!(e));
         }
 
         let terminal = RemoteTerminal::new(result.id.clone());
+        let client = self.client()?;
         if terminal.attach_remote(&client).await.is_ok() {
             self.add_terminal(terminal);
             tracing::info!("Terminal created: {}", result.id);
@@ -549,11 +553,7 @@ impl SessionHandle {
     }
 
     pub async fn agent_installed_list(&self, refresh: bool) -> Result<Vec<InstalledAgentEntry>> {
-        let result: AgentInstalledListResult = self
-            .client()?
-            .rpc(AgentInstalledListReq { refresh })
-            .await
-            .map_err(map_rpc_error)?;
+        let result: AgentInstalledListResult = self.call(AgentInstalledListReq { refresh }).await?;
         if let Some(e) = result.error {
             return Err(anyhow::anyhow!(e));
         }
@@ -561,11 +561,7 @@ impl SessionHandle {
     }
 
     pub async fn agent_list(&self, refresh: bool) -> Result<Vec<AgentSummary>> {
-        let result: AgentListResult = self
-            .client()?
-            .rpc(AgentListReq { refresh })
-            .await
-            .map_err(map_rpc_error)?;
+        let result: AgentListResult = self.call(AgentListReq { refresh }).await?;
         if let Some(e) = result.error {
             return Err(anyhow::anyhow!(e));
         }
@@ -579,14 +575,12 @@ impl SessionHandle {
         limit: u32,
     ) -> Result<Vec<AgentSessionSummary>> {
         let result: AgentSessionsResult = self
-            .client()?
-            .rpc(AgentSessionsReq {
+            .call(AgentSessionsReq {
                 kind,
                 refresh,
                 limit,
             })
-            .await
-            .map_err(map_rpc_error)?;
+            .await?;
         if let Some(e) = result.error {
             return Err(anyhow::anyhow!(e));
         }
@@ -600,21 +594,20 @@ impl SessionHandle {
         cols: u16,
         rows: u16,
     ) -> Result<String> {
-        let client = self.client()?;
-        let result: AgentResumeResult = client
-            .rpc(AgentResumeReq {
+        let result: AgentResumeResult = self
+            .call(AgentResumeReq {
                 kind,
                 session_id,
                 cols,
                 rows,
             })
-            .await
-            .map_err(map_rpc_error)?;
+            .await?;
         if let Some(e) = result.error {
             return Err(anyhow::anyhow!(e));
         }
 
         let terminal = RemoteTerminal::new(result.terminal_id.clone());
+        let client = self.client()?;
         if terminal.attach_remote(&client).await.is_ok() {
             self.add_terminal(terminal);
             tracing::info!("Agent session resumed in terminal: {}", result.terminal_id);
@@ -626,8 +619,7 @@ impl SessionHandle {
 
     pub async fn terminal_resize(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
         let _: TermResizeResult = self
-            .client()?
-            .rpc(TermResizeReq {
+            .call(TermResizeReq {
                 id: id.to_string(),
                 cols,
                 rows,
@@ -637,23 +629,19 @@ impl SessionHandle {
     }
 
     pub async fn terminal_close(&self, id: &str) -> Result<()> {
-        let _: TermCloseResult = self
-            .client()?
-            .rpc(TermCloseReq { id: id.to_string() })
-            .await?;
+        let _: TermCloseResult = self.call(TermCloseReq { id: id.to_string() }).await?;
         self.remove_terminal(id);
         Ok(())
     }
 
     pub async fn terminal_list(&self) -> Result<Vec<String>> {
-        let result: TermListResult = self.client()?.rpc(TermListReq {}).await?;
+        let result: TermListResult = self.call(TermListReq {}).await?;
         Ok(result.terminals.into_iter().map(|e| e.id).collect())
     }
 
     pub async fn terminal_reorder(&self, ordered_ids: Vec<String>) -> Result<()> {
         let result: TermReorderResult = self
-            .client()?
-            .rpc(TermReorderReq {
+            .call(TermReorderReq {
                 ordered_ids: ordered_ids.clone(),
             })
             .await?;
@@ -678,38 +666,121 @@ fn git_checkout_result(result: GitCheckoutResult, branch: &str) -> Result<()> {
     }
 }
 
-/// True when an RPC error carries no useful cause on its own: the host dropped
-/// the response (an older host that can't decode the request, or the link
-/// dropped) or a reply came back undecodable. Used to append context to the
-/// forwarded error, not to replace or swallow it.
-fn is_incompatible_close(err: &irpc::Error) -> bool {
-    let lower = err.to_string().to_lowercase();
-    lower.contains("oneshot recv")
-        || lower.contains("sender closed")
-        || lower.contains("unknown variant")
-        || lower.contains("invalid type")
-        || lower.contains("decode")
-        || lower.contains("deserialize")
+/// User-facing message for an irpc error. irpc's `Display` is shallow — variants
+/// like `OneshotRecv` render as the bare label `"Oneshot recv error"` and keep
+/// the real cause in a `source` field — so walk to the deepest link in the
+/// `source()` chain and return that. The root cause (e.g. a postcard decode
+/// message on a response we couldn't read) is the actionable part; the outer
+/// transport labels are noise. Shared by every RPC surface, including the
+/// connection handshake in `connect.rs`.
+pub(crate) fn rpc_error_message(err: &irpc::Error) -> String {
+    error_root_cause(err)
 }
 
-/// Forward the actual RPC error so the failure is legible. irpc's opaque
-/// transport closes (e.g. "oneshot recv error") carry no real cause, so replace
-/// them with the likely explanation; every other error is forwarded verbatim.
-/// Applies uniformly to every RPC; no per-agent special casing.
-fn map_rpc_error(err: irpc::Error) -> anyhow::Error {
-    if is_incompatible_close(&err) {
-        anyhow::anyhow!(
-            "host may be an older build that can't decode this request, or the \
-             connection dropped — update the host or reconnect"
-        )
-    } else {
-        anyhow::anyhow!(err.to_string())
+/// The deepest non-empty message in an error's `source()` chain, falling back
+/// to the error's own `Display` when no deeper cause carries text.
+fn error_root_cause(err: &dyn std::error::Error) -> String {
+    let mut deepest = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if !text.is_empty() {
+            deepest = text;
+        }
+        source = cause.source();
     }
+    deepest
+}
+
+pub(crate) fn map_rpc_error(err: irpc::Error) -> anyhow::Error {
+    anyhow::anyhow!(rpc_error_message(&err))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Minimal `std::error::Error` whose `Display` and `source()` we control,
+    /// for testing the chain flattener against known error shapes.
+    #[derive(Debug)]
+    struct ChainErr {
+        msg: String,
+        source: Option<Box<ChainErr>>,
+    }
+
+    impl ChainErr {
+        fn new(msg: &str) -> Self {
+            Self {
+                msg: msg.to_string(),
+                source: None,
+            }
+        }
+        /// Build a chain from outermost to innermost message.
+        fn chain(messages: &[&str]) -> Self {
+            let mut iter = messages.iter().rev();
+            let mut current = ChainErr::new(iter.next().expect("non-empty chain"));
+            for msg in iter {
+                current = ChainErr {
+                    msg: msg.to_string(),
+                    source: Some(Box::new(current)),
+                };
+            }
+            current
+        }
+    }
+
+    impl std::fmt::Display for ChainErr {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.msg)
+        }
+    }
+
+    impl std::error::Error for ChainErr {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.source
+                .as_deref()
+                .map(|e| e as &(dyn std::error::Error + 'static))
+        }
+    }
+
+    #[test]
+    fn error_root_cause_single_error_returns_itself() {
+        let err = ChainErr::new("not connected");
+        assert_eq!(error_root_cause(&err), "not connected");
+    }
+
+    #[test]
+    fn error_root_cause_strips_shallow_transport_label() {
+        // The exact shape that motivated this: irpc's shallow "Oneshot recv
+        // error" label wrapping the real cause. We want just the cause.
+        let err = ChainErr::chain(&[
+            "Oneshot recv error",
+            "Io error",
+            "Serde Deserialization Error",
+        ]);
+        assert_eq!(error_root_cause(&err), "Serde Deserialization Error");
+    }
+
+    #[test]
+    fn error_root_cause_returns_deepest_decode_message() {
+        let err = ChainErr::chain(&[
+            "Recv error",
+            "Io error",
+            "unknown variant 9999, expected one of `Claude`, `Codex`",
+        ]);
+        assert_eq!(
+            error_root_cause(&err),
+            "unknown variant 9999, expected one of `Claude`, `Codex`"
+        );
+    }
+
+    #[test]
+    fn error_root_cause_skips_empty_deepest_link() {
+        // A trailing empty link must not blank out the message; fall back to the
+        // deepest link that actually carries text.
+        let err = ChainErr::chain(&["Request error", "broken pipe", ""]);
+        assert_eq!(error_root_cause(&err), "broken pipe");
+    }
 
     #[test]
     fn add_terminal_replaces_existing_id() {
