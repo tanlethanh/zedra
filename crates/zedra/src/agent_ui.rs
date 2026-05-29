@@ -86,12 +86,22 @@ pub fn render_agent_card(cx: &App, props: AgentCardProps<'_>) -> Stateful<Div> {
     let version = cli_version_display(agent);
     let session_count = agent.sessions.resumable.max(agent.sessions.total);
     let sessions_label = format!("{session_count} sessions");
-    let plan = agent
-        .account
-        .fields
-        .iter()
-        .find(|f| f.label == "Plan")
-        .map(|f| f.value.clone());
+    let field_value = |label: &str| {
+        agent
+            .account
+            .fields
+            .iter()
+            .find(|f| f.label == label)
+            .map(|f| f.value.clone())
+    };
+    let plan = field_value("Plan");
+    let model_provider = match (
+        field_value("Default model"),
+        field_value("Default provider"),
+    ) {
+        (Some(model), Some(provider)) => Some(format!("{model} · {provider}")),
+        (model, provider) => model.or(provider),
+    };
     let usage = agent.usage.clone();
 
     div()
@@ -189,6 +199,18 @@ pub fn render_agent_card(cx: &App, props: AgentCardProps<'_>) -> Stateful<Div> {
                                 .child(sessions_label),
                         ),
                 )
+                .when_some(model_provider, |el, text| {
+                    el.child(
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(px(theme::FONT_DETAIL))
+                            .text_color(rgb(theme::text_muted(cx)))
+                            .child(text),
+                    )
+                })
                 .when_some(usage, |el, snap| {
                     el.child(render_usage_row(kind, &snap, cx))
                 }),

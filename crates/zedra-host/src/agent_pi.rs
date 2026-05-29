@@ -9,7 +9,8 @@ use serde_json::Value;
 use zedra_rpc::proto::*;
 
 use crate::agent_utils::{
-    command_on_path, empty_session_live, file_size_bytes, home_path, resume_summary, session_title,
+    command_on_path, empty_session_live, file_size_bytes, home_path, read_json_file,
+    resume_summary, session_title,
 };
 
 const LIST_HEAD_SCAN_MAX_LINES: usize = 32;
@@ -61,7 +62,9 @@ pub fn sessions(
     limit: usize,
 ) -> Result<(Vec<AgentSessionSummary>, usize), String> {
     let total = count_session_files(workdir).map_err(|e| e.to_string())?;
-    let files = collect_session_files(workdir, Some(limit), true).map_err(|e| e.to_string())?;
+    // Full-scan: session summaries surface message/malformed counters and the
+    // latest activity timestamp, which a head-only scan would underreport.
+    let files = collect_session_files(workdir, Some(limit), false).map_err(|e| e.to_string())?;
     let summaries = files
         .iter()
         .map(|file| session_summary(file, cli))
@@ -69,21 +72,42 @@ pub fn sessions(
     Ok((summaries, total))
 }
 
-pub fn account_fields() -> Vec<AgentInfoField> {
+pub fn account_fields(workdir: &Path) -> Vec<AgentInfoField> {
     let mut fields = Vec::new();
-    fields.push(AgentInfoField {
-        label: "Logged in".to_string(),
-        value: if pi_sessions_root().is_dir() {
-            "yes"
-        } else {
-            "no"
-        }
-        .to_string(),
-    });
+    let (settings, has_project) = effective_settings(workdir);
+    let providers = provider_fields();
+
+    // Per-provider auth replaces a single "Logged in" boolean: Pi is multi-provider.
+    if providers.is_empty() {
+        fields.push(info_field("Logged in", "no"));
+    } else {
+        fields.extend(providers);
+    }
+
+    if let Some(model) = &settings.default_model {
+        fields.push(info_field("Default model", model));
+    }
+    if let Some(provider) = &settings.default_provider {
+        fields.push(info_field("Default provider", provider));
+    }
+    if let Some(level) = &settings.default_thinking_level {
+        fields.push(info_field("Thinking", level));
+    }
+    if let Some(value) = extensions_value(&settings) {
+        fields.push(info_field("Extensions", &value));
+    }
+    fields.push(info_field(
+        "Project config",
+        if has_project { "yes" } else { "no" },
+    ));
     fields
 }
 
 pub fn subscription_plan_fields() -> Option<Vec<AgentInfoField>> {
+    // Pi has no remote plan to fetch: provider/auth state is local and already
+    // populated synchronously by `account_fields`. The async plan-refresh path
+    // would only re-read the same files and merge identical rows back, so opt
+    // out instead of duplicating that work.
     None
 }
 
@@ -265,9 +289,16 @@ fn read_session_file(
             .to_string();
     }
 
-    let last_activity_at = last_timestamp.or_else(|| {
-        mtime_unix_secs.and_then(|secs| DateTime::<Utc>::from_timestamp(secs as i64, 0))
-    });
+    // A head-only scan stops after the first few records, so its newest scanned
+    // timestamp reflects the opening prompt rather than the latest turn. Trust
+    // file mtime for activity there; full scans use the real last timestamp.
+    let mtime_activity =
+        mtime_unix_secs.and_then(|secs| DateTime::<Utc>::from_timestamp(secs as i64, 0));
+    let last_activity_at = if head_only {
+        mtime_activity.or(last_timestamp)
+    } else {
+        last_timestamp.or(mtime_activity)
+    };
 
     Ok(PiSessionFile {
         path: path.to_path_buf(),
@@ -323,6 +354,166 @@ fn session_summary(file: &PiSessionFile, cli: &AgentCliSummary) -> AgentSessionS
         data_sources: vec![AgentDataSource::HistoricalScan],
         warnings: crate::agent_utils::malformed_warning(file.malformed_line_count as usize),
         transcript_size_bytes: file_size_bytes(&file.path),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Config / auth (account info)
+// ---------------------------------------------------------------------------
+
+fn pi_agent_dir() -> PathBuf {
+    home_path(&[".pi", "agent"])
+}
+
+/// Subset of Pi's `settings.json` we surface. Pi stores far more, but the agent
+/// info panel only needs the model defaults and the extensibility counts.
+#[derive(Default, serde::Deserialize)]
+struct PiSettings {
+    #[serde(rename = "defaultModel")]
+    default_model: Option<String>,
+    #[serde(rename = "defaultProvider")]
+    default_provider: Option<String>,
+    #[serde(rename = "defaultThinkingLevel")]
+    default_thinking_level: Option<String>,
+    /// npm/git package sources (string or `{ source, .. }`).
+    packages: Option<Vec<Value>>,
+    /// Local extension file/dir paths.
+    extensions: Option<Vec<String>>,
+}
+
+fn read_pi_settings(path: &Path) -> PiSettings {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+/// Effective config = global (`~/.pi/agent`) overlaid with project
+/// (`<workdir>/.pi`); per field the project value replaces the global one
+/// (scalars and lists alike), matching Pi's own settings merge. Returns the
+/// merged view plus whether the workspace has its own `settings.json`.
+fn effective_settings(workdir: &Path) -> (PiSettings, bool) {
+    let global = read_pi_settings(&pi_agent_dir().join("settings.json"));
+    let project_path = workdir.join(".pi").join("settings.json");
+    let has_project = project_path.is_file();
+    let project = read_pi_settings(&project_path);
+    let merged = PiSettings {
+        default_model: project.default_model.or(global.default_model),
+        default_provider: project.default_provider.or(global.default_provider),
+        default_thinking_level: project
+            .default_thinking_level
+            .or(global.default_thinking_level),
+        packages: project.packages.or(global.packages),
+        extensions: project.extensions.or(global.extensions),
+    };
+    (merged, has_project)
+}
+
+fn extensions_value(settings: &PiSettings) -> Option<String> {
+    let packages = settings.packages.as_deref().unwrap_or(&[]);
+    let locals = settings.extensions.as_deref().map(<[_]>::len).unwrap_or(0);
+    let total = packages.len() + locals;
+    if total == 0 {
+        return None;
+    }
+    // Show the first package source as a hint; "configured" is honest because we
+    // read settings statically and never resolve the package into its resources.
+    match packages.iter().find_map(package_source) {
+        Some(src) if total == 1 => Some(src),
+        Some(src) => Some(format!("{total} configured ({src}, …)")),
+        None => Some(format!("{total} configured")),
+    }
+}
+
+fn package_source(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| string_field(value, &["source"]).map(str::to_string))
+}
+
+#[derive(serde::Deserialize)]
+struct PiAuthEntry {
+    #[serde(rename = "type")]
+    kind: String,
+    /// OAuth access-token expiry, Unix milliseconds.
+    expires: Option<i64>,
+}
+
+/// Authenticated providers from `auth.json` plus custom providers declared in
+/// `models.json`, formatted as `{provider → auth state}` info rows. Never
+/// exposes tokens or account ids.
+fn provider_fields() -> Vec<AgentInfoField> {
+    let mut fields = Vec::new();
+    if let Ok(Value::Object(map)) = read_json_file(&pi_agent_dir().join("auth.json")) {
+        let mut entries: Vec<_> = map.into_iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        for (provider, value) in entries {
+            if let Ok(entry) = serde_json::from_value::<PiAuthEntry>(value) {
+                fields.push(info_field(&provider, &auth_value(&entry)));
+            }
+        }
+    }
+    for (id, models) in custom_providers() {
+        fields.push(info_field(&id, &format!("custom · {models} models")));
+    }
+    fields
+}
+
+fn auth_value(entry: &PiAuthEntry) -> String {
+    match entry.kind.as_str() {
+        "oauth" => match entry.expires {
+            Some(expires_ms) => {
+                let remaining_ms = expires_ms - Utc::now().timestamp_millis();
+                if remaining_ms <= 0 {
+                    "OAuth · expired".to_string()
+                } else {
+                    format!("OAuth · expires in {}", humanize_secs(remaining_ms / 1000))
+                }
+            }
+            None => "OAuth".to_string(),
+        },
+        "api_key" => "API key".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn humanize_secs(secs: i64) -> String {
+    if secs >= 86_400 {
+        format!("{}d", secs / 86_400)
+    } else if secs >= 3_600 {
+        format!("{}h", secs / 3_600)
+    } else {
+        format!("{}m", (secs / 60).max(1))
+    }
+}
+
+/// Custom provider ids (e.g. `ollama`) from `models.json` and their model count.
+fn custom_providers() -> Vec<(String, usize)> {
+    let Ok(file) = read_json_file(&pi_agent_dir().join("models.json")) else {
+        return Vec::new();
+    };
+    let Some(providers) = file.get("providers").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, usize)> = providers
+        .iter()
+        .map(|(id, cfg)| {
+            let count = cfg
+                .get("models")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            (id.clone(), count)
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+fn info_field(label: &str, value: &str) -> AgentInfoField {
+    AgentInfoField {
+        label: label.to_string(),
+        value: value.to_string(),
     }
 }
 
@@ -405,6 +596,80 @@ mod tests {
     }
 
     #[test]
+    fn humanize_secs_picks_coarsest_unit() {
+        assert_eq!(humanize_secs(9 * 86_400 + 5), "9d");
+        assert_eq!(humanize_secs(5 * 3_600), "5h");
+        assert_eq!(humanize_secs(120), "2m");
+        assert_eq!(humanize_secs(10), "1m"); // never "0m"
+    }
+
+    #[test]
+    fn auth_value_covers_oauth_and_api_key() {
+        let future = Utc::now().timestamp_millis() + 3 * 86_400 * 1000;
+        assert!(auth_value(&PiAuthEntry {
+            kind: "oauth".into(),
+            expires: Some(future),
+        })
+        .starts_with("OAuth · expires in"));
+        assert_eq!(
+            auth_value(&PiAuthEntry {
+                kind: "oauth".into(),
+                expires: Some(0),
+            }),
+            "OAuth · expired"
+        );
+        assert_eq!(
+            auth_value(&PiAuthEntry {
+                kind: "oauth".into(),
+                expires: None,
+            }),
+            "OAuth"
+        );
+        assert_eq!(
+            auth_value(&PiAuthEntry {
+                kind: "api_key".into(),
+                expires: None,
+            }),
+            "API key"
+        );
+    }
+
+    #[test]
+    fn package_source_reads_string_and_object_forms() {
+        assert_eq!(
+            package_source(&serde_json::json!("npm:foo")).as_deref(),
+            Some("npm:foo")
+        );
+        assert_eq!(
+            package_source(&serde_json::json!({ "source": "git:bar", "skills": [] })).as_deref(),
+            Some("git:bar")
+        );
+        assert_eq!(package_source(&serde_json::json!({ "skills": [] })), None);
+    }
+
+    #[test]
+    fn extensions_value_counts_packages_and_locals() {
+        let none = PiSettings::default();
+        assert_eq!(extensions_value(&none), None);
+
+        let single = PiSettings {
+            packages: Some(vec![serde_json::json!("npm:web-search")]),
+            ..Default::default()
+        };
+        assert_eq!(extensions_value(&single).as_deref(), Some("npm:web-search"));
+
+        let many = PiSettings {
+            packages: Some(vec![serde_json::json!("npm:a"), serde_json::json!("npm:b")]),
+            extensions: Some(vec!["/local/ext".to_string()]),
+            ..Default::default()
+        };
+        assert_eq!(
+            extensions_value(&many).as_deref(),
+            Some("3 configured (npm:a, …)")
+        );
+    }
+
+    #[test]
     fn reads_session_header_and_first_user_message() {
         let dir = tempfile::tempdir().unwrap();
         let workdir = Path::new("/Users/me/project");
@@ -440,5 +705,38 @@ mod tests {
         .unwrap();
         let file = read_session_file(&path, None, false).unwrap();
         assert_eq!(file.session_id, "2026-05-28_xyz");
+    }
+
+    #[test]
+    fn full_scan_reaches_latest_activity_and_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("2026-05-28_long.jsonl");
+        let mut lines = String::from(
+            r#"{"type":"session","id":"long","timestamp":"2026-05-28T10:00:00Z","cwd":"/p"}
+{"type":"message","id":"u","message":{"role":"user","content":[{"type":"text","text":"start"}]}}
+"#,
+        );
+        // Push well past LIST_HEAD_SCAN_MAX_LINES so head-only would stop early.
+        for i in 0..(LIST_HEAD_SCAN_MAX_LINES + 10) {
+            lines.push_str(&format!(
+                "{{\"type\":\"message\",\"id\":\"m{i}\",\"timestamp\":\"2026-05-28T12:00:{:02}Z\",\"message\":{{\"role\":\"assistant\",\"content\":[]}}}}\n",
+                i % 60
+            ));
+        }
+        std::fs::write(&path, lines).unwrap();
+
+        // Head-only: timestamps are unreliable, so fall back to mtime; counters
+        // are partial.
+        let head = read_session_file(&path, Some(1_700_000_000), true).unwrap();
+        assert_eq!(
+            head.last_activity_at,
+            DateTime::<Utc>::from_timestamp(1_700_000_000, 0)
+        );
+        assert!(head.message_count < (LIST_HEAD_SCAN_MAX_LINES as u64));
+
+        // Full scan: sees the latest turn timestamp and every message.
+        let full = read_session_file(&path, Some(1_700_000_000), false).unwrap();
+        assert_eq!(full.message_count, (LIST_HEAD_SCAN_MAX_LINES + 11) as u64);
+        assert!(full.last_activity_at.unwrap() > head.last_activity_at.unwrap());
     }
 }

@@ -144,7 +144,7 @@ fn degraded_agent_summary(kind: ManagedAgentKind, workdir: &Path) -> AgentSummar
             code: "session_scan_panicked".to_string(),
             message: "agent session scan crashed; counts unavailable".to_string(),
         }],
-        account: account_summary(kind),
+        account: account_summary(kind, workdir),
         usage: None,
     }
 }
@@ -321,7 +321,7 @@ fn agent_summary_scan(kind: ManagedAgentKind, workdir: &Path) -> AgentSummary {
         updated_at: now,
         data_sources,
         warnings,
-        account: account_summary(kind),
+        account: account_summary(kind, workdir),
         usage: None,
     }
 }
@@ -621,12 +621,13 @@ fn lifecycle_from_shell(state: HostShellState) -> AgentLifecycleStatus {
 // Account snapshot dispatch
 // ---------------------------------------------------------------------------
 
-fn account_summary(kind: ManagedAgentKind) -> AgentAccountSummary {
+fn account_summary(kind: ManagedAgentKind, workdir: &Path) -> AgentAccountSummary {
     let fields = match kind {
         ManagedAgentKind::Claude => agent_claude::account_fields(),
         ManagedAgentKind::Codex => agent_codex::account_fields(),
         ManagedAgentKind::OpenCode => agent_opencode::account_fields(),
-        ManagedAgentKind::Pi => agent_pi::account_fields(),
+        // Pi merges global + project (`<workdir>/.pi`) config, so it needs the workdir.
+        ManagedAgentKind::Pi => agent_pi::account_fields(workdir),
     };
     AgentAccountSummary { fields }
 }
