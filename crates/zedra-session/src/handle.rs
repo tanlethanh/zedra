@@ -529,20 +529,24 @@ impl SessionHandle {
         launch_cmd: Option<String>,
         color_scheme: Option<TerminalColorScheme>,
     ) -> Result<String> {
-        let result: TermCreateResult = self
-            .call(TermCreateReqV2 {
+        // Reuse one client for the create RPC and the attach; re-fetching after
+        // the terminal exists could race with handle clearing and fail with
+        // "not connected" while the remote terminal is already live.
+        let client = self.client()?;
+        let result: TermCreateResult = client
+            .rpc(TermCreateReqV2 {
                 cols,
                 rows,
                 launch_cmd,
                 color_scheme,
             })
-            .await?;
+            .await
+            .map_err(map_rpc_error)?;
         if let Some(e) = result.error {
             return Err(anyhow::anyhow!(e));
         }
 
         let terminal = RemoteTerminal::new(result.id.clone());
-        let client = self.client()?;
         if terminal.attach_remote(&client).await.is_ok() {
             self.add_terminal(terminal);
             tracing::info!("Terminal created: {}", result.id);
@@ -603,20 +607,23 @@ impl SessionHandle {
         cols: u16,
         rows: u16,
     ) -> Result<String> {
-        let result: AgentResumeResult = self
-            .call(AgentResumeReq {
+        // Reuse one client for the resume RPC and the attach (see
+        // terminal_create_with_cmd for the race this avoids).
+        let client = self.client()?;
+        let result: AgentResumeResult = client
+            .rpc(AgentResumeReq {
                 kind,
                 session_id,
                 cols,
                 rows,
             })
-            .await?;
+            .await
+            .map_err(map_rpc_error)?;
         if let Some(e) = result.error {
             return Err(anyhow::anyhow!(e));
         }
 
         let terminal = RemoteTerminal::new(result.terminal_id.clone());
-        let client = self.client()?;
         if terminal.attach_remote(&client).await.is_ok() {
             self.add_terminal(terminal);
             tracing::info!("Agent session resumed in terminal: {}", result.terminal_id);

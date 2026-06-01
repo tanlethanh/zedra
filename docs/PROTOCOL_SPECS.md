@@ -92,7 +92,7 @@ connect and then fail to decode. Therefore:
   rather than corrupting a response.
 
 **Target mechanism — forward-compatible encodings (not yet applied; issue
-#140).** To let the schema grow *without* an ALPN bump, the undecodable-unknown
+`#140`).** To let the schema grow *without* an ALPN bump, the undecodable-unknown
 problem has to be removed at the encoding layer. Candidate techniques:
 
 - **Open enums.** Serialize a growable enum through a self-delimiting primitive

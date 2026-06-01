@@ -121,8 +121,13 @@ impl AgentDetail {
                 if this.loading_epoch != epoch {
                     return;
                 }
-                // Files are a best-effort extra; a failure shouldn't blank the screen.
-                this.files = files.unwrap_or_default();
+                // Files are a best-effort extra; on RPC/protocol failure keep
+                // the prior list rather than blanking the section (absent files
+                // already come back as explicit `missing` rows, so an error is
+                // distinct from "no files").
+                if let Ok(files) = files {
+                    this.files = files;
+                }
                 match agents {
                     Ok(agents) => {
                         this.agent = agents.into_iter().find(|agent| agent.kind == kind);

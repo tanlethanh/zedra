@@ -45,7 +45,9 @@ struct HermesSession {
 }
 
 pub fn cli_available() -> bool {
-    command_on_path("hermes") || sessions_dir().is_dir()
+    // `state.db` alone is enough to serve history even without the CLI or a
+    // sessions dir, so treat its presence as availability.
+    command_on_path("hermes") || sessions_dir().is_dir() || state_db_path().is_file()
 }
 
 pub fn normalize_event(_event_name: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
@@ -254,15 +256,19 @@ fn collect_sessions_from_json(limit: Option<usize>) -> Vec<HermesSession> {
             (p, mtime)
         })
         .collect();
-    // Newest first; mtime is the cheap proxy, refined by last_updated per file.
+    // mtime is only a cheap proxy; parse every file and sort by actual
+    // last activity before limiting, so an older-touched file with newer
+    // in-content activity isn't dropped from the first page.
     candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
-
-    let take = limit.unwrap_or(candidates.len());
-    candidates
+    let mut sessions: Vec<HermesSession> = candidates
         .into_iter()
-        .take(take)
         .filter_map(|(path, mtime)| read_session(&path, mtime))
-        .collect()
+        .collect();
+    sessions.sort_by(|a, b| b.last_activity_at.cmp(&a.last_activity_at));
+    if let Some(limit) = limit {
+        sessions.truncate(limit);
+    }
+    sessions
 }
 
 fn read_session(path: &Path, mtime_secs: Option<u64>) -> Option<HermesSession> {

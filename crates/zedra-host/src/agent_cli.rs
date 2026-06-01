@@ -534,6 +534,8 @@ async fn scan_usage(args: AgentScanCommonArgs) -> Result<()> {
                 Hermes => "Hermes",
             };
             match snapshots.get(&kind) {
+                // Hermes has no remote usage/plan endpoint; absence is expected.
+                None if kind == Hermes => println!("{label}: local-only (no remote usage)"),
                 None => println!("{label}: no credentials / fetch failed"),
                 Some(snap) => {
                     println!("{label}:");

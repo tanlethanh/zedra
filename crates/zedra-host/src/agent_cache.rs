@@ -249,10 +249,14 @@ impl AgentCache {
         let needed = agent::agent_session_limit(limit) as u32;
         {
             let inner = self.inner.lock().await;
-            if inner
-                .workdir
-                .as_deref()
-                .is_some_and(|cached| cached == workdir)
+            // Global agents (Hermes) scan workspace-independent data, so their
+            // retained session cache is valid even when the cached workdir
+            // differs after a workspace switch.
+            if agent::is_global(kind)
+                || inner
+                    .workdir
+                    .as_deref()
+                    .is_some_and(|cached| cached == workdir)
             {
                 if let Some(cached) = inner.sessions.get(&kind) {
                     if cached.limit >= needed {
