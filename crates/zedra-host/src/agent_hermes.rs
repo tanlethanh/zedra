@@ -1,8 +1,8 @@
 //! Hermes is a global personal agent: sessions are not scoped to a workspace
 //! (flat `~/.hermes/sessions/*.json`, no `cwd`), so every scan ignores the
 //! workdir and returns all sessions. Beyond sessions we surface Hermes's
-//! config/memory layer (config.yaml, auth.json, SOUL.md, USER.md, MEMORY.md,
-//! .env) read-only via [`config_files`].
+//! config/memory layer (SOUL.md, USER.md, MEMORY.md, config.yaml, .env,
+//! cron/jobs.json) read-only via [`config_files`].
 
 use std::path::{Path, PathBuf};
 
@@ -352,7 +352,7 @@ fn collect_sessions_from_db(limit: Option<usize>) -> Option<Vec<HermesSession>> 
                 "SELECT id, title, model, billing_provider, source, message_count, \
                  tool_call_count, COALESCE(actual_cost_usd, estimated_cost_usd), \
                  started_at, ended_at \
-                 FROM sessions ORDER BY started_at DESC LIMIT ?1",
+                 FROM sessions ORDER BY COALESCE(ended_at, started_at) DESC LIMIT ?1",
             )
             .ok()?;
         let mapped = stmt

@@ -191,13 +191,13 @@ impl AgentDetail {
                     .text_color(rgb(theme::text_muted(cx)))
                     .child("Config & memory (read-only)"),
             );
-        for file in files {
-            section = section.child(self.file_row(file, cx));
+        for (index, file) in files.iter().enumerate() {
+            section = section.child(self.file_row(index, file, cx));
         }
         section
     }
 
-    fn file_row(&self, file: &AgentFile, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn file_row(&self, index: usize, file: &AgentFile, cx: &mut Context<Self>) -> Stateful<Div> {
         let subtitle = if file.missing {
             "not created yet".to_string()
         } else if file.truncated {
@@ -230,14 +230,16 @@ impl AgentDetail {
                     .text_color(rgb(theme::text_muted(cx)))
                     .child(subtitle),
             );
-        // Only present files open a sheet; missing ones are inert.
+        // Only present files open a sheet; missing ones are inert. Clone the
+        // (potentially large) file content only on tap, not every render.
         if !file.missing {
-            let file = file.clone();
             row = row
                 .cursor_pointer()
                 .on_press(cx.listener(move |this, _event, _window, cx| {
                     platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-                    this.open_file_preview(file.clone(), cx);
+                    if let Some(file) = this.files.get(index).cloned() {
+                        this.open_file_preview(file, cx);
+                    }
                 }));
         }
         row
@@ -273,7 +275,6 @@ impl Render for AgentDetail {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let agent = self.agent.clone();
         let sessions = self.sessions.clone();
-        let files = self.files.clone();
         let agent_state = self.agent_state.clone();
         let session_state = self.session_state.clone();
         let title = self.header_title();
@@ -303,8 +304,8 @@ impl Render for AgentDetail {
                         .when_some(agent.usage.as_ref(), |col, usage| {
                             col.child(render_agent_usage_row(agent.kind, usage, cx))
                         })
-                        .when(!files.is_empty(), |col| {
-                            col.child(self.render_files_section(&files, cx))
+                        .when(!self.files.is_empty(), |col| {
+                            col.child(self.render_files_section(&self.files, cx))
                         })
                         .child(render_agent_session_list(
                             AgentSessionListProps {

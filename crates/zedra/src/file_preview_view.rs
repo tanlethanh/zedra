@@ -256,6 +256,7 @@ impl FilePreviewView {
         self.subtitle = subtitle.into();
         self.content = preview_content_for_path(path);
         self.state = PreviewState::Loading;
+        self.update_sheet_scroll_boundary(cx);
         cx.notify();
 
         self.apply_loaded_content(epoch, path.to_string(), content, cx);
