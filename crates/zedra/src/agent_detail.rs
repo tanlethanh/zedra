@@ -8,13 +8,16 @@ use crate::agent_ui::{
     AgentSessionListProps, cli_version_display, group_sessions_by_day, managed_agent_name,
     render_agent_session_list, render_agent_usage_row, setup_label,
 };
+use crate::file_preview_view::FilePreviewView;
 use crate::fonts;
 use crate::platform_bridge::{self, CustomSheetDetent, CustomSheetOptions, HapticFeedback};
+use crate::telemetry::view_telemetry;
 use crate::theme;
 use crate::ui::{
     chevron_back_button, subscreen_padded_body, subscreen_page, subscreen_refresh_button,
 };
 use crate::workspace_action;
+use crate::workspace_state::WorkspaceState;
 
 #[derive(Clone, Debug, PartialEq)]
 enum LoadState {
@@ -30,8 +33,8 @@ pub struct AgentDetail {
     sessions: Vec<zedra_rpc::proto::AgentSessionSummary>,
     /// Read-only config/memory files (Hermes). Empty for agents without a set.
     files: Vec<AgentFile>,
-    /// Persistent body for the native file sheet; its content swaps per tap.
-    file_sheet: Entity<AgentFileSheet>,
+    /// Persistent preview for the native file sheet; its content swaps per tap.
+    file_preview: Entity<FilePreviewView>,
     agent_state: LoadState,
     session_state: LoadState,
     loading_epoch: u64,
@@ -43,16 +46,18 @@ impl AgentDetail {
         session_handle: SessionHandle,
         session: Session,
         kind: ManagedAgentKind,
+        workspace_state: Entity<WorkspaceState>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let file_sheet = cx.new(|_| AgentFileSheet::default());
+        let file_preview =
+            cx.new(|cx| FilePreviewView::new(session_handle.clone(), workspace_state, cx));
         let mut view = Self {
             session_handle,
             kind,
             agent: None,
             sessions: Vec::new(),
             files: Vec::new(),
-            file_sheet,
+            file_preview,
             agent_state: LoadState::Loading,
             session_state: LoadState::Loading,
             loading_epoch: 0,
@@ -230,20 +235,27 @@ impl AgentDetail {
             let file = file.clone();
             row = row
                 .cursor_pointer()
-                .on_click(cx.listener(move |this, _event, _window, cx| {
+                .on_press(cx.listener(move |this, _event, _window, cx| {
                     platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-                    this.open_file_sheet(file.clone(), cx);
+                    this.open_file_preview(file.clone(), cx);
                 }));
         }
         row
     }
 
-    fn open_file_sheet(&self, file: AgentFile, cx: &mut Context<Self>) {
-        self.file_sheet
-            .update(cx, |sheet, cx| sheet.set_file(file, cx));
+    fn open_file_preview(&self, file: AgentFile, cx: &mut Context<Self>) {
+        let subtitle = if file.truncated {
+            format!("{} · truncated", file.path)
+        } else {
+            file.path.clone()
+        };
+        view_telemetry::record(view_telemetry::custom_sheet_file(&file.path));
+        self.file_preview.update(cx, |preview, cx| {
+            preview.open_content(file.label.clone(), subtitle, &file.path, file.content, cx);
+        });
         platform_bridge::show_custom_sheet(
             CustomSheetOptions {
-                detents: vec![CustomSheetDetent::Medium, CustomSheetDetent::Large],
+                detents: vec![CustomSheetDetent::Large],
                 initial_detent: CustomSheetDetent::Large,
                 shows_grabber: true,
                 expands_on_scroll_edge: true,
@@ -252,7 +264,7 @@ impl AgentDetail {
                 corner_radius: None,
                 modal_in_presentation: false,
             },
-            self.file_sheet.clone(),
+            self.file_preview.clone(),
         );
     }
 }
@@ -465,96 +477,6 @@ fn metadata_line(label: SharedString, value: String, cx: &App, show_divider: boo
 /// Body of the native file sheet: a mono, horizontally- and vertically-
 /// scrollable view of one file's content (GPUI text runs don't break on `\n`,
 /// so each line is its own element).
-#[derive(Default)]
-struct AgentFileSheet {
-    file: Option<AgentFile>,
-}
-
-impl AgentFileSheet {
-    fn set_file(&mut self, file: AgentFile, cx: &mut Context<Self>) {
-        self.file = Some(file);
-        cx.notify();
-    }
-}
-
-impl Render for AgentFileSheet {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut root = div()
-            .w_full()
-            .h_full()
-            .flex()
-            .flex_col()
-            .gap(px(theme::SPACING_SM))
-            .bg(rgb(theme::bg_primary(cx)))
-            .px(px(theme::SUBSCREEN_PADDING_X))
-            .pt(px(theme::SPACING_MD))
-            .pb(px(theme::SPACING_LG));
-        let Some(file) = self.file.clone() else {
-            return root;
-        };
-        root = root.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .child(
-                    div()
-                        .text_size(px(theme::FONT_HEADING))
-                        .font_family(fonts::HEADING_FONT_FAMILY)
-                        .text_color(rgb(theme::text_primary(cx)))
-                        .child(file.label.clone()),
-                )
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_size(px(theme::FONT_DETAIL))
-                        .text_color(rgb(theme::text_muted(cx)))
-                        .child(if file.truncated {
-                            format!("{} · truncated", file.path)
-                        } else {
-                            file.path.clone()
-                        }),
-                ),
-        );
-
-        let mut body = div()
-            .id("agent-file-sheet-body")
-            .flex_1()
-            .min_h_0()
-            .w_full()
-            .min_w_0()
-            .overflow_scroll()
-            .p(px(theme::SPACING_SM))
-            .rounded(px(6.0))
-            .border_1()
-            .border_color(rgb(theme::border_subtle(cx)))
-            .bg(rgb(theme::bg_card_dim(cx)))
-            .flex()
-            .flex_col();
-        if file.content.trim().is_empty() {
-            body = body.child(
-                div()
-                    .text_size(px(theme::FONT_DETAIL))
-                    .text_color(rgb(theme::text_muted(cx)))
-                    .child("(empty)"),
-            );
-        } else {
-            for line in file.content.lines() {
-                body = body.child(
-                    div()
-                        .text_size(px(theme::FONT_DETAIL))
-                        .font_family(fonts::MONO_FONT_FAMILY)
-                        .text_color(rgb(theme::text_secondary(cx)))
-                        .whitespace_nowrap()
-                        .child(line.to_string()),
-                );
-            }
-        }
-        root.child(body)
-    }
-}
-
 fn empty_text(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
         .w_full()

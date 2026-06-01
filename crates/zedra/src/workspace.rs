@@ -1432,6 +1432,7 @@ impl Workspace {
                         self.session.handle().clone(),
                         self.session.clone(),
                         kind,
+                        self.workspace_state.clone(),
                         cx,
                     )
                 });

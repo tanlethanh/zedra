@@ -1033,9 +1033,11 @@ Expected:
       when the db is absent); resume should run `hermes --resume <session_id>`.
       Manage detail shows a **read-only "Config & memory"** section listing
       `SOUL.md`, `USER.md`, `MEMORY.md`, `config.yaml`, `.env`, `cron/jobs.json`.
-      Tapping a present file opens its content in a **native sheet** (mono,
-      scrollable); absent files show "not created yet" and are not tappable;
-      oversized files show "truncated". The client cannot edit these.
+      Tapping a present file opens its content in the **same native preview
+      sheet as terminal file links** (`FilePreviewView`): `.md` files render as
+      formatted markdown, others as a syntax-highlighted code editor. Absent
+      files show "not created yet" and are not tappable; oversized files show
+      "truncated" in the subtitle. The client cannot edit these.
 16. Tap `Resume` on a session from manage detail.
 17. Expected: same immediate resume behavior as the unified sessions view.
 18. Re-open `View sessions` or `Manage agents` without tapping Refresh.
