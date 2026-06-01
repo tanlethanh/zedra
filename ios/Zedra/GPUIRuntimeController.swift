@@ -5,6 +5,14 @@ import ZedraFFI
 @_silgen_name("gpui_ios_set_keyboard_accessory_view")
 private func gpui_ios_set_keyboard_accessory_view(_ viewPtr: UnsafeMutableRawPointer?)
 
+@_silgen_name("gpui_ios_handle_keyboard_accessory_action")
+private func gpui_ios_handle_keyboard_accessory_action(
+    _ windowPtr: UnsafeMutableRawPointer?, _ action: UnsafePointer<CChar>?
+) -> Bool
+
+@_silgen_name("gpui_ios_hide_keyboard")
+private func gpui_ios_hide_keyboard(_ windowPtr: UnsafeMutableRawPointer?)
+
 @_silgen_name("gpui_ios_request_frame_forced")
 private func gpui_ios_request_frame_forced(_ windowPtr: UnsafeMutableRawPointer?)
 
@@ -17,9 +25,6 @@ private func gpui_ios_set_software_keyboard_visible(_ visible: Bool)
 
 @_silgen_name("zedra_firebase_initialize")
 private func zedra_firebase_initialize()
-
-@_silgen_name("zedra_ios_send_key_input")
-private func zedra_ios_send_key_input(_ key: UnsafePointer<CChar>)
 
 @_silgen_name("zedra_ios_app_will_terminate")
 private func zedra_ios_app_will_terminate()
@@ -154,7 +159,14 @@ final class GPUIRuntimeController: NSObject {
     }
 
     private func sendKeyboardAccessoryKey(_ key: String) {
-        key.withCString { zedra_ios_send_key_input($0) }
+        if key == "dismiss_keyboard" {
+            guard let gpuiWindow else { return }
+            gpui_ios_hide_keyboard(gpuiWindow)
+            return
+        }
+        key.withCString { action in
+            _ = gpui_ios_handle_keyboard_accessory_action(gpuiWindow, action)
+        }
     }
 
     @objc

@@ -522,7 +522,14 @@ impl WorkspaceTerminal {
 
 impl Render for WorkspaceTerminal {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let keyboard_inset = Self::keyboard_inset();
+        let terminal_owns_keyboard = self.terminal_view.read(cx).is_focused(window)
+            && window.is_soft_keyboard_visible()
+            && window.has_active_keyboard_accessory();
+        let keyboard_inset = if terminal_owns_keyboard {
+            Self::keyboard_inset()
+        } else {
+            px(0.0)
+        };
 
         // Keyboard just appeared while user is in scrollback — scroll to bottom.
         if self.last_synced_keyboard_inset == px(0.0) && keyboard_inset > px(0.0) {

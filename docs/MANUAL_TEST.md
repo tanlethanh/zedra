@@ -639,6 +639,8 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 5. Expected: the corresponding arrow input repeats continuously while held and stops immediately on release
 6. Start holding an arrow button, then dismiss the keyboard or background the app
 7. Expected: repeat stops and does not resume when the keyboard or app returns
+8. Open floating file search or the git commit message input while a terminal is visible behind it
+9. Expected: the software keyboard appears without the terminal accessory bar, and the visible terminal does not resize or shift for that keyboard
 
 ## 11f. Terminal Keyboard Accessory After Reconnect On iOS
 

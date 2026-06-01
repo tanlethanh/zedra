@@ -199,6 +199,10 @@ pub struct Input {
     secure: bool,
     /// Whether to ask the platform keyboard for native inline suggestions.
     native_suggestions: bool,
+    /// When true, pressing the focused input toggles the software keyboard.
+    toggle_keyboard_on_press: bool,
+    /// When true, submit hides the software keyboard without blurring the input.
+    hide_keyboard_on_submit: bool,
     /// Focus handle for GPUI focus management
     focus_handle: FocusHandle,
     /// Last time a key was pressed (for cursor blink pause)
@@ -231,6 +235,8 @@ impl Input {
             placeholder: String::new(),
             secure: false,
             native_suggestions: false,
+            toggle_keyboard_on_press: false,
+            hide_keyboard_on_submit: false,
             focus_handle: cx.focus_handle(),
             last_keystroke: None,
             compact: false,
@@ -269,6 +275,18 @@ impl Input {
     /// Enable native platform keyboard suggestions when supported.
     pub fn native_suggestions(mut self, native_suggestions: bool) -> Self {
         self.native_suggestions = native_suggestions;
+        self
+    }
+
+    /// Toggle the software keyboard when pressing an already-focused input.
+    pub fn toggle_keyboard_on_press(mut self, toggle_keyboard_on_press: bool) -> Self {
+        self.toggle_keyboard_on_press = toggle_keyboard_on_press;
+        self
+    }
+
+    /// Hide the software keyboard when the input submits.
+    pub fn hide_keyboard_on_submit(mut self, hide_keyboard_on_submit: bool) -> Self {
+        self.hide_keyboard_on_submit = hide_keyboard_on_submit;
         self
     }
 
@@ -555,15 +573,32 @@ impl Input {
     }
 
     fn handle_press(&mut self, _event: &PressEvent, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus_handle.focus(window, cx);
-        window.show_soft_keyboard();
+        if self.focus_handle.is_focused(window) && self.toggle_keyboard_on_press {
+            if window.is_soft_keyboard_visible() {
+                window.hide_soft_keyboard();
+            } else {
+                window.show_soft_keyboard();
+            }
+        } else {
+            self.focus_handle.focus(window, cx);
+            window.show_soft_keyboard();
+        }
         cx.notify();
+    }
+
+    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.hide_keyboard_on_submit {
+            window.hide_soft_keyboard();
+        }
+        cx.emit(InputSubmit {
+            value: self.value.clone(),
+        });
     }
 
     fn handle_key_down(
         &mut self,
         event: &KeyDownEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let key = &event.keystroke.key;
@@ -620,9 +655,7 @@ impl Input {
                     });
                     cx.notify();
                 } else {
-                    cx.emit(InputSubmit {
-                        value: self.value.clone(),
-                    });
+                    self.submit(window, cx);
                 }
             }
             "left" => {
@@ -789,7 +822,7 @@ impl EntityInputHandler for Input {
         &mut self,
         range_utf16: Option<Range<usize>>,
         text: &str,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.dictation_active {
@@ -803,9 +836,7 @@ impl EntityInputHandler for Input {
         }
 
         if !self.multiline && text.chars().any(|ch| ch == '\n' || ch == '\r') {
-            cx.emit(InputSubmit {
-                value: self.value.clone(),
-            });
+            self.submit(window, cx);
             return;
         }
 

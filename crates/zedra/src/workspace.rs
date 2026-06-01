@@ -1233,6 +1233,7 @@ impl Workspace {
     /// workspace action dispatch (e.g. reopening search) keeps working.
     fn dismiss_file_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let prev = self.file_search_prev_focus.take();
+        window.hide_soft_keyboard();
         self.close_file_search(cx);
         if let Some(handle) = prev {
             window.focus(&handle, cx);

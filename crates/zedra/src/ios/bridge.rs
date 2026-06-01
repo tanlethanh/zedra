@@ -593,7 +593,7 @@ pub extern "C" fn zedra_ios_native_notification_dismiss(callback_id: u32) {
     platform_bridge::dispatch_native_notification_dismiss(callback_id);
 }
 
-/// Called from the native keyboard accessory bar when a shortcut key button is tapped.
+/// Legacy terminal key route for native callers that do not have GPUI input-handler context.
 ///
 /// `key` is one of: "escape", "tab", "left", "down", "up", "right", "enter", "shift_enter".
 /// Maps the name to the corresponding terminal escape sequence and sends it via the active session.

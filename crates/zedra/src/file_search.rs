@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use gpui::*;
+use gpui::{prelude::FluentBuilder as _, *};
 use tracing::*;
 
 use zedra_rpc::proto::{FS_SEARCH_DEFAULT_LIMIT, FsSearchEntry};
@@ -48,7 +48,13 @@ pub struct FileSearchPanel {
 
 impl FileSearchPanel {
     pub fn new(session_handle: SessionHandle, cx: &mut Context<Self>) -> Self {
-        let search_input = cx.new(|cx| Input::new(cx).placeholder("Search files"));
+        let search_input = cx.new(|cx| {
+            Input::new(cx)
+                .placeholder("Search files")
+                .trailing_gutter(40.0)
+                .toggle_keyboard_on_press(true)
+                .hide_keyboard_on_submit(true)
+        });
         let subscription = cx.subscribe(
             &search_input,
             |this: &mut Self, _input, event: &InputChanged, cx| {
@@ -81,6 +87,7 @@ impl FileSearchPanel {
         self.error = None;
         self.truncated = false;
         self.epoch = self.epoch.wrapping_add(1);
+        self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
         self.search_input
             .update(cx, |input, _cx| input.set_value(""));
         let input_focus = self.search_input.read(cx).focus_handle(cx);
@@ -97,6 +104,7 @@ impl FileSearchPanel {
         self.results.clear();
         self.error = None;
         self.truncated = false;
+        self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
         if query.is_empty() {
             self.loading = false;
             return;
@@ -177,6 +185,7 @@ impl FileSearchPanel {
                 if is_dir {
                     return;
                 }
+                window.hide_soft_keyboard();
                 window.dispatch_action(
                     workspace_action::OpenFile { path: path.clone() }.boxed_clone(),
                     cx,
@@ -228,6 +237,22 @@ impl FileSearchPanel {
             .text_color(rgb(theme::text_muted(cx)))
             .child(message.into())
             .into_any_element()
+    }
+
+    fn clear_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.query.clear();
+        self.results.clear();
+        self.loading = false;
+        self.error = None;
+        self.truncated = false;
+        self.epoch = self.epoch.wrapping_add(1);
+        self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+        self.search_input
+            .update(cx, |input, _cx| input.set_value(""));
+        let input_focus = self.search_input.read(cx).focus_handle(cx);
+        input_focus.focus(window, cx);
+        window.show_soft_keyboard();
+        cx.notify();
     }
 }
 
@@ -303,12 +328,51 @@ impl Render for FileSearchPanel {
             .on_pointer_down(|_, _, cx| cx.stop_propagation())
             .child(
                 div()
+                    .relative()
                     .w_full()
-                    .px(px(theme::SPACING_MD))
-                    .py(px(theme::SPACING_SM))
-                    .border_b_1()
-                    .border_color(rgb(theme::border_subtle(cx)))
-                    .child(self.search_input.clone()),
+                    .child(
+                        div()
+                            .w_full()
+                            .px(px(theme::SPACING_MD))
+                            .py(px(theme::SPACING_SM))
+                            .border_b_1()
+                            .border_color(rgb(theme::border_subtle(cx)))
+                            .child(self.search_input.clone()),
+                    )
+                    .when(!self.query.is_empty(), |container| {
+                        container.child(
+                            div()
+                                .id("file-search-clear")
+                                .absolute()
+                                .right(px(theme::SPACING_LG))
+                                .top_0()
+                                .bottom_0()
+                                .w(px(32.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .on_pointer_down(|_, _, cx| cx.stop_propagation())
+                                .on_press(cx.listener(|this, _event, window, cx| {
+                                    this.clear_query(window, cx);
+                                }))
+                                .child(
+                                    div()
+                                        .w(px(32.0))
+                                        .h(px(32.0))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(6.0))
+                                        .child(
+                                            svg()
+                                                .path("icons/x.svg")
+                                                .size(px(14.0))
+                                                .text_color(rgb(theme::text_secondary(cx))),
+                                        ),
+                                ),
+                        )
+                    }),
             )
             .child(body)
     }
