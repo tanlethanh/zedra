@@ -198,6 +198,7 @@ Types that use non-string status fields or enum variants instead:
 - `path` is the workspace-relative directory to search from; clients usually send `"."`.
 - `query` fuzzy-matches file and directory paths case-insensitively. File contents are never read.
 - The host walks recursively with gitignore/global ignore support, does not follow symlink directories, and skips common generated directories such as `.git`, `node_modules`, `target`, `dist`, and `build`.
+- Each `FsSearchEntry` carries `rel_path` (search-root-relative) and `match_indices`: the host matcher's matched character positions into `rel_path`, sorted and deduplicated. Clients highlight using these indices rather than re-running a separate matcher.
 - `limit` is clamped to `FS_SEARCH_MAX_LIMIT`; `0` means `FS_SEARCH_DEFAULT_LIMIT`.
 - `truncated = true` means the result cap or visited-entry cap was hit before the host could prove there were no more matches.
 

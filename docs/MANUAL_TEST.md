@@ -1106,3 +1106,23 @@ Expected:
 4. Expected: UIKit presentation chrome uses light backgrounds and dark text/icons, matching the app theme.
 5. Toggle Appearance back to **Dark** and repeat the same presentations.
 6. Expected: UIKit presentation chrome returns to dark backgrounds and light text/icons without restarting the app.
+
+## Floating File Search (cmd+P)
+
+1. Connect to a workspace and open the drawer on the **Files** tab.
+2. Tap the search (magnifier) icon in the top-right control cluster, above the
+   Explorer / Docs toggle.
+3. Verify a floating panel appears near the top over a dimmed full-screen
+   backdrop, the keyboard opens, and the input is focused.
+4. Type a query: results stream in below the input (name + relative path rows).
+   Confirm "Searching…" shows briefly, then matches; clear the query to return
+   to the "Type to search files" prompt. Matched characters in the relative path
+   are emphasized exactly where the host scored them.
+5. Tap a file result: the panel closes and the file opens in the editor.
+6. Reopen the popup and tap the dim backdrop (or use system back / swipe back):
+   the popup closes without opening anything.
+7. Immediately tap the search icon again (without touching the drawer): the popup
+   reopens. Repeat the dismiss/reopen cycle a few times to confirm it never gets
+   stuck closed.
+8. Confirm the old inline search bar no longer appears at the top of the file
+   explorer list.

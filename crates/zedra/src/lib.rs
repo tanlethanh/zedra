@@ -30,6 +30,7 @@ pub mod settings_view;
 
 // Semantic components
 pub mod file_explorer;
+pub mod file_search;
 pub mod git_panel;
 pub mod quick_action_panel;
 pub mod session_panel;

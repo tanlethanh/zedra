@@ -531,9 +531,24 @@ pub struct FsSearchReq {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FsSearchResult {
-    pub entries: Vec<FsEntry>,
+    pub entries: Vec<FsSearchEntry>,
     pub truncated: bool,
     pub error: Option<String>,
+}
+
+/// A single fuzzy-search hit. `match_indices` are the host matcher's matched
+/// character positions into `rel_path`, so the client highlights exactly what
+/// the host scored instead of re-running a divergent matcher.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsSearchEntry {
+    /// Absolute path, used to open the file.
+    pub path: String,
+    /// Search-root-relative path; the string `match_indices` reference. The
+    /// filename is its last component, so it is not sent separately.
+    pub rel_path: String,
+    pub is_dir: bool,
+    /// Sorted, deduplicated character indices into `rel_path` that matched.
+    pub match_indices: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

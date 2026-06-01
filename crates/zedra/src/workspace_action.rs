@@ -144,6 +144,10 @@ pub struct OpenQuickAction;
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
+pub struct OpenFileSearch;
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
 pub struct UpdateTitle {
     pub title: String,
 }

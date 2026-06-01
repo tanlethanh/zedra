@@ -459,10 +459,15 @@ mod file_search_tests {
 
         let result = search_files(&temp.path().canonicalize().unwrap(), "SEARCH", 10).unwrap();
 
-        assert!(result
+        let hit = result
             .entries
             .iter()
-            .any(|entry| entry.path.ends_with("src/search_panel.rs")));
+            .find(|entry| entry.path.ends_with("src/search_panel.rs"))
+            .expect("expected search_panel.rs match");
+        // Host-supplied match indices are sorted and reference rel_path.
+        assert!(!hit.match_indices.is_empty());
+        assert!(hit.match_indices.windows(2).all(|w| w[0] < w[1]));
+        assert!(*hit.match_indices.last().unwrap() < hit.rel_path.chars().count() as u32);
         assert!(result
             .entries
             .iter()
@@ -643,35 +648,34 @@ fn fs_search_limit(limit: u32) -> usize {
 }
 
 fn is_file_search_ignored(entry: &ignore::DirEntry) -> bool {
-    let Some(name) = entry.file_name().to_str() else {
-        return false;
-    };
-    if entry
+    // Only filter directories; matched files should still surface as results.
+    if !entry
         .file_type()
         .is_some_and(|file_type| file_type.is_dir())
     {
-        matches!(
-            name,
-            ".git"
-                | ".hg"
-                | ".svn"
-                | "node_modules"
-                | "target"
-                | "dist"
-                | "build"
-                | ".next"
-                | ".zed"
-        )
-    } else {
-        false
+        return false;
     }
+    let Some(name) = entry.file_name().to_str() else {
+        return false;
+    };
+    // Reuse the canonical generated/vendor directory list shared with the docs
+    // tree so both walkers skip the same noise. Unlike the docs tree, file
+    // search keeps dot-directories (e.g. `.github`) visible.
+    crate::docs_tree::FALLBACK_COMPONENT_IGNORES.contains(&name)
 }
 
 struct FileSearchCandidate {
-    name: String,
     path: PathBuf,
     is_dir: bool,
     match_path: String,
+}
+
+fn fs_search_error(message: String) -> FsSearchResult {
+    FsSearchResult {
+        entries: vec![],
+        truncated: false,
+        error: Some(message),
+    }
 }
 
 fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> {
@@ -720,7 +724,6 @@ fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> 
             continue;
         }
 
-        let name = entry.file_name().to_string_lossy().into_owned();
         let path = entry.path().to_path_buf();
         let match_path = path
             .strip_prefix(root)
@@ -728,7 +731,6 @@ fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> 
             .to_string_lossy()
             .into_owned();
         candidates.push(FileSearchCandidate {
-            name,
             path,
             is_dir: file_type.is_dir(),
             match_path,
@@ -758,18 +760,25 @@ fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> 
         truncated = true;
     }
 
+    // Recompute match indices only for the rows we return so the client can
+    // highlight exactly the characters the host scored.
+    let mut indices = Vec::new();
     let entries = ranked
         .into_iter()
         .take(limit)
-        .map(|(_, candidate)| FsEntry {
-            name: candidate.name.clone(),
-            path: candidate.path.to_string_lossy().into_owned(),
-            is_dir: candidate.is_dir,
-            size: candidate
-                .path
-                .metadata()
-                .map(|metadata| metadata.len())
-                .unwrap_or(0),
+        .map(|(_, candidate)| {
+            match_buf.clear();
+            let haystack = Utf32Str::new(candidate.match_path.as_str(), &mut match_buf);
+            indices.clear();
+            pattern.indices(haystack, &mut matcher, &mut indices);
+            indices.sort_unstable();
+            indices.dedup();
+            FsSearchEntry {
+                path: candidate.path.to_string_lossy().into_owned(),
+                rel_path: candidate.match_path.clone(),
+                is_dir: candidate.is_dir,
+                match_indices: indices.clone(),
+            }
         })
         .collect();
 
@@ -2101,14 +2110,7 @@ async fn dispatch(
                 Ok(p) => p,
                 Err(e) => {
                     tracing::warn!("FsSearch: rejected path {:?}: {}", msg.path, e);
-                    let _ = msg
-                        .tx
-                        .send(FsSearchResult {
-                            entries: vec![],
-                            truncated: false,
-                            error: Some(e.to_string()),
-                        })
-                        .await;
+                    let _ = msg.tx.send(fs_search_error(e.to_string())).await;
                     return Ok(());
                 }
             };
@@ -2127,14 +2129,7 @@ async fn dispatch(
                 }
                 Err(e) => {
                     tracing::warn!("FsSearch: search failed for {:?}: {}", msg.path, e);
-                    let _ = msg
-                        .tx
-                        .send(FsSearchResult {
-                            entries: vec![],
-                            truncated: false,
-                            error: Some(e.to_string()),
-                        })
-                        .await;
+                    let _ = msg.tx.send(fs_search_error(e.to_string())).await;
                 }
             }
         }
