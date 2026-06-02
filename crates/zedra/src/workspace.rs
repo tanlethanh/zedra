@@ -607,6 +607,7 @@ fn managed_agent_command_hint(kind: ManagedAgentKind) -> &'static str {
         ManagedAgentKind::Codex => "codex",
         ManagedAgentKind::OpenCode => "opencode",
         ManagedAgentKind::Pi => "pi",
+        ManagedAgentKind::Hermes => "hermes",
     }
 }
 
@@ -1514,6 +1515,7 @@ impl Workspace {
                         self.session.handle().clone(),
                         self.session.clone(),
                         kind,
+                        self.workspace_state.clone(),
                         cx,
                     )
                 });

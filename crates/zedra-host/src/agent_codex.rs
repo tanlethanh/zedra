@@ -1,6 +1,5 @@
 use crate::agent_utils::*;
 use crate::sqlite_readonly;
-use crate::utils;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::Value;
@@ -234,8 +233,9 @@ fn finalize_title(line: &str) -> Option<String> {
     if line.is_empty() {
         return None;
     }
+    // Collapse whitespace; length is clamped centrally in `session_title`.
     let collapsed = line.split_whitespace().collect::<Vec<_>>().join(" ");
-    Some(utils::truncate_chars(&collapsed, 80))
+    Some(collapsed)
 }
 
 fn title_from_path(path: &str) -> Option<&str> {
@@ -254,7 +254,7 @@ fn title_from_agent_identity(nickname: Option<&str>, role: Option<&str>) -> Opti
         Some(role) => format!("{nickname} ({role})"),
         None => nickname.to_string(),
     };
-    Some(utils::truncate_chars(&title, 80))
+    Some(title)
 }
 
 fn session_summary_from_thread(

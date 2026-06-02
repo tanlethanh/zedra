@@ -58,6 +58,8 @@ pub fn setup_summary(
                 && (opencode_hooks_installed() || opencode_local_hooks_installed(workdir)),
         ),
         ManagedAgentKind::Pi => (false, false, false),
+        // Hermes has its own hook system, but Zedra doesn't install into it yet.
+        ManagedAgentKind::Hermes => (false, false, false),
     };
     let state = if error.is_some() {
         AgentSetupState::Error

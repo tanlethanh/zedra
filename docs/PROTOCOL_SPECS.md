@@ -35,7 +35,7 @@ The protocol layer includes:
 
 - Network transport: iroh QUIC.
 - RPC framing: `irpc` over iroh streams.
-- ALPN: `zedra/rpc/2` (see `ZEDRA_ALPN` in `crates/zedra-rpc/src/proto.rs`).
+- ALPN: `zedra/rpc/3` (see `ZEDRA_ALPN` in `crates/zedra-rpc/src/proto.rs`). Bump the trailing integer on any change that alters how existing bytes decode (see §2.4).
 
 ### 2.2 Serialization
 
@@ -51,6 +51,63 @@ The protocol layer includes:
   - Server stream: mpsc sender from host to client
   - Bidirectional stream: client rx + host tx
 - `ZedraProto` variant order is append-only. Never insert/reorder existing variants.
+
+### 2.4 Schema Evolution and Decode Compatibility
+
+postcard is schema-positional and non-self-describing. There is no field tag,
+no enum-variant length prefix, and no way to skip an unknown value. The decoder
+reads bytes by position against the type it was compiled with. Two consequences
+drive every wire-schema decision:
+
+- An enum is encoded as a bare varint discriminant. A peer that receives a
+  discriminant it does not know **cannot skip it** — `postcard::from_bytes`
+  fails the **entire message**, not just that field. One unknown enum value in a
+  `Vec<T>` response fails the whole vec; one undecodable item in a server stream
+  kills the whole stream.
+- A struct is a fixed, untagged sequence of fields. Appending a field breaks the
+  peer with fewer fields (it runs out of bytes or misreads). `#[serde(default)]`
+  and `#[serde(other)]` do **not** rescue postcard — they only work for
+  self-describing formats.
+
+A decoder fix cannot reach an already-shipped binary, so compatibility is a
+property of the wire schema, not of any per-client negotiation (the host does
+not tailor responses per client). Two strategies are available; Zedra currently
+relies on the first.
+
+**Current mechanism — ALPN version gate.** `ZEDRA_ALPN` (`zedra/rpc/N`) is the
+single compatibility boundary. A host and client connect only when their ALPN
+strings match exactly, so within one protocol version the wire schema — every
+struct's field set and every enum's variant set — is fixed and known to both
+ends. Forward skew (a host emitting a discriminant the client lacks) cannot
+happen across an ALPN boundary: the mismatched peer never connects, it does not
+connect and then fail to decode. Therefore:
+
+- **Append-only within a version.** Never reorder, remove, retype, or renumber
+  an existing variant, field, or enum code. Appending a new enum variant or a
+  new struct field changes how existing bytes decode for a peer that lacks it,
+  so it is **not** additive under postcard.
+- **Bump `ZEDRA_ALPN` on any wire change.** Adding an agent kind, an event kind,
+  a struct field, or a request/response shape all alter decoding for an older
+  peer. Bump the trailing integer; the older peer then declines to connect
+  rather than corrupting a response.
+
+**Target mechanism — forward-compatible encodings (not yet applied; issue
+`#140`).** To let the schema grow *without* an ALPN bump, the undecodable-unknown
+problem has to be removed at the encoding layer. Candidate techniques:
+
+- **Open enums.** Serialize a growable enum through a self-delimiting primitive
+  with an `Unknown` fallback (`#[serde(into = "u32", from = "u32")]` +
+  `Unknown(u32)`) so an unrecognized code decodes to `Unknown` instead of
+  failing the whole response; consumers filter `Unknown` out of display and
+  dispatch. Known codes stay wire-identical to the derived discriminant.
+- **Key/value record data.** Carry optional data as `Vec<{label,value}>` entries
+  (the `account.fields` pattern) so a struct's field count never changes.
+- **Versioned variants.** Add `FooReqV2` / `FooResultV2` rather than mutating a
+  shipped struct (the `TermCreateReq` → `TermCreateReqV2` pattern).
+
+These are documented as the intended direction; `ManagedAgentKind` and the other
+growable enums currently use the plain derived discriminant and are gated by the
+ALPN bump above. Migrating them is tracked in issue #140.
 
 ---
 
@@ -302,12 +359,13 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
 - `AgentSessions(AgentSessionsReq) -> AgentSessionsResult`
 - `AgentResume(AgentResumeReq) -> AgentResumeResult`
 - `AgentInstalledList(AgentInstalledListReq) -> AgentInstalledListResult`
+- `AgentFiles(AgentFilesReq) -> AgentFilesResult`
 - `LspDiagnostics(LspDiagnosticsReq) -> LspDiagnosticsResult`
 - `LspHover(LspHoverReq) -> LspHoverResult`
 
 ### Managed agent conventions
 
-**Terminology:** A *managed agent* is one of `ManagedAgentKind`: Claude Code (`Claude`), Codex (`Codex`), OpenCode (`OpenCode`), and Pi (`Pi`). This is narrower than `AgentInstalledList`, which lists every terminal agent CLI the host can launch (Amp, Cline, Cursor, etc.).
+**Terminology:** A *managed agent* is one of `ManagedAgentKind`: Claude Code (`Claude`), Codex (`Codex`), OpenCode (`OpenCode`), Pi (`Pi`), and Hermes (`Hermes`). This is narrower than `AgentInstalledList`, which lists every terminal agent CLI the host can launch (Amp, Cline, Cursor, etc.). Most agents scope sessions per workspace; `Hermes` is a global personal agent whose sessions are workspace-independent.
 
 - `AgentListResult.agents` returns one `AgentSummary` for every managed agent, even when the CLI is missing or no sessions exist.
 - `AgentListReq.refresh` and `AgentInstalledListReq.refresh` default to `false`. When `false`, the host serves its startup cache; when `true`, the host rescans synchronous fields before responding.
@@ -327,6 +385,8 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
   - **Codex**: Logged in, Account (name from JWT), Plan, Plan until (from `~/.codex/auth.json` `id_token` payload, re-read on async refresh); Model, Personality, Reasoning effort (from `~/.codex/config.toml`); Week threads, Total threads (from `~/.codex/state_5.sqlite`).
   - **OpenCode**: Config dir presence (from `~/.config/opencode`).
   - **Pi**: Logged in (presence of `~/.pi/agent/sessions/`). Sessions are scanned from `~/.pi/agent/sessions/--<workdir>--/<timestamp>_<uuid>.jsonl`; resume uses `pi --session <id>`. No lifecycle hooks; live binding falls back to terminal command detection (`pi` as first token).
+  - **Hermes**: per-provider auth + active provider (from `$HERMES_HOME/auth.json`, default `~/.hermes`), Default model / Default provider (from `config.yaml` `model:` block), Skills count (`$HERMES_HOME/skills/**/SKILL.md`), and `state.db` rollups (Total spend, Platforms = `DISTINCT source`). Sessions are **global** (not workspace-scoped): read from `$HERMES_HOME/state.db` (`sessions` table — curated title, `source` platform, `tool_call_count`, per-session cost, model; falls back to `sessions/session_*.json` only when the db is absent), so `AgentSessionsReq.kind == Hermes` ignores the workdir and returns all sessions incl. gateway/ACP; resume uses `hermes --resume <session_id>`. No lifecycle hooks; live binding falls back to terminal command detection (`hermes` as first token). `AgentFiles` exposes `SOUL.md`/`USER.md`/`MEMORY.md`/`config.yaml`/`.env`/`cron/jobs.json` read-only.
+- `AgentFiles(AgentFilesReq{kind}) -> AgentFilesResult{files}` returns an agent's host-side config/memory files **read-only** for detail views. Each `AgentFile` carries `label`, absolute `path`, `content` (host-capped at 256 KiB; `truncated` flags clipping), and `missing` (file absent). Only `Hermes` exposes a set today (`SOUL.md`, `USER.md`, `MEMORY.md`, `config.yaml`, `.env`, `cron/jobs.json`); other kinds return an empty list. The client never writes these files. `.env` and other credential-bearing files are returned verbatim — acceptable because the RPC transport is end-to-end encrypted and a client only views its own host's config; treat the contents as sensitive at rest.
 - `AgentSessionSummary.title` uses provider-stored titles when available, otherwise `"Unknown"`.
 - `AgentSessionSummary.transcript_size_bytes` reports transcript file size when the host scan has a local file path.
 - `AgentGitSummary.worktree` is populated for Claude when the encoded project path includes `--claude-worktrees-<name>`.
@@ -474,6 +534,17 @@ Any protocol-layer change must include all applicable steps:
 ---
 
 ## 11) Protocol Changelog
+
+### 2026-05-29
+
+- Added §2.4 Schema Evolution and Decode Compatibility: documents the postcard
+  undecodable-unknown problem, the current ALPN version-gate discipline
+  (append-only within a version, bump on any wire change), and the target
+  forward-compatible encodings (open enums, key/value records, versioned
+  variants) tracked in issue #140.
+- Added `Hermes` managed agent kind and `AgentFiles(AgentFilesReq) ->
+  AgentFilesResult`.
+- ALPN bumped to `zedra/rpc/3`.
 
 ### 2026-04-29
 

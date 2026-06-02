@@ -3023,6 +3023,20 @@ async fn dispatch(
             let _ = msg.tx.send(result).await;
         }
 
+        ZedraMessage::AgentFiles(msg) => {
+            session.touch().await;
+            let kind = msg.kind;
+            // File reads are blocking; keep them off the async dispatch path.
+            let result = tokio::task::spawn_blocking(move || agent::agent_files(kind))
+                .await
+                .map(|files| AgentFilesResult { files, error: None })
+                .unwrap_or_else(|e| AgentFilesResult {
+                    files: Vec::new(),
+                    error: Some(e.to_string()),
+                });
+            let _ = msg.tx.send(result).await;
+        }
+
         ZedraMessage::AgentResume(msg) => {
             session.touch().await;
             let workdir = session

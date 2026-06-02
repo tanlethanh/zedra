@@ -176,12 +176,12 @@ pub mod view_telemetry {
     pub const CUSTOM_SHEET_EDITOR: ViewDescriptor = ViewDescriptor::new(
         "custom_sheet_editor",
         "Custom Sheet Editor",
-        "TerminalPreviewView",
+        "FilePreviewView",
     );
     pub const CUSTOM_SHEET_MARKDOWN: ViewDescriptor = ViewDescriptor::new(
         "custom_sheet_markdown",
         "Custom Sheet Markdown",
-        "TerminalPreviewView",
+        "FilePreviewView",
     );
     pub const CUSTOM_SHEET_DEMO: ViewDescriptor =
         ViewDescriptor::new("custom_sheet_demo", "Custom Sheet Demo", "SheetDemoView");

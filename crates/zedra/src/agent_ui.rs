@@ -46,6 +46,7 @@ pub fn managed_agent_icon(kind: ManagedAgentKind) -> &'static str {
         ManagedAgentKind::Codex => "icons/openai.svg",
         ManagedAgentKind::OpenCode => "icons/opencode.svg",
         ManagedAgentKind::Pi => "icons/pi.svg",
+        ManagedAgentKind::Hermes => "icons/hermesagent.svg",
     }
 }
 
@@ -55,6 +56,7 @@ pub fn kind_slug(kind: ManagedAgentKind) -> &'static str {
         ManagedAgentKind::Codex => "codex",
         ManagedAgentKind::OpenCode => "opencode",
         ManagedAgentKind::Pi => "pi",
+        ManagedAgentKind::Hermes => "hermes",
     }
 }
 
@@ -64,6 +66,7 @@ pub fn managed_agent_name(kind: ManagedAgentKind) -> &'static str {
         ManagedAgentKind::Codex => "Codex",
         ManagedAgentKind::OpenCode => "OpenCode",
         ManagedAgentKind::Pi => "Pi",
+        ManagedAgentKind::Hermes => "Hermes",
     }
 }
 
@@ -538,8 +541,9 @@ fn session_title_row(session: &AgentSessionSummary, cx: &App) -> Div {
             div()
                 .flex_1()
                 .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
+                // Trim long titles to the row width at render time (host only
+                // applies a generous anti-abuse cap).
+                .truncate()
                 .text_size(px(theme::FONT_BODY))
                 .text_color(rgb(theme::text_primary(cx)))
                 .child(session_title(session)),
