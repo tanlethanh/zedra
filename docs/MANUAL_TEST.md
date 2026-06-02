@@ -549,8 +549,10 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 11. Expected: the corresponding arrow input repeats continuously while held and stops immediately on release
 12. Dismiss the keyboard or background the app while holding an accessory arrow
 13. Expected: repeat stops and does not resume when the keyboard or app returns
-14. Tap the already-focused terminal while the keyboard is visible
-15. Expected: the software keyboard dismisses and the next terminal tap reopens it
+14. Open floating file search or the git commit message input while a terminal is visible behind it
+15. Expected: the software keyboard appears without the terminal accessory bar, typing goes to the focused input, and the visible terminal does not resize or shift for that keyboard
+16. Tap the already-focused terminal while the keyboard is visible
+17. Expected: the software keyboard dismisses and the next terminal tap reopens it
 
 ## 11a. Terminal Scroll To Bottom Native Button On iOS
 

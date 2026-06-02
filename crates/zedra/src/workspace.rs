@@ -13,7 +13,6 @@ use zedra_session::{
     SessionState, signer::ClientSigner,
 };
 
-use crate::active_terminal;
 use crate::agent;
 use crate::agent_detail::AgentDetail;
 use crate::agent_manage::AgentManage;
@@ -2153,7 +2152,6 @@ impl Workspace {
                 .prune_stale_terminals(&state.terminal_ids);
             if was_active_terminal || state.terminal_ids.is_empty() {
                 state.active_terminal_id = None;
-                active_terminal::clear_active_input();
             }
             if was_active_main_terminal && !has_replacement_terminal {
                 state.navigate(WorkspaceMainView::NoActiveTerminal, cx);
@@ -2202,7 +2200,6 @@ impl Workspace {
             self.workspace_state.update(cx, |state, cx| {
                 if active_terminal_is_stale {
                     state.active_terminal_id = None;
-                    active_terminal::clear_active_input();
                 }
                 if active_main_terminal_is_stale {
                     state

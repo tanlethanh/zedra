@@ -263,19 +263,6 @@ void zedra_ios_native_notification_action(uint32_t callback_id);
 void zedra_ios_native_notification_dismiss(uint32_t callback_id);
 
 /**
- * Called from the native keyboard accessory bar when a shortcut key button is tapped.
- *
- * `key` is one of: "escape", "tab", "left", "down", "up", "right", "enter", "shift_enter".
- * Maps the name to the corresponding terminal escape sequence and sends it via the active session.
- */
-void zedra_ios_send_key_input(const char *key);
-
-/**
- * Called from the native terminal composer to send finalized text to the active terminal.
- */
-void zedra_ios_send_terminal_text(const char *text);
-
-/**
  * Called from the native app delegate when the app is opened via a `zedra://` URL.
  */
 void zedra_deeplink_received(const char *url);
