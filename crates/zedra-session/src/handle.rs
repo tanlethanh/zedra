@@ -11,20 +11,6 @@ use crate::{
     unregister_active_connection,
 };
 
-/// Minimum host CLI version for agent-management RPCs and `TermCreateV2`.
-///
-/// TEMPORARY: workspace-version gate, to be replaced by capability
-/// negotiation in `SyncSessionResult`. Until then, every new post-baseline
-/// variant must either bump this constant or add its own gate.
-const HOST_VERSION_AGENT_MGMT: (u32, u32, u32) = (0, 2, 5);
-
-/// Public so views can show the same message when they short-circuit at the
-/// app layer instead of letting each per-kind RPC produce its own copy.
-pub const AGENT_MGMT_UNSUPPORTED_MSG: &str =
-    "Requires host CLI 0.2.5+. Please update your host to match the version.";
-
-const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-
 #[derive(Clone)]
 pub struct SessionHandle(Arc<SessionHandleInner>);
 
@@ -41,9 +27,6 @@ struct SessionHandleInner {
     user_disconnect: AtomicBool,
     observer_rpc_supported: AtomicBool,
     docs_tree_rpc_supported: AtomicBool,
-    /// Parsed from `SyncSessionResult.host_version`; gates post-baseline
-    /// RPCs so old hosts never receive an undecodable variant.
-    host_version: Mutex<Option<(u32, u32, u32)>>,
 }
 
 impl Drop for SessionHandleInner {
@@ -78,7 +61,6 @@ impl SessionHandle {
             user_disconnect: AtomicBool::new(false),
             observer_rpc_supported: AtomicBool::new(true),
             docs_tree_rpc_supported: AtomicBool::new(true),
-            host_version: Mutex::new(None),
         }))
     }
 
@@ -134,71 +116,6 @@ impl SessionHandle {
 
     pub fn set_rpc_client(&self, client: irpc::Client<ZedraProto>) {
         *self.0.rpc_client.lock().unwrap() = Some(client);
-    }
-
-    /// Accepts strings like `"0.2.5"` or `"0.2.5-pre-1"`; unparseable → `None`.
-    pub fn set_host_version(&self, raw: Option<String>) {
-        *self.0.host_version.lock().unwrap() = raw.as_deref().and_then(parse_semver_triplet);
-    }
-
-    pub fn host_version(&self) -> Option<(u32, u32, u32)> {
-        self.0.host_version.lock().ok().and_then(|g| *g)
-    }
-
-    /// False when the version is unknown (treat as "old, don't risk it").
-    pub fn host_at_least(&self, want: (u32, u32, u32)) -> bool {
-        match self.host_version() {
-            Some(v) => v >= want,
-            None => false,
-        }
-    }
-
-    /// Single source of truth for agent-management capability. Views call
-    /// this and short-circuit so the user sees one message, not one per
-    /// kind (`agent_sessions` fans out across Claude / Codex / OpenCode).
-    pub fn supports_agent_mgmt(&self) -> bool {
-        self.host_at_least(HOST_VERSION_AGENT_MGMT)
-    }
-
-    /// Names both sides for the user when an RPC fails because the host
-    /// can't decode it. ALPN match means the baseline surface still works;
-    /// only this specific call is unsupported.
-    fn version_mismatch_notice(&self) -> String {
-        let host = self
-            .0
-            .host_version
-            .lock()
-            .ok()
-            .and_then(|g| *g)
-            .map(|(a, b, c)| format!("{a}.{b}.{c}"))
-            .unwrap_or_else(|| "unknown".to_string());
-        format!(
-            "This action is not supported by host CLI {host} (client {CLIENT_VERSION}). \
-             Update the host or client so the versions match."
-        )
-    }
-
-    /// Rewrite "host can't decode this variant" errors to a version-skew
-    /// notice. Requires either an unambiguous decode keyword or an
-    /// older-than-client host, so benign transport closes (idle timeout,
-    /// reconnect race, host crash) on a same-version peer pass through raw.
-    fn map_rpc_error(&self, err: irpc::Error) -> anyhow::Error {
-        let raw = err.to_string();
-        let lower = raw.to_lowercase();
-        let definite_decode = lower.contains("unknown variant")
-            || lower.contains("invalid type")
-            || lower.contains("decode")
-            || lower.contains("deserialize");
-        let ambiguous_close = lower.contains("oneshot recv") || lower.contains("sender closed");
-        let host_older = match (self.host_version(), parse_semver_triplet(CLIENT_VERSION)) {
-            (Some(host), Some(client)) => host < client,
-            _ => false,
-        };
-        if definite_decode || (ambiguous_close && host_older) {
-            anyhow::anyhow!(self.version_mismatch_notice())
-        } else {
-            anyhow::anyhow!(raw)
-        }
     }
 
     pub fn set_active_connection(&self, conn: iroh::endpoint::Connection) {
@@ -624,30 +541,15 @@ impl SessionHandle {
         color_scheme: Option<TerminalColorScheme>,
     ) -> Result<String> {
         let client = self.client()?;
-        // Host < 0.2.5: send legacy V1 to keep its dispatch loop alive.
-        let result: TermCreateResult = if self.host_at_least(HOST_VERSION_AGENT_MGMT) {
-            client
-                .rpc(TermCreateReqV2 {
-                    cols,
-                    rows,
-                    launch_cmd,
-                    color_scheme,
-                })
-                .await
-                .map_err(|e| self.map_rpc_error(e))?
-        } else {
-            if color_scheme.is_some() {
-                tracing::warn!("host < 0.2.5: color scheme dropped, using host defaults");
-            }
-            client
-                .rpc(TermCreateReq {
-                    cols,
-                    rows,
-                    launch_cmd,
-                })
-                .await
-                .map_err(|e| self.map_rpc_error(e))?
-        };
+        let result: TermCreateResult = client
+            .rpc(TermCreateReqV2 {
+                cols,
+                rows,
+                launch_cmd,
+                color_scheme,
+            })
+            .await
+            .map_err(map_rpc_error)?;
         if let Some(e) = result.error {
             return Err(anyhow::anyhow!(e));
         }
@@ -663,14 +565,11 @@ impl SessionHandle {
     }
 
     pub async fn agent_installed_list(&self, refresh: bool) -> Result<Vec<InstalledAgentEntry>> {
-        if !self.host_at_least(HOST_VERSION_AGENT_MGMT) {
-            return Err(anyhow::anyhow!(AGENT_MGMT_UNSUPPORTED_MSG));
-        }
         let result: AgentInstalledListResult = self
             .client()?
             .rpc(AgentInstalledListReq { refresh })
             .await
-            .map_err(|e| self.map_rpc_error(e))?;
+            .map_err(map_rpc_error)?;
         if let Some(e) = result.error {
             return Err(anyhow::anyhow!(e));
         }
@@ -678,14 +577,11 @@ impl SessionHandle {
     }
 
     pub async fn agent_list(&self, refresh: bool) -> Result<Vec<AgentSummary>> {
-        if !self.host_at_least(HOST_VERSION_AGENT_MGMT) {
-            return Err(anyhow::anyhow!(AGENT_MGMT_UNSUPPORTED_MSG));
-        }
         let result: AgentListResult = self
             .client()?
             .rpc(AgentListReq { refresh })
             .await
-            .map_err(|e| self.map_rpc_error(e))?;
+            .map_err(map_rpc_error)?;
         if let Some(e) = result.error {
             return Err(anyhow::anyhow!(e));
         }
@@ -698,9 +594,6 @@ impl SessionHandle {
         refresh: bool,
         limit: u32,
     ) -> Result<Vec<AgentSessionSummary>> {
-        if !self.host_at_least(HOST_VERSION_AGENT_MGMT) {
-            return Err(anyhow::anyhow!(AGENT_MGMT_UNSUPPORTED_MSG));
-        }
         let result: AgentSessionsResult = self
             .client()?
             .rpc(AgentSessionsReq {
@@ -709,7 +602,7 @@ impl SessionHandle {
                 limit,
             })
             .await
-            .map_err(|e| self.map_rpc_error(e))?;
+            .map_err(map_rpc_error)?;
         if let Some(e) = result.error {
             return Err(anyhow::anyhow!(e));
         }
@@ -723,9 +616,6 @@ impl SessionHandle {
         cols: u16,
         rows: u16,
     ) -> Result<String> {
-        if !self.host_at_least(HOST_VERSION_AGENT_MGMT) {
-            return Err(anyhow::anyhow!(AGENT_MGMT_UNSUPPORTED_MSG));
-        }
         let client = self.client()?;
         let result: AgentResumeResult = client
             .rpc(AgentResumeReq {
@@ -735,7 +625,7 @@ impl SessionHandle {
                 rows,
             })
             .await
-            .map_err(|e| self.map_rpc_error(e))?;
+            .map_err(map_rpc_error)?;
         if let Some(e) = result.error {
             return Err(anyhow::anyhow!(e));
         }
@@ -804,43 +694,38 @@ fn git_checkout_result(result: GitCheckoutResult, branch: &str) -> Result<()> {
     }
 }
 
-/// Parse leading `major.minor.patch`, ignoring `-pre-N` / `+build` suffix.
-fn parse_semver_triplet(raw: &str) -> Option<(u32, u32, u32)> {
-    let core = raw
-        .split(|c: char| c == '-' || c == '+')
-        .next()
-        .unwrap_or(raw);
-    let mut parts = core.split('.');
-    let major = parts.next()?.parse::<u32>().ok()?;
-    let minor = parts.next()?.parse::<u32>().ok()?;
-    let patch = parts.next()?.parse::<u32>().ok()?;
-    Some((major, minor, patch))
+/// True when an RPC error carries no useful cause on its own: the host dropped
+/// the response (an older host that can't decode the request, or the link
+/// dropped) or a reply came back undecodable. Used to append context to the
+/// forwarded error, not to replace or swallow it.
+fn is_incompatible_close(err: &irpc::Error) -> bool {
+    let lower = err.to_string().to_lowercase();
+    lower.contains("oneshot recv")
+        || lower.contains("sender closed")
+        || lower.contains("unknown variant")
+        || lower.contains("invalid type")
+        || lower.contains("decode")
+        || lower.contains("deserialize")
+}
+
+/// Forward the actual RPC error so the failure is legible. irpc's opaque
+/// transport closes (e.g. "oneshot recv error") carry no real cause, so replace
+/// them with the likely explanation; every other error is forwarded verbatim.
+/// Applies uniformly to every RPC; no per-agent special casing.
+fn map_rpc_error(err: irpc::Error) -> anyhow::Error {
+    if is_incompatible_close(&err) {
+        anyhow::anyhow!(
+            "host may be an older build that can't decode this request, or the \
+             connection dropped — update the host or reconnect"
+        )
+    } else {
+        anyhow::anyhow!(err.to_string())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_semver_triplet_handles_release_and_prerelease() {
-        assert_eq!(parse_semver_triplet("0.2.5"), Some((0, 2, 5)));
-        assert_eq!(parse_semver_triplet("0.2.5-pre-1"), Some((0, 2, 5)));
-        assert_eq!(parse_semver_triplet("1.0.0+build.7"), Some((1, 0, 0)));
-        assert_eq!(parse_semver_triplet("0.2"), None);
-        assert_eq!(parse_semver_triplet("garbage"), None);
-    }
-
-    #[test]
-    fn host_at_least_returns_false_when_version_unknown() {
-        let handle = SessionHandle::new();
-        assert!(!handle.host_at_least((0, 2, 5)));
-        handle.set_host_version(Some("0.2.4".into()));
-        assert!(!handle.host_at_least((0, 2, 5)));
-        handle.set_host_version(Some("0.2.5".into()));
-        assert!(handle.host_at_least((0, 2, 5)));
-        handle.set_host_version(Some("0.3.0".into()));
-        assert!(handle.host_at_least((0, 2, 5)));
-    }
 
     #[test]
     fn add_terminal_replaces_existing_id() {

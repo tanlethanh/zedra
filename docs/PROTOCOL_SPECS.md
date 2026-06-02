@@ -307,7 +307,7 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
 
 ### Managed agent conventions
 
-**Terminology:** A *managed agent* is one of `ManagedAgentKind`: Claude Code (`Claude`), Codex (`Codex`), and OpenCode (`OpenCode`). This is narrower than `AgentInstalledList`, which lists every terminal agent CLI the host can launch (Amp, Cline, Cursor, etc.).
+**Terminology:** A *managed agent* is one of `ManagedAgentKind`: Claude Code (`Claude`), Codex (`Codex`), OpenCode (`OpenCode`), and Pi (`Pi`). This is narrower than `AgentInstalledList`, which lists every terminal agent CLI the host can launch (Amp, Cline, Cursor, etc.).
 
 - `AgentListResult.agents` returns one `AgentSummary` for every managed agent, even when the CLI is missing or no sessions exist.
 - `AgentListReq.refresh` and `AgentInstalledListReq.refresh` default to `false`. When `false`, the host serves its startup cache; when `true`, the host rescans synchronous fields before responding.
@@ -326,6 +326,7 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
   - **Claude**: Logged in, Plan (from `~/.claude/.credentials.json` `subscriptionType` / `rateLimitTier`, refreshed from `api.anthropic.com/api/oauth/profile` when OAuth is available, or CLI PTY when the token lives in Keychain); Organization (OAuth profile only); Model, Effort, Permission mode (from `~/.claude/settings.json`); Total cost (USD), Today msgs (from `~/.claude/stats-cache.json` `dailyActivity`). Live rate limits and extra spend come from `AgentUsageSnapshot` on the summary (OAuth API or CLI PTY), not account fields.
   - **Codex**: Logged in, Account (name from JWT), Plan, Plan until (from `~/.codex/auth.json` `id_token` payload, re-read on async refresh); Model, Personality, Reasoning effort (from `~/.codex/config.toml`); Week threads, Total threads (from `~/.codex/state_5.sqlite`).
   - **OpenCode**: Config dir presence (from `~/.config/opencode`).
+  - **Pi**: Logged in (presence of `~/.pi/agent/sessions/`). Sessions are scanned from `~/.pi/agent/sessions/--<workdir>--/<timestamp>_<uuid>.jsonl`; resume uses `pi --session <id>`. No lifecycle hooks; live binding falls back to terminal command detection (`pi` as first token).
 - `AgentSessionSummary.title` uses provider-stored titles when available, otherwise `"Unknown"`.
 - `AgentSessionSummary.transcript_size_bytes` reports transcript file size when the host scan has a local file path.
 - `AgentGitSummary.worktree` is populated for Claude when the encoded project path includes `--claude-worktrees-<name>`.

@@ -3,6 +3,7 @@ use crate::agent_claude;
 use crate::agent_codex;
 use crate::agent_installed;
 use crate::agent_opencode;
+use crate::agent_pi;
 use crate::agent_setup::setup_summary;
 use crate::agent_utils::{
     capabilities, display_name, first_non_empty_line, program_name, shell_quote,
@@ -20,10 +21,11 @@ pub use crate::agent_utils::home_path;
 const AGENT_SESSION_DEFAULT_LIMIT: u32 = 50;
 const AGENT_SESSION_MAX_LIMIT: u32 = 200;
 
-pub const MANAGED_AGENT_KINDS: [ManagedAgentKind; 3] = [
+pub const MANAGED_AGENT_KINDS: [ManagedAgentKind; 4] = [
     ManagedAgentKind::Claude,
     ManagedAgentKind::Codex,
     ManagedAgentKind::OpenCode,
+    ManagedAgentKind::Pi,
 ];
 
 pub fn default_agent_session_limit() -> usize {
@@ -142,7 +144,7 @@ fn degraded_agent_summary(kind: ManagedAgentKind, workdir: &Path) -> AgentSummar
             code: "session_scan_panicked".to_string(),
             message: "agent session scan crashed; counts unavailable".to_string(),
         }],
-        account: account_summary(kind),
+        account: account_summary(kind, workdir),
         usage: None,
     }
 }
@@ -234,6 +236,7 @@ pub fn resume_launch_command(kind: ManagedAgentKind, session_id: &str) -> Option
         ManagedAgentKind::Claude => format!("claude --resume {quoted}"),
         ManagedAgentKind::Codex => format!("codex resume {quoted}"),
         ManagedAgentKind::OpenCode => format!("opencode --session {quoted}"),
+        ManagedAgentKind::Pi => format!("pi --session {quoted}"),
     })
 }
 
@@ -249,6 +252,7 @@ pub fn normalize_event(
         ManagedAgentKind::Claude => agent_claude::normalize_event(event_name),
         ManagedAgentKind::Codex => agent_codex::normalize_event(event_name),
         ManagedAgentKind::OpenCode => agent_opencode::normalize_event(event_name),
+        ManagedAgentKind::Pi => agent_pi::normalize_event(event_name),
     }
 }
 
@@ -257,6 +261,7 @@ pub fn managed_kind_from_slug(raw: &str) -> Option<ManagedAgentKind> {
         "claude" => Some(ManagedAgentKind::Claude),
         "codex" => Some(ManagedAgentKind::Codex),
         "opencode" | "open-code" | "open_code" => Some(ManagedAgentKind::OpenCode),
+        "pi" => Some(ManagedAgentKind::Pi),
         _ => None,
     }
 }
@@ -316,7 +321,7 @@ fn agent_summary_scan(kind: ManagedAgentKind, workdir: &Path) -> AgentSummary {
         updated_at: now,
         data_sources,
         warnings,
-        account: account_summary(kind),
+        account: account_summary(kind, workdir),
         usage: None,
     }
 }
@@ -370,6 +375,17 @@ fn session_counts_for_kind(
                 provider_project_id: c.provider_project_id,
             })
         }
+        ManagedAgentKind::Pi => {
+            let c = agent_pi::session_counts(workdir)?;
+            Ok(SessionCounts {
+                total: c.total,
+                resumable: c.resumable,
+                latest_session_id: c.latest_session_id,
+                latest_session_title: c.latest_session_title,
+                last_activity_at: c.last_activity_at,
+                provider_project_id: None,
+            })
+        }
     }
 }
 
@@ -386,6 +402,7 @@ fn sessions_for_kind_blocking(
         ManagedAgentKind::Claude => agent_claude::sessions(workdir, &cli, limit),
         ManagedAgentKind::Codex => agent_codex::sessions(workdir, &cli, limit),
         ManagedAgentKind::OpenCode => agent_opencode::sessions(workdir, &cli, limit),
+        ManagedAgentKind::Pi => agent_pi::sessions(workdir, &cli, limit),
     }?;
     let total = u32::try_from(sessions.1).unwrap_or(u32::MAX);
     sessions
@@ -430,6 +447,7 @@ fn agent_list_cli_summary(kind: ManagedAgentKind, workdir: &Path) -> AgentCliSum
         ManagedAgentKind::Claude => agent_claude::cli_available(workdir),
         ManagedAgentKind::Codex => agent_codex::cli_available(),
         ManagedAgentKind::OpenCode => agent_opencode::cli_available(),
+        ManagedAgentKind::Pi => agent_pi::cli_available(),
     };
     if available {
         AgentCliSummary {
@@ -532,6 +550,7 @@ fn terminal_matches(kind: ManagedAgentKind, meta: &HostTermMetaSnapshot) -> bool
         ManagedAgentKind::Claude => "claude",
         ManagedAgentKind::Codex => "codex",
         ManagedAgentKind::OpenCode => "opencode",
+        ManagedAgentKind::Pi => "pi",
     };
     meta.icon_name
         .as_deref()
@@ -548,6 +567,11 @@ fn command_mentions(kind: ManagedAgentKind, command: &str) -> bool {
         ManagedAgentKind::Claude => low.contains("claude"),
         ManagedAgentKind::Codex => low.contains("codex"),
         ManagedAgentKind::OpenCode => low.contains("opencode") || low.contains("open-code"),
+        ManagedAgentKind::Pi => low
+            .split_whitespace()
+            .next()
+            .map(|first| first == "pi" || first.ends_with("/pi"))
+            .unwrap_or(false),
     }
 }
 
@@ -566,6 +590,7 @@ fn infer_session_id(kind: ManagedAgentKind, meta: &HostTermMetaSnapshot) -> Opti
         ManagedAgentKind::OpenCode => {
             value_after_flag(&tokens, "--session").or_else(|| value_after_flag(&tokens, "-s"))
         }
+        ManagedAgentKind::Pi => value_after_flag(&tokens, "--session"),
     }
 }
 
@@ -596,11 +621,13 @@ fn lifecycle_from_shell(state: HostShellState) -> AgentLifecycleStatus {
 // Account snapshot dispatch
 // ---------------------------------------------------------------------------
 
-fn account_summary(kind: ManagedAgentKind) -> AgentAccountSummary {
+fn account_summary(kind: ManagedAgentKind, workdir: &Path) -> AgentAccountSummary {
     let fields = match kind {
         ManagedAgentKind::Claude => agent_claude::account_fields(),
         ManagedAgentKind::Codex => agent_codex::account_fields(),
         ManagedAgentKind::OpenCode => agent_opencode::account_fields(),
+        // Pi merges global + project (`<workdir>/.pi`) config, so it needs the workdir.
+        ManagedAgentKind::Pi => agent_pi::account_fields(workdir),
     };
     AgentAccountSummary { fields }
 }
@@ -609,6 +636,7 @@ pub async fn scan_account_plans() -> HashMap<ManagedAgentKind, Vec<AgentInfoFiel
     let claude = tokio::spawn(agent_claude::fetch_subscription_plan());
     let codex = tokio::task::spawn_blocking(agent_codex::subscription_plan_fields);
     let opencode = tokio::task::spawn_blocking(agent_opencode::subscription_plan_fields);
+    let pi = tokio::task::spawn_blocking(agent_pi::subscription_plan_fields);
 
     let mut out = HashMap::new();
     if let Ok(Some(fields)) = claude.await {
@@ -619,6 +647,9 @@ pub async fn scan_account_plans() -> HashMap<ManagedAgentKind, Vec<AgentInfoFiel
     }
     if let Ok(Some(fields)) = opencode.await {
         out.insert(ManagedAgentKind::OpenCode, fields);
+    }
+    if let Ok(Some(fields)) = pi.await {
+        out.insert(ManagedAgentKind::Pi, fields);
     }
     out
 }
@@ -649,6 +680,7 @@ pub async fn scan_account_usage() -> HashMap<ManagedAgentKind, AgentUsageSnapsho
     let claude = tokio::spawn(agent_claude::fetch_account_usage());
     let codex = tokio::spawn(agent_codex::fetch_account_usage());
     let opencode = tokio::task::spawn_blocking(agent_opencode::fetch_account_usage);
+    let pi = tokio::task::spawn_blocking(agent_pi::fetch_account_usage);
 
     let mut out = HashMap::new();
     if let Ok(Some(snap)) = claude.await {
@@ -659,6 +691,9 @@ pub async fn scan_account_usage() -> HashMap<ManagedAgentKind, AgentUsageSnapsho
     }
     if let Ok(Some(snap)) = opencode.await {
         out.insert(ManagedAgentKind::OpenCode, snap);
+    }
+    if let Ok(Some(snap)) = pi.await {
+        out.insert(ManagedAgentKind::Pi, snap);
     }
     out
 }
@@ -691,6 +726,10 @@ mod tests {
         assert_eq!(
             resume_launch_command(ManagedAgentKind::OpenCode, "ses_123").as_deref(),
             Some("opencode --session ses_123")
+        );
+        assert_eq!(
+            resume_launch_command(ManagedAgentKind::Pi, "abc-def").as_deref(),
+            Some("pi --session abc-def")
         );
     }
 

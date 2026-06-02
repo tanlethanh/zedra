@@ -606,6 +606,7 @@ fn managed_agent_command_hint(kind: ManagedAgentKind) -> &'static str {
         ManagedAgentKind::Claude => "claude",
         ManagedAgentKind::Codex => "codex",
         ManagedAgentKind::OpenCode => "opencode",
+        ManagedAgentKind::Pi => "pi",
     }
 }
 
