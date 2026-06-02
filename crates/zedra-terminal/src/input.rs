@@ -3,7 +3,7 @@ use std::ops::Range;
 use gpui::*;
 use smallvec::SmallVec;
 
-use crate::keyboard_accessory::TerminalKeyboardAccessoryAction;
+use crate::keyboard_accessory::AccessoryKey;
 use crate::selection::TerminalSelectionDocument;
 use crate::terminal::Terminal;
 
@@ -1075,8 +1075,7 @@ impl InputHandler for TerminalInputHandler {
         _window: &mut Window,
         cx: &mut App,
     ) -> bool {
-        let Some(keystroke) =
-            TerminalKeyboardAccessoryAction::from_name(action).map(|action| action.keystroke())
+        let Some(keystroke) = AccessoryKey::from_name(action).map(|action| action.keystroke())
         else {
             return false;
         };

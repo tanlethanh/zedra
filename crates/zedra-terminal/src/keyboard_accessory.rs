@@ -4,7 +4,7 @@ use gpui::{Keystroke, Modifiers};
 use crate::keys::to_esc_str;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TerminalKeyboardAccessoryAction {
+pub enum AccessoryKey {
     Escape,
     Tab,
     Left,
@@ -15,7 +15,7 @@ pub enum TerminalKeyboardAccessoryAction {
     ShiftEnter,
 }
 
-impl TerminalKeyboardAccessoryAction {
+impl AccessoryKey {
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name {
             "escape" => Self::Escape,
@@ -62,7 +62,7 @@ impl TerminalKeyboardAccessoryAction {
 
 #[cfg(test)]
 mod tests {
-    use super::TerminalKeyboardAccessoryAction;
+    use super::AccessoryKey;
 
     #[test]
     fn parses_terminal_keyboard_accessory_actions() {
@@ -76,9 +76,9 @@ mod tests {
             "enter",
             "shift_enter",
         ] {
-            assert!(TerminalKeyboardAccessoryAction::from_name(name).is_some());
+            assert!(AccessoryKey::from_name(name).is_some());
         }
-        assert_eq!(TerminalKeyboardAccessoryAction::from_name("unknown"), None);
+        assert_eq!(AccessoryKey::from_name("unknown"), None);
     }
 
     #[test]
@@ -95,7 +95,7 @@ mod tests {
         ];
 
         for (name, expected) in cases {
-            let bytes = TerminalKeyboardAccessoryAction::from_name(name)
+            let bytes = AccessoryKey::from_name(name)
                 .and_then(|action| action.legacy_bytes())
                 .unwrap();
             assert_eq!(bytes, expected);

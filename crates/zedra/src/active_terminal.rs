@@ -12,7 +12,7 @@ use std::sync::{Mutex, OnceLock};
 
 use tokio::sync::mpsc;
 use tracing::warn;
-use zedra_terminal::TerminalKeyboardAccessoryAction;
+use zedra_terminal::AccessoryKey;
 
 #[derive(Clone)]
 struct ActiveInput {
@@ -68,8 +68,7 @@ pub fn send_to_active(data: Vec<u8>) -> bool {
 
 /// Map a native accessory key name and send it to the active terminal.
 pub fn send_named_key(key_name: &str) -> bool {
-    let Some(bytes) = TerminalKeyboardAccessoryAction::from_name(key_name)
-        .and_then(|action| action.legacy_bytes())
+    let Some(bytes) = AccessoryKey::from_name(key_name).and_then(|action| action.legacy_bytes())
     else {
         return false;
     };
