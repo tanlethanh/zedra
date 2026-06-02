@@ -35,8 +35,9 @@ use crate::workspace_action::{self, GoHome, OpenFileSearch, OpenQuickAction, Req
 use crate::workspace_action::{
     AddSelectionToChat, CloseDrawer, CloseTerminal, CreateAgent, CreateNewTerminal, GitCommit,
     GitShowItemActions, GitStage, GitUnstage, HideConnecting, NavigateBack, OpenAgentDetail,
-    OpenAgentManage, OpenAgentSessions, OpenFile, OpenGitDiff, OpenTerminal, RestartConnection,
-    ResumeAgentSession, ShowConnecting, SpawnAgentTerminal, ToggleDrawer,
+    OpenAgentManage, OpenAgentSessions, OpenDrawer, OpenFile, OpenGitDiff, OpenTerminal,
+    RestartConnection, ResumeAgentSession, RevealInFileExplorer, ShowConnecting,
+    SpawnAgentTerminal, ToggleDrawer,
 };
 use crate::workspace_connecting::WorkspaceConnecting;
 use crate::workspace_drawer::WorkspaceDrawer;
@@ -1282,6 +1283,17 @@ impl Workspace {
         });
     }
 
+    fn handle_open_drawer(
+        &mut self,
+        _action: &OpenDrawer,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!("handle OpenDrawer from workspace");
+        self.drawer_host
+            .update(cx, |host, cx| host.open_with_window(window, cx));
+    }
+
     fn handle_close_drawer(
         &mut self,
         _action: &CloseDrawer,
@@ -1345,6 +1357,18 @@ impl Workspace {
 
     fn open_file_in_editor(&mut self, path: String, cx: &mut Context<Self>) {
         self.navigate_to(WorkspaceMainView::File { path }, cx);
+    }
+
+    fn handle_reveal_in_file_explorer(
+        &mut self,
+        action: &RevealInFileExplorer,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!("handle RevealInFileExplorer from workspace");
+        self.drawer.update(cx, |drawer, cx| {
+            drawer.reveal_path(action.path.clone(), window, cx)
+        });
     }
 
     /// Forward navigation: push route onto the nav stack and apply the view.
@@ -2392,11 +2416,13 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_open_file_search))
             .on_action(cx.listener(Self::handle_request_disconnect))
             .on_action(cx.listener(Self::handle_toggle_drawer))
+            .on_action(cx.listener(Self::handle_open_drawer))
             .on_action(cx.listener(Self::handle_close_drawer))
             .on_action(cx.listener(Self::handle_show_connecting))
             .on_action(cx.listener(Self::handle_hide_connecting))
             .on_action(cx.listener(Self::handle_restart_connection))
             .on_action(cx.listener(Self::handle_open_file))
+            .on_action(cx.listener(Self::handle_reveal_in_file_explorer))
             .on_action(cx.listener(Self::handle_add_selection_to_chat))
             .on_action(cx.listener(Self::handle_open_git_diff))
             .on_action(cx.listener(Self::handle_git_stage))

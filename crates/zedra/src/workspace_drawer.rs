@@ -136,6 +136,16 @@ impl WorkspaceDrawer {
         cx.notify();
     }
 
+    pub fn reveal_path(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.current_tab = DrawerTab::FileExplorer;
+        self.file_display_mode = FileDisplayMode::Explorer;
+        self.file_explorer.update(cx, |file_explorer, cx| {
+            file_explorer.reveal_path(path, window, cx)
+        });
+        self.record_current_view();
+        cx.notify();
+    }
+
     fn set_file_display_mode(&mut self, mode: FileDisplayMode, cx: &mut Context<Self>) {
         if self.file_display_mode == mode {
             if mode == FileDisplayMode::DocsTree {

@@ -181,15 +181,19 @@ impl FileSearchPanel {
             .gap(px(8.0))
             .cursor_pointer()
             .on_press(cx.listener(move |_this, _event, window, cx| {
-                // Directories cannot be opened in the editor; ignore taps on them.
-                if is_dir {
-                    return;
-                }
                 window.hide_soft_keyboard();
                 window.dispatch_action(
-                    workspace_action::OpenFile { path: path.clone() }.boxed_clone(),
+                    workspace_action::RevealInFileExplorer { path: path.clone() }.boxed_clone(),
                     cx,
                 );
+                if is_dir {
+                    window.dispatch_action(workspace_action::OpenDrawer.boxed_clone(), cx);
+                } else {
+                    window.dispatch_action(
+                        workspace_action::OpenFile { path: path.clone() }.boxed_clone(),
+                        cx,
+                    );
+                }
                 cx.emit(FileSearchEvent::Close);
             }))
             .child(
