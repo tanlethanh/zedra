@@ -31,7 +31,7 @@ use nucleo_matcher::{Config, Matcher, Utf32Str};
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -728,8 +728,13 @@ fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> 
         let match_path = path
             .strip_prefix(root)
             .unwrap_or(path.as_path())
-            .to_string_lossy()
-            .into_owned();
+            .components()
+            .filter_map(|component| match component {
+                Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("/");
         candidates.push(FileSearchCandidate {
             path,
             is_dir: file_type.is_dir(),
@@ -2106,6 +2111,7 @@ async fn dispatch(
         }
 
         ZedraMessage::FsSearch(msg) => {
+            session.rpc_fs_reads.fetch_add(1, Ordering::Relaxed);
             let path = match resolve_path(&state.workdir, &msg.path) {
                 Ok(p) => p,
                 Err(e) => {

@@ -544,6 +544,10 @@ Any protocol-layer change must include all applicable steps:
   variants) tracked in issue #140.
 - Added `Hermes` managed agent kind and `AgentFiles(AgentFilesReq) ->
   AgentFilesResult`.
+- Added `FsSearch(FsSearchReq) -> FsSearchResult` with
+  `FS_SEARCH_DEFAULT_LIMIT` / `FS_SEARCH_MAX_LIMIT`; `limit = 0` uses the
+  default, oversized limits are clamped, `truncated` reports capped results, and
+  `match_indices` identify host-scored character positions in `rel_path`.
 - ALPN bumped to `zedra/rpc/3`.
 
 ### 2026-04-29

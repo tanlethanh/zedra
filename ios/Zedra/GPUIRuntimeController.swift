@@ -159,13 +159,12 @@ final class GPUIRuntimeController: NSObject {
     }
 
     private func sendKeyboardAccessoryKey(_ key: String) {
-        if key == "dismiss_keyboard" {
-            guard let gpuiWindow else { return }
-            gpui_ios_hide_keyboard(gpuiWindow)
-            return
-        }
+        guard let gpuiWindow else { return }
         key.withCString { action in
             _ = gpui_ios_handle_keyboard_accessory_action(gpuiWindow, action)
+        }
+        if key == "dismiss_keyboard" {
+            gpui_ios_hide_keyboard(gpuiWindow)
         }
     }
 

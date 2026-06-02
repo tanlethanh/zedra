@@ -835,12 +835,21 @@ impl EntityInputHandler for Input {
             return;
         }
 
+        let range = self.active_replacement_range(range_utf16);
         if !self.multiline && text.chars().any(|ch| ch == '\n' || ch == '\r') {
-            self.submit(window, cx);
+            if !text.is_empty() && text.chars().all(|ch| ch == '\n' || ch == '\r') {
+                self.submit(window, cx);
+                return;
+            }
+
+            let text = text
+                .chars()
+                .map(|ch| if ch == '\n' || ch == '\r' { ' ' } else { ch })
+                .collect::<String>();
+            self.replace_range_with_text(range, &text, cx);
             return;
         }
 
-        let range = self.active_replacement_range(range_utf16);
         self.replace_range_with_text(range, text, cx);
     }
 

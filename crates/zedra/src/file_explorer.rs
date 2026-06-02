@@ -183,6 +183,7 @@ impl FileExplorer {
             self.expand_ancestors(&index_path, cx);
             self.scroll_to_entry_path(&target_path);
             cx.notify();
+            return;
         }
 
         let Some(path_chain) = reveal_path_chain(&target_path, &self.workdir) else {

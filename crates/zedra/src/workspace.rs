@@ -1213,7 +1213,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         info!("handle OpenFileSearch from workspace");
-        self.file_search_prev_focus = window.focused(cx);
+        if !self.file_search_open {
+            self.file_search_prev_focus = window.focused(cx);
+        }
         self.file_search_open = true;
         self.file_search
             .update(cx, |panel, cx| panel.open(window, cx));

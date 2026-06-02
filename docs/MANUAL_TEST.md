@@ -189,9 +189,9 @@
 9. Expected: only the file row for the active main workspace view is highlighted, and the highlight spans the full file explorer width
 10. Open a git diff or terminal as the main workspace view, then reopen the file explorer
 11. Expected: the file row highlight clears because the active main workspace view is no longer that file
-12. Type part of a file or folder name that is not currently loaded in the expanded File Explorer tree
-13. Expected: the host searches recursively and the list shows fuzzy matching files and folders case-insensitively, without expanding or collapsing the underlying tree
-14. Tap the clear button in the search field
+12. Open the floating file search and type part of a file or folder name that is not currently loaded in the expanded File Explorer tree
+13. Expected: the host searches recursively and the floating results show fuzzy matching files and folders case-insensitively, without expanding or collapsing the underlying tree
+14. Clear the floating search with its clear control or `Esc`
 15. Expected: the previous browsing context returns with the same expanded directories, loaded rows, and active file highlight
 16. Expected: before syntax highlighting appears, code text uses a subtly dim foreground; when highlighting applies, text rows do not jump, reorder, or visibly reload
 

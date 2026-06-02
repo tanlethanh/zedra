@@ -527,14 +527,14 @@ pub struct FsListResult {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FsSearchReq {
     pub path: String,
     pub query: String,
     pub limit: u32,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FsSearchResult {
     pub entries: Vec<FsSearchEntry>,
     pub truncated: bool,
@@ -544,7 +544,7 @@ pub struct FsSearchResult {
 /// A single fuzzy-search hit. `match_indices` are the host matcher's matched
 /// character positions into `rel_path`, so the client highlights exactly what
 /// the host scored instead of re-running a divergent matcher.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FsSearchEntry {
     /// Absolute path, used to open the file.
     pub path: String,
@@ -1543,6 +1543,37 @@ mod tests {
         assert_eq!(decoded.terminals[0].position, 0);
         assert_eq!(decoded.terminals[0].last_seq, 42);
         assert_eq!(decoded.terminals[0].icon_name.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn fs_search_wire_types_roundtrip() {
+        let req = FsSearchReq {
+            path: ".".into(),
+            query: "fsr".into(),
+            limit: 20,
+        };
+        let encoded = postcard::to_allocvec(&req).unwrap();
+        let decoded: FsSearchReq = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded, req);
+
+        let entry = FsSearchEntry {
+            path: "/repo/src/file_search.rs".into(),
+            rel_path: "src/file_search.rs".into(),
+            is_dir: false,
+            match_indices: vec![4, 5, 6],
+        };
+        let encoded = postcard::to_allocvec(&entry).unwrap();
+        let decoded: FsSearchEntry = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded, entry);
+
+        let result = FsSearchResult {
+            entries: vec![entry],
+            truncated: true,
+            error: Some("fixture".into()),
+        };
+        let encoded = postcard::to_allocvec(&result).unwrap();
+        let decoded: FsSearchResult = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded, result);
     }
 
     #[test]
