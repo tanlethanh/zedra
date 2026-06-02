@@ -249,10 +249,14 @@ impl AgentCache {
         let needed = agent::agent_session_limit(limit) as u32;
         {
             let inner = self.inner.lock().await;
-            if inner
-                .workdir
-                .as_deref()
-                .is_some_and(|cached| cached == workdir)
+            // Global agents (Hermes) scan workspace-independent data, so their
+            // retained session cache is valid even when the cached workdir
+            // differs after a workspace switch.
+            if agent::is_global(kind)
+                || inner
+                    .workdir
+                    .as_deref()
+                    .is_some_and(|cached| cached == workdir)
             {
                 if let Some(cached) = inner.sessions.get(&kind) {
                     if cached.limit >= needed {
@@ -533,11 +537,13 @@ impl AgentCache {
 impl CachedAgentData {
     /// Workdir-scoped caches (`agents`, `sessions`) are keyed only by agent
     /// kind, so when the workdir changes they must be dropped or a later
-    /// lookup would serve results from the previous workdir.
+    /// lookup would serve results from the previous workdir. Global agents
+    /// (Hermes) scan workspace-independent data, so their session cache stays
+    /// valid across a workdir change and is retained.
     fn invalidate_if_workdir_changed(&mut self, workdir: &Path) {
         if self.workdir.as_deref() != Some(workdir) {
             self.agents = None;
-            self.sessions.clear();
+            self.sessions.retain(|kind, _| agent::is_global(*kind));
             self.cli_versions.clear();
         }
     }

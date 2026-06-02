@@ -12,13 +12,13 @@ use crate::button::{
     NativeFloatingButtonId, hide_native_floating_button, native_floating_button,
     native_floating_button_id,
 };
+use crate::file_preview_view::FilePreviewView;
 use crate::platform_bridge::{
     self, CustomSheetDetent, CustomSheetOptions, HapticFeedback, NativeDictationPreviewOptions,
     NativeEditMenuItem,
 };
 use crate::settings::{ThemeStateEvent, theme_state as theme_entity};
 use crate::telemetry::view_telemetry;
-use crate::terminal_preview_view::TerminalPreviewView;
 use crate::terminal_state::TerminalState;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
 
@@ -39,7 +39,7 @@ pub struct WorkspaceTerminal {
     terminal_state: Entity<TerminalState>,
     session_handle: SessionHandle,
     terminal_view: Entity<TerminalView>,
-    preview: Entity<TerminalPreviewView>,
+    preview: Entity<FilePreviewView>,
     /// Tracks whether the active terminal is in alt-screen mode (vim, opencode, etc.).
     /// Updated via AltScreenChanged event — never read via terminal_view.read(cx) in render
     /// to avoid creating a GPUI dependency that causes re-render cascades.
@@ -212,9 +212,8 @@ impl WorkspaceTerminal {
         terminal_view.update(cx, |terminal_view, _cx| {
             terminal_view.set_workdir(Some(workdir.clone()));
         });
-        let preview = cx.new(|cx| {
-            TerminalPreviewView::new(session_handle.clone(), workspace_state.clone(), cx)
-        });
+        let preview =
+            cx.new(|cx| FilePreviewView::new(session_handle.clone(), workspace_state.clone(), cx));
         let terminal_events_sub =
             cx.subscribe(&terminal_view, |this, _terminal, event, cx| match event {
                 TerminalEvent::RequestResize { cols, rows } => {

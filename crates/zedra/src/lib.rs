@@ -30,6 +30,7 @@ pub mod settings_view;
 
 // Semantic components
 pub mod file_explorer;
+pub mod file_preview_view;
 pub mod git_panel;
 pub mod quick_action_panel;
 pub mod session_panel;
@@ -38,7 +39,6 @@ pub mod sheet_demo_view;
 pub mod sheet_host_view;
 pub mod terminal_card;
 pub mod terminal_panel;
-pub mod terminal_preview_view;
 pub mod terminal_state;
 pub mod transport_badge;
 

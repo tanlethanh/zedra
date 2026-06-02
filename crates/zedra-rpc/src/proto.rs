@@ -190,13 +190,18 @@ pub enum ZedraProto {
     /// gated on the client by `host_version`.
     #[rpc(tx = oneshot::Sender<TermCreateResult>)]
     TermCreateV2(TermCreateReqV2),
+
+    /// Read an agent's host-side config/memory files (read-only).
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<AgentFilesResult>)]
+    AgentFiles(AgentFilesReq),
 }
 
 // ---------------------------------------------------------------------------
 // ALPN protocol identifier
 // ---------------------------------------------------------------------------
 
-pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/2";
+pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/3";
 
 /// Default page size for `FsList` requests (host uses this when `limit == 0`).
 pub const FS_LIST_DEFAULT_LIMIT: u32 = 50;
@@ -962,12 +967,22 @@ pub struct AiPromptResult {
 // Managed AI agent types
 // ---------------------------------------------------------------------------
 
+/// Managed agent kind.
+///
+/// Wire form is a bare postcard varint discriminant. postcard is not
+/// self-describing, so a discriminant a build lacks fails decode and bricks the
+/// whole enclosing response. Cross-version skew is gated by `ZEDRA_ALPN`: a host
+/// and client only connect on a matching protocol version, so within a version
+/// the variant set is fixed. Append new known variants only; never reorder or
+/// remove, and bump the ALPN when the set changes. A non-versioned forward-compat
+/// decoding scheme is tracked in `docs/PROTOCOL_SPECS.md` §2.4 (issue #140).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum ManagedAgentKind {
     Claude,
     Codex,
     OpenCode,
     Pi,
+    Hermes,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1065,6 +1080,31 @@ pub struct AgentAccountSummary {
 pub struct AgentInfoField {
     pub label: String,
     pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentFilesReq {
+    pub kind: ManagedAgentKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct AgentFilesResult {
+    pub files: Vec<AgentFile>,
+    pub error: Option<String>,
+}
+
+/// One host-side config/memory file exposed read-only to the client.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentFile {
+    /// Human label for the UI (e.g. "SOUL.md").
+    pub label: String,
+    /// Absolute host path, for display/context.
+    pub path: String,
+    /// File contents, capped host-side; `truncated` flags when clipped.
+    pub content: String,
+    pub truncated: bool,
+    /// True when the file is absent on the host (content empty).
+    pub missing: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1185,7 +1225,7 @@ pub struct AgentGitSummary {
     pub pr_repository: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AgentUsageSnapshot {
     pub context_used_percent: Option<f32>,
     pub total_cost_usd: Option<f64>,
