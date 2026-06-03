@@ -438,7 +438,25 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeKeyboardAccessoryKe
             return;
         }
     };
-    crate::active_terminal::send_named_key(&key_name);
+    let handled = gpui_android::with_platform(|platform| {
+        platform.handle_keyboard_accessory_action(&key_name)
+    })
+    .unwrap_or(false);
+    if !handled {
+        tracing::debug!(
+            action = key_name.as_str(),
+            "jni: keyboard accessory action was not handled"
+        );
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeKeyboardAccessoryVisible(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jboolean {
+    gpui_android::with_platform(|platform| platform.has_active_keyboard_accessory())
+        .unwrap_or(false) as jboolean
 }
 
 #[unsafe(no_mangle)]

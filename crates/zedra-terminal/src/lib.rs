@@ -1,5 +1,6 @@
 pub mod element;
 pub mod input;
+pub mod keyboard_accessory;
 pub mod keys;
 mod selection;
 pub mod terminal;
@@ -8,6 +9,7 @@ pub mod view;
 
 pub use element::{TerminalElement, TerminalElementLayout};
 pub use input::*;
+pub use keyboard_accessory::*;
 pub use keys::*;
 pub use terminal::*;
 pub use theme::{AnsiPalette, TerminalTheme};

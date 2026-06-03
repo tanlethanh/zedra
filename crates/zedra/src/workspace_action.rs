@@ -13,6 +13,12 @@ pub struct OpenFile {
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
+pub struct RevealInFileExplorer {
+    pub path: String,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
 pub struct AddSelectionToChat;
 
 #[derive(Clone, PartialEq, Action)]
@@ -140,7 +146,15 @@ pub struct ToggleDrawer;
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
+pub struct OpenDrawer;
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
 pub struct OpenQuickAction;
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct OpenFileSearch;
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]

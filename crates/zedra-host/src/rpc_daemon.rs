@@ -26,10 +26,12 @@ use crate::session_registry::{
 };
 use crate::utils;
 use anyhow::Result;
+use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo_matcher::{Config, Matcher, Utf32Str};
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -439,6 +441,53 @@ mod terminal_meta_preamble_tests {
     }
 }
 
+#[cfg(test)]
+mod file_search_tests {
+    use super::*;
+    use std::fs::{create_dir_all, write};
+
+    #[test]
+    fn file_search_finds_names_below_root_and_respects_gitignore() {
+        let temp = tempfile::tempdir().unwrap();
+        create_dir_all(temp.path().join(".git")).unwrap();
+        create_dir_all(temp.path().join("src/nested")).unwrap();
+        create_dir_all(temp.path().join("ignored")).unwrap();
+        write(temp.path().join(".gitignore"), "ignored/\n").unwrap();
+        write(temp.path().join("src/search_panel.rs"), "match").unwrap();
+        write(temp.path().join("src/nested/other.rs"), "skip").unwrap();
+        write(temp.path().join("ignored/search_hidden.rs"), "skip").unwrap();
+
+        let result = search_files(&temp.path().canonicalize().unwrap(), "SEARCH", 10).unwrap();
+
+        let hit = result
+            .entries
+            .iter()
+            .find(|entry| entry.path.ends_with("src/search_panel.rs"))
+            .expect("expected search_panel.rs match");
+        // Host-supplied match indices are sorted and reference rel_path.
+        assert!(!hit.match_indices.is_empty());
+        assert!(hit.match_indices.windows(2).all(|w| w[0] < w[1]));
+        assert!(*hit.match_indices.last().unwrap() < hit.rel_path.chars().count() as u32);
+        assert!(result
+            .entries
+            .iter()
+            .all(|entry| !entry.path.contains("ignored/search_hidden.rs")));
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn file_search_reports_truncation_when_limit_is_hit() {
+        let temp = tempfile::tempdir().unwrap();
+        write(temp.path().join("search_a.rs"), "a").unwrap();
+        write(temp.path().join("search_b.rs"), "b").unwrap();
+
+        let result = search_files(&temp.path().canonicalize().unwrap(), "search", 1).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert!(result.truncated);
+    }
+}
+
 #[allow(unused)]
 fn short_key(key: &[u8; 32]) -> String {
     key[..4].iter().map(|b| format!("{b:02x}")).collect()
@@ -588,6 +637,161 @@ fn fs_dir_fingerprint(workdir: &Path, rel_path: &str) -> Option<u64> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     rows.hash(&mut hasher);
     Some(hasher.finish())
+}
+
+fn fs_search_limit(limit: u32) -> usize {
+    (if limit == 0 {
+        FS_SEARCH_DEFAULT_LIMIT
+    } else {
+        limit.min(FS_SEARCH_MAX_LIMIT)
+    }) as usize
+}
+
+fn is_file_search_ignored(entry: &ignore::DirEntry) -> bool {
+    // Only filter directories; matched files should still surface as results.
+    if !entry
+        .file_type()
+        .is_some_and(|file_type| file_type.is_dir())
+    {
+        return false;
+    }
+    let Some(name) = entry.file_name().to_str() else {
+        return false;
+    };
+    // Reuse the canonical generated/vendor directory list shared with the docs
+    // tree so both walkers skip the same noise. Unlike the docs tree, file
+    // search keeps dot-directories (e.g. `.github`) visible.
+    crate::docs_tree::FALLBACK_COMPONENT_IGNORES.contains(&name)
+}
+
+struct FileSearchCandidate {
+    path: PathBuf,
+    is_dir: bool,
+    match_path: String,
+}
+
+fn fs_search_error(message: String) -> FsSearchResult {
+    FsSearchResult {
+        entries: vec![],
+        truncated: false,
+        error: Some(message),
+    }
+}
+
+fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> {
+    let query = query.trim();
+    anyhow::ensure!(!query.is_empty(), "empty search query");
+    anyhow::ensure!(root.is_dir(), "search path must be a directory");
+
+    let limit = fs_search_limit(limit);
+    let mut candidates = Vec::new();
+    let mut visited = 0u32;
+    let mut truncated = false;
+
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder
+        .hidden(false)
+        .follow_links(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .parents(true)
+        .ignore(true);
+    builder.filter_entry(|entry| !is_file_search_ignored(entry));
+
+    for entry in builder.build() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                tracing::debug!("file search: skipping unreadable entry: {error}");
+                continue;
+            }
+        };
+        if entry.path() == root {
+            continue;
+        }
+
+        visited += 1;
+        if visited > FS_SEARCH_MAX_VISITED_ENTRIES {
+            truncated = true;
+            break;
+        }
+
+        let Some(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+
+        let path = entry.path().to_path_buf();
+        let match_path = path
+            .strip_prefix(root)
+            .unwrap_or(path.as_path())
+            .components()
+            .filter_map(|component| match component {
+                Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+        candidates.push(FileSearchCandidate {
+            path,
+            is_dir: file_type.is_dir(),
+            match_path,
+        });
+    }
+
+    let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
+    let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
+    let mut match_buf = Vec::new();
+    let mut ranked = candidates
+        .iter()
+        .filter_map(|candidate| {
+            match_buf.clear();
+            let haystack = Utf32Str::new(candidate.match_path.as_str(), &mut match_buf);
+            pattern
+                .score(haystack, &mut matcher)
+                .map(|score| (score, candidate))
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|(left_score, left), (right_score, right)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| left.match_path.cmp(&right.match_path))
+    });
+
+    if ranked.len() > limit {
+        truncated = true;
+    }
+
+    // Recompute match indices only for the rows we return so the client can
+    // highlight exactly the characters the host scored.
+    let mut indices = Vec::new();
+    let entries = ranked
+        .into_iter()
+        .take(limit)
+        .map(|(_, candidate)| {
+            match_buf.clear();
+            let haystack = Utf32Str::new(candidate.match_path.as_str(), &mut match_buf);
+            indices.clear();
+            pattern.indices(haystack, &mut matcher, &mut indices);
+            indices.sort_unstable();
+            indices.dedup();
+            FsSearchEntry {
+                path: candidate.path.to_string_lossy().into_owned(),
+                rel_path: candidate.match_path.clone(),
+                is_dir: candidate.is_dir,
+                match_indices: indices.clone(),
+            }
+        })
+        .collect();
+
+    Ok(FsSearchResult {
+        entries,
+        truncated,
+        error: None,
+    })
 }
 
 async fn run_observer(session: Arc<ServerSession>, workdir: PathBuf, my_gen: u64) {
@@ -1902,6 +2106,36 @@ async fn dispatch(
                             error: Some(e.to_string()),
                         })
                         .await;
+                }
+            }
+        }
+
+        ZedraMessage::FsSearch(msg) => {
+            session.rpc_fs_reads.fetch_add(1, Ordering::Relaxed);
+            let path = match resolve_path(&state.workdir, &msg.path) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("FsSearch: rejected path {:?}: {}", msg.path, e);
+                    let _ = msg.tx.send(fs_search_error(e.to_string())).await;
+                    return Ok(());
+                }
+            };
+
+            let query = msg.query.clone();
+            let limit = msg.limit;
+            let search_result =
+                tokio::task::spawn_blocking(move || search_files(&path, &query, limit))
+                    .await
+                    .map_err(|error| anyhow::anyhow!("file search task failed: {error}"))
+                    .and_then(|result| result);
+
+            match search_result {
+                Ok(result) => {
+                    let _ = msg.tx.send(result).await;
+                }
+                Err(e) => {
+                    tracing::warn!("FsSearch: search failed for {:?}: {}", msg.path, e);
+                    let _ = msg.tx.send(fs_search_error(e.to_string())).await;
                 }
             }
         }

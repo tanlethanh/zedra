@@ -9,10 +9,11 @@ use zedra_rpc::proto::{
 
 pub const DOCS_TREE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
-const FALLBACK_COMPONENT_IGNORES: &[&str] = &[
+pub(crate) const FALLBACK_COMPONENT_IGNORES: &[&str] = &[
     ".git",
     ".hg",
     ".svn",
+    ".zed",
     "node_modules",
     "bower_components",
     "jspm_packages",

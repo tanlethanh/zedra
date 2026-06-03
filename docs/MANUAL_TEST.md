@@ -189,7 +189,11 @@
 9. Expected: only the file row for the active main workspace view is highlighted, and the highlight spans the full file explorer width
 10. Open a git diff or terminal as the main workspace view, then reopen the file explorer
 11. Expected: the file row highlight clears because the active main workspace view is no longer that file
-12. Expected: before syntax highlighting appears, code text uses a subtly dim foreground; when highlighting applies, text rows do not jump, reorder, or visibly reload
+12. Open the floating file search and type part of a file or folder name that is not currently loaded in the expanded File Explorer tree
+13. Expected: the host searches recursively and the floating results show fuzzy matching files and folders case-insensitively, without expanding or collapsing the underlying tree
+14. Clear the floating search with its clear control or `Esc`
+15. Expected: the previous browsing context returns with the same expanded directories, loaded rows, and active file highlight
+16. Expected: before syntax highlighting appears, code text uses a subtly dim foreground; when highlighting applies, text rows do not jump, reorder, or visibly reload
 
 ## 1c. Docs Tree Display Mode
 
@@ -545,8 +549,10 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 11. Expected: the corresponding arrow input repeats continuously while held and stops immediately on release
 12. Dismiss the keyboard or background the app while holding an accessory arrow
 13. Expected: repeat stops and does not resume when the keyboard or app returns
-14. Tap the already-focused terminal while the keyboard is visible
-15. Expected: the software keyboard dismisses and the next terminal tap reopens it
+14. Open floating file search or the git commit message input while a terminal is visible behind it
+15. Expected: the software keyboard appears without the terminal accessory bar, typing goes to the focused input, and the visible terminal does not resize or shift for that keyboard
+16. Tap the already-focused terminal while the keyboard is visible
+17. Expected: the software keyboard dismisses and the next terminal tap reopens it
 
 ## 11a. Terminal Scroll To Bottom Native Button On iOS
 
@@ -635,6 +641,8 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 5. Expected: the corresponding arrow input repeats continuously while held and stops immediately on release
 6. Start holding an arrow button, then dismiss the keyboard or background the app
 7. Expected: repeat stops and does not resume when the keyboard or app returns
+8. Open floating file search or the git commit message input while a terminal is visible behind it
+9. Expected: the software keyboard appears without the terminal accessory bar, and the visible terminal does not resize or shift for that keyboard
 
 ## 11f. Terminal Keyboard Accessory After Reconnect On iOS
 
@@ -1120,3 +1128,23 @@ Expected:
 4. Expected: UIKit presentation chrome uses light backgrounds and dark text/icons, matching the app theme.
 5. Toggle Appearance back to **Dark** and repeat the same presentations.
 6. Expected: UIKit presentation chrome returns to dark backgrounds and light text/icons without restarting the app.
+
+## Floating File Search (cmd+P)
+
+1. Connect to a workspace and open the drawer on the **Files** tab.
+2. Tap the search (magnifier) icon in the top-right control cluster, above the
+   Explorer / Docs toggle.
+3. Verify a floating panel appears near the top over a dimmed full-screen
+   backdrop, the keyboard opens, and the input is focused.
+4. Type a query: results stream in below the input (name + relative path rows).
+   Confirm "Searching…" shows briefly, then matches; clear the query to return
+   to the "Type to search files" prompt. Matched characters in the relative path
+   are emphasized exactly where the host scored them.
+5. Tap a file result: the panel closes and the file opens in the editor.
+6. Reopen the popup and tap the dim backdrop (or use system back / swipe back):
+   the popup closes without opening anything.
+7. Immediately tap the search icon again (without touching the drawer): the popup
+   reopens. Repeat the dismiss/reopen cycle a few times to confirm it never gets
+   stuck closed.
+8. Confirm the old inline search bar no longer appears at the top of the file
+   explorer list.

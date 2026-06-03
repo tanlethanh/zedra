@@ -213,6 +213,7 @@ challenge is carried by `ConnectResult::Challenge`.
 ## 5.4 Filesystem
 
 - `FsList(FsListReq) -> FsListResult`
+- `FsSearch(FsSearchReq) -> FsSearchResult`
 - `FsRead(FsReadReq) -> FsReadResult`
 - `FsWrite(FsWriteReq) -> FsWriteResult`
 - `FsStat(FsStatReq) -> FsStatResult`
@@ -229,7 +230,7 @@ Most result structs carry `error: Option<String>`. When set, the operation faile
 - Never silently ignore a set `error` — propagate as `Err` or show in UI.
 
 Result types that carry `error: Option<String>`:
-`FsListResult`, `FsReadResult`, `FsStatResult`, `SessionSwitchResult`, `TermCreateResult`,
+`FsListResult`, `FsSearchResult`, `FsReadResult`, `FsStatResult`, `SessionSwitchResult`, `TermCreateResult`,
 `GitStatusResult`, `GitDiffResult`, `GitLogResult`, `GitCommitResult`, `GitStageResult`,
 `GitUnstageResult`, `GitBranchesResult`, `AgentListResult`, `AgentSessionsResult`,
 `AgentResumeResult`, `LspDiagnosticsResult`.
@@ -248,6 +249,15 @@ Types that use non-string status fields or enum variants instead:
 - `offset` is zero-based index into stable listing order returned by host.
 - `limit` is clamped by host to `FS_LIST_DEFAULT_LIMIT` when necessary.
 - `has_more` indicates additional entries exist after this page.
+
+### FsSearch conventions
+
+- `path` is the workspace-relative directory to search from; clients usually send `"."`.
+- `query` fuzzy-matches file and directory paths case-insensitively. File contents are never read.
+- The host walks recursively with gitignore/global ignore support, does not follow symlink directories, and skips common generated directories such as `.git`, `node_modules`, `target`, `dist`, and `build`.
+- Each `FsSearchEntry` carries `rel_path` (search-root-relative) and `match_indices`: the host matcher's matched character positions into `rel_path`, sorted and deduplicated. Clients highlight using these indices rather than re-running a separate matcher.
+- `limit` is clamped to `FS_SEARCH_MAX_LIMIT`; `0` means `FS_SEARCH_DEFAULT_LIMIT`.
+- `truncated = true` means the result cap or visited-entry cap was hit before the host could prove there were no more matches.
 
 ### FsDocsTree conventions
 
@@ -534,6 +544,10 @@ Any protocol-layer change must include all applicable steps:
   variants) tracked in issue #140.
 - Added `Hermes` managed agent kind and `AgentFiles(AgentFilesReq) ->
   AgentFilesResult`.
+- Added `FsSearch(FsSearchReq) -> FsSearchResult` with
+  `FS_SEARCH_DEFAULT_LIMIT` / `FS_SEARCH_MAX_LIMIT`; `limit = 0` uses the
+  default, oversized limits are clamped, `truncated` reports capped results, and
+  `match_indices` identify host-scored character positions in `rel_path`.
 - ALPN bumped to `zedra/rpc/3`.
 
 ### 2026-04-29

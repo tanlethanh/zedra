@@ -1,7 +1,6 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use tracing::*;
 
-use crate::active_terminal;
 use crate::deeplink;
 use crate::platform_bridge::{
     self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback, ListPickerItem,
@@ -591,55 +590,6 @@ pub extern "C" fn zedra_ios_native_notification_action(callback_id: u32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_native_notification_dismiss(callback_id: u32) {
     platform_bridge::dispatch_native_notification_dismiss(callback_id);
-}
-
-/// Called from the native keyboard accessory bar when a shortcut key button is tapped.
-///
-/// `key` is one of: "escape", "tab", "left", "down", "up", "right", "enter", "shift_enter".
-/// Maps the name to the corresponding terminal escape sequence and sends it via the active session.
-#[unsafe(no_mangle)]
-pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
-    if key.is_null() {
-        return;
-    }
-    let key_name = unsafe {
-        match std::ffi::CStr::from_ptr(key).to_str() {
-            Ok(s) => s,
-            Err(_) => return,
-        }
-    };
-    if key_name == "dismiss_keyboard" {
-        unsafe {
-            let window = gpui_ios_get_window();
-            if !window.is_null() {
-                gpui_ios_hide_keyboard(window);
-            }
-        }
-        return;
-    }
-
-    active_terminal::send_named_key(key_name);
-}
-
-/// Called from the native terminal composer to send finalized text to the active terminal.
-#[unsafe(no_mangle)]
-pub extern "C" fn zedra_ios_send_terminal_text(text: *const std::ffi::c_char) {
-    if text.is_null() {
-        return;
-    }
-
-    let text = unsafe {
-        match std::ffi::CStr::from_ptr(text).to_str() {
-            Ok(s) => s,
-            Err(_) => return,
-        }
-    };
-
-    if text.is_empty() {
-        return;
-    }
-
-    active_terminal::send_to_active(text.as_bytes().to_vec());
 }
 
 /// Called from the native app delegate when the app is opened via a `zedra://` URL.

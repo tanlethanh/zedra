@@ -34,6 +34,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var rootView: FrameLayout
     private lateinit var surfaceView: GpuiSurfaceView
     private lateinit var keyboardAccessoryBar: KeyboardAccessoryBar
+    private var keyboardImeBottom = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // Apply the persisted theme before super.onCreate so AppCompat picks up
@@ -69,6 +70,10 @@ class MainActivity : AppCompatActivity() {
             ),
         )
         installKeyboardAccessoryInsets()
+        rootView.viewTreeObserver.addOnPreDrawListener {
+            updateKeyboardAccessoryVisibility()
+            true
+        }
         sSurfaceView = surfaceView
         sActivity = this
         NativePresentations.register(this, rootView)
@@ -149,21 +154,30 @@ class MainActivity : AppCompatActivity() {
     private fun installKeyboardAccessoryInsets() {
         ViewCompat.setOnApplyWindowInsetsListener(rootView) { _, insets ->
             val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+            keyboardImeBottom = imeBottom
             val params = keyboardAccessoryBar.layoutParams as FrameLayout.LayoutParams
             if (params.bottomMargin != imeBottom) {
                 params.bottomMargin = imeBottom
                 keyboardAccessoryBar.layoutParams = params
             }
-            keyboardAccessoryBar.visibility = if (imeBottom > 0) View.VISIBLE else View.GONE
-            surfaceView.setKeyboardAccessoryHeight(
-                if (imeBottom > 0) keyboardAccessoryBar.layoutParams.height else 0,
-            )
+            updateKeyboardAccessoryVisibility()
             if (imeBottom == 0) {
                 keyboardAccessoryBar.stopRepeating()
             }
             insets
         }
         ViewCompat.requestApplyInsets(rootView)
+    }
+
+    private fun updateKeyboardAccessoryVisibility() {
+        val visible = keyboardImeBottom > 0 && nativeKeyboardAccessoryVisible()
+        keyboardAccessoryBar.visibility = if (visible) View.VISIBLE else View.GONE
+        surfaceView.setKeyboardAccessoryHeight(
+            if (visible) keyboardAccessoryBar.layoutParams.height else 0,
+        )
+        if (!visible) {
+            keyboardAccessoryBar.stopRepeating()
+        }
     }
 
     companion object {
@@ -236,6 +250,8 @@ class MainActivity : AppCompatActivity() {
         @JvmStatic external fun nativeSheetContentIsAtTop(): Boolean
 
         @JvmStatic external fun nativeKeyboardAccessoryKey(key: String)
+
+        @JvmStatic external fun nativeKeyboardAccessoryVisible(): Boolean
 
         @JvmStatic external fun nativeSystemBackPressed(): Boolean
 

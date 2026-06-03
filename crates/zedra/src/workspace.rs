@@ -13,7 +13,6 @@ use zedra_session::{
     SessionState, signer::ClientSigner,
 };
 
-use crate::active_terminal;
 use crate::agent;
 use crate::agent_detail::AgentDetail;
 use crate::agent_manage::AgentManage;
@@ -21,6 +20,7 @@ use crate::agent_picker::AgentPicker;
 use crate::agent_sessions::AgentSessions;
 use crate::agent_ui::managed_agent_name;
 use crate::editor::git_sidebar::GitFileSection;
+use crate::file_search::{FileSearchEvent, FileSearchPanel};
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
 use crate::placeholder::render_placeholder;
 use crate::platform_bridge::{self, AlertButton, HapticFeedback, status_bar_inset};
@@ -30,12 +30,13 @@ use crate::terminal_state::TerminalState;
 use crate::theme;
 use crate::transport_badge::ConnectionStatusIndicator;
 use crate::ui::{DrawerEvent, DrawerHost, DrawerSide};
-use crate::workspace_action::{self, GoHome, OpenQuickAction, RequestDisconnect};
+use crate::workspace_action::{self, GoHome, OpenFileSearch, OpenQuickAction, RequestDisconnect};
 use crate::workspace_action::{
     AddSelectionToChat, CloseDrawer, CloseTerminal, CreateAgent, CreateNewTerminal, GitCommit,
     GitShowItemActions, GitStage, GitUnstage, HideConnecting, NavigateBack, OpenAgentDetail,
-    OpenAgentManage, OpenAgentSessions, OpenFile, OpenGitDiff, OpenTerminal, RestartConnection,
-    ResumeAgentSession, ShowConnecting, SpawnAgentTerminal, ToggleDrawer,
+    OpenAgentManage, OpenAgentSessions, OpenDrawer, OpenFile, OpenGitDiff, OpenTerminal,
+    RestartConnection, ResumeAgentSession, RevealInFileExplorer, ShowConnecting,
+    SpawnAgentTerminal, ToggleDrawer,
 };
 use crate::workspace_connecting::WorkspaceConnecting;
 use crate::workspace_drawer::WorkspaceDrawer;
@@ -81,6 +82,13 @@ pub struct Workspace {
     /// Listens for periodic host resource snapshots.
     _host_info_listener: Option<Task<()>>,
     agent_picker: Entity<AgentPicker>,
+    /// Floating global file search overlay; shown above the drawer when open.
+    file_search: Entity<FileSearchPanel>,
+    file_search_open: bool,
+    /// Focus to restore when the file search overlay is dismissed, so action
+    /// dispatch keeps routing through the workspace (the search input takes
+    /// focus while open and would otherwise leave focus dangling on close).
+    file_search_prev_focus: Option<FocusHandle>,
     pending_platform_action: SharedPendingSlot<PendingWorkspaceAction>,
     _pending_platform_action_task: Task<()>,
     _subscriptions: Vec<Subscription>,
@@ -768,6 +776,13 @@ impl Workspace {
             shared_pending_slot();
         let agent_picker = cx
             .new(|_cx| AgentPicker::new(session.handle().clone(), pending_platform_action.clone()));
+        let file_search = cx.new(|cx| FileSearchPanel::new(session.handle().clone(), cx));
+        let file_search_subscription = cx.subscribe(
+            &file_search,
+            |workspace, _panel, event: &FileSearchEvent, cx| match event {
+                FileSearchEvent::Close => workspace.close_file_search(cx),
+            },
+        );
         let platform_action_slot = pending_platform_action.clone();
         let pending_platform_action_task =
             spawn_periodic_task(cx, Duration::from_millis(50), move |this, cx| {
@@ -797,12 +812,16 @@ impl Workspace {
             _host_event_listener: Some(host_event_listener),
             _host_info_listener: Some(host_info_listener),
             agent_picker,
+            file_search,
+            file_search_open: false,
+            file_search_prev_focus: None,
             pending_platform_action,
             _pending_platform_action_task: pending_platform_action_task,
             _subscriptions: vec![
                 drawer_host_subscription,
                 workspace_state_subscription,
                 gitdiff_subscription,
+                file_search_subscription,
             ],
         }
     }
@@ -1148,6 +1167,11 @@ impl Workspace {
     }
 
     pub fn handle_system_back(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.file_search_open {
+            self.dismiss_file_search(window, cx);
+            return true;
+        }
+
         if self.drawer_host.read(cx).is_open() {
             self.drawer_host
                 .update(cx, |host, cx| host.close_with_window(window, cx));
@@ -1180,6 +1204,44 @@ impl Workspace {
         info!("handle OpenQuickAction from workspace");
         window.hide_soft_keyboard();
         cx.emit(WorkspaceEvent::OpenQuickAction);
+    }
+
+    fn handle_open_file_search(
+        &mut self,
+        _action: &OpenFileSearch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!("handle OpenFileSearch from workspace");
+        if !self.file_search_open {
+            self.file_search_prev_focus = window.focused(cx);
+        }
+        self.file_search_open = true;
+        self.file_search
+            .update(cx, |panel, cx| panel.open(window, cx));
+        cx.notify();
+    }
+
+    /// State-only close. Used when the next focus owner is already taking over
+    /// (e.g. tapping a result opens and focuses the editor).
+    fn close_file_search(&mut self, cx: &mut Context<Self>) {
+        if !self.file_search_open {
+            return;
+        }
+        self.file_search_open = false;
+        self.file_search_prev_focus = None;
+        cx.notify();
+    }
+
+    /// Close and return focus to whatever held it before the overlay opened, so
+    /// workspace action dispatch (e.g. reopening search) keeps working.
+    fn dismiss_file_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let prev = self.file_search_prev_focus.take();
+        window.hide_soft_keyboard();
+        self.close_file_search(cx);
+        if let Some(handle) = prev {
+            window.focus(&handle, cx);
+        }
     }
 
     fn handle_request_disconnect(
@@ -1222,6 +1284,17 @@ impl Workspace {
                 host.open_with_window(&mut *window, cx);
             }
         });
+    }
+
+    fn handle_open_drawer(
+        &mut self,
+        _action: &OpenDrawer,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!("handle OpenDrawer from workspace");
+        self.drawer_host
+            .update(cx, |host, cx| host.open_with_window(window, cx));
     }
 
     fn handle_close_drawer(
@@ -1287,6 +1360,18 @@ impl Workspace {
 
     fn open_file_in_editor(&mut self, path: String, cx: &mut Context<Self>) {
         self.navigate_to(WorkspaceMainView::File { path }, cx);
+    }
+
+    fn handle_reveal_in_file_explorer(
+        &mut self,
+        action: &RevealInFileExplorer,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!("handle RevealInFileExplorer from workspace");
+        self.drawer.update(cx, |drawer, cx| {
+            drawer.reveal_path(action.path.clone(), window, cx)
+        });
     }
 
     /// Forward navigation: push route onto the nav stack and apply the view.
@@ -2072,7 +2157,6 @@ impl Workspace {
                 .prune_stale_terminals(&state.terminal_ids);
             if was_active_terminal || state.terminal_ids.is_empty() {
                 state.active_terminal_id = None;
-                active_terminal::clear_active_input();
             }
             if was_active_main_terminal && !has_replacement_terminal {
                 state.navigate(WorkspaceMainView::NoActiveTerminal, cx);
@@ -2121,7 +2205,6 @@ impl Workspace {
             self.workspace_state.update(cx, |state, cx| {
                 if active_terminal_is_stale {
                     state.active_terminal_id = None;
-                    active_terminal::clear_active_input();
                 }
                 if active_main_terminal_is_stale {
                     state
@@ -2332,13 +2415,16 @@ impl Render for Workspace {
             .key_context("workspace")
             .on_action(cx.listener(Self::handle_go_home))
             .on_action(cx.listener(Self::handle_open_quick_action))
+            .on_action(cx.listener(Self::handle_open_file_search))
             .on_action(cx.listener(Self::handle_request_disconnect))
             .on_action(cx.listener(Self::handle_toggle_drawer))
+            .on_action(cx.listener(Self::handle_open_drawer))
             .on_action(cx.listener(Self::handle_close_drawer))
             .on_action(cx.listener(Self::handle_show_connecting))
             .on_action(cx.listener(Self::handle_hide_connecting))
             .on_action(cx.listener(Self::handle_restart_connection))
             .on_action(cx.listener(Self::handle_open_file))
+            .on_action(cx.listener(Self::handle_reveal_in_file_explorer))
             .on_action(cx.listener(Self::handle_add_selection_to_chat))
             .on_action(cx.listener(Self::handle_open_git_diff))
             .on_action(cx.listener(Self::handle_git_stage))
@@ -2357,6 +2443,36 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_close_terminal))
             .size_full()
             .child(self.drawer_host.clone())
+            .when(self.file_search_open, |el| {
+                let panel = self.file_search.clone();
+                el.child(
+                    deferred(
+                        div()
+                            .id("file-search-overlay")
+                            .occlude()
+                            .absolute()
+                            .inset_0()
+                            .bg(theme::overlay_backdrop_with_opacity(
+                                theme::overlay_backdrop(cx),
+                                0.4,
+                            ))
+                            .on_pointer_down(cx.listener(|this, _event, window, cx| {
+                                this.dismiss_file_search(window, cx);
+                            }))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top(px(status_bar_inset() + 60.0))
+                                    .left(px(theme::SPACING_LG))
+                                    .right(px(theme::SPACING_LG))
+                                    .flex()
+                                    .justify_center()
+                                    .child(div().w_full().max_w(px(560.0)).child(panel)),
+                            ),
+                    )
+                    .with_priority(1000),
+                )
+            })
     }
 }
 

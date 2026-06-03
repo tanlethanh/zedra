@@ -31,6 +31,7 @@ struct SessionHandleInner {
     user_disconnect: AtomicBool,
     observer_rpc_supported: AtomicBool,
     docs_tree_rpc_supported: AtomicBool,
+    fs_search_rpc_supported: AtomicBool,
 }
 
 impl Drop for SessionHandleInner {
@@ -65,6 +66,7 @@ impl SessionHandle {
             user_disconnect: AtomicBool::new(false),
             observer_rpc_supported: AtomicBool::new(true),
             docs_tree_rpc_supported: AtomicBool::new(true),
+            fs_search_rpc_supported: AtomicBool::new(true),
         }))
     }
 
@@ -300,6 +302,32 @@ impl SessionHandle {
         Ok((result.entries, result.total, result.has_more))
     }
 
+    pub async fn fs_search(&self, path: &str, query: &str, limit: u32) -> Result<FsSearchResult> {
+        if !self.0.fs_search_rpc_supported.load(Ordering::Acquire) {
+            return Err(anyhow::anyhow!("file search RPC unsupported by host"));
+        }
+        let result: FsSearchResult = match self
+            .call(FsSearchReq {
+                path: path.to_string(),
+                query: query.to_string(),
+                limit,
+            })
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                if self.downgrade_fs_search_rpc(&error.to_string()) {
+                    return Err(anyhow::anyhow!("file search RPC unsupported by host"));
+                }
+                return Err(error);
+            }
+        };
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
+        Ok(result)
+    }
+
     pub async fn fs_read(&self, path: &str) -> Result<FsReadResult> {
         Ok(self
             .call(FsReadReq {
@@ -427,6 +455,21 @@ impl SessionHandle {
                 .docs_tree_rpc_supported
                 .store(false, Ordering::Release);
             tracing::warn!("docs tree RPC unsupported, disabling: {}", err);
+        }
+        incompatible
+    }
+
+    fn downgrade_fs_search_rpc(&self, err: &str) -> bool {
+        let msg = err.to_lowercase();
+        let incompatible = msg.contains("unknown variant")
+            || msg.contains("deserialize")
+            || msg.contains("decode")
+            || msg.contains("invalid type");
+        if incompatible {
+            self.0
+                .fs_search_rpc_supported
+                .store(false, Ordering::Release);
+            tracing::warn!("file search RPC unsupported, disabling: {}", err);
         }
         incompatible
     }

@@ -278,6 +278,10 @@ impl TerminalView {
         self.terminal.read(cx).input_sender()
     }
 
+    pub fn is_focused(&self, window: &Window) -> bool {
+        self.focus_handle.is_focused(window)
+    }
+
     pub fn dismiss_dictation_preview(&mut self, cx: &mut Context<Self>) {
         self.terminal.update(cx, |terminal, cx| {
             if terminal.dismiss_dictation_preview() {

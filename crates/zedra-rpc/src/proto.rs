@@ -195,6 +195,11 @@ pub enum ZedraProto {
     /// Kept at enum tail because protocol variants are append-only.
     #[rpc(tx = oneshot::Sender<AgentFilesResult>)]
     AgentFiles(AgentFilesReq),
+
+    /// Search files and directories by name under a workspace path.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<FsSearchResult>)]
+    FsSearch(FsSearchReq),
 }
 
 // ---------------------------------------------------------------------------
@@ -205,6 +210,12 @@ pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/3";
 
 /// Default page size for `FsList` requests (host uses this when `limit == 0`).
 pub const FS_LIST_DEFAULT_LIMIT: u32 = 50;
+/// Default result cap for host-side file search.
+pub const FS_SEARCH_DEFAULT_LIMIT: u32 = 100;
+/// Maximum result cap for host-side file search.
+pub const FS_SEARCH_MAX_LIMIT: u32 = 200;
+/// Maximum filesystem entries visited for one host-side file search.
+pub const FS_SEARCH_MAX_VISITED_ENTRIES: u32 = 20_000;
 /// Default page size for host-built docs tree requests.
 pub const FS_DOCS_TREE_DEFAULT_LIMIT: u32 = 200;
 /// Maximum page size for host-built docs tree requests.
@@ -514,6 +525,35 @@ pub struct FsListResult {
     pub total: u32,
     pub has_more: bool,
     pub error: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsSearchReq {
+    pub path: String,
+    pub query: String,
+    pub limit: u32,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsSearchResult {
+    pub entries: Vec<FsSearchEntry>,
+    pub truncated: bool,
+    pub error: Option<String>,
+}
+
+/// A single fuzzy-search hit. `match_indices` are the host matcher's matched
+/// character positions into `rel_path`, so the client highlights exactly what
+/// the host scored instead of re-running a divergent matcher.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsSearchEntry {
+    /// Absolute path, used to open the file.
+    pub path: String,
+    /// Search-root-relative path; the string `match_indices` reference. The
+    /// filename is its last component, so it is not sent separately.
+    pub rel_path: String,
+    pub is_dir: bool,
+    /// Sorted, deduplicated character indices into `rel_path` that matched.
+    pub match_indices: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1503,6 +1543,37 @@ mod tests {
         assert_eq!(decoded.terminals[0].position, 0);
         assert_eq!(decoded.terminals[0].last_seq, 42);
         assert_eq!(decoded.terminals[0].icon_name.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn fs_search_wire_types_roundtrip() {
+        let req = FsSearchReq {
+            path: ".".into(),
+            query: "fsr".into(),
+            limit: 20,
+        };
+        let encoded = postcard::to_allocvec(&req).unwrap();
+        let decoded: FsSearchReq = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded, req);
+
+        let entry = FsSearchEntry {
+            path: "/repo/src/file_search.rs".into(),
+            rel_path: "src/file_search.rs".into(),
+            is_dir: false,
+            match_indices: vec![4, 5, 6],
+        };
+        let encoded = postcard::to_allocvec(&entry).unwrap();
+        let decoded: FsSearchEntry = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded, entry);
+
+        let result = FsSearchResult {
+            entries: vec![entry],
+            truncated: true,
+            error: Some("fixture".into()),
+        };
+        let encoded = postcard::to_allocvec(&result).unwrap();
+        let decoded: FsSearchResult = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded, result);
     }
 
     #[test]
