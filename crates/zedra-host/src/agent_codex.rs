@@ -264,7 +264,7 @@ fn session_summary_from_thread(
     let rollout_path = PathBuf::from(&thread.rollout_path);
     let cli_version = (!thread.cli_version.is_empty()).then_some(thread.cli_version.clone());
     AgentSessionSummary {
-        kind: ManagedAgentKind::Codex,
+        kind: AgentKind::Codex,
         session_id: thread.id.clone(),
         title: session_title(title_from_thread(thread)),
         cwd: Some(thread.cwd.clone()),
@@ -272,7 +272,7 @@ fn session_summary_from_thread(
             .created_at_ms
             .and_then(DateTime::<Utc>::from_timestamp_millis),
         last_activity_at: thread_updated_at(thread),
-        resume: resume_summary(ManagedAgentKind::Codex, &thread.id),
+        resume: resume_summary(AgentKind::Codex, &thread.id),
         live: empty_session_live(),
         provider: AgentProviderSessionInfo {
             model: thread.model.clone(),

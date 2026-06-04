@@ -20,7 +20,7 @@ pub const fn hooks_enabled() -> bool {
 }
 
 pub fn setup_summary(
-    kind: ManagedAgentKind,
+    kind: AgentKind,
     cli_available: bool,
     workdir: &Path,
 ) -> AgentSetupSummary {
@@ -36,7 +36,7 @@ pub fn setup_summary(
 
     let mut error = None;
     let (skills_installed, plugin_installed, hooks_installed) = match kind {
-        ManagedAgentKind::Claude => {
+        AgentKind::Claude => {
             let status = claude_plugin_status();
             error = status.error;
             (
@@ -46,20 +46,20 @@ pub fn setup_summary(
                     && (status.hooks_installed || claude_local_hooks_installed(workdir)),
             )
         }
-        ManagedAgentKind::Codex => (
+        AgentKind::Codex => (
             skills_installed_at(&home_path(&[".agents", "skills"])),
             false,
             hooks_enabled() && (codex_hooks_installed() || codex_local_hooks_installed(workdir)),
         ),
-        ManagedAgentKind::OpenCode => (
+        AgentKind::OpenCode => (
             skills_installed_at(&home_path(&[".config", "opencode", "skills"])),
             opencode_plugin_installed(),
             hooks_enabled()
                 && (opencode_hooks_installed() || opencode_local_hooks_installed(workdir)),
         ),
-        ManagedAgentKind::Pi => (false, false, false),
+        AgentKind::Pi => (false, false, false),
         // Hermes has its own hook system, but Zedra doesn't install into it yet.
-        ManagedAgentKind::Hermes => (false, false, false),
+        AgentKind::Hermes => (false, false, false),
     };
     let state = if error.is_some() {
         AgentSetupState::Error

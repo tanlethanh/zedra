@@ -823,13 +823,13 @@ pub fn sessions(
 fn session_summary(session: &ClaudeSessionMetadata, cli: &AgentCliSummary) -> AgentSessionSummary {
     let pr = session.pr_links.first();
     AgentSessionSummary {
-        kind: ManagedAgentKind::Claude,
+        kind: AgentKind::Claude,
         session_id: session.session_id.clone(),
         title: session_title(session.title.clone()),
         cwd: session.cwd.clone(),
         created_at: parse_rfc3339(session.created_at.as_deref()),
         last_activity_at: parse_rfc3339(session.last_activity_at.as_deref()),
-        resume: resume_summary(ManagedAgentKind::Claude, &session.session_id),
+        resume: resume_summary(AgentKind::Claude, &session.session_id),
         live: empty_session_live(),
         provider: AgentProviderSessionInfo {
             model: None,

@@ -21,10 +21,10 @@ struct CachedAgentData {
     workdir: Option<PathBuf>,
     installed: Option<AgentInstalledListResult>,
     agents: Option<AgentListResult>,
-    cli_versions: HashMap<ManagedAgentKind, AgentCliSummary>,
-    account_usage: HashMap<ManagedAgentKind, AgentUsageSnapshot>,
-    account_plans: HashMap<ManagedAgentKind, Vec<AgentInfoField>>,
-    sessions: HashMap<ManagedAgentKind, CachedSessions>,
+    cli_versions: HashMap<AgentKind, AgentCliSummary>,
+    account_usage: HashMap<AgentKind, AgentUsageSnapshot>,
+    account_plans: HashMap<AgentKind, Vec<AgentInfoField>>,
+    sessions: HashMap<AgentKind, CachedSessions>,
 }
 
 #[derive(Default)]
@@ -118,7 +118,7 @@ impl AgentCache {
 
     pub async fn sessions(
         self: &Arc<Self>,
-        kind: ManagedAgentKind,
+        kind: AgentKind,
         workdir: &Path,
         session: Option<&Arc<ServerSession>>,
         limit: u32,
@@ -194,7 +194,7 @@ impl AgentCache {
         inner.agents = Some(agents);
     }
 
-    async fn refresh_sessions(&self, kind: ManagedAgentKind, workdir: &Path, limit: u32) {
+    async fn refresh_sessions(&self, kind: AgentKind, workdir: &Path, limit: u32) {
         let effective_limit = agent::agent_session_limit(limit) as u32;
         let workdir = workdir.to_path_buf();
         let scan_workdir = workdir.clone();
@@ -243,7 +243,7 @@ impl AgentCache {
         self.inner.lock().await.agents.is_some()
     }
 
-    async fn ensure_sessions(&self, kind: ManagedAgentKind, workdir: &Path, limit: u32) -> bool {
+    async fn ensure_sessions(&self, kind: AgentKind, workdir: &Path, limit: u32) -> bool {
         // A cache hit must cover the requested limit: a scan run at a smaller
         // limit would silently truncate the result for a larger request.
         let needed = agent::agent_session_limit(limit) as u32;
@@ -314,7 +314,7 @@ impl AgentCache {
 
     async fn cached_agent_summary(
         self: &Arc<Self>,
-        kind: ManagedAgentKind,
+        kind: AgentKind,
         session: Option<&Arc<ServerSession>>,
     ) -> Option<AgentSummary> {
         let (mut agents, versions, usage, plans) = {

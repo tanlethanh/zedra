@@ -105,7 +105,7 @@ problem has to be removed at the encoding layer. Candidate techniques:
 - **Versioned variants.** Add `FooReqV2` / `FooResultV2` rather than mutating a
   shipped struct (the `TermCreateReq` → `TermCreateReqV2` pattern).
 
-These are documented as the intended direction; `ManagedAgentKind` and the other
+These are documented as the intended direction; `AgentKind` and the other
 growable enums currently use the plain derived discriminant and are gated by the
 ALPN bump above. Migrating them is tracked in issue #140.
 
@@ -365,7 +365,7 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
 
 ### Managed agent conventions
 
-**Terminology:** A *managed agent* is one of `ManagedAgentKind`: Claude Code (`Claude`), Codex (`Codex`), OpenCode (`OpenCode`), Pi (`Pi`), and Hermes (`Hermes`). This is narrower than `AgentInstalledList`, which lists every terminal agent CLI the host can launch (Amp, Cline, Cursor, etc.). Most agents scope sessions per workspace; `Hermes` is a global personal agent whose sessions are workspace-independent.
+**Terminology:** A *managed agent* is one of `AgentKind`: Claude Code (`Claude`), Codex (`Codex`), OpenCode (`OpenCode`), Pi (`Pi`), and Hermes (`Hermes`). This is narrower than `AgentInstalledList`, which lists every terminal agent CLI the host can launch (Amp, Cline, Cursor, etc.). Most agents scope sessions per workspace; `Hermes` is a global personal agent whose sessions are workspace-independent.
 
 - `AgentListResult.agents` returns one `AgentSummary` for every managed agent, even when the CLI is missing or no sessions exist.
 - `AgentListReq.refresh` and `AgentInstalledListReq.refresh` default to `false`. When `false`, the host serves its startup cache; when `true`, the host rescans synchronous fields before responding.

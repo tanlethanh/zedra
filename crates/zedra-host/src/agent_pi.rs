@@ -311,13 +311,13 @@ fn read_session_file(
 
 fn session_summary(file: &PiSessionFile, cli: &AgentCliSummary) -> AgentSessionSummary {
     AgentSessionSummary {
-        kind: ManagedAgentKind::Pi,
+        kind: AgentKind::Pi,
         session_id: file.session_id.clone(),
         title: session_title(file.title.clone()),
         cwd: file.cwd.clone(),
         created_at: file.created_at,
         last_activity_at: file.last_activity_at,
-        resume: resume_summary(ManagedAgentKind::Pi, &file.session_id),
+        resume: resume_summary(AgentKind::Pi, &file.session_id),
         live: empty_session_live(),
         provider: AgentProviderSessionInfo {
             model: None,

@@ -346,7 +346,7 @@ fn sessions_from_json(
         let git = git_summary(&session, &mut git_branch_cache);
         let transcript = transcript_size_bytes(&session, &transcript_sizes);
         sessions.push(AgentSessionSummary {
-            kind: ManagedAgentKind::OpenCode,
+            kind: AgentKind::OpenCode,
             session_id: session.id.clone(),
             title: session_title(session.title.clone()),
             cwd: session
@@ -360,7 +360,7 @@ fn sessions_from_json(
             last_activity_at: session
                 .updated
                 .and_then(DateTime::<Utc>::from_timestamp_millis),
-            resume: resume_summary(ManagedAgentKind::OpenCode, &session.id),
+            resume: resume_summary(AgentKind::OpenCode, &session.id),
             live: empty_session_live(),
             provider: AgentProviderSessionInfo {
                 model: None,
@@ -562,7 +562,7 @@ mod tests {
 
         assert_eq!(sessions.len(), 1);
         let session = &sessions[0];
-        assert_eq!(session.kind, ManagedAgentKind::OpenCode);
+        assert_eq!(session.kind, AgentKind::OpenCode);
         assert_eq!(session.session_id, "ses_123");
         assert_eq!(session.title.as_deref(), Some("Fix terminal paste"));
         assert_eq!(

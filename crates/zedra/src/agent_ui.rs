@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use zedra_rpc::proto::{
-    AgentSessionSummary, AgentSetupState, AgentSummary, AgentUsageSnapshot, ManagedAgentKind,
+    AgentSessionSummary, AgentSetupState, AgentSummary, AgentUsageSnapshot, AgentKind,
 };
 
 use crate::fonts;
@@ -40,33 +40,33 @@ pub fn setup_label(state: AgentSetupState) -> &'static str {
     }
 }
 
-pub fn managed_agent_icon(kind: ManagedAgentKind) -> &'static str {
+pub fn managed_agent_icon(kind: AgentKind) -> &'static str {
     match kind {
-        ManagedAgentKind::Claude => "icons/claude.svg",
-        ManagedAgentKind::Codex => "icons/openai.svg",
-        ManagedAgentKind::OpenCode => "icons/opencode.svg",
-        ManagedAgentKind::Pi => "icons/pi.svg",
-        ManagedAgentKind::Hermes => "icons/hermesagent.svg",
+        AgentKind::Claude => "icons/claude.svg",
+        AgentKind::Codex => "icons/openai.svg",
+        AgentKind::OpenCode => "icons/opencode.svg",
+        AgentKind::Pi => "icons/pi.svg",
+        AgentKind::Hermes => "icons/hermesagent.svg",
     }
 }
 
-pub fn kind_slug(kind: ManagedAgentKind) -> &'static str {
+pub fn kind_slug(kind: AgentKind) -> &'static str {
     match kind {
-        ManagedAgentKind::Claude => "claude",
-        ManagedAgentKind::Codex => "codex",
-        ManagedAgentKind::OpenCode => "opencode",
-        ManagedAgentKind::Pi => "pi",
-        ManagedAgentKind::Hermes => "hermes",
+        AgentKind::Claude => "claude",
+        AgentKind::Codex => "codex",
+        AgentKind::OpenCode => "opencode",
+        AgentKind::Pi => "pi",
+        AgentKind::Hermes => "hermes",
     }
 }
 
-pub fn managed_agent_name(kind: ManagedAgentKind) -> &'static str {
+pub fn managed_agent_name(kind: AgentKind) -> &'static str {
     match kind {
-        ManagedAgentKind::Claude => "Claude",
-        ManagedAgentKind::Codex => "Codex",
-        ManagedAgentKind::OpenCode => "OpenCode",
-        ManagedAgentKind::Pi => "Pi",
-        ManagedAgentKind::Hermes => "Hermes",
+        AgentKind::Claude => "Claude",
+        AgentKind::Codex => "Codex",
+        AgentKind::OpenCode => "OpenCode",
+        AgentKind::Pi => "Pi",
+        AgentKind::Hermes => "Hermes",
     }
 }
 
@@ -223,7 +223,7 @@ pub fn render_agent_card(cx: &App, props: AgentCardProps<'_>) -> Stateful<Div> {
 /// Compact usage row when live usage data is available (agent card, agent detail).
 /// Renders rate-limit gauges (5h / 7d), reset times, and optional credit spend.
 pub fn render_agent_usage_row(
-    kind: ManagedAgentKind,
+    kind: AgentKind,
     snap: &AgentUsageSnapshot,
     cx: &App,
 ) -> impl IntoElement {
@@ -231,7 +231,7 @@ pub fn render_agent_usage_row(
 }
 
 fn render_usage_row(
-    kind: ManagedAgentKind,
+    kind: AgentKind,
     snap: &AgentUsageSnapshot,
     cx: &App,
 ) -> impl IntoElement {

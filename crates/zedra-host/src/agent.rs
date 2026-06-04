@@ -22,12 +22,12 @@ pub use crate::agent_utils::home_path;
 const AGENT_SESSION_DEFAULT_LIMIT: u32 = 50;
 const AGENT_SESSION_MAX_LIMIT: u32 = 200;
 
-pub const MANAGED_AGENT_KINDS: [ManagedAgentKind; 5] = [
-    ManagedAgentKind::Claude,
-    ManagedAgentKind::Codex,
-    ManagedAgentKind::OpenCode,
-    ManagedAgentKind::Pi,
-    ManagedAgentKind::Hermes,
+pub const MANAGED_AGENT_KINDS: [AgentKind; 5] = [
+    AgentKind::Claude,
+    AgentKind::Codex,
+    AgentKind::OpenCode,
+    AgentKind::Pi,
+    AgentKind::Hermes,
 ];
 
 pub fn default_agent_session_limit() -> usize {
@@ -47,7 +47,7 @@ pub fn scan_installed_agents() -> AgentInstalledListResult {
     agent_installed::list_installed_agents()
 }
 
-pub fn scan_managed_agent_cli_versions() -> HashMap<ManagedAgentKind, AgentCliSummary> {
+pub fn scan_managed_agent_cli_versions() -> HashMap<AgentKind, AgentCliSummary> {
     let mut versions = HashMap::with_capacity(MANAGED_AGENT_KINDS.len());
     std::thread::scope(|scope| {
         let handles: Vec<_> = MANAGED_AGENT_KINDS
@@ -71,7 +71,7 @@ pub fn scan_managed_agent_cli_versions() -> HashMap<ManagedAgentKind, AgentCliSu
 
 pub fn apply_cached_cli_versions(
     agents: &mut [AgentSummary],
-    versions: &HashMap<ManagedAgentKind, AgentCliSummary>,
+    versions: &HashMap<AgentKind, AgentCliSummary>,
 ) {
     for agent in agents {
         let Some(cached) = versions.get(&agent.kind) else {
@@ -113,7 +113,7 @@ pub fn scan_agent_list(workdir: &Path) -> AgentListResult {
     }
 }
 
-fn degraded_agent_summary(kind: ManagedAgentKind, workdir: &Path) -> AgentSummary {
+fn degraded_agent_summary(kind: AgentKind, workdir: &Path) -> AgentSummary {
     let cli = agent_list_cli_summary(kind, workdir);
     let setup = setup_summary(kind, cli.available, workdir);
     AgentSummary {
@@ -152,7 +152,7 @@ fn degraded_agent_summary(kind: ManagedAgentKind, workdir: &Path) -> AgentSummar
 }
 
 pub fn scan_agent_sessions(
-    kind: ManagedAgentKind,
+    kind: AgentKind,
     workdir: &Path,
     limit: u32,
 ) -> AgentSessionsResult {
@@ -189,7 +189,7 @@ pub async fn list_agents(
 
 pub async fn list_agent_sessions(
     cache: &Arc<AgentCache>,
-    kind: ManagedAgentKind,
+    kind: AgentKind,
     workdir: &Path,
     session: Option<&Arc<ServerSession>>,
     limit: u32,
@@ -210,7 +210,7 @@ pub async fn merge_live_into_agent_list(
 
 pub async fn merge_live_into_sessions(
     sessions: &mut [AgentSessionSummary],
-    kind: ManagedAgentKind,
+    kind: AgentKind,
     session: Option<&Arc<ServerSession>>,
 ) {
     let live = live_sessions(kind, session).await;
@@ -229,7 +229,7 @@ pub async fn merge_live_into_sessions(
     }
 }
 
-pub fn resume_launch_command(kind: ManagedAgentKind, session_id: &str) -> Option<String> {
+pub fn resume_launch_command(kind: AgentKind, session_id: &str) -> Option<String> {
     if session_id.trim().is_empty() {
         return None;
     }
@@ -237,7 +237,7 @@ pub fn resume_launch_command(kind: ManagedAgentKind, session_id: &str) -> Option
 }
 
 pub fn normalize_event(
-    kind: ManagedAgentKind,
+    kind: AgentKind,
     event_name: &str,
 ) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
     let event_name = event_name.trim();
@@ -250,17 +250,17 @@ pub fn normalize_event(
 /// True for agents whose sessions are not scoped to a workspace (Hermes). Their
 /// scans ignore the workdir, so callers can reuse a cached result across
 /// workspace switches.
-pub fn is_global(kind: ManagedAgentKind) -> bool {
+pub fn is_global(kind: AgentKind) -> bool {
     dispatch(kind).is_global()
 }
 
-pub fn managed_kind_from_slug(raw: &str) -> Option<ManagedAgentKind> {
+pub fn managed_kind_from_slug(raw: &str) -> Option<AgentKind> {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "claude" => Some(ManagedAgentKind::Claude),
-        "codex" => Some(ManagedAgentKind::Codex),
-        "opencode" | "open-code" | "open_code" => Some(ManagedAgentKind::OpenCode),
-        "pi" => Some(ManagedAgentKind::Pi),
-        "hermes" => Some(ManagedAgentKind::Hermes),
+        "claude" => Some(AgentKind::Claude),
+        "codex" => Some(AgentKind::Codex),
+        "opencode" | "open-code" | "open_code" => Some(AgentKind::OpenCode),
+        "pi" => Some(AgentKind::Pi),
+        "hermes" => Some(AgentKind::Hermes),
         _ => None,
     }
 }
@@ -269,7 +269,7 @@ pub fn managed_kind_from_slug(raw: &str) -> Option<ManagedAgentKind> {
 // Agent summary scanning (dispatcher)
 // ---------------------------------------------------------------------------
 
-fn agent_summary_scan(kind: ManagedAgentKind, workdir: &Path) -> AgentSummary {
+fn agent_summary_scan(kind: AgentKind, workdir: &Path) -> AgentSummary {
     let now = Utc::now();
     let cli = agent_list_cli_summary(kind, workdir);
     let setup = setup_summary(kind, cli.available, workdir);
@@ -387,7 +387,7 @@ struct ScanCtx<'a> {
 }
 
 trait ManagedAgent: Sync {
-    fn kind(&self) -> ManagedAgentKind;
+    fn kind(&self) -> AgentKind;
 
     /// True for agents whose sessions are not scoped to a workspace (Hermes):
     /// they ignore the scan `workdir` and surface the same sessions everywhere.
@@ -437,20 +437,20 @@ trait ManagedAgent: Sync {
     fn resume_launch_command(&self, quoted_session_id: &str) -> String;
 }
 
-fn dispatch(kind: ManagedAgentKind) -> &'static dyn ManagedAgent {
+fn dispatch(kind: AgentKind) -> &'static dyn ManagedAgent {
     match kind {
-        ManagedAgentKind::Claude => &ClaudeAgent,
-        ManagedAgentKind::Codex => &CodexAgent,
-        ManagedAgentKind::OpenCode => &OpenCodeAgent,
-        ManagedAgentKind::Pi => &PiAgent,
-        ManagedAgentKind::Hermes => &HermesAgent,
+        AgentKind::Claude => &ClaudeAgent,
+        AgentKind::Codex => &CodexAgent,
+        AgentKind::OpenCode => &OpenCodeAgent,
+        AgentKind::Pi => &PiAgent,
+        AgentKind::Hermes => &HermesAgent,
     }
 }
 
 struct ClaudeAgent;
 impl ManagedAgent for ClaudeAgent {
-    fn kind(&self) -> ManagedAgentKind {
-        ManagedAgentKind::Claude
+    fn kind(&self) -> AgentKind {
+        AgentKind::Claude
     }
     fn normalize_event(&self, event: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
         agent_claude::normalize_event(event)
@@ -484,8 +484,8 @@ impl ManagedAgent for ClaudeAgent {
 
 struct CodexAgent;
 impl ManagedAgent for CodexAgent {
-    fn kind(&self) -> ManagedAgentKind {
-        ManagedAgentKind::Codex
+    fn kind(&self) -> AgentKind {
+        AgentKind::Codex
     }
     fn normalize_event(&self, event: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
         agent_codex::normalize_event(event)
@@ -523,8 +523,8 @@ impl ManagedAgent for CodexAgent {
 
 struct OpenCodeAgent;
 impl ManagedAgent for OpenCodeAgent {
-    fn kind(&self) -> ManagedAgentKind {
-        ManagedAgentKind::OpenCode
+    fn kind(&self) -> AgentKind {
+        AgentKind::OpenCode
     }
     fn normalize_event(&self, event: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
         agent_opencode::normalize_event(event)
@@ -565,8 +565,8 @@ impl ManagedAgent for OpenCodeAgent {
 
 struct PiAgent;
 impl ManagedAgent for PiAgent {
-    fn kind(&self) -> ManagedAgentKind {
-        ManagedAgentKind::Pi
+    fn kind(&self) -> AgentKind {
+        AgentKind::Pi
     }
     fn normalize_event(&self, event: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
         agent_pi::normalize_event(event)
@@ -603,8 +603,8 @@ impl ManagedAgent for PiAgent {
 
 struct HermesAgent;
 impl ManagedAgent for HermesAgent {
-    fn kind(&self) -> ManagedAgentKind {
-        ManagedAgentKind::Hermes
+    fn kind(&self) -> AgentKind {
+        AgentKind::Hermes
     }
     fn is_global(&self) -> bool {
         true
@@ -644,7 +644,7 @@ impl ManagedAgent for HermesAgent {
 }
 
 fn sessions_for_kind_blocking(
-    kind: ManagedAgentKind,
+    kind: AgentKind,
     workdir: &Path,
     limit: usize,
 ) -> Result<(Vec<AgentSessionSummary>, u32), String> {
@@ -656,7 +656,7 @@ fn sessions_for_kind_blocking(
     Ok((sessions, total))
 }
 
-fn cli_version_summary(kind: ManagedAgentKind) -> AgentCliSummary {
+fn cli_version_summary(kind: AgentKind) -> AgentCliSummary {
     let program = program_name(kind);
     match Command::new(program).arg("--version").output() {
         Ok(output) if output.status.success() => {
@@ -687,7 +687,7 @@ fn cli_version_summary(kind: ManagedAgentKind) -> AgentCliSummary {
     }
 }
 
-fn agent_list_cli_summary(kind: ManagedAgentKind, workdir: &Path) -> AgentCliSummary {
+fn agent_list_cli_summary(kind: AgentKind, workdir: &Path) -> AgentCliSummary {
     let available = dispatch(kind).cli_available(workdir);
     if available {
         AgentCliSummary {
@@ -718,7 +718,7 @@ struct LiveAgentSessions {
 }
 
 async fn live_summary(
-    kind: ManagedAgentKind,
+    kind: AgentKind,
     session: Option<&Arc<ServerSession>>,
 ) -> AgentLiveSummary {
     let live = live_sessions(kind, session).await;
@@ -730,7 +730,7 @@ async fn live_summary(
 }
 
 async fn live_sessions(
-    kind: ManagedAgentKind,
+    kind: AgentKind,
     session: Option<&Arc<ServerSession>>,
 ) -> LiveAgentSessions {
     let Some(session) = session else {
@@ -785,7 +785,7 @@ struct HostTermMetaSnapshot {
     shell_state: HostShellState,
 }
 
-fn terminal_matches(kind: ManagedAgentKind, meta: &HostTermMetaSnapshot) -> bool {
+fn terminal_matches(kind: AgentKind, meta: &HostTermMetaSnapshot) -> bool {
     let needle = program_name(kind);
     meta.icon_name
         .as_deref()
@@ -803,7 +803,7 @@ fn command_program_is(command: &str, program: &str) -> bool {
         .is_some_and(|first| first == program || first.ends_with(&format!("/{program}")))
 }
 
-fn infer_session_id(kind: ManagedAgentKind, meta: &HostTermMetaSnapshot) -> Option<String> {
+fn infer_session_id(kind: AgentKind, meta: &HostTermMetaSnapshot) -> Option<String> {
     let command = meta.current_command.as_deref()?;
     let tokens = command.split_whitespace().collect::<Vec<_>>();
     dispatch(kind).infer_session_id(&tokens)
@@ -836,7 +836,7 @@ fn lifecycle_from_shell(state: HostShellState) -> AgentLifecycleStatus {
 // Account snapshot dispatch
 // ---------------------------------------------------------------------------
 
-fn account_summary(kind: ManagedAgentKind, workdir: &Path) -> AgentAccountSummary {
+fn account_summary(kind: AgentKind, workdir: &Path) -> AgentAccountSummary {
     AgentAccountSummary {
         fields: dispatch(kind).account_fields(workdir),
     }
@@ -844,11 +844,11 @@ fn account_summary(kind: ManagedAgentKind, workdir: &Path) -> AgentAccountSummar
 
 /// Read-only config/memory files for an agent's detail view. Only Hermes
 /// exposes a file set today; other agents return none.
-pub fn agent_files(kind: ManagedAgentKind) -> Vec<AgentFile> {
+pub fn agent_files(kind: AgentKind) -> Vec<AgentFile> {
     dispatch(kind).config_files()
 }
 
-pub async fn scan_account_plans() -> HashMap<ManagedAgentKind, Vec<AgentInfoField>> {
+pub async fn scan_account_plans() -> HashMap<AgentKind, Vec<AgentInfoField>> {
     let claude = tokio::spawn(agent_claude::fetch_subscription_plan());
     let codex = tokio::task::spawn_blocking(agent_codex::subscription_plan_fields);
     let opencode = tokio::task::spawn_blocking(agent_opencode::subscription_plan_fields);
@@ -857,26 +857,26 @@ pub async fn scan_account_plans() -> HashMap<ManagedAgentKind, Vec<AgentInfoFiel
 
     let mut out = HashMap::new();
     if let Ok(Some(fields)) = claude.await {
-        out.insert(ManagedAgentKind::Claude, fields);
+        out.insert(AgentKind::Claude, fields);
     }
     if let Ok(Some(fields)) = codex.await {
-        out.insert(ManagedAgentKind::Codex, fields);
+        out.insert(AgentKind::Codex, fields);
     }
     if let Ok(Some(fields)) = opencode.await {
-        out.insert(ManagedAgentKind::OpenCode, fields);
+        out.insert(AgentKind::OpenCode, fields);
     }
     if let Ok(Some(fields)) = pi.await {
-        out.insert(ManagedAgentKind::Pi, fields);
+        out.insert(AgentKind::Pi, fields);
     }
     if let Ok(Some(fields)) = hermes.await {
-        out.insert(ManagedAgentKind::Hermes, fields);
+        out.insert(AgentKind::Hermes, fields);
     }
     out
 }
 
 pub fn apply_cached_account_plans(
     agents: &mut [AgentSummary],
-    plans: &HashMap<ManagedAgentKind, Vec<AgentInfoField>>,
+    plans: &HashMap<AgentKind, Vec<AgentInfoField>>,
 ) {
     for agent in agents {
         let Some(remote) = plans.get(&agent.kind) else {
@@ -896,7 +896,7 @@ fn merge_account_fields(existing: &mut Vec<AgentInfoField>, remote: &[AgentInfoF
     }
 }
 
-pub async fn scan_account_usage() -> HashMap<ManagedAgentKind, AgentUsageSnapshot> {
+pub async fn scan_account_usage() -> HashMap<AgentKind, AgentUsageSnapshot> {
     let claude = tokio::spawn(agent_claude::fetch_account_usage());
     let codex = tokio::spawn(agent_codex::fetch_account_usage());
     let opencode = tokio::task::spawn_blocking(agent_opencode::fetch_account_usage);
@@ -905,26 +905,26 @@ pub async fn scan_account_usage() -> HashMap<ManagedAgentKind, AgentUsageSnapsho
 
     let mut out = HashMap::new();
     if let Ok(Some(snap)) = claude.await {
-        out.insert(ManagedAgentKind::Claude, snap);
+        out.insert(AgentKind::Claude, snap);
     }
     if let Ok(Some(snap)) = codex.await {
-        out.insert(ManagedAgentKind::Codex, snap);
+        out.insert(AgentKind::Codex, snap);
     }
     if let Ok(Some(snap)) = opencode.await {
-        out.insert(ManagedAgentKind::OpenCode, snap);
+        out.insert(AgentKind::OpenCode, snap);
     }
     if let Ok(Some(snap)) = pi.await {
-        out.insert(ManagedAgentKind::Pi, snap);
+        out.insert(AgentKind::Pi, snap);
     }
     if let Ok(Some(snap)) = hermes.await {
-        out.insert(ManagedAgentKind::Hermes, snap);
+        out.insert(AgentKind::Hermes, snap);
     }
     out
 }
 
 pub fn apply_cached_account_usage(
     agents: &mut Vec<AgentSummary>,
-    snapshots: &HashMap<ManagedAgentKind, AgentUsageSnapshot>,
+    snapshots: &HashMap<AgentKind, AgentUsageSnapshot>,
 ) {
     for agent in agents {
         if let Some(snap) = snapshots.get(&agent.kind) {
@@ -940,19 +940,19 @@ mod tests {
     #[test]
     fn resume_launch_commands_are_host_owned() {
         assert_eq!(
-            resume_launch_command(ManagedAgentKind::Claude, "abc").as_deref(),
+            resume_launch_command(AgentKind::Claude, "abc").as_deref(),
             Some("claude --resume abc")
         );
         assert_eq!(
-            resume_launch_command(ManagedAgentKind::Codex, "019e").as_deref(),
+            resume_launch_command(AgentKind::Codex, "019e").as_deref(),
             Some("codex resume 019e")
         );
         assert_eq!(
-            resume_launch_command(ManagedAgentKind::OpenCode, "ses_123").as_deref(),
+            resume_launch_command(AgentKind::OpenCode, "ses_123").as_deref(),
             Some("opencode --session ses_123")
         );
         assert_eq!(
-            resume_launch_command(ManagedAgentKind::Pi, "abc-def").as_deref(),
+            resume_launch_command(AgentKind::Pi, "abc-def").as_deref(),
             Some("pi --session abc-def")
         );
     }
@@ -978,30 +978,30 @@ mod tests {
     #[test]
     fn normalizes_supported_hook_events() {
         assert_eq!(
-            normalize_event(ManagedAgentKind::Claude, "PermissionRequest"),
+            normalize_event(AgentKind::Claude, "PermissionRequest"),
             Some((
                 AgentEventKind::PermissionRequested,
                 AgentLifecycleStatus::WaitingForPermission
             ))
         );
         assert_eq!(
-            normalize_event(ManagedAgentKind::Claude, "UserPromptSubmit"),
+            normalize_event(AgentKind::Claude, "UserPromptSubmit"),
             Some((AgentEventKind::TurnStarted, AgentLifecycleStatus::Running))
         );
         assert_eq!(
-            normalize_event(ManagedAgentKind::Claude, "PreToolUse"),
+            normalize_event(AgentKind::Claude, "PreToolUse"),
             Some((AgentEventKind::ToolStarted, AgentLifecycleStatus::Running))
         );
         assert_eq!(
-            normalize_event(ManagedAgentKind::Claude, "SessionEnd"),
+            normalize_event(AgentKind::Claude, "SessionEnd"),
             Some((AgentEventKind::SessionUpdated, AgentLifecycleStatus::Idle))
         );
         assert_eq!(
-            normalize_event(ManagedAgentKind::Codex, "PostToolUse"),
+            normalize_event(AgentKind::Codex, "PostToolUse"),
             Some((AgentEventKind::ToolCompleted, AgentLifecycleStatus::Running))
         );
         assert_eq!(
-            normalize_event(ManagedAgentKind::OpenCode, "session.error"),
+            normalize_event(AgentKind::OpenCode, "session.error"),
             Some((AgentEventKind::TurnFailed, AgentLifecycleStatus::Failed))
         );
     }

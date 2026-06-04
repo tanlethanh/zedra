@@ -11,7 +11,7 @@ use zedra_host::{agent, identity, utils};
 use zedra_rpc::proto::{
     AgentInfoField, AgentInstalledListResult, AgentListResult, AgentResumeResult,
     AgentSessionSummary, AgentSessionsResult, AgentSummary, AgentUsageSnapshot,
-    InstalledAgentEntry, ManagedAgentKind,
+    InstalledAgentEntry, AgentKind,
 };
 
 #[derive(Debug, Subcommand)]
@@ -262,14 +262,14 @@ impl CliManagedAgentKind {
     }
 }
 
-impl From<CliManagedAgentKind> for ManagedAgentKind {
+impl From<CliManagedAgentKind> for AgentKind {
     fn from(value: CliManagedAgentKind) -> Self {
         match value {
-            CliManagedAgentKind::Claude => ManagedAgentKind::Claude,
-            CliManagedAgentKind::Codex => ManagedAgentKind::Codex,
-            CliManagedAgentKind::OpenCode => ManagedAgentKind::OpenCode,
-            CliManagedAgentKind::Pi => ManagedAgentKind::Pi,
-            CliManagedAgentKind::Hermes => ManagedAgentKind::Hermes,
+            CliManagedAgentKind::Claude => AgentKind::Claude,
+            CliManagedAgentKind::Codex => AgentKind::Codex,
+            CliManagedAgentKind::OpenCode => AgentKind::OpenCode,
+            CliManagedAgentKind::Pi => AgentKind::Pi,
+            CliManagedAgentKind::Hermes => AgentKind::Hermes,
         }
     }
 }
@@ -355,7 +355,7 @@ fn scan_list(args: AgentScanWorkdirArgs) -> Result<()> {
 
 fn scan_sessions(args: AgentScanSessionsArgs) -> Result<()> {
     let workdir = resolve_workdir(&args.workdir);
-    let kind: ManagedAgentKind = args.kind.into();
+    let kind: AgentKind = args.kind.into();
     let started = Instant::now();
     let result = agent::scan_agent_sessions(kind, &workdir, args.limit);
     emit_scan(
@@ -412,11 +412,11 @@ fn scan_bench(args: AgentScanBenchArgs) -> Result<()> {
 
     let mut sessions = std::collections::HashMap::new();
     for kind in [
-        ManagedAgentKind::Claude,
-        ManagedAgentKind::Codex,
-        ManagedAgentKind::OpenCode,
-        ManagedAgentKind::Pi,
-        ManagedAgentKind::Hermes,
+        AgentKind::Claude,
+        AgentKind::Codex,
+        AgentKind::OpenCode,
+        AgentKind::Pi,
+        AgentKind::Hermes,
     ] {
         let started = Instant::now();
         let result = agent::scan_agent_sessions(kind, &workdir, args.limit);
@@ -484,11 +484,11 @@ fn scan_bench(args: AgentScanBenchArgs) -> Result<()> {
     println!();
     println!("{}", render_agent_list(&list));
     for kind in [
-        ManagedAgentKind::Claude,
-        ManagedAgentKind::Codex,
-        ManagedAgentKind::OpenCode,
-        ManagedAgentKind::Pi,
-        ManagedAgentKind::Hermes,
+        AgentKind::Claude,
+        AgentKind::Codex,
+        AgentKind::OpenCode,
+        AgentKind::Pi,
+        AgentKind::Hermes,
     ] {
         println!();
         if let Some(result) = sessions.get(&format!("{kind:?}")) {
@@ -513,8 +513,8 @@ async fn scan_usage(args: AgentScanCommonArgs) -> Result<()> {
     if args.json {
         #[derive(serde::Serialize)]
         struct ScanUsageOutput<'a> {
-            usage: &'a HashMap<ManagedAgentKind, AgentUsageSnapshot>,
-            plans: &'a HashMap<ManagedAgentKind, Vec<AgentInfoField>>,
+            usage: &'a HashMap<AgentKind, AgentUsageSnapshot>,
+            plans: &'a HashMap<AgentKind, Vec<AgentInfoField>>,
         }
         println!(
             "{}",
@@ -524,7 +524,7 @@ async fn scan_usage(args: AgentScanCommonArgs) -> Result<()> {
             })?
         );
     } else {
-        use zedra_rpc::proto::ManagedAgentKind::*;
+        use zedra_rpc::proto::AgentKind::*;
         for kind in [Claude, Codex, OpenCode, Pi, Hermes] {
             let label = match kind {
                 Claude => "Claude",
@@ -1238,7 +1238,7 @@ fn agent_summary_row(agent: &AgentSummary) -> Vec<String> {
     ]
 }
 
-fn render_agent_sessions(kind: ManagedAgentKind, result: &AgentSessionsResult) -> String {
+fn render_agent_sessions(kind: AgentKind, result: &AgentSessionsResult) -> String {
     let rows = result
         .sessions
         .iter()

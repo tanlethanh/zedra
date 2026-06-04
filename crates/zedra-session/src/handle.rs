@@ -616,7 +616,7 @@ impl SessionHandle {
     }
 
     /// Read-only config/memory files for an agent's detail view (Hermes today).
-    pub async fn agent_files(&self, kind: ManagedAgentKind) -> Result<Vec<AgentFile>> {
+    pub async fn agent_files(&self, kind: AgentKind) -> Result<Vec<AgentFile>> {
         let result: AgentFilesResult = self.call(AgentFilesReq { kind }).await?;
         if let Some(e) = result.error {
             return Err(anyhow::anyhow!(e));
@@ -626,7 +626,7 @@ impl SessionHandle {
 
     pub async fn agent_sessions(
         &self,
-        kind: ManagedAgentKind,
+        kind: AgentKind,
         refresh: bool,
         limit: u32,
     ) -> Result<Vec<AgentSessionSummary>> {
@@ -645,7 +645,7 @@ impl SessionHandle {
 
     pub async fn agent_resume_session(
         &self,
-        kind: ManagedAgentKind,
+        kind: AgentKind,
         session_id: String,
         cols: u16,
         rows: u16,

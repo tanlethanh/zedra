@@ -1017,7 +1017,7 @@ pub struct AiPromptResult {
 /// remove, and bump the ALPN when the set changes. A non-versioned forward-compat
 /// decoding scheme is tracked in `docs/PROTOCOL_SPECS.md` §2.4 (issue #140).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum ManagedAgentKind {
+pub enum AgentKind {
     Claude,
     Codex,
     OpenCode,
@@ -1039,7 +1039,7 @@ pub struct AgentListResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentSessionsReq {
-    pub kind: ManagedAgentKind,
+    pub kind: AgentKind,
     /// When false, return the host cache populated at daemon start unless missing.
     #[serde(default)]
     pub refresh: bool,
@@ -1058,7 +1058,7 @@ pub struct AgentSessionsResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentResumeReq {
-    pub kind: ManagedAgentKind,
+    pub kind: AgentKind,
     pub session_id: String,
     pub cols: u16,
     pub rows: u16,
@@ -1094,7 +1094,7 @@ pub struct InstalledAgentEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentSummary {
-    pub kind: ManagedAgentKind,
+    pub kind: AgentKind,
     pub display_name: String,
     pub cli: AgentCliSummary,
     pub setup: AgentSetupSummary,
@@ -1124,7 +1124,7 @@ pub struct AgentInfoField {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentFilesReq {
-    pub kind: ManagedAgentKind,
+    pub kind: AgentKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1208,7 +1208,7 @@ pub struct AgentLiveSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentSessionSummary {
-    pub kind: ManagedAgentKind,
+    pub kind: AgentKind,
     pub session_id: String,
     pub title: Option<String>,
     pub cwd: Option<String>,
@@ -1605,7 +1605,7 @@ mod tests {
         let now = Utc::now();
         let result = AgentListResult {
             agents: vec![AgentSummary {
-                kind: ManagedAgentKind::Claude,
+                kind: AgentKind::Claude,
                 display_name: "Claude".into(),
                 cli: AgentCliSummary {
                     available: true,
@@ -1675,7 +1675,7 @@ mod tests {
     fn agent_session_summary_roundtrip() {
         let now = Utc::now();
         let session = AgentSessionSummary {
-            kind: ManagedAgentKind::Codex,
+            kind: AgentKind::Codex,
             session_id: "019e".into(),
             title: Some("Work session".into()),
             cwd: Some("/repo".into()),

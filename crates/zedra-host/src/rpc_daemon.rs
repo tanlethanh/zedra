@@ -948,7 +948,7 @@ const MAX_AGENT_HOOK_EVENTS: usize = 512;
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AgentHookEventRecord {
     pub seq: u64,
-    pub kind: ManagedAgentKind,
+    pub kind: AgentKind,
     pub provider_event_name: String,
     pub provider_ids: AgentHookProviderIds,
     pub normalized: Option<AgentEventSummary>,

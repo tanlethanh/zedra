@@ -432,13 +432,13 @@ fn epoch_to_dt(secs: f64) -> Option<DateTime<Utc>> {
 
 fn session_summary(session: &HermesSession, cli: &AgentCliSummary) -> AgentSessionSummary {
     AgentSessionSummary {
-        kind: ManagedAgentKind::Hermes,
+        kind: AgentKind::Hermes,
         session_id: session.session_id.clone(),
         title: session_title(session.title.clone()),
         cwd: None,
         created_at: session.created_at,
         last_activity_at: session.last_activity_at,
-        resume: resume_summary(ManagedAgentKind::Hermes, &session.session_id),
+        resume: resume_summary(AgentKind::Hermes, &session.session_id),
         live: empty_session_live(),
         provider: AgentProviderSessionInfo {
             model: session.model.clone(),

@@ -115,37 +115,37 @@ pub fn sql_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-pub fn kind_slug(kind: ManagedAgentKind) -> &'static str {
+pub fn kind_slug(kind: AgentKind) -> &'static str {
     match kind {
-        ManagedAgentKind::Claude => "claude",
-        ManagedAgentKind::Codex => "codex",
-        ManagedAgentKind::OpenCode => "opencode",
-        ManagedAgentKind::Pi => "pi",
-        ManagedAgentKind::Hermes => "hermes",
+        AgentKind::Claude => "claude",
+        AgentKind::Codex => "codex",
+        AgentKind::OpenCode => "opencode",
+        AgentKind::Pi => "pi",
+        AgentKind::Hermes => "hermes",
     }
 }
 
-pub fn program_name(kind: ManagedAgentKind) -> &'static str {
+pub fn program_name(kind: AgentKind) -> &'static str {
     match kind {
-        ManagedAgentKind::Claude => "claude",
-        ManagedAgentKind::Codex => "codex",
-        ManagedAgentKind::OpenCode => "opencode",
-        ManagedAgentKind::Pi => "pi",
-        ManagedAgentKind::Hermes => "hermes",
+        AgentKind::Claude => "claude",
+        AgentKind::Codex => "codex",
+        AgentKind::OpenCode => "opencode",
+        AgentKind::Pi => "pi",
+        AgentKind::Hermes => "hermes",
     }
 }
 
-pub fn display_name(kind: ManagedAgentKind) -> &'static str {
+pub fn display_name(kind: AgentKind) -> &'static str {
     match kind {
-        ManagedAgentKind::Claude => "Claude",
-        ManagedAgentKind::Codex => "Codex",
-        ManagedAgentKind::OpenCode => "OpenCode",
-        ManagedAgentKind::Pi => "Pi",
-        ManagedAgentKind::Hermes => "Hermes",
+        AgentKind::Claude => "Claude",
+        AgentKind::Codex => "Codex",
+        AgentKind::OpenCode => "OpenCode",
+        AgentKind::Pi => "Pi",
+        AgentKind::Hermes => "Hermes",
     }
 }
 
-pub fn capabilities(kind: ManagedAgentKind) -> AgentCapabilities {
+pub fn capabilities(kind: AgentKind) -> AgentCapabilities {
     AgentCapabilities {
         list_sessions: true,
         resume_session: true,
@@ -153,7 +153,7 @@ pub fn capabilities(kind: ManagedAgentKind) -> AgentCapabilities {
         confirm_action: true,
         select_action: true,
         lifecycle_events: true,
-        usage_snapshot: matches!(kind, ManagedAgentKind::Claude),
+        usage_snapshot: matches!(kind, AgentKind::Claude),
     }
 }
 
@@ -171,7 +171,7 @@ pub fn session_title(stored: Option<String>) -> Option<String> {
         .or_else(|| Some("Unknown".to_string()))
 }
 
-pub fn resume_summary(kind: ManagedAgentKind, session_id: &str) -> AgentResumeSummary {
+pub fn resume_summary(kind: AgentKind, session_id: &str) -> AgentResumeSummary {
     let available = !session_id.trim().is_empty();
     AgentResumeSummary {
         available,

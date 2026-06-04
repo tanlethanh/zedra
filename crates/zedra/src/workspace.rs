@@ -7,7 +7,7 @@ use gpui::{prelude::FluentBuilder as _, *};
 use tokio::sync::{broadcast, mpsc};
 use tracing::*;
 use zedra_rpc::ZedraPairingTicket;
-use zedra_rpc::proto::{HostEvent, ManagedAgentKind, SyncSessionResult};
+use zedra_rpc::proto::{HostEvent, AgentKind, SyncSessionResult};
 use zedra_session::{
     ConnectEvent, ConnectPhase, ConnectSnapshot, ReconnectReason, Session, SessionHandle,
     SessionState, signer::ClientSigner,
@@ -601,13 +601,13 @@ fn seed_pending_launch_terminal_meta(
     }
 }
 
-fn managed_agent_command_hint(kind: ManagedAgentKind) -> &'static str {
+fn managed_agent_command_hint(kind: AgentKind) -> &'static str {
     match kind {
-        ManagedAgentKind::Claude => "claude",
-        ManagedAgentKind::Codex => "codex",
-        ManagedAgentKind::OpenCode => "opencode",
-        ManagedAgentKind::Pi => "pi",
-        ManagedAgentKind::Hermes => "hermes",
+        AgentKind::Claude => "claude",
+        AgentKind::Codex => "codex",
+        AgentKind::OpenCode => "opencode",
+        AgentKind::Pi => "pi",
+        AgentKind::Hermes => "hermes",
     }
 }
 
@@ -2017,7 +2017,7 @@ impl Workspace {
 
     fn resume_agent_session(
         &mut self,
-        kind: ManagedAgentKind,
+        kind: AgentKind,
         session_id: String,
         window: &mut Window,
         cx: &mut Context<Self>,

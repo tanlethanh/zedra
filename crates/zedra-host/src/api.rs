@@ -37,7 +37,7 @@ use crate::rpc_daemon::{create_terminal, AgentHookEventRecord, AgentHookProvider
 use crate::session_registry::{PairingSlotMode, ServerSession, SessionRegistry};
 use chrono::Utc;
 use zedra_rpc::proto::{
-    AgentEventSummary, AgentResumeResult, HostEvent, ManagedAgentKind, TerminalColorScheme,
+    AgentEventSummary, AgentResumeResult, HostEvent, AgentKind, TerminalColorScheme,
 };
 use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
@@ -501,7 +501,7 @@ pub struct AgentHookReq {
 struct AgentHookResp {
     ok: bool,
     seq: u64,
-    kind: ManagedAgentKind,
+    kind: AgentKind,
     provider_event_name: String,
     provider_ids: AgentHookProviderIds,
     normalized: Option<AgentEventSummary>,
