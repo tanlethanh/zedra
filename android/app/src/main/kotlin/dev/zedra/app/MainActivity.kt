@@ -154,7 +154,6 @@ class MainActivity : AppCompatActivity() {
     private fun installKeyboardAccessoryInsets() {
         ViewCompat.setOnApplyWindowInsetsListener(rootView) { _, insets ->
             val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-            Log.d(TAG, "[DEBUG-ANDROID-IME] appInsets imeBottom=$imeBottom previous=$keyboardImeBottom")
             keyboardImeBottom = imeBottom
             val params = keyboardAccessoryBar.layoutParams as FrameLayout.LayoutParams
             if (params.bottomMargin != imeBottom) {
@@ -171,12 +170,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateKeyboardAccessoryVisibility() {
-        val hasAccessory = nativeKeyboardAccessoryVisible()
-        val visible = keyboardImeBottom > 0 && hasAccessory
-        Log.d(
-            TAG,
-            "[DEBUG-ANDROID-IME] accessoryVisibility imeBottom=$keyboardImeBottom hasAccessory=$hasAccessory visible=$visible",
-        )
+        val visible = keyboardImeBottom > 0 && nativeKeyboardAccessoryVisible()
         keyboardAccessoryBar.visibility = if (visible) View.VISIBLE else View.GONE
         surfaceView.setKeyboardAccessoryHeight(
             if (visible) keyboardAccessoryBar.layoutParams.height else 0,

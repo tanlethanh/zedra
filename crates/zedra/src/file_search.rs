@@ -81,12 +81,6 @@ impl FileSearchPanel {
 
     /// Clear all state for a fresh open and focus the input.
     pub fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        debug!(
-            "[DEBUG-ANDROID-IME] file_search.open query={:?} results={} keyboard_visible={}",
-            self.query,
-            self.results.len(),
-            window.is_soft_keyboard_visible()
-        );
         self.query.clear();
         self.results.clear();
         self.loading = false;
@@ -103,11 +97,6 @@ impl FileSearchPanel {
         // attached to no active handler while the caret is already focused.
         #[cfg(not(target_os = "android"))]
         window.show_soft_keyboard();
-        debug!(
-            "[DEBUG-ANDROID-IME] file_search.open focused input; android_deferred_keyboard={} keyboard_visible={}",
-            cfg!(target_os = "android"),
-            window.is_soft_keyboard_visible()
-        );
         cx.notify();
     }
 
@@ -259,10 +248,6 @@ impl FileSearchPanel {
     }
 
     fn clear_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        debug!(
-            "[DEBUG-ANDROID-IME] file_search.clear_query keyboard_visible={}",
-            window.is_soft_keyboard_visible()
-        );
         self.query.clear();
         self.results.clear();
         self.loading = false;
@@ -276,11 +261,6 @@ impl FileSearchPanel {
         input_focus.focus(window, cx);
         #[cfg(not(target_os = "android"))]
         window.show_soft_keyboard();
-        debug!(
-            "[DEBUG-ANDROID-IME] file_search.clear_query focused input; android_deferred_keyboard={} keyboard_visible={}",
-            cfg!(target_os = "android"),
-            window.is_soft_keyboard_visible()
-        );
         cx.notify();
     }
 }

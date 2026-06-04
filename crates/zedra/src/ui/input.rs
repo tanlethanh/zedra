@@ -573,24 +573,14 @@ impl Input {
     }
 
     fn handle_press(&mut self, _event: &PressEvent, window: &mut Window, cx: &mut Context<Self>) {
-        tracing::debug!(
-            "[DEBUG-ANDROID-IME] input.handle_press focused={} toggle={} keyboard_visible={} value_len={}",
-            self.focus_handle.is_focused(window),
-            self.toggle_keyboard_on_press,
-            window.is_soft_keyboard_visible(),
-            self.value.len()
-        );
         if self.focus_handle.is_focused(window) && self.toggle_keyboard_on_press {
             if window.is_soft_keyboard_visible() {
-                tracing::debug!("[DEBUG-ANDROID-IME] input.handle_press hide_keyboard");
                 window.hide_soft_keyboard();
             } else {
-                tracing::debug!("[DEBUG-ANDROID-IME] input.handle_press show_keyboard");
                 window.show_soft_keyboard();
             }
         } else {
             self.focus_handle.focus(window, cx);
-            tracing::debug!("[DEBUG-ANDROID-IME] input.handle_press focus_and_show_keyboard");
             window.show_soft_keyboard();
         }
         cx.notify();
@@ -598,10 +588,6 @@ impl Input {
 
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.hide_keyboard_on_submit {
-            tracing::debug!(
-                "[DEBUG-ANDROID-IME] input.submit hide_keyboard value_len={}",
-                self.value.len()
-            );
             window.hide_soft_keyboard();
         }
         cx.emit(InputSubmit {
@@ -839,27 +825,13 @@ impl EntityInputHandler for Input {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        tracing::debug!(
-            "[DEBUG-ANDROID-IME] input.replace_text range={:?} text={:?} value_before={:?}",
-            range_utf16,
-            text,
-            self.value
-        );
         if self.dictation_active {
             let range = self.active_replacement_range(range_utf16);
             self.replace_range_with_marked_text(range, text, None, cx);
-            tracing::debug!(
-                "[DEBUG-ANDROID-IME] input.replace_text dictation value_after={:?}",
-                self.value
-            );
             return;
         }
 
         if self.consume_or_reconcile_dictation_cleanup(range_utf16.clone(), text, cx) {
-            tracing::debug!(
-                "[DEBUG-ANDROID-IME] input.replace_text consumed_dictation value_after={:?}",
-                self.value
-            );
             return;
         }
 
@@ -875,18 +847,10 @@ impl EntityInputHandler for Input {
                 .map(|ch| if ch == '\n' || ch == '\r' { ' ' } else { ch })
                 .collect::<String>();
             self.replace_range_with_text(range, &text, cx);
-            tracing::debug!(
-                "[DEBUG-ANDROID-IME] input.replace_text sanitized value_after={:?}",
-                self.value
-            );
             return;
         }
 
         self.replace_range_with_text(range, text, cx);
-        tracing::debug!(
-            "[DEBUG-ANDROID-IME] input.replace_text value_after={:?}",
-            self.value
-        );
     }
 
     fn replace_and_mark_text_in_range(
@@ -897,13 +861,6 @@ impl EntityInputHandler for Input {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        tracing::debug!(
-            "[DEBUG-ANDROID-IME] input.mark_text replacement={:?} marked={:?} selected={:?} value_before={:?}",
-            replacement_range_utf16,
-            marked_text,
-            selected_range_utf16,
-            self.value
-        );
         if !self.dictation_active && self.has_committed_dictation_pending_cleanup() {
             self.clear_committed_dictation_cleanup();
         }
@@ -912,11 +869,6 @@ impl EntityInputHandler for Input {
         // Replacing it as committed text breaks Vietnamese/Japanese updates.
         let range = self.active_replacement_range(replacement_range_utf16);
         self.replace_range_with_marked_text(range, marked_text, selected_range_utf16, cx);
-        tracing::debug!(
-            "[DEBUG-ANDROID-IME] input.mark_text value_after={:?} marked_range={:?}",
-            self.value,
-            self.marked_range
-        );
     }
 
     fn insert_dictation_result_placeholder(
