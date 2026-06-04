@@ -120,7 +120,7 @@ impl AgentCache {
         self: &Arc<Self>,
         kind: AgentKind,
         workdir: &Path,
-        session: Option<&Arc<ServerSession>>,
+        _session: Option<&Arc<ServerSession>>,
         limit: u32,
         refresh: bool,
     ) -> AgentSessionsResult {
@@ -129,7 +129,7 @@ impl AgentCache {
         } else {
             self.ensure_sessions(kind, workdir, limit).await;
         }
-        if let Some(mut result) = self
+        if let Some(result) = self
             .inner
             .lock()
             .await
@@ -137,7 +137,6 @@ impl AgentCache {
             .get(&kind)
             .map(|cached| cached.result.clone())
         {
-            agent::merge_live_into_sessions(&mut result.sessions, kind, session).await;
             return result;
         }
         AgentSessionsResult {
@@ -288,7 +287,7 @@ impl AgentCache {
 
     async fn agent_list_result(
         self: &Arc<Self>,
-        session: Option<&Arc<ServerSession>>,
+        _session: Option<&Arc<ServerSession>>,
     ) -> AgentListResult {
         let (result, versions, usage, plans) = {
             let inner = self.inner.lock().await;
@@ -308,14 +307,13 @@ impl AgentCache {
         agent::apply_cached_cli_versions(&mut result.agents, &versions);
         agent::apply_cached_account_usage(&mut result.agents, &usage);
         agent::apply_cached_account_plans(&mut result.agents, &plans);
-        agent::merge_live_into_agent_list(&mut result.agents, session).await;
         result
     }
 
     async fn cached_agent_summary(
         self: &Arc<Self>,
         kind: AgentKind,
-        session: Option<&Arc<ServerSession>>,
+        _session: Option<&Arc<ServerSession>>,
     ) -> Option<AgentSummary> {
         let (mut agents, versions, usage, plans) = {
             let inner = self.inner.lock().await;
@@ -330,10 +328,7 @@ impl AgentCache {
         agent::apply_cached_cli_versions(&mut agents, &versions);
         agent::apply_cached_account_usage(&mut agents, &usage);
         agent::apply_cached_account_plans(&mut agents, &plans);
-        let summary = agents.into_iter().find(|agent| agent.kind == kind)?;
-        let mut agents = [summary];
-        agent::merge_live_into_agent_list(&mut agents, session).await;
-        Some(agents.into_iter().next()?)
+        agents.into_iter().find(|agent| agent.kind == kind)
     }
 
     async fn request_version_refresh(self: &Arc<Self>, session: Option<Arc<ServerSession>>) {

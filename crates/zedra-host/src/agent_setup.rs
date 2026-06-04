@@ -19,11 +19,7 @@ pub const fn hooks_enabled() -> bool {
     cfg!(debug_assertions)
 }
 
-pub fn setup_summary(
-    kind: AgentKind,
-    cli_available: bool,
-    workdir: &Path,
-) -> AgentSetupSummary {
+pub fn setup_summary(kind: AgentKind, cli_available: bool, workdir: &Path) -> AgentSetupSummary {
     if !cli_available {
         return AgentSetupSummary {
             state: AgentSetupState::MissingCli,

@@ -180,27 +180,6 @@ pub fn resume_summary(kind: AgentKind, session_id: &str) -> AgentResumeSummary {
     }
 }
 
-pub fn empty_session_live() -> AgentSessionLiveSummary {
-    AgentSessionLiveSummary {
-        terminal_id: None,
-        status: AgentLifecycleStatus::Unknown,
-        pending_action_count: 0,
-        current_turn_id: None,
-        latest_event: None,
-    }
-}
-
-pub fn malformed_warning(count: usize) -> Vec<AgentWarning> {
-    if count == 0 {
-        Vec::new()
-    } else {
-        vec![AgentWarning {
-            code: "malformed_records".to_string(),
-            message: format!("{count} malformed records were ignored"),
-        }]
-    }
-}
-
 pub fn shell_quote(value: &str) -> String {
     if value
         .chars()

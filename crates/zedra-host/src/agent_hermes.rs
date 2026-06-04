@@ -11,8 +11,8 @@ use serde_json::Value;
 use zedra_rpc::proto::*;
 
 use crate::agent_utils::{
-    command_on_path, empty_session_live, file_size_bytes, home_path, info_field, mtime_unix_secs,
-    read_json_file, resume_summary, session_title, user_message_text,
+    command_on_path, file_size_bytes, home_path, info_field, mtime_unix_secs, read_json_file, resume_summary,
+    session_title, user_message_text,
 };
 
 /// Cap per-file content shipped to the client. Hermes `.env` and memory files
@@ -430,7 +430,7 @@ fn epoch_to_dt(secs: f64) -> Option<DateTime<Utc>> {
     DateTime::<Utc>::from_timestamp(secs.trunc() as i64, nanos)
 }
 
-fn session_summary(session: &HermesSession, cli: &AgentCliSummary) -> AgentSessionSummary {
+fn session_summary(session: &HermesSession, _cli: &AgentCliSummary) -> AgentSessionSummary {
     AgentSessionSummary {
         kind: AgentKind::Hermes,
         session_id: session.session_id.clone(),
@@ -439,20 +439,7 @@ fn session_summary(session: &HermesSession, cli: &AgentCliSummary) -> AgentSessi
         created_at: session.created_at,
         last_activity_at: session.last_activity_at,
         resume: resume_summary(AgentKind::Hermes, &session.session_id),
-        live: empty_session_live(),
-        provider: AgentProviderSessionInfo {
-            model: session.model.clone(),
-            permission_mode: None,
-            cli_version: cli.version.clone(),
-            origin: None,
-            // The platform the session ran on (cli / acp / telegram / …).
-            source: session.source.clone(),
-            entrypoint: None,
-            native_project_id: None,
-            model_provider: session.model_provider.clone(),
-        },
         git: None,
-        // Per-session spend, when the host tracked a cost.
         usage: session
             .cost_usd
             .filter(|c| *c > 0.0)
@@ -460,25 +447,6 @@ fn session_summary(session: &HermesSession, cli: &AgentCliSummary) -> AgentSessi
                 total_cost_usd: Some(cost),
                 ..Default::default()
             }),
-        counters: AgentSessionCounters {
-            record_count: session.message_count,
-            message_count: session.message_count,
-            turn_count: 0,
-            tool_count: session.tool_count,
-            tool_failure_count: 0,
-            hook_success_count: 0,
-            hook_failure_count: 0,
-            malformed_record_count: 0,
-        },
-        flags: AgentSessionFlags {
-            is_sidechain: false,
-            is_subagent: false,
-            is_archived: false,
-            historical_only: true,
-            live_bound: false,
-        },
-        data_sources: vec![AgentDataSource::HistoricalScan],
-        warnings: Vec::new(),
         transcript_size_bytes: session.transcript_path.as_deref().and_then(file_size_bytes),
     }
 }

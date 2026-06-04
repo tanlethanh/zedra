@@ -8,8 +8,8 @@ use serde_json::Value;
 use zedra_rpc::proto::*;
 
 use crate::agent_utils::{
-    command_on_path, empty_session_live, file_size_bytes, home_path, info_field, mtime_unix_secs,
-    parse_rfc3339, read_json_file, resume_summary, session_title, string_field, user_message_text,
+    command_on_path, file_size_bytes, home_path, info_field, mtime_unix_secs, parse_rfc3339, read_json_file,
+    resume_summary, session_title, string_field, user_message_text,
 };
 
 const LIST_HEAD_SCAN_MAX_LINES: usize = 32;
@@ -309,7 +309,7 @@ fn read_session_file(
     })
 }
 
-fn session_summary(file: &PiSessionFile, cli: &AgentCliSummary) -> AgentSessionSummary {
+fn session_summary(file: &PiSessionFile, _cli: &AgentCliSummary) -> AgentSessionSummary {
     AgentSessionSummary {
         kind: AgentKind::Pi,
         session_id: file.session_id.clone(),
@@ -318,38 +318,8 @@ fn session_summary(file: &PiSessionFile, cli: &AgentCliSummary) -> AgentSessionS
         created_at: file.created_at,
         last_activity_at: file.last_activity_at,
         resume: resume_summary(AgentKind::Pi, &file.session_id),
-        live: empty_session_live(),
-        provider: AgentProviderSessionInfo {
-            model: None,
-            permission_mode: None,
-            cli_version: cli.version.clone(),
-            origin: None,
-            source: None,
-            entrypoint: None,
-            native_project_id: None,
-            model_provider: None,
-        },
         git: None,
         usage: None,
-        counters: AgentSessionCounters {
-            record_count: file.message_count,
-            message_count: file.message_count,
-            turn_count: 0,
-            tool_count: 0,
-            tool_failure_count: 0,
-            hook_success_count: 0,
-            hook_failure_count: 0,
-            malformed_record_count: file.malformed_line_count,
-        },
-        flags: AgentSessionFlags {
-            is_sidechain: false,
-            is_subagent: false,
-            is_archived: false,
-            historical_only: true,
-            live_bound: false,
-        },
-        data_sources: vec![AgentDataSource::HistoricalScan],
-        warnings: crate::agent_utils::malformed_warning(file.malformed_line_count as usize),
         transcript_size_bytes: file_size_bytes(&file.path),
     }
 }
@@ -538,11 +508,13 @@ mod tests {
     #[test]
     fn auth_value_covers_oauth_and_api_key() {
         let future = Utc::now().timestamp_millis() + 3 * 86_400 * 1000;
-        assert!(auth_value(&PiAuthEntry {
-            kind: "oauth".into(),
-            expires: Some(future),
-        })
-        .starts_with("OAuth · expires in"));
+        assert!(
+            auth_value(&PiAuthEntry {
+                kind: "oauth".into(),
+                expires: Some(future),
+            })
+            .starts_with("OAuth · expires in")
+        );
         assert_eq!(
             auth_value(&PiAuthEntry {
                 kind: "oauth".into(),

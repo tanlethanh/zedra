@@ -9,7 +9,7 @@ use crate::agent_setup::setup_summary;
 use crate::agent_utils::{
     capabilities, display_name, first_non_empty_line, program_name, shell_quote,
 };
-use crate::session_registry::{HostShellState, HostTermMeta, ServerSession};
+use crate::session_registry::ServerSession;
 use chrono::Utc;
 use std::collections::HashMap;
 use std::path::Path;
@@ -130,14 +130,8 @@ fn degraded_agent_summary(kind: AgentKind, workdir: &Path) -> AgentSummary {
         sessions: AgentSessionCounts {
             total: 0,
             resumable: 0,
-            active_live: 0,
             latest_session_id: None,
             latest_session_title: None,
-        },
-        live: AgentLiveSummary {
-            active_terminal_ids: Vec::new(),
-            pending_action_count: 0,
-            latest_event: None,
         },
         last_activity_at: None,
         updated_at: Utc::now(),
@@ -151,11 +145,7 @@ fn degraded_agent_summary(kind: AgentKind, workdir: &Path) -> AgentSummary {
     }
 }
 
-pub fn scan_agent_sessions(
-    kind: AgentKind,
-    workdir: &Path,
-    limit: u32,
-) -> AgentSessionsResult {
+pub fn scan_agent_sessions(kind: AgentKind, workdir: &Path, limit: u32) -> AgentSessionsResult {
     let limit = agent_session_limit(limit);
     match sessions_for_kind_blocking(kind, workdir, limit) {
         Ok((sessions, total)) => AgentSessionsResult {
@@ -196,37 +186,6 @@ pub async fn list_agent_sessions(
     refresh: bool,
 ) -> AgentSessionsResult {
     cache.sessions(kind, workdir, session, limit, refresh).await
-}
-
-pub async fn merge_live_into_agent_list(
-    agents: &mut [AgentSummary],
-    session: Option<&Arc<ServerSession>>,
-) {
-    for agent in agents {
-        agent.live = live_summary(agent.kind, session).await;
-        agent.sessions.active_live = agent.live.active_terminal_ids.len();
-    }
-}
-
-pub async fn merge_live_into_sessions(
-    sessions: &mut [AgentSessionSummary],
-    kind: AgentKind,
-    session: Option<&Arc<ServerSession>>,
-) {
-    let live = live_sessions(kind, session).await;
-    for summary in sessions {
-        if let Some(live_state) = live.by_session.get(&summary.session_id) {
-            summary.live = live_state.clone();
-            summary.flags.live_bound = true;
-            summary.flags.historical_only = false;
-            if !summary
-                .data_sources
-                .contains(&AgentDataSource::TerminalMetadata)
-            {
-                summary.data_sources.push(AgentDataSource::TerminalMetadata);
-            }
-        }
-    }
 }
 
 pub fn resume_launch_command(kind: AgentKind, session_id: &str) -> Option<String> {
@@ -304,14 +263,8 @@ fn agent_summary_scan(kind: AgentKind, workdir: &Path) -> AgentSummary {
         sessions: AgentSessionCounts {
             total: counts.total,
             resumable: counts.resumable,
-            active_live: 0,
             latest_session_id: counts.latest_session_id.clone(),
             latest_session_title: counts.latest_session_title.clone(),
-        },
-        live: AgentLiveSummary {
-            active_terminal_ids: Vec::new(),
-            pending_action_count: 0,
-            latest_event: None,
         },
         last_activity_at: counts.last_activity_at,
         updated_at: now,
@@ -707,108 +660,6 @@ fn agent_list_cli_summary(kind: AgentKind, workdir: &Path) -> AgentCliSummary {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Live binding (terminal -> agent session)
-// ---------------------------------------------------------------------------
-
-#[derive(Default)]
-struct LiveAgentSessions {
-    active_terminal_ids: Vec<String>,
-    by_session: HashMap<String, AgentSessionLiveSummary>,
-}
-
-async fn live_summary(
-    kind: AgentKind,
-    session: Option<&Arc<ServerSession>>,
-) -> AgentLiveSummary {
-    let live = live_sessions(kind, session).await;
-    AgentLiveSummary {
-        active_terminal_ids: live.active_terminal_ids,
-        pending_action_count: 0,
-        latest_event: None,
-    }
-}
-
-async fn live_sessions(
-    kind: AgentKind,
-    session: Option<&Arc<ServerSession>>,
-) -> LiveAgentSessions {
-    let Some(session) = session else {
-        return LiveAgentSessions::default();
-    };
-    let terms = session.terminals.lock().await;
-    let mut live = LiveAgentSessions::default();
-    for (terminal_id, term) in terms.iter() {
-        let Some(meta) = term.host_meta.lock().ok().map(snapshot_meta) else {
-            continue;
-        };
-        if !terminal_matches(kind, &meta) {
-            continue;
-        }
-        live.active_terminal_ids.push(terminal_id.clone());
-        if let Some(session_id) = infer_session_id(kind, &meta) {
-            live.by_session.insert(
-                session_id.clone(),
-                AgentSessionLiveSummary {
-                    terminal_id: Some(terminal_id.clone()),
-                    status: lifecycle_from_shell(meta.shell_state),
-                    pending_action_count: 0,
-                    current_turn_id: None,
-                    latest_event: Some(AgentEventSummary {
-                        kind: AgentEventKind::SessionUpdated,
-                        status: lifecycle_from_shell(meta.shell_state),
-                        at: None,
-                        terminal_id: Some(terminal_id.clone()),
-                        session_id: Some(session_id),
-                        turn_id: None,
-                        tool_name: None,
-                    }),
-                },
-            );
-        }
-    }
-    live.active_terminal_ids.sort();
-    live
-}
-
-fn snapshot_meta(meta: std::sync::MutexGuard<'_, HostTermMeta>) -> HostTermMetaSnapshot {
-    HostTermMetaSnapshot {
-        icon_name: meta.icon_name.clone(),
-        current_command: meta.current_command.clone(),
-        shell_state: meta.shell_state,
-    }
-}
-
-struct HostTermMetaSnapshot {
-    icon_name: Option<String>,
-    current_command: Option<String>,
-    shell_state: HostShellState,
-}
-
-fn terminal_matches(kind: AgentKind, meta: &HostTermMetaSnapshot) -> bool {
-    let needle = program_name(kind);
-    meta.icon_name
-        .as_deref()
-        .is_some_and(|icon| icon.to_ascii_lowercase().contains(needle))
-        || meta
-            .current_command
-            .as_deref()
-            .is_some_and(|command| dispatch(kind).command_matches(command))
-}
-
-fn command_program_is(command: &str, program: &str) -> bool {
-    command
-        .split_whitespace()
-        .next()
-        .is_some_and(|first| first == program || first.ends_with(&format!("/{program}")))
-}
-
-fn infer_session_id(kind: AgentKind, meta: &HostTermMetaSnapshot) -> Option<String> {
-    let command = meta.current_command.as_deref()?;
-    let tokens = command.split_whitespace().collect::<Vec<_>>();
-    dispatch(kind).infer_session_id(&tokens)
-}
-
 fn value_after_flag(tokens: &[&str], flag: &str) -> Option<String> {
     let prefix = format!("{flag}=");
     for (index, token) in tokens.iter().enumerate() {
@@ -824,12 +675,11 @@ fn value_after_flag(tokens: &[&str], flag: &str) -> Option<String> {
     None
 }
 
-fn lifecycle_from_shell(state: HostShellState) -> AgentLifecycleStatus {
-    match state {
-        HostShellState::Unknown => AgentLifecycleStatus::Unknown,
-        HostShellState::Idle => AgentLifecycleStatus::Idle,
-        HostShellState::Running => AgentLifecycleStatus::Running,
-    }
+fn command_program_is(command: &str, program: &str) -> bool {
+    command
+        .split_whitespace()
+        .next()
+        .is_some_and(|first| first == program || first.ends_with(&format!("/{program}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -1015,4 +865,16 @@ mod tests {
             Some("Fix terminal paste")
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Hook payload helpers
+// ---------------------------------------------------------------------------
+
+pub fn hook_string(payload: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| payload.get(*key).and_then(|value| value.as_str()))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
