@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Subcommand};
+use serde_json::{json, Value};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -17,6 +18,8 @@ const SKILL_NAMES: &[&str] = &[
     "zedra-stop",
     "zedra-terminal",
 ];
+const ZEDRA_HOOK_SOURCE: &str = "zedra-agent-hook";
+const OPENCODE_HOOK_PLUGIN: &str = "zedra-agent-hooks.mjs";
 
 #[derive(Clone, Copy, Debug, Subcommand)]
 pub enum SetupAgent {
@@ -104,6 +107,7 @@ fn setup_claude_install() -> Result<()> {
         "claude",
         &["plugin", "install", "--scope", "user", CLAUDE_PLUGIN],
     )?;
+    install_claude_hooks()?;
 
     println!();
     println!("Claude setup complete.");
@@ -129,6 +133,7 @@ fn setup_claude_remove() -> Result<()> {
     )? {
         println!("Continuing; Zedra marketplace may already be removed.");
     }
+    remove_claude_hooks()?;
 
     println!();
     println!("Claude setup removed.");
@@ -147,6 +152,7 @@ async fn setup_codex(action: SetupAction, _assume_yes: bool) -> Result<()> {
 async fn setup_codex_install() -> Result<()> {
     let skills_dir = codex_skills_dir()?;
     install_skills_from_raw("Codex", &skills_dir, "Installing").await?;
+    install_codex_hooks()?;
 
     println!();
     println!("Codex setup complete.");
@@ -158,6 +164,7 @@ async fn setup_codex_install() -> Result<()> {
 fn setup_codex_remove() -> Result<()> {
     let skills_dir = codex_skills_dir()?;
     remove_installed_skills("Codex", &skills_dir)?;
+    remove_codex_hooks()?;
 
     println!();
     println!("Codex setup removed.");
@@ -175,6 +182,7 @@ async fn setup_opencode(action: SetupAction) -> Result<()> {
 async fn setup_opencode_install() -> Result<()> {
     let skills_dir = opencode_skills_dir()?;
     install_skills_from_raw("OpenCode", &skills_dir, "Installing").await?;
+    install_opencode_hooks()?;
 
     println!();
     println!("OpenCode setup complete.");
@@ -186,6 +194,7 @@ async fn setup_opencode_install() -> Result<()> {
 fn setup_opencode_remove() -> Result<()> {
     let skills_dir = opencode_skills_dir()?;
     remove_installed_skills("OpenCode", &skills_dir)?;
+    remove_opencode_hooks()?;
 
     println!();
     println!("OpenCode setup removed.");
@@ -316,6 +325,265 @@ fn print_success_detail(detail: &str) {
 
 fn print_error_detail(detail: &str) {
     utils::println_error(detail);
+}
+
+fn install_claude_hooks() -> Result<()> {
+    let path = home_dir()?.join(".claude").join("settings.json");
+    merge_command_hooks(
+        &path,
+        &[
+            ("UserPromptSubmit", None, 2),
+            ("PermissionRequest", Some("*"), 2),
+            ("Stop", None, 2),
+            ("TaskCompleted", None, 2),
+            ("SessionEnd", None, 2),
+        ],
+        "Claude",
+    )
+}
+
+fn remove_claude_hooks() -> Result<()> {
+    remove_command_hooks(&home_dir()?.join(".claude").join("settings.json"), "Claude")
+}
+
+fn install_codex_hooks() -> Result<()> {
+    let path = home_dir()?.join(".codex").join("hooks.json");
+    merge_command_hooks(
+        &path,
+        &[
+            ("UserPromptSubmit", None, 2),
+            ("PermissionRequest", Some("*"), 30),
+            ("Stop", None, 2),
+        ],
+        "Codex",
+    )
+}
+
+fn remove_codex_hooks() -> Result<()> {
+    remove_command_hooks(&home_dir()?.join(".codex").join("hooks.json"), "Codex")
+}
+
+fn merge_command_hooks(
+    path: &Path,
+    events: &[(&str, Option<&str>, u64)],
+    agent: &str,
+) -> Result<()> {
+    let mut root = read_json_object(path)?;
+    let command = hook_command(agent)?;
+    let hooks = root
+        .as_object_mut()
+        .expect("read_json_object returns object")
+        .entry("hooks")
+        .or_insert_with(|| json!({}));
+    let hooks = hooks
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("{} hooks must be a JSON object", path.display()))?;
+
+    for (event, matcher, timeout) in events {
+        let entries = hooks
+            .entry((*event).to_string())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        let entries = entries
+            .as_array_mut()
+            .ok_or_else(|| anyhow!("{event} hooks must be a JSON array"))?;
+        if hook_entry_index(entries, agent).is_some() {
+            continue;
+        }
+        let mut entry = json!({
+            "_source": ZEDRA_HOOK_SOURCE,
+            "hooks": [{
+                "type": "command",
+                "command": command,
+                "timeout": timeout
+            }]
+        });
+        if let Some(matcher) = matcher {
+            entry["matcher"] = Value::String((*matcher).to_string());
+            if *event == "PermissionRequest" {
+                entry["hooks"][0]["statusMessage"] =
+                    Value::String("Waiting for Zedra approval".to_string());
+            }
+        }
+        entries.push(entry);
+    }
+
+    write_json_file(path, &root)?;
+    print_step_label("hooks");
+    print_success_detail(&format!("write {}", path.display()));
+    Ok(())
+}
+
+fn remove_command_hooks(path: &Path, agent: &str) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut root = read_json_object(path)?;
+    let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) else {
+        return Ok(());
+    };
+    for value in hooks.values_mut() {
+        if let Some(entries) = value.as_array_mut() {
+            entries.retain(|entry| !is_zedra_hook_entry(entry, agent));
+        }
+    }
+    hooks.retain(|_, value| value.as_array().is_none_or(|entries| !entries.is_empty()));
+    write_json_file(path, &root)?;
+    print_step_label("hooks");
+    print_success_detail(&format!("write {}", path.display()));
+    Ok(())
+}
+
+fn install_opencode_hooks() -> Result<()> {
+    let dir = home_dir()?.join(".config").join("opencode");
+    install_opencode_hooks_in_dir(&dir, &hook_binary()?)
+}
+
+fn install_opencode_hooks_in_dir(dir: &Path, binary: &str) -> Result<()> {
+    let plugin_path = dir.join(OPENCODE_HOOK_PLUGIN);
+    fs::create_dir_all(&dir)?;
+    fs::write(&plugin_path, opencode_hook_plugin(binary)?)?;
+    let config_path = dir.join("opencode.jsonc");
+    let mut root = read_json_object(&config_path)?;
+    let plugins = root
+        .as_object_mut()
+        .expect("read_json_object returns object")
+        .entry("plugin")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let plugins = plugins
+        .as_array_mut()
+        .ok_or_else(|| anyhow!("{} plugin must be a JSON array", config_path.display()))?;
+    let plugin_entry = plugin_path.display().to_string();
+    if !plugins
+        .iter()
+        .any(|value| value.as_str() == Some(&plugin_entry))
+    {
+        plugins.push(Value::String(plugin_entry));
+    }
+    write_json_file(&config_path, &root)?;
+    print_step_label("hooks");
+    print_success_detail(&format!("write {}", plugin_path.display()));
+    Ok(())
+}
+
+fn remove_opencode_hooks() -> Result<()> {
+    let dir = home_dir()?.join(".config").join("opencode");
+    remove_opencode_hooks_in_dir(&dir)
+}
+
+fn remove_opencode_hooks_in_dir(dir: &Path) -> Result<()> {
+    let plugin_path = dir.join(OPENCODE_HOOK_PLUGIN);
+    let config_path = dir.join("opencode.jsonc");
+    if config_path.exists() {
+        let mut root = read_json_object(&config_path)?;
+        if let Some(plugins) = root.get_mut("plugin").and_then(Value::as_array_mut) {
+            let plugin_entry = plugin_path.display().to_string();
+            plugins.retain(|value| value.as_str() != Some(&plugin_entry));
+        }
+        write_json_file(&config_path, &root)?;
+    }
+    if remove_skill_path(&plugin_path)? {
+        print_step_label("hooks");
+        print_success_detail(&format!("remove {}", plugin_path.display()));
+    }
+    Ok(())
+}
+
+fn hook_command(agent: &str) -> Result<String> {
+    Ok(format!(
+        "{} agent-hook {}",
+        shell_quote(&hook_binary()?),
+        agent
+    ))
+}
+
+fn hook_binary() -> Result<String> {
+    Ok(std::env::current_exe()
+        .context("resolve current zedra binary")?
+        .display()
+        .to_string())
+}
+
+fn read_json_object(path: &Path) -> Result<Value> {
+    if !path.exists() {
+        return Ok(json!({}));
+    }
+    let contents = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let trimmed = contents.trim();
+    if trimmed.is_empty() {
+        return Ok(json!({}));
+    }
+    let value: Value =
+        serde_json::from_str(trimmed).with_context(|| format!("parse {}", path.display()))?;
+    if value.is_object() {
+        Ok(value)
+    } else {
+        bail!("{} must contain a JSON object", path.display());
+    }
+}
+
+fn write_json_file(path: &Path, value: &Value) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+fn hook_entry_index(entries: &[Value], agent: &str) -> Option<usize> {
+    entries
+        .iter()
+        .position(|entry| is_zedra_hook_entry(entry, agent))
+}
+
+fn is_zedra_hook_entry(entry: &Value, agent: &str) -> bool {
+    entry.get("_source").and_then(Value::as_str) == Some(ZEDRA_HOOK_SOURCE)
+        && entry
+            .get("hooks")
+            .and_then(Value::as_array)
+            .is_some_and(|hooks| {
+                hooks.iter().any(|hook| {
+                    hook.get("command")
+                        .and_then(Value::as_str)
+                        .is_some_and(|command| command.contains(&format!(" agent-hook {agent}")))
+                })
+            })
+}
+
+fn opencode_hook_plugin(binary: &str) -> Result<String> {
+    let binary = serde_json::to_string(binary)?;
+    Ok(format!(
+        r#"import {{ spawnSync }} from "node:child_process";
+
+const zedra = {binary};
+
+function send(event, payload = {{}}) {{
+  spawnSync(zedra, ["agent-hook", "opencode"], {{
+    input: JSON.stringify({{ event, ...payload }}),
+    stdio: ["pipe", "ignore", "ignore"],
+    timeout: 2000,
+  }});
+}}
+
+export default async function zedraAgentHooks() {{
+  return {{
+    event: async (input) => send(input.event?.type ?? "event", input),
+    "chat.message": async (input) => send("chat.message", input),
+    "permission.ask": async (input) => send("permission.ask", input),
+    "tool.execute.after": async (input) => {{
+      if (String(input.tool ?? "").toLowerCase().includes("selection")) {{
+        send("selection", input);
+      }}
+    }},
+  }};
+}}
+"#
+    ))
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 async fn install_skills_from_raw(agent_name: &str, skills_dir: &Path, verb: &str) -> Result<()> {
@@ -551,5 +819,121 @@ mod tests {
     fn setup_action_from_remove_flag() {
         assert_eq!(SetupAction::from_remove_flag(false), SetupAction::Install);
         assert_eq!(SetupAction::from_remove_flag(true), SetupAction::Remove);
+    }
+
+    #[test]
+    fn command_hook_merge_is_idempotent_and_preserves_existing_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&json!({
+                "hooks": {
+                    "Stop": [{
+                        "hooks": [{
+                            "type": "command",
+                            "command": "/usr/bin/true"
+                        }]
+                    }]
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        merge_command_hooks(
+            &path,
+            &[("Stop", None, 2), ("PermissionRequest", Some("*"), 30)],
+            "Codex",
+        )
+        .unwrap();
+        merge_command_hooks(
+            &path,
+            &[("Stop", None, 2), ("PermissionRequest", Some("*"), 30)],
+            "Codex",
+        )
+        .unwrap();
+
+        let root = read_json_object(&path).unwrap();
+        let stop = root["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 2);
+        assert_eq!(
+            stop.iter()
+                .filter(|entry| is_zedra_hook_entry(entry, "Codex"))
+                .count(),
+            1
+        );
+        assert!(root["hooks"]["PermissionRequest"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains(" agent-hook Codex"));
+        assert_eq!(
+            root["hooks"]["PermissionRequest"][0]["hooks"][0]["statusMessage"],
+            "Waiting for Zedra approval"
+        );
+    }
+
+    #[test]
+    fn command_hook_remove_only_deletes_zedra_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        merge_command_hooks(&path, &[("Stop", None, 2)], "Claude").unwrap();
+        let mut root = read_json_object(&path).unwrap();
+        root["hooks"]["Stop"].as_array_mut().unwrap().push(json!({
+            "hooks": [{
+                "type": "command",
+                "command": "/usr/bin/true"
+            }]
+        }));
+        write_json_file(&path, &root).unwrap();
+
+        remove_command_hooks(&path, "Claude").unwrap();
+
+        let root = read_json_object(&path).unwrap();
+        let stop = root["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 1);
+        assert_eq!(stop[0]["hooks"][0]["command"], "/usr/bin/true");
+    }
+
+    #[test]
+    fn opencode_hook_install_and_remove_updates_plugin_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("opencode.jsonc");
+        fs::write(
+            &config_path,
+            serde_json::to_vec_pretty(&json!({
+                "plugin": ["existing-plugin"]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        install_opencode_hooks_in_dir(dir.path(), "/tmp/zedra").unwrap();
+        install_opencode_hooks_in_dir(dir.path(), "/tmp/zedra").unwrap();
+
+        let plugin_path = dir.path().join(OPENCODE_HOOK_PLUGIN);
+        let plugin = fs::read_to_string(&plugin_path).unwrap();
+        assert!(plugin.contains(r#"spawnSync(zedra, ["agent-hook", "opencode"]"#));
+
+        let root = read_json_object(&config_path).unwrap();
+        let plugins = root["plugin"].as_array().unwrap();
+        assert_eq!(
+            plugins
+                .iter()
+                .filter(|value| value.as_str() == Some(plugin_path.to_str().unwrap()))
+                .count(),
+            1
+        );
+        assert!(plugins.iter().any(|value| value == "existing-plugin"));
+
+        remove_opencode_hooks_in_dir(dir.path()).unwrap();
+
+        let root = read_json_object(&config_path).unwrap();
+        let plugins = root["plugin"].as_array().unwrap();
+        assert!(plugins.iter().any(|value| value == "existing-plugin"));
+        assert!(plugins
+            .iter()
+            .all(|value| value.as_str() != Some(plugin_path.to_str().unwrap())));
+        assert!(!plugin_path.exists());
     }
 }

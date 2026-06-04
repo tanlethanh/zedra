@@ -2,7 +2,9 @@
 ///
 /// Delegates every call to the corresponding function in `super::jni`.
 use crate::android::jni;
-use crate::platform_bridge::{AlertButton, HapticFeedback, PlatformBridge};
+use crate::platform_bridge::{
+    AlertButton, HapticFeedback, NativeNotificationOptions, PlatformBridge,
+};
 
 pub struct AndroidBridge;
 
@@ -54,6 +56,15 @@ impl PlatformBridge for AndroidBridge {
         jni::get_files_dir()
     }
 
+    fn device_name(&self) -> Option<String> {
+        let name = jni::get_delta_device_name();
+        if name.trim().is_empty() {
+            None
+        } else {
+            Some(name)
+        }
+    }
+
     fn open_url(&self, url: &str) {
         jni::open_url(url);
     }
@@ -68,5 +79,13 @@ impl PlatformBridge for AndroidBridge {
 
     fn trigger_haptic(&self, feedback: HapticFeedback) {
         jni::trigger_haptic(feedback);
+    }
+
+    fn present_native_notification(&self, id: u32, options: &NativeNotificationOptions) {
+        jni::show_native_notification(id, options);
+    }
+
+    fn request_delta_push_token(&self, id: u32) {
+        jni::request_delta_push_token(id);
     }
 }

@@ -10,10 +10,11 @@ BUNDLE_ID_DEBUG="dev.zedra.app.debug"
 BUNDLE_ID_RELEASE="dev.zedra.app"
 
 usage() {
-    echo "Usage: $0 [sim|device] [--no-build] [--release] [--preview] [--debug] [--device-id <UDID>] [--select-device] [--launch-url <URL>]"
+    echo "Usage: $0 [sim|device|open] [--no-build] [--release] [--preview] [--debug] [--device-id <UDID>] [--select-device] [--launch-url <URL>]"
     echo ""
-    echo "  sim      Build and run on iOS Simulator (default)"
-    echo "  device   Build and install on connected device"
+    echo "  sim        Build and run on iOS Simulator (default)"
+    echo "  device     Build and install on connected device"
+    echo "  open <URL> Launch app with deep link — no build or reinstall (uses saved device)"
     echo ""
     echo "  --no-build              Skip build, just install and launch (uses last build)"
     echo "  --release               Use release profile (default is debug)"
@@ -33,6 +34,7 @@ usage() {
     echo "  $0 device --preview                       # install with preview features"
     echo "  $0 device --release                       # install release build"
     echo "  $0 device --no-build --launch-url 'zedra://connect?ticket=...'  # relaunch with URL"
+    echo "  $0 open 'zedra://la-test/foo'             # launch with deep link, no rebuild"
     exit 1
 }
 
@@ -428,6 +430,33 @@ for runtime, devices in data['devices'].items():
         fi
 
         echo "==> Running on $DEVICE_NAME"
+        ;;
+
+    open)
+        OPEN_URL="${args[1]:-}"
+        if [ -z "$OPEN_URL" ]; then
+            echo "Error: 'open' mode requires a URL argument." >&2
+            echo "Usage: $0 open 'zedra://...'" >&2
+            exit 1
+        fi
+
+        # Resolve saved device pref
+        SAVED_DEVICE_TYPE=""
+        SAVED_DEVICE_ID=""
+        SAVED_DEVICE_NAME=""
+        if [ ! -f "$PREF_FILE" ] || ! read_saved_device_pref; then
+            echo "Error: No saved device preference. Run '$0 sim' or '$0 device' first." >&2
+            exit 1
+        fi
+
+        if [ "$SAVED_DEVICE_TYPE" = "sim" ]; then
+            echo "==> Opening $OPEN_URL on simulator $SAVED_DEVICE_NAME ($SAVED_DEVICE_ID)"
+            xcrun simctl openurl "$SAVED_DEVICE_ID" "$OPEN_URL"
+        else
+            echo "==> Opening $OPEN_URL on $SAVED_DEVICE_NAME ($SAVED_DEVICE_ID)"
+            terminate_running_zedra_processes "$SAVED_DEVICE_ID"
+            xcrun devicectl device process launch --device "$SAVED_DEVICE_ID" --payload-url "$OPEN_URL" "$BUNDLE_ID"
+        fi
         ;;
 
     *)

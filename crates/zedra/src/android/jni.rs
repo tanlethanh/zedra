@@ -12,7 +12,9 @@ use crate::android::{
     command_queue::{AndroidCommand, get_command_sender},
 };
 use crate::install_panic_hook;
-use crate::platform_bridge::{self, AlertButton, AlertButtonStyle, HapticFeedback};
+use crate::platform_bridge::{
+    self, AlertButton, AlertButtonStyle, HapticFeedback, NativeNotificationOptions,
+};
 
 // Global storage for JavaVM to enable Rust→Java callbacks
 static JVM: Mutex<Option<Arc<JavaVM>>> = Mutex::new(None);
@@ -1492,6 +1494,203 @@ fn hide_keyboard_inner() {
     } else {
         tracing::debug!("jni: hide keyboard");
     }
+}
+
+// =============================================================================
+// Delta notification bridge (push token registration + in-app banners)
+// =============================================================================
+
+/// Acquire a `JNIEnv` for the current thread plus the `MainActivity` class, then
+/// run `f`. Logs and clears any pending Java exception. Keeps the Delta bridge
+/// calls below concise instead of repeating the JVM/env/class boilerplate.
+fn with_main_activity<R>(
+    name: &'static str,
+    f: impl FnOnce(&mut JNIEnv, &JClass) -> Result<R, jni::errors::Error>,
+) -> Option<R> {
+    let jvm = match JVM.lock() {
+        Ok(guard) => guard.as_ref()?.clone(),
+        Err(e) => {
+            tracing::error!(name, "jni: lock JVM failed: {:?}", e);
+            return None;
+        }
+    };
+
+    let mut env = match jvm.get_env() {
+        Ok(env) => env,
+        Err(_) => match jvm.attach_current_thread_as_daemon() {
+            Ok(env) => env,
+            Err(e) => {
+                tracing::error!(name, "jni: attach thread failed: {:?}", e);
+                return None;
+            }
+        },
+    };
+
+    let class = match env.find_class("dev/zedra/app/MainActivity") {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(name, "jni: find MainActivity failed: {:?}", e);
+            if env.exception_check().unwrap_or(false) {
+                env.exception_describe().ok();
+                env.exception_clear().ok();
+            }
+            return None;
+        }
+    };
+
+    match f(&mut env, &class) {
+        Ok(value) => Some(value),
+        Err(e) => {
+            tracing::error!(name, "jni: call failed: {:?}", e);
+            if env.exception_check().unwrap_or(false) {
+                env.exception_describe().ok();
+                env.exception_clear().ok();
+            }
+            None
+        }
+    }
+}
+
+/// Convert a (possibly null) Java string into an owned Rust `String`.
+fn jstring_to_string(env: &mut JNIEnv, value: &jni::objects::JString) -> Option<String> {
+    if value.is_null() {
+        return None;
+    }
+    env.get_string(value).ok().map(|value| value.into())
+}
+
+/// Get the native device name for Delta node labels (Build.MODEL).
+pub fn get_delta_device_name() -> String {
+    with_main_activity("get_delta_device_name", |env, class| {
+        let value =
+            env.call_static_method(class, "getDeltaDeviceName", "()Ljava/lang/String;", &[])?;
+        let obj = value.l()?;
+        if obj.is_null() {
+            return Ok(String::new());
+        }
+        Ok(env.get_string(&obj.into())?.into())
+    })
+    .unwrap_or_default()
+}
+
+/// Present a native in-app notification banner.
+pub fn show_native_notification(id: u32, options: &NativeNotificationOptions) {
+    let title = options.title.clone();
+    let message = options.message.clone().unwrap_or_default();
+    let kind = options.kind.as_i32();
+    let duration_secs = options.duration_secs;
+    let auto_close = options.auto_close;
+    jni_call("show_native_notification", move || {
+        with_main_activity("show_native_notification", |env, class| {
+            let title = env.new_string(&title)?;
+            let message = env.new_string(&message)?;
+            env.call_static_method(
+                class,
+                "showNativeNotification",
+                "(ILjava/lang/String;Ljava/lang/String;IFZ)V",
+                &[
+                    (id as jint).into(),
+                    (&title).into(),
+                    (&message).into(),
+                    (kind as jint).into(),
+                    (duration_secs as jfloat).into(),
+                    auto_close.into(),
+                ],
+            )?;
+            Ok(())
+        });
+    });
+}
+
+/// Request the FCM registration token for Delta push notifications.
+///
+/// The result is delivered asynchronously via `nativeDeltaPushTokenResult` or
+/// `nativeDeltaPushTokenError`.
+pub fn request_delta_push_token(id: u32) {
+    jni_call("request_delta_push_token", move || {
+        with_main_activity("request_delta_push_token", |env, class| {
+            env.call_static_method(
+                class,
+                "requestDeltaPushToken",
+                "(I)V",
+                &[(id as jint).into()],
+            )?;
+            Ok(())
+        });
+    });
+}
+
+/// Delivered from `MainActivity` once the FCM token resolves.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeDeltaPushTokenResult(
+    mut env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+    provider: jni::objects::JString,
+    token: jni::objects::JString,
+    environment: jni::objects::JString,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    let provider = jstring_to_string(&mut env, &provider).unwrap_or_else(|| "fcm".to_string());
+    let token = jstring_to_string(&mut env, &token).unwrap_or_default();
+    if token.is_empty() {
+        platform_bridge::dispatch_delta_push_token_error(
+            callback_id as u32,
+            "Push registration did not return a token".to_string(),
+        );
+        return;
+    }
+    let environment = jstring_to_string(&mut env, &environment).filter(|value| !value.is_empty());
+    platform_bridge::dispatch_delta_push_token_result(
+        callback_id as u32,
+        provider,
+        token,
+        environment,
+    );
+}
+
+/// Delivered from `MainActivity` when FCM token registration fails.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeDeltaPushTokenError(
+    mut env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+    message: jni::objects::JString,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    let message = jstring_to_string(&mut env, &message)
+        .unwrap_or_else(|| "Push registration failed".to_string());
+    platform_bridge::dispatch_delta_push_token_error(callback_id as u32, message);
+}
+
+/// Delivered from `MainActivity` when the user taps an in-app notification banner.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeNotificationAction(
+    _env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    platform_bridge::dispatch_native_notification_action(callback_id as u32);
+}
+
+/// Delivered from `MainActivity` when an in-app notification banner is dismissed.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeNotificationDismiss(
+    _env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    platform_bridge::dispatch_native_notification_dismiss(callback_id as u32);
 }
 
 #[cfg(test)]
