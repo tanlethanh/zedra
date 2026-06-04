@@ -5,10 +5,21 @@ buildscript {
     }
     dependencies {
         classpath 'com.android.tools.build:gradle:8.13.2'
+        classpath 'com.google.gms:google-services:4.4.2'
     }
 }
 
 apply plugin: 'com.android.application'
+
+// google-services.json is supplied per Firebase project and is not checked in.
+// Only apply the plugin when it exists so builds without it (CI, fresh clones)
+// still succeed; FCM token requests then fail gracefully at runtime.
+def googleServicesConfig = file('google-services.json')
+if (googleServicesConfig.exists()) {
+    apply plugin: 'com.google.gms.google-services'
+} else {
+    logger.warn('google-services.json not found at android/; Delta push (FCM) is disabled until it is added.')
+}
 
 repositories {
     google()
@@ -79,6 +90,11 @@ dependencies {
 
     // Lifecycle (needed for CameraX)
     implementation 'androidx.lifecycle:lifecycle-runtime:2.7.0'
+
+    // Firebase Cloud Messaging for Delta push notifications.
+    // Compiles without google-services.json; activates once it is added.
+    implementation platform('com.google.firebase:firebase-bom:33.7.0')
+    implementation 'com.google.firebase:firebase-messaging'
 }
 
 // Resolve adb from Android SDK (Android Studio doesn't inherit shell PATH)

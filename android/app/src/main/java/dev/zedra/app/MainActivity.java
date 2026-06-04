@@ -3,10 +3,16 @@ package dev.zedra.app;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.app.AppCompatDelegate;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import androidx.core.splashscreen.SplashScreen;
 
+import android.Manifest;
 import android.app.Activity;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -18,8 +24,16 @@ import android.view.Window;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 
+import com.google.android.material.snackbar.Snackbar;
+import com.google.firebase.messaging.FirebaseMessaging;
+
 public class MainActivity extends AppCompatActivity {
     private static final String TAG = "MainActivity";
+
+    /// Notification channel shared by Delta push messages and in-app banners.
+    /// Must match ZedraMessagingService.CHANNEL_ID.
+    static final String DELTA_NOTIFICATION_CHANNEL_ID = "zedra_delta";
+    private static final int POST_NOTIFICATIONS_REQUEST_CODE = 7301;
 
     static {
         System.loadLibrary("zedra");
@@ -256,6 +270,167 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /**
+     * Native device name for Delta node labels (called from Rust via JNI).
+     */
+    public static String getDeltaDeviceName() {
+        String manufacturer = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER.trim();
+        String model = Build.MODEL == null ? "" : Build.MODEL.trim();
+        if (model.isEmpty()) {
+            return manufacturer;
+        }
+        if (!manufacturer.isEmpty() && !model.toLowerCase().startsWith(manufacturer.toLowerCase())) {
+            return manufacturer + " " + model;
+        }
+        return model;
+    }
+
+    /**
+     * Present a transient in-app notification banner (called from Rust via JNI).
+     *
+     * kind values match NativeNotificationKind: 0=Info, 1=Success, 2=Warning, 3=Error.
+     * A tap reports nativeNotificationAction; any other dismissal reports
+     * nativeNotificationDismiss, so the two are mutually exclusive.
+     */
+    public static void showNativeNotification(
+        int callbackId,
+        String title,
+        String message,
+        int kind,
+        float durationSecs,
+        boolean autoClose
+    ) {
+        if (sActivity == null || sSurfaceView == null) {
+            return;
+        }
+        sActivity.runOnUiThread(() -> {
+            StringBuilder text = new StringBuilder();
+            if (title != null && !title.isEmpty()) {
+                text.append(title);
+            }
+            if (message != null && !message.isEmpty()) {
+                if (text.length() > 0) {
+                    text.append('\n');
+                }
+                text.append(message);
+            }
+
+            Snackbar snackbar = Snackbar.make(sSurfaceView, text.toString(), Snackbar.LENGTH_INDEFINITE);
+            if (autoClose) {
+                snackbar.setDuration(Math.max(1000, Math.round(durationSecs * 1000f)));
+            }
+            snackbar.setBackgroundTint(notificationAccentColor(kind));
+
+            View snackbarView = snackbar.getView();
+            TextView textView = snackbarView.findViewById(
+                com.google.android.material.R.id.snackbar_text);
+            if (textView != null) {
+                textView.setMaxLines(4);
+                textView.setTextColor(0xFFFFFFFF);
+            }
+
+            // A tap fires the action; suppress the dismiss callback so the two paths
+            // never both fire for one banner.
+            final boolean[] actionFired = { false };
+            snackbarView.setOnClickListener(view -> {
+                if (actionFired[0]) {
+                    return;
+                }
+                actionFired[0] = true;
+                nativeNotificationAction(callbackId);
+                snackbar.dismiss();
+            });
+            snackbar.addCallback(new Snackbar.Callback() {
+                @Override
+                public void onDismissed(Snackbar transientBar, int event) {
+                    if (!actionFired[0]) {
+                        nativeNotificationDismiss(callbackId);
+                    }
+                }
+            });
+            snackbar.show();
+        });
+    }
+
+    private static int notificationAccentColor(int kind) {
+        switch (kind) {
+            case 1: // Success
+                return 0xFF1E7A3D;
+            case 2: // Warning
+                return 0xFF8A6D00;
+            case 3: // Error
+                return 0xFF8B2E2E;
+            default: // Info
+                return 0xFF2C2C2E;
+        }
+    }
+
+    /**
+     * Request the FCM registration token for Delta push (called from Rust via JNI).
+     *
+     * Delivers the token via nativeDeltaPushTokenResult or nativeDeltaPushTokenError.
+     */
+    public static void requestDeltaPushToken(int callbackId) {
+        if (sActivity == null) {
+            nativeDeltaPushTokenError(callbackId, "Activity is not available");
+            return;
+        }
+        sActivity.runOnUiThread(() -> {
+            // POST_NOTIFICATIONS (API 33+) only gates whether notifications display;
+            // the FCM token can be fetched regardless, so request it best-effort.
+            maybeRequestNotificationPermission();
+            try {
+                FirebaseMessaging.getInstance().getToken().addOnCompleteListener(task -> {
+                    if (!task.isSuccessful() || task.getResult() == null || task.getResult().isEmpty()) {
+                        String reason = task.getException() != null
+                            ? task.getException().getLocalizedMessage()
+                            : null;
+                        nativeDeltaPushTokenError(
+                            callbackId,
+                            reason != null ? reason : "Failed to obtain FCM token");
+                        return;
+                    }
+                    nativeDeltaPushTokenResult(callbackId, "fcm", task.getResult(), null);
+                });
+            } catch (Throwable t) {
+                Log.e(TAG, "requestDeltaPushToken failed", t);
+                String reason = t.getLocalizedMessage();
+                nativeDeltaPushTokenError(
+                    callbackId,
+                    reason != null ? reason : "Firebase is not configured");
+            }
+        });
+    }
+
+    private static void maybeRequestNotificationPermission() {
+        if (sActivity == null || Build.VERSION.SDK_INT < 33) {
+            return;
+        }
+        if (ContextCompat.checkSelfPermission(sActivity, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(
+                sActivity,
+                new String[] { Manifest.permission.POST_NOTIFICATIONS },
+                POST_NOTIFICATIONS_REQUEST_CODE);
+        }
+    }
+
+    private void createDeltaNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return;
+        }
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager == null) {
+            return;
+        }
+        NotificationChannel channel = new NotificationChannel(
+            DELTA_NOTIFICATION_CHANNEL_ID,
+            "Delta notifications",
+            NotificationManager.IMPORTANCE_HIGH);
+        channel.setDescription("Workspace and agent updates delivered through Delta.");
+        manager.createNotificationChannel(channel);
+    }
+
     // Choreographer frame callback for command processing
     private final Choreographer.FrameCallback frameCallback = new Choreographer.FrameCallback() {
         @Override
@@ -289,6 +464,11 @@ public class MainActivity extends AppCompatActivity {
     private static native void nativeAlertResult(int callbackId, int buttonIndex);
     private static native void nativeSelectionResult(int callbackId, int buttonIndex);
     private static native void nativeSelectionDismiss(int callbackId);
+    private static native void nativeDeltaPushTokenResult(
+        int callbackId, String provider, String token, String environment);
+    private static native void nativeDeltaPushTokenError(int callbackId, String message);
+    private static native void nativeNotificationAction(int callbackId);
+    private static native void nativeNotificationDismiss(int callbackId);
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -300,6 +480,9 @@ public class MainActivity extends AppCompatActivity {
 
         // Initialize Choreographer for frame callbacks
         choreographer = Choreographer.getInstance();
+
+        // Register the Delta notification channel before any push/banner can fire.
+        createDeltaNotificationChannel();
 
         // Set up edge-to-edge display
         Window window = getWindow();
