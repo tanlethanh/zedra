@@ -27,6 +27,15 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-22.04
             cross: true
+            smoke_test: false
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+            cross: false
+            smoke_test: true
+          - target: aarch64-pc-windows-msvc
+            runner: windows-2022
+            cross: false
+            smoke_test: false
 
     runs-on: ${{ matrix.runner }}
     steps:
@@ -48,20 +57,49 @@ jobs:
         run: cargo install cross --locked
 
       - name: Build
+        shell: bash
         env:
           ZEDRA_GA_MEASUREMENT_ID: ${{ secrets.ZEDRA_GA_MEASUREMENT_ID }}
           ZEDRA_GA_API_SECRET: ${{ secrets.ZEDRA_GA_API_SECRET }}
         run: |
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            export RUSTFLAGS="-C target-feature=+crt-static"
+          fi
+
           if [ "${{ matrix.cross }}" = "true" ]; then
             cross build -p zedra-host --release --target ${{ matrix.target }}
           else
             cargo build -p zedra-host --release --target ${{ matrix.target }}
           fi
 
-      - name: Package
+      - name: Smoke test CLI
+        if: ${{ matrix.smoke_test != false }}
+        shell: bash
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf zedra-${{ matrix.target }}.tar.gz zedra
+          binary="./zedra"
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            binary="./zedra.exe"
+          fi
+
+          version_output="$("$binary" --version)"
+          if [ -z "$version_output" ]; then
+            echo "zedra --version produced no output" >&2
+            exit 1
+          fi
+
+          "$binary" --help > zedra-help.txt
+          grep -q "Commands" zedra-help.txt
+
+      - name: Package
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          binary="zedra"
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            binary="zedra.exe"
+          fi
+          tar czf zedra-${{ matrix.target }}.tar.gz "$binary"
           shasum -a 256 zedra-${{ matrix.target }}.tar.gz > zedra-${{ matrix.target }}.tar.gz.sha256 || \
             sha256sum zedra-${{ matrix.target }}.tar.gz > zedra-${{ matrix.target }}.tar.gz.sha256
 

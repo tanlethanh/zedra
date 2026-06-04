@@ -55,6 +55,17 @@ cd android && ./gradlew installDebug && cd ..  # install APK
 ./scripts/log-android.sh tail                  # view logs
 ```
 
+Android release builds read signing credentials from Gradle properties. Gradle
+loads `~/.gradle/gradle.properties` automatically, so a global config can use:
+
+```properties
+ZEDRA_KEYSTORE=/absolute/path/to/zedra-release.jks
+ZEDRA_KEYSTORE_ALIAS=zedra
+ZEDRA_KEYSTORE_PASSWORD=...
+# Optional when the key password differs from the keystore password:
+ZEDRA_KEY_PASSWORD=...
+```
+
 ## Host Daemon
 
 ```bash
@@ -74,6 +85,24 @@ Scan the printed QR from the app, or pass the URL during development:
 ```bash
 ./scripts/run-ios.sh sim --no-build --launch-url 'zedra://connect?ticket=...'
 ```
+
+### Windows Host CLI
+
+Windows support is for the host daemon, not a native desktop client.
+
+```powershell
+powershell -c "irm https://zedra.dev/install.ps1 | iex"
+zedra start --workdir C:\path\to\project --detach
+zedra qr --workdir C:\path\to\project
+zedra status --workdir C:\path\to\project
+zedra logs --workdir C:\path\to\project
+zedra client --workdir C:\path\to\project --count 3
+zedra stop --workdir C:\path\to\project
+```
+
+Runtime files are stored under `%APPDATA%\zedra\workspaces\`. `daemon.lock` uses the lock hash for the workdir; `daemon.log`, `sessions.json`, `host-info.json`, and API discovery files use the stable workspace hash. Terminal sessions use `ZEDRA_SHELL` when set, otherwise Zedra detects the shell that launched the host, then falls back to `SHELL`, then `%ComSpec%` (`cmd.exe`). Supported launch shells are `cmd.exe`, `pwsh.exe`, `powershell.exe`, and Git Bash/POSIX-style shells.
+
+To build from source instead, install the MSVC Rust toolchain and Git for Windows, then run `cargo build -p zedra-host`.
 
 ## Pre-Commit Checks
 

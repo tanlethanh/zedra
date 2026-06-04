@@ -18,7 +18,7 @@ zedra-telemetry (pure crate, no platform deps)
   |
   +-- App backend: FirebaseBackend  (crates/zedra/src/telemetry.rs)
   |     iOS:     extern "C" FFI --> Firebase iOS SDK
-  |     Android: JNI --> ZedraFirebase.java --> Firebase Android SDK
+  |     Android: JNI --> ZedraFirebase.kt --> Firebase Android SDK
   |
   +-- Host backend: HostBackend  (crates/zedra-host/src/telemetry.rs)
         Wraps Ga4 transport --> tokio::spawn --> HTTPS POST
@@ -149,14 +149,36 @@ Debug builds can run without `ios/Zedra/GoogleService-Info.plist`; Firebase
 initialization and event calls become no-ops. Release builds require the plist
 and fail during the Xcode build when it is absent.
 
-### Android (planned)
+### Android
 
 | File | Purpose |
 |------|---------|
-| `android/google-services.json` | Firebase project config |
-| `android/build.gradle` | `firebase-analytics`, `firebase-crashlytics`, `firebase-crashlytics-ndk` |
-| `android/.../ZedraFirebase.java` | Java wrapper: `logEvent`, `recordError`, `recordPanic` |
+| `android/google-services.json` | Release Firebase project config for `dev.zedra.app` (ignored; add locally or in CI secrets) |
+| `android/build.gradle` | Firebase BoM, `firebase-analytics`, `firebase-crashlytics`, `firebase-crashlytics-ndk`; release-only Google Services and Crashlytics Gradle plugins |
+| `android/app/src/main/kotlin/dev/zedra/app/ZedraFirebase.kt` | Kotlin wrapper: `logEvent`, `recordError`, `recordPanic`, SDK collection toggles |
 | `crates/zedra/src/android/telemetry.rs` | Rust JNI bridge |
+| `android/app/proguard-rules.pro` | R8 keep rules for the app JNI boundary package |
+
+`android/google-services.json` only needs the release client
+`dev.zedra.app`. Firebase Gradle plugins are applied only for release tasks; the
+debug build includes the Firebase SDK but disables Analytics, Crashlytics, and
+automatic screen reporting through manifest placeholders and the
+`BuildConfig.DEBUG` guard in `ZedraFirebase`. Debug does not require a Firebase
+client for `dev.zedra.app.debug`. Android uses `minSdk 23` because current
+Firebase Crashlytics and Crashlytics NDK require API 23 or newer.
+
+Android release builds are signed from normal Gradle properties. Put
+`ZEDRA_KEYSTORE`, `ZEDRA_KEYSTORE_ALIAS`, and `ZEDRA_KEYSTORE_PASSWORD` in
+`~/.gradle/gradle.properties` or pass them with `-P`. `ZEDRA_KEY_PASSWORD` is
+optional and defaults to `ZEDRA_KEYSTORE_PASSWORD`.
+
+Rust looks up app Kotlin classes such as `dev/zedra/app/MainActivity` and
+`dev/zedra/app/ZedraFirebase` by exact JNI class/name/signature.
+`android/app/proguard-rules.pro` keeps `dev.zedra.app.**` and
+`dev.zed.gpui.**` stable in release so alerts, selections, keyboard toggles,
+sheets, notifications, Firebase calls, GPUI lifecycle callbacks, and
+Kotlin-to-Rust callbacks do not depend on R8's rewritten names. After
+`assembleRelease`, confirm the release mapping still preserves those packages.
 
 ### Crashlytics NDK (release builds)
 
@@ -225,6 +247,7 @@ and never transmitted alongside it.
 | `crates/zedra-telemetry/src/lib.rs` | `Event` enum, `TelemetryBackend` trait, `send()`, `init()` |
 | `crates/zedra/src/telemetry.rs` | `FirebaseBackend` — registers Firebase with `zedra-telemetry` |
 | `crates/zedra/src/ios/telemetry.rs` | iOS FFI: Rust -> `NativeBridge.swift` -> Firebase SDK |
+| `crates/zedra/src/android/telemetry.rs` | Android JNI: Rust -> `ZedraFirebase.kt` -> Firebase SDK |
 | `ios/project.yml` | iOS Firebase config bundling and Release validation |
 | `crates/zedra-host/src/telemetry.rs` | `HostBackend` — bridges GA4 `Ga4` <-> `zedra-telemetry` |
 | `crates/zedra-host/src/ga4.rs` | GA4 Measurement Protocol transport (`track_raw`, `host_panic_sync`) |

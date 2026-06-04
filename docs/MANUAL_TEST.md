@@ -25,6 +25,20 @@
 7. Expected: native text selection handles appear, command and comment lines are selectable, and `Copy` copies the selected text
 8. Expected: switching tabs or scrolling the guide does not leave stale selection handles on screen
 
+## 0b-Status. Connection Status Indicator
+
+1. From Home, tap the status dot on a saved workspace card without tapping the card body
+2. Expected: light haptic, the app navigates to that workspace, and the connecting view opens
+3. Tap the card body outside the dot
+4. Expected: the workspace still opens, but the card tap path is unchanged from before
+5. In a connected workspace, tap the status dot beside the header title
+6. Expected: the connecting view opens and any open workspace drawer closes
+7. Open the workspace drawer and tap the status dot in the drawer header
+8. Expected: the connecting view opens and the drawer closes
+9. Open Quick Actions and tap the status dot on a workspace row, not the row body or `+` button
+10. Expected: Quick Actions closes, that workspace becomes active, and the connecting view opens
+11. While a workspace is idle or reconnecting, confirm the status dot pulses opacity and scale without shifting header layout
+
 ## 0b. Home Settings Button
 
 1. Run a Debug build and open the Home screen
@@ -33,7 +47,7 @@
 4. Run a Release build and open the Home screen
 5. Expected: the settings icon is not visible and the developer Settings screen is not reachable from Home
 
-## 0c. Developer Native Notification
+## 0c. Developer Native Notification (iOS)
 
 1. Run a Debug build and open Settings
 2. Tap `Native Notification` in the Developer section
@@ -49,15 +63,65 @@
 12. Tap `Native Notification` repeatedly
 13. Expected: multiple notifications collect into the same bubble stack and all auto-close after their configured durations by default
 
+## 0c-Android. Native Presentations And Embedded Sheet
+
+1. Run a Debug Android build and open Settings
+2. Tap the developer alert and selection presentation actions
+3. Expected: native Material dialogs appear; the selection dialog shows `First Action`, `Second Action`, `Destructive Action`, and `Cancel` rows with visible row separation, not just the title
+4. Expected: button callbacks fire once, and dismissing the selection reports a dismiss rather than choosing the last item
+5. Tap `Native Notification`
+6. Expected: native notification banners appear near the top safe area, auto-close by default, and tapping the action banner triggers the callback notification
+7. Trigger the text input dialog from an existing call site
+8. Expected: the native text field shows the initial value, `OK` returns the entered value, and `Cancel`/outside dismissal returns no value
+9. Open a terminal file link so the native custom sheet opens
+10. Expected: a Material bottom sheet appears with a grabber when requested and GPUI-rendered preview content inside the embedded sheet surface
+11. From a fresh sheet open, swipe the preview content upward and downward before it reaches top, then drag downward from the top of the preview
+12. Expected: inner content scrolls while not at top; when it is at top, the bottom sheet can take the downward drag for detent/dismiss handoff without preview repaint glitches during the drag or dismissal
+13. Trigger the scroll-to-bottom floating button
+14. Expected: the native floating button appears at the GPUI wrapper bounds and pressing it runs the Rust callback
+15. Trigger dictation preview events if the call site is available
+16. Expected: Android displays the preview overlay and dismiss callback, without attempting iOS-specific dictation stream interpretation
+
+## 0c-Android-Renderer. GPUI Surface Lifecycle
+
+1. Run a Debug Android build on a physical device
+2. Connect via QR and open a terminal
+3. Expected: after returning from the scanner, logcat shows `ZedraApp: window activated`, the pending ticket is processed, and connect succeeds
+4. Type, scroll, and fling terminal output for at least 30 seconds
+5. Expected: scrolling remains smooth and fling momentum does not continue after a drawer drag calls `prevent_default()`
+5a. Slowly drag-scroll the terminal through scrollback a fraction of a row at a time
+5b. Expected: the row entering at the top edge (and leaving at the bottom edge) slides in pixel by pixel; rows do not pop in only once fully visible
+6. Open and close the workspace drawer while nested terminal/editor content is scrollable
+7. Expected: drawer drags do not scroll the inner content, and inner vertical scroll does not move the drawer once the drawer gesture is not claimed
+8. Background the app, wait 5 seconds, then foreground it
+9. Expected: the existing GPUI window resumes without recreating all renderer state, and no surface validation or device-lost crash appears in logcat
+10. Rotate the device to landscape left and landscape right
+11. Expected: the app remains in portrait orientation and the existing workspace/session state stays visible instead of returning to the initial launch view
+12. Expected: the app redraws at full physical surface resolution with `scale_factor = density`, with no fixed 0.75 render scale
+13. On an Android 15 device, confirm content is not obscured by the status bar, gesture navigation handle, 3-button navigation bar, or display cutout
+14. Confirm outlined buttons, cards, and input borders are visible even when their background is transparent
+15. In the terminal, render `✔ ✘ ⚠ ⏺ ⏹ ⏸` and a real emoji such as `😀`
+16. Expected: terminal/UI symbols render as monochrome symbol glyphs, while the real emoji renders through Android color emoji fallback before and after attempting rotation
+
+## 0c-Android-AppIds. Debug And Release Application IDs
+
+1. Run `./scripts/run-android.sh --target arm64-v8a`
+2. Expected: Android installs and launches the debug app id `dev.zedra.app.debug` with the launcher label `Zedra Dev`
+3. Expected: the launcher, app info, and recents icons show the black Zedra lightning icon instead of the default Android robot, including on round-icon launchers
+4. Expected: startup logcat has no `getAppVersion` / `getAppBuildNumber` JavaException and no GPUI atlas panic during the first surface draw
+5. Confirm Android release signing properties are present in global Gradle config: `ZEDRA_KEYSTORE`, `ZEDRA_KEYSTORE_ALIAS`, and `ZEDRA_KEYSTORE_PASSWORD`
+6. Run `./scripts/run-android.sh --release --target arm64-v8a`
+7. Expected: Android installs and launches the release app id `dev.zedra.app` with the normal app label, and it can coexist with the debug build
+
 ## 0d. Firebase GPUI Screen Views
 
-1. Run an iOS build with Firebase Analytics enabled and open Firebase DebugView or a build with `debug-telemetry`
+1. Run an iOS build with Firebase Analytics enabled, or add `android/google-services.json` with the `dev.zedra.app` client and run `./scripts/run-android.sh --release --target arm64-v8a`
 2. Open Home, Settings, Quick Actions, then connect to a workspace
 3. Open the workspace drawer and switch through Files, Documents, Git Diff, Terminals, and Session
-4. Open a non-markdown file, a markdown file, a git diff, and a terminal as the main workspace view
+4. Open a non-markdown file, a markdown file, a git diff, a terminal, and the managed-agent view as the main workspace view
 5. Tap terminal file links for both a source file and a markdown file so the native custom sheet opens
 6. Expected: manual `screen_view` events include `screen_name` and `screen_class` for `Home`, `Settings`, `Quick Actions`, `Workspace Connecting`, `Workspace Editor`, `Workspace Markdown`, `Workspace Git Diff`, `Workspace Terminal`, each drawer tab, `Custom Sheet Editor`, and `Custom Sheet Markdown`
-7. Expected: native automatic rows such as `UIViewController`, `CustomSheetViewController`, `UIAlertController`, and `ZedraQRScannerVC` are still present because native Firebase screen reporting remains enabled
+7. Expected: native automatic rows such as `UIViewController`, `CustomSheetViewController`, `UIAlertController`, and `ZedraQRScannerVC` on iOS or Android activity rows on Android are still present because native Firebase screen reporting remains enabled
 
 ## 0e. Developer Native Selection
 
@@ -113,6 +177,21 @@ app still builds, but push registration reports an error instead of a token.
 13. Expected: file explorer root entries and git status are already loaded without waiting for the first drawer open to trigger them
 14. Navigate to terminal — verify PTY works (shell prompt, keystrokes echo)
 
+## 1a-Android. System Back Navigation
+
+1. On Android, connect to a workspace and open Quick Actions from the workspace header
+2. Press the system Back button or gesture
+3. Expected: Quick Actions closes and the app remains on the workspace
+4. Open Settings from Home, then press system Back
+5. Expected: Settings returns to Home
+6. Connect to a workspace, open the workspace drawer, then press system Back
+7. Expected: the workspace drawer closes
+8. Open the connecting overlay from the Session tab, then press system Back
+9. Expected: the connecting overlay closes and the workspace content remains visible
+10. Open a terminal, then a file, then a git diff, then reopen the same terminal
+11. Press system Back repeatedly
+12. Expected: Back visits the previous distinct main content views in order, without duplicate entries for the reopened terminal
+
 ## 1a. Host Info Subscription
 
 1. Start host daemon: `zedra start --workdir .`
@@ -137,7 +216,11 @@ app still builds, but push registration reports an error instead of a token.
 9. Expected: only the file row for the active main workspace view is highlighted, and the highlight spans the full file explorer width
 10. Open a git diff or terminal as the main workspace view, then reopen the file explorer
 11. Expected: the file row highlight clears because the active main workspace view is no longer that file
-12. Expected: before syntax highlighting appears, code text uses a subtly dim foreground; when highlighting applies, text rows do not jump, reorder, or visibly reload
+12. Open the floating file search and type part of a file or folder name that is not currently loaded in the expanded File Explorer tree
+13. Expected: the host searches recursively and the floating results show fuzzy matching files and folders case-insensitively, without expanding or collapsing the underlying tree
+14. Clear the floating search with its clear control or `Esc`
+15. Expected: the previous browsing context returns with the same expanded directories, loaded rows, and active file highlight
+16. Expected: before syntax highlighting appears, code text uses a subtly dim foreground; when highlighting applies, text rows do not jump, reorder, or visibly reload
 
 ## 1c. Docs Tree Display Mode
 
@@ -165,6 +248,33 @@ app still builds, but push registration reports an error instead of a token.
 22. Connect to an older host that does not support docs-tree RPCs
 23. Expected: the docs tree shows an unsupported-host message and the refresh icon no longer stays in the building state
 
+## 1d. Windows Host CLI
+
+1. On an x86_64 Windows machine, run `powershell -c "irm https://zedra.dev/install.ps1 | iex"` from Command Prompt or Windows Terminal
+2. Expected: `zedra.exe` is installed under `%LOCALAPPDATA%\Programs\zedra\bin`, the directory is added to the user `Path`, and `zedra --help` works from the current shell
+3. Start the daemon from PowerShell: `zedra start --workdir C:\path\to\repo --detach`
+4. Expected: startup succeeds, Windows may show a firewall prompt, and `daemon.lock` plus `daemon.log` are written under `%APPDATA%\zedra\workspaces\` using their respective workspace hashes
+5. Run `zedra status --workdir C:\path\to\repo`
+6. Expected: status shows the running daemon, endpoint, workspace path, sessions, and terminal count without Unix path assumptions
+7. Run `zedra qr --workdir C:\path\to\repo`, scan from the mobile app, then disconnect and reconnect the app without scanning again
+8. Expected: QR pairing succeeds, reconnect uses the saved session identity, and relay fallback still works if direct P2P is unavailable
+9. Open a terminal from the app
+10. Expected: a Windows PTY opens with the shell that launched the host, keystrokes echo, resize works, and commands available on `PATH` run normally
+11. Stop the daemon, set `$env:ZEDRA_SHELL = "cmd.exe"` in PowerShell, restart the daemon, and open another terminal from the app
+12. Expected: the terminal opens in `cmd.exe`; clear `ZEDRA_SHELL`, restart from PowerShell, and launch commands still leave an interactive PowerShell after they run
+13. Run `zedra client --workdir C:\path\to\repo --count 3`
+14. Expected: the CLI client authenticates without QR and prints three RTT samples
+15. Run `zedra logs --workdir C:\path\to\repo`
+16. Expected: recent daemon log lines are printed from the AppData workspace directory
+17. Run `zedra update --version <current-release-tag> --yes` while the daemon is still running
+18. Expected: the update succeeds and warns that running daemons keep using the old version until restarted
+19. Run `zedra stop --workdir C:\path\to\repo`
+20. Expected: the daemon exits, the lock file is removed, and a follow-up `status` reports no running daemon
+21. Run `zedra update --version <current-release-tag> --yes`
+22. Expected: the update downloads the Windows release asset, verifies the checksum when available, and reports that `zedra.exe` will be replaced after the command exits
+23. Open a new PowerShell window and run `zedra --version`
+24. Expected: the command prints the release version
+
 ## 2. QR Already Consumed
 
 1. Start host: `zedra start --workdir .`
@@ -184,6 +294,28 @@ app still builds, but push registration reports an error instead of a token.
 7. Stop and restart the daemon
 8. Expected: the old static QR no longer works; the app says the QR expired or was replaced
 9. Restart the daemon and generate a fresh static QR if needed
+
+## 2b. QR Rescan Restarts Existing Entry
+
+Covers the rescan path through `Workspaces::connect_ticket` →
+`Workspace::restart_with_ticket`. Every scenario must end with the same
+entry index (no duplicate) and the entry transitioning into `BindingEndpoint`
+or beyond.
+
+1. Start host: `zedra start --workdir .`
+2. Scan QR, let StaleTimestamp or any auth failure land the entry in `Failed`
+3. Refresh the QR on the host, rescan from the same device
+4. Expected: existing entry restarts and reaches `Connected`; no new entry is created
+5. Repeat with a deliberately stuck Authenticating phase (e.g. pause network for
+   ~10s mid-auth, then rescan a fresh QR before the entry times out)
+6. Expected: in-flight attempt is aborted and the fresh ticket drives a new
+   Register/Authenticate round on the same entry
+7. While the entry is `Connected`, rescan a still-valid QR for the same endpoint
+8. Expected: just switches to the entry; no restart, no flicker of the connecting view
+9. Rescan twice in rapid succession (two fresh QRs back-to-back)
+10. Expected: only the last attempt is alive; no overlapping connect loops
+    (`grep` logs for `start connect to` — two entries are fine, but the first
+    one must be followed by abort/cancel before the second's `Connected`)
 
 ## 2a. Protocol Version Mismatch
 
@@ -224,6 +356,13 @@ app still builds, but push registration reports an error instead of a token.
 4. Expected: the terminal reattaches and prints a new `WINCH <cols>x<rows>` matching the current device viewport
 5. Repeat with a non-alt AI CLI session such as `claude`, `codex`, or a `/zedra-start` resumed session
 6. Expected: resumed output uses the current device width without stale wrapping or dumped resize artifacts
+
+## 3c. Terminal Smooth Scroll Edge Rendering
+
+1. Connect via QR and open a terminal with enough output to fill the scrollback
+2. Slowly drag-scroll the terminal through scrollback a fraction of a row at a time
+3. Expected: the row entering at the top edge (and the row leaving at the bottom edge) slides in pixel by pixel
+4. Expected: rows do not pop in only once fully visible, and the edge gap never shows a blank partial row
 
 ## 4. Reconnect After Host Restart
 
@@ -422,6 +561,26 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 33. With the keyboard still visible and enough scrollback to reach history top, drag upward until scrolling stops, then keep dragging slightly
 34. Expected: the oldest scrollback rows can be revealed and are not clipped above the terminal viewport
 
+## 11-Android. Terminal Keyboard And IME
+
+1. Connect to a session on an Android device and open the terminal view
+2. Tap a non-hyperlink area of the terminal once
+3. Expected: the terminal becomes focused, the software keyboard appears, and terminal input works
+4. Type plain text, press backspace, press enter, and type another command
+5. Expected: committed text, delete, and enter reach the PTY exactly once without opening the dictation preview
+6. Use an IME that composes text, such as Vietnamese Telex or Japanese, type a short composition, and accept it
+7. Expected: composing text updates without duplicating committed characters, and the accepted text reaches the PTY once
+8. With the keyboard visible, tap `Esc`, `Tab`, `Enter`, and each arrow in the accessory bar
+9. Expected: each accessory key reaches the PTY exactly once
+10. Press and hold each accessory arrow, then release it
+11. Expected: the corresponding arrow input repeats continuously while held and stops immediately on release
+12. Dismiss the keyboard or background the app while holding an accessory arrow
+13. Expected: repeat stops and does not resume when the keyboard or app returns
+14. Open floating file search or the git commit message input while a terminal is visible behind it
+15. Expected: the software keyboard appears without the terminal accessory bar, typing goes to the focused input, and the visible terminal does not resize or shift for that keyboard
+16. Tap the already-focused terminal while the keyboard is visible
+17. Expected: the software keyboard dismisses and the next terminal tap reopens it
+
 ## 11a. Terminal Scroll To Bottom Native Button On iOS
 
 1. Connect to a session on iPhone or iOS simulator and open the terminal view
@@ -509,6 +668,8 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 5. Expected: the corresponding arrow input repeats continuously while held and stops immediately on release
 6. Start holding an arrow button, then dismiss the keyboard or background the app
 7. Expected: repeat stops and does not resume when the keyboard or app returns
+8. Open floating file search or the git commit message input while a terminal is visible behind it
+9. Expected: the software keyboard appears without the terminal accessory bar, and the visible terminal does not resize or shift for that keyboard
 
 ## 11f. Terminal Keyboard Accessory After Reconnect On iOS
 
@@ -642,7 +803,31 @@ printf '/tmp/zedra-markdown-table.md:1\n'
 10. Swipe vertically starting inside the table
 11. Expected: the markdown preview scrolls vertically and the table does not drift horizontally
 
-## 15c. Markdown Bottom Padding And Link Hit Slop
+## 15c. Markdown Mermaid Diagram In Preview
+
+1. Connect to a session and open the terminal view
+2. Run:
+
+```bash
+printf '%s\n' '# Mermaid Test' '' '```mermaid' 'flowchart LR' '  A[Start] --> B[End]' '```' > /tmp/zedra-markdown-mermaid.md
+printf '/tmp/zedra-markdown-mermaid.md:1\n'
+```
+
+3. Tap `/tmp/zedra-markdown-mermaid.md:1`
+4. Expected: the preview opens in markdown mode
+5. Expected: a rendered flowchart appears in a card at intrinsic SVG scale (not shrunk to viewport width)
+6. Expected: wide diagrams scroll horizontally inside the card, like markdown tables
+7. Expected: invalid mermaid syntax falls back to monospace source with a muted error line
+8. Tap `Show source` below a rendered diagram
+9. Expected: the fenced mermaid source appears and remains selectable for Add to Chat
+10. Open the same file from the workspace docs tree or editor
+11. Expected: the main workspace markdown view renders the diagram the same way
+12. Open `examples/markdown-mermaid/diagrams.md` (or copy its ER and pie sections to `/tmp`)
+13. Expected: diagram canvas, nodes, and ER entity boxes use dark fills with visible borders (not white boxes on a dark card)
+14. Expected: ER attribute rows, pie legend labels, and edge relationship labels use light text on dark surfaces
+15. Expected: flowchart connectors and arrowheads use accent blue (`#61afef`), not dim gray, with mostly straight vertical/horizontal segments
+
+## 15d. Markdown Bottom Padding And Link Hit Slop
 
 1. Connect to a session and open the terminal view
 2. Run:
@@ -830,6 +1015,85 @@ Expected:
   Claude is running, the terminal card shows the Claude icon even before a shell
   prompt emits fresh OSC metadata.
 
+## 18b. Agent Toolbar, Sessions, and Manage Views
+
+1. Open a connected workspace and open the workspace drawer Terminals tab.
+2. Expected: the top toolbar shows four icon actions: Create agent, Create
+   terminal, View sessions, and Manage agents.
+3. Tap `Create terminal`.
+4. Expected: the drawer closes, a new shell terminal opens in the main view,
+   and the terminal card appears in the drawer.
+5. Tap `Create agent`.
+6. Expected: a scrollable native list picker shows installed host agents with
+   icon and version subtitle; unavailable agents are omitted.
+7. Pick an installed agent such as Claude or Codex.
+8. Expected: Zedra creates a new terminal using the host-owned launch command,
+   opens it as the active main view, and the terminal card shows the matching
+   agent icon once OSC metadata arrives.
+9. Tap `View sessions`.
+10. Expected: the drawer closes and the main view shows a unified session list
+    grouped by day across Claude, Codex, OpenCode, Pi, and Hermes for the current
+    workspace. Each row shows agent icon, title, datetime, branch/worktree,
+    transcript size, and model when available. Hermes is a global agent, so its
+    sessions appear in every workspace (not filtered by `cwd`).
+11. Tap a resumable session row.
+12. Expected: Zedra immediately resumes the session in a new terminal and opens
+    it as the active main view.
+13. Tap `Manage agents`.
+14. Expected: the main view shows managed agents as a list with setup/session
+    counts and usage gauges when live usage is available. Tapping an agent opens
+    detail with metadata, usage gauges (5h / 7d and extra spend when present),
+    account fields, and a session list below.
+15. In manage detail, verify discovered account fields:
+    - Claude: logged in, plan (Pro/Max/Team/Enterprise when OAuth, credentials
+      file, or CLI PTY is available), model, effort, permission mode, today msgs
+      and total cost when `stats-cache.json` exists; no week msgs/sessions/tools
+      rows. Usage gauges: with a valid `~/.claude/.credentials.json` token,
+      limits come from the OAuth usage API; with Keychain-only CLI auth or an
+      expired file token while the CLI still works, from PTY `/usage` scrape
+      (percents should match the CLI panel; inline reset duration may be missing
+      if parsing fails). Host check: `zedra agent scan usage --json`.
+    - Codex: logged in, plan, plan until, account name from `auth.json`, model/
+      personality from `config.toml`
+    - OpenCode: config dir presence
+    - Pi: logged in (sessions dir presence). Install with `npm install -g
+      @earendil-works/pi-coding-agent`; sessions live at
+      `~/.pi/agent/sessions/--<workdir>--/<timestamp>_<uuid>.jsonl`. Resume
+      should run `pi --session <id>` in a new terminal.
+    - Hermes: per-provider auth + active provider (`$HERMES_HOME/auth.json`,
+      default `~/.hermes`), Default model / Default provider (`config.yaml`),
+      Skills count, Total spend + Platforms (`state.db` rollups). Sessions are
+      global, read from `$HERMES_HOME/state.db` (curated titles, platform
+      `source`, tool counts, per-session cost; falls back to `sessions/*.json`
+      when the db is absent); resume should run `hermes --resume <session_id>`.
+      Manage detail shows a **read-only "Config & memory"** section listing
+      `SOUL.md`, `USER.md`, `MEMORY.md`, `config.yaml`, `.env`, `cron/jobs.json`.
+      Tapping a present file opens its content in the **same native preview
+      sheet as terminal file links** (`FilePreviewView`): `.md` files render as
+      formatted markdown, others as a syntax-highlighted code editor. Absent
+      files show "not created yet" and are not tappable; oversized files show
+      "truncated" in the subtitle. The client cannot edit these.
+16. Tap `Resume` on a session from manage detail.
+17. Expected: same immediate resume behavior as the unified sessions view.
+18. Re-open `View sessions` or `Manage agents` without tapping Refresh.
+19. Expected: lists load quickly from the host startup cache (default limit 50
+    sessions per agent).
+20. Tap Refresh in either view.
+21. Expected: the host rescans synchronous managed-agent metadata and session
+    lists immediately; CLI versions may arrive a moment later (one
+    `AgentInfoChanged` host event per agent) and update manage detail without
+    another refresh.
+22. In manage detail for an available agent, wait a few seconds after opening
+    or refreshing.
+23. Expected: the version line updates from `Checking…` to the real `--version`
+    string when the host finishes that agent’s async version probe.
+24. Open manage detail for an agent with zero sessions or a session-list error
+    (for example Codex when the host scan fails).
+25. Expected: the header (back, title, refresh) stays full content width and
+    lines up with the metadata column; narrow error text must not shrink-wrap
+    the header (see `docs/CONVENTIONS.md` GPUI flex width rules and
+    `ui::subscreen_layout`).
+
 ## 19. Xcode Rust Build Target
 
 1. Open `ios/Zedra.xcworkspace` in Xcode
@@ -879,3 +1143,61 @@ id in production). The trailing shows the aggregate `done/total` rollup.
     task is ended (equivalently, `zedra://la-test/end` with no id clears it at once)
 11. Toggle `Settings > Zedra > Live Activities` off, then open `zedra://la-test/start/x`
 12. Expected: no activity appears; device log shows `[LA] disabled in Settings`
+## 21. iOS Release logging
+
+1. Install a **Release** build on device (not Xcode Run with debugger attached)
+2. Connect via **Scan QR**; optional: `scripts/log-ios.sh --grep connect`
+3. Expected: no burst of per-packet iroh/quinn trace lines (`tracing-subscriber` requires `debug-logs`)
+
+## 22. Terminal appearance (light/dark)
+
+1. Connect to a workspace and open a terminal running `ls` with color
+2. Open Settings → Appearance and tap the **sun** segment (light mode)
+3. Expected: terminal background is light; directory names and ANSI colors are readable (not washed out)
+4. Run `claude` (or another session already showing Claude output) and scroll to file-reference lines such as `L123 (file.rs):`
+5. Expected: highlighted paths are readable on the light background (not pale lavender)
+6. Open **Codex** in the same terminal (or a dedicated Codex session)
+7. Expected: the composer / user-message background pill matches the light theme (not missing or using a dark gray from stale palette)
+8. From the agent picker or quick action panel, open a fresh Codex launch-command terminal
+9. Expected: Codex's first rendered composer / user-message background pill is visible without waiting for terminal reattach or focus changes
+10. Toggle back to **Dark**
+11. Expected: terminal colors, Claude highlights, and Codex pill update without restarting the app
+12. Optional: from the host, run `printf '\e[10;?\e[11;?\e\\'` inside the Zedra session and confirm replies report the current fg/bg (light: `fafafa` background). Zedra answers OSC queries on the session PTY via `ColorRequest` and the active `TerminalTheme`; it does not inject palette setup bytes into scrollback on toggle.
+
+## 22a. Android Native Presentations Follow Theme
+
+1. Install an Android build and open Settings.
+2. Toggle Appearance to **Light**.
+3. Open the agent picker, keyboard accessory bar, and a native text input or alert.
+4. Expected: native surfaces use light backgrounds and dark text/icons, matching the app theme.
+5. Toggle Appearance back to **Dark** and repeat the same presentations.
+6. Expected: native surfaces return to dark backgrounds and light text/icons without restarting the app.
+
+## 22b. iOS Native Presentations Follow Theme
+
+1. Install an iOS build and open Settings.
+2. Toggle Appearance to **Light**.
+3. Open an alert, action sheet, agent picker, keyboard accessory bar, native text input, custom sheet, and native notification.
+4. Expected: UIKit presentation chrome uses light backgrounds and dark text/icons, matching the app theme.
+5. Toggle Appearance back to **Dark** and repeat the same presentations.
+6. Expected: UIKit presentation chrome returns to dark backgrounds and light text/icons without restarting the app.
+
+## Floating File Search (cmd+P)
+
+1. Connect to a workspace and open the drawer on the **Files** tab.
+2. Tap the search (magnifier) icon in the top-right control cluster, above the
+   Explorer / Docs toggle.
+3. Verify a floating panel appears near the top over a dimmed full-screen
+   backdrop, the keyboard opens, and the input is focused.
+4. Type a query: results stream in below the input (name + relative path rows).
+   Confirm "Searching…" shows briefly, then matches; clear the query to return
+   to the "Type to search files" prompt. Matched characters in the relative path
+   are emphasized exactly where the host scored them.
+5. Tap a file result: the panel closes and the file opens in the editor.
+6. Reopen the popup and tap the dim backdrop (or use system back / swipe back):
+   the popup closes without opening anything.
+7. Immediately tap the search icon again (without touching the drawer): the popup
+   reopens. Repeat the dismiss/reopen cycle a few times to confirm it never gets
+   stuck closed.
+8. Confirm the old inline search bar no longer appears at the top of the file
+   explorer list.

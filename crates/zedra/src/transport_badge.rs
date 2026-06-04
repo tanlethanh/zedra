@@ -1,19 +1,22 @@
 /// Transport badge: connection type indicator (P2P / Relay / Reconnecting).
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::*;
 use zedra_session::{ConnectPhase, TransportSnapshot};
 
-use crate::theme;
+use crate::platform_bridge::{self, HapticFeedback};
+use crate::theme::{self, ThemePalette};
 
 /// Compute badge label and dot color from phase and transport.
 /// Returns `(label, dot_color)`.
 pub(crate) fn transport_badge(
+    palette: &ThemePalette,
     phase: &ConnectPhase,
     transport: Option<&TransportSnapshot>,
 ) -> (String, u32) {
     match phase {
-        ConnectPhase::Init => ("Initializing".into(), theme::ACCENT_YELLOW),
+        ConnectPhase::Init => ("Initializing".into(), palette.accent_yellow),
         ConnectPhase::Connected => {
             let (conn_type, relay): (String, Option<&str>) = match transport {
                 Some(t) if t.is_direct => {
@@ -34,13 +37,13 @@ pub(crate) fn transport_badge(
                 _ => conn_type.to_string(),
             };
             let color = match transport {
-                Some(t) if t.is_direct => theme::ACCENT_GREEN,
-                Some(_) => theme::ACCENT_GREEN,
-                None => theme::ACCENT_GREEN,
+                Some(t) if t.is_direct => palette.accent_green,
+                Some(_) => palette.accent_green,
+                None => palette.accent_green,
             };
             (label, color)
         }
-        ConnectPhase::Disconnected => ("Tap refresh to reconnect.".into(), theme::ACCENT_RED),
+        ConnectPhase::Disconnected => ("Tap refresh to reconnect.".into(), palette.accent_red),
         ConnectPhase::Reconnecting {
             attempt,
             next_retry_secs,
@@ -51,40 +54,44 @@ pub(crate) fn transport_badge(
             } else {
                 format!("Reconnecting ({attempt})")
             };
-            (label, theme::ACCENT_RED)
+            (label, palette.accent_red)
         }
-        ConnectPhase::Failed(err) => (err.user_message(), theme::ACCENT_RED),
-        ConnectPhase::BindingEndpoint => ("Binding endpoint".into(), theme::ACCENT_YELLOW),
-        ConnectPhase::HolePunching => ("Hole punching".into(), theme::ACCENT_YELLOW),
-        ConnectPhase::Registering => ("Registering device".into(), theme::ACCENT_YELLOW),
-        ConnectPhase::Authenticating => ("Authenticating".into(), theme::ACCENT_YELLOW),
-        ConnectPhase::Proving => ("Auth challenge".into(), theme::ACCENT_YELLOW),
-        ConnectPhase::Sync => ("Syncing state".into(), theme::ACCENT_YELLOW),
+        ConnectPhase::Failed(err) => (err.user_message(), palette.accent_red),
+        ConnectPhase::BindingEndpoint => ("Binding endpoint".into(), palette.accent_yellow),
+        ConnectPhase::HolePunching => ("Hole punching".into(), palette.accent_yellow),
+        ConnectPhase::Registering => ("Registering device".into(), palette.accent_yellow),
+        ConnectPhase::Authenticating => ("Authenticating".into(), palette.accent_yellow),
+        ConnectPhase::Proving => ("Auth challenge".into(), palette.accent_yellow),
+        ConnectPhase::Sync => ("Syncing state".into(), palette.accent_yellow),
         ConnectPhase::Idle { idle_since } => (
             format!("Idle {}s", idle_since.elapsed().as_secs()),
-            theme::ACCENT_YELLOW,
+            palette.accent_yellow,
         ),
     }
 }
 
-pub(crate) fn phase_indicator_color(phase: &ConnectPhase) -> u32 {
+pub(crate) fn phase_indicator_color(palette: &ThemePalette, phase: &ConnectPhase) -> u32 {
     if phase.is_connected() {
-        theme::ACCENT_GREEN
+        palette.accent_green
     } else if phase.is_idle() || phase.is_connecting() || phase.is_reconnecting() {
-        theme::ACCENT_YELLOW
+        palette.accent_yellow
     } else if phase.is_failed() {
-        theme::ACCENT_RED
+        palette.accent_red
     } else {
-        theme::ACCENT_DIM
+        palette.accent_dim
     }
 }
 
-fn phase_indicator_blinks(phase: &ConnectPhase) -> bool {
-    phase_indicator_color(phase) == theme::ACCENT_YELLOW
+fn phase_indicator_blinks(palette: &ThemePalette, phase: &ConnectPhase) -> bool {
+    phase_indicator_color(palette, phase) == palette.accent_yellow
 }
 
 const STATUS_PULSE_MS: u64 = 1800;
 const STATUS_PULSE_MIN_OPACITY: f32 = 0.35;
+const STATUS_PULSE_MAX_SCALE: f32 = 1.3;
+const STATUS_HIT_SLOP: f32 = 20.0;
+
+type ConnectionStatusPressHandler = Arc<dyn Fn(&PressEvent, &mut Window, &mut App) + 'static>;
 
 #[derive(Clone, IntoElement)]
 pub(crate) struct ConnectionStatusIndicator {
@@ -92,20 +99,28 @@ pub(crate) struct ConnectionStatusIndicator {
     color: u32,
     size: f32,
     blink: bool,
+    on_press: Option<ConnectionStatusPressHandler>,
 }
 
 impl ConnectionStatusIndicator {
-    pub(crate) fn from_phase(id: impl Into<ElementId>, phase: Option<&ConnectPhase>) -> Self {
+    pub(crate) fn from_phase(
+        id: impl Into<ElementId>,
+        phase: Option<&ConnectPhase>,
+        palette: &ThemePalette,
+    ) -> Self {
         let color = phase
-            .map(phase_indicator_color)
-            .unwrap_or(theme::ACCENT_DIM);
-        let blink = phase.map(phase_indicator_blinks).unwrap_or(false);
+            .map(|phase| phase_indicator_color(palette, phase))
+            .unwrap_or(palette.accent_dim);
+        let blink = phase
+            .map(|phase| phase_indicator_blinks(palette, phase))
+            .unwrap_or(false);
 
         Self {
             id: id.into(),
             color,
             size: theme::ICON_STATUS,
             blink,
+            on_press: None,
         }
     }
 
@@ -113,31 +128,70 @@ impl ConnectionStatusIndicator {
         self.size = size;
         self
     }
+
+    /// Press handler compatible with [`Context::listener`].
+    pub(crate) fn on_press(
+        mut self,
+        handler: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_press = Some(Arc::new(handler));
+        self
+    }
+}
+
+fn status_pulse_wave(delta: f32) -> f32 {
+    0.5 - 0.5 * (delta * std::f32::consts::TAU).cos()
+}
+
+fn render_status_dot(id: ElementId, color: u32, dot_size: f32, blink: bool) -> AnyElement {
+    let dot = svg()
+        .path("icons/dot.svg")
+        .size(px(dot_size))
+        .flex_shrink_0()
+        .text_color(rgb(color));
+
+    if blink {
+        dot.with_animation(
+            id,
+            Animation::new(Duration::from_millis(STATUS_PULSE_MS)).repeat(),
+            move |dot, delta| {
+                let wave = status_pulse_wave(delta);
+                let opacity = STATUS_PULSE_MIN_OPACITY + wave * (1.0 - STATUS_PULSE_MIN_OPACITY);
+                let scale = 1.0 + wave * (STATUS_PULSE_MAX_SCALE - 1.0);
+                dot.opacity(opacity)
+                    .with_transformation(Transformation::scale(gpui::size(scale, scale)))
+            },
+        )
+        .into_any_element()
+    } else {
+        dot.into_any_element()
+    }
 }
 
 impl RenderOnce for ConnectionStatusIndicator {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let dot = div()
-            .w(px(self.size))
-            .h(px(self.size))
-            .rounded(px(self.size / 2.0))
-            .flex_shrink_0()
-            .bg(rgb(self.color));
+        let indicator = render_status_dot(self.id.clone(), self.color, self.size, self.blink);
 
-        if self.blink {
-            dot.with_animation(
-                self.id,
-                Animation::new(Duration::from_millis(STATUS_PULSE_MS)).repeat(),
-                |dot, delta| {
-                    let wave = 0.5 - 0.5 * (delta * std::f32::consts::TAU).cos();
-                    let opacity =
-                        STATUS_PULSE_MIN_OPACITY + wave * (1.0 - STATUS_PULSE_MIN_OPACITY);
-                    dot.opacity(opacity)
-                },
-            )
-            .into_any_element()
+        if let Some(on_press) = self.on_press {
+            let button_id = (self.id, "press");
+            div()
+                .id(button_id)
+                .flex()
+                .items_center()
+                .justify_center()
+                .flex_shrink_0()
+                .cursor_pointer()
+                .hit_slop(px(STATUS_HIT_SLOP))
+                .on_pointer_down(|_, _, cx| cx.stop_propagation())
+                .on_press(move |event, window, cx| {
+                    cx.stop_propagation();
+                    platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+                    on_press(event, window, cx);
+                })
+                .child(indicator)
+                .into_any_element()
         } else {
-            dot.into_any_element()
+            indicator
         }
     }
 }
@@ -165,7 +219,7 @@ pub fn format_bytes(bytes: u64) -> String {
 mod tests {
     use std::time::Instant;
 
-    use crate::theme;
+    use crate::theme::ThemePalette;
     use crate::transport_badge::{
         ConnectionStatusIndicator, phase_indicator_color, transport_badge,
     };
@@ -173,15 +227,18 @@ mod tests {
 
     #[test]
     fn disconnected_badge_uses_manual_reconnect_hint() {
-        let (label, color) = transport_badge(&ConnectPhase::Disconnected, None);
+        let palette = ThemePalette::dark();
+        let (label, color) = transport_badge(&palette, &ConnectPhase::Disconnected, None);
 
         assert_eq!(label, "Tap refresh to reconnect.");
-        assert_eq!(color, theme::ACCENT_RED);
+        assert_eq!(color, palette.accent_red);
     }
 
     #[test]
     fn reconnecting_badge_includes_retry_countdown() {
+        let palette = ThemePalette::dark();
         let (label, color) = transport_badge(
+            &palette,
             &ConnectPhase::Reconnecting {
                 attempt: 2,
                 reason: zedra_session::ReconnectReason::ConnectionLost,
@@ -191,11 +248,12 @@ mod tests {
         );
 
         assert_eq!(label, "Reconnecting (2) \u{00b7} 3s");
-        assert_eq!(color, theme::ACCENT_RED);
+        assert_eq!(color, palette.accent_red);
     }
 
     #[test]
     fn warning_status_indicator_blinks() {
+        let palette = ThemePalette::dark();
         let idle = ConnectPhase::Idle {
             idle_since: Instant::now(),
         };
@@ -208,20 +266,29 @@ mod tests {
         let failed = ConnectPhase::Failed(ConnectError::HostUnreachable);
 
         for phase in [&idle, &reconnecting] {
-            let indicator = ConnectionStatusIndicator::from_phase("test-dot", Some(phase));
-            assert_eq!(phase_indicator_color(phase), theme::ACCENT_YELLOW);
+            let indicator =
+                ConnectionStatusIndicator::from_phase("test-dot", Some(phase), &palette);
+            assert_eq!(
+                phase_indicator_color(&palette, phase),
+                palette.accent_yellow
+            );
             assert!(indicator.blink);
         }
 
         for phase in [&connected, &failed] {
-            let indicator = ConnectionStatusIndicator::from_phase("test-dot", Some(phase));
-            assert_ne!(phase_indicator_color(phase), theme::ACCENT_YELLOW);
+            let indicator =
+                ConnectionStatusIndicator::from_phase("test-dot", Some(phase), &palette);
+            assert_ne!(
+                phase_indicator_color(&palette, phase),
+                palette.accent_yellow
+            );
             assert!(!indicator.blink);
         }
     }
 
     #[test]
     fn failed_badge_uses_friendly_error_message() {
+        let palette = ThemePalette::dark();
         let cases = [
             (
                 ConnectError::AlpnMismatch,
@@ -246,10 +313,10 @@ mod tests {
         ];
 
         for (error, message) in cases {
-            let (label, color) = transport_badge(&ConnectPhase::Failed(error), None);
+            let (label, color) = transport_badge(&palette, &ConnectPhase::Failed(error), None);
 
             assert_eq!(label, message);
-            assert_eq!(color, theme::ACCENT_RED);
+            assert_eq!(color, palette.accent_red);
         }
     }
 }

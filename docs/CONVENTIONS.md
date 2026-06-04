@@ -152,7 +152,17 @@ Always `platform_bridge::bridge()`. Never call platform APIs directly from UI co
 Read `docs/DESIGN.md` before creating or redesigning UI.
 
 - Treat it as the visual source of truth for tone, density, spacing, typography, and component styling.
-- New product UI should match the repo's dark, flat, quiet, tool-like direction.
+- New product UI should match the repo's flat, quiet, tool-like direction in both dark and light appearance.
+
+## Theming
+
+Read `docs/THEMING.md` before adding or changing product UI colors.
+
+- **Workspace GPUI**: use `theme::palette(cx)` or `theme::bg_primary(cx)` (and related accessors) in `render()`. Layout sizes use constants in `theme.rs` (`SPACING_*`, `FONT_*`, `ICON_*`).
+- **Editor**: sync `theme::bundle(cx).editor` into editor entities on create and on `ThemeStateEvent::Changed`.
+- **Terminal**: sync `theme::bundle(cx).terminal` through `WorkspaceTerminal` / `TerminalView::set_terminal_theme`; do not map terminal ANSI colors from `ThemePalette`.
+- **Do not** hardcode `0xRRGGBB` or inline light/dark branches in views. Add tokens in `crates/zedra/src/theme.rs` or `crates/zedra-terminal/src/theme.rs` when a new color is needed.
+- Subscribe to `ThemeStateEvent::Changed` on the owning entity when the subtree is not refreshed by a parent that already notifies on theme change.
 
 ## Swift Native Integration
 
@@ -229,6 +239,28 @@ When the scroll area lives inside nested flex layouts, the parent chain must als
 - This is required for embedded native iOS sheet content, where GPUI otherwise tends to measure the scroll node at content height and `overflow_y_scroll()` will not produce a usable scroll range.
 
 See `docs/GPUI_NATIVE_PRESENTATIONS.md` for the native sheet gesture bridge and ownership split.
+
+## GPUI Flex Layout — Width Resolution in Column Containers
+
+Do not use `w_full()` (`width: 100%`) on flex items inside a `flex_col()` container to make them fill the container's width. Taffy only resolves percentage widths against a definite size. When a flex container's width comes from cross-axis stretch (the default), it is not considered definite for percentage resolution, so `width: 100%` on children resolves against a higher ancestor and produces wrong widths.
+
+**Use instead**: omit the explicit width and let the default `align-self: stretch` fill the cross axis.
+
+```rust
+// Wrong — w_full() resolves against the wrong ancestor
+div().flex_col()
+    .child(div().w_full().flex().flex_row()...)
+
+// Correct — stretch is the default and uses the definite container width
+div().flex_col()
+    .child(div().min_w_0().flex().flex_row()...)
+```
+
+Keep `min_w_0()` on flex items that contain truncated text or overflow content to prevent them from overflowing their container.
+
+For the column container itself to have a definite width (so its children can use stretch reliably), give it an explicit `w_full()` or absolute pixel width. Do not rely solely on cross-axis stretch being inherited transitively through multiple flex levels.
+
+Do not combine `justify_between()` with `flex_1()` on a sibling to push a right-hand element to the far edge. With `flex_1()` consuming all free space, `justify-content: space-between` has no remaining space to distribute and behaves identically to `flex-start`. Use `flex_1()` on the left child alone — it naturally pushes the right child to the far edge without `justify_between`.
 
 ## WorkspaceState as Single Source of Truth
 

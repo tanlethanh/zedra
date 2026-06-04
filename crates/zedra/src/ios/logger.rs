@@ -1,10 +1,14 @@
-/// iOS logger that routes Rust logs into the device log stream.
+/// iOS logger that routes `log` output through NSLog (visible in idevicesyslog).
 ///
-/// `log` crate lines are formatted as `[I dev.zedra.app::module] message`.
-/// `tracing` lines use the compact subscriber format.
+/// Release builds use only this path. `tracing` macros are not subscribed unless
+/// the `debug-logs` feature is enabled — matching v0.2.4 behavior and avoiding
+/// synchronous NSLog/os_log storms during iroh connect.
 use log::{Level, Log, Metadata, Record};
 use std::ffi::CString;
+
+#[cfg(feature = "debug-logs")]
 use std::io::{self, Write};
+#[cfg(feature = "debug-logs")]
 use tracing_subscriber::{EnvFilter, fmt::MakeWriter};
 
 unsafe extern "C" {
@@ -20,11 +24,13 @@ impl IosLogger {
             Err(_) => log::set_max_level(level),
         }
 
-        install_tracing_logger(level);
+        #[cfg(feature = "debug-logs")]
+        install_tracing_subscriber(level);
     }
 }
 
-fn install_tracing_logger(level: log::LevelFilter) {
+#[cfg(feature = "debug-logs")]
+fn install_tracing_subscriber(level: log::LevelFilter) {
     if level == log::LevelFilter::Off {
         return;
     }
@@ -41,6 +47,7 @@ fn install_tracing_logger(level: log::LevelFilter) {
     let _ = tracing::subscriber::set_global_default(subscriber);
 }
 
+#[cfg(feature = "debug-logs")]
 fn ios_tracing_filter(level: log::LevelFilter) -> EnvFilter {
     let level = match level {
         log::LevelFilter::Off => "off",
@@ -51,17 +58,16 @@ fn ios_tracing_filter(level: log::LevelFilter) -> EnvFilter {
         log::LevelFilter::Trace => "trace",
     };
 
-    if cfg!(feature = "debug-logs") {
-        EnvFilter::new(level)
-    } else {
-        EnvFilter::new(format!(
-            "{level},iroh=warn,iroh_quinn=warn,iroh_relay=warn,quinn=warn"
-        ))
-    }
+    EnvFilter::new(format!(
+        "{level},iroh=warn,iroh_quinn=warn,iroh_quinn_proto=warn,\
+         iroh_relay=warn,iroh_net_report=warn,quinn=warn"
+    ))
 }
 
+#[cfg(feature = "debug-logs")]
 struct IosTracingMakeWriter;
 
+#[cfg(feature = "debug-logs")]
 impl<'a> MakeWriter<'a> for IosTracingMakeWriter {
     type Writer = IosTracingWriter;
 
@@ -70,10 +76,12 @@ impl<'a> MakeWriter<'a> for IosTracingMakeWriter {
     }
 }
 
+#[cfg(feature = "debug-logs")]
 struct IosTracingWriter {
     buffer: Vec<u8>,
 }
 
+#[cfg(feature = "debug-logs")]
 impl Write for IosTracingWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.buffer.extend_from_slice(buf);
@@ -85,6 +93,7 @@ impl Write for IosTracingWriter {
     }
 }
 
+#[cfg(feature = "debug-logs")]
 impl Drop for IosTracingWriter {
     fn drop(&mut self) {
         if self.buffer.is_empty() {
@@ -108,7 +117,6 @@ impl Log for IosLogger {
         if matches!(target, "tracing::span" | "tracing::span::active") {
             return false;
         }
-        // Without debug-logs feature, suppress noisy iroh/quinn below warn
         if !cfg!(feature = "debug-logs")
             && metadata.level() > Level::Warn
             && (target.starts_with("iroh") || target.starts_with("quinn"))

@@ -6,20 +6,27 @@ An experimental remote code editor on mobile with GPU-accelerated rendering powe
 
 ## Download App
 
-- iOS — [TestFlight](https://testflight.apple.com/join/1EWe2kRH)
-- Android — coming soon
-
+- iOS — [AppStore](https://apps.apple.com/vn/app/zedra-code-from-anywhere/id6760534630) or [TestFlight](https://testflight.apple.com/join/1EWe2kRH)
+- Android — Closed testing. Join via [Google Groups](https://groups.google.com/g/zedra-beta)
+ 
 ## Desktop daemon
 
 Note: Zedra uses direct P2P connections when possible, but may fallback to relays if blocked by `Symmetric NAT` or `CGNAT` (common in home networks). Works best on LANs and supported relay regions. For high latency issues, please reach out. Learn more: [How NAT traversal works](https://tailscale.com/blog/how-nat-traversal-works)
 
-**Manual**
+**MacOS/Linux**
 ```shell
 # Install Zedra CLI
 curl -fsSL zedra.dev/install.sh | sh
 # Start Zedra in working directory
 zedra start
 # Or start in background 
+zedra start --detach
+```
+
+**Windows**
+
+```powershell
+powershell -c "irm https://zedra.dev/install.ps1 | iex"
 zedra start --detach
 ```
 

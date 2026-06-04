@@ -1,12 +1,11 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use tracing::*;
 
-use crate::active_terminal;
 use crate::deeplink;
 use crate::platform_bridge::{
-    self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback,
+    self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback, ListPickerItem,
     NativeDictationPreviewOptions, NativeEditMenuItem, NativeFloatingButtonOptions,
-    NativeNotificationOptions, PlatformBridge,
+    NativeNotificationOptions, PlatformBridge, SystemTheme,
 };
 
 /// Screen scale factor (e.g. 3.0 for @3x), stored as f32 bits.
@@ -92,6 +91,15 @@ unsafe extern "C" {
         styles: *const i32,
         image_names: *const *const std::ffi::c_char,
     );
+    fn ios_present_list_picker(
+        callback_id: u32,
+        title: *const std::ffi::c_char,
+        message: *const std::ffi::c_char,
+        item_count: i32,
+        labels: *const *const std::ffi::c_char,
+        subtitles: *const *const std::ffi::c_char,
+        image_names: *const *const std::ffi::c_char,
+    );
     /// Present a native edit menu anchored at a window coordinate.
     fn ios_present_native_edit_menu(
         callback_id: u32,
@@ -163,6 +171,10 @@ unsafe extern "C" {
         placeholder: *const std::ffi::c_char,
         initial_value: *const std::ffi::c_char,
     );
+    /// Returns 1 for dark, 0 for light, -1 when unavailable.
+    fn ios_system_prefers_dark_theme() -> i32;
+    /// Apply the app appearance to the native keyboard accessory bar.
+    fn ios_set_keyboard_accessory_theme(is_dark: bool);
 }
 
 impl PlatformBridge for IosBridge {
@@ -328,6 +340,52 @@ impl PlatformBridge for IosBridge {
         }
     }
 
+    fn present_list_picker(&self, id: u32, title: &str, message: &str, items: &[ListPickerItem]) {
+        use std::ffi::CString;
+
+        let c_title = CString::new(title).unwrap_or_else(|_| CString::new("").unwrap());
+        let c_message = CString::new(message).unwrap_or_else(|_| CString::new("").unwrap());
+        let c_labels: Vec<CString> = items
+            .iter()
+            .map(|item| {
+                CString::new(item.label.as_str()).unwrap_or_else(|_| CString::new("").unwrap())
+            })
+            .collect();
+        let label_ptrs: Vec<*const std::ffi::c_char> =
+            c_labels.iter().map(|label| label.as_ptr()).collect();
+        let c_subtitles: Vec<CString> = items
+            .iter()
+            .map(|item| {
+                CString::new(item.subtitle.as_deref().unwrap_or(""))
+                    .unwrap_or_else(|_| CString::new("").unwrap())
+            })
+            .collect();
+        let subtitle_ptrs: Vec<*const std::ffi::c_char> = c_subtitles
+            .iter()
+            .map(|subtitle| subtitle.as_ptr())
+            .collect();
+        let c_image_names: Vec<CString> = items
+            .iter()
+            .map(|item| {
+                CString::new(item.image_name.as_deref().unwrap_or(""))
+                    .unwrap_or_else(|_| CString::new("").unwrap())
+            })
+            .collect();
+        let image_name_ptrs: Vec<*const std::ffi::c_char> =
+            c_image_names.iter().map(|name| name.as_ptr()).collect();
+        unsafe {
+            ios_present_list_picker(
+                id,
+                c_title.as_ptr(),
+                c_message.as_ptr(),
+                items.len() as i32,
+                label_ptrs.as_ptr(),
+                subtitle_ptrs.as_ptr(),
+                image_name_ptrs.as_ptr(),
+            );
+        }
+    }
+
     fn present_native_edit_menu(
         &self,
         id: u32,
@@ -470,6 +528,20 @@ impl PlatformBridge for IosBridge {
                 placeholder.as_ptr(),
                 initial_value.as_ptr(),
             );
+        }
+    }
+
+    fn system_prefers_theme(&self) -> SystemTheme {
+        match unsafe { ios_system_prefers_dark_theme() } {
+            1 => SystemTheme::Dark,
+            0 => SystemTheme::Light,
+            _ => SystemTheme::Unknown,
+        }
+    }
+
+    fn set_native_theme(&self, is_dark: bool) {
+        unsafe {
+            ios_set_keyboard_accessory_theme(is_dark);
         }
     }
 }

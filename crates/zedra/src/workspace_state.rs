@@ -5,6 +5,7 @@ use std::sync::{Mutex, OnceLock};
 use tracing::*;
 use zedra_rpc::proto::HostInfoSnapshot;
 
+use zedra_rpc::proto::ManagedAgentKind;
 use zedra_session::*;
 
 use crate::platform_bridge;
@@ -38,6 +39,11 @@ pub enum WorkspaceMainView {
     },
     Terminal {
         id: String,
+    },
+    AgentSessions,
+    AgentManage,
+    AgentDetail {
+        kind: ManagedAgentKind,
     },
     NoActiveTerminal,
 }
@@ -76,6 +82,60 @@ impl WorkspaceMainView {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WorkspaceNavigationStack {
+    routes: Vec<WorkspaceMainView>,
+}
+
+impl WorkspaceNavigationStack {
+    pub fn active(&self) -> WorkspaceMainView {
+        self.routes.last().cloned().unwrap_or_default()
+    }
+
+    pub fn open(&mut self, route: WorkspaceMainView) {
+        if self.routes.last() == Some(&route) {
+            return;
+        }
+
+        self.routes.retain(|entry| entry != &route);
+        self.routes.push(route);
+    }
+
+    pub fn replace(&mut self, route: WorkspaceMainView) {
+        if !self.routes.is_empty() {
+            self.routes.pop();
+        }
+        self.routes.retain(|entry| entry != &route);
+        self.routes.push(route);
+    }
+
+    pub fn reset(&mut self, route: WorkspaceMainView) {
+        self.routes.clear();
+        self.routes.push(route);
+    }
+
+    pub fn go_back(&mut self) -> Option<WorkspaceMainView> {
+        if self.routes.len() <= 1 {
+            return None;
+        }
+
+        self.routes.pop();
+        self.routes.last().cloned()
+    }
+
+    pub fn prune_stale_terminals(&mut self, terminal_ids: &[String]) {
+        self.routes.retain(|route| {
+            route
+                .terminal_id()
+                .is_none_or(|id| terminal_ids.iter().any(|terminal_id| terminal_id == id))
+        });
+    }
+
+    pub fn remove_terminal(&mut self, id: &str) {
+        self.routes.retain(|route| route.terminal_id() != Some(id));
+    }
+}
+
 /// Shareable workspace state. Clone copies the Arc only. Read via methods (non-blocking).
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct WorkspaceState {
@@ -100,6 +160,8 @@ pub struct WorkspaceState {
     pub active_terminal_id: Option<String>,
     #[serde(skip)]
     pub active_main_view: WorkspaceMainView,
+    #[serde(skip)]
+    pub main_view_stack: WorkspaceNavigationStack,
     #[serde(skip)]
     pub terminal_ids: Vec<String>,
     #[serde(skip)]
@@ -194,6 +256,7 @@ impl WorkspaceState {
         self.connect_phase = Some(ConnectPhase::Disconnected);
         self.active_terminal_id = None;
         self.active_main_view = WorkspaceMainView::Default;
+        self.main_view_stack.reset(WorkspaceMainView::Default);
         self.terminal_ids.clear();
         self.host_info = None;
     }
@@ -294,6 +357,43 @@ impl WorkspaceState {
 
         self.active_main_view = active_main_view;
         cx.notify();
+    }
+
+    pub fn active_main_view_terminal_id(&self) -> Option<&str> {
+        self.active_main_view.terminal_id()
+    }
+
+    pub fn navigate(&mut self, route: WorkspaceMainView, cx: &mut Context<Self>) {
+        self.main_view_stack.open(route.clone());
+        if let WorkspaceMainView::Terminal { ref id } = route {
+            self.active_terminal_id = Some(id.clone());
+            cx.emit(WorkspaceStateEvent::TerminalOpened { id: id.clone() });
+        }
+        self.set_active_main_view(route, cx);
+    }
+
+    pub fn replace_current_route(&mut self, route: WorkspaceMainView, cx: &mut Context<Self>) {
+        self.main_view_stack.replace(route.clone());
+        if let WorkspaceMainView::Terminal { ref id } = route {
+            self.active_terminal_id = Some(id.clone());
+            cx.emit(WorkspaceStateEvent::TerminalOpened { id: id.clone() });
+        }
+        self.set_active_main_view(route, cx);
+    }
+
+    pub fn remove_terminal_route(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.main_view_stack.remove_terminal(id);
+        cx.notify();
+    }
+
+    pub fn go_back(&mut self, cx: &mut Context<Self>) -> Option<WorkspaceMainView> {
+        let route = self.main_view_stack.go_back()?;
+        if let WorkspaceMainView::Terminal { ref id } = route {
+            self.active_terminal_id = Some(id.clone());
+            cx.emit(WorkspaceStateEvent::TerminalOpened { id: id.clone() });
+        }
+        self.set_active_main_view(route.clone(), cx);
+        Some(route)
     }
 
     pub fn set_docs_tree_dir_collapsed(
@@ -505,6 +605,115 @@ mod tests {
         assert!(!git_diff_view.is_git_diff("src/lib.rs", 1));
         assert_eq!(git_diff_view.file_path(), None);
         assert_eq!(git_diff_view.terminal_id(), None);
+    }
+
+    #[test]
+    fn navigation_stack_moves_existing_route_to_top() {
+        let mut stack = WorkspaceNavigationStack::default();
+        let terminal = WorkspaceMainView::Terminal {
+            id: "terminal-1".into(),
+        };
+        let file = WorkspaceMainView::File {
+            path: "src/main.rs".into(),
+        };
+        let diff = WorkspaceMainView::GitDiff {
+            path: "src/lib.rs".into(),
+            section: 1,
+        };
+
+        stack.open(terminal.clone());
+        stack.open(file.clone());
+        stack.open(diff.clone());
+        stack.open(terminal.clone());
+
+        assert_eq!(stack.active(), terminal);
+        assert_eq!(stack.go_back(), Some(diff));
+        assert_eq!(stack.go_back(), Some(file));
+        assert_eq!(stack.go_back(), None);
+    }
+
+    #[test]
+    fn navigation_stack_replace_does_not_grow_history() {
+        let mut stack = WorkspaceNavigationStack::default();
+        let file = WorkspaceMainView::File {
+            path: "src/main.rs".into(),
+        };
+
+        stack.open(WorkspaceMainView::Terminal {
+            id: "terminal-1".into(),
+        });
+        stack.open(file.clone());
+        stack.replace(WorkspaceMainView::NoActiveTerminal);
+
+        assert_eq!(stack.active(), WorkspaceMainView::NoActiveTerminal);
+        assert_eq!(
+            stack.go_back(),
+            Some(WorkspaceMainView::Terminal {
+                id: "terminal-1".into()
+            })
+        );
+        assert_eq!(stack.go_back(), None);
+    }
+
+    #[test]
+    fn navigation_stack_prunes_stale_terminal_routes() {
+        let mut stack = WorkspaceNavigationStack::default();
+        let file = WorkspaceMainView::File {
+            path: "src/main.rs".into(),
+        };
+        stack.open(WorkspaceMainView::Terminal {
+            id: "terminal-1".into(),
+        });
+        stack.open(file.clone());
+        stack.open(WorkspaceMainView::Terminal {
+            id: "terminal-2".into(),
+        });
+
+        stack.prune_stale_terminals(&["terminal-1".to_string()]);
+
+        assert_eq!(stack.active(), file);
+        assert_eq!(
+            stack.go_back(),
+            Some(WorkspaceMainView::Terminal {
+                id: "terminal-1".into()
+            })
+        );
+    }
+
+    #[test]
+    fn navigation_stack_removes_buried_terminal_route() {
+        let mut stack = WorkspaceNavigationStack::default();
+        let file = WorkspaceMainView::File {
+            path: "src/main.rs".into(),
+        };
+        let diff = WorkspaceMainView::GitDiff {
+            path: "src/lib.rs".into(),
+            section: 0,
+        };
+
+        stack.open(WorkspaceMainView::Terminal {
+            id: "terminal-pending".into(),
+        });
+        stack.open(file.clone());
+        stack.open(diff.clone());
+
+        stack.remove_terminal("terminal-pending");
+
+        assert_eq!(stack.active(), diff);
+        assert_eq!(stack.go_back(), Some(file));
+        assert_eq!(stack.go_back(), None);
+    }
+
+    #[test]
+    fn active_main_view_terminal_id_ignores_last_active_terminal() {
+        let mut state = WorkspaceState::default();
+        state.active_terminal_id = Some("terminal-pending".into());
+        state.active_main_view = WorkspaceMainView::GitDiff {
+            path: "src/lib.rs".into(),
+            section: 0,
+        };
+
+        assert_eq!(state.active_main_view_terminal_id(), None);
     }
 
     #[test]

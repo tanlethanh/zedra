@@ -1,6 +1,10 @@
 .DS_Store
 
 .claude/worktrees/
+.claude/settings.local.json
+.codex/hooks.json
+.opencode/plugins/zedra.js
+.zedra/agent-hooks/
 
 /target
 target
@@ -8,6 +12,7 @@ target
 # Android
 .idea
 .gradle
+android/.kotlin/
 android/app/libs
 android/android/app/libs
 android/build
@@ -51,3 +56,5 @@ screenshots
 
 .env*
 .private
+
+worktrees

@@ -3,6 +3,7 @@ use tracing::*;
 
 use iroh::EndpointAddr;
 use tokio::sync::{Notify, broadcast, mpsc};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use zedra_rpc::ZedraPairingTicket;
 use zedra_rpc::proto::{
@@ -31,6 +32,10 @@ pub struct Session {
     abort_signal: Arc<Mutex<CancellationToken>>,
     /// Notify when the session connection is closed.
     closed_notify: Arc<Notify>,
+    /// JoinHandle of the connect loop task. Used to serialize re-entry: a new
+    /// `connect()` awaits the previous loop's exit before running so old/new
+    /// loops never race on the same `event_tx` or `SessionHandle`.
+    connect_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl Session {
@@ -52,6 +57,7 @@ impl Session {
             closed_notify,
             host_event_tx,
             host_info_tx,
+            connect_task: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -115,7 +121,15 @@ impl Session {
         }
         handle.set_session_id(session_id.clone());
 
-        session_runtime().spawn(async move {
+        // Take ownership of the previous connect-loop handle (if any); the new
+        // task awaits its exit before running so we never have two loops
+        // writing to the same `event_tx`/`SessionHandle` simultaneously.
+        let previous_task = self.connect_task.lock().unwrap().take();
+        let task_slot = self.connect_task.clone();
+        let new_task = session_runtime().spawn(async move {
+            if let Some(prev) = previous_task {
+                let _ = prev.await;
+            }
             let mut connector = Connector::new(event_tx);
             let mut ticket = ticket;
             let mut session_id = session_id;
@@ -296,6 +310,14 @@ impl Session {
                 }
             }
         });
+        *task_slot.lock().unwrap() = Some(new_task);
+    }
+
+    /// Abort the in-flight connect attempt without marking the session as
+    /// manually disconnected. Used when restarting with fresh credentials
+    /// (e.g. QR rescan) so the entry stays alive for the new attempt.
+    pub fn abort_in_flight(&self) {
+        self.cancel_abort_signal();
     }
 
     /// Disconnect and clear session state.
@@ -354,6 +376,9 @@ impl Session {
             }
             HostEvent::FsChanged { path } => {
                 info!("HostEvent: fs changed path={path}");
+            }
+            HostEvent::AgentInfoChanged { info } => {
+                info!("HostEvent: agent info changed {:?}", info.kind);
             }
         }
 

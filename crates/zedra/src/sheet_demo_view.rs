@@ -19,9 +19,10 @@ impl Render for SheetDemoView {
         div()
             .id("sheet-demo")
             .size_full()
-            .bg(rgb(theme::BG_PRIMARY))
+            .bg(rgb(theme::bg_primary(cx)))
             .flex()
-            .justify_center()
+            .flex_col()
+            .items_center()
             .px(px(18.0))
             .py(px(20.0))
             .child(
@@ -30,8 +31,8 @@ impl Render for SheetDemoView {
                     .max_w(px(680.0))
                     .rounded(px(14.0))
                     .border_1()
-                    .border_color(rgb(theme::BORDER_DEFAULT))
-                    .bg(rgb(theme::BG_CARD))
+                    .border_color(rgb(theme::border_default(cx)))
+                    .bg(rgb(theme::bg_card(cx)))
                     .px(px(20.0))
                     .py(px(18.0))
                     .flex()
@@ -39,7 +40,7 @@ impl Render for SheetDemoView {
                     .gap(px(theme::SPACING_MD))
                     .child(
                         div()
-                            .text_color(rgb(theme::TEXT_PRIMARY))
+                            .text_color(rgb(theme::text_primary(cx)))
                             .text_size(px(theme::FONT_BODY))
                             .font_family(fonts::MONO_FONT_FAMILY)
                             .font_weight(FontWeight::MEDIUM)
@@ -47,7 +48,7 @@ impl Render for SheetDemoView {
                     )
                     .child(
                         div()
-                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_color(rgb(theme::text_muted(cx)))
                             .text_size(px(theme::FONT_DETAIL))
                             .font_family(fonts::MONO_FONT_FAMILY)
                             .child(state.subtitle.clone()),
@@ -57,8 +58,8 @@ impl Render for SheetDemoView {
                             .w_full()
                             .rounded(px(8.0))
                             .border_1()
-                            .border_color(rgb(theme::BORDER_SUBTLE))
-                            .bg(rgb(theme::BG_SURFACE))
+                            .border_color(rgb(theme::border_subtle(cx)))
+                            .bg(rgb(theme::bg_surface(cx)))
                             .px(px(14.0))
                             .py(px(12.0))
                             .flex()
@@ -66,14 +67,14 @@ impl Render for SheetDemoView {
                             .gap(px(6.0))
                             .child(
                                 div()
-                                    .text_color(rgb(theme::ACCENT_BLUE))
+                                    .text_color(rgb(theme::accent_blue(cx)))
                                     .text_size(px(theme::FONT_DETAIL))
                                     .font_family(fonts::MONO_FONT_FAMILY)
                                     .child("// Mock presentation entrypoint"),
                             )
                             .children(state.mock_code.iter().cloned().map(|line| {
                                 div()
-                                    .text_color(rgb(theme::TEXT_SECONDARY))
+                                    .text_color(rgb(theme::text_secondary(cx)))
                                     .text_size(px(theme::FONT_DETAIL))
                                     .font_family(fonts::MONO_FONT_FAMILY)
                                     .child(line)
@@ -81,7 +82,7 @@ impl Render for SheetDemoView {
                     )
                     .child(
                         div()
-                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_color(rgb(theme::text_muted(cx)))
                             .text_size(px(theme::FONT_DETAIL))
                             .font_family(fonts::MONO_FONT_FAMILY)
                             .child(format!(

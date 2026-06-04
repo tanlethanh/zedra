@@ -30,6 +30,13 @@ pub struct AlertButton {
 }
 
 #[derive(Clone, Debug)]
+pub struct ListPickerItem {
+    pub label: String,
+    pub subtitle: Option<String>,
+    pub image_name: Option<String>,
+}
+
+#[derive(Clone, Debug)]
 pub struct NativeEditMenuItem {
     pub label: String,
     pub image_name: Option<String>,
@@ -323,6 +330,24 @@ pub fn show_selection(
     bridge().present_selection(id, title, message, &buttons);
 }
 
+/// Present a native scrollable list picker.
+///
+/// `on_result` receives `Some(index)` when the user picks an item, or `None`
+/// when the picker is dismissed without a selection.
+pub fn show_list_picker(
+    title: &str,
+    message: &str,
+    items: Vec<ListPickerItem>,
+    on_result: impl FnOnce(Option<usize>) + Send + 'static,
+) {
+    let id = NEXT_SELECTION_ID.fetch_add(1, Ordering::Relaxed);
+    selection_callbacks()
+        .lock()
+        .unwrap()
+        .insert(id, Box::new(on_result));
+    bridge().present_list_picker(id, title, message, &items);
+}
+
 /// Present a native text-input dialog (UIAlertController with a UITextField on iOS).
 ///
 /// `on_result` receives `Some(text)` when the user confirms, or `None` when cancelled.
@@ -367,6 +392,9 @@ where
     PENDING_CUSTOM_SHEET_VIEW.with(|pending| {
         *pending.borrow_mut() = Some(view.into());
     });
+    // Fresh content always starts at the top; clear any stale boundary left by
+    // a previously presented sheet so the drag hand-off starts correct.
+    crate::native_presentation::set_sheet_content_at_top(true);
     bridge().present_custom_sheet(&options);
 }
 
@@ -732,6 +760,14 @@ pub fn trigger_haptic(feedback: HapticFeedback) {
     bridge().trigger_haptic(feedback);
 }
 
+/// OS color scheme reported by the platform bridge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SystemTheme {
+    Dark,
+    Light,
+    Unknown,
+}
+
 // ---------------------------------------------------------------------------
 // PlatformBridge trait
 // ---------------------------------------------------------------------------
@@ -769,6 +805,15 @@ pub trait PlatformBridge: Send + Sync + 'static {
     /// `platform_bridge::dispatch_selection_result(id, button_index)` on selection,
     /// or `platform_bridge::dispatch_selection_dismiss(id)` if dismissed.
     fn present_selection(&self, _id: u32, _title: &str, _message: &str, _buttons: &[AlertButton]) {}
+    /// Display a native scrollable list picker.
+    fn present_list_picker(
+        &self,
+        _id: u32,
+        _title: &str,
+        _message: &str,
+        _items: &[ListPickerItem],
+    ) {
+    }
     /// Display a configurable native custom sheet that hosts GPUI content.
     fn present_custom_sheet(&self, _options: &CustomSheetOptions) {}
     /// Open a URL in the system browser.
@@ -813,6 +858,12 @@ pub trait PlatformBridge: Send + Sync + 'static {
     /// or `dispatch_text_input_dismiss(id)` on cancel.
     fn present_text_input(&self, _id: u32, _title: &str, _placeholder: &str, _initial_value: &str) {
     }
+    /// OS appearance: `dark`, `light`, or `unknown` when unavailable.
+    fn system_prefers_theme(&self) -> SystemTheme {
+        SystemTheme::Unknown
+    }
+    /// Sync native platform chrome with the selected app appearance.
+    fn set_native_theme(&self, _is_dark: bool) {}
 }
 
 static BRIDGE: OnceLock<Box<dyn PlatformBridge>> = OnceLock::new();

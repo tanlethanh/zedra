@@ -41,7 +41,7 @@ zedra-session  zedra-host │                       │
 
 All connectivity via iroh (QUIC/TLS 1.3). Path selection (LAN, hole-punch, relay) is automatic.
 
-- **ALPN**: `zedra/rpc/2`
+- **ALPN**: `zedra/rpc/3`
 - **Host identity**: persistent Ed25519 keypair at `~/.config/zedra/identity.key`, used as iroh Endpoint secret key
 - **Client identity**: persistent Ed25519 keypair in app data directory, used for PKI auth
 - **Relay**: iroh-relay servers for NAT traversal fallback
@@ -134,6 +134,10 @@ phase until drawer bootstrap data is fetched: the file explorer root listing
 and git status are refreshed before the initial terminal is opened or created.
 On reconnect, the same drawer refresh is triggered in the background so terminal
 reattach and user interaction are not blocked by file/git refresh latency.
+
+### Appearance / theming
+
+App settings live in `crates/zedra/src/settings.rs`. `ThemeState` is the appearance-specific part of those settings: it owns the user’s `ThemePreference` and a `ThemeBundle` (UI palette, editor theme, terminal theme). GPUI views read tokens through `theme::palette(cx)`; editor and terminal entities sync their sub-bundles on `ThemeStateEvent::Changed`. New UI must follow `docs/THEMING.md`—do not hardcode colors in views.
 
 ## Security
 

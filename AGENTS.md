@@ -28,7 +28,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - Use `platform_bridge::bridge()` for platform integration. Do not call platform APIs directly from UI code.
 - Use existing imports and concise module-qualified calls for platform UI affordances, such as `platform_bridge::trigger_haptic(HapticFeedback::ImpactLight)`. Normal taps and workspace switches should use light haptics; reserve stronger feedback for long press, confirmation, or destructive actions.
 - Use `tracing` for logging. Never add `log::` calls.
-- Read `docs/DESIGN.md` before creating or redesigning UI.
+- Read `docs/DESIGN.md` before creating or redesigning UI. Read `docs/THEMING.md` before adding colors; new GPUI UI must use `theme::` tokens, not hardcoded hex in views.
 - GPUI tasks are cancelled when their `Task` handle is dropped. Await, detach, or store tasks according to the intended lifetime.
 - Inside GPUI entity `update`, `read_with`, and related closures, use the inner `cx` passed to the closure and avoid reentrant updates of the same entity.
 - Keep lifecycle helpers aligned with their names. Entry points that own the user action should own policy checks such as dedupe, reconnect, or stale cleanup; lower-level helpers that create/connect/initialize should not also switch entries, disconnect existing state, or hide caller contracts.
@@ -95,10 +95,12 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - `docs/CONVENTIONS.md` — imports, Rust style, error handling, GPUI lifecycle, logging, git commit subjects, docs style, async runtime choice, `WorkspaceState`, platform bridge, scroll container rules
 - `docs/ARCHITECTURE.md` — crate boundaries, session flow, auth, RPC, transport
 - `docs/DESIGN.md` — product UI tone and component direction
+- `docs/THEMING.md` — theme tokens, light/dark, editor/terminal palettes, subscription pattern
 - `docs/IOS_WORKFLOW.md` — iOS build pipeline, FFI workflow, pitfalls
 - `docs/PROTOCOL_SPECS.md` — protocol contract
 - `docs/TELEMETRY.md` — telemetry events and privacy
 - `docs/MANUAL_TEST.md` — manual verification steps for UI and device work
+- `docs/DEVTOOL.md` — in-app HTTP devtool for agent-driven UI scripting (debug Android); wrapper at `scripts/devtool.sh`
 - `vendor/zed/` — GPUI, platform crates, grammars, and desktop reference implementations
 
 ## Recent Learnings

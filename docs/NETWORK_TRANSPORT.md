@@ -62,7 +62,7 @@ Error correction level L (7% recovery).
 
 ## 2. Connection Lifecycle
 
-ALPN: `zedra/rpc/2`. All messages are postcard-serialized irpc requests.
+ALPN: `zedra/rpc/3`. All messages are postcard-serialized irpc requests.
 
 ### First pairing (after QR scan)
 

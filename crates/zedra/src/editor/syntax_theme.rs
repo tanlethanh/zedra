@@ -2,33 +2,61 @@ use gpui::HighlightStyle;
 
 /// Maps tree-sitter capture names to highlight styles.
 /// Lookup uses longest prefix match so e.g. `"function.method"` matches `"function"`.
+#[derive(Clone, Debug, PartialEq)]
 pub struct SyntaxTheme {
     styles: Vec<(String, HighlightStyle)>,
 }
 
 impl SyntaxTheme {
-    /// A dark theme inspired by One Dark.
-    pub fn default_dark() -> Self {
+    pub fn dark() -> Self {
         use gpui::rgb;
 
         let entries = vec![
-            ("keyword", rgb(0xc678dd)),     // purple
-            ("function", rgb(0x61afef)),    // blue
-            ("type", rgb(0xe5c07b)),        // yellow
-            ("string", rgb(0x98c379)),      // green
-            ("comment", rgb(0x5c6370)),     // gray
-            ("number", rgb(0xd19a66)),      // orange
-            ("constant", rgb(0xd19a66)),    // orange
-            ("property", rgb(0x56b6c2)),    // cyan
-            ("operator", rgb(0xc678dd)),    // purple
-            ("variable", rgb(0xabb2bf)),    // foreground
-            ("punctuation", rgb(0x636d83)), // dim gray
-            ("attribute", rgb(0xd19a66)),   // orange
-            ("label", rgb(0xe06c75)),       // red
-            ("constructor", rgb(0x61afef)), // blue
-            ("tag", rgb(0xe06c75)),         // red
+            ("keyword", rgb(0xc678dd)),
+            ("function", rgb(0x61afef)),
+            ("type", rgb(0xe5c07b)),
+            ("string", rgb(0x98c379)),
+            ("comment", rgb(0x5c6370)),
+            ("number", rgb(0xd19a66)),
+            ("constant", rgb(0xd19a66)),
+            ("property", rgb(0x56b6c2)),
+            ("operator", rgb(0xc678dd)),
+            ("variable", rgb(0xabb2bf)),
+            ("punctuation", rgb(0x636d83)),
+            ("attribute", rgb(0xd19a66)),
+            ("label", rgb(0xe06c75)),
+            ("constructor", rgb(0x61afef)),
+            ("tag", rgb(0xe06c75)),
         ];
 
+        Self::from_entries(entries)
+    }
+
+    pub fn light() -> Self {
+        use gpui::rgb;
+
+        let entries = vec![
+            ("keyword", rgb(0xcf222e)),
+            ("function", rgb(0x8250df)),
+            ("type", rgb(0x953800)),
+            ("string", rgb(0x0a3069)),
+            ("comment", rgb(0x6e7781)),
+            ("number", rgb(0x0550ae)),
+            ("constant", rgb(0x0550ae)),
+            ("property", rgb(0x116329)),
+            ("operator", rgb(0xcf222e)),
+            ("variable", rgb(0x24292f)),
+            ("punctuation", rgb(0x57606a)),
+            ("attribute", rgb(0x0550ae)),
+            ("label", rgb(0xcf222e)),
+            ("constructor", rgb(0x8250df)),
+            ("tag", rgb(0xcf222e)),
+        ];
+
+        Self::from_entries(entries)
+    }
+
+    fn from_entries(entries: Vec<(&str, gpui::Rgba)>) -> Self {
         let styles = entries
             .into_iter()
             .map(|(name, color)| {
@@ -68,7 +96,7 @@ mod tests {
 
     #[test]
     fn test_prefix_match() {
-        let theme = SyntaxTheme::default_dark();
+        let theme = SyntaxTheme::dark();
         assert!(theme.get("keyword").is_some());
         assert!(theme.get("function").is_some());
         assert!(theme.get("function.method").is_some());

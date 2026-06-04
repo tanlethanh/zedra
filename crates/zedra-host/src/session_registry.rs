@@ -21,7 +21,8 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 use zedra_osc::{OscEvent, OscScanner};
 use zedra_rpc::proto::{
-    BacklogEntry, FsDocsTreeError, FsDocsTreeResult, HostEvent, TermOutput, TerminalSyncEntry,
+    BacklogEntry, FsDocsTreeError, FsDocsTreeResult, HostEvent, SessionCloseReason, TermOutput,
+    TerminalSyncEntry,
 };
 use zedra_rpc::verify_registration_hmac;
 
@@ -84,6 +85,45 @@ const MAX_SUPERSEDED_PAIRING_SLOTS_PER_SESSION: usize = 8;
 
 static NEXT_ACTIVE_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Close the QUIC connection if it is still open.
+///
+/// iroh-quinn's driver panics if the last handle drops while the connection is
+/// drained but `State::error` was never set. Always call this before releasing
+/// the final `Connection` clone in a handler task.
+pub fn close_connection_if_open(
+    conn: &iroh::endpoint::Connection,
+    reason: SessionCloseReason,
+    detail: &[u8],
+) {
+    if conn.close_reason().is_none() {
+        conn.close((reason as u32).into(), detail);
+    }
+}
+
+/// Wait for the QUIC driver to finish after a close.
+pub async fn wait_connection_drained(conn: &iroh::endpoint::Connection) {
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), conn.closed()).await;
+}
+
+/// Close a handler-owned connection and wait for the QUIC driver to drain.
+pub async fn finish_host_connection(conn: &iroh::endpoint::Connection) {
+    if conn.close_reason().is_none() {
+        conn.close(0u32.into(), b"");
+    }
+    wait_connection_drained(conn).await;
+}
+
+/// Tear down a connection after auth failed.
+///
+/// Wait briefly for the client to close first so any typed auth error response
+/// can be delivered before we send CONNECTION_CLOSE. If the client is still
+/// connected, close explicitly so iroh-quinn always sees a close reason before
+/// the handler drops its last handle.
+pub async fn finish_auth_failed_connection(conn: &iroh::endpoint::Connection) {
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(500), conn.closed()).await;
+    finish_host_connection(conn).await;
+}
+
 /// Host-side lease for the active client connection.
 #[derive(Clone)]
 pub struct ActiveClientConnection {
@@ -128,15 +168,15 @@ impl ActiveClientConnection {
         self.client_pubkey
     }
 
-    pub fn spawn_monitor(&self) {
+    pub fn spawn_monitor(&self) -> Option<tokio::task::JoinHandle<()>> {
         let Some(conn) = self.conn.clone() else {
-            return;
+            return None;
         };
         let last_rx_bytes = self.last_rx_bytes.clone();
         let last_rx_at = self.last_rx_at.clone();
         let closed = self.closed.clone();
 
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             let mut interval = tokio::time::interval(ACTIVE_CLIENT_PROBE_INTERVAL);
             loop {
                 tokio::select! {
@@ -160,7 +200,7 @@ impl ActiveClientConnection {
                     }
                 }
             }
-        });
+        }))
     }
 
     pub fn is_stale(&self, now: Instant) -> bool {
@@ -181,7 +221,11 @@ impl ActiveClientConnection {
 
     pub fn close_for_takeover(&self) {
         if let Some(conn) = &self.conn {
-            conn.close(0u32.into(), b"replaced by new client");
+            close_connection_if_open(
+                conn,
+                SessionCloseReason::SessionTakenOver,
+                b"replaced by new client",
+            );
         }
         self.closed.store(true, Ordering::Release);
     }
@@ -553,6 +597,8 @@ pub struct SessionInfo {
 pub struct TerminalInfo {
     pub id: String,
     pub title: Option<String>,
+    pub cwd: Option<String>,
+    pub icon_name: Option<String>,
     pub created_at_unix_secs: u64,
     pub created_at_elapsed_secs: u64,
     pub uptime_secs: u64,
@@ -838,10 +884,20 @@ impl SessionRegistry {
         self.sessions.lock().await.len()
     }
 
-    /// Return the first session (arbitrary order), if any.
-    /// Used by the REST API when no session_id is specified.
-    pub async fn first_session(&self) -> Option<Arc<ServerSession>> {
-        self.sessions.lock().await.values().next().cloned()
+    /// Return the most recently active session, if any.
+    /// Used by the REST API when no session_id is specified, so the request
+    /// targets the session a user is actually working in rather than an
+    /// arbitrary entry in `HashMap` iteration order.
+    pub async fn most_recent_session(&self) -> Option<Arc<ServerSession>> {
+        let sessions = self.sessions.lock().await;
+        let mut best: Option<(Instant, &Arc<ServerSession>)> = None;
+        for session in sessions.values() {
+            let last = *session.last_activity.lock().await;
+            if best.map(|(t, _)| last > t).unwrap_or(true) {
+                best = Some((last, session));
+            }
+        }
+        best.map(|(_, session)| Arc::clone(session))
     }
 
     /// List all active sessions with summary info.
@@ -870,7 +926,18 @@ impl SessionRegistry {
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => a.id.cmp(&b.id),
         });
+        result
+    }
 
+    /// All server sessions that currently have a host-event subscriber attached.
+    pub async fn sessions_with_event_subscribers(&self) -> Vec<Arc<ServerSession>> {
+        let sessions = self.sessions.lock().await;
+        let mut result = Vec::new();
+        for session in sessions.values() {
+            if session.has_event_subscriber().await {
+                result.push(Arc::clone(session));
+            }
+        }
         result
     }
 
@@ -927,6 +994,15 @@ impl SessionRegistry {
     /// Check if a client pubkey is in the global authorized list.
     pub async fn is_globally_authorized(&self, client_pubkey: &[u8; 32]) -> bool {
         self.authorized_clients.lock().await.contains(client_pubkey)
+    }
+
+    /// Check if a client pubkey is already in a session's ACL.
+    pub async fn is_in_session_acl(&self, session_id: &str, client_pubkey: &[u8; 32]) -> bool {
+        let sessions = self.sessions.lock().await;
+        match sessions.get(session_id) {
+            Some(session) => session.acl.lock().await.contains(client_pubkey),
+            None => false,
+        }
     }
 
     /// Add a client pubkey to the global authorized list and the session ACL.
@@ -1066,7 +1142,10 @@ impl SessionRegistry {
     pub async fn force_detach(&self, session_id: &str) -> bool {
         let sessions = self.sessions.lock().await;
         if let Some(session) = sessions.get(session_id) {
-            *session.active_client.lock().await = None;
+            let previous = session.active_client.lock().await.take();
+            if let Some(previous) = previous {
+                previous.close_for_takeover();
+            }
             true
         } else {
             false
@@ -1306,11 +1385,12 @@ impl ServerSession {
             let Some(term) = terms.get(&id) else {
                 continue;
             };
-            let title = term
+            let (title, cwd, icon_name) = term
                 .host_meta
                 .lock()
                 .ok()
-                .and_then(|meta| meta.title.clone());
+                .map(|meta| (meta.title.clone(), meta.cwd.clone(), meta.icon_name.clone()))
+                .unwrap_or((None, None, None));
             let created_at_unix_secs = term
                 .created_at
                 .duration_since(UNIX_EPOCH)
@@ -1320,6 +1400,8 @@ impl ServerSession {
             entries.push(TerminalInfo {
                 id,
                 title,
+                cwd,
+                icon_name,
                 created_at_unix_secs,
                 created_at_elapsed_secs: uptime_secs,
                 uptime_secs,
@@ -1357,6 +1439,11 @@ impl ServerSession {
         let mut order = self.terminal_order.lock().await;
         *order = ordered_ids;
         Ok(())
+    }
+
+    /// Whether this session has an active `Subscribe` host-event stream.
+    pub async fn has_event_subscriber(&self) -> bool {
+        self.event_tx.lock().await.is_some()
     }
 
     /// Push a host-initiated event to the subscribed client, if any.

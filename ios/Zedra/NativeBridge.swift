@@ -77,6 +77,25 @@ func ios_get_documents_directory() -> UnsafePointer<CChar>? {
     return CStringStorage.shared.pointer(for: "documents_directory", value: path)
 }
 
+/// Returns 1 for dark, 0 for light, -1 when unavailable.
+@_cdecl("ios_system_prefers_dark_theme")
+func ios_system_prefers_dark_theme() -> Int32 {
+    switch UITraitCollection.current.userInterfaceStyle {
+    case .dark:
+        return 1
+    case .light:
+        return 0
+    default:
+        return -1
+    }
+}
+
+@_cdecl("ios_set_keyboard_accessory_theme")
+func ios_set_keyboard_accessory_theme(_ isDark: Bool) {
+    GPUIRuntimeController.setKeyboardAccessoryTheme(isDark: isDark)
+    NativePresentationTheme.setDark(isDark)
+}
+
 @_cdecl("zedra_firebase_initialize")
 func zedra_firebase_initialize_bridge() {
     _ = ZedraFirebase.configureIfAvailable()

@@ -1,9 +1,11 @@
 // PTY spawning for shell sessions
 // Uses portable-pty for cross-platform PTY support
 
+use crate::paths;
 use anyhow::Result;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
+use zedra_rpc::proto::TerminalColorScheme;
 
 /// A spawned shell session with PTY
 pub struct ShellSession {
@@ -21,6 +23,10 @@ pub struct SpawnOptions {
     /// Shell command to run when the PTY starts.
     /// Example: `"claude --resume"` to drop straight into a Claude session.
     pub launch_cmd: Option<String>,
+    /// Terminal appearance used for host-side OSC color query replies.
+    pub color_scheme: Option<TerminalColorScheme>,
+    /// Extra environment variables set on the spawned shell after sanitization.
+    pub env: Vec<(String, String)>,
 }
 
 fn launch_script(launch_cmd: &str) -> String {
@@ -43,47 +49,30 @@ impl ShellSession {
             .openpty(pty_size)
             .map_err(|e| anyhow::anyhow!("Failed to open PTY: {}", e))?;
 
-        // Determine shell to use
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-
+        let shell = default_shell();
         let mut cmd = CommandBuilder::new(&shell);
-        if let Some(launch_cmd) = &opts.launch_cmd {
-            // Avoid typing into the PTY before the shell has drawn its prompt.
-            cmd.arg("-l");
-            cmd.arg("-c");
-            cmd.arg(launch_script(launch_cmd));
-        } else {
-            cmd.arg("-l"); // Login shell
-        }
+        configure_shell_command(&mut cmd, &shell, opts.launch_cmd.as_deref())?;
 
         // Start in the session working directory if provided.
         if let Some(dir) = &opts.workdir {
-            cmd.cwd(dir);
+            cmd.cwd(paths::user_path(dir));
         }
 
         // Build a sanitized environment: start clean, allow only safe variables.
         // This prevents daemon secrets (AWS keys, tokens, etc.) from leaking into shells.
         cmd.env_clear();
-        let allowed = [
-            "HOME",
-            "PATH",
-            "SHELL",
-            "TERM",
-            "LANG",
-            "USER",
-            "LOGNAME",
-            "COLORTERM",
-            "XDG_RUNTIME_DIR",
-        ];
-        for key in &allowed {
+        for key in allowed_env_vars() {
             if let Ok(val) = std::env::var(key) {
                 cmd.env(key, val);
             }
         }
-        cmd.env("SHELL", &shell);
+        set_shell_env(&mut cmd, &shell);
         // Always set a known-good TERM; override any inherited value.
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        for (key, val) in &opts.env {
+            cmd.env(key, val);
+        }
 
         // Spawn the shell process
         let child = pair
@@ -122,6 +111,247 @@ impl ShellSession {
     }
 }
 
+#[cfg(windows)]
+fn default_shell() -> String {
+    windows_shell_from_env(&["ZEDRA_SHELL"])
+        .or_else(|| windows_shell_from_env(&["ZEDRA_LAUNCH_SHELL"]))
+        .or_else(detect_parent_shell)
+        .or_else(|| windows_shell_from_env(&["SHELL"]))
+        .or_else(|| windows_shell_from_env(&["COMSPEC", "ComSpec"]))
+        .unwrap_or_else(|| "cmd.exe".to_string())
+}
+
+#[cfg(not(windows))]
+fn default_shell() -> String {
+    std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
+}
+
+#[cfg(windows)]
+fn shell_from_env(keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        std::env::var(key)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+#[cfg(windows)]
+fn windows_shell_from_env(keys: &[&str]) -> Option<String> {
+    shell_from_env(keys).map(|shell| normalize_windows_shell_path(&shell))
+}
+
+#[cfg(windows)]
+pub fn detect_parent_shell() -> Option<String> {
+    detect_parent_shell_for_pid(std::process::id())
+}
+
+#[cfg(windows)]
+fn detect_parent_shell_for_pid(pid: u32) -> Option<String> {
+    use sysinfo::{Pid, System};
+
+    let system = System::new_all();
+    let mut current_pid = Pid::from_u32(pid);
+
+    for _ in 0..8 {
+        let parent_pid = system.process(current_pid)?.parent()?;
+        let parent = system.process(parent_pid)?;
+        if let Some(shell) = shell_from_process_names(
+            parent.exe().and_then(|path| path.to_str()),
+            parent.name().to_str(),
+        ) {
+            return Some(shell);
+        }
+        current_pid = parent_pid;
+    }
+
+    None
+}
+
+#[cfg(any(windows, test))]
+fn shell_from_process_names(exe: Option<&str>, name: Option<&str>) -> Option<String> {
+    exe.and_then(shell_from_process_name)
+        .or_else(|| name.and_then(shell_from_process_name))
+}
+
+#[cfg(any(windows, test))]
+fn shell_from_process_name(process_name: &str) -> Option<String> {
+    (windows_shell_kind(process_name) != WindowsShellKind::Unknown)
+        .then(|| normalize_windows_shell_path(process_name))
+}
+
+#[cfg(any(windows, test))]
+fn normalize_windows_shell_path(shell: &str) -> String {
+    if shell.starts_with('/') && !shell.starts_with("//") {
+        let file_name = shell
+            .rsplit('/')
+            .find(|part| !part.is_empty())
+            .unwrap_or(shell);
+        if file_name.contains('.') {
+            file_name.to_string()
+        } else {
+            format!("{file_name}.exe")
+        }
+    } else {
+        shell.to_string()
+    }
+}
+
+#[cfg(windows)]
+fn configure_shell_command(
+    cmd: &mut CommandBuilder,
+    shell: &str,
+    launch_cmd: Option<&str>,
+) -> Result<()> {
+    for arg in windows_shell_args(shell, launch_cmd)? {
+        cmd.arg(arg);
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn configure_shell_command(
+    cmd: &mut CommandBuilder,
+    _shell: &str,
+    launch_cmd: Option<&str>,
+) -> Result<()> {
+    if let Some(launch_cmd) = launch_cmd.filter(|command| !command.is_empty()) {
+        // Avoid typing into the PTY before the shell has drawn its prompt.
+        cmd.arg("-l");
+        cmd.arg("-c");
+        cmd.arg(launch_script(launch_cmd));
+    } else {
+        cmd.arg("-l"); // Login shell
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WindowsShellKind {
+    Cmd,
+    PowerShell,
+    Posix,
+    Unknown,
+}
+
+#[cfg(any(windows, test))]
+fn windows_shell_args(shell: &str, launch_cmd: Option<&str>) -> Result<Vec<String>> {
+    let launch_cmd = launch_cmd.filter(|command| !command.is_empty());
+
+    match windows_shell_kind(shell) {
+        WindowsShellKind::Cmd => {
+            let mut args = vec!["/d".to_string()];
+            if let Some(launch_cmd) = launch_cmd {
+                args.push("/k".to_string());
+                args.push(launch_cmd.to_string());
+            }
+            Ok(args)
+        }
+        WindowsShellKind::PowerShell => {
+            let mut args = vec!["-NoLogo".to_string()];
+            if let Some(launch_cmd) = launch_cmd {
+                args.push("-NoExit".to_string());
+                args.push("-Command".to_string());
+                args.push(launch_cmd.to_string());
+            }
+            Ok(args)
+        }
+        WindowsShellKind::Posix => {
+            let mut args = vec!["-l".to_string()];
+            if let Some(launch_cmd) = launch_cmd {
+                args.push("-c".to_string());
+                args.push(launch_script(launch_cmd));
+            }
+            Ok(args)
+        }
+        WindowsShellKind::Unknown => {
+            if launch_cmd.is_some() {
+                anyhow::bail!(
+                    "launch commands are not supported for Windows shell `{}`; \
+                     set ZEDRA_SHELL to cmd.exe, pwsh.exe, powershell.exe, or bash.exe",
+                    shell
+                );
+            }
+            Ok(Vec::new())
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
+fn windows_shell_kind(shell: &str) -> WindowsShellKind {
+    let file_name = shell
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(shell)
+        .to_ascii_lowercase();
+    let stem = file_name
+        .strip_suffix(".exe")
+        .or_else(|| file_name.strip_suffix(".cmd"))
+        .or_else(|| file_name.strip_suffix(".bat"))
+        .unwrap_or(&file_name);
+
+    match stem {
+        "cmd" => WindowsShellKind::Cmd,
+        "pwsh" | "powershell" => WindowsShellKind::PowerShell,
+        "bash" | "sh" | "zsh" | "fish" => WindowsShellKind::Posix,
+        _ => WindowsShellKind::Unknown,
+    }
+}
+
+#[cfg(windows)]
+fn allowed_env_vars() -> &'static [&'static str] {
+    &[
+        "APPDATA",
+        "COMSPEC",
+        "ComSpec",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "LANG",
+        "LOCALAPPDATA",
+        "PATH",
+        "PATHEXT",
+        "Path",
+        "ProgramFiles",
+        "SystemRoot",
+        "TEMP",
+        "TMP",
+        "SHELL",
+        "USERNAME",
+        "USERPROFILE",
+        "WINDIR",
+    ]
+}
+
+#[cfg(not(windows))]
+fn allowed_env_vars() -> &'static [&'static str] {
+    &[
+        "HOME",
+        "PATH",
+        "SHELL",
+        "TERM",
+        "LANG",
+        "USER",
+        "LOGNAME",
+        "COLORTERM",
+        "XDG_RUNTIME_DIR",
+    ]
+}
+
+#[cfg(windows)]
+fn set_shell_env(cmd: &mut CommandBuilder, shell: &str) {
+    cmd.env("SHELL", shell);
+    if windows_shell_kind(shell) == WindowsShellKind::Cmd {
+        cmd.env("COMSPEC", shell);
+        cmd.env("ComSpec", shell);
+    }
+}
+
+#[cfg(not(windows))]
+fn set_shell_env(cmd: &mut CommandBuilder, shell: &str) {
+    cmd.env("SHELL", shell);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,6 +365,65 @@ mod tests {
     }
 
     #[test]
+    fn windows_shell_kind_matches_common_shell_names() {
+        assert_eq!(windows_shell_kind("cmd.exe"), WindowsShellKind::Cmd);
+        assert_eq!(windows_shell_kind("/usr/bin/bash"), WindowsShellKind::Posix);
+        assert_eq!(
+            windows_shell_kind(r"C:\Program Files\PowerShell\7\pwsh.exe"),
+            WindowsShellKind::PowerShell
+        );
+        assert_eq!(
+            windows_shell_kind(r"C:\Program Files\Git\bin\bash.exe"),
+            WindowsShellKind::Posix
+        );
+        assert_eq!(windows_shell_kind("nu.exe"), WindowsShellKind::Unknown);
+    }
+
+    #[test]
+    fn windows_shell_normalizes_posix_paths_for_win32_spawn() {
+        assert_eq!(normalize_windows_shell_path("/usr/bin/bash"), "bash.exe");
+        assert_eq!(normalize_windows_shell_path("/bin/zsh"), "zsh.exe");
+        assert_eq!(
+            normalize_windows_shell_path(r"C:\Program Files\Git\bin\bash.exe"),
+            r"C:\Program Files\Git\bin\bash.exe"
+        );
+    }
+
+    #[test]
+    fn windows_shell_uses_detected_process_path_before_name() {
+        assert_eq!(
+            shell_from_process_names(
+                Some(r"C:\Program Files\PowerShell\7\pwsh.exe"),
+                Some("WindowsTerminal.exe"),
+            ),
+            Some(r"C:\Program Files\PowerShell\7\pwsh.exe".to_string())
+        );
+        assert_eq!(
+            shell_from_process_names(None, Some("powershell.exe")),
+            Some("powershell.exe".to_string())
+        );
+        assert_eq!(shell_from_process_names(None, Some("cargo.exe")), None);
+    }
+
+    #[test]
+    fn windows_shell_args_match_shell_family() {
+        assert_eq!(
+            windows_shell_args("cmd.exe", Some("echo ready")).unwrap(),
+            vec!["/d", "/k", "echo ready"]
+        );
+        assert_eq!(
+            windows_shell_args("pwsh.exe", Some("Write-Host ready")).unwrap(),
+            vec!["-NoLogo", "-NoExit", "-Command", "Write-Host ready"]
+        );
+        assert_eq!(
+            windows_shell_args(r"C:\Program Files\Git\bin\bash.exe", Some("echo ready")).unwrap(),
+            vec!["-l", "-c", "echo ready\nexec \"$SHELL\" -l"]
+        );
+        assert!(windows_shell_args("nu.exe", Some("echo ready")).is_err());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
     fn launch_command_runs_without_typed_echo() {
         let session = ShellSession::spawn(
             80,
@@ -142,6 +431,8 @@ mod tests {
             SpawnOptions {
                 workdir: None,
                 launch_cmd: Some("printf 'ZEDRA_LAUNCH_OK\\n'; exit".to_string()),
+                color_scheme: None,
+                env: Vec::new(),
             },
         )
         .unwrap();

@@ -250,6 +250,11 @@ pub struct ConnectSnapshot {
     pub hole_punch_ms: Option<u64>,
     pub rpc_ms: Option<u64>,
     pub register_ms: Option<u64>,
+    /// Set once a Register handshake has been attempted this process. Sticky
+    /// across reconnects: a one-time pairing ticket must not be resent after
+    /// registration was attempted, even if `register_ms` is missing because
+    /// the connection dropped before `RegisterComplete` was observed.
+    pub register_attempted: bool,
     pub auth_ms: Option<u64>,
     pub sync_ms: Option<u64>,
     pub resume_ms: Option<u64>,
@@ -383,6 +388,7 @@ impl SessionState {
                 self.phase = ConnectPhase::Registering;
                 snap.session_id = Some(session_id);
                 snap.is_first_pairing = true;
+                snap.register_attempted = true;
             }
             ConnectEvent::RegisterComplete { register_ms } => {
                 snap.register_ms = Some(register_ms);
@@ -411,12 +417,7 @@ impl SessionState {
                 snap.username = sync.username;
                 snap.workdir = sync.workdir.clone();
                 snap.homedir = sync.home_dir.clone().unwrap_or_default();
-                snap.project_name = sync
-                    .workdir
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&sync.workdir)
-                    .to_string();
+                snap.project_name = project_name_from_workdir(&sync.workdir);
                 let home = sync.home_dir.as_deref().unwrap_or("");
                 snap.strip_path = if !home.is_empty() && sync.workdir.starts_with(home) {
                     format!("~{}", &sync.workdir[home.len()..])
@@ -601,6 +602,18 @@ fn classify_ip(ip: std::net::IpAddr) -> NetworkHint {
     }
 }
 
+/// Last path component of a workdir. Splits on both `/` and `\` so a Windows
+/// host workdir yields the project folder, and trims trailing separators.
+fn project_name_from_workdir(workdir: &str) -> String {
+    workdir
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(workdir)
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,6 +677,17 @@ mod tests {
 
         state.apply_event(ConnectEvent::Connected { total_ms: 10 });
         assert!(matches!(state.phase, ConnectPhase::Connected));
+    }
+
+    #[test]
+    fn sync_extracts_project_name_from_windows_workdir() {
+        let mut state = SessionState::new();
+        let mut sync = sync_session_result();
+        sync.workdir = r"C:\Users\zedra\zedra".into();
+
+        state.apply_event(ConnectEvent::SyncComplete { sync, sync_ms: 7 });
+
+        assert_eq!(state.snapshot.project_name, "zedra");
     }
 
     #[test]

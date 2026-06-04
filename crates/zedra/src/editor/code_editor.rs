@@ -9,7 +9,7 @@ use super::text_buffer::Buffer;
 
 use crate::fonts;
 use crate::platform_bridge;
-use crate::theme;
+use crate::theme::{self, EditorTheme};
 use crate::workspace_action::AddSelectionToChat;
 
 const LINE_HEIGHT: f32 = theme::EDITOR_LINE_HEIGHT;
@@ -17,8 +17,6 @@ const GUTTER_WIDTH: f32 = theme::EDITOR_GUTTER_WIDTH;
 const FONT_SIZE: f32 = theme::EDITOR_FONT_SIZE;
 const GUTTER_FONT_SIZE: f32 = theme::EDITOR_GUTTER_FONT_SIZE;
 const BOTTOM_INSET_MIN: f32 = 100.0;
-const CODE_TEXT_COLOR: u32 = 0xabb2bf;
-const PENDING_SYNTAX_TEXT_COLOR: u32 = 0x7b8494;
 pub const CODE_EDITOR_SELECTION_AREA_ID: &str = "code-editor-selection";
 
 type LineHighlights = Vec<(Range<usize>, HighlightStyle)>;
@@ -32,20 +30,13 @@ struct CachedLine {
 
 pub struct ParsedEditorSyntax {
     highlighter: Highlighter,
-    line_highlights: Vec<LineHighlights>,
 }
 
 impl ParsedEditorSyntax {
     pub fn build(filename: &str, content: String) -> Self {
         let mut highlighter = Highlighter::from_filename(filename);
         highlighter.parse(&content);
-        let theme = SyntaxTheme::default_dark();
-        let buffer = Buffer::new(content);
-        let line_highlights = build_line_highlights(&buffer, &highlighter, &theme);
-        Self {
-            highlighter,
-            line_highlights,
-        }
+        Self { highlighter }
     }
 }
 
@@ -53,7 +44,7 @@ impl ParsedEditorSyntax {
 pub struct EditorView {
     buffer: Buffer,
     highlighter: Rc<Highlighter>,
-    theme: SyntaxTheme,
+    editor_theme: EditorTheme,
     scroll_handle: UniformListScrollHandle,
     /// Cached line data shared with the uniform_list closure via Rc.
     /// Only rebuilt when the buffer content changes.
@@ -92,7 +83,7 @@ impl EditorView {
         Self {
             buffer: Buffer::new(content),
             highlighter: Rc::new(highlighter),
-            theme: SyntaxTheme::default_dark(),
+            editor_theme: EditorTheme::dark(),
             scroll_handle: UniformListScrollHandle::new(),
             cached_lines: Rc::new(Vec::new()),
             cached_line_highlights: Rc::new(Vec::new()),
@@ -126,28 +117,43 @@ impl EditorView {
         self.lines_dirty = true;
         self.h_scroll_offset = 0.0;
         self.h_scroll_active = false;
-        // A new file owns its vertical origin; reusing this handle leaks the previous offset.
-        self.scroll_handle = UniformListScrollHandle::new();
-
-        let initial_line_ix = initial_line
-            .map(|line| line.saturating_sub(1) as usize)
-            .unwrap_or(0)
-            .min(self.buffer.line_count().saturating_sub(1));
         self.scroll_handle
-            .scroll_to_item_strict(initial_line_ix, ScrollStrategy::Top);
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(point(px(0.0), px(0.0)));
+
+        let line_count = self.buffer.line_count();
+        let target_index = match initial_line {
+            Some(line) if line > 0 => {
+                // initial_line is 1-based; clamp to last line index
+                ((line as usize) - 1).min(line_count.saturating_sub(1))
+            }
+            _ => 0,
+        };
+        self.scroll_handle
+            .scroll_to_item(target_index, ScrollStrategy::Top);
     }
 
     pub fn apply_parsed_syntax(&mut self, parsed: ParsedEditorSyntax) {
-        let ParsedEditorSyntax {
-            highlighter,
-            line_highlights,
-        } = parsed;
-        self.highlighter = Rc::new(highlighter);
-        self.cached_line_highlights = Rc::new(line_highlights);
+        self.highlighter = Rc::new(parsed.highlighter);
+        self.cached_line_highlights = if self.highlighter.is_waiting_for_syntax() {
+            Rc::new(vec![Vec::new(); self.buffer.line_count()])
+        } else {
+            Rc::new(build_line_highlights(
+                &self.buffer,
+                &self.highlighter,
+                &self.editor_theme.syntax,
+            ))
+        };
     }
 
     pub fn language(&self) -> Language {
         self.highlighter.language()
+    }
+
+    pub fn is_scrolled_to_top(&self) -> bool {
+        self.scroll_handle.0.borrow().base_handle.offset().y >= px(-0.5)
     }
 
     pub fn line_range_for_selection(&self, range_utf16: Range<usize>) -> Option<(u32, u32)> {
@@ -157,6 +163,15 @@ impl EditorView {
             .map(|line| line.text.as_str())
             .collect::<Vec<_>>();
         line_range_for_selection_lines(&lines, range_utf16)
+    }
+
+    pub fn sync_editor_theme(&mut self, editor_theme: &EditorTheme) {
+        if self.editor_theme == *editor_theme {
+            return;
+        }
+        self.editor_theme = editor_theme.clone();
+        self.cached_line_highlights = Rc::new(Vec::new());
+        self.lines_dirty = true;
     }
 
     /// Rebuild the cached line data from the buffer text only.
@@ -169,14 +184,15 @@ impl EditorView {
             })
             .collect();
         self.max_line_chars = lines.iter().map(|l| l.text.len()).max().unwrap_or(0);
-        if self.cached_line_highlights.len() != line_count {
+        if self.cached_line_highlights.is_empty() || self.cached_line_highlights.len() != line_count
+        {
             self.cached_line_highlights = if self.highlighter.is_waiting_for_syntax() {
                 Rc::new(vec![Vec::new(); line_count])
             } else {
                 Rc::new(build_line_highlights(
                     &self.buffer,
                     &self.highlighter,
-                    &self.theme,
+                    &self.editor_theme.syntax,
                 ))
             };
         }
@@ -202,11 +218,11 @@ impl EditorView {
     }
 }
 
-fn code_text_color_for_highlighter(highlighter: &Highlighter) -> u32 {
+fn code_text_color_for_highlighter(editor_theme: &EditorTheme, highlighter: &Highlighter) -> u32 {
     if highlighter.is_waiting_for_syntax() {
-        PENDING_SYNTAX_TEXT_COLOR
+        editor_theme.pending_syntax
     } else {
-        CODE_TEXT_COLOR
+        editor_theme.foreground
     }
 }
 
@@ -294,6 +310,8 @@ fn line_range_for_selection_lines(lines: &[&str], range_utf16: Range<usize>) -> 
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_editor_theme(&theme::bundle(cx).editor);
+
         // Rebuild line cache only when buffer content changed.
         // During scroll, this is skipped entirely.
         if self.lines_dirty {
@@ -312,9 +330,14 @@ impl Render for EditorView {
         // the vertical position doesn't drift during a horizontal swipe.
         let scroll_y_lock = self.scroll_handle.0.borrow().base_handle.offset().y;
 
+        let editor_theme = self.editor_theme.clone();
         let text_style = {
             let mut style = window.text_style();
-            style.color = rgb(code_text_color_for_highlighter(&self.highlighter)).into();
+            style.color = rgb(code_text_color_for_highlighter(
+                &editor_theme,
+                &self.highlighter,
+            ))
+            .into();
             style.font_family = fonts::MONO_FONT_FAMILY.into();
             style.font_size = px(FONT_SIZE).into();
             style
@@ -324,7 +347,7 @@ impl Render for EditorView {
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0x0e0c0c))
+            .bg(rgb(editor_theme.background))
             .font_family(fonts::MONO_FONT_FAMILY)
             .on_scroll_wheel(
                 cx.listener(move |this, event: &ScrollWheelEvent, _window, cx| {
@@ -407,7 +430,7 @@ impl Render for EditorView {
                                                 .items_center()
                                                 .justify_end()
                                                 .pr_2()
-                                                .text_color(hsla(0.0, 0.0, 0.83, 0.3))
+                                                .text_color(editor_theme.gutter)
                                                 .text_size(px(GUTTER_FONT_SIZE))
                                                 .child(cached.number.clone()),
                                         )
@@ -453,10 +476,11 @@ mod tests {
     use gpui::{ScrollStrategy, point, px};
 
     use super::{
-        CODE_TEXT_COLOR, EditorView, PENDING_SYNTAX_TEXT_COLOR, ParsedEditorSyntax,
-        code_text_color_for_highlighter, line_range_for_selection_lines,
+        EditorView, ParsedEditorSyntax, code_text_color_for_highlighter,
+        line_range_for_selection_lines,
     };
     use crate::editor::syntax_highlighter::{Highlighter, Language};
+    use crate::theme::EditorTheme;
 
     #[test]
     fn maps_utf16_selection_to_code_lines() {
@@ -485,16 +509,14 @@ mod tests {
         assert!(editor.cached_line_highlights[0].is_empty());
 
         let parsed = ParsedEditorSyntax::build("main.rs", content);
-        assert_eq!(parsed.line_highlights.len(), editor.cached_lines.len());
-        let parsed_first_line_highlights = parsed.line_highlights[0].clone();
-        assert!(!parsed_first_line_highlights.is_empty());
         editor.apply_parsed_syntax(parsed);
 
         assert!(Rc::ptr_eq(&original_lines, &editor.cached_lines));
         assert_eq!(
-            editor.cached_line_highlights[0],
-            parsed_first_line_highlights
+            editor.cached_line_highlights.len(),
+            editor.cached_lines.len()
         );
+        assert!(!editor.cached_line_highlights[0].is_empty());
         assert!(
             editor.cached_line_highlights[0]
                 .iter()
@@ -504,21 +526,25 @@ mod tests {
 
     #[test]
     fn dims_code_text_only_while_syntax_is_pending() {
+        let editor_theme = EditorTheme::dark();
         let pending = Highlighter::from_filename("main.rs");
         assert_eq!(
-            code_text_color_for_highlighter(&pending),
-            PENDING_SYNTAX_TEXT_COLOR
+            code_text_color_for_highlighter(&editor_theme, &pending),
+            editor_theme.pending_syntax
         );
 
         let plain_text = Highlighter::from_language(Language::PlainText);
         assert_eq!(
-            code_text_color_for_highlighter(&plain_text),
-            CODE_TEXT_COLOR
+            code_text_color_for_highlighter(&editor_theme, &plain_text),
+            editor_theme.foreground
         );
 
         let mut parsed = Highlighter::from_filename("main.rs");
         parsed.parse("fn main() {}\n");
-        assert_eq!(code_text_color_for_highlighter(&parsed), CODE_TEXT_COLOR);
+        assert_eq!(
+            code_text_color_for_highlighter(&editor_theme, &parsed),
+            editor_theme.foreground
+        );
     }
 
     #[test]

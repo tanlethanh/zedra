@@ -23,6 +23,13 @@ pub enum WorkspacesEvent {
 
 impl EventEmitter<WorkspacesEvent> for Workspaces {}
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OpenConnectingForState {
+    ActiveEntry,
+    StartedConnect,
+    InvalidState,
+}
+
 pub struct Workspaces {
     /// Workspace entries, one per state.
     /// The entry is lazily loaded from the state when first opened,
@@ -118,6 +125,44 @@ impl Workspaces {
         }
     }
 
+    pub fn open_connecting_for_entry(
+        &mut self,
+        entry_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if entry_index >= self.entries.len() {
+            warn!("Index {entry_index} out of range. Cannot open connecting view.");
+            return;
+        }
+        self.switch_to(entry_index, cx);
+        let Some(workspace) = self.entries.get(entry_index).cloned() else {
+            return;
+        };
+        workspace.update(cx, |ws, cx| ws.reveal_connecting_view(window, cx));
+    }
+
+    pub fn open_connecting_for_state(
+        &mut self,
+        state_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> OpenConnectingForState {
+        let Some(state) = self.states.get(state_index) else {
+            warn!("Index {state_index} out of range. Cannot open connecting view.");
+            return OpenConnectingForState::InvalidState;
+        };
+
+        let endpoint_addr = state.read(cx).endpoint_addr.clone();
+        if let Some(entry_index) = self.entry_index_by_endpoint_addr(&endpoint_addr, cx) {
+            self.open_connecting_for_entry(entry_index, window, cx);
+            OpenConnectingForState::ActiveEntry
+        } else {
+            self.connect_saved(state_index, window, cx);
+            OpenConnectingForState::StartedConnect
+        }
+    }
+
     /// Connect via QR pairing ticket (new device pairing).
     pub fn connect_ticket(
         &mut self,
@@ -134,9 +179,11 @@ impl Workspaces {
             }
         };
 
-        // Existing entry just needs to switch into, triggers reconnect if it's failed/disconencted
+        // Existing entry: if healthy (Connected/Idle), just switch to it.
+        // Otherwise (Failed, Disconnected, or any in-flight phase) restart
+        // with the fresh ticket so a rescan always overrides stale auth.
         if let Some(index) = self.entry_index_by_endpoint_addr(&encoded_addr, cx) {
-            self.open_existing_entry(index, cx);
+            self.open_existing_entry_with_ticket(index, addr, ticket, cx);
             return;
         }
 
@@ -204,20 +251,27 @@ impl Workspaces {
         }
     }
 
-    fn open_existing_entry(&mut self, index: usize, cx: &mut Context<Self>) {
+    fn open_existing_entry_with_ticket(
+        &mut self,
+        index: usize,
+        addr: iroh::EndpointAddr,
+        ticket: ZedraPairingTicket,
+        cx: &mut Context<Self>,
+    ) {
         let Some(entry) = self.entries.get(index).cloned() else {
             return;
         };
 
         let phase = entry.read(cx).workspace_state(cx).connect_phase.clone();
-        if matches!(
+        let healthy = matches!(
             phase,
-            Some(ConnectPhase::Disconnected) | Some(ConnectPhase::Failed(_))
-        ) {
-            info!("Reconnecting existing workspace for endpoint.");
-            entry.update(cx, |ws, cx| ws.restart_connection(cx));
+            Some(ConnectPhase::Connected) | Some(ConnectPhase::Idle { .. })
+        );
+        if healthy {
+            info!("Workspace for this endpoint already connected; switching to it.");
         } else {
-            info!("Workspace for this endpoint already exists; switching to it.");
+            info!("Restarting existing workspace for endpoint with fresh ticket.");
+            entry.update(cx, |ws, cx| ws.restart_with_ticket(addr, ticket, cx));
         }
 
         self.activate_entry(index, cx);
@@ -363,6 +417,12 @@ impl Workspaces {
         for entry in self.entries.clone() {
             entry.update(cx, |ws, _cx| ws.close_transport_for_lifecycle(reason));
         }
+    }
+
+    pub fn handle_system_back(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.active().cloned().is_some_and(|workspace| {
+            workspace.update(cx, |ws, cx| ws.handle_system_back(window, cx))
+        })
     }
 
     pub fn remove_by_endpoint_addr(&mut self, endpoint_addr: &str, cx: &mut Context<Self>) {

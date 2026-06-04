@@ -12,7 +12,7 @@ use crate::platform_bridge;
 use crate::platform_bridge::HapticFeedback;
 use crate::session_panel::SessionPanel;
 use crate::telemetry::view_telemetry::{self, ViewDescriptor};
-use crate::terminal_panel::TerminalPanel;
+use crate::terminal_panel::{TerminalPanel, divider, toolbar_button};
 use crate::terminal_state::TerminalState;
 use crate::theme;
 use crate::transport_badge::ConnectionStatusIndicator;
@@ -136,6 +136,16 @@ impl WorkspaceDrawer {
         cx.notify();
     }
 
+    pub fn reveal_path(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.current_tab = DrawerTab::FileExplorer;
+        self.file_display_mode = FileDisplayMode::Explorer;
+        self.file_explorer.update(cx, |file_explorer, cx| {
+            file_explorer.reveal_path(path, window, cx)
+        });
+        self.record_current_view();
+        cx.notify();
+    }
+
     fn set_file_display_mode(&mut self, mode: FileDisplayMode, cx: &mut Context<Self>) {
         if self.file_display_mode == mode {
             if mode == FileDisplayMode::DocsTree {
@@ -188,7 +198,7 @@ impl WorkspaceDrawer {
                     .clone()
                     .unwrap_or_else(|| session_state.phase());
                 let transport = session_state.snapshot().transport;
-                let (label, _) = transport_badge(&phase, transport.as_ref());
+                let (label, _) = transport_badge(&theme::palette(cx), &phase, transport.as_ref());
                 label
             }
         };
@@ -225,14 +235,14 @@ impl WorkspaceDrawer {
     fn nav_icon(&self, tab: DrawerTab, cx: &mut Context<Self>) -> impl IntoElement {
         let is_active = self.current_tab == tab;
         let color = if is_active {
-            rgb(theme::TEXT_PRIMARY)
+            rgb(theme::text_primary(cx))
         } else {
-            rgb(theme::TEXT_MUTED)
+            rgb(theme::text_muted(cx))
         };
         let fill = if is_active {
-            rgb(theme::BG_CARD)
+            rgb(theme::bg_card(cx))
         } else {
-            rgb(theme::BG_PRIMARY)
+            rgb(theme::bg_primary(cx))
         };
 
         div()
@@ -268,9 +278,9 @@ impl WorkspaceDrawer {
     fn file_mode_button(&self, mode: FileDisplayMode, cx: &mut Context<Self>) -> impl IntoElement {
         let is_active = self.file_display_mode == mode;
         let color = if is_active {
-            rgb(theme::TEXT_SECONDARY)
+            rgb(theme::text_secondary(cx))
         } else {
-            rgb(theme::TEXT_MUTED)
+            rgb(theme::text_muted(cx))
         };
 
         div()
@@ -298,6 +308,31 @@ impl WorkspaceDrawer {
             )
     }
 
+    /// Opens the global floating file search (handled at the workspace root).
+    fn file_search_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("file-search-open")
+            .w(px(32.0))
+            .h(px(32.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hit_slop(px(8.0))
+            .on_pointer_down(|_, _, cx| cx.stop_propagation())
+            .on_press(cx.listener(|_this, _event, window, cx| {
+                platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+                window.dispatch_action(workspace_action::OpenFileSearch.boxed_clone(), cx);
+                cx.stop_propagation();
+            }))
+            .child(
+                svg()
+                    .path("icons/search.svg")
+                    .size(px(theme::ICON_XS))
+                    .text_color(rgb(theme::text_muted(cx))),
+            )
+    }
+
     fn render_file_mode_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("file-display-mode-toggle")
@@ -305,17 +340,18 @@ impl WorkspaceDrawer {
             .top(px(0.0))
             .right(px(0.0))
             .pb_1()
-            .bg(rgb(theme::BG_SURFACE))
+            .bg(rgb(theme::bg_surface(cx)))
             .occlude()
             .on_pointer_down(|_, _, cx| cx.stop_propagation())
             .rounded_bl(px(6.0))
             .border_b_1()
             .border_l_1()
-            .border_color(rgb(theme::BORDER_SUBTLE))
+            .border_color(rgb(theme::border_subtle(cx)))
             .flex()
             .flex_col()
             .child(self.file_mode_button(FileDisplayMode::Explorer, cx))
             .child(self.file_mode_button(FileDisplayMode::DocsTree, cx))
+            .child(self.file_search_button(cx))
     }
 }
 
@@ -351,7 +387,7 @@ impl Render for WorkspaceDrawer {
             .flex_col()
             .w_full()
             .h(viewport_h)
-            .bg(rgb(theme::BG_PRIMARY))
+            .bg(rgb(theme::bg_primary(cx)))
             .child(div().h(px(top_inset)))
             // Header
             .child(
@@ -361,7 +397,7 @@ impl Render for WorkspaceDrawer {
                     .flex_row()
                     .items_center()
                     .border_b_1()
-                    .border_color(rgb(theme::BORDER_SUBTLE))
+                    .border_color(rgb(theme::border_subtle(cx)))
                     .child(
                         div()
                             .id("drawer-home-icon")
@@ -379,7 +415,7 @@ impl Render for WorkspaceDrawer {
                                 svg()
                                     .path("icons/logo.svg")
                                     .size(px(theme::ICON_LOGO))
-                                    .text_color(rgb(theme::TEXT_PRIMARY)),
+                                    .text_color(rgb(theme::text_primary(cx))),
                             ),
                     )
                     .child(
@@ -395,7 +431,7 @@ impl Render for WorkspaceDrawer {
                                     .min_w_0()
                                     .truncate()
                                     .text_center()
-                                    .text_color(rgb(theme::TEXT_SECONDARY))
+                                    .text_color(rgb(theme::text_secondary(cx)))
                                     .text_size(px(theme::FONT_BODY))
                                     .font_weight(FontWeight::MEDIUM)
                                     .child(title),
@@ -406,7 +442,7 @@ impl Render for WorkspaceDrawer {
                                     .min_w_0()
                                     .truncate()
                                     .text_center()
-                                    .text_color(rgb(theme::TEXT_MUTED))
+                                    .text_color(rgb(theme::text_muted(cx)))
                                     .text_size(px(theme::FONT_BODY))
                                     .font_weight(FontWeight::MEDIUM)
                                     .child(subtitle),
@@ -422,8 +458,17 @@ impl Render for WorkspaceDrawer {
                                 ConnectionStatusIndicator::from_phase(
                                     "drawer-connect-status",
                                     connect_phase.as_ref(),
+                                    &theme::palette(cx),
                                 )
-                                .size(6.0),
+                                .size(6.0)
+                                .on_press(cx.listener(
+                                    |_this, _event, window, cx| {
+                                        window.dispatch_action(
+                                            workspace_action::ShowConnecting.boxed_clone(),
+                                            cx,
+                                        );
+                                    },
+                                )),
                             ),
                     ),
             )
@@ -441,6 +486,48 @@ impl Render for WorkspaceDrawer {
                         el.child(self.render_file_mode_toggle(cx))
                     }),
             )
+            // Terminal action bar — only on Terminals tab, flush with the footer
+            .when(self.current_tab == DrawerTab::Terminals, |el| {
+                el.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .rounded_t(px(8.0))
+                        .border_1()
+                        .border_b_0()
+                        .border_color(rgb(theme::border_subtle(cx)))
+                        .mx(px(theme::DRAWER_PADDING))
+                        .overflow_hidden()
+                        .child(toolbar_button(
+                            "terminal-manage-agents-btn",
+                            "icons/layers-2.svg",
+                            cx,
+                            workspace_action::OpenAgentManage,
+                        ))
+                        .child(divider(cx))
+                        .child(toolbar_button(
+                            "terminal-view-sessions-btn",
+                            "icons/history.svg",
+                            cx,
+                            workspace_action::OpenAgentSessions,
+                        ))
+                        .child(divider(cx))
+                        .child(toolbar_button(
+                            "terminal-create-terminal-btn",
+                            "icons/terminal.svg",
+                            cx,
+                            workspace_action::CreateNewTerminal,
+                        ))
+                        .child(divider(cx))
+                        .child(toolbar_button(
+                            "terminal-create-agent-btn",
+                            "icons/plus.svg",
+                            cx,
+                            workspace_action::CreateAgent,
+                        )),
+                )
+            })
             // Footer nav bar
             .child(
                 div()
@@ -451,7 +538,7 @@ impl Render for WorkspaceDrawer {
                     .justify_center()
                     .gap(px(36.0))
                     .border_t_1()
-                    .border_color(rgb(theme::BORDER_SUBTLE))
+                    .border_color(rgb(theme::border_subtle(cx)))
                     .child(self.nav_icon(DrawerTab::FileExplorer, cx))
                     .child(self.nav_icon(DrawerTab::GitDiff, cx))
                     .child(self.nav_icon(DrawerTab::Terminals, cx))

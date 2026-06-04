@@ -1,10 +1,12 @@
-pub mod app;
 pub(crate) mod bridge;
-pub mod command_queue;
-/// Android platform integration: JNI bridge, command queue, GPUI app, and platform bridge.
+pub mod entry;
+/// App-specific JNI exports + Rust→Java helpers (alerts, sheets, presentations,
+/// QR scanner, deeplinks). Framework-level JNI lives in `gpui_android`.
 pub mod jni;
+pub mod sheet;
+pub mod telemetry;
 
-// Legacy JNI stubs (kept for ABI compatibility with existing Java code)
+// Legacy JNI stubs (kept for ABI compatibility with existing Java code).
 mod legacy_jni {
     use ::jni::{JNIEnv, objects::JClass};
 

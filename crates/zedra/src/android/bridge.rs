@@ -3,7 +3,8 @@
 /// Delegates every call to the corresponding function in `super::jni`.
 use crate::android::jni;
 use crate::platform_bridge::{
-    AlertButton, HapticFeedback, NativeNotificationOptions, PlatformBridge,
+    AlertButton, CustomSheetOptions, HapticFeedback, ListPickerItem, NativeDictationPreviewOptions,
+    NativeFloatingButtonOptions, NativeNotificationOptions, PlatformBridge, SystemTheme,
 };
 
 pub struct AndroidBridge;
@@ -77,12 +78,48 @@ impl PlatformBridge for AndroidBridge {
         jni::show_selection(id, title, message, buttons);
     }
 
+    fn present_list_picker(&self, id: u32, title: &str, message: &str, items: &[ListPickerItem]) {
+        jni::show_list_picker(id, title, message, items);
+    }
+
+    fn present_custom_sheet(&self, options: &CustomSheetOptions) {
+        jni::present_custom_sheet(options);
+    }
+
     fn trigger_haptic(&self, feedback: HapticFeedback) {
         jni::trigger_haptic(feedback);
     }
 
+    fn update_native_floating_button(&self, id: u32, options: &NativeFloatingButtonOptions) {
+        jni::update_native_floating_button(id, options);
+    }
+
+    fn hide_native_floating_button(&self, id: u32) {
+        jni::hide_native_floating_button(id);
+    }
+
+    fn update_native_dictation_preview(&self, id: u32, options: &NativeDictationPreviewOptions) {
+        jni::update_native_dictation_preview(id, options);
+    }
+
+    fn hide_native_dictation_preview(&self, id: u32) {
+        jni::hide_native_dictation_preview(id);
+    }
+
     fn present_native_notification(&self, id: u32, options: &NativeNotificationOptions) {
-        jni::show_native_notification(id, options);
+        jni::present_native_notification(id, options);
+    }
+
+    fn present_text_input(&self, id: u32, title: &str, placeholder: &str, initial_value: &str) {
+        jni::show_text_input(id, title, placeholder, initial_value);
+    }
+
+    fn system_prefers_theme(&self) -> SystemTheme {
+        jni::system_prefers_theme()
+    }
+
+    fn set_native_theme(&self, is_dark: bool) {
+        jni::set_native_theme(is_dark);
     }
 
     fn request_delta_push_token(&self, id: u32) {

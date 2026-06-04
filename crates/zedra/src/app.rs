@@ -3,14 +3,17 @@ use std::time::Duration;
 use gpui::*;
 use zedra_telemetry::*;
 
+use crate::app_action::SystemBack;
 use crate::deeplink::{self, DeeplinkAction};
 use crate::fonts;
 use crate::home_view::{HomeEvent, HomeView};
 use crate::platform_bridge;
 use crate::quick_action_panel::{QuickActionEvent, QuickActionPanel};
+use crate::settings::{ThemeState, ThemeStateEvent};
 use crate::settings_view::{SettingsEvent, SettingsView};
 use crate::telemetry::view_telemetry::{self, ViewDescriptor};
 use crate::ui::{DrawerHost, DrawerSide};
+use crate::workspace_action::ShowConnecting;
 use crate::workspaces::{Workspaces, WorkspacesEvent};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -49,6 +52,9 @@ impl ZedraApp {
 
         let mut subscriptions = Vec::new();
 
+        let theme_state = cx.new(ThemeState::new);
+        ThemeState::register_global(theme_state.downgrade(), cx);
+
         // --- Workspaces ---
         let workspaces = cx.new(|cx| Workspaces::new(cx));
 
@@ -57,8 +63,11 @@ impl ZedraApp {
         let sub = cx.subscribe(&home_view, Self::on_home_event);
         subscriptions.push(sub);
 
-        let settings_view = cx.new(SettingsView::new);
+        let settings_view = cx.new(|cx| SettingsView::new(theme_state.clone(), cx));
         let sub = cx.subscribe(&settings_view, Self::on_settings_event);
+        subscriptions.push(sub);
+
+        let sub = cx.subscribe(&theme_state, Self::on_theme_changed);
         subscriptions.push(sub);
 
         // --- Quick action panel ---
@@ -172,6 +181,15 @@ impl ZedraApp {
         }
     }
 
+    fn on_theme_changed(
+        &mut self,
+        _: Entity<ThemeState>,
+        _: &ThemeStateEvent,
+        cx: &mut Context<Self>,
+    ) {
+        cx.notify();
+    }
+
     fn on_quick_action_event(
         &mut self,
         _: Entity<QuickActionPanel>,
@@ -196,6 +214,25 @@ impl ZedraApp {
                 self.close_terminal_from_quick_action(*ws_index, tid, cx);
             }
         }
+    }
+
+    fn close_quick_action_drawer(&self, cx: &mut Context<Self>) {
+        self.quick_action_drawer
+            .update(cx, |host, cx| host.close(cx));
+    }
+
+    fn handle_show_connecting(
+        &mut self,
+        _: &ShowConnecting,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(entry_index) = self.workspaces.read(cx).active_index() {
+            self.workspaces.update(cx, |ws, cx| {
+                ws.open_connecting_for_entry(entry_index, window, cx);
+            });
+        }
+        self.close_quick_action_drawer(cx);
     }
 
     fn open_terminal_from_quick_action(
@@ -300,6 +337,34 @@ impl ZedraApp {
         }
     }
 
+    fn handle_system_back_action(
+        &mut self,
+        _action: &SystemBack,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.handle_system_back(window, cx);
+    }
+
+    pub fn handle_system_back(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.quick_action_drawer.read(cx).is_open() {
+            self.quick_action_drawer
+                .update(cx, |drawer, cx| drawer.close_with_window(window, cx));
+            return true;
+        }
+
+        match self.screen {
+            AppScreen::Home => false,
+            AppScreen::Settings => {
+                self.set_screen(AppScreen::Home, cx);
+                true
+            }
+            AppScreen::Workspace => self.workspaces.update(cx, |workspaces, cx| {
+                workspaces.handle_system_back(window, cx)
+            }),
+        }
+    }
+
     fn set_screen(&mut self, screen: AppScreen, cx: &mut Context<Self>) {
         let screen_changed = self.screen != screen;
         let should_update_content = should_update_drawer_content(self.screen, screen);
@@ -356,9 +421,11 @@ impl ZedraApp {
 }
 
 impl Render for ZedraApp {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
+            .on_action(cx.listener(Self::handle_system_back_action))
+            .on_action(cx.listener(Self::handle_show_connecting))
             .font_family(fonts::MONO_FONT_FAMILY)
             .child(self.quick_action_drawer.clone())
     }

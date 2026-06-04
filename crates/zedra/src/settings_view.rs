@@ -1,7 +1,6 @@
 use std::time::Duration;
 
-use gpui::prelude::FluentBuilder;
-use gpui::*;
+use gpui::{prelude::FluentBuilder as _, *};
 
 use crate::delta;
 use crate::fonts;
@@ -10,9 +9,10 @@ use crate::platform_bridge::{
     self, AlertButton, CustomSheetDetent, CustomSheetOptions, HapticFeedback,
     NativeNotificationKind, NativeNotificationOptions,
 };
+use crate::settings::ThemeState;
 use crate::sheet_demo_state::SheetDemoState;
 use crate::telemetry::view_telemetry;
-use crate::theme;
+use crate::theme::{self, ThemePreference};
 
 #[derive(Clone, Debug)]
 pub enum SettingsEvent {
@@ -35,6 +35,7 @@ static PENDING_DELTA_EVENT: PendingSlot<DeltaSettingsEvent> = PendingSlot::new()
 
 pub struct SettingsView {
     focus_handle: FocusHandle,
+    theme_state: Entity<ThemeState>,
     sheet_state: Entity<SheetDemoState>,
     sheet_view: Entity<crate::sheet_demo_view::SheetDemoView>,
     delta_status: delta::DeltaStatus,
@@ -44,7 +45,7 @@ pub struct SettingsView {
 }
 
 impl SettingsView {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(theme_state: Entity<ThemeState>, cx: &mut Context<Self>) -> Self {
         let sheet_state = cx.new(|cx| SheetDemoState::new(cx));
         let sheet_view =
             cx.new(|cx| crate::sheet_demo_view::SheetDemoView::new(sheet_state.clone(), cx));
@@ -53,6 +54,7 @@ impl SettingsView {
         });
         Self {
             focus_handle: cx.focus_handle(),
+            theme_state,
             sheet_state,
             sheet_view,
             delta_status: delta::status(),
@@ -226,6 +228,13 @@ impl SettingsView {
         }
     }
 
+    fn set_theme_preference(&self, preference: ThemePreference, cx: &mut Context<Self>) {
+        platform_bridge::trigger_haptic(HapticFeedback::SelectionChanged);
+        self.theme_state.update(cx, |state, cx| {
+            state.set_preference(preference, cx);
+        });
+    }
+
     fn show_test_alert(&self) {
         platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
         platform_bridge::show_alert(
@@ -329,12 +338,15 @@ impl Render for SettingsView {
         } else {
             "Sign In"
         };
+        let preference = self.theme_state.read(cx).preference();
 
         div()
             .id("settings-view")
             .track_focus(&self.focus_handle)
             .size_full()
-            .bg(rgb(theme::BG_PRIMARY))
+            .min_h_0()
+            .min_w_0()
+            .bg(rgb(theme::bg_primary(cx)))
             .flex()
             .flex_col()
             .child(
@@ -347,7 +359,6 @@ impl Render for SettingsView {
                     .flex_row()
                     .items_center()
                     .justify_between()
-                    .border_b_1()
                     .child(
                         div()
                             .flex()
@@ -366,31 +377,24 @@ impl Render for SettingsView {
                                         svg()
                                             .path("icons/chevron-left.svg")
                                             .size(px(theme::ICON_SM))
-                                            .text_color(rgb(theme::TEXT_MUTED))
-                                            .into_any_element()
-                                    )
+                                            .text_color(rgb(theme::text_muted(cx)))
+                                            .into_any_element(),
+                                    ),
                             )
                             .child(
                                 div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap(px(8.0))
-                                    .child(
-                                        div()
-                                            .text_color(rgb(theme::TEXT_PRIMARY))
-                                            .text_size(px(theme::FONT_TITLE))
-                                            .font_family(fonts::HEADING_FONT_FAMILY)
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child("Settings"),
-                                    )
+                                    .text_color(rgb(theme::text_primary(cx)))
+                                    .text_size(px(theme::FONT_TITLE))
+                                    .font_family(fonts::HEADING_FONT_FAMILY)
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child("Settings"),
                             ),
                     ),
             )
             .child(
                 div()
                     .id("settings-scroll")
-                    .overflow_scroll()
+                    .overflow_y_scroll()
                     .flex_1()
                     .px(px(theme::SPACING_LG))
                     .pb(px(bottom_inset + 18.0))
@@ -398,12 +402,24 @@ impl Render for SettingsView {
                         div()
                             .w_full()
                             .max_w(px(520.0))
-                            .mx_auto()
                             .flex()
                             .flex_col()
-                            .child(section_header("Profile"))
+                            .gap(px(theme::SPACING_MD))
+                            .child(section_header(cx, "Appearance"))
+                            .child(appearance_theme_toggle(
+                                cx,
+                                preference,
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.set_theme_preference(ThemePreference::Dark, cx);
+                                }),
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.set_theme_preference(ThemePreference::Light, cx);
+                                }),
+                            ))
+                            .child(section_header(cx, "Profile"))
                             .when(self.delta_status.signed_in, |this| {
                                 this.child(profile_info_row(
+                                    cx,
                                     "settings-delta-profile",
                                     profile_initial,
                                     profile_title,
@@ -413,6 +429,7 @@ impl Render for SettingsView {
                             .when(!self.delta_status.signed_in, |this| {
                                 this.child(
                                     action_row_text(
+                                        cx,
                                         "settings-delta-sign-in",
                                         sign_in_title,
                                         "Choose a sign-in method",
@@ -424,14 +441,16 @@ impl Render for SettingsView {
                             })
                             .when_some(delta_message, |this, message| {
                                 this.child(info_row(
+                                    cx,
                                     "settings-delta-message",
                                     "Status",
                                     message,
                                 ))
                             })
-                            .child(section_header("Notifications"))
+                            .child(section_header(cx, "Notifications"))
                             .child(
                                 action_row_text(
+                                    cx,
                                     "settings-delta-push-token",
                                     "Enable Notifications",
                                     push_summary,
@@ -440,84 +459,186 @@ impl Render for SettingsView {
                                     this.request_push_token(cx);
                                 })),
                             )
-                            .child(
-                                section_header("Developer")
-                            )
-                            .child(
-                                action_row(
-                                    "settings-test-alert",
-                                    "Native Alert",
-                                    "Native confirmation/failure prompts",
-                                )
-                                .on_press(cx.listener(|this, _event, _window, _cx| {
-                                    this.show_test_alert();
-                                })),
-                            )
-                            .child(
-                                action_row(
-                                    "settings-test-selection",
-                                    "Native Selection",
-                                    "Action sheet selection and behavior",
-                                )
-                                .on_press(cx.listener(|this, _event, _window, _cx| {
-                                    this.show_test_selection();
-                                })),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .max_w(px(520.0))
-                            .mx_auto()
-                            .child(
-                                action_row(
-                                    "settings-test-native-notification",
-                                    "Native Notification",
-                                    "In-app glass banner presentation",
-                                )
-                                .on_press(cx.listener(|this, _event, _window, _cx| {
-                                    this.show_test_native_notification();
-                                })),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .max_w(px(520.0))
-                            .mx_auto()
-                            .child(
-                                action_row(
-                                    "settings-test-custom-sheet",
-                                    "Custom Sheet",
-                                    "Native sheet with GPUI-rendered content",
-                                )
-                                .on_press(cx.listener(|this, _event, _window, cx| {
-                                    this.show_test_custom_sheet(cx);
-                                })),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .max_w(px(520.0))
-                            .mx_auto()
-                            .child(
-                                div()
-                                    .text_color(rgb(theme::TEXT_MUTED))
-                                    .text_size(px(theme::FONT_DETAIL))
-                                    .font_family(fonts::MONO_FONT_FAMILY)
-                                    .child("QR scanner and dictation preview remain separate native flows."),
-                            ),
+                            .when(cfg!(debug_assertions), |section| {
+                                section
+                                    .child(section_header(cx, "Developer"))
+                                    .child(
+                                        action_row(
+                                            cx,
+                                            "settings-test-alert",
+                                            "Native Alert",
+                                            "Native confirmation/failure prompts",
+                                        )
+                                        .on_press(cx.listener(|this, _event, _window, _cx| {
+                                            this.show_test_alert();
+                                        })),
+                                    )
+                                    .child(
+                                        action_row(
+                                            cx,
+                                            "settings-test-selection",
+                                            "Native Selection",
+                                            "Action sheet selection and behavior",
+                                        )
+                                        .on_press(cx.listener(|this, _event, _window, _cx| {
+                                            this.show_test_selection();
+                                        })),
+                                    )
+                                    .child(
+                                        action_row(
+                                            cx,
+                                            "settings-test-native-notification",
+                                            "Native Notification",
+                                            "In-app glass banner presentation",
+                                        )
+                                        .on_press(cx.listener(|this, _event, _window, _cx| {
+                                            this.show_test_native_notification();
+                                        })),
+                                    )
+                                    .child(
+                                        action_row(
+                                            cx,
+                                            "settings-test-custom-sheet",
+                                            "Custom Sheet",
+                                            "Native sheet with GPUI-rendered content",
+                                        )
+                                        .on_press(cx.listener(|this, _event, _window, cx| {
+                                            this.show_test_custom_sheet(cx);
+                                        })),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_color(rgb(theme::text_muted(cx)))
+                                            .text_size(px(theme::FONT_DETAIL))
+                                            .font_family(fonts::MONO_FONT_FAMILY)
+                                            .child(
+                                                "QR scanner and dictation preview remain separate native flows.",
+                                            ),
+                                    )
+                            }),
                     ),
             )
     }
 }
 
-fn action_row(id: &'static str, title: &'static str, description: &'static str) -> Stateful<Div> {
-    action_row_text(id, title, description)
+fn section_header(cx: &App, title: &'static str) -> Div {
+    div()
+        .pt(px(12.0))
+        .pb(px(10.0))
+        .border_b_1()
+        .border_color(rgb(theme::border_subtle(cx)))
+        .child(
+            div()
+                .text_color(rgb(theme::text_primary(cx)))
+                .text_size(px(theme::FONT_HEADING))
+                .font_family(fonts::MONO_FONT_FAMILY)
+                .font_weight(FontWeight::MEDIUM)
+                .child(title),
+        )
 }
 
-fn action_row_text(
+/// Settings row with a compact segmented appearance control.
+fn appearance_theme_toggle(
+    cx: &App,
+    preference: ThemePreference,
+    on_dark: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
+    on_light: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let is_dark = preference == ThemePreference::Dark;
+
+    div()
+        .id("settings-appearance-toggle")
+        .min_w_0()
+        .min_h(px(32.0))
+        .py(px(2.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(theme::SPACING_MD))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_row()
+                .items_center()
+                .child(
+                    div()
+                        .text_color(rgb(theme::text_secondary(cx)))
+                        .text_size(px(theme::FONT_BODY))
+                        .font_family(fonts::MONO_FONT_FAMILY)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child("Theme"),
+                ),
+        )
+        .child(
+            div()
+                .flex_none()
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(rgb(theme::border_default(cx)))
+                .bg(rgb(theme::bg_surface(cx)))
+                .flex()
+                .flex_row()
+                .child(theme_toggle_segment(
+                    cx,
+                    "settings-theme-dark",
+                    "icons/moon.svg",
+                    is_dark,
+                    on_dark,
+                ))
+                .child(
+                    div()
+                        .w(px(1.0))
+                        .h(px(22.0))
+                        .bg(rgb(theme::border_subtle(cx))),
+                )
+                .child(theme_toggle_segment(
+                    cx,
+                    "settings-theme-light",
+                    "icons/sun.svg",
+                    !is_dark,
+                    on_light,
+                )),
+        )
+}
+
+fn theme_toggle_segment(
+    cx: &App,
+    id: &'static str,
+    icon_path: &'static str,
+    selected: bool,
+    on_press: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let mut segment = div()
+        .id(id)
+        .min_w(px(42.0))
+        .h(px(24.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .hit_slop(px(6.0))
+        .on_press(on_press);
+
+    if selected {
+        segment = segment.bg(rgb(theme::bg_card(cx)));
+    }
+
+    segment.child(
+        svg()
+            .path(icon_path)
+            .size(px(theme::ICON_XS))
+            .text_color(rgb(if selected {
+                theme::text_primary(cx)
+            } else {
+                theme::text_muted(cx)
+            })),
+    )
+}
+
+fn action_row(
+    cx: &App,
     id: &'static str,
     title: impl Into<SharedString>,
     description: impl Into<SharedString>,
@@ -526,14 +647,12 @@ fn action_row_text(
     let description = description.into();
     div()
         .id(id)
-        .w_full()
         .min_w_0()
         .min_h(px(56.0))
         .py(px(10.0))
         .flex()
         .flex_row()
         .items_center()
-        .justify_between()
         .gap(px(theme::SPACING_MD))
         .cursor_pointer()
         .child(
@@ -545,7 +664,7 @@ fn action_row_text(
                 .overflow_hidden()
                 .child(
                     div()
-                        .text_color(rgb(theme::TEXT_SECONDARY))
+                        .text_color(rgb(theme::text_secondary(cx)))
                         .text_size(px(theme::FONT_BODY))
                         .font_family(fonts::MONO_FONT_FAMILY)
                         .font_weight(FontWeight::MEDIUM)
@@ -553,7 +672,7 @@ fn action_row_text(
                 )
                 .child(
                     div()
-                        .text_color(rgb(theme::TEXT_MUTED))
+                        .text_color(rgb(theme::text_muted(cx)))
                         .text_size(px(theme::FONT_DETAIL))
                         .font_family(fonts::MONO_FONT_FAMILY)
                         .child(description),
@@ -564,12 +683,13 @@ fn action_row_text(
                 svg()
                     .path("icons/chevron-right.svg")
                     .size(px(theme::ICON_SM))
-                    .text_color(rgb(theme::TEXT_MUTED)),
+                    .text_color(rgb(theme::text_muted(cx))),
             ),
         )
 }
 
 fn info_row(
+    cx: &App,
     id: &'static str,
     title: impl Into<SharedString>,
     description: impl Into<SharedString>,
@@ -586,7 +706,7 @@ fn info_row(
         .gap(px(3.0))
         .child(
             div()
-                .text_color(rgb(theme::TEXT_SECONDARY))
+                .text_color(rgb(theme::text_secondary(cx)))
                 .text_size(px(theme::FONT_BODY))
                 .font_family(fonts::MONO_FONT_FAMILY)
                 .font_weight(FontWeight::MEDIUM)
@@ -594,7 +714,7 @@ fn info_row(
         )
         .child(
             div()
-                .text_color(rgb(theme::TEXT_MUTED))
+                .text_color(rgb(theme::text_muted(cx)))
                 .text_size(px(theme::FONT_DETAIL))
                 .font_family(fonts::MONO_FONT_FAMILY)
                 .child(description),
@@ -602,6 +722,7 @@ fn info_row(
 }
 
 fn profile_info_row(
+    cx: &App,
     id: &'static str,
     initials: impl Into<SharedString>,
     title: impl Into<SharedString>,
@@ -624,13 +745,13 @@ fn profile_info_row(
             div()
                 .size(px(34.0))
                 .rounded_full()
-                .bg(rgb(theme::BG_CARD))
+                .bg(rgb(theme::bg_card(cx)))
                 .border_1()
-                .border_color(rgb(theme::BORDER_SUBTLE))
+                .border_color(rgb(theme::border_subtle(cx)))
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_color(rgb(theme::TEXT_SECONDARY))
+                .text_color(rgb(theme::text_secondary(cx)))
                 .text_size(px(theme::FONT_BODY))
                 .font_family(fonts::MONO_FONT_FAMILY)
                 .font_weight(FontWeight::MEDIUM)
@@ -646,7 +767,7 @@ fn profile_info_row(
                 .overflow_hidden()
                 .child(
                     div()
-                        .text_color(rgb(theme::TEXT_SECONDARY))
+                        .text_color(rgb(theme::text_secondary(cx)))
                         .text_size(px(theme::FONT_BODY))
                         .font_family(fonts::MONO_FONT_FAMILY)
                         .font_weight(FontWeight::MEDIUM)
@@ -654,30 +775,11 @@ fn profile_info_row(
                 )
                 .child(
                     div()
-                        .text_color(rgb(theme::TEXT_MUTED))
+                        .text_color(rgb(theme::text_muted(cx)))
                         .text_size(px(theme::FONT_DETAIL))
                         .font_family(fonts::MONO_FONT_FAMILY)
                         .child(description),
                 ),
-        )
-}
-
-fn section_header(title: &'static str) -> Div {
-    div()
-        .pt(px(12.0))
-        .pb(px(10.0))
-        .border_b_1()
-        .border_color(rgb(theme::BORDER_SUBTLE))
-        .flex()
-        .flex_col()
-        .gap(px(4.0))
-        .child(
-            div()
-                .text_color(rgb(theme::TEXT_PRIMARY))
-                .text_size(px(theme::FONT_HEADING))
-                .font_family(fonts::MONO_FONT_FAMILY)
-                .font_weight(FontWeight::MEDIUM)
-                .child(title),
         )
 }
 

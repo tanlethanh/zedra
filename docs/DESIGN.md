@@ -14,24 +14,29 @@ The UI should read like a native code workspace on mobile: calm surfaces, compac
 
 ## Color System
 
-Primary references live in `crates/zedra/src/theme.rs`.
+Canonical tokens and wiring live in `docs/THEMING.md`. Definitions are in `crates/zedra/src/theme.rs` (`ThemePalette`, dark/light pairs) and `crates/zedra-terminal/src/theme.rs` for the embedded terminal.
 
-- Base background: `BG_PRIMARY` / `BG_SURFACE`
-- Raised surface: `BG_CARD`
-- Quiet structure: `BORDER_SUBTLE`
-- Stronger control edge: `BORDER_DEFAULT`
-- Primary text: `TEXT_PRIMARY`
-- Standard text: `TEXT_SECONDARY`
-- Muted metadata and inactive states: `TEXT_MUTED`
+New UI must read colors from `theme::palette(cx)` or the `theme::bg_primary(cx)`-style accessors at render time. Do not hardcode hex values in views.
+
+| Role | Token (via `theme::`) |
+|------|------------------------|
+| Base background | `bg_primary`, `bg_surface` |
+| Raised surface | `bg_card`, `bg_overlay` |
+| Quiet card fill | `bg_card_dim` |
+| Quiet structure | `border_subtle` |
+| Control edge | `border_default`, `border_active` |
+| Primary text | `text_primary` |
+| Standard text | `text_secondary` |
+| Muted metadata | `text_muted` |
 
 Accent colors are semantic only.
 
-- Green: healthy / connected / success
-- Yellow: connecting / warning
-- Red: failure / destructive
-- Blue: focus and active input state
+- Green: healthy / connected / success (`accent_green`)
+- Yellow: connecting / warning (`accent_yellow`)
+- Red: failure / destructive (`accent_red`)
+- Blue: focus and active input state (`accent_blue`)
 
-Do not use accent color as decoration.
+Do not use accent color as decoration. Light and dark palettes are paired in `ThemePalette::dark()` / `light()`; keep new tokens in sync in both.
 
 ## Layout And Spacing
 
@@ -88,7 +93,7 @@ If a component feels busy, remove a line before adding a new one.
 
 ### Cards
 
-- Use `BG_CARD`
+- Use `bg_card` from the active palette
 - Use a subtle 1px border
 - Keep padding tight
 - Avoid decorative fills and badges unless they carry state
@@ -127,8 +132,8 @@ Recommended direction for commit UI:
 
 ## Do
 
-- Use neutral dark surfaces
-- Reuse `theme.rs` tokens
+- Use neutral surfaces from the active palette (dark or light)
+- Reuse `theme.rs` tokens; follow `docs/THEMING.md` for editor and terminal
 - Reuse existing GPUI controls
 - Prefer subtraction over embellishment
 - Make state visible with text, opacity, and spacing

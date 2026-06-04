@@ -1,15 +1,17 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 
 use crate::editor::merge_highlights;
+use crate::editor::mermaid::{self, MermaidDiagram};
 use crate::fonts;
-use crate::native_presentation;
 use crate::platform_bridge;
-use crate::theme;
+use crate::settings::{ThemeStateEvent, theme_state};
+use crate::theme::{self, ThemePreference};
 use crate::workspace_action::AddSelectionToChat;
 
 // Enough offscreen content to keep fast mobile scrolls smooth without
@@ -28,17 +30,32 @@ const TABLE_CELL_MAX_WIDTH: f32 = 220.0;
 const TABLE_CELL_CHAR_WIDTH_FACTOR: f32 = 0.62;
 const TABLE_CELL_PADDING_X: f32 = CODE_BLOCK_PADDING_X;
 const TABLE_CELL_PADDING_Y: f32 = CODE_BLOCK_PADDING_Y;
+const MERMAID_PENDING_HEIGHT: f32 = 120.0;
+const MERMAID_DISPLAY_SCALE: f32 = 0.5;
+const MERMAID_MIN_DISPLAY_HEIGHT: f32 = 80.0;
+const MERMAID_MAX_DISPLAY_WIDTH: f32 = 2400.0;
+const MERMAID_MAX_DISPLAY_HEIGHT: f32 = 1600.0;
 pub const MARKDOWN_SELECTION_AREA_ID: &str = "markdown-preview-selection";
+
+#[derive(Clone, Debug)]
+enum MermaidBlockState {
+    Pending,
+    Ready(MermaidDiagram),
+    Failed,
+}
 
 pub struct MarkdownView {
     document: MarkdownDocument,
     list_state: ListState,
-    track_sheet_scroll_boundary: bool,
     focus_handle: Option<FocusHandle>,
+    mermaid_states: HashMap<usize, MermaidBlockState>,
+    mermaid_show_source: HashSet<usize>,
+    mermaid_generation: u64,
+    _theme_subscription: Vec<Subscription>,
 }
 
 impl MarkdownView {
-    pub fn new(source: impl Into<SharedString>) -> Self {
+    pub fn new(source: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         let source = source.into();
         let document = parse_document(source.as_ref());
         let list_state = ListState::new(
@@ -46,43 +63,110 @@ impl MarkdownView {
             ListAlignment::Top,
             px(MARKDOWN_LIST_OVERDRAW_PX),
         );
-        Self {
+        let mut subscriptions = Vec::new();
+        if let Some(theme_state) = theme_state(cx) {
+            subscriptions.push(
+                cx.subscribe(&theme_state, |this, _, _: &ThemeStateEvent, cx| {
+                    this.on_theme_changed(cx);
+                }),
+            );
+        }
+        let mut view = Self {
             document,
             list_state,
-            track_sheet_scroll_boundary: false,
             focus_handle: None,
+            mermaid_states: HashMap::new(),
+            mermaid_show_source: HashSet::new(),
+            mermaid_generation: 0,
+            _theme_subscription: subscriptions,
+        };
+        view.schedule_mermaid_renders(cx);
+        view
+    }
+
+    fn on_theme_changed(&mut self, cx: &mut Context<Self>) {
+        let has_mermaid = self
+            .document
+            .blocks
+            .iter()
+            .any(|block| matches!(block, Block::Mermaid { .. }));
+        if has_mermaid {
+            mermaid::clear_mermaid_svg_cache();
+            self.mermaid_generation = self.mermaid_generation.wrapping_add(1);
+            self.schedule_mermaid_renders(cx);
         }
+        cx.notify();
     }
 
-    pub fn new_for_sheet(source: impl Into<SharedString>) -> Self {
-        let mut this = Self::new(source);
-        this.track_sheet_scroll_boundary = true;
-        this.list_state.set_scroll_handler(|event, _window, _cx| {
-            native_presentation::set_sheet_content_at_top(!event.is_scrolled);
-        });
-        this
-    }
-
-    pub fn set_source(&mut self, source: impl Into<SharedString>) {
+    pub fn set_source(&mut self, source: impl Into<SharedString>, cx: &mut Context<Self>) {
         let source = source.into();
-        self.replace_document(parse_document(source.as_ref()));
+        self.replace_document(parse_document(source.as_ref()), cx);
     }
 
     pub fn line_range_for_selection(&self, range_utf16: Range<usize>) -> Option<(u32, u32)> {
         self.document.line_range_for_selection(range_utf16)
     }
 
-    pub(crate) fn set_parsed_source(&mut self, parsed: ParsedMarkdownSource) {
-        self.replace_document(parsed.document);
+    pub fn is_scrolled_to_top(&self) -> bool {
+        let scroll_top = self.list_state.logical_scroll_top();
+        scroll_top.item_ix == 0 && scroll_top.offset_in_item <= px(0.5)
     }
 
-    fn replace_document(&mut self, document: MarkdownDocument) {
+    pub(crate) fn set_parsed_source(
+        &mut self,
+        parsed: ParsedMarkdownSource,
+        cx: &mut Context<Self>,
+    ) {
+        self.replace_document(parsed.document, cx);
+    }
+
+    fn replace_document(&mut self, document: MarkdownDocument, cx: &mut Context<Self>) {
         self.document = document;
+        self.mermaid_show_source.clear();
+        self.mermaid_generation = self.mermaid_generation.wrapping_add(1);
+        mermaid::clear_mermaid_svg_cache();
         // ListState caches row measurements. Reset it whenever the parsed block
         // tree changes, or scroll position and item heights can be reused from
         // the previous file.
         self.list_state
             .reset(markdown_list_item_count(self.document.blocks.len()));
+        self.schedule_mermaid_renders(cx);
+    }
+
+    fn schedule_mermaid_renders(&mut self, cx: &mut Context<Self>) {
+        self.mermaid_states.clear();
+        let generation = self.mermaid_generation;
+        let preference = theme_state(cx)
+            .map(|entity| entity.read(cx).preference())
+            .unwrap_or(ThemePreference::Dark);
+        for (block_ix, block) in self.document.blocks.iter().enumerate() {
+            let Block::Mermaid { text } = block else {
+                continue;
+            };
+            self.mermaid_states
+                .insert(block_ix, MermaidBlockState::Pending);
+            let source = text.clone();
+            let block_ix = block_ix;
+            cx.spawn(async move |this, cx| {
+                let rendered = cx
+                    .background_spawn(async move {
+                        mermaid::render_mermaid_diagram(block_ix, &source, preference)
+                    })
+                    .await;
+                let _ = this.update(cx, |view, cx| {
+                    if view.mermaid_generation != generation {
+                        return;
+                    }
+                    let state = match rendered {
+                        Some(diagram) => MermaidBlockState::Ready(diagram),
+                        None => MermaidBlockState::Failed,
+                    };
+                    view.mermaid_states.insert(block_ix, state);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
     }
 }
 
@@ -168,6 +252,10 @@ enum Block {
         items: Vec<Vec<Block>>,
     },
     CodeBlock {
+        language: Option<String>,
+        text: String,
+    },
+    Mermaid {
         text: String,
     },
     Table(TableBlock),
@@ -238,12 +326,11 @@ impl InlineRenderBuffer {
 }
 
 impl Render for MarkdownView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        if self.track_sheet_scroll_boundary {
-            update_sheet_scroll_boundary(&self.list_state);
-        }
-
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let blocks = Arc::clone(&self.document.blocks);
+        let mermaid_states = self.mermaid_states.clone();
+        let mermaid_show_source = self.mermaid_show_source.clone();
+        let view = cx.weak_entity();
         let block_count = blocks.len();
         let bottom_inset = f32::max(
             platform_bridge::home_indicator_inset(),
@@ -251,7 +338,7 @@ impl Render for MarkdownView {
         );
         let focus_handle = self
             .focus_handle
-            .get_or_insert_with(|| _cx.focus_handle())
+            .get_or_insert_with(|| cx.focus_handle())
             .clone();
         let press_focus_handle = focus_handle.clone();
         // Keep each top-level markdown block as one variable-height list row.
@@ -268,7 +355,16 @@ impl Render for MarkdownView {
                     } else {
                         px(theme::SPACING_MD)
                     })
-                    .child(render_block(block, format!("md-{ix}"), window, cx))
+                    .child(render_block(
+                        block,
+                        ix,
+                        format!("md-{ix}"),
+                        &mermaid_states,
+                        &mermaid_show_source,
+                        view.clone(),
+                        window,
+                        cx,
+                    ))
                     .into_any_element()
             } else if ix == block_count {
                 div().h(px(bottom_inset)).into_any_element()
@@ -298,12 +394,6 @@ impl Render for MarkdownView {
                     .into_any_element(),
             )
     }
-}
-
-fn update_sheet_scroll_boundary(list_state: &ListState) {
-    let scroll_top = list_state.logical_scroll_top();
-    let is_at_top = scroll_top.item_ix == 0 && scroll_top.offset_in_item <= px(0.5);
-    native_presentation::set_sheet_content_at_top(is_at_top);
 }
 
 fn parse_document(source: &str) -> MarkdownDocument {
@@ -829,6 +919,32 @@ fn line_number_for_byte_offset(source: &str, byte_offset: usize) -> u32 {
         + 1
 }
 
+fn take_code_block_body(events: &[Event<'_>], cursor: &mut usize) -> String {
+    *cursor += 1;
+    let mut text = String::new();
+    while *cursor < events.len() {
+        match &events[*cursor] {
+            Event::End(TagEnd::CodeBlock) => {
+                *cursor += 1;
+                break;
+            }
+            Event::Text(value)
+            | Event::Code(value)
+            | Event::Html(value)
+            | Event::InlineHtml(value) => {
+                text.push_str(value);
+                *cursor += 1;
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                text.push('\n');
+                *cursor += 1;
+            }
+            _ => *cursor += 1,
+        }
+    }
+    text
+}
+
 fn parse_blocks(events: &[Event<'_>], cursor: &mut usize, end: Option<TagEnd>) -> Vec<Block> {
     let mut blocks = Vec::new();
 
@@ -890,30 +1006,24 @@ fn parse_blocks(events: &[Event<'_>], cursor: &mut usize, end: Option<TagEnd>) -
                     items,
                 });
             }
-            Event::Start(Tag::CodeBlock(_)) => {
-                *cursor += 1;
-                let mut text = String::new();
-                while *cursor < events.len() {
-                    match &events[*cursor] {
-                        Event::End(TagEnd::CodeBlock) => {
-                            *cursor += 1;
-                            break;
+            Event::Start(Tag::CodeBlock(kind)) => {
+                let language = match kind {
+                    CodeBlockKind::Fenced(lang) => {
+                        let lang = lang.to_string();
+                        if mermaid::is_mermaid_language(&lang) {
+                            blocks.push(Block::Mermaid {
+                                text: take_code_block_body(events, cursor),
+                            });
+                            continue;
                         }
-                        Event::Text(value)
-                        | Event::Code(value)
-                        | Event::Html(value)
-                        | Event::InlineHtml(value) => {
-                            text.push_str(value);
-                            *cursor += 1;
-                        }
-                        Event::SoftBreak | Event::HardBreak => {
-                            text.push('\n');
-                            *cursor += 1;
-                        }
-                        _ => *cursor += 1,
+                        Some(lang)
                     }
-                }
-                blocks.push(Block::CodeBlock { text });
+                    CodeBlockKind::Indented => None,
+                };
+                blocks.push(Block::CodeBlock {
+                    language,
+                    text: take_code_block_body(events, cursor),
+                });
             }
             Event::Start(Tag::Table(_)) => {
                 *cursor += 1;
@@ -1117,31 +1227,121 @@ fn parse_inline_event(events: &[Event<'_>], cursor: &mut usize) -> Vec<Inline> {
     }
 }
 
-fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -> AnyElement {
+fn render_code_block_content(text: &str, key: &str, cx: &App) -> AnyElement {
+    let code_width = code_block_content_min_width(text);
+    let code_lines = div()
+        .min_w(px(code_width))
+        .px(px(CODE_BLOCK_PADDING_X))
+        .py(px(CODE_BLOCK_PADDING_Y))
+        .flex()
+        .flex_col()
+        .children(text.lines().map(|line| {
+            let line = if line.is_empty() {
+                " ".to_string()
+            } else {
+                line.to_string()
+            };
+            div()
+                .w_full()
+                .text_color(rgb(theme::text_primary(cx)))
+                .text_size(px(CODE_BLOCK_FONT_SIZE))
+                .line_height(px(CODE_BLOCK_LINE_HEIGHT))
+                .font_family(fonts::MONO_FONT_FAMILY)
+                .whitespace_nowrap()
+                .child(markdown_text(StyledText::new(line), "\n"))
+        }));
+
+    let mut container = div()
+        .id(format!("{key}-code-scroll"))
+        .w_full()
+        .bg(rgb(theme::bg_card(cx)))
+        .border_1()
+        .border_color(rgb(theme::border_default(cx)))
+        .rounded(px(6.0))
+        .overflow_x_scroll()
+        .child(code_lines);
+    container.style().restrict_scroll_to_axis = Some(true);
+
+    container.into_any_element()
+}
+
+fn mermaid_layout_size(diagram: &MermaidDiagram) -> (f32, f32) {
+    let width =
+        (diagram.intrinsic_width.max(1.0) * MERMAID_DISPLAY_SCALE).min(MERMAID_MAX_DISPLAY_WIDTH);
+    let height = (diagram.intrinsic_height.max(1.0) * MERMAID_DISPLAY_SCALE)
+        .min(MERMAID_MAX_DISPLAY_HEIGHT)
+        .max(MERMAID_MIN_DISPLAY_HEIGHT);
+    (width, height)
+}
+
+fn render_mermaid_diagram_card(diagram: &MermaidDiagram, key: &str, cx: &App) -> AnyElement {
+    let (diagram_width, diagram_height) = mermaid_layout_size(diagram);
+    let diagram_body = div()
+        .flex_none()
+        .min_w(px(diagram_width))
+        .w(px(diagram_width))
+        .h(px(diagram_height))
+        .child(
+            img(diagram.asset_path.clone())
+                .w(px(diagram_width))
+                .h(px(diagram_height)),
+        );
+
+    let mut container = div()
+        .id(format!("{key}-mermaid-scroll"))
+        .w_full()
+        .bg(rgb(theme::bg_card(cx)))
+        .border_1()
+        .border_color(rgb(theme::border_default(cx)))
+        .rounded(px(6.0))
+        .overflow_x_scroll()
+        .child(diagram_body);
+    container.style().restrict_scroll_to_axis = Some(true);
+
+    container.into_any_element()
+}
+
+fn render_block(
+    block: &Block,
+    block_ix: usize,
+    key: String,
+    mermaid_states: &HashMap<usize, MermaidBlockState>,
+    mermaid_show_source: &HashSet<usize>,
+    view: WeakEntity<MarkdownView>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     match block {
-        Block::Paragraph(content) => render_inline_block(content, InlineBlockStyle::Body, key),
+        Block::Paragraph(content) => render_inline_block(content, InlineBlockStyle::Body, key, cx),
         Block::Heading { level, content } => {
             let style = match level {
                 HeadingLevel::H1 => InlineBlockStyle::Title,
                 HeadingLevel::H2 => InlineBlockStyle::Section,
                 _ => InlineBlockStyle::Heading,
             };
-            render_inline_block(content, style, key)
+            render_inline_block(content, style, key, cx)
         }
-        Block::BlockQuote(children) => {
-            div()
-                .w_full()
-                .pl(px(theme::SPACING_MD))
-                .border_l_1()
-                .border_color(rgb(theme::BORDER_DEFAULT))
-                .flex()
-                .flex_col()
-                .gap(px(10.0))
-                .children(children.iter().enumerate().map(|(ix, child)| {
-                    render_block(child, format!("{key}-quote-{ix}"), window, cx)
-                }))
-                .into_any_element()
-        }
+        Block::BlockQuote(children) => div()
+            .w_full()
+            .pl(px(theme::SPACING_MD))
+            .border_l_1()
+            .border_color(rgb(theme::border_default(cx)))
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .children(children.iter().enumerate().map(|(ix, child)| {
+                render_block(
+                    child,
+                    usize::MAX,
+                    format!("{key}-quote-{ix}"),
+                    mermaid_states,
+                    mermaid_show_source,
+                    view.clone(),
+                    window,
+                    cx,
+                )
+            }))
+            .into_any_element(),
         Block::List {
             ordered,
             start,
@@ -1166,7 +1366,7 @@ fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -
                         div()
                             .flex_shrink_0()
                             .min_w(px(16.0))
-                            .text_color(rgb(theme::TEXT_MUTED))
+                            .text_color(rgb(theme::text_muted(cx)))
                             .text_size(px(theme::FONT_BODY))
                             .line_height(px(theme::FONT_BODY + 6.0))
                             .font_family(fonts::MONO_FONT_FAMILY)
@@ -1183,7 +1383,11 @@ fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -
                             .children(item.iter().enumerate().map(|(child_ix, child)| {
                                 render_block(
                                     child,
+                                    usize::MAX,
                                     format!("{key}-item-{ix}-{child_ix}"),
+                                    mermaid_states,
+                                    mermaid_show_source,
+                                    view.clone(),
                                     window,
                                     cx,
                                 )
@@ -1191,51 +1395,113 @@ fn render_block(block: &Block, key: String, window: &mut Window, cx: &mut App) -
                     )
             }))
             .into_any_element(),
-        Block::CodeBlock { text } => {
-            let code_width = code_block_content_min_width(text);
-            let code_lines = div()
-                .min_w(px(code_width))
-                .px(px(CODE_BLOCK_PADDING_X))
-                .py(px(CODE_BLOCK_PADDING_Y))
+        Block::Mermaid { text } => {
+            let show_source = mermaid_show_source.contains(&block_ix);
+            let state = mermaid_states.get(&block_ix);
+            let mut body: Vec<AnyElement> = Vec::new();
+
+            match state {
+                Some(MermaidBlockState::Ready(diagram)) => {
+                    body.push(render_mermaid_diagram_card(diagram, &key, cx));
+                }
+                Some(MermaidBlockState::Pending) => {
+                    body.push(
+                        div()
+                            .w_full()
+                            .h(px(MERMAID_PENDING_HEIGHT))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .bg(rgb(theme::bg_card(cx)))
+                            .border_1()
+                            .border_color(rgb(theme::border_default(cx)))
+                            .rounded(px(6.0))
+                            .text_color(rgb(theme::text_muted(cx)))
+                            .text_size(px(theme::FONT_DETAIL))
+                            .font_family(fonts::MONO_FONT_FAMILY)
+                            .child("Rendering diagram…")
+                            .into_any_element(),
+                    );
+                }
+                Some(MermaidBlockState::Failed) | None => {
+                    body.push(render_code_block_content(
+                        text,
+                        &format!("{key}-mermaid-fallback"),
+                        cx,
+                    ));
+                    body.push(
+                        div()
+                            .mt(px(6.0))
+                            .text_color(rgb(theme::text_muted(cx)))
+                            .text_size(px(theme::FONT_DETAIL))
+                            .font_family(fonts::MONO_FONT_FAMILY)
+                            .child("Diagram could not be rendered.")
+                            .into_any_element(),
+                    );
+                }
+            }
+
+            if matches!(
+                state,
+                Some(MermaidBlockState::Ready(_)) | Some(MermaidBlockState::Pending)
+            ) {
+                let toggle_label = if show_source {
+                    "Hide source"
+                } else {
+                    "Show source"
+                };
+                let toggle_ix = block_ix;
+                body.push(
+                    div()
+                        .id(format!("{key}-mermaid-source-toggle"))
+                        .mt(px(6.0))
+                        .cursor_pointer()
+                        .text_color(rgb(theme::accent_blue(cx)))
+                        .text_size(px(theme::FONT_DETAIL))
+                        .font_family(fonts::MONO_FONT_FAMILY)
+                        .on_click(move |_, _window, cx| {
+                            let _ = view.update(cx, |view, cx| {
+                                if view.mermaid_show_source.contains(&toggle_ix) {
+                                    view.mermaid_show_source.remove(&toggle_ix);
+                                } else {
+                                    view.mermaid_show_source.insert(toggle_ix);
+                                }
+                                cx.notify();
+                            });
+                        })
+                        .child(toggle_label)
+                        .into_any_element(),
+                );
+            }
+
+            if show_source {
+                body.push(render_code_block_content(
+                    text,
+                    &format!("{key}-mermaid-source"),
+                    cx,
+                ));
+            }
+
+            div()
+                .w_full()
                 .flex()
                 .flex_col()
-                .children(text.lines().map(|line| {
-                    let line = if line.is_empty() {
-                        " ".to_string()
-                    } else {
-                        line.to_string()
-                    };
-                    div()
-                        .w_full()
-                        .text_color(rgb(theme::TEXT_PRIMARY))
-                        .text_size(px(CODE_BLOCK_FONT_SIZE))
-                        .line_height(px(CODE_BLOCK_LINE_HEIGHT))
-                        .font_family(fonts::MONO_FONT_FAMILY)
-                        .whitespace_nowrap()
-                        .child(markdown_text(StyledText::new(line), "\n"))
-                }));
-
-            let mut container = div()
-                .id(format!("{key}-code-scroll"))
-                .w_full()
-                .bg(rgb(theme::BG_CARD))
-                .border_1()
-                .border_color(rgb(theme::BORDER_DEFAULT))
-                .rounded(px(6.0))
-                .overflow_x_scroll()
-                .child(code_lines);
-            container.style().restrict_scroll_to_axis = Some(true);
-
-            container.into_any_element()
+                .gap(px(6.0))
+                .children(body)
+                .into_any_element()
         }
-        Block::Table(table) => render_table(table, key),
-        Block::Html(text) => {
-            render_inline_block(&[Inline::Html(text.clone())], InlineBlockStyle::Html, key)
-        }
+        Block::CodeBlock { text, .. } => render_code_block_content(text, &key, cx),
+        Block::Table(table) => render_table(table, key, cx),
+        Block::Html(text) => render_inline_block(
+            &[Inline::Html(text.clone())],
+            InlineBlockStyle::Html,
+            key,
+            cx,
+        ),
         Block::Rule => div()
             .w_full()
             .h(px(1.0))
-            .bg(rgb(theme::BORDER_SUBTLE))
+            .bg(rgb(theme::border_subtle(cx)))
             .into_any_element(),
     }
 }
@@ -1262,7 +1528,7 @@ fn code_block_display_columns(line: &str) -> usize {
     columns
 }
 
-fn render_table(table: &TableBlock, key: String) -> AnyElement {
+fn render_table(table: &TableBlock, key: String, cx: &App) -> AnyElement {
     let column_widths = table_column_widths(table);
     let table_width = column_widths.iter().sum::<f32>().max(TABLE_CELL_MIN_WIDTH);
     let rows = (!table.headers.is_empty())
@@ -1286,9 +1552,9 @@ fn render_table(table: &TableBlock, key: String) -> AnyElement {
                         .flex()
                         .border_b_1()
                         .when(is_last_row, |this| {
-                            this.border_color(rgb(theme::BORDER_SUBTLE))
+                            this.border_color(rgb(theme::border_subtle(cx)))
                         })
-                        .border_color(rgb(theme::BORDER_SUBTLE))
+                        .border_color(rgb(theme::border_subtle(cx)))
                         .children(row.iter().enumerate().map(|(cell_ix, cell)| {
                             let cell_width = column_widths
                                 .get(cell_ix)
@@ -1302,7 +1568,7 @@ fn render_table(table: &TableBlock, key: String) -> AnyElement {
                                 .px(px(TABLE_CELL_PADDING_X))
                                 .py(px(TABLE_CELL_PADDING_Y))
                                 .border_r_1()
-                                .border_color(rgb(theme::BORDER_SUBTLE))
+                                .border_color(rgb(theme::border_subtle(cx)))
                                 .child(render_inline_block(
                                     &cell,
                                     if is_header {
@@ -1311,6 +1577,7 @@ fn render_table(table: &TableBlock, key: String) -> AnyElement {
                                         InlineBlockStyle::TableCell
                                     },
                                     format!("{key}-row-{row_ix}-cell-{cell_ix}"),
+                                    cx,
                                 ))
                         }))
                 }),
@@ -1319,9 +1586,9 @@ fn render_table(table: &TableBlock, key: String) -> AnyElement {
     let mut container = div()
         .id(format!("{key}-table-scroll"))
         .w_full()
-        .bg(rgb(theme::BG_CARD))
+        .bg(rgb(theme::bg_card(cx)))
         .border_1()
-        .border_color(rgb(theme::BORDER_DEFAULT))
+        .border_color(rgb(theme::border_default(cx)))
         .rounded(px(6.0))
         .overflow_x_scroll()
         .child(table_body);
@@ -1422,11 +1689,16 @@ enum InlineBlockStyle {
     Html,
 }
 
-fn render_inline_block(content: &[Inline], style: InlineBlockStyle, key: String) -> AnyElement {
+fn render_inline_block(
+    content: &[Inline],
+    style: InlineBlockStyle,
+    key: String,
+    cx: &App,
+) -> AnyElement {
     let mut buffer = InlineRenderBuffer::default();
-    flatten_inlines(content, &mut buffer, InlineMarks::default());
+    flatten_inlines(content, &mut buffer, InlineMarks::default(), cx);
 
-    let base = block_style(style);
+    let base = block_style(style, cx);
     let styled = StyledText::new(buffer.text.clone()).with_highlights(merge_highlights(
         buffer
             .highlights
@@ -1481,47 +1753,47 @@ struct InlineMarks {
     html: bool,
 }
 
-fn flatten_inlines(content: &[Inline], out: &mut InlineRenderBuffer, marks: InlineMarks) {
+fn flatten_inlines(content: &[Inline], out: &mut InlineRenderBuffer, marks: InlineMarks, cx: &App) {
     for inline in content {
         match inline {
-            Inline::Text(text) => push_text_with_marks(out, text, marks),
+            Inline::Text(text) => push_text_with_marks(out, text, marks, cx),
             Inline::Code(text) => {
                 let mut next = marks;
                 next.code = true;
-                push_text_with_marks(out, text, next);
+                push_text_with_marks(out, text, next, cx);
             }
             Inline::Html(text) => {
                 let mut next = marks;
                 next.html = true;
-                push_text_with_marks(out, text, next);
+                push_text_with_marks(out, text, next, cx);
             }
             Inline::Emphasis(children) => {
                 let mut next = marks;
                 next.emphasis = true;
-                flatten_inlines(children, out, next);
+                flatten_inlines(children, out, next, cx);
             }
             Inline::Strong(children) => {
                 let mut next = marks;
                 next.strong = true;
-                flatten_inlines(children, out, next);
+                flatten_inlines(children, out, next, cx);
             }
             Inline::Strikethrough(children) => {
                 let mut next = marks;
                 next.strike = true;
-                flatten_inlines(children, out, next);
+                flatten_inlines(children, out, next, cx);
             }
             Inline::Link { url, content } => {
                 let start = out.text.len();
-                flatten_inlines(content, out, marks);
+                flatten_inlines(content, out, marks, cx);
                 let end = out.text.len();
                 if start != end {
                     let range = start..end;
                     out.highlights.push(StyledRun {
                         range: range.clone(),
                         style: HighlightStyle {
-                            color: Some(rgb(theme::ACCENT_BLUE).into()),
+                            color: Some(rgb(theme::accent_blue(cx)).into()),
                             underline: Some(UnderlineStyle {
-                                color: Some(rgb(theme::ACCENT_BLUE).into()),
+                                color: Some(rgb(theme::accent_blue(cx)).into()),
                                 thickness: px(1.0),
                                 wavy: false,
                             }),
@@ -1547,7 +1819,7 @@ fn flatten_inlines(content: &[Inline], out: &mut InlineRenderBuffer, marks: Inli
     }
 }
 
-fn push_text_with_marks(out: &mut InlineRenderBuffer, text: &str, marks: InlineMarks) {
+fn push_text_with_marks(out: &mut InlineRenderBuffer, text: &str, marks: InlineMarks, cx: &App) {
     if text.is_empty() {
         return;
     }
@@ -1565,19 +1837,19 @@ fn push_text_with_marks(out: &mut InlineRenderBuffer, text: &str, marks: InlineM
     }
     if marks.strike {
         style.strikethrough = Some(StrikethroughStyle {
-            color: Some(rgb(theme::TEXT_SECONDARY).into()),
+            color: Some(rgb(theme::text_secondary(cx)).into()),
             thickness: px(1.0),
         });
         has_style = true;
     }
     if marks.code {
-        style.background_color = Some(rgb(theme::BG_CARD).into());
-        style.color = Some(rgb(theme::TEXT_PRIMARY).into());
+        style.background_color = Some(rgb(theme::bg_card(cx)).into());
+        style.color = Some(rgb(theme::text_primary(cx)).into());
         has_style = true;
     }
     if marks.html {
-        style.background_color = Some(rgb(theme::BG_CARD).into());
-        style.color = Some(rgb(theme::TEXT_MUTED).into());
+        style.background_color = Some(rgb(theme::bg_card(cx)).into());
+        style.color = Some(rgb(theme::text_muted(cx)).into());
         has_style = true;
     }
 
@@ -1594,47 +1866,47 @@ struct BlockStyleSpec {
     weight: Option<FontWeight>,
 }
 
-fn block_style(style: InlineBlockStyle) -> BlockStyleSpec {
+fn block_style(style: InlineBlockStyle, cx: &App) -> BlockStyleSpec {
     match style {
         InlineBlockStyle::Title => BlockStyleSpec {
             size: theme::FONT_TITLE,
             line_height: theme::FONT_TITLE + 8.0,
-            color: rgb(theme::TEXT_PRIMARY).into(),
+            color: rgb(theme::text_primary(cx)).into(),
             font_family: fonts::HEADING_FONT_FAMILY,
             weight: Some(FontWeight::MEDIUM),
         },
         InlineBlockStyle::Section => BlockStyleSpec {
             size: theme::FONT_HEADING + 2.0,
             line_height: theme::FONT_HEADING + 8.0,
-            color: rgb(theme::TEXT_PRIMARY).into(),
+            color: rgb(theme::text_primary(cx)).into(),
             font_family: fonts::HEADING_FONT_FAMILY,
             weight: Some(FontWeight::MEDIUM),
         },
         InlineBlockStyle::Heading => BlockStyleSpec {
             size: theme::FONT_HEADING,
             line_height: theme::FONT_HEADING + 6.0,
-            color: rgb(theme::TEXT_PRIMARY).into(),
+            color: rgb(theme::text_primary(cx)).into(),
             font_family: fonts::HEADING_FONT_FAMILY,
             weight: Some(FontWeight::MEDIUM),
         },
         InlineBlockStyle::TableHeader => BlockStyleSpec {
             size: theme::FONT_BODY,
             line_height: theme::FONT_BODY + 6.0,
-            color: rgb(theme::TEXT_PRIMARY).into(),
+            color: rgb(theme::text_primary(cx)).into(),
             font_family: fonts::MONO_FONT_FAMILY,
             weight: Some(FontWeight::MEDIUM),
         },
         InlineBlockStyle::TableCell | InlineBlockStyle::Body => BlockStyleSpec {
             size: theme::FONT_BODY,
             line_height: theme::FONT_BODY + 6.0,
-            color: rgb(theme::TEXT_SECONDARY).into(),
+            color: rgb(theme::text_secondary(cx)).into(),
             font_family: fonts::MONO_FONT_FAMILY,
             weight: None,
         },
         InlineBlockStyle::Html => BlockStyleSpec {
             size: theme::FONT_DETAIL,
             line_height: theme::FONT_DETAIL + 5.0,
-            color: rgb(theme::TEXT_MUTED).into(),
+            color: rgb(theme::text_muted(cx)).into(),
             font_family: fonts::MONO_FONT_FAMILY,
             weight: None,
         },
@@ -1704,7 +1976,13 @@ fn main() {}
         assert!(matches!(document.blocks[1], Block::Paragraph(_)));
         assert!(matches!(document.blocks[2], Block::BlockQuote(_)));
         assert!(matches!(document.blocks[3], Block::List { .. }));
-        assert!(matches!(document.blocks[4], Block::CodeBlock { .. }));
+        assert!(matches!(
+            document.blocks[4],
+            Block::CodeBlock {
+                language: Some(_),
+                ..
+            }
+        ));
         assert!(matches!(document.blocks[5], Block::Table(_)));
         assert!(document.total_block_count() > document.blocks.len());
     }
@@ -1787,16 +2065,70 @@ fn main() {}
     }
 
     #[test]
-    fn markdown_view_resets_virtualized_rows_when_source_changes() {
-        let mut view = MarkdownView::new("# Title\n\nBody paragraph.");
-        assert_eq!(
-            view.list_state.item_count(),
-            markdown_list_item_count(view.document.blocks.len())
-        );
-        assert_eq!(view.document.blocks.len(), 2);
+    fn mermaid_layout_size_uses_intrinsic_dimensions_with_caps() {
+        use super::{MERMAID_MAX_DISPLAY_WIDTH, mermaid_layout_size};
+        use crate::editor::mermaid::MermaidDiagram;
 
-        view.set_source(
-            r#"# Updated
+        let diagram = MermaidDiagram {
+            asset_path: "mermaid/0-0.svg".into(),
+            intrinsic_width: 800.0,
+            intrinsic_height: 450.0,
+        };
+        let (width, height) = mermaid_layout_size(&diagram);
+        assert_eq!(width, 400.0);
+        assert_eq!(height, 225.0);
+
+        let wide = MermaidDiagram {
+            asset_path: "mermaid/0-1.svg".into(),
+            intrinsic_width: 4000.0,
+            intrinsic_height: 200.0,
+        };
+        let (width, _) = mermaid_layout_size(&wide);
+        assert_eq!(width, 2000.0);
+
+        let huge = MermaidDiagram {
+            asset_path: "mermaid/0-2.svg".into(),
+            intrinsic_width: 20_000.0,
+            intrinsic_height: 100.0,
+        };
+        let (width, _) = mermaid_layout_size(&huge);
+        assert_eq!(width, MERMAID_MAX_DISPLAY_WIDTH);
+    }
+
+    #[test]
+    fn parses_mermaid_fence_into_mermaid_block() {
+        let document = parse_document("```mermaid\nflowchart LR\n  A --> B\n```\n");
+        assert_eq!(document.blocks.len(), 1);
+        assert!(matches!(document.blocks[0], Block::Mermaid { .. }));
+    }
+
+    #[test]
+    fn parses_non_mermaid_fenced_blocks_with_language() {
+        let document = parse_document("```rust\nfn main() {}\n```\n");
+        let Block::CodeBlock { language, .. } = &document.blocks[0] else {
+            panic!("expected code block");
+        };
+        assert_eq!(language.as_deref(), Some("rust"));
+    }
+
+    #[test]
+    fn markdown_view_resets_virtualized_rows_when_source_changes() {
+        use gpui::{AppContext as _, TestAppContext};
+
+        let mut cx = TestAppContext::single();
+        let view = cx.update(|cx| cx.new(|cx| MarkdownView::new("# Title\n\nBody paragraph.", cx)));
+
+        view.update(&mut cx, |view, _cx| {
+            assert_eq!(
+                view.list_state.item_count(),
+                markdown_list_item_count(view.document.blocks.len())
+            );
+            assert_eq!(view.document.blocks.len(), 2);
+        });
+
+        view.update(&mut cx, |view, cx| {
+            view.set_source(
+                r#"# Updated
 
 - First
 - Second
@@ -1805,12 +2137,16 @@ fn main() {}
 fn main() {}
 ```
 "#,
-        );
+                cx,
+            );
+        });
 
-        assert_eq!(view.document.blocks.len(), 3);
-        assert_eq!(
-            view.list_state.item_count(),
-            markdown_list_item_count(view.document.blocks.len())
-        );
+        view.update(&mut cx, |view, _cx| {
+            assert_eq!(view.document.blocks.len(), 3);
+            assert_eq!(
+                view.list_state.item_count(),
+                markdown_list_item_count(view.document.blocks.len())
+            );
+        });
     }
 }

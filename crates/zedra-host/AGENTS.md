@@ -52,6 +52,8 @@ Desktop daemon and CLI for serving filesystem, git, PTY, auth, and telemetry ove
 
 ## Key Files
 
+- `src/account_usage.rs` — shared `resets_at` parsing for structured provider usage APIs (Claude OAuth, Codex)
+- `src/claude_cli_probe.rs` — Claude CLI PTY `/usage` + `/status` scrape when OAuth file token is absent or API fails; best-effort TUI parse. Env: `ZEDRA_DEBUG_CLAUDE_PTY`, `ZEDRA_CLAUDE_PTY_CACHE_SECS` (10–300, default 60)
 - `src/main.rs` — CLI orchestration, daemon startup, telemetry init
 - `src/rpc_daemon.rs` — auth, dispatch, terminal attach, observer loop
 - `src/session_registry.rs` — persistent session state and attachment rules

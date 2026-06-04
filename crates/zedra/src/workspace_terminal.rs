@@ -7,17 +7,17 @@ use zedra_session::SessionHandle;
 use zedra_terminal::terminal::{TerminalEvent, TerminalHyperlinkTarget};
 use zedra_terminal::view::TerminalView;
 
-use crate::active_terminal;
 use crate::button::{
     NativeFloatingButtonId, hide_native_floating_button, native_floating_button,
     native_floating_button_id,
 };
+use crate::file_preview_view::FilePreviewView;
 use crate::platform_bridge::{
     self, CustomSheetDetent, CustomSheetOptions, HapticFeedback, NativeDictationPreviewOptions,
     NativeEditMenuItem,
 };
+use crate::settings::{ThemeStateEvent, theme_state as theme_entity};
 use crate::telemetry::view_telemetry;
-use crate::terminal_preview_view::TerminalPreviewView;
 use crate::terminal_state::TerminalState;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
 
@@ -38,7 +38,7 @@ pub struct WorkspaceTerminal {
     terminal_state: Entity<TerminalState>,
     session_handle: SessionHandle,
     terminal_view: Entity<TerminalView>,
-    preview: Entity<TerminalPreviewView>,
+    preview: Entity<FilePreviewView>,
     /// Tracks whether the active terminal is in alt-screen mode (vim, opencode, etc.).
     /// Updated via AltScreenChanged event — never read via terminal_view.read(cx) in render
     /// to avoid creating a GPUI dependency that causes re-render cascades.
@@ -55,6 +55,13 @@ pub struct WorkspaceTerminal {
 }
 
 impl WorkspaceTerminal {
+    fn sync_terminal_theme(&mut self, cx: &mut Context<Self>) {
+        let terminal_theme = crate::theme::bundle(cx).terminal;
+        self.terminal_view.update(cx, |terminal_view, cx| {
+            terminal_view.set_terminal_theme(terminal_theme, cx);
+        });
+    }
+
     fn keyboard_inset() -> Pixels {
         let bridge = platform_bridge::bridge();
         let density = bridge.density();
@@ -164,32 +171,27 @@ impl WorkspaceTerminal {
         let attach_sub = cx.subscribe(&workspace_state, |this, _ws, event, cx| match event {
             WorkspaceStateEvent::SyncComplete => {
                 info!("received SyncComplete event, attempt to attach input/output channel");
-                if Self::attach_channel_to_terminal_view(
+                Self::attach_channel_to_terminal_view(
                     this.session_handle.clone(),
                     this.terminal_id.clone(),
                     this.terminal_view.clone(),
                     cx,
-                ) {
-                    this.refresh_active_input_if_current(cx);
-                }
+                );
             }
             WorkspaceStateEvent::TerminalCreated { id } => {
                 if this.terminal_id == *id {
                     info!("received TerminalCreated event, attempt to attach input/output channel");
-                    if Self::attach_channel_to_terminal_view(
+                    Self::attach_channel_to_terminal_view(
                         this.session_handle.clone(),
                         this.terminal_id.clone(),
                         this.terminal_view.clone(),
                         cx,
-                    ) {
-                        this.refresh_active_input_if_current(cx);
-                    }
+                    );
                 }
             }
             WorkspaceStateEvent::TerminalOpened { id } => {
                 if this.terminal_id == *id {
-                    info!("received TerminalOpened event, registering as active input");
-                    this.register_as_active_input(cx);
+                    this.refresh_scroll_to_bottom_button(cx, true);
                 } else {
                     this.deactivate(cx);
                 }
@@ -204,9 +206,8 @@ impl WorkspaceTerminal {
         terminal_view.update(cx, |terminal_view, _cx| {
             terminal_view.set_workdir(Some(workdir.clone()));
         });
-        let preview = cx.new(|cx| {
-            TerminalPreviewView::new(session_handle.clone(), workspace_state.clone(), cx)
-        });
+        let preview =
+            cx.new(|cx| FilePreviewView::new(session_handle.clone(), workspace_state.clone(), cx));
         let terminal_events_sub =
             cx.subscribe(&terminal_view, |this, _terminal, event, cx| match event {
                 TerminalEvent::RequestResize { cols, rows } => {
@@ -378,7 +379,16 @@ impl WorkspaceTerminal {
             },
         );
 
-        Self {
+        let mut subscriptions = vec![attach_sub, terminal_events_sub, keyboard_offset_hook];
+        if let Some(theme_state) = theme_entity(cx) {
+            subscriptions.push(
+                cx.subscribe(&theme_state, |this, _, _: &ThemeStateEvent, cx| {
+                    this.sync_terminal_theme(cx);
+                }),
+            );
+        }
+
+        let mut this = Self {
             terminal_id,
             workspace_state,
             terminal_state,
@@ -392,36 +402,14 @@ impl WorkspaceTerminal {
             scroll_to_bottom_button_visible: false,
             scroll_to_bottom_button_hide_pending: false,
             scroll_to_bottom_button_hide_generation: 0,
-            _subscriptions: vec![attach_sub, terminal_events_sub, keyboard_offset_hook],
-        }
-    }
-
-    pub fn register_as_active_input(&mut self, cx: &mut Context<Self>) {
-        match self.terminal_view.read(cx).input_sender(cx) {
-            Some(sender) => {
-                let terminal_id = self.terminal_id.clone();
-                active_terminal::set_active_input(terminal_id, sender);
-            }
-            None => {
-                warn!(terminal_id = %self.terminal_id, "no input sender, skipping active input registration");
-                active_terminal::clear_active_input();
-            }
-        }
-
-        self.refresh_scroll_to_bottom_button(cx, true);
+            _subscriptions: subscriptions,
+        };
+        this.sync_terminal_theme(cx);
+        this
     }
 
     pub fn input_sender(&self, cx: &App) -> Option<tokio::sync::mpsc::Sender<Vec<u8>>> {
         self.terminal_view.read(cx).input_sender(cx)
-    }
-
-    fn refresh_active_input_if_current(&mut self, cx: &mut Context<Self>) {
-        let is_active = self.workspace_state.read(cx).active_terminal_id.as_deref()
-            == Some(self.terminal_id.as_str());
-        if is_active {
-            // Reconnect reuses the active terminal entity but replaces its channel sender.
-            self.register_as_active_input(cx);
-        }
     }
 
     pub fn set_terminal_id(&mut self, terminal_id: String, cx: &mut Context<Self>) {
@@ -503,7 +491,14 @@ impl WorkspaceTerminal {
 
 impl Render for WorkspaceTerminal {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let keyboard_inset = Self::keyboard_inset();
+        let terminal_owns_keyboard = self.terminal_view.read(cx).is_focused(window)
+            && window.is_soft_keyboard_visible()
+            && window.has_active_keyboard_accessory();
+        let keyboard_inset = if terminal_owns_keyboard {
+            Self::keyboard_inset()
+        } else {
+            px(0.0)
+        };
 
         // Keyboard just appeared while user is in scrollback — scroll to bottom.
         if self.last_synced_keyboard_inset == px(0.0) && keyboard_inset > px(0.0) {
@@ -561,6 +556,7 @@ impl Render for WorkspaceTerminal {
                             });
                         },
                     )
+                    .icon_size(if cfg!(target_os = "ios") { 16.0 } else { 22.0 })
                     .absolute()
                     .right(px(24.0))
                     .bottom(px(24.0 + bottom_offset))

@@ -118,6 +118,70 @@ fileprivate enum NativeNotificationKind: Int32 {
     }
 }
 
+enum NativePresentationTheme {
+    // Default to the current system trait so early presentations (before the
+    // Rust ThemeState pushes the saved preference) don't hard-snap to dark on
+    // a light device.
+    private(set) static var isDark: Bool = {
+        UITraitCollection.current.userInterfaceStyle == .dark
+    }()
+
+    static func setDark(_ value: Bool) {
+        isDark = value
+        NativeNotificationBannerController.shared.applyTheme()
+        NativeFloatingButtonController.shared.applyTheme()
+        NativeDictationPreviewController.shared.applyTheme()
+    }
+
+    static var interfaceStyle: UIUserInterfaceStyle {
+        isDark ? .dark : .light
+    }
+
+    static var backgroundColor: UIColor {
+        isDark ? UIColor(red: 0.055, green: 0.047, blue: 0.047, alpha: 1) : UIColor(red: 0.961, green: 0.961, blue: 0.961, alpha: 1)
+    }
+
+    static var surfaceColor: UIColor {
+        isDark ? UIColor(red: 0.075, green: 0.075, blue: 0.075, alpha: 1) : .white
+    }
+
+    static var overlayColor: UIColor {
+        isDark ? UIColor(red: 0.075, green: 0.075, blue: 0.075, alpha: 1) : .white
+    }
+
+    static var primaryTextColor: UIColor {
+        isDark ? .white : UIColor(red: 0.102, green: 0.102, blue: 0.102, alpha: 1)
+    }
+
+    static var secondaryTextColor: UIColor {
+        isDark ? UIColor(red: 0.792, green: 0.792, blue: 0.792, alpha: 1) : UIColor(red: 0.29, green: 0.29, blue: 0.29, alpha: 1)
+    }
+
+    static var mutedTextColor: UIColor {
+        isDark ? UIColor(red: 0.314, green: 0.314, blue: 0.314, alpha: 1) : UIColor(red: 0.541, green: 0.541, blue: 0.541, alpha: 1)
+    }
+
+    static var borderColor: UIColor {
+        isDark ? UIColor(red: 0.173, green: 0.173, blue: 0.173, alpha: 1) : UIColor(red: 0.847, green: 0.847, blue: 0.847, alpha: 1)
+    }
+
+    static var accentGreen: UIColor {
+        isDark ? UIColor(red: 0.596, green: 0.765, blue: 0.475, alpha: 1) : UIColor(red: 0.102, green: 0.498, blue: 0.216, alpha: 1)
+    }
+
+    static var accentYellow: UIColor {
+        isDark ? UIColor(red: 0.898, green: 0.753, blue: 0.482, alpha: 1) : UIColor(red: 0.604, green: 0.404, blue: 0, alpha: 1)
+    }
+
+    static var accentRed: UIColor {
+        isDark ? UIColor(red: 0.878, green: 0.424, blue: 0.459, alpha: 1) : UIColor(red: 0.812, green: 0.133, blue: 0.18, alpha: 1)
+    }
+
+    static func blurEffect() -> UIVisualEffect {
+        UIBlurEffect(style: isDark ? .systemChromeMaterialDark : .systemChromeMaterialLight)
+    }
+}
+
 private final class PresentationDismissDelegate: NSObject, UIAdaptivePresentationControllerDelegate {
     let callbackID: UInt32
     let isSelection: Bool
@@ -135,6 +199,113 @@ private final class PresentationDismissDelegate: NSObject, UIAdaptivePresentatio
             zedra_ios_selection_dismiss(callbackID)
         } else {
             zedra_ios_alert_dismiss(callbackID)
+        }
+    }
+}
+
+private final class AgentListPickerViewController: UITableViewController {
+    private let callbackID: UInt32
+    private let pickerTitle: String?
+    private let pickerMessage: String?
+    private let itemLabels: [String]
+    private let itemSubtitles: [String?]
+    private let itemImageNames: [String?]
+    init(
+        callbackID: UInt32,
+        title: String?,
+        message: String?,
+        itemLabels: [String],
+        itemSubtitles: [String?],
+        itemImageNames: [String?]
+    ) {
+        self.callbackID = callbackID
+        self.pickerTitle = title
+        self.pickerMessage = message
+        self.itemLabels = itemLabels
+        self.itemSubtitles = itemSubtitles
+        self.itemImageNames = itemImageNames
+        super.init(style: .insetGrouped)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        overrideUserInterfaceStyle = NativePresentationTheme.interfaceStyle
+        view.backgroundColor = NativePresentationTheme.backgroundColor
+        navigationController?.navigationBar.tintColor = NativePresentationTheme.primaryTextColor
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .cancel,
+            target: self,
+            action: #selector(cancelTapped)
+        )
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "AgentListPickerCell")
+        if #available(iOS 15.0, *) {
+            tableView.sectionHeaderTopPadding = 0
+        }
+        // Suppress the default top gap insetGrouped adds before the first section.
+        tableView.tableHeaderView = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: CGFloat.leastNormalMagnitude))
+
+        let stack = UIStackView()
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 2
+
+        let titleLabel = UILabel()
+        titleLabel.text = pickerTitle
+        titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
+        titleLabel.textColor = NativePresentationTheme.primaryTextColor
+        stack.addArrangedSubview(titleLabel)
+
+        if let message = pickerMessage, !message.isEmpty {
+            let subtitleLabel = UILabel()
+            subtitleLabel.text = message
+            subtitleLabel.font = .systemFont(ofSize: 12, weight: .regular)
+            subtitleLabel.textColor = NativePresentationTheme.secondaryTextColor
+            subtitleLabel.numberOfLines = 1
+            stack.addArrangedSubview(subtitleLabel)
+        }
+
+        stack.sizeToFit()
+        navigationItem.titleView = stack
+    }
+
+    @objc private func cancelTapped() {
+        dismiss(animated: true) {
+            zedra_ios_selection_dismiss(self.callbackID)
+        }
+    }
+
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        itemLabels.count
+    }
+
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "AgentListPickerCell", for: indexPath)
+        var content = UIListContentConfiguration.subtitleCell()
+        content.text = itemLabels[indexPath.row]
+        content.textProperties.color = NativePresentationTheme.primaryTextColor
+        content.secondaryTextProperties.color = NativePresentationTheme.secondaryTextColor
+        if let subtitle = itemSubtitles[safe: indexPath.row].flatMap({ $0 }), !subtitle.isEmpty {
+            content.secondaryText = subtitle
+        }
+        if let imageName = itemImageNames[safe: indexPath.row].flatMap({ $0 }),
+           let image = NativePresentationBridge.actionListImage(named: imageName) {
+            content.image = image
+            content.imageProperties.reservedLayoutSize = CGSize(width: 28, height: 28)
+        }
+        cell.contentConfiguration = content
+        cell.selectionStyle = .default
+        return cell
+    }
+
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        dismiss(animated: true) {
+            zedra_ios_selection_result(self.callbackID, Int32(indexPath.row))
         }
     }
 }
@@ -257,6 +428,19 @@ enum NativePresentationBridge {
         return image?.withRenderingMode(.alwaysTemplate)
     }
 
+    private static let actionListIconPointSize: CGFloat = 22
+    static func actionListImage(named imageName: String) -> UIImage? {
+        guard let image = actionImage(named: imageName) else { return nil }
+        let size = CGSize(width: actionListIconPointSize, height: actionListIconPointSize)
+        let tinted = image.withTintColor(NativePresentationTheme.primaryTextColor, renderingMode: .alwaysTemplate)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = UIScreen.main.scale
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        return renderer.image { _ in
+            tinted.draw(in: CGRect(origin: .zero, size: size))
+        }.withRenderingMode(.alwaysOriginal)
+    }
+
     static func notificationImage(named imageName: String) -> UIImage? {
         let image = UIImage(named: imageName) ?? UIImage(systemName: imageName)
         return image?.withRenderingMode(.alwaysTemplate)
@@ -307,7 +491,7 @@ private final class NativeFloatingButtonController {
             effectView.transform = Self.initialScale
 
             button = UIButton(type: .system)
-            button.tintColor = UIColor(white: 1.0, alpha: 0.92)
+            button.tintColor = NativePresentationTheme.primaryTextColor
             button.alpha = 0
             button.addAction(
                 UIAction { [weak owner] _ in
@@ -419,11 +603,11 @@ private final class NativeFloatingButtonController {
             if #available(iOS 26.0, *) {
                 let effect = UIGlassEffect(style: .regular)
                 effect.isInteractive = true
-                effect.tintColor = UIColor(white: 0.08, alpha: 0.45)
+                effect.tintColor = NativePresentationTheme.overlayColor.withAlphaComponent(0.45)
                 return effect
             }
 
-            return UIBlurEffect(style: .systemChromeMaterialDark)
+            return NativePresentationTheme.blurEffect()
         }
 
         static func symbolWeight(_ rawValue: Int32) -> UIImage.SymbolWeight {
@@ -503,6 +687,14 @@ private final class NativeFloatingButtonController {
     private func buttonTapped(callbackID: UInt32) {
         zedra_ios_native_floating_button_pressed(callbackID)
     }
+
+    func applyTheme() {
+        DispatchQueue.main.async {
+            for control in self.controls.values {
+                control.button.tintColor = NativePresentationTheme.primaryTextColor
+            }
+        }
+    }
 }
 
 private final class NativeDictationPreviewController {
@@ -544,7 +736,7 @@ private final class NativeDictationPreviewController {
             effectView.accessibilityTraits.insert(.button)
 
             label.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .medium)
-            label.textColor = UIColor(white: 1.0, alpha: 0.92)
+            label.textColor = NativePresentationTheme.primaryTextColor
             label.numberOfLines = 3
             label.lineBreakMode = .byTruncatingTail
             label.alpha = 0
@@ -695,11 +887,11 @@ private final class NativeDictationPreviewController {
             if #available(iOS 26.0, *) {
                 let effect = UIGlassEffect(style: .regular)
                 effect.isInteractive = false
-                effect.tintColor = UIColor(white: 0.08, alpha: 0.48)
+                effect.tintColor = NativePresentationTheme.overlayColor.withAlphaComponent(0.48)
                 return effect
             }
 
-            return UIBlurEffect(style: .systemChromeMaterialDark)
+            return NativePresentationTheme.blurEffect()
         }
     }
 
@@ -730,6 +922,14 @@ private final class NativeDictationPreviewController {
     private func dismissFromTap(previewID: UInt32) {
         hide(previewID: previewID)
         zedra_ios_dictation_preview_dismiss(previewID)
+    }
+
+    func applyTheme() {
+        DispatchQueue.main.async {
+            for overlay in self.overlays.values {
+                overlay.label.textColor = NativePresentationTheme.primaryTextColor
+            }
+        }
     }
 }
 
@@ -899,24 +1099,34 @@ private final class NativeNotificationBannerController {
             effectView.clipsToBounds = true
             effectView.alpha = 0
             effectView.layer.borderWidth = 1 / UIScreen.main.scale
-            effectView.layer.borderColor = UIColor(white: 1.0, alpha: 0.14).cgColor
+            effectView.layer.borderColor = NativePresentationTheme.borderColor.withAlphaComponent(0.7).cgColor
             effectView.accessibilityIdentifier = "zedra-native-notification"
 
             iconView.contentMode = .scaleAspectFit
 
             titleLabel.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
-            titleLabel.textColor = Self.primaryTextColor
+            titleLabel.textColor = NativePresentationTheme.primaryTextColor
             titleLabel.lineBreakMode = .byTruncatingTail
             titleLabel.numberOfLines = 1
 
             messageLabel.font = UIFont.systemFont(ofSize: 12.5, weight: .regular)
-            messageLabel.textColor = Self.secondaryTextColor
+            messageLabel.textColor = NativePresentationTheme.secondaryTextColor
             messageLabel.lineBreakMode = .byTruncatingTail
             messageLabel.numberOfLines = 2
 
             effectView.contentView.addSubview(iconView)
             effectView.contentView.addSubview(titleLabel)
             effectView.contentView.addSubview(messageLabel)
+        }
+
+        func applyCurrentTheme() {
+            effectView.layer.borderColor = NativePresentationTheme.borderColor.withAlphaComponent(0.7).cgColor
+            titleLabel.textColor = NativePresentationTheme.primaryTextColor
+            messageLabel.textColor = NativePresentationTheme.secondaryTextColor
+            iconView.tintColor = NativePresentationTheme.primaryTextColor
+            if isVisible {
+                effectView.effect = Self.bannerEffect()
+            }
         }
 
         private func configureGestures() {
@@ -940,7 +1150,7 @@ private final class NativeNotificationBannerController {
                 ?? NativePresentationBridge.notificationImage(
                     named: configuration.kind.defaultSystemImageName
                 )
-            iconView.tintColor = Self.primaryTextColor
+            iconView.tintColor = NativePresentationTheme.primaryTextColor
             titleLabel.text = configuration.title.isEmpty ? "Zedra" : configuration.title
             let message = configuration.message?.trimmingCharacters(in: .whitespacesAndNewlines)
             messageLabel.text = message
@@ -1078,48 +1288,15 @@ private final class NativeNotificationBannerController {
             )
         }
 
-        private static var primaryTextColor: UIColor {
-            UIColor { traits in
-                switch traits.userInterfaceStyle {
-                case .dark:
-                    return UIColor(white: 1.0, alpha: 0.94)
-                default:
-                    return UIColor(white: 0.0, alpha: 0.86)
-                }
-            }
-        }
-
-        private static var secondaryTextColor: UIColor {
-            UIColor { traits in
-                switch traits.userInterfaceStyle {
-                case .dark:
-                    return UIColor(white: 1.0, alpha: 0.72)
-                default:
-                    return UIColor(white: 0.0, alpha: 0.56)
-                }
-            }
-        }
-
-        private static var glassTintColor: UIColor {
-            UIColor { traits in
-                switch traits.userInterfaceStyle {
-                case .dark:
-                    return UIColor(white: 0.08, alpha: 0.42)
-                default:
-                    return UIColor(white: 1.0, alpha: 0.34)
-                }
-            }
-        }
-
         private static func bannerEffect() -> UIVisualEffect {
             if #available(iOS 26.0, *) {
                 let effect = UIGlassEffect(style: .regular)
                 effect.isInteractive = true
-                effect.tintColor = Self.glassTintColor
+                effect.tintColor = NativePresentationTheme.overlayColor.withAlphaComponent(0.42)
                 return effect
             }
 
-            return UIBlurEffect(style: .systemChromeMaterial)
+            return NativePresentationTheme.blurEffect()
         }
     }
 
@@ -1147,6 +1324,14 @@ private final class NativeNotificationBannerController {
             self.relayout(in: window, animated: true)
             banner.materializeIfNeeded()
             self.scheduleDismissIfNeeded(for: configuration)
+        }
+    }
+
+    func applyTheme() {
+        DispatchQueue.main.async {
+            for banner in self.banners.values {
+                banner.applyCurrentTheme()
+            }
         }
     }
 
@@ -1367,6 +1552,7 @@ private enum PresentationCoordinator {
             guard let presenter = NativePresentationBridge.topViewController() else { return }
 
             let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+            Self.applyTheme(to: alert)
             let outsideTapHandler = AlertOutsideTapDismissHandler(callbackID: callbackID, alert: alert)
             objc_setAssociatedObject(
                 alert,
@@ -1401,6 +1587,7 @@ private enum PresentationCoordinator {
             guard let presenter = NativePresentationBridge.topViewController() else { return }
 
             let sheet = UIAlertController(title: title, message: message, preferredStyle: .actionSheet)
+            Self.applyTheme(to: sheet)
             let delegate = PresentationDismissDelegate(callbackID: callbackID, isSelection: true)
             sheet.presentationController?.delegate = delegate
             objc_setAssociatedObject(sheet, dismissAssociationKey, delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
@@ -1428,6 +1615,48 @@ private enum PresentationCoordinator {
             }
 
             presenter.present(sheet, animated: true)
+        }
+    }
+
+    static func presentListPicker(
+        callbackID: UInt32,
+        title: String?,
+        message: String?,
+        itemLabels: [String],
+        itemSubtitles: [String?],
+        itemImageNames: [String?]
+    ) {
+        DispatchQueue.main.async {
+            guard !itemLabels.isEmpty else {
+                zedra_ios_selection_dismiss(callbackID)
+                return
+            }
+            guard let presenter = NativePresentationBridge.topViewController() else {
+                zedra_ios_selection_dismiss(callbackID)
+                return
+            }
+
+            let controller = AgentListPickerViewController(
+                callbackID: callbackID,
+                title: title,
+                message: message,
+                itemLabels: itemLabels,
+                itemSubtitles: itemSubtitles,
+                itemImageNames: itemImageNames
+            )
+            let navigation = UINavigationController(rootViewController: controller)
+            navigation.overrideUserInterfaceStyle = NativePresentationTheme.interfaceStyle
+            navigation.view.backgroundColor = NativePresentationTheme.backgroundColor
+            navigation.navigationBar.tintColor = NativePresentationTheme.primaryTextColor
+            navigation.modalPresentationStyle = .formSheet
+            if let sheet = navigation.sheetPresentationController {
+                sheet.detents = [.medium(), .large()]
+                sheet.prefersGrabberVisible = true
+            }
+            let delegate = PresentationDismissDelegate(callbackID: callbackID, isSelection: true)
+            navigation.presentationController?.delegate = delegate
+            objc_setAssociatedObject(navigation, dismissAssociationKey, delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+            presenter.present(navigation, animated: true)
         }
     }
 
@@ -1518,9 +1747,13 @@ private enum PresentationCoordinator {
                 message: nil,
                 preferredStyle: .alert
             )
+            Self.applyTheme(to: alert)
             alert.addTextField { field in
                 field.placeholder = placeholder
                 field.text = initialValue
+                field.textColor = NativePresentationTheme.primaryTextColor
+                field.tintColor = NativePresentationTheme.primaryTextColor
+                field.overrideUserInterfaceStyle = NativePresentationTheme.interfaceStyle
                 field.clearButtonMode = .whileEditing
                 field.autocapitalizationType = .words
                 field.returnKeyType = .done
@@ -1548,6 +1781,11 @@ private enum PresentationCoordinator {
             let sheet = CustomSheetViewController(configuration: configuration)
             presenter.present(sheet, animated: true)
         }
+    }
+
+    private static func applyTheme(to alert: UIAlertController) {
+        alert.overrideUserInterfaceStyle = NativePresentationTheme.interfaceStyle
+        alert.view.tintColor = NativePresentationTheme.primaryTextColor
     }
 }
 
@@ -1599,6 +1837,7 @@ final class CustomSheetViewController: UIViewController, UIGestureRecognizerDele
 
         modalPresentationStyle = .pageSheet
         isModalInPresentation = configuration.isModalInPresentation
+        overrideUserInterfaceStyle = NativePresentationTheme.interfaceStyle
     }
 
     @available(*, unavailable)
@@ -1609,7 +1848,7 @@ final class CustomSheetViewController: UIViewController, UIGestureRecognizerDele
     override func viewDidLoad() {
         super.viewDidLoad()
 
-        view.backgroundColor = .systemBackground
+        view.backgroundColor = NativePresentationTheme.backgroundColor
         configureCanvasLayout()
         configureSheetPresentation()
     }
@@ -1846,6 +2085,32 @@ func ios_present_alert(
         message: NativePresentationBridge.string(message),
         buttonLabels: NativePresentationBridge.strings(count: buttonCount, labels: labels),
         buttonStyles: NativePresentationBridge.styles(count: buttonCount, styles: styles)
+    )
+}
+
+@_cdecl("ios_present_list_picker")
+func ios_present_list_picker(
+    _ callbackID: UInt32,
+    _ title: UnsafePointer<CChar>?,
+    _ message: UnsafePointer<CChar>?,
+    _ itemCount: Int32,
+    _ labels: UnsafePointer<UnsafePointer<CChar>?>?,
+    _ subtitles: UnsafePointer<UnsafePointer<CChar>?>?,
+    _ imageNames: UnsafePointer<UnsafePointer<CChar>?>?
+) {
+    PresentationCoordinator.presentListPicker(
+        callbackID: callbackID,
+        title: NativePresentationBridge.string(title),
+        message: NativePresentationBridge.string(message),
+        itemLabels: NativePresentationBridge.strings(count: itemCount, labels: labels),
+        itemSubtitles: NativePresentationBridge.optionalStrings(
+            count: itemCount,
+            labels: subtitles
+        ),
+        itemImageNames: NativePresentationBridge.optionalStrings(
+            count: itemCount,
+            labels: imageNames
+        )
     )
 }
 

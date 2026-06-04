@@ -1,5 +1,6 @@
 use gpui::*;
 
+use crate::platform_bridge::{self, HapticFeedback};
 use crate::terminal_card::{TerminalCardProps, render_terminal_card};
 use crate::terminal_state::TerminalState;
 use crate::workspace_state::WorkspaceState;
@@ -58,17 +59,20 @@ impl Render for TerminalPanel {
                 }));
 
                 let tid_tap = tid.clone();
-                let card = render_terminal_card(TerminalCardProps {
-                    id: tid,
-                    index: index + 1,
-                    is_active,
-                    title: meta.title,
-                    cwd: meta.cwd,
-                    agent_icon: meta.agent_icon,
-                    shell_state: meta.shell_state,
-                    last_exit_code: meta.last_exit_code,
-                    on_close: Some(on_close),
-                })
+                let card = render_terminal_card(
+                    cx,
+                    TerminalCardProps {
+                        id: tid,
+                        index: index + 1,
+                        is_active,
+                        title: meta.title,
+                        cwd: meta.cwd,
+                        agent_icon: meta.agent_icon,
+                        shell_state: meta.shell_state,
+                        last_exit_code: meta.last_exit_code,
+                        on_close: Some(on_close),
+                    },
+                )
                 .on_press(cx.listener(move |_this, _event, window, cx| {
                     window.dispatch_action(
                         workspace_action::OpenTerminal {
@@ -83,26 +87,41 @@ impl Render for TerminalPanel {
             }
         }
 
-        content = content.child(
-            div()
-                .id("new-terminal-btn")
-                .mx(px(theme::DRAWER_PADDING))
-                .mt(px(8.0))
-                .px(px(8.0))
-                .py(px(8.0))
-                .cursor_pointer()
-                .on_press(cx.listener(|_this, _event, window, cx| {
-                    window.dispatch_action(workspace_action::CreateNewTerminal.boxed_clone(), cx);
-                }))
-                .child(
-                    div()
-                        .text_color(rgb(theme::TEXT_MUTED))
-                        .text_size(px(theme::FONT_BODY))
-                        .text_center()
-                        .child("+ New Terminal"),
-                ),
-        );
-
         content
     }
+}
+
+pub fn toolbar_button<V: 'static, A: Action>(
+    id: &'static str,
+    icon: &'static str,
+    cx: &mut Context<V>,
+    action: A,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex_1()
+        .min_w_0()
+        .px(px(6.0))
+        .py(px(8.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .on_press(cx.listener(move |_this, _event, window, cx| {
+            platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+            window.dispatch_action(action.boxed_clone(), cx);
+        }))
+        .child(
+            svg()
+                .path(icon)
+                .size(px(theme::ICON_SM))
+                .text_color(rgb(theme::text_muted(cx))),
+        )
+}
+
+pub fn divider<V: 'static>(cx: &mut Context<V>) -> Div {
+    div()
+        .w(px(1.0))
+        .self_stretch()
+        .bg(rgb(theme::border_subtle(cx)))
 }

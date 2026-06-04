@@ -106,6 +106,11 @@ pub extern "C" fn zedra_ios_app_will_terminate() {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_system_back() -> bool {
+    false
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_native_floating_button_pressed(callback_id: u32) {
     IOS_APP_CELL.with(|cell| {
         let Some(app_cell) = cell.borrow().as_ref().cloned() else {

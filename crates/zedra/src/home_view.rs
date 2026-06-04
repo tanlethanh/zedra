@@ -10,7 +10,7 @@ use crate::fonts;
 use crate::platform_bridge::{self, AlertButton, HapticFeedback};
 use crate::theme;
 use crate::transport_badge::{ConnectionStatusIndicator, phase_indicator_color};
-use crate::workspaces::Workspaces;
+use crate::workspaces::{OpenConnectingForState, Workspaces};
 
 const WEBSITE_URL: &str = "https://www.zedra.dev";
 const GITHUB_URL: &str = "https://github.com/tanlethanh/zedra";
@@ -76,7 +76,7 @@ impl HomeView {
         Self {
             workspaces,
             focus_handle: cx.focus_handle(),
-            selected_guide_tab: GuideTab::Curl,
+            selected_guide_tab: GuideTab::MacLinux,
             action_tx,
             _action_task: action_task,
         }
@@ -114,6 +114,28 @@ impl HomeView {
             });
         }
         cx.emit(HomeEvent::NavigateToWorkspace);
+    }
+
+    fn show_connecting_for_state(
+        &self,
+        state_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let outcome = self.workspaces.update(cx, |ws, cx| {
+            ws.open_connecting_for_state(state_index, window, cx)
+        });
+        match outcome {
+            OpenConnectingForState::ActiveEntry => {
+                zedra_telemetry::send(Event::WorkspaceSelected { source: "active" });
+                cx.emit(HomeEvent::NavigateToWorkspace);
+            }
+            OpenConnectingForState::StartedConnect => {
+                zedra_telemetry::send(Event::WorkspaceSelected { source: "saved" });
+                cx.emit(HomeEvent::NavigateToWorkspace);
+            }
+            OpenConnectingForState::InvalidState => {}
+        }
     }
 
     fn handle_workspace_long_press(&self, item_idx: usize, cx: &mut Context<Self>) {
@@ -273,12 +295,12 @@ impl Render for HomeView {
                 svg()
                     .path("icons/logo.svg")
                     .size(px(60.0))
-                    .text_color(rgb(theme::TEXT_PRIMARY))
+                    .text_color(rgb(theme::text_primary(cx)))
                     .mb(px(theme::SPACING_LG)),
             )
             .child(
                 div()
-                    .text_color(rgb(theme::TEXT_PRIMARY))
+                    .text_color(rgb(theme::text_primary(cx)))
                     .text_size(px(theme::FONT_APP_TITLE))
                     .font_family(fonts::HEADING_FONT_FAMILY)
                     .font_weight(FontWeight::EXTRA_BOLD)
@@ -288,7 +310,7 @@ impl Render for HomeView {
                 div()
                     .flex()
                     .items_center()
-                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_color(rgb(theme::text_muted(cx)))
                     .text_size(px(theme::FONT_BODY))
                     .child("Code from anywhere. ")
                     .child(
@@ -305,7 +327,6 @@ impl Render for HomeView {
             )
             .mb(px(theme::SPACING_LG));
 
-        #[cfg(debug_assertions)]
         let settings_button = div()
             .id("home-settings-button")
             .absolute()
@@ -322,7 +343,7 @@ impl Render for HomeView {
                 svg()
                     .path("icons/settings.svg")
                     .size(px(theme::ICON_LG))
-                    .text_color(rgb(theme::TEXT_MUTED)),
+                    .text_color(rgb(theme::text_muted(cx))),
             );
 
         let mut content = div()
@@ -350,8 +371,8 @@ impl Render for HomeView {
 
                 let connect_phase = state.connect_phase.clone();
                 let status_color = match connect_phase.as_ref() {
-                    Some(p) => phase_indicator_color(p),
-                    None => theme::ACCENT_DIM,
+                    Some(p) => phase_indicator_color(&theme::palette(cx), p),
+                    None => theme::accent_dim(cx),
                 };
                 let status_label = match connect_phase.as_ref() {
                     Some(ConnectPhase::Connected) => "Connected",
@@ -393,7 +414,7 @@ impl Render for HomeView {
         }
 
         content = content.child(
-            outline_button("home-scan-qr", "Scan QR Code")
+            outline_button(cx, "home-scan-qr", "Scan QR Code")
                 .w(px(theme::HOME_CARD_WIDTH))
                 .on_press(cx.listener(|this, _event, _window, _cx| {
                     this.handle_scan_qr();
@@ -441,7 +462,7 @@ impl Render for HomeView {
             )
             .child(
                 div()
-                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_color(rgb(theme::text_muted(cx)))
                     .text_size(px(theme::FONT_DETAIL))
                     .child(app_version_text()),
             );
@@ -450,26 +471,26 @@ impl Render for HomeView {
             .id("home-view")
             .track_focus(&self.focus_handle)
             .size_full()
-            .bg(rgb(theme::BG_PRIMARY))
+            .bg(rgb(theme::bg_primary(cx)))
             .flex()
             .flex_col()
             .items_center()
             .justify_center();
 
-        #[cfg(debug_assertions)]
-        let root = root.child(settings_button);
-
-        root.child(header).child(content).child(footer)
+        root.child(settings_button)
+            .child(header)
+            .child(content)
+            .child(footer)
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GuideTab {
-    Curl,
+    MacLinux,
+    Windows,
     Claude,
     Codex,
     OpenCode,
-    Gemini,
 }
 
 struct GuideTabSpec {
@@ -490,9 +511,15 @@ struct GuideLine {
 
 static GUIDE_TABS: &[GuideTabSpec] = &[
     GuideTabSpec {
-        tab: GuideTab::Curl,
-        label: "curl",
+        tab: GuideTab::MacLinux,
+        label: "mac-linux",
         icon: "icons/terminal.svg",
+        icon_size: 17.0,
+    },
+    GuideTabSpec {
+        tab: GuideTab::Windows,
+        label: "windows",
+        icon: "icons/windows.svg",
         icon_size: 17.0,
     },
     GuideTabSpec {
@@ -513,15 +540,9 @@ static GUIDE_TABS: &[GuideTabSpec] = &[
         icon: "icons/opencode.svg",
         icon_size: 14.5,
     },
-    GuideTabSpec {
-        tab: GuideTab::Gemini,
-        label: "gemini",
-        icon: "icons/gemini.svg",
-        icon_size: 19.0,
-    },
 ];
 
-static CURL_INSTALL_LINES: &[GuideLine] = &[
+static MAC_LINUX_INSTALL_LINES: &[GuideLine] = &[
     GuideLine {
         text: "# Install Zedra CLI",
         comment: true,
@@ -532,7 +553,7 @@ static CURL_INSTALL_LINES: &[GuideLine] = &[
     },
 ];
 
-static CURL_RUN_LINES: &[GuideLine] = &[
+static MAC_LINUX_RUN_LINES: &[GuideLine] = &[
     GuideLine {
         text: "# Start Zedra in the working directory",
         comment: true,
@@ -613,34 +634,43 @@ static OPENCODE_RUN_LINES: &[GuideLine] = &[
     },
 ];
 
-static GEMINI_INSTALL_LINES: &[GuideLine] = &[
+static WINDOWS_INSTALL_LINES: &[GuideLine] = &[
     GuideLine {
-        text: "# Set up Zedra for Gemini",
+        text: "# Install Zedra CLI",
         comment: true,
     },
     GuideLine {
-        text: "zedra setup gemini",
+        text: "powershell -c \"irm https://zedra.dev/install.ps1 | iex\"",
         comment: false,
     },
 ];
 
-static GEMINI_RUN_LINES: &[GuideLine] = &[
+static WINDOWS_RUN_LINES: &[GuideLine] = &[
     GuideLine {
-        text: "# In Gemini, reload skills and start",
+        text: "# Start Zedra in the working directory",
         comment: true,
     },
     GuideLine {
-        text: "/zedra-start",
+        text: "zedra start",
         comment: false,
     },
 ];
 
-static CURL_BLOCKS: &[GuideBlock] = &[
+static MAC_LINUX_BLOCKS: &[GuideBlock] = &[
     GuideBlock {
-        lines: CURL_INSTALL_LINES,
+        lines: MAC_LINUX_INSTALL_LINES,
     },
     GuideBlock {
-        lines: CURL_RUN_LINES,
+        lines: MAC_LINUX_RUN_LINES,
+    },
+];
+
+static WINDOWS_BLOCKS: &[GuideBlock] = &[
+    GuideBlock {
+        lines: WINDOWS_INSTALL_LINES,
+    },
+    GuideBlock {
+        lines: WINDOWS_RUN_LINES,
     },
 ];
 
@@ -671,22 +701,13 @@ static OPENCODE_BLOCKS: &[GuideBlock] = &[
     },
 ];
 
-static GEMINI_BLOCKS: &[GuideBlock] = &[
-    GuideBlock {
-        lines: GEMINI_INSTALL_LINES,
-    },
-    GuideBlock {
-        lines: GEMINI_RUN_LINES,
-    },
-];
-
 fn guide_blocks(tab: GuideTab) -> &'static [GuideBlock] {
     match tab {
-        GuideTab::Curl => CURL_BLOCKS,
+        GuideTab::MacLinux => MAC_LINUX_BLOCKS,
+        GuideTab::Windows => WINDOWS_BLOCKS,
         GuideTab::Claude => CLAUDE_BLOCKS,
         GuideTab::Codex => CODEX_BLOCKS,
         GuideTab::OpenCode => OPENCODE_BLOCKS,
-        GuideTab::Gemini => GEMINI_BLOCKS,
     }
 }
 
@@ -748,9 +769,9 @@ fn install_guide(selected_tab: GuideTab, cx: &mut Context<HomeView>) -> impl Int
                 .w_full()
                 .max_h(px(184.0))
                 .rounded(px(8.0))
-                .bg(rgb(theme::BG_CARD))
+                .bg(rgb(theme::bg_card(cx)))
                 .border_1()
-                .border_color(rgb(theme::BORDER_SUBTLE))
+                .border_color(rgb(theme::border_subtle(cx)))
                 .px(px(theme::SPACING_SM))
                 .pb(px(theme::SPACING_SM))
                 .child(tab_list)
@@ -765,7 +786,7 @@ fn guide_tab_button(
 ) -> impl IntoElement {
     div()
         .id(SharedString::from(format!("home-guide-tab-{}", spec.label)))
-        .w(px(48.0))
+        .w(px(42.0))
         .h(px(34.0))
         .flex()
         .items_center()
@@ -773,9 +794,9 @@ fn guide_tab_button(
         .cursor_pointer()
         .border_b_1()
         .border_color(rgb(if selected {
-            theme::BORDER_HIGHLIGHT
+            theme::border_highlight(cx)
         } else {
-            theme::BG_CARD
+            theme::bg_card(cx)
         }))
         .hit_slop(px(10.0))
         .on_press(cx.listener(move |this, _event, _window, cx| {
@@ -786,9 +807,9 @@ fn guide_tab_button(
                 .path(spec.icon)
                 .size(px(spec.icon_size))
                 .text_color(rgb(if selected {
-                    theme::TEXT_SECONDARY
+                    theme::text_secondary(cx)
                 } else {
-                    theme::TEXT_MUTED
+                    theme::text_muted(cx)
                 })),
         )
 }
@@ -800,7 +821,7 @@ fn guide_line(
     line: &'static GuideLine,
     selection_order: u64,
     is_last_line: bool,
-    _cx: &mut Context<HomeView>,
+    cx: &mut Context<HomeView>,
 ) -> AnyElement {
     let text = StyledText::new(line.text)
         .selectable()
@@ -814,9 +835,9 @@ fn guide_line(
         )))
         .w_full()
         .text_color(rgb(if line.comment {
-            theme::TEXT_MUTED
+            theme::text_muted(cx)
         } else {
-            theme::TEXT_SECONDARY
+            theme::text_secondary(cx)
         }))
         .text_size(px(theme::FONT_DETAIL))
         .child(text);
@@ -850,9 +871,9 @@ fn workspace_card(
         .id(SharedString::from(format!("ws-card-{}", index)))
         .w_full()
         .rounded(px(8.0))
-        .bg(rgb(theme::BG_CARD))
+        .bg(rgb(theme::bg_card(cx)))
         .border_1()
-        .border_color(rgb(theme::BORDER_SUBTLE))
+        .border_color(rgb(theme::border_subtle(cx)))
         .p(px(12.0))
         .cursor_pointer()
         .on_press(cx.listener(move |this, _event, window, cx| {
@@ -869,14 +890,20 @@ fn workspace_card(
                 .flex_row()
                 .items_center()
                 .gap(px(6.0))
-                .child(ConnectionStatusIndicator::from_phase(
-                    ("home-connect-status", index),
-                    connect_phase.as_ref(),
-                ))
+                .child(
+                    ConnectionStatusIndicator::from_phase(
+                        ("home-connect-status", index),
+                        connect_phase.as_ref(),
+                        &theme::palette(cx),
+                    )
+                    .on_press(cx.listener(move |this, _event, window, cx| {
+                        this.show_connecting_for_state(index, window, cx);
+                    })),
+                )
                 .child(
                     div()
                         .flex_1()
-                        .text_color(rgb(theme::TEXT_PRIMARY))
+                        .text_color(rgb(theme::text_primary(cx)))
                         .text_size(px(theme::FONT_BODY))
                         .font_weight(FontWeight::MEDIUM)
                         .child(project_name),
@@ -894,7 +921,7 @@ fn workspace_card(
             Some(
                 div()
                     .mt(px(4.0))
-                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_color(rgb(theme::text_muted(cx)))
                     .text_size(px(theme::FONT_DETAIL))
                     .text_overflow(TextOverflow::Truncate(SharedString::new("...")))
                     .child(subtitle),
@@ -923,6 +950,6 @@ fn social_button(
             svg()
                 .path(icon)
                 .size(px(size))
-                .text_color(rgb(theme::TEXT_MUTED)),
+                .text_color(rgb(theme::text_muted(cx))),
         )
 }

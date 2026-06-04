@@ -12,7 +12,7 @@
         <list>
           <option value=":assembleDebug" />
           <option value=":installDebug" />
-          <option value=":launchApp" />
+          <option value=":launchDebug" />
         </list>
       </option>
       <option name="vmOptions" />

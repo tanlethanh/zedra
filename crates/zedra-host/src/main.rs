@@ -18,13 +18,15 @@ use std::sync::Arc;
 use zedra_host::client as zedra_client;
 use zedra_host::ga4::Ga4;
 use zedra_host::{
-    api, delta, identity, iroh_listener, metrics, net_monitor, qr, rpc_daemon, session_registry,
-    utils, version_check, workspace_lock,
+    api, delta, identity, iroh_listener, metrics, net_monitor, paths, qr, rpc_daemon,
+    session_registry, utils, version_check, workspace_lock,
 };
 use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
 
+mod agent_cli;
 mod setup;
+mod terminal_cli;
 
 #[derive(Parser)]
 #[command(
@@ -166,6 +168,12 @@ enum Commands {
         /// Intended only for testing and store review.
         #[arg(long = "static-qr")]
         static_qr: bool,
+
+        /// How often (in seconds) to re-fetch live agent usage from provider APIs.
+        /// Set to 0 to disable periodic refresh (initial fetch at startup still runs).
+        /// Default: 300 (5 minutes).
+        #[arg(long = "usage-refresh-secs", default_value = "300")]
+        usage_refresh_secs: u64,
     },
     /// Connect to a daemon and measure connection RTT
     Client {
@@ -240,15 +248,13 @@ enum Commands {
         lines: usize,
     },
 
-    /// Open a terminal on the connected phone
-    Terminal {
-        /// Working directory of the running daemon
-        #[arg(short, long, default_value = ".")]
-        workdir: String,
+    /// Open or list terminals on the connected phone
+    Terminal(terminal_cli::TerminalArgs),
 
-        /// Command to run in the terminal on startup (e.g. "claude --resume <id>")
-        #[arg(long)]
-        launch_cmd: Option<String>,
+    /// Inspect and test managed AI-agent integration
+    Agent {
+        #[command(subcommand)]
+        command: agent_cli::AgentCommand,
     },
 
     /// Install Zedra skills or plugins for an AI coding agent
@@ -386,6 +392,7 @@ struct DetachedStartOptions {
     debug_telemetry: bool,
     relay_only: bool,
     static_qr: bool,
+    usage_refresh_secs: u64,
 }
 
 struct DetachedStartResult {
@@ -417,6 +424,12 @@ fn detached_start_child_args(options: &DetachedStartOptions) -> Vec<String> {
     }
     if options.static_qr {
         args.push("--static-qr".to_string());
+    }
+    if options.usage_refresh_secs != 300 {
+        args.extend([
+            "--usage-refresh-secs".to_string(),
+            options.usage_refresh_secs.to_string(),
+        ]);
     }
     args
 }
@@ -508,9 +521,93 @@ fn start_detached(options: DetachedStartOptions) -> Result<DetachedStartResult> 
     })
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn start_detached(options: DetachedStartOptions) -> Result<DetachedStartResult> {
+    use std::os::windows::process::CommandExt;
+    use std::process::Stdio;
+
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+    if let Some(existing) = workspace_lock::read_lock_info(&options.workdir)? {
+        if workspace_lock::is_process_alive(existing.pid) {
+            anyhow::bail!(
+                "Zedra daemon is already running for this workspace.\n\
+                 \n\
+                 \x20 PID:      {}\n\
+                 \x20 Workdir:  {}\n\
+                 \x20 Host:     {}\n\
+                 \x20 Started:  {}\n\
+                 \n\
+                 Run `zedra stop` from this workspace to stop it.\n\
+                 From another directory, add `--workdir <path>`.",
+                existing.pid,
+                existing.workdir,
+                existing.hostname,
+                existing.running_for(),
+            );
+        }
+    }
+
+    let config_dir = identity::workspace_config_dir(&options.workdir)?;
+    std::fs::create_dir_all(&config_dir)?;
+    let log_path = config_dir.join("daemon.log");
+    let mut log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+    writeln!(
+        log,
+        "\n--- zedra detached start parent_pid={} workdir={} ---",
+        std::process::id(),
+        options.workdir.display()
+    )?;
+    let launch_shell = zedra_host::pty::detect_parent_shell();
+    if let Some(shell) = &launch_shell {
+        writeln!(log, "detected_launch_shell={shell}")?;
+    }
+
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command
+        .args(detached_start_child_args(&options))
+        .current_dir(&options.workdir)
+        .env("ZEDRA_DETACHED", "1")
+        .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log));
+    if let Some(shell) = launch_shell {
+        command.env("ZEDRA_LAUNCH_SHELL", shell);
+    }
+
+    let mut child = command.spawn()?;
+    let child_pid = child.id();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        if let Some(status) = child.try_wait()? {
+            anyhow::bail!(
+                "detached zedra-host exited early with status {}. See log: {}",
+                status,
+                log_path.display()
+            );
+        }
+        if let Some(info) = workspace_lock::read_lock_info(&options.workdir)? {
+            if info.pid == child_pid {
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    Ok(DetachedStartResult {
+        pid: child_pid,
+        workdir: options.workdir,
+    })
+}
+
+#[cfg(all(not(unix), not(windows)))]
 fn start_detached(_options: DetachedStartOptions) -> Result<DetachedStartResult> {
-    anyhow::bail!("`zedra start --detach` is only supported on Unix platforms.");
+    anyhow::bail!("`zedra start --detach` is not supported on this platform.");
 }
 
 fn telemetry_disabled(no_telemetry: bool) -> bool {
@@ -542,6 +639,12 @@ fn new_ga4(
 
 fn render_cli_version() -> String {
     format!("{}\n", env!("CARGO_PKG_VERSION"))
+}
+
+fn resolve_workdir(workdir: impl AsRef<Path>) -> PathBuf {
+    let fallback = workdir.as_ref().to_path_buf();
+    let workdir = fallback.canonicalize().unwrap_or(fallback);
+    paths::user_path(&workdir)
 }
 
 #[tokio::main]
@@ -707,9 +810,7 @@ async fn main() -> Result<()> {
             count,
             relay_only,
         } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workdir = resolve_workdir(workdir);
             zedra_client::run(&workdir, count, relay_only).await?;
         }
 
@@ -722,10 +823,9 @@ async fn main() -> Result<()> {
             debug_telemetry,
             relay_only,
             static_qr,
+            usage_refresh_secs,
         } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workdir = resolve_workdir(workdir);
             let pairing_mode = if static_qr {
                 session_registry::PairingSlotMode::Static
             } else {
@@ -740,6 +840,7 @@ async fn main() -> Result<()> {
                     debug_telemetry,
                     relay_only,
                     static_qr,
+                    usage_refresh_secs,
                 })?;
                 match wait_for_detached_pairing_qr(&detached.workdir, detached.pid, pairing_mode)
                     .await
@@ -842,6 +943,29 @@ async fn main() -> Result<()> {
                 workdir.clone(),
                 host_identity.clone(),
             ));
+            state
+                .agent_cache
+                .set_registry(Arc::downgrade(&registry))
+                .await;
+            {
+                let cache = state.agent_cache.clone();
+                let preload_workdir = workdir.clone();
+                tokio::spawn(async move {
+                    cache.preload(preload_workdir).await;
+                });
+            }
+            if usage_refresh_secs > 0 {
+                let cache = state.agent_cache.clone();
+                tokio::spawn(async move {
+                    let mut interval =
+                        tokio::time::interval(std::time::Duration::from_secs(usage_refresh_secs));
+                    interval.tick().await; // skip immediate first tick — preload covers it
+                    loop {
+                        interval.tick().await;
+                        cache.refresh_usage().await;
+                    }
+                });
+            }
 
             // 1. Bind iroh endpoint with configured relay URLs.
             let endpoint_relay_urls: Vec<String> = if relay_url.is_empty() {
@@ -902,9 +1026,10 @@ async fn main() -> Result<()> {
                 match version_check::check_latest_version().await {
                     Ok(Some(ref latest)) => {
                         let update_msg = format!(
-                            "New version available: {} (current: v{}). Run `zedra update`.",
+                            "New version available: {} (current: v{}). {}",
                             latest,
-                            env!("CARGO_PKG_VERSION")
+                            env!("CARGO_PKG_VERSION"),
+                            update_instruction()
                         );
                         utils::eprintln_warn(update_msg);
                         zedra_telemetry::send(Event::UpdateChecked {
@@ -1054,9 +1179,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Status { workdir } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workdir = resolve_workdir(workdir);
             let config_dir = identity::workspace_config_dir(&workdir)?;
             let addr = std::fs::read_to_string(config_dir.join("api-addr")).unwrap_or_default();
             let token = std::fs::read_to_string(config_dir.join("api-token")).unwrap_or_default();
@@ -1091,9 +1214,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Metrics { workdir } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workdir = resolve_workdir(workdir);
             let snapshot = metrics::snapshot(&workdir)?;
             let http = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(2))
@@ -1111,9 +1232,7 @@ async fn main() -> Result<()> {
             json,
             static_qr,
         } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workdir = resolve_workdir(workdir);
             let pairing_mode = if static_qr {
                 session_registry::PairingSlotMode::Static
             } else {
@@ -1131,53 +1250,12 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Terminal {
-            workdir,
-            launch_cmd,
-        } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let config_dir = identity::workspace_config_dir(&workdir)?;
-            let addr = std::fs::read_to_string(config_dir.join("api-addr")).unwrap_or_default();
-            let token = std::fs::read_to_string(config_dir.join("api-token")).unwrap_or_default();
-            if addr.trim().is_empty() {
-                utils::eprintln_error(format!(
-                    "No running daemon found for: {}",
-                    workdir.display()
-                ));
-                std::process::exit(1);
-            }
-            let url = format!("http://{}/api/terminal", addr.trim());
-            let body = serde_json::json!({ "launch_cmd": launch_cmd.as_deref() });
-            let client = reqwest::Client::new();
-            match client
-                .post(&url)
-                .bearer_auth(token.trim())
-                .json(&body)
-                .send()
-                .await
-            {
-                Ok(resp) => {
-                    let status = resp.status();
-                    let text = resp.text().await.unwrap_or_default();
-                    if !status.is_success() {
-                        utils::eprintln_error(format!(
-                            "Failed to open terminal: HTTP {} {}",
-                            status, text
-                        ));
-                        std::process::exit(1);
-                    }
-                    match render_terminal_created_output(&text, launch_cmd.as_deref()) {
-                        Some(output) => println!("{output}"),
-                        None => println!("{}", text),
-                    }
-                }
-                Err(e) => {
-                    utils::eprintln_error(format!("Failed to reach daemon: {}", e));
-                    std::process::exit(1);
-                }
-            }
+        Commands::Terminal(args) => {
+            terminal_cli::run(args).await?;
+        }
+
+        Commands::Agent { command } => {
+            agent_cli::run(command).await?;
         }
 
         Commands::Setup { yes, agent } => {
@@ -1247,9 +1325,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Logs { workdir, lines } => {
-            let workdir = std::path::PathBuf::from(workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let workdir = resolve_workdir(workdir);
             let log_path = daemon_log_path(&workdir)?;
             if !log_path.exists() {
                 utils::eprintln_error(format!("No daemon log found for: {}", workdir.display()));
@@ -1302,6 +1378,12 @@ async fn main() -> Result<()> {
             let alive: Vec<_> = instances.iter().filter(|(_, _, alive)| *alive).collect();
             if !alive.is_empty() {
                 eprintln!();
+                #[cfg(windows)]
+                utils::eprintln_warn(format!(
+                    "{} running daemon(s) found. They will keep using the old version until restarted:",
+                    alive.len()
+                ));
+                #[cfg(not(windows))]
                 utils::eprintln_warn(format!(
                     "{} running daemon(s) found. Restart them after update:",
                     alive.len()
@@ -1372,9 +1454,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Stop { workdir, grace } => {
-            let workdir = std::path::PathBuf::from(&workdir)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from(&workdir));
+            let workdir = resolve_workdir(&workdir);
 
             match workspace_lock::read_lock_info(&workdir)? {
                 None => {
@@ -1714,13 +1794,21 @@ fn classify_update_error(e: &anyhow::Error) -> &'static str {
         "download_failed"
     } else if msg.contains("archive did not contain") || msg.contains("failed to extract") {
         "extract_failed"
-    } else if msg.contains("failed to install") || msg.contains("failed to rename") {
+    } else if msg.contains("failed to install")
+        || msg.contains("failed to rename")
+        || msg.contains("install directory is not writable")
+        || msg.contains("failed to start PowerShell")
+    {
         "install_failed"
     } else if msg.contains("failed to resolve latest") {
         "version_resolve_failed"
     } else {
         "unknown"
     }
+}
+
+fn update_instruction() -> &'static str {
+    "Run `zedra update`."
 }
 
 fn should_proceed_with_update(input: &str) -> bool {
@@ -2032,21 +2120,6 @@ fn terminal_status_row(terminal: &serde_json::Value) -> Vec<String> {
         .unwrap_or_else(|| "-".to_string());
 
     vec![id, title.to_string(), created, uptime, session]
-}
-
-fn render_terminal_created_output(body: &str, launch_cmd: Option<&str>) -> Option<String> {
-    let response = serde_json::from_str::<serde_json::Value>(body).ok()?;
-    let id = response["id"].as_str()?;
-    let session_id = response["session_id"].as_str()?;
-    let mut rows = vec![("ID", id.to_string()), ("Session", session_id.to_string())];
-    if let Some(launch_cmd) = launch_cmd.filter(|command| !command.is_empty()) {
-        rows.push(("Command", launch_cmd.to_string()));
-    }
-
-    Some(format!(
-        "Terminal Opened\n\n{}",
-        utils::render_key_values(&rows)
-    ))
 }
 
 fn non_empty_str(value: &serde_json::Value) -> Option<&str> {
@@ -2489,6 +2562,7 @@ mod tests {
             debug_telemetry: true,
             relay_only: true,
             static_qr: true,
+            usage_refresh_secs: 300,
         });
 
         assert_eq!(

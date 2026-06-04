@@ -569,7 +569,7 @@ impl Connector {
                 session_id,
             })
             .await
-            .map_err(|e| ConnectError::RequestError(e.to_string()))?
+            .map_err(|e| ConnectError::RequestError(crate::handle::rpc_error_message(&e)))?
         {
             RegisterResult::Ok => {
                 let register_ms = t.elapsed().as_millis() as u64;
@@ -599,7 +599,7 @@ impl Connector {
                 session_token,
             })
             .await
-            .map_err(|e| ConnectError::RequestError(e.to_string()))?
+            .map_err(|e| ConnectError::RequestError(crate::handle::rpc_error_message(&e)))?
         {
             ConnectResult::Ok(sync) => {
                 info!(
@@ -645,7 +645,7 @@ impl Connector {
                 session_id: session_id.clone(),
             })
             .await
-            .map_err(|e| ConnectError::RequestError(e.to_string()))?
+            .map_err(|e| ConnectError::RequestError(crate::handle::rpc_error_message(&e)))?
         {
             AuthProveResult::Ok(sync) => {
                 info!("authenticated, session={}", session_id);

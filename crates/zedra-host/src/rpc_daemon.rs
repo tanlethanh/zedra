@@ -6,6 +6,8 @@
 //   PKI reconnect:  Connect(None) → Challenge → AuthProve → Ok(SyncSessionResult) → (RPC calls)
 //   Health:         Ping (every 2s, foreground only, 5 misses = client reconnects)
 
+use crate::agent;
+use crate::agent_cache;
 use crate::docs_tree::{
     build_snapshot, docs_tree_cache_key, docs_tree_limit, snapshot_page_result,
     validate_docs_tree_offset,
@@ -15,19 +17,22 @@ use crate::git::GitRepo;
 use crate::host_info;
 use crate::identity::SharedIdentity;
 use crate::metrics;
+use crate::paths;
 use crate::pty::{ShellSession, SpawnOptions};
 use crate::session_registry::{
-    ActiveClientConnection, AttachResult, ConsumeSlotResult, HostShellState, HostTermMeta,
-    OutputSenderSlot, PairingSlotMode, ServerSession, SessionRegistry, TermBacklog, TermSession,
-    MAX_WATCHED_PATHS_PER_SESSION,
+    finish_auth_failed_connection, finish_host_connection, ActiveClientConnection, AttachResult,
+    ConsumeSlotResult, HostShellState, HostTermMeta, OutputSenderSlot, PairingSlotMode,
+    ServerSession, SessionRegistry, TermBacklog, TermSession, MAX_WATCHED_PATHS_PER_SESSION,
 };
 use crate::utils;
 use anyhow::Result;
-use std::collections::HashMap;
+use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo_matcher::{Config, Matcher, Utf32Str};
+use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zedra_rpc::proto::*;
@@ -46,10 +51,25 @@ fn collect_host_env(workdir: &std::path::Path) -> HostEnvInfo {
             .ok()
             .and_then(|h| h.into_string().ok())
             .unwrap_or_else(|| "unknown".to_string()),
-        username: std::env::var("USER").unwrap_or_else(|_| "unknown".to_string()),
-        workdir: workdir.to_string_lossy().into_owned(),
-        home_dir: std::env::var("HOME").ok(),
+        username: current_username(),
+        workdir: paths::user_path_string(workdir),
+        home_dir: current_home_dir(),
     }
+}
+
+fn current_username() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+fn current_home_dir() -> Option<String> {
+    std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok())
+        .or_else(|| {
+            directories::BaseDirs::new().map(|base| base.home_dir().to_string_lossy().into_owned())
+        })
 }
 
 async fn build_sync_result(
@@ -151,7 +171,7 @@ fn initial_host_meta(opts: &SpawnOptions) -> HostTermMeta {
     meta.cwd = opts
         .workdir
         .as_ref()
-        .map(|path| path.to_string_lossy().into_owned());
+        .map(|path| paths::user_path_string(path));
     if let Some(command) = opts
         .launch_cmd
         .as_ref()
@@ -161,6 +181,164 @@ fn initial_host_meta(opts: &SpawnOptions) -> HostTermMeta {
         meta.shell_state = HostShellState::Running;
     }
     meta
+}
+
+#[derive(Default)]
+enum ColorQueryScanState {
+    #[default]
+    Idle,
+    SawEsc,
+    SawBracket,
+    Collecting {
+        buf: Vec<u8>,
+        esc_pending: bool,
+    },
+}
+
+struct TerminalColorQueryResponder {
+    color_scheme: TerminalColorScheme,
+    state: ColorQueryScanState,
+}
+
+impl TerminalColorQueryResponder {
+    fn new(color_scheme: TerminalColorScheme) -> Self {
+        Self {
+            color_scheme,
+            state: ColorQueryScanState::Idle,
+        }
+    }
+
+    fn feed(&mut self, bytes: &[u8]) -> Vec<Vec<u8>> {
+        let mut replies = Vec::new();
+        for &b in bytes {
+            self.state = match std::mem::take(&mut self.state) {
+                ColorQueryScanState::Idle => {
+                    if b == 0x1b {
+                        ColorQueryScanState::SawEsc
+                    } else {
+                        ColorQueryScanState::Idle
+                    }
+                }
+                ColorQueryScanState::SawEsc => match b {
+                    b']' => ColorQueryScanState::SawBracket,
+                    0x1b => ColorQueryScanState::SawEsc,
+                    _ => ColorQueryScanState::Idle,
+                },
+                ColorQueryScanState::SawBracket => match b {
+                    0x07 => ColorQueryScanState::Idle,
+                    0x1b => ColorQueryScanState::Collecting {
+                        buf: Vec::new(),
+                        esc_pending: true,
+                    },
+                    _ => ColorQueryScanState::Collecting {
+                        buf: vec![b],
+                        esc_pending: false,
+                    },
+                },
+                ColorQueryScanState::Collecting {
+                    mut buf,
+                    esc_pending,
+                } => {
+                    if esc_pending {
+                        match b {
+                            b'\\' => {
+                                if let Some(reply) =
+                                    terminal_color_query_reply(&buf, self.color_scheme)
+                                {
+                                    replies.push(reply);
+                                }
+                                ColorQueryScanState::Idle
+                            }
+                            b']' => ColorQueryScanState::SawBracket,
+                            _ => {
+                                buf.push(0x1b);
+                                buf.push(b);
+                                ColorQueryScanState::Collecting {
+                                    buf,
+                                    esc_pending: false,
+                                }
+                            }
+                        }
+                    } else {
+                        match b {
+                            0x07 => {
+                                if let Some(reply) =
+                                    terminal_color_query_reply(&buf, self.color_scheme)
+                                {
+                                    replies.push(reply);
+                                }
+                                ColorQueryScanState::Idle
+                            }
+                            0x1b => ColorQueryScanState::Collecting {
+                                buf,
+                                esc_pending: true,
+                            },
+                            _ => {
+                                buf.push(b);
+                                if buf.len() > 64 {
+                                    ColorQueryScanState::Idle
+                                } else {
+                                    ColorQueryScanState::Collecting {
+                                        buf,
+                                        esc_pending: false,
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+        }
+        replies
+    }
+}
+
+fn terminal_color_query_reply(body: &[u8], color_scheme: TerminalColorScheme) -> Option<Vec<u8>> {
+    let (kind, hex) = match body {
+        b"10;?" => (b"10".as_slice(), terminal_foreground(color_scheme)),
+        b"11;?" => (b"11".as_slice(), terminal_background(color_scheme)),
+        b"12;?" => (b"12".as_slice(), terminal_cursor(color_scheme)),
+        _ => return None,
+    };
+    Some(format_osc_color_reply(kind, hex))
+}
+
+fn terminal_foreground(color_scheme: TerminalColorScheme) -> u32 {
+    match color_scheme {
+        TerminalColorScheme::Dark => 0xabb2bf,
+        TerminalColorScheme::Light => 0x1f2328,
+    }
+}
+
+fn terminal_background(color_scheme: TerminalColorScheme) -> u32 {
+    match color_scheme {
+        TerminalColorScheme::Dark => 0x0e0c0c,
+        TerminalColorScheme::Light => 0xfafafa,
+    }
+}
+
+fn terminal_cursor(color_scheme: TerminalColorScheme) -> u32 {
+    match color_scheme {
+        TerminalColorScheme::Dark => 0x528bff,
+        TerminalColorScheme::Light => 0x0969da,
+    }
+}
+
+fn format_osc_color_reply(kind: &[u8], hex: u32) -> Vec<u8> {
+    let r = ((hex >> 16) & 0xff) as u8;
+    let g = ((hex >> 8) & 0xff) as u8;
+    let b = (hex & 0xff) as u8;
+    format!(
+        "\x1b]{};rgb:{:02x}{:02x}/{:02x}{:02x}/{:02x}{:02x}\x07",
+        std::str::from_utf8(kind).unwrap_or("10"),
+        r,
+        r,
+        g,
+        g,
+        b,
+        b
+    )
+    .into_bytes()
 }
 
 #[cfg(test)]
@@ -219,6 +397,8 @@ mod terminal_meta_preamble_tests {
         let opts = SpawnOptions {
             workdir: Some(PathBuf::from("/repo/project")),
             launch_cmd: Some("claude --resume session".to_owned()),
+            color_scheme: None,
+            env: Vec::new(),
         };
 
         assert_eq!(
@@ -233,6 +413,78 @@ mod terminal_meta_preamble_tests {
             initial_host_meta(&opts).shell_state,
             HostShellState::Running
         );
+    }
+
+    #[test]
+    fn color_query_responder_answers_light_default_queries() {
+        let mut responder = TerminalColorQueryResponder::new(TerminalColorScheme::Light);
+        let replies = responder.feed(b"\x1b]10;?\x07\x1b]11;?\x1b\\");
+
+        assert_eq!(
+            replies,
+            vec![
+                b"\x1b]10;rgb:1f1f/2323/2828\x07".to_vec(),
+                b"\x1b]11;rgb:fafa/fafa/fafa\x07".to_vec(),
+            ]
+        );
+    }
+
+    #[test]
+    fn color_query_responder_handles_chunked_queries_and_ignores_setters() {
+        let mut responder = TerminalColorQueryResponder::new(TerminalColorScheme::Dark);
+        assert!(responder.feed(b"\x1b]11").is_empty());
+        assert!(responder.feed(b";#112233\x07").is_empty());
+        assert!(responder.feed(b"\x1b]12").is_empty());
+        let replies = responder.feed(b";?\x07");
+
+        assert_eq!(replies, vec![b"\x1b]12;rgb:5252/8b8b/ffff\x07".to_vec()]);
+    }
+}
+
+#[cfg(test)]
+mod file_search_tests {
+    use super::*;
+    use std::fs::{create_dir_all, write};
+
+    #[test]
+    fn file_search_finds_names_below_root_and_respects_gitignore() {
+        let temp = tempfile::tempdir().unwrap();
+        create_dir_all(temp.path().join(".git")).unwrap();
+        create_dir_all(temp.path().join("src/nested")).unwrap();
+        create_dir_all(temp.path().join("ignored")).unwrap();
+        write(temp.path().join(".gitignore"), "ignored/\n").unwrap();
+        write(temp.path().join("src/search_panel.rs"), "match").unwrap();
+        write(temp.path().join("src/nested/other.rs"), "skip").unwrap();
+        write(temp.path().join("ignored/search_hidden.rs"), "skip").unwrap();
+
+        let result = search_files(&temp.path().canonicalize().unwrap(), "SEARCH", 10).unwrap();
+
+        let hit = result
+            .entries
+            .iter()
+            .find(|entry| entry.path.ends_with("src/search_panel.rs"))
+            .expect("expected search_panel.rs match");
+        // Host-supplied match indices are sorted and reference rel_path.
+        assert!(!hit.match_indices.is_empty());
+        assert!(hit.match_indices.windows(2).all(|w| w[0] < w[1]));
+        assert!(*hit.match_indices.last().unwrap() < hit.rel_path.chars().count() as u32);
+        assert!(result
+            .entries
+            .iter()
+            .all(|entry| !entry.path.contains("ignored/search_hidden.rs")));
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn file_search_reports_truncation_when_limit_is_hit() {
+        let temp = tempfile::tempdir().unwrap();
+        write(temp.path().join("search_a.rs"), "a").unwrap();
+        write(temp.path().join("search_b.rs"), "b").unwrap();
+
+        let result = search_files(&temp.path().canonicalize().unwrap(), "search", 1).unwrap();
+
+        assert_eq!(result.entries.len(), 1);
+        assert!(result.truncated);
     }
 }
 
@@ -387,6 +639,161 @@ fn fs_dir_fingerprint(workdir: &Path, rel_path: &str) -> Option<u64> {
     Some(hasher.finish())
 }
 
+fn fs_search_limit(limit: u32) -> usize {
+    (if limit == 0 {
+        FS_SEARCH_DEFAULT_LIMIT
+    } else {
+        limit.min(FS_SEARCH_MAX_LIMIT)
+    }) as usize
+}
+
+fn is_file_search_ignored(entry: &ignore::DirEntry) -> bool {
+    // Only filter directories; matched files should still surface as results.
+    if !entry
+        .file_type()
+        .is_some_and(|file_type| file_type.is_dir())
+    {
+        return false;
+    }
+    let Some(name) = entry.file_name().to_str() else {
+        return false;
+    };
+    // Reuse the canonical generated/vendor directory list shared with the docs
+    // tree so both walkers skip the same noise. Unlike the docs tree, file
+    // search keeps dot-directories (e.g. `.github`) visible.
+    crate::docs_tree::FALLBACK_COMPONENT_IGNORES.contains(&name)
+}
+
+struct FileSearchCandidate {
+    path: PathBuf,
+    is_dir: bool,
+    match_path: String,
+}
+
+fn fs_search_error(message: String) -> FsSearchResult {
+    FsSearchResult {
+        entries: vec![],
+        truncated: false,
+        error: Some(message),
+    }
+}
+
+fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> {
+    let query = query.trim();
+    anyhow::ensure!(!query.is_empty(), "empty search query");
+    anyhow::ensure!(root.is_dir(), "search path must be a directory");
+
+    let limit = fs_search_limit(limit);
+    let mut candidates = Vec::new();
+    let mut visited = 0u32;
+    let mut truncated = false;
+
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder
+        .hidden(false)
+        .follow_links(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .parents(true)
+        .ignore(true);
+    builder.filter_entry(|entry| !is_file_search_ignored(entry));
+
+    for entry in builder.build() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                tracing::debug!("file search: skipping unreadable entry: {error}");
+                continue;
+            }
+        };
+        if entry.path() == root {
+            continue;
+        }
+
+        visited += 1;
+        if visited > FS_SEARCH_MAX_VISITED_ENTRIES {
+            truncated = true;
+            break;
+        }
+
+        let Some(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+
+        let path = entry.path().to_path_buf();
+        let match_path = path
+            .strip_prefix(root)
+            .unwrap_or(path.as_path())
+            .components()
+            .filter_map(|component| match component {
+                Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+        candidates.push(FileSearchCandidate {
+            path,
+            is_dir: file_type.is_dir(),
+            match_path,
+        });
+    }
+
+    let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
+    let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
+    let mut match_buf = Vec::new();
+    let mut ranked = candidates
+        .iter()
+        .filter_map(|candidate| {
+            match_buf.clear();
+            let haystack = Utf32Str::new(candidate.match_path.as_str(), &mut match_buf);
+            pattern
+                .score(haystack, &mut matcher)
+                .map(|score| (score, candidate))
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|(left_score, left), (right_score, right)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| left.match_path.cmp(&right.match_path))
+    });
+
+    if ranked.len() > limit {
+        truncated = true;
+    }
+
+    // Recompute match indices only for the rows we return so the client can
+    // highlight exactly the characters the host scored.
+    let mut indices = Vec::new();
+    let entries = ranked
+        .into_iter()
+        .take(limit)
+        .map(|(_, candidate)| {
+            match_buf.clear();
+            let haystack = Utf32Str::new(candidate.match_path.as_str(), &mut match_buf);
+            indices.clear();
+            pattern.indices(haystack, &mut matcher, &mut indices);
+            indices.sort_unstable();
+            indices.dedup();
+            FsSearchEntry {
+                path: candidate.path.to_string_lossy().into_owned(),
+                rel_path: candidate.match_path.clone(),
+                is_dir: candidate.is_dir,
+                match_indices: indices.clone(),
+            }
+        })
+        .collect();
+
+    Ok(FsSearchResult {
+        entries,
+        truncated,
+        error: None,
+    })
+}
+
 async fn run_observer(session: Arc<ServerSession>, workdir: PathBuf, my_gen: u64) {
     let mut last_git: Option<u64> = None;
     let mut fs_snapshots: HashMap<String, u64> = HashMap::new();
@@ -474,6 +881,9 @@ pub struct DaemonState {
     pub identity: SharedIdentity,
     /// When the daemon started; used to compute uptime.
     pub started_at: std::time::Instant,
+    pub agent_hook_events: tokio::sync::Mutex<VecDeque<AgentHookEventRecord>>,
+    pub agent_cache: Arc<agent_cache::AgentCache>,
+    next_agent_hook_event_seq: AtomicU64,
 }
 
 impl std::fmt::Debug for DaemonState {
@@ -491,8 +901,72 @@ impl DaemonState {
             workdir,
             identity,
             started_at: std::time::Instant::now(),
+            agent_hook_events: tokio::sync::Mutex::new(VecDeque::new()),
+            agent_cache: agent_cache::AgentCache::new(),
+            next_agent_hook_event_seq: AtomicU64::new(1),
         }
     }
+
+    pub async fn record_agent_hook_event(&self, mut event: AgentHookEventRecord) -> u64 {
+        let seq = self
+            .next_agent_hook_event_seq
+            .fetch_add(1, Ordering::Relaxed);
+        event.seq = seq;
+        let mut events = self.agent_hook_events.lock().await;
+        events.push_back(event);
+        while events.len() > MAX_AGENT_HOOK_EVENTS {
+            events.pop_front();
+        }
+        seq
+    }
+
+    pub async fn list_agent_hook_events(
+        &self,
+        terminal_id: Option<&str>,
+        after_seq: u64,
+        limit: usize,
+    ) -> Vec<AgentHookEventRecord> {
+        let limit = limit.clamp(1, MAX_AGENT_HOOK_EVENTS);
+        self.agent_hook_events
+            .lock()
+            .await
+            .iter()
+            .filter(|event| event.seq > after_seq)
+            .filter(|event| {
+                terminal_id
+                    .map(|terminal_id| event.terminal_id.as_deref() == Some(terminal_id))
+                    .unwrap_or(true)
+            })
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+}
+
+const MAX_AGENT_HOOK_EVENTS: usize = 512;
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentHookEventRecord {
+    pub seq: u64,
+    pub kind: ManagedAgentKind,
+    pub provider_event_name: String,
+    pub provider_ids: AgentHookProviderIds,
+    pub normalized: Option<AgentEventSummary>,
+    pub terminal_id: Option<String>,
+    pub terminal_bound: bool,
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct AgentHookProviderIds {
+    pub session_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub tool_use_id: Option<String>,
+    pub task_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub elicitation_id: Option<String>,
+    pub transcript_id: Option<String>,
+    pub batch_tool_use_ids: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -534,10 +1008,7 @@ pub async fn handle_connection(
                 path_type,
             });
             tracing::warn!("auth failed from {}: {}", remote.fmt_short(), e);
-            // Wait for the client to close the connection (up to 500ms) so any
-            // error response we sent has time to be delivered before CONNECTION_CLOSE.
-            let _ =
-                tokio::time::timeout(std::time::Duration::from_millis(500), conn.closed()).await;
+            finish_auth_failed_connection(&conn).await;
             return Ok(());
         }
     };
@@ -556,7 +1027,7 @@ pub async fn handle_connection(
         &client_pubkey[..4],
         session.id,
     );
-    active_connection.spawn_monitor();
+    let monitor_task = active_connection.spawn_monitor();
     let metrics_connection_open = match metrics::record_connection_opened(&state.workdir) {
         Ok(()) => true,
         Err(e) => {
@@ -573,7 +1044,7 @@ pub async fn handle_connection(
     let session_start = std::time::Instant::now();
 
     // Spawn bandwidth sampler: reads iroh path stats every 60s while connected.
-    {
+    let bandwidth_task = {
         use iroh::Watcher;
         let conn_for_bw = conn.clone();
         tokio::spawn(async move {
@@ -586,6 +1057,9 @@ pub async fn handle_connection(
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
+                        if conn_for_bw.close_reason().is_some() {
+                            break;
+                        }
                         let path_list = paths.get();
                         let mut cur_tx = 0u64;
                         let mut cur_rx = 0u64;
@@ -624,10 +1098,12 @@ pub async fn handle_connection(
                     _ = conn_for_bw.closed() => break,
                 }
             }
-        });
-    }
+        })
+    };
 
-    // RPC dispatch loop
+    // RPC dispatch loop. Treat decode failures (newer-client variant /
+    // extended struct) as per-stream, not connection-level: breaking here
+    // would brick every other in-flight RPC on the same QUIC connection.
     loop {
         match irpc_iroh::read_request::<ZedraProto>(&conn).await {
             Ok(Some(msg)) => {
@@ -643,6 +1119,10 @@ pub async fn handle_connection(
                 });
             }
             Ok(None) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                tracing::warn!("ignoring undecodable request: {}", e);
+                continue;
+            }
             Err(e) => {
                 tracing::debug!("read_request error: {}", e);
                 break;
@@ -677,6 +1157,12 @@ pub async fn handle_connection(
             tracing::warn!("Failed to record connection metrics: {}", e);
         }
     }
+
+    if let Some(monitor_task) = monitor_task {
+        monitor_task.abort();
+    }
+    bandwidth_task.abort();
+    finish_host_connection(&conn).await;
 
     tracing::info!(
         "Connection closed: session={} (session stays alive in registry)",
@@ -953,6 +1439,23 @@ async fn handle_register(
             RegisterResult::Ok
         }
         ConsumeSlotResult::Consumed => {
+            // The slot may have been consumed by THIS client on an earlier
+            // connection that dropped before the client observed the result.
+            // Re-registration from a pubkey already in the ACL is idempotent:
+            // report success instead of a fatal HandshakeConsumed. A pubkey
+            // not in the ACL (e.g. the slot was burned by a bad-HMAC attempt)
+            // still gets HandshakeConsumed.
+            if registry
+                .is_in_session_acl(&msg.session_id, &msg.client_pubkey)
+                .await
+            {
+                tracing::info!(
+                    "Register: client {:?}... already registered to session {}; idempotent ok",
+                    &msg.client_pubkey[..4],
+                    msg.session_id,
+                );
+                return RegisterResult::Ok;
+            }
             tracing::warn!("Register: slot for {} already consumed", msg.session_id);
             utils::eprintln_warn(
                 "QR already used. Run `zedra qr` from the workspace, or add `--workdir <path>` from another directory.",
@@ -1129,7 +1632,7 @@ pub async fn create_terminal(
     session: &Arc<ServerSession>,
     cols: u16,
     rows: u16,
-    opts: SpawnOptions,
+    mut opts: SpawnOptions,
 ) -> Result<String> {
     if session.terminals.lock().await.len() >= MAX_TERMINALS_PER_SESSION {
         anyhow::bail!(
@@ -1140,10 +1643,19 @@ pub async fn create_terminal(
         );
     }
 
+    let id = session.next_terminal_id().await;
+    opts.env.push(("ZEDRA_TERMINAL_ID".to_string(), id.clone()));
+    if let Some(workdir) = &opts.workdir {
+        opts.env.push((
+            "ZEDRA_WORKDIR".to_string(),
+            workdir.to_string_lossy().into_owned(),
+        ));
+    }
+
+    let color_scheme = opts.color_scheme.unwrap_or(TerminalColorScheme::Dark);
     let initial_meta = initial_host_meta(&opts);
     let shell = ShellSession::spawn(cols, rows, opts)?;
     let (pty_reader, pty_writer, master, child) = shell.take_reader();
-    let id = session.next_terminal_id().await;
 
     tracing::info!(
         "create_terminal: id={} cols={} rows={} session={}",
@@ -1162,6 +1674,7 @@ pub async fn create_terminal(
     // Wrap the writer so TermAttach can hold a direct Arc clone and write
     // without locking session.terminals on every keystroke (Fix 3).
     let writer = Arc::new(std::sync::Mutex::new(pty_writer));
+    let query_reply_writer = writer.clone();
 
     session
         .insert_terminal(
@@ -1183,6 +1696,7 @@ pub async fn create_terminal(
     tokio::task::spawn_blocking(move || {
         let mut reader = pty_reader;
         let mut buf = [0u8; 8192];
+        let mut color_query_responder = TerminalColorQueryResponder::new(color_scheme);
         // Chunks that couldn't be sent (channel full) are held here and
         // coalesced with the next PTY read. This keeps the spawn_blocking
         // thread alive under QUIC back-pressure without blocking (Fix 2).
@@ -1192,6 +1706,19 @@ pub async fn create_terminal(
                 Ok(0) => break,
                 Ok(n) => {
                     let data = buf[..n].to_vec();
+
+                    // Launch-command TUIs can query colors before a client TerminalView attaches.
+                    // Answer these tiny OSC queries at the PTY boundary so startup style probes do
+                    // not race the mobile render path.
+                    let replies = color_query_responder.feed(&data);
+                    if !replies.is_empty() {
+                        if let Ok(mut writer) = query_reply_writer.lock() {
+                            for reply in replies {
+                                let _ = writer.write_all(&reply);
+                            }
+                            let _ = writer.flush();
+                        }
+                    }
 
                     // Scan for OSC sequences to keep the per-terminal metadata
                     // cache up to date. This runs on every PTY
@@ -1583,6 +2110,36 @@ async fn dispatch(
             }
         }
 
+        ZedraMessage::FsSearch(msg) => {
+            session.rpc_fs_reads.fetch_add(1, Ordering::Relaxed);
+            let path = match resolve_path(&state.workdir, &msg.path) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("FsSearch: rejected path {:?}: {}", msg.path, e);
+                    let _ = msg.tx.send(fs_search_error(e.to_string())).await;
+                    return Ok(());
+                }
+            };
+
+            let query = msg.query.clone();
+            let limit = msg.limit;
+            let search_result =
+                tokio::task::spawn_blocking(move || search_files(&path, &query, limit))
+                    .await
+                    .map_err(|error| anyhow::anyhow!("file search task failed: {error}"))
+                    .and_then(|result| result);
+
+            match search_result {
+                Ok(result) => {
+                    let _ = msg.tx.send(result).await;
+                }
+                Err(e) => {
+                    tracing::warn!("FsSearch: search failed for {:?}: {}", msg.path, e);
+                    let _ = msg.tx.send(fs_search_error(e.to_string())).await;
+                }
+            }
+        }
+
         ZedraMessage::FsRead(msg) => {
             session.rpc_fs_reads.fetch_add(1, Ordering::Relaxed);
             let path = match resolve_path(&state.workdir, &msg.path) {
@@ -1893,6 +2450,8 @@ async fn dispatch(
                 SpawnOptions {
                     workdir,
                     launch_cmd,
+                    color_scheme: None,
+                    env: Vec::new(),
                 },
             )
             .await
@@ -1908,6 +2467,49 @@ async fn dispatch(
                 }
                 Err(e) => {
                     tracing::warn!("TermCreate failed: {}", e);
+                    let _ = msg
+                        .tx
+                        .send(TermCreateResult {
+                            id: String::new(),
+                            error: Some(e.to_string()),
+                        })
+                        .await;
+                }
+            }
+        }
+
+        ZedraMessage::TermCreateV2(msg) => {
+            session.touch().await;
+            let workdir = session
+                .workdir
+                .clone()
+                .or_else(|| Some(state.workdir.clone()));
+            let has_launch_cmd = msg.launch_cmd.is_some();
+            let launch_cmd = msg.launch_cmd.clone();
+            match create_terminal(
+                &session,
+                msg.cols,
+                msg.rows,
+                SpawnOptions {
+                    workdir,
+                    launch_cmd,
+                    color_scheme: msg.color_scheme,
+                    env: Vec::new(),
+                },
+            )
+            .await
+            {
+                Ok(id) => {
+                    zedra_telemetry::send(Event::HostTerminalOpen { has_launch_cmd });
+                    let terminal_count = session.terminals.lock().await.len();
+                    if let Err(e) = metrics::record_terminal_created(&state.workdir, terminal_count)
+                    {
+                        tracing::warn!("Failed to record terminal metrics: {}", e);
+                    }
+                    let _ = msg.tx.send(TermCreateResult { id, error: None }).await;
+                }
+                Err(e) => {
+                    tracing::warn!("TermCreateV2 failed: {}", e);
                     let _ = msg
                         .tx
                         .send(TermCreateResult {
@@ -2396,6 +2998,109 @@ async fn dispatch(
                 response_bytes: text.len(),
             });
             let _ = msg.tx.send(AiPromptResult { text, done }).await;
+        }
+
+        ZedraMessage::AgentList(msg) => {
+            session.touch().await;
+            let workdir = session.workdir.as_ref().unwrap_or(&state.workdir);
+            let result =
+                agent::list_agents(&state.agent_cache, workdir, Some(&session), msg.refresh).await;
+            let _ = msg.tx.send(result).await;
+        }
+
+        ZedraMessage::AgentSessions(msg) => {
+            session.touch().await;
+            let workdir = session.workdir.as_ref().unwrap_or(&state.workdir);
+            let result = agent::list_agent_sessions(
+                &state.agent_cache,
+                msg.kind,
+                workdir,
+                Some(&session),
+                msg.limit,
+                msg.refresh,
+            )
+            .await;
+            let _ = msg.tx.send(result).await;
+        }
+
+        ZedraMessage::AgentInstalledList(msg) => {
+            session.touch().await;
+            let result = agent::list_installed_agents(&state.agent_cache, msg.refresh).await;
+            let _ = msg.tx.send(result).await;
+        }
+
+        ZedraMessage::AgentFiles(msg) => {
+            session.touch().await;
+            let kind = msg.kind;
+            // File reads are blocking; keep them off the async dispatch path.
+            let result = tokio::task::spawn_blocking(move || agent::agent_files(kind))
+                .await
+                .map(|files| AgentFilesResult { files, error: None })
+                .unwrap_or_else(|e| AgentFilesResult {
+                    files: Vec::new(),
+                    error: Some(e.to_string()),
+                });
+            let _ = msg.tx.send(result).await;
+        }
+
+        ZedraMessage::AgentResume(msg) => {
+            session.touch().await;
+            let workdir = session
+                .workdir
+                .clone()
+                .or_else(|| Some(state.workdir.clone()));
+            let launch_cmd = agent::resume_launch_command(msg.kind, &msg.session_id);
+            let Some(launch_cmd) = launch_cmd else {
+                let _ = msg
+                    .tx
+                    .send(AgentResumeResult {
+                        terminal_id: String::new(),
+                        error: Some("missing session id".to_string()),
+                    })
+                    .await;
+                return Ok(());
+            };
+            match create_terminal(
+                &session,
+                msg.cols,
+                msg.rows,
+                SpawnOptions {
+                    workdir,
+                    launch_cmd: Some(launch_cmd),
+                    color_scheme: None,
+                    env: Vec::new(),
+                },
+            )
+            .await
+            {
+                Ok(terminal_id) => {
+                    zedra_telemetry::send(Event::HostTerminalOpen {
+                        has_launch_cmd: true,
+                    });
+                    let terminal_count = session.terminals.lock().await.len();
+                    if let Err(e) = metrics::record_terminal_created(&state.workdir, terminal_count)
+                    {
+                        tracing::warn!("Failed to record terminal metrics: {}", e);
+                    }
+                    let _ = msg
+                        .tx
+                        .send(AgentResumeResult {
+                            terminal_id,
+                            error: None,
+                        })
+                        .await;
+                }
+                Err(e) => {
+                    tracing::warn!("AgentResume failed: {}", e);
+                    let _ = msg
+                        .tx
+                        .send(AgentResumeResult {
+                            terminal_id: String::new(),
+                            error: Some(e.to_string()),
+                        })
+                        .await;
+                }
+            }
         }
 
         // -- LSP --
