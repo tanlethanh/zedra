@@ -5,6 +5,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::identity;
@@ -235,7 +236,7 @@ pub async fn dev_auth(delta_url: &str, subject: &str) -> Result<DeltaConfig> {
     let config_dir = identity::host_config_dir()?;
     std::fs::create_dir_all(&config_dir)?;
     let signing_key = load_signing_key()?;
-    let client = DeltaClient::new(delta_url);
+    let client = DeltaHttp::new(delta_url);
     let display_name = default_host_display_name();
     let auth = client
         .dev_auth(&DevAuthRequest {
@@ -278,7 +279,7 @@ pub async fn start_browser_auth(delta_url: &str) -> Result<CliAuthSession> {
     let config_dir = identity::host_config_dir()?;
     std::fs::create_dir_all(&config_dir)?;
     let signing_key = load_signing_key()?;
-    let client = DeltaClient::new(delta_url);
+    let client = DeltaHttp::new(delta_url);
     let display_name = default_host_display_name();
     let started = client
         .cli_auth_start(&CliAuthStartRequest {
@@ -298,7 +299,7 @@ pub async fn start_browser_auth(delta_url: &str) -> Result<CliAuthSession> {
 }
 
 pub async fn complete_browser_auth(session: &CliAuthSession) -> Result<DeltaConfig> {
-    let client = DeltaClient::new(&session.delta_url);
+    let client = DeltaHttp::new(&session.delta_url);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10 * 60);
     loop {
         match client
@@ -349,251 +350,20 @@ pub async fn complete_browser_auth(session: &CliAuthSession) -> Result<DeltaConf
     }
 }
 
-pub async fn list_nodes() -> Result<Vec<NodeSummary>> {
-    let config = load_config()?;
-    let signing_key = load_signing_key()?;
-    let client = DeltaClient::new(&config.delta_url);
-    let response = client
-        .list_nodes_signed(config.stack_id, config.node_id, &signing_key)
-        .await?;
-    Ok(response.nodes)
-}
-
-pub async fn update_node_alias(target: String, alias: String) -> Result<NodeSummary> {
-    let config = load_config()?;
-    let signing_key = load_signing_key()?;
-    let client = DeltaClient::new(&config.delta_url);
-    let target_node_id = resolve_node_target(&client, &config, &signing_key, &target).await?;
-    let response = client
-        .update_node_signed(
-            config.stack_id,
-            config.node_id,
-            target_node_id,
-            &signing_key,
-            &NodeUpdateRequest { alias: Some(alias) },
-        )
-        .await?;
-    Ok(response.node)
-}
-
-pub async fn delete_node(target: String) -> Result<NodeDeleteResponse> {
-    let config = load_config()?;
-    let signing_key = load_signing_key()?;
-    let client = DeltaClient::new(&config.delta_url);
-    let target_node_id = resolve_node_target(&client, &config, &signing_key, &target).await?;
-    if target_node_id == config.node_id {
-        anyhow::bail!("refusing to delete the authenticated host node");
-    }
-    client
-        .delete_node_signed(
-            config.stack_id,
-            config.node_id,
-            target_node_id,
-            &signing_key,
-        )
-        .await
-}
-
-pub async fn send_notification(
-    target: String,
-    title: String,
-    body: Option<String>,
-    category: Option<String>,
-    deeplink: Option<String>,
-) -> Result<NotificationSendResponse> {
-    send_notification_impl(Some(target), title, body, category, deeplink).await
-}
-
-pub async fn send_notification_to_stack(
-    title: String,
-    body: Option<String>,
-    category: Option<String>,
-    deeplink: Option<String>,
-) -> Result<NotificationSendResponse> {
-    send_notification_impl(None, title, body, category, deeplink).await
-}
-
-async fn send_notification_impl(
-    target: Option<String>,
-    title: String,
-    body: Option<String>,
-    category: Option<String>,
-    deeplink: Option<String>,
-) -> Result<NotificationSendResponse> {
-    let config = load_config()?;
-    let signing_key = load_signing_key()?;
-    let client = DeltaClient::new(&config.delta_url);
-    let target_node_id = match target {
-        Some(target) => Some(resolve_node_target(&client, &config, &signing_key, &target).await?),
-        None => None,
-    };
-    client
-        .send_notification_signed(
-            config.stack_id,
-            config.node_id,
-            &signing_key,
-            &NotificationSendRequest {
-                target_node_id,
-                title,
-                body,
-                category,
-                priority: NotificationPriority::Normal,
-                ttl_seconds: None,
-                collapse_key: None,
-                deeplink,
-                data: Value::Object(Default::default()),
-            },
-        )
-        .await
-}
-
-pub async fn update_live_activity(
-    target: String,
-    activity_id: String,
-    alert_title: Option<String>,
-    alert_body: Option<String>,
-    content_state: Value,
-    end: bool,
-) -> Result<LiveActivityUpdateResponse> {
-    update_live_activity_impl(
-        Some(target),
-        activity_id,
-        alert_title,
-        alert_body,
-        content_state,
-        end,
-    )
-    .await
-}
-
-pub async fn update_live_activity_for_stack(
-    activity_id: String,
-    alert_title: Option<String>,
-    alert_body: Option<String>,
-    content_state: Value,
-    end: bool,
-) -> Result<LiveActivityUpdateResponse> {
-    update_live_activity_impl(
-        None,
-        activity_id,
-        alert_title,
-        alert_body,
-        content_state,
-        end,
-    )
-    .await
-}
-
-async fn update_live_activity_impl(
-    target: Option<String>,
-    activity_id: String,
-    alert_title: Option<String>,
-    alert_body: Option<String>,
-    content_state: Value,
-    end: bool,
-) -> Result<LiveActivityUpdateResponse> {
-    let config = load_config()?;
-    let signing_key = load_signing_key()?;
-    let client = DeltaClient::new(&config.delta_url);
-    let target_node_id = match target {
-        Some(target) => Some(resolve_node_target(&client, &config, &signing_key, &target).await?),
-        None => None,
-    };
-    tracing::info!(
-        target = "LA",
-        activity_id = %activity_id,
-        node = ?target_node_id,
-        end,
-        "sending live activity update to delta"
-    );
-    let response = client
-        .update_live_activity_signed(
-            config.stack_id,
-            config.node_id,
-            &signing_key,
-            &LiveActivityUpdateRequest {
-                target_node_id,
-                activity_id: activity_id.clone(),
-                event: if end {
-                    LiveActivityEvent::End
-                } else {
-                    LiveActivityEvent::Update
-                },
-                alert_title,
-                alert_body,
-                content_state,
-                stale_at: None,
-                dismissal_at: None,
-                priority: NotificationPriority::Normal,
-                ttl_seconds: Some(300),
-                collapse_key: Some(activity_id.clone()),
-            },
-        )
-        .await?;
-    tracing::info!(
-        target = "LA",
-        activity_id = %activity_id,
-        accepted = response.accepted,
-        recipients = response.recipients,
-        provider_ok = response.provider_success,
-        provider_fail = response.provider_failure,
-        "delta accepted live activity update"
-    );
-    Ok(response)
-}
-
-async fn resolve_node_target(
-    client: &DeltaClient,
-    config: &DeltaConfig,
-    signing_key: &SigningKey,
-    target: &str,
-) -> Result<Uuid> {
-    if let Ok(id) = Uuid::parse_str(target) {
-        return Ok(id);
-    }
-
-    let response = client
-        .list_nodes_signed(config.stack_id, config.node_id, signing_key)
-        .await?;
-    let normalized_target = normalize_alias_candidate(target);
-    let matches = response
-        .nodes
-        .iter()
-        .filter(|node| {
-            node.alias.as_deref() == Some(target)
-                || normalized_target
-                    .as_deref()
-                    .is_some_and(|alias| node.alias.as_deref() == Some(alias))
-        })
-        .collect::<Vec<_>>();
-    match matches.as_slice() {
-        [node] => Ok(node.id),
-        [] => {
-            let aliases = response
-                .nodes
-                .iter()
-                .filter_map(|node| node.alias.as_deref())
-                .collect::<Vec<_>>();
-            if aliases.is_empty() {
-                anyhow::bail!("unknown Delta node alias `{target}`; run `zedra stack nodes`");
-            }
-            anyhow::bail!(
-                "unknown Delta node alias `{target}`; available aliases: {}",
-                aliases.join(", ")
-            );
-        }
-        _ => anyhow::bail!("Delta node alias `{target}` is ambiguous; use the node id instead"),
-    }
-}
-
 async fn refresh_host_alias_if_default(
-    client: &DeltaClient,
+    client: &DeltaHttp,
     config: &DeltaConfig,
     signing_key: &SigningKey,
     display_name: &str,
 ) -> Result<()> {
-    let response = client
-        .list_nodes_signed(config.stack_id, config.node_id, signing_key)
+    let response: NodeListResponse = client
+        .signed_json(
+            "GET",
+            &format!("/v1/stacks/{}/nodes", config.stack_id),
+            config.node_id,
+            signing_key,
+            None::<&serde_json::Value>,
+        )
         .await?;
     let Some(self_node) = response.nodes.iter().find(|node| node.id == config.node_id) else {
         return Ok(());
@@ -601,15 +371,15 @@ async fn refresh_host_alias_if_default(
     if !should_refresh_host_alias(self_node.alias.as_deref(), display_name) {
         return Ok(());
     }
-    client
-        .update_node_signed(
-            config.stack_id,
-            config.node_id,
+    let _: NodeUpdateResponse = client
+        .signed_json(
+            "PATCH",
+            &format!("/v1/stacks/{}/nodes/{}", config.stack_id, config.node_id),
             config.node_id,
             signing_key,
-            &NodeUpdateRequest {
+            Some(&NodeUpdateRequest {
                 alias: Some(display_name.to_string()),
-            },
+            }),
         )
         .await?;
     Ok(())
@@ -687,12 +457,291 @@ fn default_hostname() -> Option<String> {
         .filter(|name| !name.is_empty())
 }
 
-struct DeltaClient {
+// ---------------------------------------------------------------------------
+// Public DeltaClient — holds config + signing key, exposes API methods
+// ---------------------------------------------------------------------------
+
+/// A reusable Delta API client. Load once with `DeltaClient::load()` and
+/// share across calls to avoid repeated config and key reads.
+pub struct DeltaClient {
+    config: DeltaConfig,
+    signing_key: SigningKey,
+    http: DeltaHttp,
+}
+
+impl DeltaClient {
+    /// Load config and signing key from disk.
+    pub fn load() -> Result<Self> {
+        let config = load_config()?;
+        let signing_key = load_signing_key()?;
+        let http = DeltaHttp::new(&config.delta_url);
+        Ok(Self {
+            config,
+            signing_key,
+            http,
+        })
+    }
+
+    /// Try to load from disk. Returns `None` if Delta is not configured.
+    pub fn try_load() -> Option<Arc<Self>> {
+        match Self::load() {
+            Ok(client) => Some(Arc::new(client)),
+            Err(err) => {
+                tracing::debug!("Delta not configured: {err:#}");
+                None
+            }
+        }
+    }
+
+    /// Signed request helper — pre-binds node_id and signing_key from this client.
+    async fn signed<B, T>(&self, method: &str, path: &str, body: Option<&B>) -> Result<T>
+    where
+        B: Serialize,
+        T: DeserializeOwned,
+    {
+        self.http
+            .signed_json(method, path, self.config.node_id, &self.signing_key, body)
+            .await
+    }
+
+    pub async fn list_nodes(&self) -> Result<Vec<NodeSummary>> {
+        let response: NodeListResponse = self
+            .signed(
+                "GET",
+                &format!("/v1/stacks/{}/nodes", self.config.stack_id),
+                None::<&serde_json::Value>,
+            )
+            .await?;
+        Ok(response.nodes)
+    }
+
+    pub async fn update_node_alias(&self, target: String, alias: String) -> Result<NodeSummary> {
+        let target_id = self.resolve_target(&target).await?;
+        let response: NodeUpdateResponse = self
+            .signed(
+                "PATCH",
+                &format!("/v1/stacks/{}/nodes/{target_id}", self.config.stack_id),
+                Some(&NodeUpdateRequest { alias: Some(alias) }),
+            )
+            .await?;
+        Ok(response.node)
+    }
+
+    pub async fn delete_node(&self, target: String) -> Result<NodeDeleteResponse> {
+        let target_id = self.resolve_target(&target).await?;
+        if target_id == self.config.node_id {
+            anyhow::bail!("refusing to delete the authenticated host node");
+        }
+        self.signed(
+            "DELETE",
+            &format!("/v1/stacks/{}/nodes/{target_id}", self.config.stack_id),
+            None::<&serde_json::Value>,
+        )
+        .await
+    }
+
+    /// Send a push notification to a specific node (by alias or UUID).
+    pub async fn send_notification(
+        &self,
+        target: String,
+        title: String,
+        body: Option<String>,
+        category: Option<String>,
+        deeplink: Option<String>,
+    ) -> Result<NotificationSendResponse> {
+        let target_node_id = Some(self.resolve_target(&target).await?);
+        self.signed(
+            "POST",
+            &format!("/v1/stacks/{}/notifications", self.config.stack_id),
+            Some(&NotificationSendRequest {
+                target_node_id,
+                title,
+                body,
+                category,
+                priority: NotificationPriority::Normal,
+                ttl_seconds: None,
+                collapse_key: None,
+                deeplink,
+                data: Value::Object(Default::default()),
+            }),
+        )
+        .await
+    }
+
+    /// Broadcast a push notification to all nodes in this stack.
+    pub async fn send_notification_to_stack(
+        &self,
+        title: String,
+        body: Option<String>,
+        category: Option<String>,
+        deeplink: Option<String>,
+    ) -> Result<NotificationSendResponse> {
+        self.signed(
+            "POST",
+            &format!("/v1/stacks/{}/notifications", self.config.stack_id),
+            Some(&NotificationSendRequest {
+                target_node_id: None,
+                title,
+                body,
+                category,
+                priority: NotificationPriority::Normal,
+                ttl_seconds: None,
+                collapse_key: None,
+                deeplink,
+                data: Value::Object(Default::default()),
+            }),
+        )
+        .await
+    }
+
+    /// Send a Live Activity update to a specific node.
+    pub async fn update_live_activity(
+        &self,
+        target: String,
+        activity_id: String,
+        alert_title: Option<String>,
+        alert_body: Option<String>,
+        content_state: Value,
+        end: bool,
+    ) -> Result<LiveActivityUpdateResponse> {
+        let target_node_id = Some(self.resolve_target(&target).await?);
+        self.send_live_activity(
+            target_node_id,
+            activity_id,
+            alert_title,
+            alert_body,
+            content_state,
+            end,
+        )
+        .await
+    }
+
+    /// Send a Live Activity update to all nodes in this stack.
+    pub async fn update_live_activity_for_stack(
+        &self,
+        activity_id: String,
+        alert_title: Option<String>,
+        alert_body: Option<String>,
+        content_state: Value,
+        end: bool,
+    ) -> Result<LiveActivityUpdateResponse> {
+        self.send_live_activity(
+            None,
+            activity_id,
+            alert_title,
+            alert_body,
+            content_state,
+            end,
+        )
+        .await
+    }
+
+    async fn send_live_activity(
+        &self,
+        target_node_id: Option<Uuid>,
+        activity_id: String,
+        alert_title: Option<String>,
+        alert_body: Option<String>,
+        content_state: Value,
+        end: bool,
+    ) -> Result<LiveActivityUpdateResponse> {
+        tracing::info!(
+            target = "LA",
+            activity_id = %activity_id,
+            node = ?target_node_id,
+            end,
+            "sending live activity update to delta"
+        );
+        let response: LiveActivityUpdateResponse = self
+            .signed(
+                "POST",
+                &format!("/v1/stacks/{}/live-activities", self.config.stack_id),
+                Some(&LiveActivityUpdateRequest {
+                    target_node_id,
+                    activity_id: activity_id.clone(),
+                    event: if end {
+                        LiveActivityEvent::End
+                    } else {
+                        LiveActivityEvent::Update
+                    },
+                    alert_title,
+                    alert_body,
+                    content_state,
+                    stale_at: None,
+                    dismissal_at: None,
+                    priority: NotificationPriority::Normal,
+                    ttl_seconds: Some(300),
+                    collapse_key: Some(activity_id.clone()),
+                }),
+            )
+            .await?;
+        tracing::info!(
+            target = "LA",
+            activity_id = %activity_id,
+            accepted = response.accepted,
+            recipients = response.recipients,
+            provider_ok = response.provider_success,
+            provider_fail = response.provider_failure,
+            "delta accepted live activity update"
+        );
+        Ok(response)
+    }
+
+    async fn resolve_target(&self, target: &str) -> Result<Uuid> {
+        if let Ok(id) = Uuid::parse_str(target) {
+            return Ok(id);
+        }
+        let response: NodeListResponse = self
+            .signed(
+                "GET",
+                &format!("/v1/stacks/{}/nodes", self.config.stack_id),
+                None::<&serde_json::Value>,
+            )
+            .await?;
+        let normalized = normalize_alias_candidate(target);
+        let matches = response
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.alias.as_deref() == Some(target)
+                    || normalized
+                        .as_deref()
+                        .is_some_and(|alias| node.alias.as_deref() == Some(alias))
+            })
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [node] => Ok(node.id),
+            [] => {
+                let aliases = response
+                    .nodes
+                    .iter()
+                    .filter_map(|node| node.alias.as_deref())
+                    .collect::<Vec<_>>();
+                if aliases.is_empty() {
+                    anyhow::bail!("unknown Delta node alias `{target}`; run `zedra stack nodes`");
+                }
+                anyhow::bail!(
+                    "unknown Delta node alias `{target}`; available aliases: {}",
+                    aliases.join(", ")
+                );
+            }
+            _ => {
+                anyhow::bail!("Delta node alias `{target}` is ambiguous; use the node id instead")
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Private HTTP transport
+// ---------------------------------------------------------------------------
+
+struct DeltaHttp {
     base_url: String,
     http: reqwest::Client,
 }
 
-impl DeltaClient {
+impl DeltaHttp {
     fn new(base_url: &str) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -726,91 +775,6 @@ impl DeltaClient {
             &format!("/v1/stacks/{stack_id}/nodes"),
             Some(access_token),
             req,
-        )
-        .await
-    }
-
-    async fn list_nodes_signed(
-        &self,
-        stack_id: Uuid,
-        node_id: Uuid,
-        signing_key: &SigningKey,
-    ) -> Result<NodeListResponse> {
-        self.signed_json::<serde_json::Value, _>(
-            "GET",
-            &format!("/v1/stacks/{stack_id}/nodes"),
-            node_id,
-            signing_key,
-            None,
-        )
-        .await
-    }
-
-    async fn update_node_signed(
-        &self,
-        stack_id: Uuid,
-        signing_node_id: Uuid,
-        target_node_id: Uuid,
-        signing_key: &SigningKey,
-        req: &NodeUpdateRequest,
-    ) -> Result<NodeUpdateResponse> {
-        self.signed_json(
-            "PATCH",
-            &format!("/v1/stacks/{stack_id}/nodes/{target_node_id}"),
-            signing_node_id,
-            signing_key,
-            Some(req),
-        )
-        .await
-    }
-
-    async fn delete_node_signed(
-        &self,
-        stack_id: Uuid,
-        signing_node_id: Uuid,
-        target_node_id: Uuid,
-        signing_key: &SigningKey,
-    ) -> Result<NodeDeleteResponse> {
-        self.signed_json::<serde_json::Value, _>(
-            "DELETE",
-            &format!("/v1/stacks/{stack_id}/nodes/{target_node_id}"),
-            signing_node_id,
-            signing_key,
-            None,
-        )
-        .await
-    }
-
-    async fn send_notification_signed(
-        &self,
-        stack_id: Uuid,
-        node_id: Uuid,
-        signing_key: &SigningKey,
-        req: &NotificationSendRequest,
-    ) -> Result<NotificationSendResponse> {
-        self.signed_json(
-            "POST",
-            &format!("/v1/stacks/{stack_id}/notifications"),
-            node_id,
-            signing_key,
-            Some(req),
-        )
-        .await
-    }
-
-    async fn update_live_activity_signed(
-        &self,
-        stack_id: Uuid,
-        node_id: Uuid,
-        signing_key: &SigningKey,
-        req: &LiveActivityUpdateRequest,
-    ) -> Result<LiveActivityUpdateResponse> {
-        self.signed_json(
-            "POST",
-            &format!("/v1/stacks/{stack_id}/live-activities"),
-            node_id,
-            signing_key,
-            Some(req),
         )
         .await
     }
