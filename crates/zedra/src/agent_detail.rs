@@ -1,7 +1,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use tracing::error;
-use zedra_rpc::proto::{AgentFile, AgentSummary, HostEvent, AgentKind};
+use zedra_rpc::proto::{AgentFile, AgentKind, AgentSummary, HostEvent};
 use zedra_session::{Session, SessionHandle};
 
 use crate::agent_ui::{

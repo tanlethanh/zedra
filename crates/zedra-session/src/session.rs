@@ -380,6 +380,7 @@ impl Session {
             HostEvent::AgentInfoChanged { info } => {
                 info!("HostEvent: agent info changed {:?}", info.kind);
             }
+            HostEvent::AgentHookReceived { .. } => {}
         }
 
         let _ = host_event_tx.send(event);

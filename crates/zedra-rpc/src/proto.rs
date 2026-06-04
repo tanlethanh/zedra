@@ -721,6 +721,11 @@ pub enum HostEvent {
     FsChanged { path: String },
     /// Cached managed-agent summary updated after an async fetch (for example CLI version).
     AgentInfoChanged { info: AgentSummary },
+    /// A hook event fired by a managed agent (Claude Code, Codex, etc.) in a terminal.
+    AgentHookReceived {
+        agent_kind: AgentKind,
+        event: AgentEventSummary,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -1101,7 +1106,6 @@ pub struct AgentSummary {
     pub capabilities: AgentCapabilities,
     pub workspace: AgentWorkspaceSummary,
     pub sessions: AgentSessionCounts,
-    pub live: AgentLiveSummary,
     pub last_activity_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
     pub data_sources: Vec<AgentDataSource>,
@@ -1194,16 +1198,8 @@ pub struct AgentWorkspaceSummary {
 pub struct AgentSessionCounts {
     pub total: usize,
     pub resumable: usize,
-    pub active_live: usize,
     pub latest_session_id: Option<String>,
     pub latest_session_title: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AgentLiveSummary {
-    pub active_terminal_ids: Vec<String>,
-    pub pending_action_count: usize,
-    pub latest_event: Option<AgentEventSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1215,14 +1211,8 @@ pub struct AgentSessionSummary {
     pub created_at: Option<DateTime<Utc>>,
     pub last_activity_at: Option<DateTime<Utc>>,
     pub resume: AgentResumeSummary,
-    pub live: AgentSessionLiveSummary,
-    pub provider: AgentProviderSessionInfo,
     pub git: Option<AgentGitSummary>,
     pub usage: Option<AgentUsageSnapshot>,
-    pub counters: AgentSessionCounters,
-    pub flags: AgentSessionFlags,
-    pub data_sources: Vec<AgentDataSource>,
-    pub warnings: Vec<AgentWarning>,
     pub transcript_size_bytes: Option<u64>,
 }
 
@@ -1231,27 +1221,6 @@ pub struct AgentResumeSummary {
     pub available: bool,
     pub unavailable_reason: Option<String>,
     pub action_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AgentSessionLiveSummary {
-    pub terminal_id: Option<String>,
-    pub status: AgentLifecycleStatus,
-    pub pending_action_count: usize,
-    pub current_turn_id: Option<String>,
-    pub latest_event: Option<AgentEventSummary>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AgentProviderSessionInfo {
-    pub model: Option<String>,
-    pub permission_mode: Option<String>,
-    pub cli_version: Option<String>,
-    pub origin: Option<String>,
-    pub source: Option<String>,
-    pub entrypoint: Option<String>,
-    pub native_project_id: Option<String>,
-    pub model_provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1279,27 +1248,6 @@ pub struct AgentUsageSnapshot {
     pub rate_limit_five_hour_resets_at: Option<i64>,
     /// Unix seconds at which the 7-day rate-limit window resets. None when not provided by the API.
     pub rate_limit_seven_day_resets_at: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AgentSessionCounters {
-    pub record_count: u64,
-    pub message_count: u64,
-    pub turn_count: u64,
-    pub tool_count: u64,
-    pub tool_failure_count: u64,
-    pub hook_success_count: u64,
-    pub hook_failure_count: u64,
-    pub malformed_record_count: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AgentSessionFlags {
-    pub is_sidechain: bool,
-    pub is_subagent: bool,
-    pub is_archived: bool,
-    pub historical_only: bool,
-    pub live_bound: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1341,12 +1289,6 @@ pub enum AgentEventKind {
     PermissionRequested,
     PermissionResolved,
     Notification,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum AgentActionKind {
-    Confirm,
-    Select,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1636,22 +1578,8 @@ mod tests {
                 sessions: AgentSessionCounts {
                     total: 1,
                     resumable: 1,
-                    active_live: 0,
                     latest_session_id: Some("session".into()),
                     latest_session_title: None,
-                },
-                live: AgentLiveSummary {
-                    active_terminal_ids: vec!["term".into()],
-                    pending_action_count: 1,
-                    latest_event: Some(AgentEventSummary {
-                        kind: AgentEventKind::PermissionRequested,
-                        status: AgentLifecycleStatus::WaitingForPermission,
-                        at: Some(now),
-                        terminal_id: Some("term".into()),
-                        session_id: Some("session".into()),
-                        turn_id: Some("turn".into()),
-                        tool_name: Some("Bash".into()),
-                    }),
                 },
                 last_activity_at: Some(now),
                 updated_at: now,
@@ -1686,23 +1614,6 @@ mod tests {
                 unavailable_reason: None,
                 action_id: Some("codex:019e".into()),
             },
-            live: AgentSessionLiveSummary {
-                terminal_id: Some("term".into()),
-                status: AgentLifecycleStatus::Running,
-                pending_action_count: 0,
-                current_turn_id: Some("turn".into()),
-                latest_event: None,
-            },
-            provider: AgentProviderSessionInfo {
-                model: Some("gpt-5.3-codex".into()),
-                permission_mode: Some("on-request".into()),
-                cli_version: Some("0.130.0".into()),
-                origin: Some("codex_cli".into()),
-                source: Some("cli".into()),
-                entrypoint: None,
-                native_project_id: None,
-                model_provider: Some("openai".into()),
-            },
             git: Some(AgentGitSummary {
                 branch: Some("main".into()),
                 worktree: None,
@@ -1724,25 +1635,6 @@ mod tests {
                 rate_limit_five_hour_resets_at: None,
                 rate_limit_seven_day_resets_at: None,
             }),
-            counters: AgentSessionCounters {
-                record_count: 3,
-                message_count: 0,
-                turn_count: 1,
-                tool_count: 0,
-                tool_failure_count: 0,
-                hook_success_count: 0,
-                hook_failure_count: 0,
-                malformed_record_count: 0,
-            },
-            flags: AgentSessionFlags {
-                is_sidechain: false,
-                is_subagent: false,
-                is_archived: false,
-                historical_only: true,
-                live_bound: false,
-            },
-            data_sources: vec![AgentDataSource::HistoricalScan],
-            warnings: vec![],
             transcript_size_bytes: Some(4096),
         };
 
