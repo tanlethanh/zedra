@@ -34,7 +34,7 @@ portable-pty = "0.8"
 qrcode = "0.14"
 
 # CLI
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 # Serialization
 base64-url.workspace = true

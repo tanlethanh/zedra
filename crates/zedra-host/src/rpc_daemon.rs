@@ -28,11 +28,11 @@ use crate::utils;
 use anyhow::Result;
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zedra_rpc::proto::*;
@@ -881,9 +881,9 @@ pub struct DaemonState {
     pub identity: SharedIdentity,
     /// When the daemon started; used to compute uptime.
     pub started_at: std::time::Instant,
-    pub agent_hook_events: tokio::sync::Mutex<VecDeque<AgentHookEventRecord>>,
     pub agent_cache: Arc<agent_cache::AgentCache>,
-    next_agent_hook_event_seq: AtomicU64,
+    /// Delta client loaded at daemon startup. `None` if Delta is not configured.
+    pub delta: Option<Arc<crate::delta::DeltaClient>>,
 }
 
 impl std::fmt::Debug for DaemonState {
@@ -895,78 +895,20 @@ impl std::fmt::Debug for DaemonState {
 }
 
 impl DaemonState {
-    pub fn new(workdir: std::path::PathBuf, identity: SharedIdentity) -> Self {
+    pub fn new(
+        workdir: std::path::PathBuf,
+        identity: SharedIdentity,
+        delta: Option<Arc<crate::delta::DeltaClient>>,
+    ) -> Self {
         Self {
             fs: Arc::new(LocalFs),
             workdir,
             identity,
             started_at: std::time::Instant::now(),
-            agent_hook_events: tokio::sync::Mutex::new(VecDeque::new()),
             agent_cache: agent_cache::AgentCache::new(),
-            next_agent_hook_event_seq: AtomicU64::new(1),
+            delta,
         }
     }
-
-    pub async fn record_agent_hook_event(&self, mut event: AgentHookEventRecord) -> u64 {
-        let seq = self
-            .next_agent_hook_event_seq
-            .fetch_add(1, Ordering::Relaxed);
-        event.seq = seq;
-        let mut events = self.agent_hook_events.lock().await;
-        events.push_back(event);
-        while events.len() > MAX_AGENT_HOOK_EVENTS {
-            events.pop_front();
-        }
-        seq
-    }
-
-    pub async fn list_agent_hook_events(
-        &self,
-        terminal_id: Option<&str>,
-        after_seq: u64,
-        limit: usize,
-    ) -> Vec<AgentHookEventRecord> {
-        let limit = limit.clamp(1, MAX_AGENT_HOOK_EVENTS);
-        self.agent_hook_events
-            .lock()
-            .await
-            .iter()
-            .filter(|event| event.seq > after_seq)
-            .filter(|event| {
-                terminal_id
-                    .map(|terminal_id| event.terminal_id.as_deref() == Some(terminal_id))
-                    .unwrap_or(true)
-            })
-            .take(limit)
-            .cloned()
-            .collect()
-    }
-}
-
-const MAX_AGENT_HOOK_EVENTS: usize = 512;
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct AgentHookEventRecord {
-    pub seq: u64,
-    pub kind: AgentKind,
-    pub provider_event_name: String,
-    pub provider_ids: AgentHookProviderIds,
-    pub normalized: Option<AgentEventSummary>,
-    pub terminal_id: Option<String>,
-    pub terminal_bound: bool,
-    pub warning: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, serde::Serialize)]
-pub struct AgentHookProviderIds {
-    pub session_id: Option<String>,
-    pub turn_id: Option<String>,
-    pub tool_use_id: Option<String>,
-    pub task_id: Option<String>,
-    pub agent_id: Option<String>,
-    pub elicitation_id: Option<String>,
-    pub transcript_id: Option<String>,
-    pub batch_tool_use_ids: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------

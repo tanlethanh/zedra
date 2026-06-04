@@ -83,7 +83,7 @@ async fn setup_host(
     std::fs::write(dir.path().join("hello.txt"), "hello world")?;
 
     let identity = Arc::new(HostIdentity::load_or_generate_for_workdir(dir.path())?);
-    let state = Arc::new(DaemonState::new(dir.path().to_path_buf(), identity.clone()));
+    let state = Arc::new(DaemonState::new(dir.path().to_path_buf(), identity.clone(), None));
     let registry = Arc::new(SessionRegistry::new());
 
     let endpoint = make_endpoint(relay_url).await?;

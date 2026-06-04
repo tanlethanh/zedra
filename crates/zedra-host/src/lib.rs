@@ -7,6 +7,7 @@ pub mod agent_claude;
 mod agent_claude_probe;
 pub mod agent_codex;
 pub mod agent_hermes;
+pub mod agent_hook_recv;
 pub mod agent_installed;
 pub mod agent_opencode;
 pub mod agent_pi;

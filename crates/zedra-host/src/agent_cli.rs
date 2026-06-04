@@ -1,17 +1,17 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use clap::{Args, Subcommand, ValueEnum};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::HashMap;
-use std::io::{stderr, Read, Write};
+use std::io::{Read, Write, stderr};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use zedra_host::{agent, identity, utils};
 use zedra_rpc::proto::{
-    AgentInfoField, AgentInstalledListResult, AgentListResult, AgentResumeResult,
+    AgentInfoField, AgentInstalledListResult, AgentKind, AgentListResult, AgentResumeResult,
     AgentSessionSummary, AgentSessionsResult, AgentSummary, AgentUsageSnapshot,
-    InstalledAgentEntry, AgentKind,
+    InstalledAgentEntry,
 };
 
 #[derive(Debug, Subcommand)]
@@ -22,8 +22,6 @@ pub enum AgentCommand {
     Sessions(AgentSessionsArgs),
     /// Resume an agent session in a new phone terminal
     Resume(AgentResumeArgs),
-    /// Listen for hook events bound to one terminal id
-    Listen(AgentListenArgs),
     /// Run local host filesystem/CLI scans (benchmark and raw preview)
     Scan {
         #[command(subcommand)]
@@ -152,25 +150,6 @@ pub struct AgentResumeArgs {
     json: bool,
 }
 
-#[derive(Debug, Args)]
-pub struct AgentListenArgs {
-    /// Zedra terminal id to listen on
-    #[arg(long = "tid", alias = "terminal-id")]
-    terminal_id: String,
-    /// Working directory of the running daemon
-    #[arg(short, long, default_value = ".")]
-    workdir: String,
-    /// Read the current buffered events and exit
-    #[arg(long)]
-    once: bool,
-    /// Poll interval while following events
-    #[arg(long, default_value_t = 1)]
-    interval_secs: u64,
-    /// Print one JSON object per event
-    #[arg(long)]
-    json: bool,
-}
-
 #[derive(Debug, Subcommand)]
 pub enum AgentHookCommand {
     /// Write project-local hook config files for this workspace
@@ -196,27 +175,18 @@ pub struct AgentHookInstallArgs {
 
 #[derive(Debug, Args)]
 pub struct AgentHookReceiveArgs {
-    /// Agent provider that emitted the hook
-    #[arg(long, value_enum)]
-    kind: CliManagedAgentKind,
-    /// Provider event name. If omitted, zedra tries to infer it from stdin JSON.
+    /// Normalized agent slug: claude, codex, opencode, pi, hermes
     #[arg(long)]
-    event: Option<String>,
-    /// Working directory of the running daemon
-    #[arg(short, long, default_value = ".")]
+    agent: String,
+    /// Working directory of the running daemon. Falls back to ZEDRA_WORKDIR env.
+    #[arg(short, long, env = "ZEDRA_WORKDIR", default_value = ".")]
     workdir: String,
-    /// Override the Zedra terminal id. Defaults to ZEDRA_TERMINAL_ID.
-    #[arg(long)]
+    /// Zedra terminal id the hook originated from. Falls back to ZEDRA_TERMINAL_ID env.
+    #[arg(long, env = "ZEDRA_TERMINAL_ID")]
     terminal_id: Option<String>,
-    /// Provider session id, when the hook exposes it
+    /// Hook payload JSON. If omitted, reads from stdin.
     #[arg(long)]
-    session_id: Option<String>,
-    /// Provider turn id, when the hook exposes it
-    #[arg(long)]
-    turn_id: Option<String>,
-    /// Tool name, when the hook exposes it
-    #[arg(long)]
-    tool_name: Option<String>,
+    payload: Option<String>,
     /// Do not print the daemon response. Useful for provider hooks.
     #[arg(long)]
     quiet: bool,
@@ -279,7 +249,6 @@ pub async fn run(command: AgentCommand) -> Result<()> {
         AgentCommand::List(args) => list_agents(args).await,
         AgentCommand::Sessions(args) => list_sessions(args).await,
         AgentCommand::Resume(args) => resume_session(args).await,
-        AgentCommand::Listen(args) => listen_events(args).await,
         AgentCommand::Scan { command } => run_scan(command).await,
         AgentCommand::Hook { command } => run_hook(command).await,
     }
@@ -654,49 +623,6 @@ async fn resume_session(args: AgentResumeArgs) -> Result<()> {
     Ok(())
 }
 
-async fn listen_events(args: AgentListenArgs) -> Result<()> {
-    let workdir = resolve_workdir(&args.workdir);
-    let mut after = 0;
-    if !args.json && !args.once {
-        println!(
-            "Listening for agent hook events on terminal {}",
-            args.terminal_id
-        );
-    }
-
-    loop {
-        let path = format!(
-            "/api/agent-hooks/events?terminal_id={}&after={after}&limit=100",
-            query_encode(&args.terminal_id)
-        );
-        let response: serde_json::Value = api_get(&workdir, &path).await?;
-        let events = response["events"].as_array().cloned().unwrap_or_default();
-
-        for event in &events {
-            if let Some(seq) = event["seq"].as_u64() {
-                after = after.max(seq);
-            }
-            if args.json {
-                println!("{}", serde_json::to_string(event)?);
-            } else {
-                println!("{}", render_hook_event(event));
-            }
-        }
-
-        if args.once {
-            if events.is_empty() && !args.json {
-                println!(
-                    "No agent hook events buffered for terminal {}.",
-                    args.terminal_id
-                );
-            }
-            return Ok(());
-        }
-
-        tokio::time::sleep(Duration::from_secs(args.interval_secs.max(1))).await;
-    }
-}
-
 async fn run_hook(command: AgentHookCommand) -> Result<()> {
     match command {
         AgentHookCommand::Install(args) => install_hooks(args),
@@ -707,22 +633,29 @@ async fn run_hook(command: AgentHookCommand) -> Result<()> {
 
 async fn receive_hook(args: AgentHookReceiveArgs) -> Result<()> {
     let workdir = resolve_workdir(&args.workdir);
-    let mut stdin = String::new();
-    std::io::stdin()
-        .read_to_string(&mut stdin)
-        .context("failed to read hook payload from stdin")?;
-    let payload = parse_hook_payload(&stdin);
+    let raw = match args.payload {
+        Some(p) => p,
+        None => {
+            let mut stdin = String::new();
+            std::io::stdin()
+                .read_to_string(&mut stdin)
+                .context("failed to read hook payload from stdin")?;
+            stdin
+        }
+    };
+    let payload = parse_hook_payload(&raw);
+    let slug = zedra_host::agent::managed_kind_from_slug(&args.agent)
+        .map(|k| zedra_host::agent_utils::program_name(k))
+        .unwrap_or(args.agent.as_str());
     let body = AgentHookForwardReq {
-        event_name: args.event,
-        terminal_id: args
-            .terminal_id
-            .or_else(|| std::env::var("ZEDRA_TERMINAL_ID").ok()),
-        session_id: args.session_id,
-        turn_id: args.turn_id,
-        tool_name: args.tool_name,
+        event_name: None,
+        terminal_id: args.terminal_id,
+        session_id: None,
+        turn_id: None,
+        tool_name: None,
         payload,
     };
-    let path = format!("/api/agent-hooks/{}", args.kind.slug());
+    let path = format!("/api/agent-hooks/{slug}");
     let response: serde_json::Value = api_post(&workdir, &path, &body).await?;
     if !args.quiet {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -1214,11 +1147,7 @@ fn agent_summary_row(agent: &AgentSummary) -> Vec<String> {
         },
         format!("{:?}", agent.setup.state),
         format!("{}/{}", agent.sessions.resumable, agent.sessions.total),
-        format!(
-            "{} term, {} pending",
-            agent.live.active_terminal_ids.len(),
-            agent.live.pending_action_count
-        ),
+        "-".to_string(),
         agent
             .sessions
             .latest_session_title
@@ -1321,163 +1250,11 @@ fn strip_home_path(path: &str) -> String {
 }
 
 fn render_hook_response(response: &serde_json::Value) -> String {
-    let normalized = response
-        .get("normalized")
-        .and_then(|value| value.get("kind"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("-");
-    let status = response
-        .get("normalized")
-        .and_then(|value| value.get("status"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("-");
-    let rows = vec![
-        (
-            "Seq",
-            response["seq"]
-                .as_u64()
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "-".to_string()),
-        ),
-        (
-            "Provider",
-            response["kind"].as_str().unwrap_or("-").to_string(),
-        ),
-        (
-            "Event",
-            response["provider_event_name"]
-                .as_str()
-                .unwrap_or("-")
-                .to_string(),
-        ),
-        (
-            "Provider IDs",
-            render_provider_ids(&response["provider_ids"]),
-        ),
-        ("Normalized", normalized.to_string()),
-        ("Status", status.to_string()),
-        (
-            "Terminal Bound",
-            response["terminal_bound"]
-                .as_bool()
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "-".to_string()),
-        ),
-        (
-            "Warning",
-            response["warning"].as_str().unwrap_or("-").to_string(),
-        ),
-    ];
-    format!("Agent Hook Received\n\n{}", utils::render_key_values(&rows))
-}
-
-fn render_hook_event(event: &serde_json::Value) -> String {
-    let normalized = event.get("normalized");
-    let kind = normalized
-        .and_then(|value| value.get("kind"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("-");
-    let status = normalized
-        .and_then(|value| value.get("status"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("-");
-    let session = normalized
-        .and_then(|value| value.get("session_id"))
-        .and_then(serde_json::Value::as_str);
-    let turn = normalized
-        .and_then(|value| value.get("turn_id"))
-        .and_then(serde_json::Value::as_str);
-    let tool = normalized
-        .and_then(|value| value.get("tool_name"))
-        .and_then(serde_json::Value::as_str);
-    let provider_ids = render_provider_ids(&event["provider_ids"]);
-    let warning = event["warning"].as_str();
-    let mut suffix = Vec::new();
-    push_label(&mut suffix, "session", session);
-    push_label(&mut suffix, "turn", turn);
-    push_label(&mut suffix, "tool", tool);
-    if provider_ids != "-" {
-        suffix.push(format!("ids={provider_ids}"));
-    }
-    push_label(&mut suffix, "warning", warning);
-
-    let base = format!(
-        "[{}] {} {} -> {} ({})",
-        event["seq"]
-            .as_u64()
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "-".to_string()),
-        event["kind"].as_str().unwrap_or("-"),
-        event["provider_event_name"].as_str().unwrap_or("-"),
-        kind,
-        status
-    );
-    if suffix.is_empty() {
-        base
+    if response["ok"].as_bool() == Some(true) {
+        "Agent hook delivered to daemon.".to_string()
     } else {
-        format!("{base} {}", suffix.join(" "))
+        format!("Agent hook failed: {response}")
     }
-}
-
-fn push_label(parts: &mut Vec<String>, label: &str, value: Option<&str>) {
-    if let Some(value) = value.filter(|value| !value.is_empty()) {
-        parts.push(format!("{label}={value}"));
-    }
-}
-
-fn render_provider_ids(provider_ids: &serde_json::Value) -> String {
-    let Some(provider_ids) = provider_ids.as_object() else {
-        return "-".to_string();
-    };
-    let mut parts = Vec::new();
-    for (key, label) in [
-        ("turn_id", "turn"),
-        ("tool_use_id", "tool_use"),
-        ("task_id", "task"),
-        ("agent_id", "agent"),
-        ("elicitation_id", "elicitation"),
-        ("transcript_id", "transcript"),
-    ] {
-        if let Some(value) = provider_ids
-            .get(key)
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| !value.is_empty())
-        {
-            parts.push(format!("{label}={value}"));
-        }
-    }
-    if let Some(values) = provider_ids
-        .get("batch_tool_use_ids")
-        .and_then(serde_json::Value::as_array)
-    {
-        let values = values
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .filter(|value| !value.is_empty())
-            .collect::<Vec<_>>();
-        if !values.is_empty() {
-            parts.push(format!("batch_tools={}", values.join(",")));
-        }
-    }
-
-    if parts.is_empty() {
-        "-".to_string()
-    } else {
-        parts.join(" ")
-    }
-}
-
-fn query_encode(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                encoded.push(byte as char)
-            }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    encoded
 }
 
 fn short_id(id: &str) -> String {
@@ -1562,33 +1339,5 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
         assert_eq!(format_session_time(time), "2026-05-21 08:07");
-    }
-
-    #[test]
-    fn hook_event_output_includes_terminal_bound_event_fields() {
-        let event = serde_json::json!({
-            "seq": 9,
-            "kind": "Claude",
-            "provider_event_name": "TaskCompleted",
-            "normalized": {
-                "kind": "TaskCompleted",
-                "status": "Completed",
-                "session_id": "session-1",
-                "turn_id": "turn-1",
-                "tool_name": "Bash"
-            },
-            "provider_ids": {
-                "task_id": "task-1",
-                "batch_tool_use_ids": []
-            },
-            "warning": null
-        });
-
-        let output = render_hook_event(&event);
-        assert!(output.contains("[9] Claude TaskCompleted -> TaskCompleted (Completed)"));
-        assert!(output.contains("session=session-1"));
-        assert!(output.contains("ids=task=task-1"));
-        assert!(!output.contains("corr="));
-        assert!(!output.contains("warning=-"));
     }
 }

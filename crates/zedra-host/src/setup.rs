@@ -225,6 +225,8 @@ fn install_claude_hooks() -> Result<()> {
             ("Stop", None, 2),
             ("TaskCompleted", None, 2),
             ("SessionEnd", None, 2),
+            ("SubagentStart", None, 2),
+            ("SubagentStop", None, 2),
         ],
         "Claude",
     )
@@ -242,6 +244,8 @@ fn install_codex_hooks() -> Result<()> {
             ("UserPromptSubmit", None, 2),
             ("PermissionRequest", Some("*"), 30),
             ("Stop", None, 2),
+            ("SubagentStart", None, 2),
+            ("SubagentStop", None, 2),
         ],
         "Codex",
     )
@@ -378,7 +382,7 @@ fn remove_opencode_hooks_in_dir(dir: &Path) -> Result<()> {
 
 fn hook_command(agent: &str) -> Result<String> {
     Ok(format!(
-        "{} agent-hook {}",
+        "{} agent hook receive --agent {}",
         shell_quote(&hook_binary()?),
         agent
     ))
@@ -434,7 +438,9 @@ fn is_zedra_hook_entry(entry: &Value, agent: &str) -> bool {
                 hooks.iter().any(|hook| {
                     hook.get("command")
                         .and_then(Value::as_str)
-                        .is_some_and(|command| command.contains(&format!(" agent-hook {agent}")))
+                        .is_some_and(|command| {
+                            command.contains(&format!(" agent hook receive --agent {agent}"))
+                        })
                 })
             })
 }
@@ -447,9 +453,8 @@ fn opencode_hook_plugin(binary: &str) -> Result<String> {
 const zedra = {binary};
 
 function send(event, payload = {{}}) {{
-  spawnSync(zedra, ["agent-hook", "opencode"], {{
-    input: JSON.stringify({{ event, ...payload }}),
-    stdio: ["pipe", "ignore", "ignore"],
+  spawnSync(zedra, ["agent", "hook", "receive", "--agent", "opencode", "--payload", JSON.stringify({{ event, ...payload }})], {{
+    stdio: ["ignore", "ignore", "ignore"],
     timeout: 2000,
   }});
 }}
@@ -750,7 +755,7 @@ mod tests {
         assert!(root["hooks"]["PermissionRequest"][0]["hooks"][0]["command"]
             .as_str()
             .unwrap()
-            .contains(" agent-hook Codex"));
+            .contains(" agent hook receive --agent Codex"));
         assert_eq!(
             root["hooks"]["PermissionRequest"][0]["hooks"][0]["statusMessage"],
             "Waiting for Zedra approval"
@@ -797,7 +802,8 @@ mod tests {
 
         let plugin_path = dir.path().join(OPENCODE_HOOK_PLUGIN);
         let plugin = fs::read_to_string(&plugin_path).unwrap();
-        assert!(plugin.contains(r#"spawnSync(zedra, ["agent-hook", "opencode"]"#));
+        assert!(plugin
+            .contains(r#"spawnSync(zedra, ["agent", "hook", "receive", "--agent", "opencode""#));
 
         let root = read_json_object(&config_path).unwrap();
         let plugins = root["plugin"].as_array().unwrap();

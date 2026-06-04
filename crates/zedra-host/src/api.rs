@@ -21,7 +21,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path as AxumPath, Query, State};
+use axum::extract::{Path as AxumPath, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -30,16 +30,19 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 
 use crate::agent;
+use crate::agent_hook_recv::{
+    ClaudeHookReceiver, CodexHookReceiver, HookContext, OpenCodeHookReceiver,
+};
 use crate::metrics;
 use crate::pty::SpawnOptions;
 use crate::qr;
-use crate::rpc_daemon::{create_terminal, AgentHookEventRecord, AgentHookProviderIds, DaemonState};
+use crate::rpc_daemon::{DaemonState, create_terminal};
 use crate::session_registry::{PairingSlotMode, ServerSession, SessionRegistry};
 use chrono::Utc;
-use zedra_rpc::proto::{
-    AgentEventSummary, AgentResumeResult, HostEvent, AgentKind, TerminalColorScheme,
-};
 use zedra_rpc::ZedraPairingTicket;
+use zedra_rpc::proto::{
+    AgentEventSummary, AgentKind, AgentResumeResult, HostEvent, TerminalColorScheme,
+};
 use zedra_telemetry::Event;
 
 // ---------------------------------------------------------------------------
@@ -497,18 +500,6 @@ pub struct AgentHookReq {
     pub payload: serde_json::Value,
 }
 
-#[derive(Debug, Serialize)]
-struct AgentHookResp {
-    ok: bool,
-    seq: u64,
-    kind: AgentKind,
-    provider_event_name: String,
-    provider_ids: AgentHookProviderIds,
-    normalized: Option<AgentEventSummary>,
-    terminal_bound: bool,
-    warning: Option<String>,
-}
-
 async fn receive_agent_hook_handler(
     State(s): State<ApiState>,
     headers: HeaderMap,
@@ -531,7 +522,7 @@ async fn receive_agent_hook_handler(
         .or_else(|| {
             req.payload
                 .get("event")
-                .and_then(|event| payload_string(event, "type"))
+                .and_then(|e| payload_string(e, "type"))
         })
         .unwrap_or_else(|| "unknown".to_string());
 
@@ -539,119 +530,17 @@ async fn receive_agent_hook_handler(
         .terminal_id
         .clone()
         .or_else(|| payload_string(&req.payload, "terminal_id"));
-    let provider_ids = extract_provider_ids(&req);
-    let terminal_bound = match terminal_id.as_deref() {
-        Some(id) if !id.is_empty() => terminal_exists(&s.registry, id).await,
-        _ => false,
-    };
-    let warning = if terminal_id.as_deref().filter(|id| !id.is_empty()).is_none() {
-        Some("hook did not include ZEDRA_TERMINAL_ID".to_string())
-    } else if !terminal_bound {
-        Some("hook terminal id is not active in this daemon".to_string())
-    } else {
-        None
+
+    let Some((event_kind, status)) = agent::normalize_event(kind, &event_name) else {
+        tracing::debug!(?kind, event_name, "agent hook event not recognized");
+        return StatusCode::OK.into_response();
     };
 
-    let normalized =
-        agent::normalize_event(kind, &event_name).map(|(event_kind, status)| AgentEventSummary {
-            kind: event_kind,
-            status,
-            at: Some(Utc::now()),
-            terminal_id: terminal_id.clone(),
-            session_id: req
-                .session_id
-                .clone()
-                .or_else(|| provider_ids.session_id.clone())
-                .or_else(|| payload_string(&req.payload, "session_id"))
-                .or_else(|| payload_string(&req.payload, "sessionID")),
-            turn_id: req
-                .turn_id
-                .clone()
-                .or_else(|| provider_ids.turn_id.clone())
-                .or_else(|| payload_string(&req.payload, "turn_id"))
-                .or_else(|| payload_string(&req.payload, "turnID")),
-            tool_name: req
-                .tool_name
-                .clone()
-                .or_else(|| payload_string(&req.payload, "tool_name"))
-                .or_else(|| payload_string(&req.payload, "tool")),
-        });
-    let record = AgentHookEventRecord {
-        seq: 0,
-        kind,
-        provider_event_name: event_name.clone(),
-        provider_ids: provider_ids.clone(),
+    let event = AgentEventSummary {
+        kind: event_kind,
+        status,
+        at: Some(Utc::now()),
         terminal_id: terminal_id.clone(),
-        normalized: normalized.clone(),
-        terminal_bound,
-        warning: warning.clone(),
-    };
-    let seq = s.daemon_state.record_agent_hook_event(record).await;
-
-    tracing::info!(
-        ?kind,
-        provider_event_name = %event_name,
-        terminal_bound,
-        normalized = ?normalized.as_ref().map(|event| event.kind),
-        "agent hook received"
-    );
-
-    Json(AgentHookResp {
-        ok: normalized.is_some(),
-        seq,
-        kind,
-        provider_event_name: event_name,
-        provider_ids,
-        normalized,
-        terminal_bound,
-        warning,
-    })
-    .into_response()
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AgentHookEventsQuery {
-    pub terminal_id: Option<String>,
-    #[serde(default)]
-    pub after: u64,
-    #[serde(default = "default_hook_event_limit")]
-    pub limit: usize,
-}
-
-fn default_hook_event_limit() -> usize {
-    100
-}
-
-#[derive(Debug, Serialize)]
-struct AgentHookEventsResp {
-    events: Vec<AgentHookEventRecord>,
-}
-
-async fn list_agent_hook_events_handler(
-    State(s): State<ApiState>,
-    headers: HeaderMap,
-    Query(query): Query<AgentHookEventsQuery>,
-) -> impl IntoResponse {
-    if !verify_token(&headers, &s.token) {
-        return unauthorized();
-    }
-    let events = s
-        .daemon_state
-        .list_agent_hook_events(query.terminal_id.as_deref(), query.after, query.limit)
-        .await;
-    Json(AgentHookEventsResp { events }).into_response()
-}
-
-fn payload_string(payload: &serde_json::Value, key: &str) -> Option<String> {
-    payload
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn extract_provider_ids(req: &AgentHookReq) -> AgentHookProviderIds {
-    let mut ids = AgentHookProviderIds {
         session_id: req
             .session_id
             .clone()
@@ -662,59 +551,45 @@ fn extract_provider_ids(req: &AgentHookReq) -> AgentHookProviderIds {
             .clone()
             .or_else(|| payload_string(&req.payload, "turn_id"))
             .or_else(|| payload_string(&req.payload, "turnID")),
-        tool_use_id: payload_string(&req.payload, "tool_use_id")
-            .or_else(|| payload_string(&req.payload, "toolUseID"))
-            .or_else(|| payload_string(&req.payload, "toolUseId")),
-        task_id: payload_string(&req.payload, "task_id")
-            .or_else(|| payload_string(&req.payload, "taskID"))
-            .or_else(|| payload_string(&req.payload, "taskId")),
-        agent_id: payload_string(&req.payload, "agent_id")
-            .or_else(|| payload_string(&req.payload, "agentID"))
-            .or_else(|| payload_string(&req.payload, "agentId")),
-        elicitation_id: payload_string(&req.payload, "elicitation_id")
-            .or_else(|| payload_string(&req.payload, "elicitationID"))
-            .or_else(|| payload_string(&req.payload, "elicitationId")),
-        transcript_id: payload_string(&req.payload, "transcript_path")
-            .and_then(|path| transcript_id_from_path(&path)),
-        batch_tool_use_ids: Vec::new(),
+        tool_name: req
+            .tool_name
+            .clone()
+            .or_else(|| payload_string(&req.payload, "tool_name"))
+            .or_else(|| payload_string(&req.payload, "tool")),
     };
-    ids.batch_tool_use_ids = req
-        .payload
-        .get("tool_calls")
-        .and_then(serde_json::Value::as_array)
-        .map(|tool_calls| {
-            tool_calls
-                .iter()
-                .filter_map(|tool_call| payload_string(tool_call, "tool_use_id"))
-                .collect()
-        })
-        .unwrap_or_default();
-    ids
-}
 
-fn transcript_id_from_path(path: &str) -> Option<String> {
-    std::path::Path::new(path)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .filter(|stem| !stem.is_empty())
-        .map(str::to_string)
-}
+    tracing::info!(?kind, ?event_kind, "agent hook received");
 
-async fn terminal_exists(registry: &SessionRegistry, terminal_id: &str) -> bool {
-    for session in registry.list_sessions().await {
-        let Some(session) = registry.get(&session.id).await else {
-            continue;
-        };
-        if session
-            .terminal_infos()
-            .await
-            .iter()
-            .any(|terminal| terminal.id == terminal_id)
-        {
-            return true;
+    let transcript_path =
+        agent::hook_string(&req.payload, &["transcript_path"]).map(std::path::PathBuf::from);
+    let ctx = HookContext {
+        registry: s.registry.clone(),
+        terminal_id,
+        delta: s.daemon_state.delta.clone(),
+        workdir: s.daemon_state.workdir.clone(),
+    };
+    tokio::spawn(async move {
+        match kind {
+            AgentKind::Claude => {
+                ClaudeHookReceiver { transcript_path }
+                    .receive(event, ctx)
+                    .await
+            }
+            AgentKind::Codex => CodexHookReceiver.receive(event, ctx).await,
+            AgentKind::OpenCode => OpenCodeHookReceiver.receive(event, ctx).await,
+            _ => {}
         }
-    }
-    false
+    });
+
+    Json(serde_json::json!({"ok": true})).into_response()
+}
+
+fn payload_string(payload: &serde_json::Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 // ---------------------------------------------------------------------------
@@ -737,10 +612,6 @@ pub async fn start(state: ApiState) -> anyhow::Result<std::net::SocketAddr> {
             get(list_agent_sessions_handler),
         )
         .route("/api/agents/:kind/resume", post(resume_agent_handler))
-        .route(
-            "/api/agent-hooks/events",
-            get(list_agent_hook_events_handler),
-        )
         .route("/api/agent-hooks/:kind", post(receive_agent_hook_handler))
         .with_state(state);
 
@@ -768,7 +639,11 @@ mod tests {
         let session = registry
             .create_named("test", dir.path().to_path_buf())
             .await;
-        let daemon_state = Arc::new(DaemonState::new(dir.path().to_path_buf(), identity.clone()));
+        let daemon_state = Arc::new(DaemonState::new(
+            dir.path().to_path_buf(),
+            identity.clone(),
+            None,
+        ));
         let endpoint = iroh::Endpoint::builder()
             .relay_mode(iroh::RelayMode::Disabled)
             .secret_key(iroh::SecretKey::from(rand::random::<[u8; 32]>()))
@@ -848,48 +723,5 @@ mod tests {
         }
 
         endpoint.close().await;
-    }
-
-    #[test]
-    fn extracts_safe_provider_ids_from_claude_tool_payload() {
-        let req = AgentHookReq {
-            event_name: Some("PreToolUse".to_string()),
-            terminal_id: None,
-            session_id: None,
-            turn_id: None,
-            tool_name: None,
-            payload: serde_json::json!({
-                "session_id": "claude-session",
-                "transcript_path": "/Users/me/.claude/projects/repo/claude-session.jsonl",
-                "tool_use_id": "toolu_123",
-                "tool_input": {"command": "secret command should not be copied"}
-            }),
-        };
-
-        let ids = extract_provider_ids(&req);
-        assert_eq!(ids.session_id.as_deref(), Some("claude-session"));
-        assert_eq!(ids.tool_use_id.as_deref(), Some("toolu_123"));
-        assert_eq!(ids.transcript_id.as_deref(), Some("claude-session"));
-    }
-
-    #[test]
-    fn extracts_batch_tool_ids_without_tool_outputs() {
-        let req = AgentHookReq {
-            event_name: Some("PostToolBatch".to_string()),
-            terminal_id: None,
-            session_id: None,
-            turn_id: None,
-            tool_name: None,
-            payload: serde_json::json!({
-                "session_id": "claude-session",
-                "tool_calls": [
-                    {"tool_use_id": "toolu_1", "tool_response": "large output"},
-                    {"tool_use_id": "toolu_2", "tool_input": {"file_path": "/tmp/a"}}
-                ]
-            }),
-        };
-
-        let ids = extract_provider_ids(&req);
-        assert_eq!(ids.batch_tool_use_ids, vec!["toolu_1", "toolu_2"]);
     }
 }
