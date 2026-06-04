@@ -92,6 +92,10 @@ impl FileSearchPanel {
             .update(cx, |input, _cx| input.set_value(""));
         let input_focus = self.search_input.read(cx).focus_handle(cx);
         input_focus.focus(window, cx);
+        // Android registers the platform input handler during the next render
+        // of this overlay. Requesting IME before that can leave the keyboard
+        // attached to no active handler while the caret is already focused.
+        #[cfg(not(target_os = "android"))]
         window.show_soft_keyboard();
         cx.notify();
     }
@@ -255,6 +259,7 @@ impl FileSearchPanel {
             .update(cx, |input, _cx| input.set_value(""));
         let input_focus = self.search_input.read(cx).focus_handle(cx);
         input_focus.focus(window, cx);
+        #[cfg(not(target_os = "android"))]
         window.show_soft_keyboard();
         cx.notify();
     }
