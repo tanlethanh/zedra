@@ -62,6 +62,14 @@ pub struct NotificationSendResponse {
     pub provider_failure: u32,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct LiveActivityUpdateResponse {
+    pub accepted: bool,
+    pub recipients: u32,
+    pub provider_success: u32,
+    pub provider_failure: u32,
+}
+
 #[derive(Debug, Deserialize)]
 struct AuthResponse {
     access_token: String,
@@ -172,6 +180,28 @@ struct NotificationSendRequest {
     collapse_key: Option<String>,
     deeplink: Option<String>,
     data: Value,
+}
+
+#[derive(Debug, Serialize)]
+struct LiveActivityUpdateRequest {
+    target_node_id: Option<Uuid>,
+    activity_id: String,
+    event: LiveActivityEvent,
+    alert_title: Option<String>,
+    alert_body: Option<String>,
+    content_state: Value,
+    stale_at: Option<String>,
+    dismissal_at: Option<String>,
+    priority: NotificationPriority,
+    ttl_seconds: Option<u32>,
+    collapse_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LiveActivityEvent {
+    Update,
+    End,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -371,17 +401,39 @@ pub async fn send_notification(
     category: Option<String>,
     deeplink: Option<String>,
 ) -> Result<NotificationSendResponse> {
+    send_notification_impl(Some(target), title, body, category, deeplink).await
+}
+
+pub async fn send_notification_to_stack(
+    title: String,
+    body: Option<String>,
+    category: Option<String>,
+    deeplink: Option<String>,
+) -> Result<NotificationSendResponse> {
+    send_notification_impl(None, title, body, category, deeplink).await
+}
+
+async fn send_notification_impl(
+    target: Option<String>,
+    title: String,
+    body: Option<String>,
+    category: Option<String>,
+    deeplink: Option<String>,
+) -> Result<NotificationSendResponse> {
     let config = load_config()?;
     let signing_key = load_signing_key()?;
     let client = DeltaClient::new(&config.delta_url);
-    let target_node_id = resolve_node_target(&client, &config, &signing_key, &target).await?;
+    let target_node_id = match target {
+        Some(target) => Some(resolve_node_target(&client, &config, &signing_key, &target).await?),
+        None => None,
+    };
     client
         .send_notification_signed(
             config.stack_id,
             config.node_id,
             &signing_key,
             &NotificationSendRequest {
-                target_node_id: Some(target_node_id),
+                target_node_id,
                 title,
                 body,
                 category,
@@ -393,6 +445,101 @@ pub async fn send_notification(
             },
         )
         .await
+}
+
+pub async fn update_live_activity(
+    target: String,
+    activity_id: String,
+    alert_title: Option<String>,
+    alert_body: Option<String>,
+    content_state: Value,
+    end: bool,
+) -> Result<LiveActivityUpdateResponse> {
+    update_live_activity_impl(
+        Some(target),
+        activity_id,
+        alert_title,
+        alert_body,
+        content_state,
+        end,
+    )
+    .await
+}
+
+pub async fn update_live_activity_for_stack(
+    activity_id: String,
+    alert_title: Option<String>,
+    alert_body: Option<String>,
+    content_state: Value,
+    end: bool,
+) -> Result<LiveActivityUpdateResponse> {
+    update_live_activity_impl(
+        None,
+        activity_id,
+        alert_title,
+        alert_body,
+        content_state,
+        end,
+    )
+    .await
+}
+
+async fn update_live_activity_impl(
+    target: Option<String>,
+    activity_id: String,
+    alert_title: Option<String>,
+    alert_body: Option<String>,
+    content_state: Value,
+    end: bool,
+) -> Result<LiveActivityUpdateResponse> {
+    let config = load_config()?;
+    let signing_key = load_signing_key()?;
+    let client = DeltaClient::new(&config.delta_url);
+    let target_node_id = match target {
+        Some(target) => Some(resolve_node_target(&client, &config, &signing_key, &target).await?),
+        None => None,
+    };
+    tracing::info!(
+        target = "LA",
+        activity_id = %activity_id,
+        node = ?target_node_id,
+        end,
+        "sending live activity update to delta"
+    );
+    let response = client
+        .update_live_activity_signed(
+            config.stack_id,
+            config.node_id,
+            &signing_key,
+            &LiveActivityUpdateRequest {
+                target_node_id,
+                activity_id: activity_id.clone(),
+                event: if end {
+                    LiveActivityEvent::End
+                } else {
+                    LiveActivityEvent::Update
+                },
+                alert_title,
+                alert_body,
+                content_state,
+                stale_at: None,
+                dismissal_at: None,
+                priority: NotificationPriority::Normal,
+                ttl_seconds: Some(300),
+                collapse_key: Some(activity_id.clone()),
+            },
+        )
+        .await?;
+    tracing::info!(
+        target = "LA",
+        activity_id = %activity_id,
+        accepted = response.accepted,
+        recipients = response.recipients,
+        provider_ok = response.provider_success,
+        provider_fail = response.provider_failure,
+        "delta accepted live activity update"
+    );
+    Ok(response)
 }
 
 async fn resolve_node_target(
@@ -644,6 +791,23 @@ impl DeltaClient {
         self.signed_json(
             "POST",
             &format!("/v1/stacks/{stack_id}/notifications"),
+            node_id,
+            signing_key,
+            Some(req),
+        )
+        .await
+    }
+
+    async fn update_live_activity_signed(
+        &self,
+        stack_id: Uuid,
+        node_id: Uuid,
+        signing_key: &SigningKey,
+        req: &LiveActivityUpdateRequest,
+    ) -> Result<LiveActivityUpdateResponse> {
+        self.signed_json(
+            "POST",
+            &format!("/v1/stacks/{stack_id}/live-activities"),
             node_id,
             signing_key,
             Some(req),

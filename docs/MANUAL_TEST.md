@@ -69,6 +69,33 @@
 6. Open `Native Selection` again, then tap outside the sheet
 7. Expected: the sheet dismisses without crashing
 
+## 0f. Delta Agent Hooks
+
+1. Sign in the host with Delta and confirm `zedra stack nodes` lists at least one push-enabled mobile node
+2. Run `zedra setup claude`, `zedra setup codex`, and `zedra setup opencode`
+3. Start a new Claude, Codex, and opencode session
+4. Submit a prompt, trigger a tool approval, use Add to Chat from a Zedra editor selection when an agent terminal is active, and let the task finish
+5. Expected: each agent event produces a Delta notification without exposing prompt, tool output, diff, file path, or terminal contents
+6. If an iOS Live Activity token is registered for the same `activity_id`, expected: the Live Activity changes to working, waiting, selection, and done/end states as the hooks fire
+7. Run each setup command again
+8. Expected: hook installation remains idempotent and does not duplicate hook entries
+
+## 0g. Android Delta Push + In-App Banner
+
+Requires `android/google-services.json` from the Firebase project. Without it the
+app still builds, but push registration reports an error instead of a token.
+
+1. Drop `google-services.json` into `android/`, then build and install: `./scripts/build-android.sh && cd android && ./gradlew installDebug`
+2. Open Settings → Delta and tap the push token row
+3. On Android 13+, expected: the system prompts for the notification permission; grant it
+4. Expected: registration succeeds, the row shows provider `fcm`, and `zedra stack nodes` lists the device (labeled with its `Build.MODEL`) as push-enabled
+5. From the host, trigger a Delta notification while the app is backgrounded
+6. Expected: a system notification appears in the `Delta notifications` channel; tapping it opens the app (and follows the `deeplink` data field when present)
+7. Trigger a notification (or tap a Developer in-app notification action) while the app is foregrounded
+8. Expected: an in-app banner slides up from the bottom, tinted by kind, auto-closing for transient banners; tapping it fires the action and suppresses the dismiss callback
+9. Build without `google-services.json` and repeat step 2
+10. Expected: the push row reports a configuration error and does not crash
+
 ## 1. Normal QR Scan → Connect
 
 1. Start host daemon: `zedra start --workdir .`
@@ -825,3 +852,30 @@ Expected:
 4. Archive the Release build and inspect the generated `Info.plist`
 5. Expected: the base `UISupportedInterfaceOrientations` key contains `UIInterfaceOrientationPortrait`
 6. Expected: the iPad-specific `UISupportedInterfaceOrientations~ipad` key contains portrait, portrait upside down, landscape left, and landscape right
+
+## 21. Task Live Activity (local MVP)
+
+Requires a physical device on iOS 16.2+ (Dynamic Island needs iPhone 14 Pro or
+later). Confirm `Settings > Zedra > Live Activities` is on. Trigger with deeplinks
+typed in Safari or via `xcrun devicectl device open` / a notes link.
+
+Deeplinks are `zedra://la-test/<action>/<taskId>`, where `<action>` is
+`start|needs|done|end` and `<taskId>` binds the action to a specific task (a terminal
+id in production). The trailing shows the aggregate `done/total` rollup.
+
+1. Open `zedra://la-test/start/term-1`, then `zedra://la-test/start/term-2`
+2. Expected: a Live Activity appears; Dynamic Island leading shows the Zedra glyph,
+   trailing shows `0/2`; lock screen headline reads "0/2 tasks done"
+3. Open `zedra://la-test/done/term-1`
+4. Expected: trailing updates to `1/2`
+5. Open `zedra://la-test/needs/term-2`
+6. Expected: trailing changes to an orange `!` (needs-attention outranks the count);
+   headline reads "Waiting for you"
+7. Open `zedra://la-test/done/term-2`
+8. Expected: all tasks done — trailing changes to a green checkmark; headline reads
+   "All done · 2/2"
+9. Open `zedra://la-test/end/term-1`, then `zedra://la-test/end/term-2`
+10. Expected: the activity stays while one task remains, then is removed when the last
+    task is ended (equivalently, `zedra://la-test/end` with no id clears it at once)
+11. Toggle `Settings > Zedra > Live Activities` off, then open `zedra://la-test/start/x`
+12. Expected: no activity appears; device log shows `[LA] disabled in Settings`

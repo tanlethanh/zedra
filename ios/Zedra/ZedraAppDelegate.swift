@@ -21,6 +21,13 @@ final class ZedraAppDelegate: UIResponder, UIApplicationDelegate {
         if ZedraDeltaGoogleSignIn.handleURL(url) {
             return true
         }
+        #if DEBUG
+        // `la-test` deeplinks are a debug-only on-device scaffold. Never compiled into
+        // release builds, where Delta drives the aggregate Live Activity instead.
+        if #available(iOS 16.2, *), LiveActivityController.handleTestURL(url) {
+            return true
+        }
+        #endif
         runtime.handleOpenURL(url)
         return true
     }

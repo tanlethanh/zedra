@@ -11,7 +11,7 @@
 use anyhow::{Context, Result};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 
-use std::io::{IsTerminal, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::sync::Arc;
@@ -91,6 +91,39 @@ enum Commands {
         /// Deeplink to open from the notification
         #[arg(long)]
         deeplink: Option<String>,
+    },
+
+    /// Send a Live Activity update through Zedra Delta
+    LiveActivity {
+        /// Target node alias or UUID
+        #[arg(long = "id")]
+        id: String,
+
+        /// Stable Live Activity id registered by the mobile app
+        #[arg(long)]
+        activity_id: String,
+
+        /// Optional alert title shown with the update
+        #[arg(long)]
+        title: Option<String>,
+
+        /// Optional alert body shown with the update
+        #[arg(long)]
+        body: Option<String>,
+
+        /// JSON object for ActivityKit content-state
+        #[arg(long, default_value = "{}")]
+        state: String,
+
+        /// End the Live Activity instead of updating it
+        #[arg(long)]
+        end: bool,
+    },
+
+    /// Agent hook entrypoint used by zedra setup integrations
+    AgentHook {
+        /// Agent name that emitted the hook
+        agent: String,
     },
 
     /// Start the Zedra daemon for this workspace
@@ -641,6 +674,32 @@ async fn main() -> Result<()> {
                 ("Provider OK", response.provider_success.to_string()),
                 ("Provider Fail", response.provider_failure.to_string()),
             ]);
+        }
+
+        Commands::LiveActivity {
+            id,
+            activity_id,
+            title,
+            body,
+            state,
+            end,
+        } => {
+            let content_state = parse_json_object(&state)?;
+            let response =
+                delta::update_live_activity(id, activity_id, title, body, content_state, end)
+                    .await?;
+            utils::println_success("Live Activity update accepted.");
+            println!();
+            utils::print_key_values(&[
+                ("Accepted", response.accepted.to_string()),
+                ("Recipients", response.recipients.to_string()),
+                ("Provider OK", response.provider_success.to_string()),
+                ("Provider Fail", response.provider_failure.to_string()),
+            ]);
+        }
+
+        Commands::AgentHook { agent } => {
+            run_agent_hook(agent).await?;
         }
 
         Commands::Client {
@@ -1351,6 +1410,181 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn parse_json_object(input: &str) -> Result<serde_json::Value> {
+    let value: serde_json::Value = serde_json::from_str(input).context("parse --state JSON")?;
+    if value.is_object() {
+        Ok(value)
+    } else {
+        anyhow::bail!("--state must be a JSON object");
+    }
+}
+
+async fn run_agent_hook(agent: String) -> Result<()> {
+    let mut input = String::new();
+    std::io::stdin()
+        .read_to_string(&mut input)
+        .context("read agent hook payload")?;
+    let payload = serde_json::from_str::<serde_json::Value>(&input).unwrap_or_default();
+    let event = hook_event_name(&payload);
+    let agent = normalize_agent_label(&agent);
+    let summary = agent_hook_summary(&agent, &event, &payload);
+
+    // Hooks must not block the agent if Delta is not configured or a mobile device
+    // has no active Live Activity token yet.
+    if let Err(err) = delta::send_notification_to_stack(
+        summary.title.clone(),
+        summary.body.clone(),
+        Some("agent".to_string()),
+        None,
+    )
+    .await
+    {
+        tracing::warn!(agent = %agent, event = %event, error = %err, "Delta agent hook notification failed");
+    }
+    if let Err(err) = delta::update_live_activity_for_stack(
+        summary.activity_id,
+        Some(summary.title),
+        summary.body,
+        summary.content_state,
+        summary.end_live_activity,
+    )
+    .await
+    {
+        tracing::warn!(agent = %agent, event = %event, error = %err, "Delta agent hook live activity update failed");
+    }
+    Ok(())
+}
+
+struct AgentHookSummary {
+    title: String,
+    body: Option<String>,
+    activity_id: String,
+    content_state: serde_json::Value,
+    end_live_activity: bool,
+}
+
+fn agent_hook_summary(agent: &str, event: &str, payload: &serde_json::Value) -> AgentHookSummary {
+    let session_id = hook_string(payload, &["session_id", "sessionID"])
+        .or_else(|| std::env::var("CLAUDE_CODE_SESSION_ID").ok())
+        .unwrap_or_else(|| "default".to_string());
+    let activity_id = std::env::var("ZEDRA_AGENT_ACTIVITY_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("agent-{agent}-{}", compact_id(&session_id)));
+    let cwd = hook_string(payload, &["cwd", "CLAUDE_PROJECT_DIR"]).or_else(|| {
+        std::env::current_dir()
+            .ok()
+            .map(|path| path.display().to_string())
+    });
+    let kind = classify_agent_hook_event(event, payload);
+    let project = cwd
+        .as_deref()
+        .and_then(|cwd| Path::new(cwd).file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or("workspace");
+
+    let (title, status, end_live_activity) = match kind {
+        AgentHookKind::Working => (format!("{agent} started"), "working", false),
+        AgentHookKind::Waiting => (format!("{agent} waiting for approval"), "waiting", false),
+        AgentHookKind::Selection => (format!("{agent} received selection"), "selection", false),
+        AgentHookKind::Done => (format!("{agent} done"), "done", true),
+        AgentHookKind::Other => (format!("{agent} updated"), "updated", false),
+    };
+    let body = Some(project.to_string());
+    AgentHookSummary {
+        title,
+        body,
+        activity_id,
+        content_state: serde_json::json!({
+            "agent": agent,
+            "event": event,
+            "status": status,
+            "project": project,
+        }),
+        end_live_activity,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum AgentHookKind {
+    Working,
+    Waiting,
+    Selection,
+    Done,
+    Other,
+}
+
+fn classify_agent_hook_event(event: &str, payload: &serde_json::Value) -> AgentHookKind {
+    let event = event.to_ascii_lowercase();
+    if event.contains("permission") || event.contains("approval") || event.contains("elicitation") {
+        return AgentHookKind::Waiting;
+    }
+    if event.contains("stop") || event.contains("completed") || event.contains("sessionend") {
+        return AgentHookKind::Done;
+    }
+    if event.contains("userpromptsubmit") || event.contains("chat.message") {
+        return AgentHookKind::Working;
+    }
+    if event.contains("selection")
+        || hook_string(payload, &["tool_name", "tool", "name"])
+            .is_some_and(|tool| tool.to_ascii_lowercase().contains("selection"))
+    {
+        return AgentHookKind::Selection;
+    }
+    AgentHookKind::Other
+}
+
+fn hook_event_name(payload: &serde_json::Value) -> String {
+    hook_string(
+        payload,
+        &["hook_event_name", "event", "type", "event_name", "name"],
+    )
+    .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn hook_string(payload: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| payload.get(*key).and_then(|value| value.as_str()))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn normalize_agent_label(agent: &str) -> String {
+    match agent.trim().to_ascii_lowercase().as_str() {
+        "claude" | "claude-code" => "Claude".to_string(),
+        "codex" | "openai" => "Codex".to_string(),
+        "opencode" | "open-code" => "OpenCode".to_string(),
+        other if !other.is_empty() => other.to_string(),
+        _ => "Agent".to_string(),
+    }
+}
+
+fn compact_id(value: &str) -> String {
+    let mut id = String::new();
+    let mut last_was_dash = false;
+    for ch in value.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            id.push(ch);
+            last_was_dash = false;
+        } else if !last_was_dash && !id.is_empty() {
+            id.push('-');
+            last_was_dash = true;
+        }
+        if id.len() >= 80 {
+            break;
+        }
+    }
+    while id.ends_with('-') {
+        id.pop();
+    }
+    if id.is_empty() {
+        "default".to_string()
+    } else {
+        id
+    }
 }
 
 fn print_delta_browser_auth_prompt(session: &delta::CliAuthSession) {
@@ -2448,6 +2682,25 @@ mod tests {
         assert!(output.contains("  ID       terminal-id"));
         assert!(output.contains("  Session  session-id"));
         assert!(output.contains("  Command  claude"));
+    }
+
+    #[test]
+    fn classifies_agent_hook_events_without_payload_contents() {
+        assert_eq!(
+            classify_agent_hook_event("PermissionRequest", &serde_json::json!({})),
+            AgentHookKind::Waiting
+        );
+        assert_eq!(
+            classify_agent_hook_event("Stop", &serde_json::json!({})),
+            AgentHookKind::Done
+        );
+        assert_eq!(
+            classify_agent_hook_event(
+                "tool.execute.after",
+                &serde_json::json!({"tool": "selection"})
+            ),
+            AgentHookKind::Selection
+        );
     }
 
     #[cfg(unix)]
