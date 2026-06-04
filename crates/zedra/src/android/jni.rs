@@ -455,8 +455,10 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeKeyboardAccessoryVi
     _env: JNIEnv,
     _class: JClass,
 ) -> jboolean {
-    gpui_android::with_platform(|platform| platform.has_active_keyboard_accessory())
-        .unwrap_or(false) as jboolean
+    let visible = gpui_android::with_platform(|platform| platform.has_active_keyboard_accessory())
+        .unwrap_or(false);
+    tracing::debug!("[DEBUG-ANDROID-IME] zedra.nativeKeyboardAccessoryVisible visible={visible}");
+    visible as jboolean
 }
 
 #[unsafe(no_mangle)]
@@ -544,6 +546,7 @@ fn with_main_activity_class(
 
 pub fn show_keyboard() {
     jni_call("show_keyboard", || {
+        tracing::debug!("[DEBUG-ANDROID-IME] zedra.jni showKeyboard");
         with_main_activity_class("show_keyboard", |env, class| {
             if let Err(e) = env.call_static_method(class, "showKeyboard", "()V", &[]) {
                 tracing::error!("jni: showKeyboard failed: {:?}", e);
@@ -554,6 +557,7 @@ pub fn show_keyboard() {
 
 pub fn hide_keyboard() {
     jni_call("hide_keyboard", || {
+        tracing::debug!("[DEBUG-ANDROID-IME] zedra.jni hideKeyboard");
         with_main_activity_class("hide_keyboard", |env, class| {
             if let Err(e) = env.call_static_method(class, "hideKeyboard", "()V", &[]) {
                 tracing::error!("jni: hideKeyboard failed: {:?}", e);
