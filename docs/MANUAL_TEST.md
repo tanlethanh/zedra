@@ -63,6 +63,15 @@
 12. Tap `Native Notification` repeatedly
 13. Expected: multiple notifications collect into the same bubble stack and all auto-close after their configured durations by default
 
+## 0c-Settings. Delta Settings Flow
+
+1. Run a Debug build and open Settings
+2. Expected: `Profile` and `Notifications` appear above `Appearance`
+3. Start sign-in or notification registration
+4. Expected: progress or error status replaces the relevant row description, with no separate `Status` row and no combined status/description text
+5. Sign in to Delta, then tap the logout icon in the profile row
+6. Expected: a native confirmation alert appears; cancelling keeps the profile signed in, and confirming returns the profile row to `Sign In`
+
 ## 0c-Android. Native Presentations And Embedded Sheet
 
 1. Run a Debug Android build and open Settings

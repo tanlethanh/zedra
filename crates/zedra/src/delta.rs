@@ -196,6 +196,17 @@ pub fn status() -> DeltaStatus {
     load_state().unwrap_or_default().status()
 }
 
+pub fn sign_out() -> Result<DeltaStatus> {
+    let state = DeltaState {
+        base_url: load_state()
+            .map(|state| state.base_url)
+            .unwrap_or_else(|_| default_base_url()),
+        ..DeltaState::default()
+    };
+    save_state(&state)?;
+    Ok(state.status())
+}
+
 pub async fn sign_in_with_google(id_token: String, email: Option<String>) -> Result<DeltaStatus> {
     let mut state = load_state().unwrap_or_default();
     state.base_url = normalize_base_url(&state.base_url);

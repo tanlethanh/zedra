@@ -106,6 +106,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 ## Recent Learnings
 
 - GPUI scroll containers need an explicit `.id(...)`. In nested flex layouts, also constrain the full parent chain with `size_full()` and `min_h_0()` or scrolling can silently fail.
+- In GPUI `flex_col()` children, avoid `w_full()` for width fill; let stretch work with `min_w_0()`. For right-aligned row actions, make the left text column `flex_1()` and the action `flex_none()`.
 - GPUI text wrapping requires definite width constraints. Use `.w(px(width))` not `.max_w(px(width))` for text containers or text wraps at viewport width.
 - Prefer `cx.spawn(...)` for UI-thread async work and `session_runtime().spawn(...)` for Tokio session or network work when `cx` is unavailable.
 - Session-to-UI flow is `Session / SessionHandle -> ConnectEvent -> SessionState -> WorkspaceState -> Views`. Preserve that layering.

@@ -25,13 +25,21 @@ enum DeltaSettingsEvent {
     StartGoogleSignIn,
     GoogleSignIn(Result<platform_bridge::DeltaGoogleSignInResult, String>),
     PushToken(Result<platform_bridge::DeltaPushTokenResult, String>),
+    ConfirmLogout,
     OperationComplete {
         result: Result<delta::DeltaStatus, String>,
-        success_message: &'static str,
+        success_message: Option<&'static str>,
+        target: DeltaMessageTarget,
     },
 }
 
 static PENDING_DELTA_EVENT: PendingSlot<DeltaSettingsEvent> = PendingSlot::new();
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DeltaMessageTarget {
+    Profile,
+    Notifications,
+}
 
 pub struct SettingsView {
     focus_handle: FocusHandle,
@@ -40,6 +48,7 @@ pub struct SettingsView {
     sheet_view: Entity<crate::sheet_demo_view::SheetDemoView>,
     delta_status: delta::DeltaStatus,
     delta_message: Option<String>,
+    delta_message_target: DeltaMessageTarget,
     delta_busy: bool,
     _delta_task: Task<()>,
 }
@@ -59,6 +68,7 @@ impl SettingsView {
             sheet_view,
             delta_status: delta::status(),
             delta_message: None,
+            delta_message_target: DeltaMessageTarget::Profile,
             delta_busy: false,
             _delta_task: delta_task,
         }
@@ -69,6 +79,7 @@ impl SettingsView {
             return;
         }
         self.delta_busy = true;
+        self.delta_message_target = DeltaMessageTarget::Profile;
         self.delta_message = Some("Opening Google sign-in".to_string());
         platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
         platform_bridge::start_delta_google_sign_in(|result| {
@@ -81,7 +92,8 @@ impl SettingsView {
         if self.delta_busy {
             return;
         }
-        self.delta_message = Some("Choose a sign-in method".to_string());
+        self.delta_message_target = DeltaMessageTarget::Profile;
+        self.delta_message = None;
         platform_bridge::trigger_haptic(HapticFeedback::SelectionChanged);
         platform_bridge::show_selection(
             "Sign In",
@@ -101,6 +113,7 @@ impl SettingsView {
             return;
         }
         self.delta_busy = true;
+        self.delta_message_target = DeltaMessageTarget::Notifications;
         self.delta_message = Some("Requesting notification permission".to_string());
         platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
         platform_bridge::request_delta_push_token(|result| {
@@ -119,6 +132,7 @@ impl SettingsView {
                 self.start_google_sign_in(cx);
             }
             DeltaSettingsEvent::GoogleSignIn(Ok(result)) => {
+                self.delta_message_target = DeltaMessageTarget::Profile;
                 self.delta_message = Some("Registering Delta mobile node".to_string());
                 zedra_session::session_runtime().spawn(async move {
                     let result = delta::sign_in_with_google(result.id_token, result.email)
@@ -126,7 +140,8 @@ impl SettingsView {
                         .map_err(|err| format!("{err:#}"));
                     PENDING_DELTA_EVENT.set(DeltaSettingsEvent::OperationComplete {
                         result,
-                        success_message: "Signed in to Delta",
+                        success_message: None,
+                        target: DeltaMessageTarget::Profile,
                     });
                 });
             }
@@ -134,6 +149,7 @@ impl SettingsView {
                 self.finish_delta_error(message);
             }
             DeltaSettingsEvent::PushToken(Ok(result)) => {
+                self.delta_message_target = DeltaMessageTarget::Notifications;
                 self.delta_message = Some("Registering push token".to_string());
                 zedra_session::session_runtime().spawn(async move {
                     let result = delta::register_push_token(
@@ -145,26 +161,44 @@ impl SettingsView {
                     .map_err(|err| format!("{err:#}"));
                     PENDING_DELTA_EVENT.set(DeltaSettingsEvent::OperationComplete {
                         result,
-                        success_message: "Notifications enabled",
+                        success_message: Some("Notifications enabled"),
+                        target: DeltaMessageTarget::Notifications,
                     });
                 });
             }
             DeltaSettingsEvent::PushToken(Err(message)) => {
                 self.finish_delta_error(message);
             }
+            DeltaSettingsEvent::ConfirmLogout => {
+                self.delta_message_target = DeltaMessageTarget::Profile;
+                match delta::sign_out().map_err(|err| format!("{err:#}")) {
+                    Ok(status) => {
+                        self.delta_status = status;
+                        self.delta_busy = false;
+                        self.delta_message = Some("Signed out of Delta".to_string());
+                    }
+                    Err(message) => {
+                        self.finish_delta_error(message);
+                    }
+                }
+            }
             DeltaSettingsEvent::OperationComplete {
                 result: Ok(status),
                 success_message,
+                target,
             } => {
                 self.delta_status = status;
                 self.delta_busy = false;
-                self.delta_message = Some(success_message.to_string());
-                platform_bridge::show_native_notification(
-                    NativeNotificationOptions::new(success_message)
-                        .kind(NativeNotificationKind::Success)
-                        .system_image("checkmark.circle")
-                        .duration_secs(2.6),
-                );
+                self.delta_message_target = target;
+                self.delta_message = None;
+                if let Some(success_message) = success_message {
+                    platform_bridge::show_native_notification(
+                        NativeNotificationOptions::new(success_message)
+                            .kind(NativeNotificationKind::Success)
+                            .system_image("checkmark.circle")
+                            .duration_secs(2.6),
+                    );
+                }
             }
             DeltaSettingsEvent::OperationComplete {
                 result: Err(message),
@@ -226,6 +260,23 @@ impl SettingsView {
             (false, Some(provider), _, true) => format!("{provider} token not registered"),
             _ => "Request permission and register this device".to_string(),
         }
+    }
+
+    fn show_logout_confirmation(&self) {
+        platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+        platform_bridge::show_alert(
+            "",
+            "Log out of Delta?",
+            vec![
+                AlertButton::destructive("Log Out"),
+                AlertButton::cancel("Cancel"),
+            ],
+            |button_index| {
+                if button_index == 0 {
+                    PENDING_DELTA_EVENT.set(DeltaSettingsEvent::ConfirmLogout);
+                }
+            },
+        );
     }
 
     fn set_theme_preference(&self, preference: ThemePreference, cx: &mut Context<Self>) {
@@ -331,10 +382,26 @@ impl Render for SettingsView {
             .unwrap_or('Z')
             .to_ascii_uppercase()
             .to_string();
-        let profile_summary = self.profile_summary();
-        let push_summary = self.push_summary();
+        let profile_summary = status_or_summary(
+            self.profile_summary(),
+            delta_message.as_deref(),
+            self.delta_message_target,
+            DeltaMessageTarget::Profile,
+        );
+        let sign_in_summary = status_or_summary(
+            "Choose a sign-in method".to_string(),
+            delta_message.as_deref(),
+            self.delta_message_target,
+            DeltaMessageTarget::Profile,
+        );
+        let push_summary = status_or_summary(
+            self.push_summary(),
+            delta_message.as_deref(),
+            self.delta_message_target,
+            DeltaMessageTarget::Notifications,
+        );
         let sign_in_title = if self.delta_busy {
-            "Working..."
+            "Signing in..."
         } else {
             "Sign In"
         };
@@ -405,6 +472,44 @@ impl Render for SettingsView {
                             .flex()
                             .flex_col()
                             .gap(px(theme::SPACING_MD))
+                            .child(section_header(cx, "Profile"))
+                            .when(self.delta_status.signed_in, |this| {
+                                this.child(profile_info_row(
+                                    cx,
+                                    "settings-delta-profile",
+                                    profile_initial,
+                                    profile_title,
+                                    profile_summary,
+                                    Some(cx.listener(|this, _event, _window, _cx| {
+                                        this.show_logout_confirmation();
+                                    })),
+                                ))
+                            })
+                            .when(!self.delta_status.signed_in, |this| {
+                                this.child(
+                                    action_row(
+                                        cx,
+                                        "settings-delta-sign-in",
+                                        sign_in_title,
+                                        sign_in_summary,
+                                    )
+                                    .on_press(cx.listener(|this, _event, _window, cx| {
+                                        this.show_sign_in_methods(cx);
+                                    })),
+                                )
+                            })
+                            .child(section_header(cx, "Notifications"))
+                            .child(
+                                action_row(
+                                    cx,
+                                    "settings-delta-push-token",
+                                    "Enable Notifications",
+                                    push_summary,
+                                )
+                                .on_press(cx.listener(|this, _event, _window, cx| {
+                                    this.request_push_token(cx);
+                                })),
+                            )
                             .child(section_header(cx, "Appearance"))
                             .child(appearance_theme_toggle(
                                 cx,
@@ -416,49 +521,6 @@ impl Render for SettingsView {
                                     this.set_theme_preference(ThemePreference::Light, cx);
                                 }),
                             ))
-                            .child(section_header(cx, "Profile"))
-                            .when(self.delta_status.signed_in, |this| {
-                                this.child(profile_info_row(
-                                    cx,
-                                    "settings-delta-profile",
-                                    profile_initial,
-                                    profile_title,
-                                    profile_summary,
-                                ))
-                            })
-                            .when(!self.delta_status.signed_in, |this| {
-                                this.child(
-                                    action_row_text(
-                                        cx,
-                                        "settings-delta-sign-in",
-                                        sign_in_title,
-                                        "Choose a sign-in method",
-                                    )
-                                    .on_press(cx.listener(|this, _event, _window, cx| {
-                                        this.show_sign_in_methods(cx);
-                                    })),
-                                )
-                            })
-                            .when_some(delta_message, |this, message| {
-                                this.child(info_row(
-                                    cx,
-                                    "settings-delta-message",
-                                    "Status",
-                                    message,
-                                ))
-                            })
-                            .child(section_header(cx, "Notifications"))
-                            .child(
-                                action_row_text(
-                                    cx,
-                                    "settings-delta-push-token",
-                                    "Enable Notifications",
-                                    push_summary,
-                                )
-                                .on_press(cx.listener(|this, _event, _window, cx| {
-                                    this.request_push_token(cx);
-                                })),
-                            )
                             .when(cfg!(debug_assertions), |section| {
                                 section
                                     .child(section_header(cx, "Developer"))
@@ -688,37 +750,18 @@ fn action_row(
         )
 }
 
-fn info_row(
-    cx: &App,
-    id: &'static str,
-    title: impl Into<SharedString>,
-    description: impl Into<SharedString>,
-) -> Stateful<Div> {
-    let title = title.into();
-    let description = description.into();
-    div()
-        .id(id)
-        .w_full()
-        .min_w_0()
-        .py(px(8.0))
-        .flex()
-        .flex_col()
-        .gap(px(3.0))
-        .child(
-            div()
-                .text_color(rgb(theme::text_secondary(cx)))
-                .text_size(px(theme::FONT_BODY))
-                .font_family(fonts::MONO_FONT_FAMILY)
-                .font_weight(FontWeight::MEDIUM)
-                .child(title),
-        )
-        .child(
-            div()
-                .text_color(rgb(theme::text_muted(cx)))
-                .text_size(px(theme::FONT_DETAIL))
-                .font_family(fonts::MONO_FONT_FAMILY)
-                .child(description),
-        )
+fn status_or_summary(
+    summary: String,
+    status: Option<&str>,
+    status_target: DeltaMessageTarget,
+    row_target: DeltaMessageTarget,
+) -> String {
+    if status_target == row_target {
+        if let Some(status) = status.filter(|message| !message.trim().is_empty()) {
+            return status.to_string();
+        }
+    }
+    summary
 }
 
 fn profile_info_row(
@@ -727,13 +770,13 @@ fn profile_info_row(
     initials: impl Into<SharedString>,
     title: impl Into<SharedString>,
     description: impl Into<SharedString>,
+    on_logout: Option<impl Fn(&PressEvent, &mut Window, &mut App) + 'static>,
 ) -> Stateful<Div> {
     let initials = initials.into();
     let title = title.into();
     let description = description.into();
-    div()
+    let mut row = div()
         .id(id)
-        .w_full()
         .min_w_0()
         .min_h(px(56.0))
         .py(px(10.0))
@@ -780,6 +823,34 @@ fn profile_info_row(
                         .font_family(fonts::MONO_FONT_FAMILY)
                         .child(description),
                 ),
+        );
+
+    if let Some(on_logout) = on_logout {
+        row = row.child(logout_button(cx, on_logout));
+    }
+
+    row
+}
+
+fn logout_button(
+    cx: &App,
+    on_press: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id("settings-delta-logout")
+        .flex_none()
+        .size(px(16.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .hit_slop(px(14.0))
+        .on_press(on_press)
+        .child(
+            svg()
+                .path("icons/log-out.svg")
+                .size(px(12.0))
+                .text_color(rgb(theme::accent_red(cx))),
         )
 }
 
