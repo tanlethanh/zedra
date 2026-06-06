@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
+use tokio::sync::broadcast;
 
 use gpui::{AnyView, App, Bounds, Entity, Pixels, Point, Render};
 
@@ -760,6 +761,46 @@ pub fn trigger_haptic(feedback: HapticFeedback) {
     bridge().trigger_haptic(feedback);
 }
 
+/// Sound effects the app can play through the platform bridge.
+#[derive(Clone, Copy, Debug)]
+pub enum SoundEffect {
+    /// Short tick played on agent state transitions (WaitingApproval, Completed).
+    AgentNotification,
+}
+
+impl SoundEffect {
+    pub fn to_i32(self) -> i32 {
+        match self {
+            SoundEffect::AgentNotification => 0,
+        }
+    }
+}
+
+static APP_IN_FOREGROUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+static FOREGROUND_TX: OnceLock<broadcast::Sender<bool>> = OnceLock::new();
+
+fn foreground_tx() -> &'static broadcast::Sender<bool> {
+    FOREGROUND_TX.get_or_init(|| broadcast::channel(4).0)
+}
+
+pub fn subscribe_foreground_state() -> broadcast::Receiver<bool> {
+    foreground_tx().subscribe()
+}
+
+pub fn set_app_in_foreground(value: bool) {
+    APP_IN_FOREGROUND.store(value, std::sync::atomic::Ordering::Relaxed);
+    let _ = foreground_tx().send(value);
+}
+
+pub fn is_app_in_foreground() -> bool {
+    APP_IN_FOREGROUND.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn play_sound(sound: SoundEffect) {
+    bridge().play_sound(sound);
+}
+
 /// OS color scheme reported by the platform bridge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SystemTheme {
@@ -820,6 +861,8 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn open_url(&self, _url: &str) {}
     /// Trigger a haptic feedback pattern. No-op on platforms without haptic hardware.
     fn trigger_haptic(&self, _feedback: HapticFeedback) {}
+    /// Play a short UI sound effect. No-op on platforms without audio or when silent.
+    fn play_sound(&self, _sound: SoundEffect) {}
     /// Position or update a native floating icon button that is anchored by a GPUI wrapper.
     fn update_native_floating_button(&self, _id: u32, _options: &NativeFloatingButtonOptions) {}
     /// Hide a native floating icon button.

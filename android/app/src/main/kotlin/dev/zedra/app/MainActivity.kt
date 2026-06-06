@@ -103,6 +103,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         runtime.onResume()
+        nativeSetAppForeground(true)
         if (::surfaceView.isInitialized) {
             surfaceView.requestFocus()
         }
@@ -118,6 +119,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
+        nativeSetAppForeground(false)
         runtime.onStop()
     }
 
@@ -254,6 +256,8 @@ class MainActivity : AppCompatActivity() {
         @JvmStatic external fun nativeKeyboardAccessoryVisible(): Boolean
 
         @JvmStatic external fun nativeSystemBackPressed(): Boolean
+
+        @JvmStatic external fun nativeSetAppForeground(foreground: Boolean)
 
         // ===== Rust → Java callbacks =====
 

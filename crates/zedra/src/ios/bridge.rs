@@ -5,7 +5,7 @@ use crate::deeplink;
 use crate::platform_bridge::{
     self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback, ListPickerItem,
     NativeDictationPreviewOptions, NativeEditMenuItem, NativeFloatingButtonOptions,
-    NativeNotificationOptions, PlatformBridge, SystemTheme,
+    NativeNotificationOptions, PlatformBridge, SoundEffect, SystemTheme,
 };
 
 /// Screen scale factor (e.g. 3.0 for @3x), stored as f32 bits.
@@ -127,6 +127,9 @@ unsafe extern "C" {
     /// Trigger a UIKit haptic feedback generator.
     /// kind encoding matches HapticFeedback::to_i32().
     fn ios_trigger_haptic(kind: i32);
+    /// Play a UI sound effect via AudioToolbox.
+    /// kind encoding matches SoundEffect::to_i32().
+    fn ios_play_sound(kind: i32);
     /// Position or update a native floating icon button.
     fn ios_update_native_floating_button_with_icon(
         callback_id: u32,
@@ -265,6 +268,10 @@ impl PlatformBridge for IosBridge {
 
     fn trigger_haptic(&self, feedback: HapticFeedback) {
         unsafe { ios_trigger_haptic(feedback.to_i32()) };
+    }
+
+    fn play_sound(&self, sound: SoundEffect) {
+        unsafe { ios_play_sound(sound.to_i32()) };
     }
 
     fn present_alert(&self, id: u32, title: &str, message: &str, buttons: &[AlertButton]) {
@@ -605,7 +612,13 @@ pub extern "C" fn zedra_ios_text_input_dismiss(callback_id: u32) {
 /// Wire this to the iOS app delegate's `applicationDidEnterBackground`.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_app_did_enter_background() {
+    platform_bridge::set_app_in_foreground(false);
     platform_bridge::clear_pending_alerts();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_app_will_enter_foreground() {
+    platform_bridge::set_app_in_foreground(true);
 }
 
 #[unsafe(no_mangle)]

@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use zedra_rpc::proto::AgentState;
+
 use crate::agent;
 
 #[derive(Clone, Default, Debug, PartialEq)]
@@ -25,6 +27,7 @@ pub struct TerminalMeta {
     pub agent_icon: Option<&'static str>,
     pub agent_kind: Option<agent::Kind>,
     pub agent_source: AgentIdentitySource,
+    pub agent_state: AgentState,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -65,6 +68,10 @@ impl TerminalState {
 
     pub fn set_cwd(&mut self, id: &str, cwd: String) {
         self.entry(id).cwd = Some(cwd);
+    }
+
+    pub fn set_agent_state(&mut self, id: &str, state: AgentState) {
+        self.entry(id).agent_state = state;
     }
 
     pub fn set_shell_running(&mut self, id: &str) {

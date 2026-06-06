@@ -467,6 +467,18 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeSystemBackPressed(
     crate::android::entry::handle_system_back() as jboolean
 }
 
+/// Foreground/background state from the Android activity lifecycle
+/// (onResume → true, onStop → false). Mirrors the iOS bridge so the host can
+/// decide between RPC-only delivery and Delta push notifications.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeSetAppForeground(
+    _env: JNIEnv,
+    _class: JClass,
+    foreground: jboolean,
+) {
+    platform_bridge::set_app_in_foreground(foreground != 0);
+}
+
 fn dispatch_deeplink(url: String) {
     tracing::info!(url = &url[..url.len().min(80)], "jni: deeplink");
     match crate::deeplink::parse(&url) {
@@ -944,32 +956,6 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeDeltaPushTokenError
     platform_bridge::dispatch_delta_push_token_error(callback_id as u32, message);
 }
 
-/// Delivered from `MainActivity` when the user taps an in-app notification banner.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeNotificationAction(
-    _env: JNIEnv,
-    _class: JClass,
-    callback_id: jint,
-) {
-    if callback_id <= 0 {
-        return;
-    }
-    platform_bridge::dispatch_native_notification_action(callback_id as u32);
-}
-
-/// Delivered from `MainActivity` when an in-app notification banner is dismissed.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeNotificationDismiss(
-    _env: JNIEnv,
-    _class: JClass,
-    callback_id: jint,
-) {
-    if callback_id <= 0 {
-        return;
-    }
-    platform_bridge::dispatch_native_notification_dismiss(callback_id as u32);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -979,6 +965,8 @@ mod tests {
         // This test just verifies the JNI exports compile
         // Actual testing requires a JVM
     }
+}
+
 pub fn show_text_input(id: u32, title: &str, placeholder: &str, initial_value: &str) {
     let title = title.to_string();
     let placeholder = placeholder.to_string();

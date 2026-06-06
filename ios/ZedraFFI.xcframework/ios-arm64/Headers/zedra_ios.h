@@ -161,6 +161,12 @@ extern void ios_open_url(const char *url);
 extern void ios_trigger_haptic(int32_t kind);
 
 /**
+ * Play a UI sound effect via AudioToolbox.
+ * kind encoding matches SoundEffect::to_i32().
+ */
+extern void ios_play_sound(int32_t kind);
+
+/**
  * Position or update a native floating icon button.
  */
 extern void ios_update_native_floating_button_with_icon(uint32_t callback_id,
@@ -272,6 +278,8 @@ void zedra_ios_text_input_dismiss(uint32_t callback_id);
  * Wire this to the iOS app delegate's `applicationDidEnterBackground`.
  */
 void zedra_ios_app_did_enter_background(void);
+
+void zedra_ios_app_will_enter_foreground(void);
 
 void zedra_ios_native_notification_action(uint32_t callback_id);
 

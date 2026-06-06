@@ -11,6 +11,7 @@
 /// Used in the workspace drawer terminal tab and the quick-action panel.
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use zedra_rpc::proto::AgentState;
 
 use crate::terminal_state::ShellState;
 use crate::{fonts, theme};
@@ -23,9 +24,24 @@ pub struct TerminalCardProps {
     pub title: Option<String>,
     pub cwd: Option<String>,
     pub agent_icon: Option<&'static str>,
+    pub agent_state: AgentState,
     pub shell_state: ShellState,
     pub last_exit_code: Option<i32>,
     pub on_close: Option<Box<dyn Fn(&PressEvent, &mut Window, &mut App) + 'static>>,
+}
+
+/// Diameter of the live agent-state dot overlaid on the terminal icon.
+const AGENT_DOT_SIZE: f32 = 8.0;
+
+/// Colour for the live agent-state dot, or `None` when no dot should show (Idle).
+fn agent_dot_color(cx: &App, state: AgentState) -> Option<u32> {
+    match state {
+        AgentState::Running => Some(theme::accent_blue(cx)),
+        AgentState::WaitingApproval => Some(theme::accent_yellow(cx)),
+        AgentState::Completed => Some(theme::accent_green(cx)),
+        AgentState::Error => Some(theme::accent_red(cx)),
+        AgentState::Idle => None,
+    }
 }
 
 /// Colour of the status dot based on shell state and last exit code.
@@ -151,14 +167,32 @@ pub fn render_terminal_card(cx: &App, props: TerminalCardProps) -> Stateful<Div>
         // Icon — brand icon for known AI agents, terminal icon otherwise.
         // Colour tied to active state only for visual consistency.
         .child(
-            svg()
-                .path(icon_path)
+            div()
+                .relative()
                 .size(px(theme::ICON_TERMINAL))
                 .flex_shrink_0()
-                .text_color(if is_active {
-                    rgb(theme::text_primary(cx))
-                } else {
-                    rgb(theme::text_muted(cx))
+                .child(
+                    svg()
+                        .path(icon_path)
+                        .size(px(theme::ICON_TERMINAL))
+                        .text_color(if is_active {
+                            rgb(theme::text_primary(cx))
+                        } else {
+                            rgb(theme::text_muted(cx))
+                        }),
+                )
+                .when_some(agent_dot_color(cx, props.agent_state), |el, color| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .bottom(px(-2.0))
+                            .right(px(-2.0))
+                            .size(px(AGENT_DOT_SIZE))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(rgb(theme::bg_card(cx)))
+                            .bg(rgb(color)),
+                    )
                 }),
         )
         // Text column: always two rows for a fixed card height.

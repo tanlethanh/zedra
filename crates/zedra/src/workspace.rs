@@ -7,7 +7,7 @@ use gpui::{prelude::FluentBuilder as _, *};
 use tokio::sync::{broadcast, mpsc};
 use tracing::*;
 use zedra_rpc::ZedraPairingTicket;
-use zedra_rpc::proto::{HostEvent, AgentKind, SyncSessionResult};
+use zedra_rpc::proto::{AgentKind, HostEvent, SyncSessionResult};
 use zedra_session::{
     ConnectEvent, ConnectPhase, ConnectSnapshot, ReconnectReason, Session, SessionHandle,
     SessionState, signer::ClientSigner,
@@ -81,6 +81,8 @@ pub struct Workspace {
     _host_event_listener: Option<Task<()>>,
     /// Listens for periodic host resource snapshots.
     _host_info_listener: Option<Task<()>>,
+    /// Notifies the host when app foreground/background state changes.
+    _foreground_state_listener: Option<tokio::task::JoinHandle<()>>,
     agent_picker: Entity<AgentPicker>,
     /// Floating global file search overlay; shown above the drawer when open.
     file_search: Entity<FileSearchPanel>,
@@ -738,11 +740,78 @@ impl Workspace {
                             break;
                         }
                     }
+                    Ok(HostEvent::AgentHookReceived {
+                        agent_kind,
+                        event_name,
+                        ..
+                    }) => {
+                        let should_notify = match agent_kind {
+                            AgentKind::Claude => matches!(
+                                event_name.as_str(),
+                                "Stop" | "TaskCompleted" | "PermissionRequest"
+                            ),
+                            AgentKind::Codex => {
+                                matches!(event_name.as_str(), "Stop" | "PermissionRequest")
+                            }
+                            AgentKind::OpenCode => matches!(
+                                event_name.as_str(),
+                                "chat.message" | "permission.ask" | "permission.asked"
+                            ),
+                            _ => false,
+                        };
+                        let in_foreground = platform_bridge::is_app_in_foreground();
+                        tracing::info!(
+                            ?agent_kind,
+                            event_name,
+                            should_notify,
+                            in_foreground,
+                            "app received agent hook event"
+                        );
+                        if should_notify && in_foreground {
+                            tracing::info!("playing agent notification sound");
+                            platform_bridge::play_sound(
+                                platform_bridge::SoundEffect::AgentNotification,
+                            );
+                        }
+                    }
+                    Ok(HostEvent::AgentStateChanged {
+                        terminal_id, state, ..
+                    }) => {
+                        let should_break = workspace
+                            .update(cx, |ws, cx| {
+                                ws.terminal_state.update(cx, |tstate, cx| {
+                                    tstate.set_agent_state(&terminal_id, state);
+                                    cx.notify();
+                                });
+                            })
+                            .is_err();
+                        if should_break {
+                            break;
+                        }
+                    }
                     Ok(_) => {}
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
                         tracing::warn!("workspace host event listener lagged by {}", skipped);
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+
+        // Notify host when app foreground state changes so it can switch
+        // between RPC-only delivery and Delta push notifications.
+        // Run on Tokio, not GPUI: the GPUI executor pauses when the app backgrounds,
+        // which is exactly when we need this listener to fire and call notify_app_state.
+        let foreground_handle = session.handle().clone();
+        let mut foreground_rx = platform_bridge::subscribe_foreground_state();
+        let foreground_state_listener = zedra_session::session_runtime().spawn(async move {
+            loop {
+                match foreground_rx.recv().await {
+                    Ok(in_foreground) => {
+                        foreground_handle.notify_app_state(in_foreground).await;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
                 }
             }
         });
@@ -811,6 +880,7 @@ impl Workspace {
             _connect_listener: None,
             _host_event_listener: Some(host_event_listener),
             _host_info_listener: Some(host_info_listener),
+            _foreground_state_listener: Some(foreground_state_listener.into()),
             agent_picker,
             file_search,
             file_search_open: false,
@@ -2276,6 +2346,9 @@ impl Workspace {
                 if let Some(icon_name) = &terminal.icon_name {
                     state.set_icon_name(&terminal.id, icon_name.clone());
                 }
+                // Seed live agent state from the host snapshot so the dot survives
+                // app relaunch and reconnect, not just live AgentStateChanged events.
+                state.set_agent_state(&terminal.id, terminal.agent_state);
             }
             cx.notify();
         });

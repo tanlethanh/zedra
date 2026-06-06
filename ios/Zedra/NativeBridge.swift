@@ -1,3 +1,4 @@
+import AudioToolbox
 import FirebaseAnalytics
 import FirebaseCore
 import FirebaseCrashlytics
@@ -99,6 +100,15 @@ func ios_set_keyboard_accessory_theme(_ isDark: Bool) {
 @_cdecl("zedra_firebase_initialize")
 func zedra_firebase_initialize_bridge() {
     _ = ZedraFirebase.configureIfAvailable()
+}
+
+@_cdecl("ios_play_sound")
+func ios_play_sound(_ kind: Int32) {
+    // kind 0 = AgentNotification: system "Tock" (1057) — short, non-intrusive tick.
+    let soundID: SystemSoundID = 1057
+    DispatchQueue.main.async {
+        AudioServicesPlaySystemSound(soundID)
+    }
 }
 
 @_cdecl("ios_trigger_haptic")

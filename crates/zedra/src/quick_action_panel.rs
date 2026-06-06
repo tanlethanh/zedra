@@ -407,6 +407,7 @@ impl Render for QuickActionPanel {
                             title: meta.title,
                             cwd: meta.cwd,
                             agent_icon: meta.agent_icon,
+                            agent_state: meta.agent_state,
                             shell_state: meta.shell_state,
                             last_exit_code: meta.last_exit_code,
                             on_close: Some(on_close),
