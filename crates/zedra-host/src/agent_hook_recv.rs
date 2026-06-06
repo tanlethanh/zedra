@@ -94,11 +94,55 @@ pub trait HookReceiver {
                 false,
             ),
         );
-        if let Err(err) = notify_result {
-            warn!(error = %err, "agent hook Delta notification failed");
+        match notify_result {
+            Ok(response) if response.recipients == 0 => {
+                warn!(
+                    accepted = response.accepted,
+                    recipients = response.recipients,
+                    provider_success = response.provider_success,
+                    provider_failure = response.provider_failure,
+                    errors = ?response.errors,
+                    "agent hook Delta notification accepted with no recipients"
+                );
+            }
+            Ok(response) if response.provider_failure > 0 || response.provider_success == 0 => {
+                warn!(
+                    accepted = response.accepted,
+                    recipients = response.recipients,
+                    provider_success = response.provider_success,
+                    provider_failure = response.provider_failure,
+                    errors = ?response.errors,
+                    "agent hook Delta notification completed without full provider delivery"
+                );
+            }
+            Ok(response) => {
+                info!(
+                    accepted = response.accepted,
+                    recipients = response.recipients,
+                    provider_success = response.provider_success,
+                    provider_failure = response.provider_failure,
+                    "agent hook Delta notification accepted by provider"
+                );
+            }
+            Err(err) => {
+                warn!(error = %err, "agent hook Delta notification failed");
+            }
         }
-        if let Err(err) = activity_result {
-            warn!(error = %err, "agent hook Delta live activity failed");
+        match activity_result {
+            Ok(response) if response.provider_failure > 0 || response.provider_success == 0 => {
+                warn!(
+                    accepted = response.accepted,
+                    recipients = response.recipients,
+                    provider_success = response.provider_success,
+                    provider_failure = response.provider_failure,
+                    errors = ?response.errors,
+                    "agent hook Delta live activity completed without full provider delivery"
+                );
+            }
+            Ok(_) => {}
+            Err(err) => {
+                warn!(error = %err, "agent hook Delta live activity failed");
+            }
         }
         Ok(())
     }
@@ -140,8 +184,13 @@ pub struct ClaudeHookReceiver;
 impl HookReceiver for ClaudeHookReceiver {
     async fn receive(&self, ctx: HookContext) -> Result<()> {
         // Claude Code pipes hook JSON with `hook_event_name` and snake_case `session_id`.
-        let event_name =
-            agent_utils::payload_string(&ctx.payload, "hook_event_name").unwrap_or_default();
+        let Some(event_name) = agent_utils::payload_string(&ctx.payload, "hook_event_name") else {
+            warn!(
+                "Claude hook payload missing or empty hook_event_name; ignoring, {:?}",
+                ctx.payload
+            );
+            return Ok(());
+        };
         let agent_session_id = agent_utils::payload_string(&ctx.payload, "session_id");
         let agent_state = match event_name.as_str() {
             "UserPromptSubmit" => Some(AgentState::Running),
@@ -161,6 +210,9 @@ impl HookReceiver for ClaudeHookReceiver {
         {
             return Ok(());
         }
+
+        // If Delta is not configured, skip sending a notification.
+        // TODO: host side might still able to send notification without Delta being configured.
         let Some(delta) = ctx.delta.clone() else {
             return Ok(());
         };

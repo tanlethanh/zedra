@@ -61,6 +61,15 @@ pub struct NotificationSendResponse {
     pub recipients: u32,
     pub provider_success: u32,
     pub provider_failure: u32,
+    #[serde(default)]
+    pub errors: Vec<ProviderError>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProviderError {
+    pub node_id: Uuid,
+    pub provider: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -69,6 +78,8 @@ pub struct LiveActivityUpdateResponse {
     pub recipients: u32,
     pub provider_success: u32,
     pub provider_failure: u32,
+    #[serde(default)]
+    pub errors: Vec<ProviderError>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -682,6 +693,7 @@ impl DeltaClient {
             recipients = response.recipients,
             provider_ok = response.provider_success,
             provider_fail = response.provider_failure,
+            errors = ?response.errors,
             "delta accepted live activity update"
         );
         Ok(response)
