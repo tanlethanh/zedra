@@ -7,6 +7,8 @@
 ///
 /// Supported actions:
 ///   - `connect?ticket=<ticket>` — pair/connect with a host via pairing ticket
+///   - `open-terminal?endpoint=<addr>&terminal_id=<id>` — navigate to a specific terminal,
+///     connecting to the workspace first if needed
 use anyhow::{Result, anyhow};
 
 use crate::pending::PendingSlot;
@@ -15,6 +17,11 @@ use crate::pending::PendingSlot;
 pub enum DeeplinkAction {
     /// Connect to a host via a pairing ticket.
     Connect(zedra_rpc::ZedraPairingTicket),
+    /// Navigate to a specific terminal on a known workspace.
+    OpenTerminal {
+        endpoint_addr: String,
+        terminal_id: String,
+    },
 }
 
 static PENDING_DEEPLINK: PendingSlot<DeeplinkAction> = PendingSlot::new();
@@ -37,6 +44,21 @@ pub fn parse(url: &str) -> Result<DeeplinkAction> {
                 .ok_or_else(|| anyhow!("connect: missing ticket parameter"))?;
             let ticket = zedra_rpc::ZedraPairingTicket::decode(&ticket_str)?;
             Ok(DeeplinkAction::Connect(ticket))
+        }
+        "open-terminal" => {
+            let endpoint_addr = parse_query_param(query, "endpoint")
+                .ok_or_else(|| anyhow!("open-terminal: missing endpoint parameter"))?;
+            let terminal_id = parse_query_param(query, "terminal_id")
+                .ok_or_else(|| anyhow!("open-terminal: missing terminal_id parameter"))?;
+            if endpoint_addr.is_empty() || terminal_id.is_empty() {
+                return Err(anyhow!(
+                    "open-terminal: endpoint and terminal_id must be non-empty"
+                ));
+            }
+            Ok(DeeplinkAction::OpenTerminal {
+                endpoint_addr,
+                terminal_id,
+            })
         }
         other => Err(anyhow!("unknown deeplink action: {}", other)),
     }
@@ -82,6 +104,7 @@ mod tests {
         let action = parse(&url).unwrap();
         match action {
             DeeplinkAction::Connect(t) => assert_eq!(t, ticket),
+            other => panic!("expected Connect, got {other:?}"),
         }
     }
 

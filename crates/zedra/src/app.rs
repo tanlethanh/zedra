@@ -143,6 +143,7 @@ impl ZedraApp {
             self.handle_deeplink_deferred(action, cx);
         }
         self.process_pending_ticket_if_ready(window, cx);
+        self.process_pending_terminal_nav_if_ready(window, cx);
     }
 
     fn handle_deeplink_deferred(&mut self, action: DeeplinkAction, cx: &mut Context<Self>) {
@@ -152,6 +153,15 @@ impl ZedraApp {
                 // Store ticket for processing when a window-aware tick or activation is available.
                 self.workspaces.update(cx, |ws, cx| {
                     ws.connect_ticket_deferred(ticket, cx);
+                });
+            }
+            DeeplinkAction::OpenTerminal {
+                endpoint_addr,
+                terminal_id,
+            } => {
+                tracing::info!("Deeplink: open-terminal action (deferred)");
+                self.workspaces.update(cx, |ws, cx| {
+                    ws.navigate_terminal_deferred(endpoint_addr, terminal_id, cx);
                 });
             }
         }
@@ -334,6 +344,13 @@ impl ZedraApp {
         ) {
             self.workspaces
                 .update(cx, |ws, cx| ws.process_pending_ticket(window, cx));
+        }
+    }
+
+    fn process_pending_terminal_nav_if_ready(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if Workspaces::has_pending_terminal_nav() && window.is_window_active() {
+            self.workspaces
+                .update(cx, |ws, cx| ws.process_pending_terminal_nav(window, cx));
         }
     }
 

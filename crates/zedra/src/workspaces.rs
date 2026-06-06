@@ -12,6 +12,9 @@ use crate::workspace_state::WorkspaceState;
 
 static PENDING_TICKET: PendingSlot<ZedraPairingTicket> = PendingSlot::new();
 
+// (endpoint_addr, terminal_id) from a notification deeplink tap.
+static PENDING_TERMINAL_NAV: PendingSlot<(String, String)> = PendingSlot::new();
+
 #[derive(Clone, Debug)]
 pub enum WorkspacesEvent {
     Connected { index: usize },
@@ -210,6 +213,75 @@ impl Workspaces {
     pub fn process_pending_ticket(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ticket) = PENDING_TICKET.take() {
             self.connect_ticket(ticket, window, cx);
+        }
+    }
+
+    /// Queue a terminal navigation from a notification deeplink (deferred until window is ready).
+    pub fn navigate_terminal_deferred(
+        &mut self,
+        endpoint_addr: String,
+        terminal_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        PENDING_TERMINAL_NAV.set((endpoint_addr, terminal_id));
+        cx.notify();
+    }
+
+    pub fn has_pending_terminal_nav() -> bool {
+        PENDING_TERMINAL_NAV.has_pending()
+    }
+
+    /// Process a pending terminal nav. Call this when window is available.
+    pub fn process_pending_terminal_nav(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((endpoint_addr, terminal_id)) = PENDING_TERMINAL_NAV.take() else {
+            return;
+        };
+
+        // Workspace already open for this endpoint.
+        if let Some(index) = self.entry_index_by_endpoint_addr(&endpoint_addr, cx) {
+            self.switch_to(index, cx);
+            platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+            cx.emit(WorkspacesEvent::Connected { index });
+
+            let Some(entry) = self.entries.get(index).cloned() else {
+                return;
+            };
+            entry.update(cx, |ws, cx| {
+                // Reconnect a stale entry before queuing the terminal, otherwise the
+                // pending nav never resolves on a Failed/Disconnected workspace.
+                let phase = ws.workspace_state(cx).connect_phase.clone();
+                let healthy = matches!(
+                    phase,
+                    Some(ConnectPhase::Connected) | Some(ConnectPhase::Idle { .. })
+                );
+                if !healthy {
+                    ws.restart_connection(cx);
+                }
+                ws.open_terminal_after_sync(terminal_id, cx);
+            });
+            return;
+        }
+
+        // Saved (registered) workspace: reconnect then queue the terminal.
+        let state_index = self
+            .states
+            .iter()
+            .position(|s| s.read(cx).endpoint_addr == endpoint_addr);
+        let Some(state_index) = state_index else {
+            warn!(
+                "navigate_terminal: no workspace or saved state for endpoint {}",
+                &endpoint_addr[..endpoint_addr.len().min(20)]
+            );
+            return;
+        };
+
+        self.connect_saved(state_index, window, cx);
+
+        // The workspace entity was just pushed by connect_saved.
+        if let Some(entry) = self.entries.last().cloned() {
+            entry.update(cx, |ws, cx| {
+                ws.open_terminal_after_sync(terminal_id, cx);
+            });
         }
     }
 

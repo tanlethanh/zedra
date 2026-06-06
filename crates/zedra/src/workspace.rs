@@ -93,6 +93,8 @@ pub struct Workspace {
     file_search_prev_focus: Option<FocusHandle>,
     pending_platform_action: SharedPendingSlot<PendingWorkspaceAction>,
     _pending_platform_action_task: Task<()>,
+    /// Terminal to open immediately after the first sync completes (set by notification deeplink).
+    pending_terminal_after_sync: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -887,6 +889,7 @@ impl Workspace {
             file_search_prev_focus: None,
             pending_platform_action,
             _pending_platform_action_task: pending_platform_action_task,
+            pending_terminal_after_sync: None,
             _subscriptions: vec![
                 drawer_host_subscription,
                 workspace_state_subscription,
@@ -1237,6 +1240,17 @@ impl Workspace {
         self.persist_workspace_state = false;
         self.session.disconnect();
         self.latency_sampler.reset();
+    }
+
+    /// Queue a terminal to open as soon as the next sync completes.
+    /// If the workspace is already synced and the terminal is known, navigate immediately.
+    pub fn open_terminal_after_sync(&mut self, terminal_id: String, cx: &mut Context<Self>) {
+        let terminal_ids = self.workspace_state.read(cx).terminal_ids.clone();
+        if terminal_ids.contains(&terminal_id) {
+            self.activate_existing_terminal(terminal_id, cx);
+        } else {
+            self.pending_terminal_after_sync = Some(terminal_id);
+        }
     }
 
     pub fn open_terminal_from_quick_action(&mut self, id: String, cx: &mut Context<Self>) {
@@ -2500,21 +2514,27 @@ impl Workspace {
             .unwrap_or_else(|| WorkspaceContent::fallback_mainview_viewport(window))
     }
 
-    /// Pre-create WorkspaceTerminal entities for all known IDs so their
-    /// Open or create the first terminal.
+    /// Pre-create WorkspaceTerminal entities for all known IDs and open the initial terminal.
+    /// If `pending_terminal_after_sync` names a terminal in the synced list, open that one;
+    /// otherwise fall back to the first terminal or create a new one.
     fn initialize_workspace_terminals(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let terminal_ids = self.workspace_state.read(cx).terminal_ids.clone();
-        let first_id = terminal_ids.first().cloned();
 
-        for id in terminal_ids {
-            if self.terminal_by_id(&id, cx).is_none() {
+        for id in &terminal_ids {
+            if self.terminal_by_id(id, cx).is_none() {
                 self.create_terminal_entity(id.clone(), window, cx);
             }
         }
 
-        if let Some(first_id) = first_id {
-            info!("auto-opening first terminal on connect: {}", first_id);
-            self.handle_open_terminal(&OpenTerminal { id: first_id }, window, cx);
+        let target = self
+            .pending_terminal_after_sync
+            .take()
+            .filter(|id| terminal_ids.contains(id))
+            .or_else(|| terminal_ids.first().cloned());
+
+        if let Some(id) = target {
+            info!("auto-opening terminal on connect: {}", id);
+            self.handle_open_terminal(&OpenTerminal { id }, window, cx);
         } else {
             info!("no terminals on connect, creating new terminal");
             self.create_new_terminal("new_session", window, cx);
