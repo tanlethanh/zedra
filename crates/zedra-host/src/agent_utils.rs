@@ -126,13 +126,7 @@ pub fn kind_slug(kind: AgentKind) -> &'static str {
 }
 
 pub fn program_name(kind: AgentKind) -> &'static str {
-    match kind {
-        AgentKind::Claude => "claude",
-        AgentKind::Codex => "codex",
-        AgentKind::OpenCode => "opencode",
-        AgentKind::Pi => "pi",
-        AgentKind::Hermes => "hermes",
-    }
+    kind_slug(kind)
 }
 
 pub fn display_name(kind: AgentKind) -> &'static str {
@@ -368,6 +362,15 @@ pub fn humanize_plan_token(raw: &str) -> String {
         out.push(ch);
     }
     out
+}
+
+/// Extract a non-empty string value from a JSON object by key.
+pub fn payload_string(payload: &Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 
 pub fn toml_value(line: &str) -> String {

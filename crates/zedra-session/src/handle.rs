@@ -624,6 +624,15 @@ impl SessionHandle {
         Ok(result.files)
     }
 
+    /// Notify the host of the app's foreground/background state.
+    /// Fire-and-forget: errors are logged but not surfaced.
+    pub async fn notify_app_state(&self, in_foreground: bool) {
+        let result: Result<SetAppStateResult> = self.call(SetAppStateReq { in_foreground }).await;
+        if let Err(e) = result {
+            tracing::debug!(error = %e, "notify_app_state failed");
+        }
+    }
+
     pub async fn agent_sessions(
         &self,
         kind: AgentKind,

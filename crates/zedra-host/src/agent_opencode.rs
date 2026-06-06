@@ -49,31 +49,6 @@ pub fn cli_available() -> bool {
     db_path().is_file() || command_on_path("opencode")
 }
 
-pub fn normalize_event(event_name: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
-    Some(match event_name {
-        "session.status" => (
-            AgentEventKind::SessionUpdated,
-            AgentLifecycleStatus::Running,
-        ),
-        "session.idle" => (AgentEventKind::SessionUpdated, AgentLifecycleStatus::Idle),
-        "session.error" => (AgentEventKind::TurnFailed, AgentLifecycleStatus::Failed),
-        "permission.asked" => (
-            AgentEventKind::PermissionRequested,
-            AgentLifecycleStatus::WaitingForPermission,
-        ),
-        "permission.replied" => (
-            AgentEventKind::PermissionResolved,
-            AgentLifecycleStatus::Running,
-        ),
-        "tool.execute.before" => (AgentEventKind::ToolStarted, AgentLifecycleStatus::Running),
-        "tool.execute.after" => (AgentEventKind::ToolCompleted, AgentLifecycleStatus::Running),
-        name if name.starts_with("tool.") && name.ends_with(".error") => {
-            (AgentEventKind::ToolFailed, AgentLifecycleStatus::Failed)
-        }
-        _ => return None,
-    })
-}
-
 pub fn session_counts(workdir: &Path, _cli: &AgentCliSummary) -> Result<SessionCounts, String> {
     if !cli_available() {
         return Ok(SessionCounts {

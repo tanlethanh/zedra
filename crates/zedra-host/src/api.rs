@@ -31,18 +31,16 @@ use tokio::net::TcpListener;
 
 use crate::agent;
 use crate::agent_hook_recv::{
-    ClaudeHookReceiver, CodexHookReceiver, HookContext, OpenCodeHookReceiver,
+    ClaudeHookReceiver, CodexHookReceiver, HookContext, HookReceiver, OpenCodeHookReceiver,
 };
+use crate::agent_utils::payload_string;
 use crate::metrics;
 use crate::pty::SpawnOptions;
 use crate::qr;
-use crate::rpc_daemon::{DaemonState, create_terminal};
+use crate::rpc_daemon::{create_terminal, DaemonState};
 use crate::session_registry::{PairingSlotMode, ServerSession, SessionRegistry};
-use chrono::Utc;
+use zedra_rpc::proto::{AgentKind, AgentResumeResult, HostEvent, TerminalColorScheme};
 use zedra_rpc::ZedraPairingTicket;
-use zedra_rpc::proto::{
-    AgentEventSummary, AgentKind, AgentResumeResult, HostEvent, TerminalColorScheme,
-};
 use zedra_telemetry::Event;
 
 // ---------------------------------------------------------------------------
@@ -513,83 +511,49 @@ async fn receive_agent_hook_handler(
         return invalid_agent(&kind);
     };
 
-    let event_name = req
-        .event_name
-        .clone()
-        .or_else(|| payload_string(&req.payload, "hook_event_name"))
-        .or_else(|| payload_string(&req.payload, "event_name"))
-        .or_else(|| payload_string(&req.payload, "type"))
-        .or_else(|| {
-            req.payload
-                .get("event")
-                .and_then(|e| payload_string(e, "type"))
-        })
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let terminal_id = req
+    let Some(terminal_id) = req
         .terminal_id
         .clone()
-        .or_else(|| payload_string(&req.payload, "terminal_id"));
-
-    let Some((event_kind, status)) = agent::normalize_event(kind, &event_name) else {
-        tracing::debug!(?kind, event_name, "agent hook event not recognized");
-        return StatusCode::OK.into_response();
+        .or_else(|| payload_string(&req.payload, "terminal_id"))
+    else {
+        return Json(serde_json::json!({"ok": true})).into_response();
     };
 
-    let event = AgentEventSummary {
-        kind: event_kind,
-        status,
-        at: Some(Utc::now()),
-        terminal_id: terminal_id.clone(),
-        session_id: req
-            .session_id
-            .clone()
-            .or_else(|| payload_string(&req.payload, "session_id"))
-            .or_else(|| payload_string(&req.payload, "sessionID")),
-        turn_id: req
-            .turn_id
-            .clone()
-            .or_else(|| payload_string(&req.payload, "turn_id"))
-            .or_else(|| payload_string(&req.payload, "turnID")),
-        tool_name: req
-            .tool_name
-            .clone()
-            .or_else(|| payload_string(&req.payload, "tool_name"))
-            .or_else(|| payload_string(&req.payload, "tool")),
+    let registry = s.registry.clone();
+    let Some(session) = registry.resolve_session_by_tid(&terminal_id).await else {
+        return Json(serde_json::json!({"ok": true})).into_response();
     };
 
-    tracing::info!(?kind, ?event_kind, "agent hook received");
-
-    let transcript_path =
-        agent::hook_string(&req.payload, &["transcript_path"]).map(std::path::PathBuf::from);
-    let ctx = HookContext {
-        registry: s.registry.clone(),
-        terminal_id,
-        delta: s.daemon_state.delta.clone(),
-        workdir: s.daemon_state.workdir.clone(),
+    let endpoint_addr = {
+        let endpoint_id = s.daemon_state.identity.endpoint_id();
+        let addr = iroh::EndpointAddr::from(endpoint_id);
+        zedra_rpc::encode_endpoint_addr(&addr).unwrap_or_default()
     };
+    let delta = s.daemon_state.delta.clone();
+    let workdir = s.daemon_state.workdir.clone();
+    let payload = req.payload.clone();
+
     tokio::spawn(async move {
-        match kind {
-            AgentKind::Claude => {
-                ClaudeHookReceiver { transcript_path }
-                    .receive(event, ctx)
-                    .await
-            }
-            AgentKind::Codex => CodexHookReceiver.receive(event, ctx).await,
-            AgentKind::OpenCode => OpenCodeHookReceiver.receive(event, ctx).await,
-            _ => {}
+        let ctx = HookContext {
+            payload,
+            terminal_id,
+            endpoint_addr,
+            session,
+            delta,
+            workdir,
+        };
+        let result = match kind {
+            AgentKind::Claude => ClaudeHookReceiver.receive(ctx).await,
+            AgentKind::Codex => CodexHookReceiver.receive(ctx).await,
+            AgentKind::OpenCode => OpenCodeHookReceiver.receive(ctx).await,
+            _ => Ok(()),
+        };
+        if let Err(err) = result {
+            tracing::warn!(error = %err, "agent hook receiver failed");
         }
     });
 
     Json(serde_json::json!({"ok": true})).into_response()
-}
-
-fn payload_string(payload: &serde_json::Value, key: &str) -> Option<String> {
-    payload
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
 }
 
 // ---------------------------------------------------------------------------

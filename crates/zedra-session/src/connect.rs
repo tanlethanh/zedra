@@ -1084,6 +1084,7 @@ mod tests {
                     title: None,
                     cwd: None,
                     icon_name: None,
+                    agent_state: Default::default(),
                 },
                 TerminalSyncEntry {
                     id: "term-3".to_string(),
@@ -1092,6 +1093,7 @@ mod tests {
                     title: None,
                     cwd: None,
                     icon_name: None,
+                    agent_state: Default::default(),
                 },
             ],
             None,
@@ -1119,6 +1121,7 @@ mod tests {
                 title: None,
                 cwd: None,
                 icon_name: None,
+                agent_state: Default::default(),
             }],
             Some(std::slice::from_ref(&old_terminal)),
         );
@@ -1141,6 +1144,7 @@ mod tests {
                 title: None,
                 cwd: None,
                 icon_name: None,
+                agent_state: Default::default(),
             }],
             Some(std::slice::from_ref(&existing)),
         );
@@ -1163,6 +1167,7 @@ mod tests {
                     title: None,
                     cwd: None,
                     icon_name: None,
+                    agent_state: Default::default(),
                 },
                 TerminalSyncEntry {
                     id: "term-b".to_string(),
@@ -1171,6 +1176,7 @@ mod tests {
                     title: None,
                     cwd: None,
                     icon_name: None,
+                    agent_state: Default::default(),
                 },
             ],
             Some(&[existing_first, existing_second]),
@@ -1198,6 +1204,7 @@ mod tests {
                     title: None,
                     cwd: None,
                     icon_name: None,
+                    agent_state: Default::default(),
                 },
                 TerminalSyncEntry {
                     id: "term-b".to_string(),
@@ -1206,6 +1213,7 @@ mod tests {
                     title: None,
                     cwd: None,
                     icon_name: None,
+                    agent_state: Default::default(),
                 },
                 TerminalSyncEntry {
                     id: "term-c".to_string(),
@@ -1214,6 +1222,7 @@ mod tests {
                     title: None,
                     cwd: None,
                     icon_name: None,
+                    agent_state: Default::default(),
                 },
             ],
             Some(&[existing]),
@@ -1241,6 +1250,7 @@ mod tests {
                 title: None,
                 cwd: None,
                 icon_name: None,
+                agent_state: Default::default(),
             }],
             Some(&[local_only, active_remote]),
         );

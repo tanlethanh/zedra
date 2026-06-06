@@ -45,28 +45,6 @@ pub fn cli_available() -> bool {
     command_on_path("codex") || state_db_path().is_some()
 }
 
-pub fn normalize_event(event_name: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
-    Some(match event_name {
-        "SessionStart" => (
-            AgentEventKind::SessionStarted,
-            AgentLifecycleStatus::Starting,
-        ),
-        "PermissionRequest" => (
-            AgentEventKind::PermissionRequested,
-            AgentLifecycleStatus::WaitingForPermission,
-        ),
-        "PostToolUse" => (AgentEventKind::ToolCompleted, AgentLifecycleStatus::Running),
-        "Stop" => (
-            AgentEventKind::TurnCompleted,
-            AgentLifecycleStatus::Completed,
-        ),
-        name if name.contains("Failure") || name.contains("Failed") => {
-            (AgentEventKind::TurnFailed, AgentLifecycleStatus::Failed)
-        }
-        _ => return None,
-    })
-}
-
 pub fn session_counts(workdir: &Path) -> Result<SessionCounts, String> {
     let threads = threads_for_workdir(workdir)?;
     let latest = threads.first();

@@ -21,8 +21,8 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 use zedra_osc::{OscEvent, OscScanner};
 use zedra_rpc::proto::{
-    BacklogEntry, FsDocsTreeError, FsDocsTreeResult, HostEvent, SessionCloseReason, TermOutput,
-    TerminalSyncEntry,
+    AgentState, BacklogEntry, FsDocsTreeError, FsDocsTreeResult, HostEvent, SessionCloseReason,
+    TermOutput, TerminalSyncEntry,
 };
 use zedra_rpc::verify_registration_hmac;
 
@@ -169,9 +169,7 @@ impl ActiveClientConnection {
     }
 
     pub fn spawn_monitor(&self) -> Option<tokio::task::JoinHandle<()>> {
-        let Some(conn) = self.conn.clone() else {
-            return None;
-        };
+        let conn = self.conn.clone()?;
         let last_rx_bytes = self.last_rx_bytes.clone();
         let last_rx_at = self.last_rx_at.clone();
         let closed = self.closed.clone();
@@ -286,6 +284,14 @@ pub struct ServerSession {
     pub observer_events_dropped_full: AtomicU64,
     pub fs_watch_quota_rejected: AtomicU64,
     pub fs_watch_rate_limited: AtomicU64,
+
+    /// Whether the connected client app is currently in the foreground.
+    /// Set via the SetAppState RPC; used to decide when to send Delta push notifications.
+    pub client_in_foreground: AtomicBool,
+    /// Live agent state per terminal (terminal_id → state). Updated by hook receivers.
+    pub terminal_agent_states: Mutex<HashMap<String, AgentState>>,
+    /// Per-terminal idle-revert timers. Aborted when a new state transition arrives.
+    terminal_idle_timers: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
 }
 
 #[derive(Clone)]
@@ -420,6 +426,12 @@ pub struct TermBacklogReplay {
     pub newest_seq: u64,
     pub retained_entries: usize,
     pub retained_bytes: usize,
+}
+
+impl Default for TermBacklog {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TermBacklog {
@@ -657,6 +669,12 @@ impl std::fmt::Debug for SessionRegistry {
     }
 }
 
+impl Default for SessionRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionRegistry {
     /// Create an empty in-memory registry (no persistence).
     pub fn new() -> Self {
@@ -877,6 +895,27 @@ impl SessionRegistry {
     /// Get a session by ID.
     pub async fn get(&self, session_id: &str) -> Option<Arc<ServerSession>> {
         self.sessions.lock().await.get(session_id).cloned()
+    }
+
+    /// Resolve the session that owns `terminal_id`. `None` for unknown or foreign
+    /// terminals (e.g. hooks from processes this daemon didn't spawn).
+    pub async fn resolve_session_by_tid(&self, terminal_id: &str) -> Option<Arc<ServerSession>> {
+        if terminal_id.is_empty() {
+            return None;
+        }
+        let sessions: Vec<Arc<ServerSession>> =
+            self.sessions.lock().await.values().cloned().collect();
+        for session in sessions {
+            if session
+                .terminal_infos()
+                .await
+                .iter()
+                .any(|t| t.id == terminal_id)
+            {
+                return Some(session);
+            }
+        }
+        None
     }
 
     /// Return the number of active sessions.
@@ -1306,6 +1345,9 @@ impl ServerSession {
             observer_events_dropped_full: AtomicU64::new(0),
             fs_watch_quota_rejected: AtomicU64::new(0),
             fs_watch_rate_limited: AtomicU64::new(0),
+            client_in_foreground: AtomicBool::new(true),
+            terminal_agent_states: Mutex::new(HashMap::new()),
+            terminal_idle_timers: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1341,6 +1383,7 @@ impl ServerSession {
     pub async fn terminal_sync_entries(&self) -> Vec<TerminalSyncEntry> {
         let terms = self.terminals.lock().await;
         let mut order = self.terminal_order.lock().await;
+        let agent_states = self.terminal_agent_states.lock().await;
         let ordered_ids = ordered_terminal_ids_locked(&terms, &mut order);
         let mut entries = Vec::with_capacity(ordered_ids.len());
         for (position, id) in ordered_ids.into_iter().enumerate() {
@@ -1358,6 +1401,7 @@ impl ServerSession {
                 .lock()
                 .map(|b| b.next_seq.saturating_sub(1))
                 .unwrap_or(0);
+            let agent_state = agent_states.get(&id).copied().unwrap_or_default();
             entries.push(TerminalSyncEntry {
                 id,
                 position: position as u64,
@@ -1365,6 +1409,7 @@ impl ServerSession {
                 title,
                 cwd,
                 icon_name,
+                agent_state,
             });
         }
         entries
@@ -1471,6 +1516,68 @@ impl ServerSession {
                 false
             }
         }
+    }
+
+    /// Update the live agent state for a terminal and push `AgentStateChanged` to the client.
+    ///
+    /// Cancels any pending idle-revert timer and starts a new 30-second one when
+    /// `state` is `Completed`.
+    pub async fn set_agent_state(
+        self: &Arc<Self>,
+        terminal_id: String,
+        agent_session_id: &str,
+        state: AgentState,
+    ) {
+        // Abort any existing idle-revert timer for this terminal.
+        {
+            let mut timers = self.terminal_idle_timers.lock().await;
+            if let Some(h) = timers.remove(&terminal_id) {
+                h.abort();
+            }
+        }
+        self.terminal_agent_states
+            .lock()
+            .await
+            .insert(terminal_id.clone(), state);
+        // After Completed, revert to Idle after 30 seconds unless interrupted.
+        if matches!(state, AgentState::Completed) {
+            let weak = Arc::downgrade(self);
+            let tid = terminal_id.clone();
+            let asid = agent_session_id.to_owned();
+            let handle = tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                let Some(session) = weak.upgrade() else {
+                    return;
+                };
+                {
+                    let mut timers = session.terminal_idle_timers.lock().await;
+                    timers.remove(&tid);
+                }
+                session
+                    .terminal_agent_states
+                    .lock()
+                    .await
+                    .insert(tid.clone(), AgentState::Idle);
+                session
+                    .push_event(HostEvent::AgentStateChanged {
+                        terminal_id: tid,
+                        agent_session_id: asid,
+                        state: AgentState::Idle,
+                    })
+                    .await;
+            });
+            self.terminal_idle_timers
+                .lock()
+                .await
+                .insert(terminal_id.clone(), handle);
+        }
+        // Push the state change event to any connected client.
+        self.push_event(HostEvent::AgentStateChanged {
+            terminal_id,
+            agent_session_id: agent_session_id.to_owned(),
+            state,
+        })
+        .await;
     }
 
     /// Token-bucket guard for FsWatch/FsUnwatch RPC calls.

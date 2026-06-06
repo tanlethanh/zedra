@@ -200,6 +200,12 @@ pub enum ZedraProto {
     /// Kept at enum tail because protocol variants are append-only.
     #[rpc(tx = oneshot::Sender<FsSearchResult>)]
     FsSearch(FsSearchReq),
+
+    /// Client notifies host of its foreground/background state.
+    /// Host uses this to decide whether to send Delta push notifications.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<SetAppStateResult>)]
+    SetAppState(SetAppStateReq),
 }
 
 // ---------------------------------------------------------------------------
@@ -462,6 +468,22 @@ pub struct SyncSessionResult {
     pub terminals: Vec<TerminalSyncEntry>,
 }
 
+/// Live state of a managed agent running in a terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AgentState {
+    /// No agent activity; initial state or after idle timeout.
+    #[default]
+    Idle,
+    /// Agent is processing a user prompt.
+    Running,
+    /// Agent is waiting for the user to approve a permission request.
+    WaitingApproval,
+    /// Agent finished its last task.
+    Completed,
+    /// Agent encountered an error.
+    Error,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalSyncEntry {
     /// Opaque host-generated UUID string.
@@ -472,6 +494,8 @@ pub struct TerminalSyncEntry {
     pub cwd: Option<String>,
     #[serde(default)]
     pub icon_name: Option<String>,
+    #[serde(default)]
+    pub agent_state: AgentState,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -540,6 +564,14 @@ pub struct FsSearchResult {
     pub truncated: bool,
     pub error: Option<String>,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetAppStateReq {
+    pub in_foreground: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetAppStateResult {}
 
 /// A single fuzzy-search hit. `match_indices` are the host matcher's matched
 /// character positions into `rel_path`, so the client highlights exactly what
@@ -722,9 +754,21 @@ pub enum HostEvent {
     /// Cached managed-agent summary updated after an async fetch (for example CLI version).
     AgentInfoChanged { info: AgentSummary },
     /// A hook event fired by a managed agent (Claude Code, Codex, etc.) in a terminal.
+    /// Carries the raw event name and the agent's original JSON payload so the
+    /// app-side handler for each agent can parse what it needs directly.
+    /// Payload is a raw JSON string — postcard cannot serialize `serde_json::Value`
+    /// directly (unknown-length maps/arrays are unsupported).
     AgentHookReceived {
         agent_kind: AgentKind,
-        event: AgentEventSummary,
+        event_name: String,
+        payload: String,
+    },
+    /// Agent state changed for a terminal (derived from hook events).
+    AgentStateChanged {
+        terminal_id: String,
+        /// The agent's own session identifier (e.g. Claude conversation id, Codex thread id).
+        agent_session_id: String,
+        state: AgentState,
     },
 }
 
@@ -1250,47 +1294,6 @@ pub struct AgentUsageSnapshot {
     pub rate_limit_seven_day_resets_at: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AgentEventSummary {
-    pub kind: AgentEventKind,
-    pub status: AgentLifecycleStatus,
-    pub at: Option<DateTime<Utc>>,
-    pub terminal_id: Option<String>,
-    pub session_id: Option<String>,
-    pub turn_id: Option<String>,
-    pub tool_name: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum AgentLifecycleStatus {
-    Unknown,
-    Starting,
-    Running,
-    WaitingForUser,
-    WaitingForPermission,
-    Idle,
-    Completed,
-    Failed,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum AgentEventKind {
-    SessionStarted,
-    SessionUpdated,
-    TurnStarted,
-    TurnCompleted,
-    TurnFailed,
-    TaskCreated,
-    TaskCompleted,
-    TaskFailed,
-    ToolStarted,
-    ToolCompleted,
-    ToolFailed,
-    PermissionRequested,
-    PermissionResolved,
-    Notification,
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AgentDataSource {
     Cli,
@@ -1475,6 +1478,7 @@ mod tests {
                 title: Some("shell".into()),
                 cwd: Some("/workspace".into()),
                 icon_name: Some("codex".into()),
+                agent_state: AgentState::Idle,
             }],
         };
         let encoded = postcard::to_allocvec(&result).unwrap();

@@ -166,12 +166,14 @@ fn escape_osc633(raw: &str) -> String {
 }
 
 fn initial_host_meta(opts: &SpawnOptions) -> HostTermMeta {
-    let mut meta = HostTermMeta::default();
     // Launch commands can run before a prompt emits OSC 7; seed cwd from the spawn request.
-    meta.cwd = opts
-        .workdir
-        .as_ref()
-        .map(|path| paths::user_path_string(path));
+    let mut meta = HostTermMeta {
+        cwd: opts
+            .workdir
+            .as_ref()
+            .map(|path| paths::user_path_string(path)),
+        ..Default::default()
+    };
     if let Some(command) = opts
         .launch_cmd
         .as_ref()
@@ -804,18 +806,16 @@ async fn run_observer(session: Arc<ServerSession>, workdir: PathBuf, my_gen: u64
             break;
         }
 
-        if let Ok(git_hash) = tokio::task::spawn_blocking({
+        if let Ok(Some(git_hash)) = tokio::task::spawn_blocking({
             let workdir = workdir.clone();
             move || git_status_fingerprint(&workdir)
         })
         .await
         {
-            if let Some(git_hash) = git_hash {
-                if last_git.is_some() && last_git != Some(git_hash) {
-                    let _ = session.push_event(HostEvent::GitChanged).await;
-                }
-                last_git = Some(git_hash);
+            if last_git.is_some() && last_git != Some(git_hash) {
+                let _ = session.push_event(HostEvent::GitChanged).await;
             }
+            last_git = Some(git_hash);
         }
 
         let watched: Vec<String> = {
@@ -854,7 +854,7 @@ async fn run_observer(session: Arc<ServerSession>, workdir: PathBuf, my_gen: u64
         fs_snapshots = retained;
 
         tick_count += 1;
-        if tick_count % 30 == 0 {
+        if tick_count.is_multiple_of(30) {
             tracing::info!(
                 "observer metrics: session={} watched={} sent={} dropped_full={} dropped_no_subscriber={} rate_limited={} quota_rejected={}",
                 session.id,
@@ -2082,6 +2082,17 @@ async fn dispatch(
             }
         }
 
+        ZedraMessage::SetAppState(msg) => {
+            session
+                .client_in_foreground
+                .store(msg.in_foreground, Ordering::Relaxed);
+            tracing::info!(
+                in_foreground = msg.in_foreground,
+                "client app state updated"
+            );
+            let _ = msg.tx.send(SetAppStateResult {}).await;
+        }
+
         ZedraMessage::FsRead(msg) => {
             session.rpc_fs_reads.fetch_add(1, Ordering::Relaxed);
             let path = match resolve_path(&state.workdir, &msg.path) {
@@ -2465,6 +2476,9 @@ async fn dispatch(
 
         ZedraMessage::Subscribe(msg) => {
             session.touch().await;
+            // Assume the client is in the foreground on a fresh connection; the app
+            // will send SetAppState when it actually backgrounds.
+            session.client_in_foreground.store(true, Ordering::Relaxed);
             // Bridge: store a regular tokio sender in the session; spawn a task
             // that forwards events from it to the irpc channel toward the client.
             let (bridge_tx, mut bridge_rx) = tokio::sync::mpsc::channel::<HostEvent>(32);
@@ -2907,10 +2921,9 @@ async fn dispatch(
             })
             .await
             .unwrap_or_else(|e| {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("AI prompt worker failed: {e}"),
-                ))
+                Err(std::io::Error::other(format!(
+                    "AI prompt worker failed: {e}"
+                )))
             });
             let duration_ms = ai_start.elapsed().as_millis() as u64;
 

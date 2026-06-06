@@ -741,67 +741,6 @@ pub fn cli_available(workdir: &Path) -> bool {
         || project_dir_for_workdir(&home_path(&[".claude"]), workdir).is_dir()
 }
 
-pub fn normalize_event(event_name: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
-    Some(match event_name {
-        "Setup" | "InstructionsLoaded" => (
-            AgentEventKind::SessionUpdated,
-            AgentLifecycleStatus::Starting,
-        ),
-        "SessionStart" => (
-            AgentEventKind::SessionStarted,
-            AgentLifecycleStatus::Starting,
-        ),
-        "SessionEnd" => (AgentEventKind::SessionUpdated, AgentLifecycleStatus::Idle),
-        "UserPromptSubmit" | "UserPromptExpansion" => {
-            (AgentEventKind::TurnStarted, AgentLifecycleStatus::Running)
-        }
-        "PreToolUse" => (AgentEventKind::ToolStarted, AgentLifecycleStatus::Running),
-        "PermissionRequest" => (
-            AgentEventKind::PermissionRequested,
-            AgentLifecycleStatus::WaitingForPermission,
-        ),
-        "PermissionDenied" => (
-            AgentEventKind::PermissionResolved,
-            AgentLifecycleStatus::Failed,
-        ),
-        "TaskCreated" | "SubagentStart" => {
-            (AgentEventKind::TaskCreated, AgentLifecycleStatus::Running)
-        }
-        "TaskCompleted" | "SubagentStop" => (
-            AgentEventKind::TaskCompleted,
-            AgentLifecycleStatus::Completed,
-        ),
-        "PostToolUse" => (AgentEventKind::ToolCompleted, AgentLifecycleStatus::Running),
-        "PostToolUseFailure" => (AgentEventKind::ToolFailed, AgentLifecycleStatus::Failed),
-        "PostToolBatch" => (AgentEventKind::ToolCompleted, AgentLifecycleStatus::Running),
-        "Stop" => (
-            AgentEventKind::TurnCompleted,
-            AgentLifecycleStatus::Completed,
-        ),
-        "StopFailure" => (AgentEventKind::TurnFailed, AgentLifecycleStatus::Failed),
-        "TeammateIdle" => (AgentEventKind::SessionUpdated, AgentLifecycleStatus::Idle),
-        "PreCompact" => (
-            AgentEventKind::SessionUpdated,
-            AgentLifecycleStatus::Running,
-        ),
-        "PostCompact" => (AgentEventKind::SessionUpdated, AgentLifecycleStatus::Idle),
-        "ConfigChange" | "CwdChanged" | "WorktreeCreate" | "WorktreeRemove" => (
-            AgentEventKind::SessionUpdated,
-            AgentLifecycleStatus::Running,
-        ),
-        "Elicitation" => (
-            AgentEventKind::PermissionRequested,
-            AgentLifecycleStatus::WaitingForUser,
-        ),
-        "ElicitationResult" => (
-            AgentEventKind::PermissionResolved,
-            AgentLifecycleStatus::Running,
-        ),
-        "Notification" => (AgentEventKind::Notification, AgentLifecycleStatus::Idle),
-        _ => return None,
-    })
-}
-
 pub fn session_counts(workdir: &Path) -> Result<SessionCounts, String> {
     let (total, latest) = session_count_summary(workdir).map_err(|e| e.to_string())?;
     Ok(SessionCounts {
@@ -1560,7 +1499,7 @@ mod tests {
         )
         .unwrap();
         filetime::set_file_mtime(
-            &project_dir.join("older.jsonl"),
+            project_dir.join("older.jsonl"),
             filetime::FileTime::from_unix_time(1_700_000_000, 0),
         )
         .unwrap();

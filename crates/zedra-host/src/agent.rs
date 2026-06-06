@@ -195,17 +195,6 @@ pub fn resume_launch_command(kind: AgentKind, session_id: &str) -> Option<String
     Some(dispatch(kind).resume_launch_command(&shell_quote(session_id)))
 }
 
-pub fn normalize_event(
-    kind: AgentKind,
-    event_name: &str,
-) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
-    let event_name = event_name.trim();
-    if event_name.is_empty() {
-        return None;
-    }
-    dispatch(kind).normalize_event(event_name)
-}
-
 /// True for agents whose sessions are not scoped to a workspace (Hermes). Their
 /// scans ignore the workdir, so callers can reuse a cached result across
 /// workspace switches.
@@ -348,8 +337,6 @@ trait ManagedAgent: Sync {
         false
     }
 
-    fn normalize_event(&self, event_name: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)>;
-
     fn cli_available(&self, workdir: &Path) -> bool;
 
     fn session_counts(&self, ctx: &ScanCtx) -> Result<SessionCounts, String>;
@@ -380,12 +367,6 @@ trait ManagedAgent: Sync {
         agent_list_cli_summary(self.kind(), workdir)
     }
 
-    /// True if `command` (the foreground shell command) is this agent's CLI.
-    fn command_matches(&self, command: &str) -> bool;
-
-    /// Resume session id parsed from the foreground command tokens, if present.
-    fn infer_session_id(&self, tokens: &[&str]) -> Option<String>;
-
     /// Shell command that resumes `quoted_session_id` (already shell-quoted).
     fn resume_launch_command(&self, quoted_session_id: &str) -> String;
 }
@@ -405,9 +386,6 @@ impl ManagedAgent for ClaudeAgent {
     fn kind(&self) -> AgentKind {
         AgentKind::Claude
     }
-    fn normalize_event(&self, event: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
-        agent_claude::normalize_event(event)
-    }
     fn cli_available(&self, workdir: &Path) -> bool {
         agent_claude::cli_available(workdir)
     }
@@ -424,12 +402,6 @@ impl ManagedAgent for ClaudeAgent {
     fn account_fields(&self, _workdir: &Path) -> Vec<AgentInfoField> {
         agent_claude::account_fields()
     }
-    fn command_matches(&self, command: &str) -> bool {
-        command.to_ascii_lowercase().contains("claude")
-    }
-    fn infer_session_id(&self, tokens: &[&str]) -> Option<String> {
-        value_after_flag(tokens, "--resume")
-    }
     fn resume_launch_command(&self, quoted: &str) -> String {
         format!("claude --resume {quoted}")
     }
@@ -439,9 +411,6 @@ struct CodexAgent;
 impl ManagedAgent for CodexAgent {
     fn kind(&self) -> AgentKind {
         AgentKind::Codex
-    }
-    fn normalize_event(&self, event: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
-        agent_codex::normalize_event(event)
     }
     fn cli_available(&self, _workdir: &Path) -> bool {
         agent_codex::cli_available()
@@ -459,16 +428,6 @@ impl ManagedAgent for CodexAgent {
     fn account_fields(&self, _workdir: &Path) -> Vec<AgentInfoField> {
         agent_codex::account_fields()
     }
-    fn command_matches(&self, command: &str) -> bool {
-        command.to_ascii_lowercase().contains("codex")
-    }
-    fn infer_session_id(&self, tokens: &[&str]) -> Option<String> {
-        let resume_index = tokens.iter().position(|token| *token == "resume")?;
-        tokens
-            .get(resume_index + 1)
-            .filter(|value| !value.starts_with('-'))
-            .map(|value| value.trim_matches('"').trim_matches('\'').to_string())
-    }
     fn resume_launch_command(&self, quoted: &str) -> String {
         format!("codex resume {quoted}")
     }
@@ -478,9 +437,6 @@ struct OpenCodeAgent;
 impl ManagedAgent for OpenCodeAgent {
     fn kind(&self) -> AgentKind {
         AgentKind::OpenCode
-    }
-    fn normalize_event(&self, event: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
-        agent_opencode::normalize_event(event)
     }
     fn cli_available(&self, _workdir: &Path) -> bool {
         agent_opencode::cli_available()
@@ -504,13 +460,6 @@ impl ManagedAgent for OpenCodeAgent {
     fn session_scan_cli(&self, _workdir: &Path) -> AgentCliSummary {
         agent_opencode::session_cli_summary()
     }
-    fn command_matches(&self, command: &str) -> bool {
-        let low = command.to_ascii_lowercase();
-        low.contains("opencode") || low.contains("open-code")
-    }
-    fn infer_session_id(&self, tokens: &[&str]) -> Option<String> {
-        value_after_flag(tokens, "--session").or_else(|| value_after_flag(tokens, "-s"))
-    }
     fn resume_launch_command(&self, quoted: &str) -> String {
         format!("opencode --session {quoted}")
     }
@@ -520,9 +469,6 @@ struct PiAgent;
 impl ManagedAgent for PiAgent {
     fn kind(&self) -> AgentKind {
         AgentKind::Pi
-    }
-    fn normalize_event(&self, event: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
-        agent_pi::normalize_event(event)
     }
     fn cli_available(&self, _workdir: &Path) -> bool {
         agent_pi::cli_available()
@@ -541,14 +487,6 @@ impl ManagedAgent for PiAgent {
         // Pi merges global + project (`<workdir>/.pi`) config, so it needs the workdir.
         agent_pi::account_fields(workdir)
     }
-    fn command_matches(&self, command: &str) -> bool {
-        // Pi shares its name with common words, so match only when it is the
-        // invoked program (first token), bare or path-qualified.
-        command_program_is(&command.to_ascii_lowercase(), "pi")
-    }
-    fn infer_session_id(&self, tokens: &[&str]) -> Option<String> {
-        value_after_flag(tokens, "--session")
-    }
     fn resume_launch_command(&self, quoted: &str) -> String {
         format!("pi --session {quoted}")
     }
@@ -561,9 +499,6 @@ impl ManagedAgent for HermesAgent {
     }
     fn is_global(&self) -> bool {
         true
-    }
-    fn normalize_event(&self, event: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
-        agent_hermes::normalize_event(event)
     }
     fn cli_available(&self, _workdir: &Path) -> bool {
         agent_hermes::cli_available()
@@ -584,12 +519,6 @@ impl ManagedAgent for HermesAgent {
     }
     fn config_files(&self) -> Vec<AgentFile> {
         agent_hermes::config_files()
-    }
-    fn command_matches(&self, command: &str) -> bool {
-        command_program_is(&command.to_ascii_lowercase(), "hermes")
-    }
-    fn infer_session_id(&self, tokens: &[&str]) -> Option<String> {
-        value_after_flag(tokens, "--resume").or_else(|| value_after_flag(tokens, "-r"))
     }
     fn resume_launch_command(&self, quoted: &str) -> String {
         format!("hermes --resume {quoted}")
@@ -658,28 +587,6 @@ fn agent_list_cli_summary(kind: AgentKind, workdir: &Path) -> AgentCliSummary {
             )),
         }
     }
-}
-
-fn value_after_flag(tokens: &[&str], flag: &str) -> Option<String> {
-    let prefix = format!("{flag}=");
-    for (index, token) in tokens.iter().enumerate() {
-        if *token == flag {
-            return tokens
-                .get(index + 1)
-                .map(|value| value.trim_matches('"').trim_matches('\'').to_string());
-        }
-        if let Some(value) = token.strip_prefix(&prefix) {
-            return Some(value.trim_matches('"').trim_matches('\'').to_string());
-        }
-    }
-    None
-}
-
-fn command_program_is(command: &str, program: &str) -> bool {
-    command
-        .split_whitespace()
-        .next()
-        .is_some_and(|first| first == program || first.ends_with(&format!("/{program}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -783,6 +690,18 @@ pub fn apply_cached_account_usage(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Hook payload helpers
+// ---------------------------------------------------------------------------
+
+pub fn hook_string(payload: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| payload.get(*key).and_then(|value| value.as_str()))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -826,37 +745,6 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_supported_hook_events() {
-        assert_eq!(
-            normalize_event(AgentKind::Claude, "PermissionRequest"),
-            Some((
-                AgentEventKind::PermissionRequested,
-                AgentLifecycleStatus::WaitingForPermission
-            ))
-        );
-        assert_eq!(
-            normalize_event(AgentKind::Claude, "UserPromptSubmit"),
-            Some((AgentEventKind::TurnStarted, AgentLifecycleStatus::Running))
-        );
-        assert_eq!(
-            normalize_event(AgentKind::Claude, "PreToolUse"),
-            Some((AgentEventKind::ToolStarted, AgentLifecycleStatus::Running))
-        );
-        assert_eq!(
-            normalize_event(AgentKind::Claude, "SessionEnd"),
-            Some((AgentEventKind::SessionUpdated, AgentLifecycleStatus::Idle))
-        );
-        assert_eq!(
-            normalize_event(AgentKind::Codex, "PostToolUse"),
-            Some((AgentEventKind::ToolCompleted, AgentLifecycleStatus::Running))
-        );
-        assert_eq!(
-            normalize_event(AgentKind::OpenCode, "session.error"),
-            Some((AgentEventKind::TurnFailed, AgentLifecycleStatus::Failed))
-        );
-    }
-
-    #[test]
     fn session_title_defaults_to_unknown_without_provider_title() {
         use crate::agent_utils::session_title;
         assert_eq!(session_title(None).as_deref(), Some("Unknown"));
@@ -865,16 +753,4 @@ mod tests {
             Some("Fix terminal paste")
         );
     }
-}
-
-// ---------------------------------------------------------------------------
-// Hook payload helpers
-// ---------------------------------------------------------------------------
-
-pub fn hook_string(payload: &serde_json::Value, keys: &[&str]) -> Option<String> {
-    keys.iter()
-        .find_map(|key| payload.get(*key).and_then(|value| value.as_str()))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
 }
