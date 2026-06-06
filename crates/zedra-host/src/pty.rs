@@ -7,6 +7,13 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use std::io::{Read, Write};
 use zedra_rpc::proto::TerminalColorScheme;
 
+pub type PtyParts = (
+    Box<dyn Read + Send>,
+    Box<dyn Write + Send>,
+    Box<dyn MasterPty + Send>,
+    Box<dyn Child + Send + Sync>,
+);
+
 /// A spawned shell session with PTY
 pub struct ShellSession {
     master: Box<dyn MasterPty + Send>,
@@ -99,14 +106,7 @@ impl ShellSession {
     }
 
     /// Split the session into its raw components for async I/O.
-    pub fn take_reader(
-        self,
-    ) -> (
-        Box<dyn Read + Send>,
-        Box<dyn Write + Send>,
-        Box<dyn MasterPty + Send>,
-        Box<dyn Child + Send + Sync>,
-    ) {
+    pub fn take_reader(self) -> PtyParts {
         (self.reader, self.writer, self.master, self.child)
     }
 }

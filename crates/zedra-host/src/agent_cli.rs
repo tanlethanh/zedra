@@ -1,10 +1,10 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use clap::{Args, Subcommand, ValueEnum};
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::collections::HashMap;
-use std::io::{Read, Write, stderr};
+use std::io::{stderr, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use zedra_host::{agent, identity, utils};
@@ -645,7 +645,7 @@ async fn receive_hook(args: AgentHookReceiveArgs) -> Result<()> {
     };
     let payload = parse_hook_payload(&raw);
     let slug = zedra_host::agent::managed_kind_from_slug(&args.agent)
-        .map(|k| zedra_host::agent_utils::program_name(k))
+        .map(zedra_host::agent_utils::program_name)
         .unwrap_or(args.agent.as_str());
     let body = AgentHookForwardReq {
         event_name: None,
@@ -656,7 +656,16 @@ async fn receive_hook(args: AgentHookReceiveArgs) -> Result<()> {
         payload,
     };
     let path = format!("/api/agent-hooks/{slug}");
-    let response: serde_json::Value = api_post(&workdir, &path, &body).await?;
+    let response: serde_json::Value = match api_post(&workdir, &path, &body).await {
+        Ok(r) => r,
+        Err(e) => {
+            // Daemon not running — hook is fire-and-forget, silently skip.
+            if is_connection_error(&e) {
+                return Ok(());
+            }
+            return Err(e);
+        }
+    };
     if !args.quiet {
         println!("{}", serde_json::to_string_pretty(&response)?);
     }
@@ -986,7 +995,7 @@ fn synthetic_hook_payload(
         CliManagedAgentKind::OpenCode => {
             let cwd = workdir.to_string_lossy();
             serde_json::json!({
-                "type": event_name,
+                "event": event_name,
                 "sessionID": "zedra-test-session",
                 "cwd": cwd,
                 "tool": "bash"
@@ -1022,6 +1031,13 @@ fn parse_hook_payload(stdin: &str) -> serde_json::Value {
             })
         })
     }
+}
+
+fn is_connection_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|e| {
+        e.downcast_ref::<reqwest::Error>()
+            .is_some_and(|re| re.is_connect())
+    })
 }
 
 async fn api_get<T: DeserializeOwned>(workdir: &Path, path: &str) -> Result<T> {

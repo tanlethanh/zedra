@@ -332,7 +332,7 @@ fn install_opencode_hooks() -> Result<()> {
 
 fn install_opencode_hooks_in_dir(dir: &Path, binary: &str) -> Result<()> {
     let plugin_path = dir.join(OPENCODE_HOOK_PLUGIN);
-    fs::create_dir_all(&dir)?;
+    fs::create_dir_all(dir)?;
     fs::write(&plugin_path, opencode_hook_plugin(binary)?)?;
     let config_path = dir.join("opencode.jsonc");
     let mut root = read_json_object(&config_path)?;

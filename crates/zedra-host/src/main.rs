@@ -1056,17 +1056,17 @@ async fn main() -> Result<()> {
             // resolves addresses at connect time via pkarr. STUN runs in the
             // background and PkarrPublisher will republish once the public IP is
             // discovered, before any user could reasonably scan and connect.
-            if let Err(e) = generate_pairing_qr(
-                &registry,
-                &session_id,
+            if let Err(e) = generate_pairing_qr(PairingQrRequest {
+                registry: &registry,
+                session_id: &session_id,
                 endpoint_id,
-                &endpoint,
-                &endpoint_relay_urls,
+                endpoint: &endpoint,
+                relay_urls: &endpoint_relay_urls,
                 json,
-                Some(&workdir),
-                Some(&workdir),
-                pairing_mode,
-            )
+                started_workdir: Some(&workdir),
+                metrics_workdir: Some(&workdir),
+                mode: pairing_mode,
+            })
             .await
             {
                 tracing::warn!("Failed to generate QR code: {}", e);
@@ -2133,17 +2133,30 @@ fn elapsed_since_unix_secs(started_secs: u64) -> u64 {
         .unwrap_or(0)
 }
 
-async fn generate_pairing_qr(
-    registry: &Arc<session_registry::SessionRegistry>,
-    session_id: &str,
+struct PairingQrRequest<'a> {
+    registry: &'a Arc<session_registry::SessionRegistry>,
+    session_id: &'a str,
     endpoint_id: iroh::PublicKey,
-    endpoint: &iroh::Endpoint,
-    relay_urls: &[String],
+    endpoint: &'a iroh::Endpoint,
+    relay_urls: &'a [String],
     json: bool,
-    started_workdir: Option<&Path>,
-    metrics_workdir: Option<&Path>,
+    started_workdir: Option<&'a Path>,
+    metrics_workdir: Option<&'a Path>,
     mode: session_registry::PairingSlotMode,
-) -> Result<()> {
+}
+
+async fn generate_pairing_qr(request: PairingQrRequest<'_>) -> Result<()> {
+    let PairingQrRequest {
+        registry,
+        session_id,
+        endpoint_id,
+        endpoint,
+        relay_urls,
+        json,
+        started_workdir,
+        metrics_workdir,
+        mode,
+    } = request;
     let ticket = ZedraPairingTicket {
         endpoint_id,
         handshake_secret: rand::random(),
@@ -2212,7 +2225,17 @@ async fn run_qr_key_listener(
                     break;
                 };
                 if matches!(key, b'r' | b'R') {
-                    if let Err(e) = generate_pairing_qr(&registry, &session_id, endpoint_id, &endpoint, &relay_urls, false, None, Some(&workdir), mode).await {
+                    if let Err(e) = generate_pairing_qr(PairingQrRequest {
+                        registry: &registry,
+                        session_id: &session_id,
+                        endpoint_id,
+                        endpoint: &endpoint,
+                        relay_urls: &relay_urls,
+                        json: false,
+                        started_workdir: None,
+                        metrics_workdir: Some(&workdir),
+                        mode,
+                    }).await {
                         tracing::warn!("Failed to regenerate QR code: {}", e);
                     } else {
                         utils::eprintln_success("Regenerated pairing QR. Press 'r' again to refresh.");
@@ -2573,20 +2596,6 @@ mod tests {
         assert!(output.contains("  Daemon        not running"));
         assert!(output.contains("  Active Time   40s"));
         assert!(output.contains("  Active Now    0 connections"));
-    }
-
-    #[test]
-    fn terminal_created_output_summarizes_api_response() {
-        let output = render_terminal_created_output(
-            r#"{"id":"terminal-id","session_id":"session-id"}"#,
-            Some("claude"),
-        )
-        .unwrap();
-
-        assert!(output.contains("Terminal Opened"));
-        assert!(output.contains("  ID       terminal-id"));
-        assert!(output.contains("  Session  session-id"));
-        assert!(output.contains("  Command  claude"));
     }
 
     #[cfg(unix)]

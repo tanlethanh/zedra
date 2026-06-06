@@ -311,10 +311,11 @@ mod tests {
 
     #[test]
     fn active_seconds_accumulate_after_last_connection_closes() {
-        let mut metrics = WorkspaceMetrics::default();
-
-        metrics.active_connection_count = 1;
-        metrics.active_started_at_unix_secs = Some(100);
+        let mut metrics = WorkspaceMetrics {
+            active_connection_count: 1,
+            active_started_at_unix_secs: Some(100),
+            ..Default::default()
+        };
         assert_eq!(metrics.active_secs_at(150), 50);
 
         metrics.close_stale_active_window(160);

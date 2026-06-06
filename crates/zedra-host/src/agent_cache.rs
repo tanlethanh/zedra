@@ -482,8 +482,7 @@ impl AgentCache {
             let mut coord = self.usage_refresh.lock().await;
             coord.pending_sessions.drain().collect::<Vec<_>>()
         };
-        let mut by_id: HashMap<String, Arc<ServerSession>> =
-            pending.into_iter().map(|(id, s)| (id, s)).collect();
+        let mut by_id: HashMap<String, Arc<ServerSession>> = pending.into_iter().collect();
         if let Some(registry) = self.registry.lock().await.as_ref().and_then(Weak::upgrade) {
             for session in registry.sessions_with_event_subscribers().await {
                 by_id.insert(session.id.clone(), session);
@@ -497,8 +496,7 @@ impl AgentCache {
             let mut coord = self.version_refresh.lock().await;
             coord.pending_sessions.drain().collect::<Vec<_>>()
         };
-        let mut by_id: HashMap<String, Arc<ServerSession>> =
-            pending.into_iter().map(|(id, s)| (id, s)).collect();
+        let mut by_id: HashMap<String, Arc<ServerSession>> = pending.into_iter().collect();
 
         if let Some(registry) = self.registry.lock().await.as_ref().and_then(Weak::upgrade) {
             for session in registry.sessions_with_event_subscribers().await {
