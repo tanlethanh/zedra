@@ -11,8 +11,8 @@ use serde_json::Value;
 use zedra_rpc::proto::*;
 
 use crate::agent_utils::{
-    command_on_path, file_size_bytes, home_path, info_field, mtime_unix_secs, read_json_file, resume_summary,
-    session_title, user_message_text,
+    command_on_path, file_size_bytes, home_path, info_field, mtime_unix_secs, read_json_file,
+    resume_summary, session_title, user_message_text,
 };
 
 /// Cap per-file content shipped to the client. Hermes `.env` and memory files
@@ -31,12 +31,6 @@ pub struct SessionCounts {
 struct HermesSession {
     session_id: String,
     title: Option<String>,
-    model: Option<String>,
-    model_provider: Option<String>,
-    /// Platform the session ran on (cli, acp, telegram, discord, …).
-    source: Option<String>,
-    message_count: u64,
-    tool_count: u64,
     cost_usd: Option<f64>,
     created_at: Option<DateTime<Utc>>,
     last_activity_at: Option<DateTime<Utc>>,
@@ -48,10 +42,6 @@ pub fn cli_available() -> bool {
     // `state.db` alone is enough to serve history even without the CLI or a
     // sessions dir, so treat its presence as availability.
     command_on_path("hermes") || sessions_dir().is_dir() || state_db_path().is_file()
-}
-
-pub fn normalize_event(_event_name: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
-    None
 }
 
 /// Sessions are global, so `workdir` is intentionally ignored.
@@ -284,21 +274,6 @@ fn read_session(path: &Path, mtime_secs: Option<u64>) -> Option<HermesSession> {
                 .unwrap_or("unknown")
                 .to_string()
         });
-    let model = value
-        .get("model")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let message_count = value
-        .get("message_count")
-        .and_then(Value::as_u64)
-        .or_else(|| {
-            value
-                .get("messages")
-                .and_then(Value::as_array)
-                .map(|m| m.len() as u64)
-        })
-        .unwrap_or(0);
     let created_at = parse_timestamp(value.get("session_start"));
     let last_activity_at = parse_timestamp(value.get("last_updated"))
         .or_else(|| mtime_secs.and_then(|s| DateTime::<Utc>::from_timestamp(s as i64, 0)));
@@ -307,8 +282,6 @@ fn read_session(path: &Path, mtime_secs: Option<u64>) -> Option<HermesSession> {
     Some(HermesSession {
         session_id,
         title,
-        model,
-        message_count,
         created_at,
         last_activity_at,
         transcript_path: Some(path.to_path_buf()),
@@ -323,11 +296,6 @@ fn read_session(path: &Path, mtime_secs: Option<u64>) -> Option<HermesSession> {
 struct DbRow {
     id: String,
     title: Option<String>,
-    model: Option<String>,
-    billing_provider: Option<String>,
-    source: Option<String>,
-    message_count: i64,
-    tool_count: i64,
     cost: Option<f64>,
     started_at: Option<f64>,
     ended_at: Option<f64>,
@@ -355,8 +323,7 @@ fn collect_sessions_from_db(limit: Option<usize>) -> Option<Vec<HermesSession>> 
     let rows: Vec<DbRow> = {
         let mut stmt = conn
             .prepare(
-                "SELECT id, title, model, billing_provider, source, message_count, \
-                 tool_call_count, COALESCE(actual_cost_usd, estimated_cost_usd), \
+                "SELECT id, title, COALESCE(actual_cost_usd, estimated_cost_usd), \
                  started_at, ended_at \
                  FROM sessions ORDER BY COALESCE(ended_at, started_at) DESC LIMIT ?1",
             )
@@ -366,14 +333,9 @@ fn collect_sessions_from_db(limit: Option<usize>) -> Option<Vec<HermesSession>> 
                 Ok(DbRow {
                     id: row.get(0)?,
                     title: row.get(1)?,
-                    model: row.get(2)?,
-                    billing_provider: row.get(3)?,
-                    source: row.get(4)?,
-                    message_count: row.get::<_, Option<i64>>(5)?.unwrap_or(0),
-                    tool_count: row.get::<_, Option<i64>>(6)?.unwrap_or(0),
-                    cost: row.get(7)?,
-                    started_at: row.get(8)?,
-                    ended_at: row.get(9)?,
+                    cost: row.get(2)?,
+                    started_at: row.get(3)?,
+                    ended_at: row.get(4)?,
                 })
             })
             .ok()?;
@@ -391,11 +353,6 @@ fn collect_sessions_from_db(limit: Option<usize>) -> Option<Vec<HermesSession>> 
             HermesSession {
                 session_id: r.id,
                 title,
-                model: r.model.filter(|s| !s.is_empty()),
-                model_provider: r.billing_provider.filter(|s| !s.is_empty()),
-                source: r.source.filter(|s| !s.is_empty()),
-                message_count: r.message_count.max(0) as u64,
-                tool_count: r.tool_count.max(0) as u64,
                 cost_usd: r.cost,
                 created_at: r.started_at.and_then(epoch_to_dt),
                 last_activity_at: r.ended_at.or(r.started_at).and_then(epoch_to_dt),
