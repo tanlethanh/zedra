@@ -153,6 +153,33 @@
 7. Run each setup command again
 8. Expected: hook installation remains idempotent and does not duplicate hook entries
 
+## 0f-1. Agent Hook Notification Deeplink — App In Background
+
+Requires Delta sign-in, a registered push-enabled device, and hook setup
+(`zedra setup claude` or equivalent).
+
+**Connected workspace, app in background:**
+1. Connect to a workspace and open a Claude terminal with a running session
+2. Background the app (home button / swipe up, do not force-quit)
+3. From the Claude session, submit a prompt or trigger a tool approval so a hook fires
+4. Expected: a push notification arrives with a title such as `Claude requires approval` or `Claude turn finished`
+5. Tap the notification
+6. Expected: the app foregrounds and navigates directly to the terminal that generated the hook event, without requiring any manual workspace selection or terminal tap
+7. Expected: no duplicate or blank terminal view appears
+
+**Saved (disconnected) workspace, app in foreground or background:**
+1. Disconnect the workspace or force-quit and relaunch the app (workspace card visible on Home but not connected)
+2. From the host, trigger a hook event in a previously-known terminal
+3. Tap the push notification
+4. Expected: the app begins reconnecting to the workspace; the connecting view appears
+5. Expected: after sync completes, the app navigates automatically to the terminal from the deeplink without user interaction
+6. Expected: if the terminal from the deeplink no longer exists on the host after sync (stale terminal), the app falls back to the first available terminal or creates a new one
+
+**Validation guards (must not notify):**
+1. On the host, run `claude` in a plain shell that was **not** started from Zedra (no `ZEDRA_TERMINAL_ID` set); trigger a hook event
+2. Expected: no push notification is sent — hooks from terminals not registered in the daemon's session registry are silently dropped
+3. Confirm in daemon logs that the hook was received and discarded without an error
+
 ## 0g. Android Delta Push + In-App Banner
 
 Requires `android/google-services.json` from the Firebase project. Without it the
