@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use tracing::*;
 
+use crate::active_terminal;
 use crate::deeplink;
 use crate::platform_bridge::{
     self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback, ListPickerItem,
