@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use anyhow::Result;
 use tracing::{info, warn};
@@ -312,22 +312,16 @@ pub struct OpenCodeHookReceiver;
 impl HookReceiver for OpenCodeHookReceiver {
     async fn receive(&self, ctx: HookContext) -> Result<()> {
         // The OpenCode plugin sends a top-level event name and OpenCode's native
-        // `sessionID` (capital ID). Accept `type` as a fallback for the event name
-        // since synthetic/test payloads use it.
-        let event_name = agent_utils::payload_string(&ctx.payload, "event")
+        // event object. Accept flat fields as fallbacks for synthetic/test payloads.
+        let event_name = agent_utils::payload_string(&ctx.payload, "event_name")
+            .or_else(|| agent_utils::payload_string(&ctx.payload, "event"))
             .or_else(|| agent_utils::payload_string(&ctx.payload, "type"))
+            .or_else(|| opencode_event_string(&ctx.payload, "type"))
             .unwrap_or_default();
         let agent_session_id = agent_utils::payload_string(&ctx.payload, "sessionID")
-            .or_else(|| agent_utils::payload_string(&ctx.payload, "sessionId"));
-        // OpenCode's real event names: `permission.asked` → WaitingApproval,
-        // `session.idle` (turn complete) → Completed. `permission.ask` is kept as a
-        // defensive alias for older/synthetic payloads. No Running transition —
-        // OpenCode has no direct user-submit hook.
-        let agent_state = match event_name.as_str() {
-            "permission.ask" | "permission.asked" => Some(AgentState::WaitingApproval),
-            "session.idle" => Some(AgentState::Completed),
-            _ => None,
-        };
+            .or_else(|| agent_utils::payload_string(&ctx.payload, "sessionId"))
+            .or_else(|| opencode_event_property_string(&ctx.payload, "sessionID"));
+        let agent_state = opencode_agent_state(&event_name, &ctx.payload);
         if !self
             .apply_and_should_notify(
                 AgentKind::OpenCode,
@@ -347,7 +341,7 @@ impl HookReceiver for OpenCodeHookReceiver {
         let name = agent_utils::display_name(AgentKind::OpenCode);
         // Notify on approval requests and turn completion, matching Claude and Codex.
         let Some(title) = (match event_name.as_str() {
-            "permission.ask" | "permission.asked" => Some(format!("{name} requires approval")),
+            "permission.asked" => Some(format!("{name} requires approval")),
             "session.idle" => Some(format!("{name} completed")),
             _ => None,
         }) else {
@@ -365,6 +359,43 @@ impl HookReceiver for OpenCodeHookReceiver {
             },
         )
         .await
+    }
+}
+
+fn opencode_event_string(payload: &serde_json::Value, key: &str) -> Option<String> {
+    agent_utils::payload_string(payload.get("event")?, key)
+}
+
+fn opencode_event_property_string(payload: &serde_json::Value, key: &str) -> Option<String> {
+    agent_utils::payload_string(payload.get("event")?.get("properties")?, key)
+}
+
+fn opencode_session_status(payload: &serde_json::Value) -> Option<String> {
+    let status = payload
+        .get("status")
+        .or_else(|| payload.get("event")?.get("properties")?.get("status"))?;
+    if let Some(status) = status.as_str() {
+        return Some(status.to_owned());
+    }
+    status
+        .get("type")?
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn opencode_agent_state(event_name: &str, payload: &serde_json::Value) -> Option<AgentState> {
+    match event_name {
+        "permission.asked" => Some(AgentState::WaitingApproval),
+        "permission.replied" => Some(AgentState::Running),
+        "session.idle" => Some(AgentState::Completed),
+        "session.status" => match opencode_session_status(payload)?.as_str() {
+            "busy" | "retry" => Some(AgentState::Running),
+            "idle" => Some(AgentState::Completed),
+            _ => None,
+        },
+        "session.error" => Some(AgentState::Error),
+        _ => None,
     }
 }
 
@@ -441,5 +472,44 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
         format!("{truncated}…")
     } else {
         truncated
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn opencode_native_events_map_to_agent_states() {
+        let busy = json!({
+            "event": {
+                "type": "session.status",
+                "properties": {
+                    "sessionID": "ses_123",
+                    "status": { "type": "busy" }
+                }
+            }
+        });
+        assert_eq!(
+            opencode_event_property_string(&busy, "sessionID").as_deref(),
+            Some("ses_123")
+        );
+        assert_eq!(
+            opencode_agent_state("session.status", &busy),
+            Some(AgentState::Running)
+        );
+        assert_eq!(
+            opencode_agent_state("permission.asked", &json!({})),
+            Some(AgentState::WaitingApproval)
+        );
+        assert_eq!(
+            opencode_agent_state("permission.replied", &json!({})),
+            Some(AgentState::Running)
+        );
+        assert_eq!(
+            opencode_agent_state("session.idle", &json!({})),
+            Some(AgentState::Completed)
+        );
     }
 }

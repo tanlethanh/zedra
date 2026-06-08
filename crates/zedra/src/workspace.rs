@@ -755,10 +755,9 @@ impl Workspace {
                             AgentKind::Codex => {
                                 matches!(event_name.as_str(), "Stop" | "PermissionRequest")
                             }
-                            AgentKind::OpenCode => matches!(
-                                event_name.as_str(),
-                                "session.idle" | "permission.ask" | "permission.asked"
-                            ),
+                            AgentKind::OpenCode => {
+                                matches!(event_name.as_str(), "session.idle" | "permission.asked")
+                            }
                             _ => false,
                         };
                         let in_foreground = platform_bridge::is_app_in_foreground();

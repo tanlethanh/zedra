@@ -160,10 +160,7 @@ fn codex_local_hooks_installed(workdir: &Path) -> bool {
 }
 
 fn opencode_plugin_installed() -> bool {
-    let plugin_dir = home_path(&[".config", "opencode", "plugins"]);
-    ["zedra.js", "zedra.ts", "zedra.mjs"]
-        .iter()
-        .any(|name| plugin_dir.join(name).is_file())
+    home_path(&[".config", "opencode", "plugins", "zedra-agent-hooks.js"]).is_file()
 }
 
 fn opencode_hooks_installed() -> bool {
