@@ -67,6 +67,14 @@ pub fn sessions(
     Ok((summaries, total))
 }
 
+/// Title of a single pi session, looked up by id within the workdir's project
+/// transcripts. Used to fill the notification body on a `Stop` hook.
+pub fn title_for_session(workdir: &Path, session_id: &str) -> Option<String> {
+    let files = collect_session_files(workdir, None, false).ok()?;
+    let file = files.into_iter().find(|f| f.session_id == session_id)?;
+    session_title(file.title)
+}
+
 pub fn account_fields(workdir: &Path) -> Vec<AgentInfoField> {
     let mut fields = Vec::new();
     let (settings, has_project) = effective_settings(workdir);

@@ -19,6 +19,7 @@ const SKILL_NAMES: &[&str] = &[
 ];
 const ZEDRA_HOOK_SOURCE: &str = "zedra-agent-hook";
 const OPENCODE_HOOK_PLUGIN: &str = "zedra-agent-hooks.mjs";
+const PI_HOOK_EXTENSION: &str = "zedra-agent-hooks.ts";
 
 #[derive(Clone, Copy, Debug, Subcommand)]
 pub enum SetupAgent {
@@ -38,13 +39,19 @@ pub enum SetupAgent {
         #[command(flatten)]
         action: SetupActionArgs,
     },
+    /// Manage the Zedra pi lifecycle-hook extension
+    Pi {
+        #[command(flatten)]
+        action: SetupActionArgs,
+    },
 }
 
-pub async fn run(agent: SetupAgent, assume_yes: bool) -> Result<()> {
+pub async fn run(agent: SetupAgent, assume_yes: bool, full_bin_path: bool) -> Result<()> {
     match agent {
-        SetupAgent::Claude { action } => setup_claude(action.into()),
-        SetupAgent::Codex { action } => setup_codex(action.into(), assume_yes).await,
-        SetupAgent::OpenCode { action } => setup_opencode(action.into()).await,
+        SetupAgent::Claude { action } => setup_claude(action.into(), full_bin_path),
+        SetupAgent::Codex { action } => setup_codex(action.into(), assume_yes, full_bin_path).await,
+        SetupAgent::OpenCode { action } => setup_opencode(action.into(), full_bin_path).await,
+        SetupAgent::Pi { action } => setup_pi(action.into(), full_bin_path),
     }
 }
 
@@ -77,16 +84,16 @@ impl SetupAction {
     }
 }
 
-fn setup_claude(action: SetupAction) -> Result<()> {
+fn setup_claude(action: SetupAction, full_bin_path: bool) -> Result<()> {
     require_command("claude")?;
 
     match action {
-        SetupAction::Install => setup_claude_install(),
+        SetupAction::Install => setup_claude_install(full_bin_path),
         SetupAction::Remove => setup_claude_remove(),
     }
 }
 
-fn setup_claude_install() -> Result<()> {
+fn setup_claude_install(full_bin_path: bool) -> Result<()> {
     println!("Installing Zedra plugin for Claude:");
     if !run_optional_command_step(
         "marketplace",
@@ -100,7 +107,7 @@ fn setup_claude_install() -> Result<()> {
         "claude",
         &["plugin", "install", "--scope", "user", CLAUDE_PLUGIN],
     )?;
-    install_claude_hooks()?;
+    install_claude_hooks(full_bin_path)?;
 
     println!();
     println!("Claude setup complete.");
@@ -135,17 +142,17 @@ fn setup_claude_remove() -> Result<()> {
     Ok(())
 }
 
-async fn setup_codex(action: SetupAction, _assume_yes: bool) -> Result<()> {
+async fn setup_codex(action: SetupAction, _assume_yes: bool, full_bin_path: bool) -> Result<()> {
     match action {
-        SetupAction::Install => setup_codex_install().await,
+        SetupAction::Install => setup_codex_install(full_bin_path).await,
         SetupAction::Remove => setup_codex_remove(),
     }
 }
 
-async fn setup_codex_install() -> Result<()> {
+async fn setup_codex_install(full_bin_path: bool) -> Result<()> {
     let skills_dir = codex_skills_dir()?;
     install_skills_from_raw("Codex", &skills_dir, "Installing").await?;
-    install_codex_hooks()?;
+    install_codex_hooks(full_bin_path)?;
 
     println!();
     println!("Codex setup complete.");
@@ -165,17 +172,17 @@ fn setup_codex_remove() -> Result<()> {
     Ok(())
 }
 
-async fn setup_opencode(action: SetupAction) -> Result<()> {
+async fn setup_opencode(action: SetupAction, full_bin_path: bool) -> Result<()> {
     match action {
-        SetupAction::Install => setup_opencode_install().await,
+        SetupAction::Install => setup_opencode_install(full_bin_path).await,
         SetupAction::Remove => setup_opencode_remove(),
     }
 }
 
-async fn setup_opencode_install() -> Result<()> {
+async fn setup_opencode_install(full_bin_path: bool) -> Result<()> {
     let skills_dir = opencode_skills_dir()?;
     install_skills_from_raw("OpenCode", &skills_dir, "Installing").await?;
-    install_opencode_hooks()?;
+    install_opencode_hooks(full_bin_path)?;
 
     println!();
     println!("OpenCode setup complete.");
@@ -193,6 +200,106 @@ fn setup_opencode_remove() -> Result<()> {
     println!("OpenCode setup removed.");
     println!("Restart OpenCode or reload skills to apply the change.");
     Ok(())
+}
+
+fn setup_pi(action: SetupAction, full_bin_path: bool) -> Result<()> {
+    match action {
+        SetupAction::Install => setup_pi_install(full_bin_path),
+        SetupAction::Remove => setup_pi_remove(),
+    }
+}
+
+fn setup_pi_install(full_bin_path: bool) -> Result<()> {
+    println!("Installing Zedra lifecycle-hook extension for pi:");
+    install_pi_hooks(full_bin_path)?;
+
+    println!();
+    println!("pi setup complete.");
+    println!("pi auto-discovers the extension; start a new pi session inside Zedra.");
+    Ok(())
+}
+
+fn setup_pi_remove() -> Result<()> {
+    println!("Removing Zedra lifecycle-hook extension for pi:");
+    remove_pi_hooks()?;
+
+    println!();
+    println!("pi setup removed.");
+    println!("Restart any running pi session to apply the change.");
+    Ok(())
+}
+
+fn pi_extension_path() -> Result<PathBuf> {
+    Ok(home_dir()?
+        .join(".pi")
+        .join("agent")
+        .join("extensions")
+        .join(PI_HOOK_EXTENSION))
+}
+
+fn install_pi_hooks(full_bin_path: bool) -> Result<()> {
+    let path = pi_extension_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, pi_hook_extension(&hook_binary(full_bin_path)?)?)?;
+    print_step_label("hooks");
+    print_success_detail(&format!("write {}", path.display()));
+    Ok(())
+}
+
+fn remove_pi_hooks() -> Result<()> {
+    let path = pi_extension_path()?;
+    if remove_skill_path(&path)? {
+        print_step_label("hooks");
+        print_success_detail(&format!("remove {}", path.display()));
+    }
+    Ok(())
+}
+
+/// pi extension that mirrors the OpenCode plugin: it shells back into the zedra
+/// binary on lifecycle events. It is a complete no-op outside a Zedra terminal
+/// (no `ZEDRA_TERMINAL_ID`) and for non-interactive pi runs (`ctx.hasUI === false`,
+/// i.e. subagents / `-p` / JSON mode). Dispatch is fire-and-forget so a missing
+/// or slow zedra binary can never stall the pi agent loop.
+///
+/// pi's native events are normalized to the Claude-compatible names the host
+/// receiver expects: `before_agent_start → UserPromptSubmit`, `agent_end → Stop`.
+/// `session_shutdown → Stop` clears a stuck "running" state on Ctrl+C / quit.
+fn pi_hook_extension(binary: &str) -> Result<String> {
+    let binary = serde_json::to_string(binary)?;
+    Ok(format!(
+        r#"// zedra-agent-hook (pi lifecycle extension)
+import {{ spawn }} from "node:child_process";
+
+const zedra = {binary};
+
+function fire(eventName) {{
+  if (!process.env.ZEDRA_TERMINAL_ID) return;
+  try {{
+    const child = spawn(
+      zedra,
+      ["agent", "hook", "receive", "--agent", "pi", "--payload", JSON.stringify({{ hook_event_name: eventName }})],
+      {{ stdio: ["ignore", "ignore", "ignore"], detached: true }},
+    );
+    child.on("error", () => {{}});
+    child.unref();
+  }} catch {{
+    // spawn() can throw synchronously (EACCES, ENOENT). Stay silent.
+  }}
+}}
+
+// Gate on ctx.hasUI === false (not !ctx.hasUI) so pi versions without the field
+// still fire; only explicit non-interactive runs are skipped.
+const skip = (ctx) => ctx?.hasUI === false;
+
+export default function (pi) {{
+  pi.on("before_agent_start", (_event, ctx) => {{ if (!skip(ctx)) fire("UserPromptSubmit"); }});
+  pi.on("agent_end", (_event, ctx) => {{ if (!skip(ctx)) fire("Stop"); }});
+  pi.on("session_shutdown", (_event, ctx) => {{ if (!skip(ctx)) fire("Stop"); }});
+}}
+"#
+    ))
 }
 
 fn print_suggested_command(command: &str) {
@@ -215,20 +322,20 @@ fn print_error_detail(detail: &str) {
     utils::println_error(detail);
 }
 
-fn install_claude_hooks() -> Result<()> {
+fn install_claude_hooks(full_bin_path: bool) -> Result<()> {
     let path = home_dir()?.join(".claude").join("settings.json");
     merge_command_hooks(
         &path,
         &[
             ("UserPromptSubmit", None, 2),
             ("PermissionRequest", Some("*"), 2),
+            ("PostToolUse", Some("*"), 2),
             ("Stop", None, 2),
             ("TaskCompleted", None, 2),
             ("SessionEnd", None, 2),
-            ("SubagentStart", None, 2),
-            ("SubagentStop", None, 2),
         ],
         "Claude",
+        full_bin_path,
     )
 }
 
@@ -236,18 +343,18 @@ fn remove_claude_hooks() -> Result<()> {
     remove_command_hooks(&home_dir()?.join(".claude").join("settings.json"), "Claude")
 }
 
-fn install_codex_hooks() -> Result<()> {
+fn install_codex_hooks(full_bin_path: bool) -> Result<()> {
     let path = home_dir()?.join(".codex").join("hooks.json");
     merge_command_hooks(
         &path,
         &[
             ("UserPromptSubmit", None, 2),
             ("PermissionRequest", Some("*"), 30),
+            ("PostToolUse", Some("*"), 2),
             ("Stop", None, 2),
-            ("SubagentStart", None, 2),
-            ("SubagentStop", None, 2),
         ],
         "Codex",
+        full_bin_path,
     )
 }
 
@@ -259,9 +366,10 @@ fn merge_command_hooks(
     path: &Path,
     events: &[(&str, Option<&str>, u64)],
     agent: &str,
+    full_bin_path: bool,
 ) -> Result<()> {
     let mut root = read_json_object(path)?;
-    let command = hook_command(agent)?;
+    let command = hook_command(agent, full_bin_path)?;
     let hooks = root
         .as_object_mut()
         .expect("read_json_object returns object")
@@ -278,9 +386,6 @@ fn merge_command_hooks(
         let entries = entries
             .as_array_mut()
             .ok_or_else(|| anyhow!("{event} hooks must be a JSON array"))?;
-        if hook_entry_index(entries, agent).is_some() {
-            continue;
-        }
         let mut entry = json!({
             "_source": ZEDRA_HOOK_SOURCE,
             "hooks": [{
@@ -296,11 +401,23 @@ fn merge_command_hooks(
                     Value::String("Waiting for Zedra approval".to_string());
             }
         }
-        entries.push(entry);
+        if let Some(index) = hook_entry_index(entries, agent) {
+            entries[index] = entry;
+        } else {
+            entries.push(entry);
+        }
     }
 
     write_json_file(path, &root)?;
     print_step_label("hooks");
+    print_success_detail(&format!(
+        "register {agent} hooks: {}",
+        events
+            .iter()
+            .map(|(event, _, _)| *event)
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
     print_success_detail(&format!("write {}", path.display()));
     Ok(())
 }
@@ -325,9 +442,9 @@ fn remove_command_hooks(path: &Path, agent: &str) -> Result<()> {
     Ok(())
 }
 
-fn install_opencode_hooks() -> Result<()> {
+fn install_opencode_hooks(full_bin_path: bool) -> Result<()> {
     let dir = home_dir()?.join(".config").join("opencode");
-    install_opencode_hooks_in_dir(&dir, &hook_binary()?)
+    install_opencode_hooks_in_dir(&dir, &hook_binary(full_bin_path)?)
 }
 
 fn install_opencode_hooks_in_dir(dir: &Path, binary: &str) -> Result<()> {
@@ -380,19 +497,39 @@ fn remove_opencode_hooks_in_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn hook_command(agent: &str) -> Result<String> {
+fn hook_command(agent: &str, full_bin_path: bool) -> Result<String> {
     Ok(format!(
-        "{} agent hook receive --agent {}",
-        shell_quote(&hook_binary()?),
-        agent
+        "{} agent hook receive --agent {} --quiet",
+        hook_command_program(full_bin_path)?,
+        agent_slug(agent)
     ))
 }
 
-fn hook_binary() -> Result<String> {
+fn hook_command_program(full_bin_path: bool) -> Result<String> {
+    if full_bin_path {
+        Ok(shell_quote(&current_zedra_binary()?))
+    } else {
+        Ok("zedra".to_string())
+    }
+}
+
+fn hook_binary(full_bin_path: bool) -> Result<String> {
+    if full_bin_path {
+        current_zedra_binary()
+    } else {
+        Ok("zedra".to_string())
+    }
+}
+
+fn current_zedra_binary() -> Result<String> {
     Ok(std::env::current_exe()
         .context("resolve current zedra binary")?
         .display()
         .to_string())
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn read_json_object(path: &Path) -> Result<Value> {
@@ -438,11 +575,37 @@ fn is_zedra_hook_entry(entry: &Value, agent: &str) -> bool {
                 hooks.iter().any(|hook| {
                     hook.get("command")
                         .and_then(Value::as_str)
-                        .is_some_and(|command| {
-                            command.contains(&format!(" agent hook receive --agent {agent}"))
-                        })
+                        .is_some_and(|command| command_uses_agent(command, agent))
                 })
             })
+}
+
+fn command_uses_agent(command: &str, agent: &str) -> bool {
+    let Some(raw_agent) = command_agent(command) else {
+        return false;
+    };
+    command.contains("agent hook receive --agent") && agent_slug(raw_agent) == agent_slug(agent)
+}
+
+fn command_agent(command: &str) -> Option<&str> {
+    let mut tokens = command.split_whitespace();
+    while let Some(token) = tokens.next() {
+        if token == "--agent" {
+            return tokens.next();
+        }
+    }
+    None
+}
+
+fn agent_slug(agent: &str) -> &str {
+    match agent {
+        "Claude" | "claude" => "claude",
+        "Codex" | "codex" => "codex",
+        "OpenCode" | "opencode" | "open-code" | "open_code" => "opencode",
+        "Pi" | "pi" => "pi",
+        "Hermes" | "hermes" => "hermes",
+        _ => agent,
+    }
 }
 
 fn opencode_hook_plugin(binary: &str) -> Result<String> {
@@ -462,8 +625,6 @@ function send(event, payload = {{}}) {{
 export default async function zedraAgentHooks() {{
   return {{
     event: async (input) => send(input.event?.type ?? "event", input),
-    "chat.message": async (input) => send("chat.message", input),
-    "permission.ask": async (input) => send("permission.ask", input),
     "tool.execute.after": async (input) => {{
       if (String(input.tool ?? "").toLowerCase().includes("selection")) {{
         send("selection", input);
@@ -473,10 +634,6 @@ export default async function zedraAgentHooks() {{
 }}
 "#
     ))
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 async fn install_skills_from_raw(agent_name: &str, skills_dir: &Path, verb: &str) -> Result<()> {
@@ -732,14 +889,28 @@ mod tests {
 
         merge_command_hooks(
             &path,
-            &[("Stop", None, 2), ("PermissionRequest", Some("*"), 30)],
+            &[
+                ("Stop", None, 2),
+                ("PermissionRequest", Some("*"), 30),
+                ("PostToolUse", Some("*"), 2),
+            ],
             "Codex",
+            false,
         )
         .unwrap();
+        let mut root = read_json_object(&path).unwrap();
+        root["hooks"]["PermissionRequest"][0]["hooks"][0]["command"] =
+            Value::String("/tmp/old-zedra agent hook receive --agent Codex".to_string());
+        write_json_file(&path, &root).unwrap();
         merge_command_hooks(
             &path,
-            &[("Stop", None, 2), ("PermissionRequest", Some("*"), 30)],
+            &[
+                ("Stop", None, 2),
+                ("PermissionRequest", Some("*"), 30),
+                ("PostToolUse", Some("*"), 2),
+            ],
             "Codex",
+            false,
         )
         .unwrap();
 
@@ -755,10 +926,18 @@ mod tests {
         assert!(root["hooks"]["PermissionRequest"][0]["hooks"][0]["command"]
             .as_str()
             .unwrap()
-            .contains(" agent hook receive --agent Codex"));
+            .contains(" agent hook receive --agent codex"));
+        assert_eq!(
+            root["hooks"]["PermissionRequest"][0]["hooks"][0]["command"],
+            "zedra agent hook receive --agent codex --quiet"
+        );
         assert_eq!(
             root["hooks"]["PermissionRequest"][0]["hooks"][0]["statusMessage"],
             "Waiting for Zedra approval"
+        );
+        assert_eq!(
+            root["hooks"]["PostToolUse"][0]["hooks"][0]["command"],
+            "zedra agent hook receive --agent codex --quiet"
         );
     }
 
@@ -766,7 +945,7 @@ mod tests {
     fn command_hook_remove_only_deletes_zedra_entries() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        merge_command_hooks(&path, &[("Stop", None, 2)], "Claude").unwrap();
+        merge_command_hooks(&path, &[("Stop", None, 2)], "Claude", false).unwrap();
         let mut root = read_json_object(&path).unwrap();
         root["hooks"]["Stop"].as_array_mut().unwrap().push(json!({
             "hooks": [{
@@ -782,6 +961,29 @@ mod tests {
         let stop = root["hooks"]["Stop"].as_array().unwrap();
         assert_eq!(stop.len(), 1);
         assert_eq!(stop[0]["hooks"][0]["command"], "/usr/bin/true");
+    }
+
+    #[test]
+    fn hook_command_uses_lowercase_agent_slugs() {
+        for (agent, slug) in [
+            ("Claude", "claude"),
+            ("Codex", "codex"),
+            ("OpenCode", "opencode"),
+            ("Pi", "pi"),
+            ("Hermes", "hermes"),
+        ] {
+            assert_eq!(
+                hook_command(agent, false).unwrap(),
+                format!("zedra agent hook receive --agent {slug} --quiet")
+            );
+        }
+    }
+
+    #[test]
+    fn hook_command_can_use_current_binary_path() {
+        let command = hook_command("Codex", true).unwrap();
+        assert!(command.ends_with(" agent hook receive --agent codex --quiet"));
+        assert_ne!(command, "zedra agent hook receive --agent codex --quiet");
     }
 
     #[test]
@@ -825,5 +1027,17 @@ mod tests {
             .iter()
             .all(|value| value.as_str() != Some(plugin_path.to_str().unwrap())));
         assert!(!plugin_path.exists());
+    }
+
+    #[test]
+    fn pi_extension_shells_into_zedra_and_is_detectable() {
+        let ext = pi_hook_extension("/tmp/zedra").unwrap();
+        // Shells back into the zedra binary with the pi agent slug.
+        assert!(ext.contains(r#"["agent", "hook", "receive", "--agent", "pi", "--payload""#));
+        // No-op guards: outside Zedra terminals and for non-interactive pi runs.
+        assert!(ext.contains("if (!process.env.ZEDRA_TERMINAL_ID) return;"));
+        assert!(ext.contains("ctx?.hasUI === false"));
+        // Detection in agent_setup relies on this marker substring.
+        assert!(ext.contains("zedra-agent-hook"));
     }
 }

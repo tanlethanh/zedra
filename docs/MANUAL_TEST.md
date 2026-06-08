@@ -145,13 +145,20 @@
 ## 0f. Delta Agent Hooks
 
 1. Sign in the host with Delta and confirm `zedra stack nodes` lists at least one push-enabled mobile node
-2. Run `zedra setup claude`, `zedra setup codex`, and `zedra setup opencode`
-3. Start a new Claude, Codex, and opencode session
+2. Run `zedra setup claude`, `zedra setup codex`, `zedra setup opencode`, and `zedra setup pi`
+3. Start a new Claude, Codex, opencode, and pi session
 4. Submit a prompt, trigger a tool approval, use Add to Chat from a Zedra editor selection when an agent terminal is active, and let the task finish
 5. Expected: each agent event produces a Delta notification without exposing prompt, tool output, diff, file path, or terminal contents
-6. If an iOS Live Activity token is registered for the same `activity_id`, expected: the Live Activity changes to working, waiting, selection, and done/end states as the hooks fire
-7. Run each setup command again
-8. Expected: hook installation remains idempotent and does not duplicate hook entries
+6. Expected for pi: the working indicator turns on when a prompt is submitted and a `Pi completed` notification fires on turn end; pi has no approval event, so no waiting/approval notification is expected
+7. If an iOS Live Activity token is registered for the same `activity_id`, expected: the Live Activity changes to working, waiting, selection, and done/end states as the hooks fire
+8. Run each setup command again
+9. Expected: hook installation remains idempotent and does not duplicate hook entries (for pi, `~/.pi/agent/extensions/zedra-agent-hooks.ts` is rewritten in place)
+
+### Pi hook smoke test (no live model)
+
+1. Run `zedra setup pi`, then start any pi session inside a Zedra terminal
+2. From another shell on the host, run `zedra agent hook test --agent pi --event UserPromptSubmit --terminal-id <id>` then `... --event Stop --terminal-id <id>`
+3. Expected: the agent state transitions Running → Completed, and a `Pi completed` Delta notification fires when the app is backgrounded
 
 ## 0f-1. Agent Hook Notification Deeplink — App In Background
 

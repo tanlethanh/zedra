@@ -195,6 +195,7 @@ impl HookReceiver for ClaudeHookReceiver {
         let agent_state = match event_name.as_str() {
             "UserPromptSubmit" => Some(AgentState::Running),
             "PermissionRequest" => Some(AgentState::WaitingApproval),
+            "PostToolUse" => Some(AgentState::Running),
             "Stop" => Some(AgentState::Completed),
             _ => None,
         };
@@ -252,6 +253,7 @@ impl HookReceiver for CodexHookReceiver {
         let agent_state = match event_name.as_str() {
             "UserPromptSubmit" => Some(AgentState::Running),
             "PermissionRequest" => Some(AgentState::WaitingApproval),
+            "PostToolUse" => Some(AgentState::Running),
             "Stop" => Some(AgentState::Completed),
             _ => None,
         };
@@ -272,9 +274,10 @@ impl HookReceiver for CodexHookReceiver {
         };
 
         let name = agent_utils::display_name(AgentKind::Codex);
-        // Only notify for permission requests — Stop fires on every turn end.
+        // Notify on approval requests and turn completion, matching Claude.
         let Some(title) = (match event_name.as_str() {
             "PermissionRequest" => Some(format!("{name} requires approval")),
+            "Stop" => Some(format!("{name} completed")),
             _ => None,
         }) else {
             return Ok(());
@@ -316,11 +319,13 @@ impl HookReceiver for OpenCodeHookReceiver {
             .unwrap_or_default();
         let agent_session_id = agent_utils::payload_string(&ctx.payload, "sessionID")
             .or_else(|| agent_utils::payload_string(&ctx.payload, "sessionId"));
-        // permission.ask → WaitingApproval; chat.message → Completed.
-        // No Running transition — OpenCode has no direct user-submit hook.
+        // OpenCode's real event names: `permission.asked` → WaitingApproval,
+        // `session.idle` (turn complete) → Completed. `permission.ask` is kept as a
+        // defensive alias for older/synthetic payloads. No Running transition —
+        // OpenCode has no direct user-submit hook.
         let agent_state = match event_name.as_str() {
             "permission.ask" | "permission.asked" => Some(AgentState::WaitingApproval),
-            "chat.message" => Some(AgentState::Completed),
+            "session.idle" => Some(AgentState::Completed),
             _ => None,
         };
         if !self
@@ -340,9 +345,10 @@ impl HookReceiver for OpenCodeHookReceiver {
         };
 
         let name = agent_utils::display_name(AgentKind::OpenCode);
-        // Only notify for permission requests — chat.message fires too often.
+        // Notify on approval requests and turn completion, matching Claude and Codex.
         let Some(title) = (match event_name.as_str() {
             "permission.ask" | "permission.asked" => Some(format!("{name} requires approval")),
+            "session.idle" => Some(format!("{name} completed")),
             _ => None,
         }) else {
             return Ok(());
@@ -354,6 +360,71 @@ impl HookReceiver for OpenCodeHookReceiver {
             HookNotification {
                 title,
                 body: None,
+                deeplink: self.build_deeplink(&ctx),
+                content_state: self.content_state(name, &event_name),
+            },
+        )
+        .await
+    }
+}
+
+pub struct PiHookReceiver;
+
+impl HookReceiver for PiHookReceiver {
+    async fn receive(&self, ctx: HookContext) -> Result<()> {
+        // The pi extension normalizes pi's native events to Claude-compatible
+        // names (`UserPromptSubmit`, `Stop`) and pipes snake_case `session_id`.
+        // Pi exposes no approval hook, so there is no WaitingApproval transition.
+        let event_name =
+            agent_utils::payload_string(&ctx.payload, "hook_event_name").unwrap_or_default();
+        let agent_session_id = agent_utils::payload_string(&ctx.payload, "session_id");
+        let agent_state = match event_name.as_str() {
+            "UserPromptSubmit" => Some(AgentState::Running),
+            "Stop" => Some(AgentState::Completed),
+            _ => None,
+        };
+        if !self
+            .apply_and_should_notify(
+                AgentKind::Pi,
+                &event_name,
+                agent_state,
+                agent_session_id.as_deref(),
+                &ctx,
+            )
+            .await
+        {
+            return Ok(());
+        }
+        let Some(delta) = ctx.delta.clone() else {
+            return Ok(());
+        };
+
+        let name = agent_utils::display_name(AgentKind::Pi);
+        // Only notify on completion — pi has no approval event, and Stop is the
+        // single user-meaningful turn boundary.
+        let Some(title) = (match event_name.as_str() {
+            "Stop" => Some(format!("{name} completed")),
+            _ => None,
+        }) else {
+            return Ok(());
+        };
+
+        // Pi stores transcripts per workdir; look up the session title for the body.
+        let workdir = ctx.workdir.clone();
+        let body = tokio::task::spawn_blocking(move || {
+            agent_session_id
+                .as_deref()
+                .and_then(|id| crate::agent_pi::title_for_session(&workdir, id))
+        })
+        .await
+        .unwrap_or(None);
+
+        info!(event_name, "agent hook delta notification (pi)");
+        self.send_notification(
+            &delta,
+            HookNotification {
+                title,
+                body,
                 deeplink: self.build_deeplink(&ctx),
                 content_state: self.content_state(name, &event_name),
             },

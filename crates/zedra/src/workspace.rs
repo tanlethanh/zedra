@@ -757,7 +757,7 @@ impl Workspace {
                             }
                             AgentKind::OpenCode => matches!(
                                 event_name.as_str(),
-                                "chat.message" | "permission.ask" | "permission.asked"
+                                "session.idle" | "permission.ask" | "permission.asked"
                             ),
                             _ => false,
                         };

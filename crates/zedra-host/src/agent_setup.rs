@@ -53,7 +53,7 @@ pub fn setup_summary(kind: AgentKind, cli_available: bool, workdir: &Path) -> Ag
             hooks_enabled()
                 && (opencode_hooks_installed() || opencode_local_hooks_installed(workdir)),
         ),
-        AgentKind::Pi => (false, false, false),
+        AgentKind::Pi => (false, false, hooks_enabled() && pi_hooks_installed()),
         // Hermes has its own hook system, but Zedra doesn't install into it yet.
         AgentKind::Hermes => (false, false, false),
     };
@@ -172,6 +172,15 @@ fn opencode_hooks_installed() -> bool {
 
 fn opencode_local_hooks_installed(workdir: &Path) -> bool {
     hook_file_mentions_zedra(&workdir.join(".opencode/plugins/zedra.js"))
+}
+
+fn pi_hooks_installed() -> bool {
+    hook_file_mentions_zedra(&home_path(&[
+        ".pi",
+        "agent",
+        "extensions",
+        "zedra-agent-hooks.ts",
+    ]))
 }
 
 fn hook_file_mentions_zedra(path: &Path) -> bool {

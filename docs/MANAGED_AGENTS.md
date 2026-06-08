@@ -316,9 +316,22 @@ When defining `normalize_event`, match the exact strings the agent fires. Common
 | Claude (PascalCase) | `SessionStart`, `Stop`, `PermissionRequest`, `PostToolUse` |
 | OpenCode (dot.case) | `session.status`, `session.idle`, `tool.execute.before` |
 | Codex (PascalCase) | `SessionStart`, `PermissionRequest`, `PostToolUse`, `Stop` |
+| Pi (snake_case, normalized in the extension) | native `before_agent_start`, `agent_end`, `session_shutdown` → wire `UserPromptSubmit`, `Stop` |
 | Generic (snake_case) | `session_start`, `session_end`, `permission_request`, `error` |
 
 Map to `AgentEventKind` variants. Only handle events the agent actually fires. Unknown events return `None` and are dropped — that is intentional and keeps the pipeline clean.
+
+### Pi: extension-based hook delivery
+
+Pi has no shell-hook config file. Instead `zedra setup pi` writes a TypeScript
+extension to `~/.pi/agent/extensions/zedra-agent-hooks.ts`, which pi
+auto-discovers at session start. The extension shells back into the zedra binary
+(`zedra agent hook receive --agent pi`) on lifecycle events, mirroring the
+OpenCode plugin pattern. It is a no-op outside a Zedra terminal (no
+`ZEDRA_TERMINAL_ID`) and for non-interactive pi runs (`ctx.hasUI === false`).
+Pi exposes no approval/permission event, so `PiHookReceiver` only drives
+`Running`/`Completed` state and notifies on `Stop`. See `pi_hook_extension` in
+`setup.rs` and `pi_hooks_installed` in `agent_setup.rs`.
 
 ## Global vs workspace-scoped agents
 

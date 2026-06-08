@@ -257,6 +257,10 @@ enum Commands {
         #[arg(short, long)]
         yes: bool,
 
+        /// Write hooks using the current zedra binary path instead of the global `zedra` command
+        #[arg(long)]
+        full_bin_path: bool,
+
         #[command(subcommand)]
         agent: setup::SetupAgent,
     },
@@ -1255,8 +1259,12 @@ async fn main() -> Result<()> {
             agent_cli::run(command).await?;
         }
 
-        Commands::Setup { yes, agent } => {
-            setup::run(agent, yes).await?;
+        Commands::Setup {
+            yes,
+            full_bin_path,
+            agent,
+        } => {
+            setup::run(agent, yes, full_bin_path).await?;
         }
 
         Commands::List { stale } => {

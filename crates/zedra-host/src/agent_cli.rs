@@ -798,8 +798,6 @@ fn claude_hook_config(script_path: &Path) -> serde_json::Value {
             "PostToolUse": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "PostToolUse", Some("*")),
             "PostToolUseFailure": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "PostToolUseFailure", Some("*")),
             "PostToolBatch": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "PostToolBatch", None),
-            "SubagentStart": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "SubagentStart", Some("*")),
-            "SubagentStop": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "SubagentStop", Some("*")),
             "TaskCreated": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "TaskCreated", None),
             "TaskCompleted": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "TaskCompleted", None),
             "Stop": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "Stop", None),
@@ -821,16 +819,21 @@ fn claude_hook_config(script_path: &Path) -> serde_json::Value {
 
 fn write_codex_hook_config(workdir: &Path, script_path: &Path, force: bool) -> Result<PathBuf> {
     let path = workdir.join(".codex/hooks.json");
-    let value = serde_json::json!({
+    let value = codex_hook_config(script_path);
+    write_json_file_checked(&path, &value, force, "Codex local hook config")?;
+    Ok(path)
+}
+
+fn codex_hook_config(script_path: &Path) -> serde_json::Value {
+    serde_json::json!({
         "hooks": {
             "SessionStart": hook_groups_for_event(script_path, CliManagedAgentKind::Codex, "SessionStart", None),
+            "UserPromptSubmit": hook_groups_for_event(script_path, CliManagedAgentKind::Codex, "UserPromptSubmit", None),
             "PermissionRequest": hook_groups_for_event(script_path, CliManagedAgentKind::Codex, "PermissionRequest", Some("*")),
             "PostToolUse": hook_groups_for_event(script_path, CliManagedAgentKind::Codex, "PostToolUse", Some("*")),
             "Stop": hook_groups_for_event(script_path, CliManagedAgentKind::Codex, "Stop", None)
         }
-    });
-    write_json_file_checked(&path, &value, force, "Codex local hook config")?;
-    Ok(path)
+    })
 }
 
 fn write_opencode_hook_config(workdir: &Path, script_path: &Path, force: bool) -> Result<PathBuf> {
@@ -1002,10 +1005,12 @@ fn synthetic_hook_payload(
             })
         }
         CliManagedAgentKind::Pi => {
+            // The pi extension normalizes to Claude-compatible names; match that
+            // wire so `agent hook test --agent pi` exercises the real receiver.
             let cwd = workdir.to_string_lossy();
             serde_json::json!({
-                "event": event_name,
-                "sessionId": "zedra-test-session",
+                "hook_event_name": event_name,
+                "session_id": "zedra-test-session",
                 "cwd": cwd,
             })
         }
@@ -1323,8 +1328,24 @@ mod tests {
             "PreToolUse",
             "PostToolBatch",
             "PermissionDenied",
-            "SubagentStart",
             "SessionEnd",
+        ] {
+            assert!(hooks.contains_key(event), "missing {event}");
+        }
+        assert!(!hooks.contains_key("SubagentStart"));
+        assert!(!hooks.contains_key("SubagentStop"));
+    }
+
+    #[test]
+    fn codex_hook_config_includes_prompt_submit() {
+        let config = codex_hook_config(Path::new("/tmp/zedra-hook.sh"));
+        let hooks = config["hooks"].as_object().unwrap();
+
+        for event in [
+            "UserPromptSubmit",
+            "PermissionRequest",
+            "PostToolUse",
+            "Stop",
         ] {
             assert!(hooks.contains_key(event), "missing {event}");
         }
