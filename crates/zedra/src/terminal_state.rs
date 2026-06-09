@@ -84,35 +84,35 @@ impl TerminalState {
                 .map(agent_kind_from_command)
                 .unwrap_or_default()
         };
-        let agent_icon = if kind == agent::Kind::Shell {
-            None
-        } else {
-            kind.icon()
-        };
         e.shell_state = ShellState::Running;
-        if e.agent_source == AgentIdentitySource::CommandLine {
-            e.agent_kind = (kind != agent::Kind::Shell).then_some(kind);
-            e.agent_icon = agent_icon;
+        if e.agent_source == AgentIdentitySource::CommandLine && kind != agent::Kind::Shell {
+            e.agent_kind = Some(kind);
+            e.agent_icon = kind.icon();
         }
     }
 
     pub fn set_shell_idle(&mut self, id: &str, exit_code: Option<i32>) {
-        self.mark_shell_idle(id, exit_code);
+        self.mark_shell_idle(id, exit_code, true);
     }
 
     pub fn set_prompt_ready(&mut self, id: &str) {
-        self.mark_shell_idle(id, None);
+        // OSC 133;A signals the shell is showing its prompt. For long-running
+        // agents like pi that emit this between turns, do not clear agent
+        // identity — the agent is still the foreground process.
+        self.mark_shell_idle(id, None, false);
     }
 
-    fn mark_shell_idle(&mut self, id: &str, exit_code: Option<i32>) {
+    fn mark_shell_idle(&mut self, id: &str, exit_code: Option<i32>, clear_agent: bool) {
         let e = self.entry(id);
         e.shell_state = ShellState::Idle;
         if let Some(code) = exit_code {
             e.last_exit_code = Some(code);
         }
         e.current_command = None;
-        e.agent_icon = None;
-        e.agent_kind = None;
+        if clear_agent {
+            e.agent_icon = None;
+            e.agent_kind = None;
+        }
     }
 
     pub fn set_current_command(&mut self, id: &str, command: String) {
