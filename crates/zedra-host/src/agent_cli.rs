@@ -713,6 +713,7 @@ fn install_hooks(args: AgentHookInstallArgs) -> Result<()> {
             CliManagedAgentKind::Claude,
             CliManagedAgentKind::Codex,
             CliManagedAgentKind::OpenCode,
+            CliManagedAgentKind::Pi,
         ]
     } else {
         args.providers
@@ -735,7 +736,7 @@ fn install_hooks(args: AgentHookInstallArgs) -> Result<()> {
                 args.force,
             )?),
             CliManagedAgentKind::Pi => {
-                eprintln!("warning: Pi has no documented hook system; skipping");
+                written.push(write_pi_hook_extension(args.force)?)
             }
             CliManagedAgentKind::Hermes => {
                 eprintln!("warning: Zedra hook install for Hermes is not supported; skipping");
@@ -877,6 +878,85 @@ export const ZedraPlugin = async () => ({{
     );
     write_file_checked(&path, &contents, force, "OpenCode local plugin")?;
     Ok(path)
+}
+
+fn write_pi_hook_extension(force: bool) -> Result<PathBuf> {
+    let path = agent::home_path(&[".pi", "agent", "extensions", "zedra-agent-hooks.ts"]);
+    let cli = std::env::current_exe().context("failed to resolve current zedra binary")?;
+    let contents = pi_hook_extension_contents(&cli.display().to_string());
+    write_file_checked(&path, &contents, force, "Pi hook extension")?;
+    Ok(path)
+}
+
+fn pi_hook_extension_contents(cli_path: &str) -> String {
+    let cli_json = serde_json::to_string(cli_path).unwrap_or_else(|_| format!("\"{}\"", cli_path));
+    format!(
+        r#"import type {{ ExtensionAPI }} from "@mariozechner/pi-coding-agent";
+import {{ spawn }} from "node:child_process";
+
+// Zedra hook extension for pi.
+// Forwards pi lifecycle events to the Zedra daemon so the mobile app can show
+// Running/Completed state and send Delta push notifications.
+// Activates only when running inside a Zedra terminal (ZEDRA_TERMINAL_ID set).
+// Outside Zedra it is a complete no-op. Failures are always swallowed so hook
+// errors never affect the agent loop.
+export default function (pi: ExtensionAPI) {{
+  if (!process.env.ZEDRA_TERMINAL_ID) return;
+
+  const CLI = process.env.ZEDRA_CLI || {cli};
+
+  const fire = (hookEventName: string, sessionId?: string) => {{
+    try {{
+      const child = spawn(
+        CLI,
+        ["agent", "hook", "receive", "--agent", "pi", "--quiet"],
+        {{
+          stdio: ["pipe", "ignore", "ignore"],
+          detached: true,
+          // ZEDRA_TERMINAL_ID and ZEDRA_WORKDIR are inherited from process.env
+          // and picked up by `agent hook receive` as --terminal-id / --workdir.
+        }},
+      );
+      child.on("error", () => {{}});
+      child.stdin?.on("error", () => {{}});
+      const payload: Record<string, string> = {{ hook_event_name: hookEventName }};
+      if (sessionId) payload.session_id = sessionId;
+      child.stdin?.end(JSON.stringify(payload));
+      child.unref();
+    }} catch {{
+      // spawn() can throw synchronously (EACCES, ENOENT). Stay silent.
+    }}
+  }};
+
+  // Gate on ctx.hasUI: skip non-interactive (print / JSON / subagent) runs.
+  // Check `=== false` so older pi versions without hasUI still fire hooks.
+  const skip = (ctx: {{ hasUI?: boolean }}) => ctx.hasUI === false;
+
+  pi.on("before_agent_start", (event, ctx) => {{
+    if (skip(ctx)) return;
+    fire("UserPromptSubmit", (event as any)?.sessionId);
+  }});
+
+  pi.on("tool_execution_end", (event, ctx) => {{
+    if (skip(ctx)) return;
+    fire("PostToolUse", (event as any)?.sessionId);
+  }});
+
+  pi.on("agent_end", (event, ctx) => {{
+    if (skip(ctx)) return;
+    fire("Stop", (event as any)?.sessionId);
+  }});
+
+  // Fires on Ctrl+C, SIGTERM, /quit, /reload, /new, /resume, /fork.
+  // Ensures Running indicator clears if pi is killed mid-turn.
+  pi.on("session_shutdown", (event, ctx) => {{
+    if (skip(ctx)) return;
+    fire("Stop", (event as any)?.sessionId);
+  }});
+}}
+"#,
+        cli = cli_json
+    )
 }
 
 fn hook_groups(command: &str, matcher: Option<&str>) -> serde_json::Value {

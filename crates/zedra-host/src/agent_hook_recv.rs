@@ -44,9 +44,9 @@ pub trait HookReceiver {
         agent_session_id: Option<&str>,
         ctx: &HookContext,
     ) -> bool {
-        if let (Some(state), Some(sid)) = (agent_state, agent_session_id) {
+        if let Some(state) = agent_state {
             ctx.session
-                .set_agent_state(ctx.terminal_id.clone(), sid, state)
+                .set_agent_state(ctx.terminal_id.clone(), agent_session_id.unwrap_or(""), state)
                 .await;
         }
         self.push_rpc(kind, event_name, ctx).await;
