@@ -503,7 +503,8 @@ pub fn detect(raw: &str) -> Kind {
         Kind::Cursor
     } else if has_any(&words, &["goose"]) {
         Kind::Goose
-    } else if low.contains("hermes-agent")
+    } else if low.trim() == "hermes"
+        || low.contains("hermes-agent")
         || low.contains("hermes agent")
         || has_any(&words, &["hermesagent"])
     {
@@ -714,6 +715,7 @@ mod tests {
         assert_eq!(detect("gemini"), Kind::Gemini);
         assert_eq!(detect("gemini-cli"), Kind::Gemini);
         assert_eq!(detect("goose session"), Kind::Goose);
+        assert_eq!(detect("hermes"), Kind::Hermes);
         assert_eq!(detect("hermes-agent"), Kind::Hermes);
         assert_eq!(detect("junie"), Kind::Junie);
         assert_eq!(detect("kilo"), Kind::KiloCode);

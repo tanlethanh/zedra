@@ -195,7 +195,7 @@ fn config_files_in(home: &Path) -> Vec<AgentFile> {
 // Session scan (global)
 // ---------------------------------------------------------------------------
 
-fn hermes_home() -> PathBuf {
+pub fn hermes_home() -> PathBuf {
     std::env::var_os("HERMES_HOME")
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())

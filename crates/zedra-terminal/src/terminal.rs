@@ -344,16 +344,12 @@ impl Terminal {
                 };
                 self.send_bytes_sync(format(window_size).into_bytes());
             }
-            AlacTermEvent::ColorRequest(index, format) => {
-                // Apps like Codex query OSC 10/11 at startup; answer through the PTY so
-                // terminal-derived styles do not silently disable themselves.
-                let color = if index < ALACRITTY_COLOR_COUNT {
-                    self.term.colors()[index]
-                } else {
-                    None
-                }
-                .unwrap_or_else(|| self.theme.color_at_index(index));
-                self.send_bytes_sync(format(color).into_bytes());
+            AlacTermEvent::ColorRequest(_index, _format) => {
+                // The host answers OSC 10/11/12 color queries inline at the PTY boundary
+                // (TerminalColorQueryResponder in rpc_daemon.rs). Sending a second reply
+                // from the client causes TUI apps in raw mode (e.g. Hermes) to receive
+                // the response bytes as spurious stdin keystrokes and display them as
+                // garbage in their input area.
             }
             _ => {}
         }
@@ -2628,44 +2624,18 @@ mod tests {
     }
 
     #[test]
-    fn responds_to_osc_default_color_queries() {
+    fn does_not_respond_to_osc_color_queries() {
+        // The host (TerminalColorQueryResponder in rpc_daemon.rs) answers OSC 10/11/12
+        // inline at the PTY boundary. The client must not send a second reply — TUI apps
+        // in raw mode (e.g. Hermes) read every stdin byte and would display the duplicate
+        // response as garbage in their input area.
         let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
         let (input_tx, mut input_rx) = mpsc::channel(4);
         terminal.input_tx = Some(input_tx);
 
-        terminal.advance_bytes(b"\x1b]10;?\x07\x1b]11;?\x1b\\");
+        terminal.advance_bytes(b"\x1b]10;?\x07\x1b]11;?\x1b\\\x1b]11;#112233\x1b\\\x1b]11;?\x1b\\");
 
-        let foreground = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
-        let background = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
-        assert_eq!(foreground, "\x1b]10;rgb:abab/b2b2/bfbf\x07");
-        assert_eq!(background, "\x1b]11;rgb:0e0e/0c0c/0c0c\x1b\\");
-    }
-
-    #[test]
-    fn responds_to_osc_color_queries_with_current_color_table() {
-        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
-        let (input_tx, mut input_rx) = mpsc::channel(4);
-        terminal.input_tx = Some(input_tx);
-
-        terminal.advance_bytes(b"\x1b]11;#112233\x1b\\\x1b]11;?\x1b\\");
-
-        let background = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
-        assert_eq!(background, "\x1b]11;rgb:1111/2222/3333\x1b\\");
-    }
-
-    #[test]
-    fn responds_to_osc_queries_with_light_theme_palette() {
-        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
-        let (input_tx, mut input_rx) = mpsc::channel(8);
-        terminal.input_tx = Some(input_tx);
-        terminal.apply_theme(TerminalTheme::light());
-
-        terminal.advance_bytes(b"\x1b]10;?\x07\x1b]11;?\x1b\\");
-
-        let foreground = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
-        let background = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
-        assert_eq!(foreground, "\x1b]10;rgb:2a2a/2c2c/3333\x07");
-        assert_eq!(background, "\x1b]11;rgb:fafa/fafa/fafa\x1b\\");
+        assert!(input_rx.try_recv().is_err(), "client must not reply to OSC color queries");
     }
 
     #[test]

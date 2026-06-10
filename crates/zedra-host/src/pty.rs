@@ -56,6 +56,27 @@ impl ShellSession {
             .openpty(pty_size)
             .map_err(|e| anyhow::anyhow!("Failed to open PTY: {}", e))?;
 
+        // Disable PTY echo before spawning. When the host (or client VTE) writes an OSC
+        // color query reply to PTY master, an echo-on line discipline bounces those bytes
+        // back out as caret-notation text (ESC → "^["), which the mobile VTE then renders
+        // as garbage at the prompt. Disabling ECHO/ECHOCTL/ECHOKE fixes this without
+        // touching OPOST/ONLCR, so newline translation stays intact for non-TUI output.
+        #[cfg(unix)]
+        if let Some(fd) = pair.master.as_raw_fd() {
+            unsafe {
+                let mut t: libc::termios = std::mem::MaybeUninit::zeroed().assume_init();
+                if libc::tcgetattr(fd, &mut t) == 0 {
+                    t.c_lflag &= !(libc::ECHO
+                        | libc::ECHOE
+                        | libc::ECHOK
+                        | libc::ECHONL
+                        | libc::ECHOCTL
+                        | libc::ECHOKE);
+                    libc::tcsetattr(fd, libc::TCSANOW, &t);
+                }
+            }
+        }
+
         let shell = default_shell();
         let mut cmd = CommandBuilder::new(&shell);
         configure_shell_command(&mut cmd, &shell, opts.launch_cmd.as_deref())?;
