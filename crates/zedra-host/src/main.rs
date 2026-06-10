@@ -259,22 +259,22 @@ enum Commands {
         command: agent_cli::AgentCommand,
     },
 
-    /// Install Zedra skills or plugins for an AI coding agent
+    /// Install Zedra for all detected agents, or a specific one
     Setup {
         /// Skip interactive confirmation prompts
         #[arg(short, long)]
         yes: bool,
 
-        /// Write hooks using the current zedra binary path instead of the global `zedra` command
+        /// Use absolute path to this binary in hooks instead of `zedra`
         #[arg(long)]
         full_bin_path: bool,
 
-        /// Install hooks without --quiet so errors are visible (useful for local development)
+        /// Show hook output (skip --quiet)
         #[arg(long)]
         no_quiet: bool,
 
         #[command(subcommand)]
-        agent: setup::SetupAgent,
+        agent: Option<setup::SetupAgent>,
     },
 
     /// Update the Zedra CLI
@@ -1290,9 +1290,10 @@ async fn main() -> Result<()> {
             full_bin_path,
             no_quiet,
             agent,
-        } => {
-            setup::run(agent, yes, full_bin_path, no_quiet).await?;
-        }
+        } => match agent {
+            Some(agent) => setup::run(agent, yes, full_bin_path, no_quiet).await?,
+            None => setup::run_all(yes, full_bin_path, no_quiet).await?,
+        },
 
         Commands::List { stale } => {
             let instances = workspace_lock::scan_all_instances();
