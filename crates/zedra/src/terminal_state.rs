@@ -91,6 +91,16 @@ impl TerminalState {
         }
     }
 
+    pub fn set_command_started(&mut self, id: &str) {
+        self.set_shell_running(id);
+        let e = self.entry(id);
+        if let Some(kind) = e.agent_kind {
+            let title = agent::make_adapter(kind).display_name().to_owned();
+            e.plain_title = plain_terminal_title(&title);
+            e.title = Some(title);
+        }
+    }
+
     pub fn set_shell_idle(&mut self, id: &str, exit_code: Option<i32>) {
         self.mark_shell_idle(id, exit_code, true);
     }
@@ -277,6 +287,32 @@ mod tests {
         let meta = state.meta(id);
         assert_eq!(meta.title.as_deref(), Some("🤖  Fix auth flow 🚀"));
         assert_eq!(meta.plain_title.as_deref(), Some("Fix auth flow"));
+    }
+
+    #[test]
+    fn command_start_sets_default_agent_title() {
+        let mut state = TerminalState::new();
+        let id = "term-1";
+
+        state.set_title(id, Some("Launching Hermes Agent...".to_owned()));
+        state.set_current_command(id, "hermes".to_owned());
+        state.set_command_started(id);
+
+        let meta = state.meta(id);
+        assert_eq!(meta.title.as_deref(), Some("Hermes Agent"));
+        assert_eq!(meta.plain_title.as_deref(), Some("Hermes Agent"));
+    }
+
+    #[test]
+    fn inner_program_title_overrides_default_agent_title() {
+        let mut state = TerminalState::new();
+        let id = "term-1";
+
+        state.set_current_command(id, "hermes".to_owned());
+        state.set_command_started(id);
+        state.set_title(id, Some("Reviewing auth flow".to_owned()));
+
+        assert_eq!(state.meta(id).title.as_deref(), Some("Reviewing auth flow"));
     }
 
     #[test]
