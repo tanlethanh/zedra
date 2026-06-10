@@ -6,12 +6,7 @@ use zedra_rpc::proto::*;
 
 use crate::agent::home_path;
 
-const SKILL_NAMES: &[&str] = &[
-    "zedra-start",
-    "zedra-status",
-    "zedra-stop",
-    "zedra-terminal",
-];
+const SKILL_NAMES: &[&str] = &["zedra-start"];
 
 /// Temporary kill-switch for hooks setup/detection in release builds.
 /// Flip to `true` (or remove the gate) when re-enabling.
@@ -42,11 +37,15 @@ pub fn setup_summary(kind: AgentKind, cli_available: bool, workdir: &Path) -> Ag
                     && (status.hooks_installed || claude_local_hooks_installed(workdir)),
             )
         }
-        AgentKind::Codex => (
-            skills_installed_at(&home_path(&[".agents", "skills"])),
-            false,
-            hooks_enabled() && (codex_hooks_installed() || codex_local_hooks_installed(workdir)),
-        ),
+        AgentKind::Codex => {
+            let plugin_installed = codex_plugin_installed();
+            (
+                false,
+                plugin_installed,
+                hooks_enabled()
+                    && (codex_hooks_installed() || codex_local_hooks_installed(workdir)),
+            )
+        }
         AgentKind::OpenCode => (
             skills_installed_at(&home_path(&[".config", "opencode", "skills"])),
             opencode_plugin_installed(),
@@ -149,6 +148,26 @@ fn codex_hooks_installed() -> bool {
     std::fs::read_to_string(home_path(&[".codex", "config.toml"]))
         .map(|contents| contents.contains("zedra") && contents.contains("hook"))
         .unwrap_or(false)
+}
+
+fn codex_plugin_installed() -> bool {
+    std::fs::read_to_string(home_path(&[".codex", "config.toml"]))
+        .map(|contents| codex_plugin_installed_from_config(&contents))
+        .unwrap_or(false)
+}
+
+pub fn codex_plugin_installed_from_config(contents: &str) -> bool {
+    let mut in_plugin_section = false;
+    for line in contents.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_plugin_section = line == r#"[plugins."zedra@zedra"]"#;
+            continue;
+        }
+        if in_plugin_section && line == "enabled = true" {
+            return true;
+        }
+    }
+    false
 }
 
 fn claude_local_hooks_installed(workdir: &Path) -> bool {

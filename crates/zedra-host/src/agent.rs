@@ -745,6 +745,26 @@ mod tests {
     }
 
     #[test]
+    fn codex_plugin_status_reads_config() {
+        let config = r#"
+[marketplaces.zedra]
+source_type = "git"
+source = "tanlethanh/zedra-plugin"
+
+[plugins."zedra@zedra"]
+enabled = true
+"#;
+        assert!(crate::agent_setup::codex_plugin_installed_from_config(
+            config
+        ));
+        assert!(!crate::agent_setup::codex_plugin_installed_from_config(
+            r#"[plugins."zedra@zedra"]
+enabled = false
+"#
+        ));
+    }
+
+    #[test]
     fn session_title_defaults_to_unknown_without_provider_title() {
         use crate::agent_utils::session_title;
         assert_eq!(session_title(None).as_deref(), Some("Unknown"));
