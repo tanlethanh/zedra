@@ -10,49 +10,97 @@ use zedra_host::utils;
 const PLUGIN_REPO: &str = "tanlethanh/zedra-plugin";
 const CLAUDE_MARKETPLACE: &str = "zedra";
 const CLAUDE_PLUGIN: &str = "zedra@zedra";
+const CODEX_MARKETPLACE: &str = "zedra";
+const CODEX_PLUGIN: &str = "zedra@zedra";
 const PLUGIN_RAW_BASE: &str = "https://raw.githubusercontent.com/tanlethanh/zedra-plugin/main";
-const SKILL_NAMES: &[&str] = &[
-    "zedra-start",
-    "zedra-status",
-    "zedra-stop",
-    "zedra-terminal",
-];
+const SKILL_NAMES: &[&str] = &["zedra-start"];
 const ZEDRA_HOOK_SOURCE: &str = "zedra-agent-hook";
 const OPENCODE_HOOK_PLUGIN: &str = "zedra-agent-hooks.js";
 const PI_HOOK_EXTENSION: &str = "zedra-agent-hooks.ts";
 
 #[derive(Clone, Copy, Debug, Subcommand)]
 pub enum SetupAgent {
-    /// Manage the Claude Code plugin from the Zedra marketplace
+    /// Claude Code — installs the Zedra plugin and lifecycle hooks
     Claude {
         #[command(flatten)]
         action: SetupActionArgs,
     },
-    /// Manage Codex skills
+    /// Codex — installs the Zedra plugin and lifecycle hooks
     Codex {
         #[command(flatten)]
         action: SetupActionArgs,
     },
-    /// Manage OpenCode skills in the global OpenCode skill directory
+    /// OpenCode — installs Zedra skills and the hook plugin
     #[command(name = "opencode", alias = "open-code")]
     OpenCode {
         #[command(flatten)]
         action: SetupActionArgs,
     },
-    /// Manage the Zedra pi lifecycle-hook extension
+    /// Pi — installs the Zedra lifecycle-hook extension
     Pi {
+        #[command(flatten)]
+        action: SetupActionArgs,
+    },
+    /// Hermes — installs the Zedra lifecycle-hook script and patches config.yaml
+    Hermes {
         #[command(flatten)]
         action: SetupActionArgs,
     },
 }
 
-pub async fn run(agent: SetupAgent, assume_yes: bool, full_bin_path: bool, no_quiet: bool) -> Result<()> {
+pub async fn run_all(_assume_yes: bool, full_bin_path: bool, no_quiet: bool) -> Result<()> {
+    let quiet = !no_quiet;
+    let agents: &[(&str, &str)] = &[
+        ("claude", "Claude"),
+        ("codex", "Codex"),
+        ("opencode", "OpenCode"),
+        ("pi", "Pi"),
+        ("hermes", "Hermes"),
+    ];
+    let mut found = false;
+    for (program, name) in agents {
+        if !cli_on_path(program) {
+            continue;
+        }
+        found = true;
+        let result = match *name {
+            "Claude" => setup_claude_install(full_bin_path, quiet),
+            "Codex" => setup_codex_install(full_bin_path, quiet).await,
+            "OpenCode" => setup_opencode_install(full_bin_path, quiet).await,
+            "Pi" => setup_pi_install(full_bin_path),
+            "Hermes" => setup_hermes_install(full_bin_path),
+            _ => unreachable!(),
+        };
+        if let Err(e) = result {
+            utils::eprintln_error(format!("{name} setup failed: {e}"));
+        }
+        println!();
+        println!();
+    }
+    if !found {
+        println!("No supported agents found on PATH.");
+        println!("Run `zedra setup <agent>` to set up a specific agent.");
+    }
+    Ok(())
+}
+
+pub async fn run(
+    agent: SetupAgent,
+    assume_yes: bool,
+    full_bin_path: bool,
+    no_quiet: bool,
+) -> Result<()> {
     let quiet = !no_quiet;
     match agent {
         SetupAgent::Claude { action } => setup_claude(action.into(), full_bin_path, quiet),
-        SetupAgent::Codex { action } => setup_codex(action.into(), assume_yes, full_bin_path, quiet).await,
-        SetupAgent::OpenCode { action } => setup_opencode(action.into(), full_bin_path, quiet).await,
+        SetupAgent::Codex { action } => {
+            setup_codex(action.into(), assume_yes, full_bin_path, quiet).await
+        }
+        SetupAgent::OpenCode { action } => {
+            setup_opencode(action.into(), full_bin_path, quiet).await
+        }
         SetupAgent::Pi { action } => setup_pi(action.into(), full_bin_path),
+        SetupAgent::Hermes { action } => setup_hermes(action.into(), full_bin_path),
     }
 }
 
@@ -91,7 +139,7 @@ fn setup_claude(action: SetupAction, full_bin_path: bool, quiet: bool) -> Result
 }
 
 fn setup_claude_install(full_bin_path: bool, quiet: bool) -> Result<()> {
-    println!("Installing Zedra plugin for Claude:");
+    utils::println_section("Setting up Claude");
     if !run_optional_command_step(
         "marketplace",
         "claude",
@@ -105,11 +153,7 @@ fn setup_claude_install(full_bin_path: bool, quiet: bool) -> Result<()> {
         &["plugin", "install", "--scope", "user", CLAUDE_PLUGIN],
     )?;
     install_claude_hooks(full_bin_path, quiet)?;
-
-    println!();
-    println!("Claude setup complete.");
-    println!("In Claude Code, reload plugins, then start Zedra:");
-    print_suggested_command("/reload-plugins");
+    println!("Claude setup complete. Start in Claude Code:");
     print_suggested_command("/zedra-start");
     Ok(())
 }
@@ -139,7 +183,12 @@ fn setup_claude_remove() -> Result<()> {
     Ok(())
 }
 
-async fn setup_codex(action: SetupAction, _assume_yes: bool, full_bin_path: bool, quiet: bool) -> Result<()> {
+async fn setup_codex(
+    action: SetupAction,
+    _assume_yes: bool,
+    full_bin_path: bool,
+    quiet: bool,
+) -> Result<()> {
     match action {
         SetupAction::Install => setup_codex_install(full_bin_path, quiet).await,
         SetupAction::Remove => setup_codex_remove(),
@@ -147,20 +196,35 @@ async fn setup_codex(action: SetupAction, _assume_yes: bool, full_bin_path: bool
 }
 
 async fn setup_codex_install(full_bin_path: bool, quiet: bool) -> Result<()> {
-    let skills_dir = codex_skills_dir()?;
-    install_skills_from_raw("Codex", &skills_dir, "Installing").await?;
+    require_command("codex")?;
+    utils::println_section("Setting up Codex");
+    if !run_optional_command_step(
+        "marketplace",
+        "codex",
+        &["plugin", "marketplace", "add", PLUGIN_REPO],
+    )? {
+        println!("Continuing; marketplace may already be configured.");
+    }
+    run_command_step("plugin", "codex", &["plugin", "add", CODEX_PLUGIN])?;
     install_codex_hooks(full_bin_path, quiet)?;
-
-    println!();
-    println!("Codex setup complete.");
-    println!("In Codex, reload skills if this session is already open, then run:");
+    println!("Codex setup complete. Start in Codex:");
     print_suggested_command("$zedra-start");
     Ok(())
 }
 
 fn setup_codex_remove() -> Result<()> {
-    let skills_dir = codex_skills_dir()?;
-    remove_installed_skills("Codex", &skills_dir)?;
+    require_command("codex")?;
+    println!("Removing Zedra plugin for Codex:");
+    if !run_optional_command_step("plugin", "codex", &["plugin", "remove", CODEX_PLUGIN])? {
+        println!("Continuing; Zedra plugin may already be removed.");
+    }
+    if !run_optional_command_step(
+        "marketplace",
+        "codex",
+        &["plugin", "marketplace", "remove", CODEX_MARKETPLACE],
+    )? {
+        println!("Continuing; Zedra marketplace may already be removed.");
+    }
     remove_codex_hooks()?;
 
     println!();
@@ -178,12 +242,9 @@ async fn setup_opencode(action: SetupAction, full_bin_path: bool, quiet: bool) -
 
 async fn setup_opencode_install(full_bin_path: bool, quiet: bool) -> Result<()> {
     let skills_dir = opencode_skills_dir()?;
-    install_skills_from_raw("OpenCode", &skills_dir, "Installing").await?;
+    install_skills_from_raw("OpenCode", &skills_dir).await?;
     install_opencode_hooks(full_bin_path, quiet)?;
-
-    println!();
-    println!("OpenCode setup complete.");
-    println!("In OpenCode, run:");
+    println!("OpenCode setup complete. Start in OpenCode:");
     print_suggested_command("/zedra-start");
     Ok(())
 }
@@ -207,12 +268,9 @@ fn setup_pi(action: SetupAction, full_bin_path: bool) -> Result<()> {
 }
 
 fn setup_pi_install(full_bin_path: bool) -> Result<()> {
-    println!("Installing Zedra lifecycle-hook extension for pi:");
+    utils::println_section("Setting up Pi");
     install_pi_hooks(full_bin_path)?;
-
-    println!();
     println!("pi setup complete.");
-    println!("pi auto-discovers the extension; start a new pi session inside Zedra.");
     Ok(())
 }
 
@@ -224,6 +282,279 @@ fn setup_pi_remove() -> Result<()> {
     println!("pi setup removed.");
     println!("Restart any running pi session to apply the change.");
     Ok(())
+}
+
+fn setup_hermes(action: SetupAction, full_bin_path: bool) -> Result<()> {
+    match action {
+        SetupAction::Install => setup_hermes_install(full_bin_path),
+        SetupAction::Remove => setup_hermes_remove(),
+    }
+}
+
+fn setup_hermes_install(full_bin_path: bool) -> Result<()> {
+    utils::println_section("Setting up Hermes");
+    install_hermes_hooks(full_bin_path)?;
+    println!("Hermes setup complete.");
+    Ok(())
+}
+
+fn setup_hermes_remove() -> Result<()> {
+    println!("Removing Zedra lifecycle-hook script for Hermes:");
+    remove_hermes_hooks()?;
+
+    println!();
+    println!("Hermes setup removed.");
+    println!("Restart any running Hermes session to apply the change.");
+    Ok(())
+}
+
+fn hermes_home() -> Result<PathBuf> {
+    Ok(std::env::var_os("HERMES_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().unwrap_or_default().join(".hermes")))
+}
+
+fn hermes_hook_script_path() -> Result<PathBuf> {
+    Ok(hermes_home()?.join("agent-hooks").join(HERMES_HOOK_SCRIPT))
+}
+
+const HERMES_HOOK_SCRIPT: &str = "zedra-agent-hooks.sh";
+
+const HERMES_HOOK_EVENTS: &[&str] = &[
+    "on_session_start",
+    "pre_approval_request",
+    "post_approval_response",
+    "post_llm_call",
+    "on_session_end",
+];
+
+fn install_hermes_hooks(full_bin_path: bool) -> Result<()> {
+    let script_path = hermes_hook_script_path()?;
+    let binary = hook_binary(full_bin_path)?;
+    let script = hermes_hook_script(&binary);
+    if let Some(parent) = script_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&script_path, &script)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&script_path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script_path, perms)?;
+    }
+    print_step_label("hooks");
+    print_success_detail(&format!("write {}", script_path.display()));
+
+    let config_path = hermes_home()?.join("config.yaml");
+    let existing = fs::read_to_string(&config_path).unwrap_or_default();
+    let patched = patch_hermes_config_hooks(&existing, &script_path);
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&config_path, &patched)?;
+    print_step_label("config");
+    print_success_detail(&format!("write {}", config_path.display()));
+
+    Ok(())
+}
+
+fn remove_hermes_hooks() -> Result<()> {
+    let script_path = hermes_hook_script_path()?;
+    if remove_skill_path(&script_path)? {
+        print_step_label("hooks");
+        print_success_detail(&format!("remove {}", script_path.display()));
+    }
+
+    let config_path = hermes_home()?.join("config.yaml");
+    if config_path.is_file() {
+        let existing = fs::read_to_string(&config_path)?;
+        let cleaned = remove_hermes_zedra_hooks(&existing);
+        if cleaned != existing {
+            fs::write(&config_path, &cleaned)?;
+            print_step_label("config");
+            print_success_detail(&format!("write {}", config_path.display()));
+        }
+    }
+    Ok(())
+}
+
+fn hermes_hook_script(binary: &str) -> String {
+    format!(
+        r#"#!/bin/sh
+# zedra-agent-hook (Hermes lifecycle hook)
+# No-op outside a Zedra terminal (ZEDRA_TERMINAL_ID not set by the shell).
+[ -z "${{ZEDRA_TERMINAL_ID:-}}" ] && exit 0
+CLI="${{ZEDRA_CLI:-{binary}}}"
+[ -x "$CLI" ] || CLI="zedra"
+exec "$CLI" agent hook receive --agent hermes --quiet
+"#,
+        binary = shell_quote(binary),
+    )
+}
+
+/// Idempotently patches the `hooks:` block in `~/.hermes/config.yaml` to
+/// include Zedra hook entries. Preserves all non-Zedra event keys. On
+/// re-run, removes old Zedra event keys and re-inserts fresh entries.
+fn patch_hermes_config_hooks(config: &str, script_path: &Path) -> String {
+    let script = script_path.display().to_string();
+    let lines: Vec<&str> = config.lines().collect();
+    let trailing_newline = config.ends_with('\n');
+
+    let hooks_idx = lines.iter().position(|l| is_hooks_key_line(l));
+
+    let Some(hooks_idx) = hooks_idx else {
+        let mut out = config.to_string();
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("hooks:\n");
+        out.push_str(&zedra_hooks_entries(&script));
+        return out;
+    };
+
+    let inline_empty = {
+        let t = lines[hooks_idx].trim();
+        t == "hooks: {}" || t == "hooks:{}"
+    };
+
+    let hooks_block_end = lines[hooks_idx + 1..]
+        .iter()
+        .position(|l| {
+            !l.is_empty() && !l.starts_with(' ') && !l.starts_with('\t') && !l.starts_with('#')
+        })
+        .map(|i| hooks_idx + 1 + i)
+        .unwrap_or(lines.len());
+
+    let pre = &lines[..hooks_idx];
+    let post = &lines[hooks_block_end..];
+
+    let mut hooks_block = String::from("hooks:\n");
+    if !inline_empty {
+        let existing_content = &lines[hooks_idx + 1..hooks_block_end];
+        let preserved = remove_zedra_event_blocks(existing_content, HERMES_HOOK_EVENTS);
+        if !preserved.trim().is_empty() {
+            hooks_block.push_str(&preserved);
+        }
+    }
+    hooks_block.push_str(&zedra_hooks_entries(&script));
+
+    let mut out = String::new();
+    for l in pre {
+        out.push_str(l);
+        out.push('\n');
+    }
+    out.push_str(&hooks_block);
+    for l in post {
+        out.push_str(l);
+        out.push('\n');
+    }
+    while out.ends_with("\n\n") {
+        out.pop();
+    }
+    if trailing_newline && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// Remove all Zedra-managed event blocks from config.yaml hooks section
+/// (used by `--remove`).
+fn remove_hermes_zedra_hooks(config: &str) -> String {
+    let lines: Vec<&str> = config.lines().collect();
+    let trailing_newline = config.ends_with('\n');
+
+    let Some(hooks_idx) = lines.iter().position(|l| is_hooks_key_line(l)) else {
+        return config.to_string();
+    };
+
+    let hooks_block_end = lines[hooks_idx + 1..]
+        .iter()
+        .position(|l| {
+            !l.is_empty() && !l.starts_with(' ') && !l.starts_with('\t') && !l.starts_with('#')
+        })
+        .map(|i| hooks_idx + 1 + i)
+        .unwrap_or(lines.len());
+
+    let existing_content = &lines[hooks_idx + 1..hooks_block_end];
+    let preserved = remove_zedra_event_blocks(existing_content, HERMES_HOOK_EVENTS);
+
+    let mut hooks_block = String::from("hooks:");
+    if preserved.trim().is_empty() {
+        hooks_block.push_str(" {}\n");
+    } else {
+        hooks_block.push('\n');
+        hooks_block.push_str(&preserved);
+    }
+
+    let mut out = String::new();
+    for l in &lines[..hooks_idx] {
+        out.push_str(l);
+        out.push('\n');
+    }
+    out.push_str(&hooks_block);
+    for l in &lines[hooks_block_end..] {
+        out.push_str(l);
+        out.push('\n');
+    }
+    while out.ends_with("\n\n") {
+        out.pop();
+    }
+    if trailing_newline && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+fn is_hooks_key_line(line: &str) -> bool {
+    if line.starts_with(' ') || line.starts_with('\t') {
+        return false;
+    }
+    let t = line.trim();
+    t == "hooks: {}"
+        || t == "hooks:{}"
+        || t == "hooks:"
+        || (t.starts_with("hooks:")
+            && matches!(t.as_bytes().get(6), Some(b' ') | Some(b'{') | None))
+}
+
+fn remove_zedra_event_blocks(lines: &[&str], remove_events: &[&str]) -> String {
+    let mut out = String::new();
+    let mut skip = false;
+    for line in lines {
+        if let Some(key) = event_key_at_line(line) {
+            skip = remove_events.contains(&key);
+        }
+        if !skip {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn event_key_at_line<'a>(line: &'a str) -> Option<&'a str> {
+    let rest = line.strip_prefix("  ")?;
+    if rest.starts_with(' ') {
+        return None;
+    }
+    let name = rest.strip_suffix(':')?;
+    if name.is_empty() || name.contains(' ') || name.contains('"') || name.contains('\'') {
+        return None;
+    }
+    Some(name)
+}
+
+fn zedra_hooks_entries(script: &str) -> String {
+    let script_yaml = script.replace('\\', "\\\\").replace('"', "\\\"");
+    let mut out = String::new();
+    for event in HERMES_HOOK_EVENTS {
+        out.push_str(&format!("  {}:\n", event));
+        out.push_str(&format!("    - command: \"{}\"\n", script_yaml));
+        out.push_str("      timeout: 5\n");
+    }
+    out
 }
 
 fn pi_extension_path() -> Result<PathBuf> {
@@ -308,11 +639,11 @@ fn print_step_label(label: &str) {
 }
 
 fn print_detail(detail: &str) {
-    utils::println_note(detail);
+    println!("{}", utils::command_text(detail));
 }
 
 fn print_success_detail(detail: &str) {
-    utils::println_success(detail);
+    utils::println_dim(detail);
 }
 
 fn print_error_detail(detail: &str) {
@@ -328,8 +659,6 @@ fn install_claude_hooks(full_bin_path: bool, quiet: bool) -> Result<()> {
             ("PermissionRequest", Some("*"), 2),
             ("PostToolUse", Some("*"), 2),
             ("Stop", None, 2),
-            ("TaskCompleted", None, 2),
-            ("SessionEnd", None, 2),
         ],
         "Claude",
         full_bin_path,
@@ -411,7 +740,7 @@ fn merge_command_hooks(
     write_json_file(path, &root)?;
     print_step_label("hooks");
     print_success_detail(&format!(
-        "register {agent} hooks: {}",
+        "register: {}",
         events
             .iter()
             .map(|(event, _, _)| *event)
@@ -620,12 +949,11 @@ export const ZedraAgentHooks = async () => {{
     ))
 }
 
-async fn install_skills_from_raw(agent_name: &str, skills_dir: &Path, verb: &str) -> Result<()> {
+async fn install_skills_from_raw(agent_name: &str, skills_dir: &Path) -> Result<()> {
+    utils::println_section(format!("Setting up {agent_name}"));
     let client = reqwest::Client::new();
     let mut installed = 0usize;
     let mut skipped = Vec::new();
-
-    println!("{verb} Zedra skills for {agent_name}:");
 
     for skill in SKILL_NAMES {
         let url = format!("{PLUGIN_RAW_BASE}/plugins/zedra/skills/{skill}/SKILL.md");
@@ -729,10 +1057,6 @@ fn remove_skill_path(path: &Path) -> Result<bool> {
     }
 }
 
-fn codex_skills_dir() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".agents").join("skills"))
-}
-
 fn opencode_skills_dir() -> Result<PathBuf> {
     Ok(home_dir()?.join(".config").join("opencode").join("skills"))
 }
@@ -744,13 +1068,19 @@ fn home_dir() -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("HOME is not set"))
 }
 
-fn require_command(program: &str) -> Result<()> {
+fn cli_on_path(program: &str) -> bool {
     Command::new(program)
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .with_context(|| format!("`{program}` was not found in PATH"))?;
+        .is_ok()
+}
+
+fn require_command(program: &str) -> Result<()> {
+    if !cli_on_path(program) {
+        anyhow::bail!("`{program}` was not found in PATH");
+    }
     Ok(())
 }
 
@@ -781,7 +1111,7 @@ fn run_command_step_status(
     let terminal = utils::stdout_is_terminal();
 
     if terminal {
-        print!("{}", utils::command_text(&command));
+        print!("{}", utils::dim_text(&command));
         std::io::stdout().flush()?;
     }
 

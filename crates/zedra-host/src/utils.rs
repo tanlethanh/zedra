@@ -2,8 +2,10 @@ use std::io::IsTerminal;
 use std::path::Path;
 
 const COMMAND_STYLE: &str = "1;36";
+const DIM_STYLE: &str = "2";
 const ERROR_STYLE: &str = "1;31";
 const HEADING_STYLE: &str = "1";
+const SECTION_STYLE: &str = "1;35";
 const SUCCESS_STYLE: &str = "1;32";
 const WARNING_STYLE: &str = "33";
 
@@ -49,6 +51,10 @@ pub fn heading_text(text: impl AsRef<str>) -> String {
 
 pub fn println_heading(title: impl AsRef<str>) {
     println!("{}", heading_text(title));
+}
+
+pub fn println_section(title: impl AsRef<str>) {
+    println!("{}", stdout_color(title, SECTION_STYLE));
 }
 
 pub fn eprintln_heading(title: impl AsRef<str>) {
@@ -113,6 +119,14 @@ pub fn println_error(message: impl AsRef<str>) {
 
 pub fn eprintln_error(message: impl AsRef<str>) {
     eprintln!("{}", stderr_color(message, ERROR_STYLE));
+}
+
+pub fn dim_text(text: impl AsRef<str>) -> String {
+    stdout_color(text, DIM_STYLE)
+}
+
+pub fn println_dim(message: impl AsRef<str>) {
+    println!("{}", stdout_color(message, DIM_STYLE));
 }
 
 pub fn println_note(message: impl AsRef<str>) {
