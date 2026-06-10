@@ -46,11 +46,12 @@ pub enum SetupAgent {
     },
 }
 
-pub async fn run(agent: SetupAgent, assume_yes: bool, full_bin_path: bool) -> Result<()> {
+pub async fn run(agent: SetupAgent, assume_yes: bool, full_bin_path: bool, no_quiet: bool) -> Result<()> {
+    let quiet = !no_quiet;
     match agent {
-        SetupAgent::Claude { action } => setup_claude(action.into(), full_bin_path),
-        SetupAgent::Codex { action } => setup_codex(action.into(), assume_yes, full_bin_path).await,
-        SetupAgent::OpenCode { action } => setup_opencode(action.into(), full_bin_path).await,
+        SetupAgent::Claude { action } => setup_claude(action.into(), full_bin_path, quiet),
+        SetupAgent::Codex { action } => setup_codex(action.into(), assume_yes, full_bin_path, quiet).await,
+        SetupAgent::OpenCode { action } => setup_opencode(action.into(), full_bin_path, quiet).await,
         SetupAgent::Pi { action } => setup_pi(action.into(), full_bin_path),
     }
 }
@@ -80,16 +81,16 @@ impl SetupAction {
     }
 }
 
-fn setup_claude(action: SetupAction, full_bin_path: bool) -> Result<()> {
+fn setup_claude(action: SetupAction, full_bin_path: bool, quiet: bool) -> Result<()> {
     require_command("claude")?;
 
     match action {
-        SetupAction::Install => setup_claude_install(full_bin_path),
+        SetupAction::Install => setup_claude_install(full_bin_path, quiet),
         SetupAction::Remove => setup_claude_remove(),
     }
 }
 
-fn setup_claude_install(full_bin_path: bool) -> Result<()> {
+fn setup_claude_install(full_bin_path: bool, quiet: bool) -> Result<()> {
     println!("Installing Zedra plugin for Claude:");
     if !run_optional_command_step(
         "marketplace",
@@ -103,7 +104,7 @@ fn setup_claude_install(full_bin_path: bool) -> Result<()> {
         "claude",
         &["plugin", "install", "--scope", "user", CLAUDE_PLUGIN],
     )?;
-    install_claude_hooks(full_bin_path)?;
+    install_claude_hooks(full_bin_path, quiet)?;
 
     println!();
     println!("Claude setup complete.");
@@ -138,17 +139,17 @@ fn setup_claude_remove() -> Result<()> {
     Ok(())
 }
 
-async fn setup_codex(action: SetupAction, _assume_yes: bool, full_bin_path: bool) -> Result<()> {
+async fn setup_codex(action: SetupAction, _assume_yes: bool, full_bin_path: bool, quiet: bool) -> Result<()> {
     match action {
-        SetupAction::Install => setup_codex_install(full_bin_path).await,
+        SetupAction::Install => setup_codex_install(full_bin_path, quiet).await,
         SetupAction::Remove => setup_codex_remove(),
     }
 }
 
-async fn setup_codex_install(full_bin_path: bool) -> Result<()> {
+async fn setup_codex_install(full_bin_path: bool, quiet: bool) -> Result<()> {
     let skills_dir = codex_skills_dir()?;
     install_skills_from_raw("Codex", &skills_dir, "Installing").await?;
-    install_codex_hooks(full_bin_path)?;
+    install_codex_hooks(full_bin_path, quiet)?;
 
     println!();
     println!("Codex setup complete.");
@@ -168,17 +169,17 @@ fn setup_codex_remove() -> Result<()> {
     Ok(())
 }
 
-async fn setup_opencode(action: SetupAction, full_bin_path: bool) -> Result<()> {
+async fn setup_opencode(action: SetupAction, full_bin_path: bool, quiet: bool) -> Result<()> {
     match action {
-        SetupAction::Install => setup_opencode_install(full_bin_path).await,
+        SetupAction::Install => setup_opencode_install(full_bin_path, quiet).await,
         SetupAction::Remove => setup_opencode_remove(),
     }
 }
 
-async fn setup_opencode_install(full_bin_path: bool) -> Result<()> {
+async fn setup_opencode_install(full_bin_path: bool, quiet: bool) -> Result<()> {
     let skills_dir = opencode_skills_dir()?;
     install_skills_from_raw("OpenCode", &skills_dir, "Installing").await?;
-    install_opencode_hooks(full_bin_path)?;
+    install_opencode_hooks(full_bin_path, quiet)?;
 
     println!();
     println!("OpenCode setup complete.");
@@ -318,7 +319,7 @@ fn print_error_detail(detail: &str) {
     utils::println_error(detail);
 }
 
-fn install_claude_hooks(full_bin_path: bool) -> Result<()> {
+fn install_claude_hooks(full_bin_path: bool, quiet: bool) -> Result<()> {
     let path = home_dir()?.join(".claude").join("settings.json");
     merge_command_hooks(
         &path,
@@ -332,6 +333,7 @@ fn install_claude_hooks(full_bin_path: bool) -> Result<()> {
         ],
         "Claude",
         full_bin_path,
+        quiet,
     )
 }
 
@@ -339,7 +341,7 @@ fn remove_claude_hooks() -> Result<()> {
     remove_command_hooks(&home_dir()?.join(".claude").join("settings.json"), "Claude")
 }
 
-fn install_codex_hooks(full_bin_path: bool) -> Result<()> {
+fn install_codex_hooks(full_bin_path: bool, quiet: bool) -> Result<()> {
     let path = home_dir()?.join(".codex").join("hooks.json");
     merge_command_hooks(
         &path,
@@ -351,6 +353,7 @@ fn install_codex_hooks(full_bin_path: bool) -> Result<()> {
         ],
         "Codex",
         full_bin_path,
+        quiet,
     )
 }
 
@@ -363,9 +366,10 @@ fn merge_command_hooks(
     events: &[(&str, Option<&str>, u64)],
     agent: &str,
     full_bin_path: bool,
+    quiet: bool,
 ) -> Result<()> {
     let mut root = read_json_object(path)?;
-    let command = hook_command(agent, full_bin_path)?;
+    let command = hook_command(agent, full_bin_path, quiet)?;
     let hooks = root
         .as_object_mut()
         .expect("read_json_object returns object")
@@ -438,14 +442,14 @@ fn remove_command_hooks(path: &Path, agent: &str) -> Result<()> {
     Ok(())
 }
 
-fn install_opencode_hooks(full_bin_path: bool) -> Result<()> {
+fn install_opencode_hooks(full_bin_path: bool, quiet: bool) -> Result<()> {
     let dir = home_dir()?.join(".config").join("opencode");
-    install_opencode_hooks_in_dir(&dir, &hook_binary(full_bin_path)?)
+    install_opencode_hooks_in_dir(&dir, &hook_binary(full_bin_path)?, quiet)
 }
 
-fn install_opencode_hooks_in_dir(dir: &Path, binary: &str) -> Result<()> {
+fn install_opencode_hooks_in_dir(dir: &Path, binary: &str, quiet: bool) -> Result<()> {
     let plugin_path = opencode_hook_plugin_path(dir);
-    let content = opencode_hook_plugin(binary)?;
+    let content = opencode_hook_plugin(binary, quiet)?;
     if fs::read_to_string(&plugin_path).ok().as_deref() == Some(&content) {
         return Ok(());
     }
@@ -476,11 +480,13 @@ fn opencode_hook_plugin_path(dir: &Path) -> PathBuf {
     dir.join("plugins").join(OPENCODE_HOOK_PLUGIN)
 }
 
-fn hook_command(agent: &str, full_bin_path: bool) -> Result<String> {
+fn hook_command(agent: &str, full_bin_path: bool, quiet: bool) -> Result<String> {
+    let quiet_flag = if quiet { " --quiet" } else { "" };
     Ok(format!(
-        "{} agent hook receive --agent {} --quiet",
+        "{} agent hook receive --agent {}{}",
         hook_command_program(full_bin_path)?,
-        agent_slug(agent)
+        agent_slug(agent),
+        quiet_flag,
     ))
 }
 
@@ -546,17 +552,20 @@ fn hook_entry_index(entries: &[Value], agent: &str) -> Option<usize> {
 }
 
 fn is_zedra_hook_entry(entry: &Value, agent: &str) -> bool {
-    entry.get("_source").and_then(Value::as_str) == Some(ZEDRA_HOOK_SOURCE)
-        && entry
-            .get("hooks")
-            .and_then(Value::as_array)
-            .is_some_and(|hooks| {
-                hooks.iter().any(|hook| {
-                    hook.get("command")
-                        .and_then(Value::as_str)
-                        .is_some_and(|command| command_uses_agent(command, agent))
-                })
+    // Match by _source (new format) OR by command pattern (old/plugin format).
+    // Either is sufficient so re-runs never duplicate entries written without _source.
+    let has_source = entry.get("_source").and_then(Value::as_str) == Some(ZEDRA_HOOK_SOURCE);
+    let has_command = entry
+        .get("hooks")
+        .and_then(Value::as_array)
+        .is_some_and(|hooks| {
+            hooks.iter().any(|hook| {
+                hook.get("command")
+                    .and_then(Value::as_str)
+                    .is_some_and(|command| command_uses_agent(command, agent))
             })
+        });
+    has_source || has_command
 }
 
 fn command_uses_agent(command: &str, agent: &str) -> bool {
@@ -587,15 +596,16 @@ fn agent_slug(agent: &str) -> &str {
     }
 }
 
-fn opencode_hook_plugin(binary: &str) -> Result<String> {
+fn opencode_hook_plugin(binary: &str, quiet: bool) -> Result<String> {
     let binary = serde_json::to_string(binary)?;
+    let quiet_arg = if quiet { r#", "--quiet""# } else { "" };
     Ok(format!(
         r#"import {{ spawnSync }} from "node:child_process";
 
 const zedra = {binary};
 
 function send(event, payload = {{}}) {{
-  spawnSync(zedra, ["agent", "hook", "receive", "--agent", "opencode", "--quiet", "--payload", JSON.stringify({{ event_name: event, ...payload }})], {{
+  spawnSync(zedra, ["agent", "hook", "receive", "--agent", "opencode"{quiet_arg}, "--payload", JSON.stringify({{ event_name: event, ...payload }})], {{
     stdio: ["ignore", "ignore", "ignore"],
     timeout: 2000,
   }});
@@ -870,6 +880,7 @@ mod tests {
             ],
             "Codex",
             false,
+            true,
         )
         .unwrap();
         let mut root = read_json_object(&path).unwrap();
@@ -885,6 +896,7 @@ mod tests {
             ],
             "Codex",
             false,
+            true,
         )
         .unwrap();
 
@@ -921,7 +933,7 @@ mod tests {
     fn command_hook_remove_only_deletes_zedra_entries() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        merge_command_hooks(&path, &[("Stop", None, 2)], "Claude", false).unwrap();
+        merge_command_hooks(&path, &[("Stop", None, 2)], "Claude", false, true).unwrap();
         let mut root = read_json_object(&path).unwrap();
         root["hooks"]["Stop"].as_array_mut().unwrap().push(json!({
             "hooks": [{
@@ -949,15 +961,19 @@ mod tests {
             ("Hermes", "hermes"),
         ] {
             assert_eq!(
-                hook_command(agent, false).unwrap(),
+                hook_command(agent, false, true).unwrap(),
                 format!("zedra agent hook receive --agent {slug} --quiet")
+            );
+            assert_eq!(
+                hook_command(agent, false, false).unwrap(),
+                format!("zedra agent hook receive --agent {slug}")
             );
         }
     }
 
     #[test]
     fn hook_command_can_use_current_binary_path() {
-        let command = hook_command("Codex", true).unwrap();
+        let command = hook_command("Codex", true, true).unwrap();
         assert!(command.ends_with(" agent hook receive --agent codex --quiet"));
         assert_ne!(command, "zedra agent hook receive --agent codex --quiet");
     }
@@ -966,8 +982,8 @@ mod tests {
     fn opencode_hook_install_and_remove_updates_plugin_directory() {
         let dir = tempfile::tempdir().unwrap();
 
-        install_opencode_hooks_in_dir(dir.path(), "/tmp/zedra").unwrap();
-        install_opencode_hooks_in_dir(dir.path(), "/tmp/zedra").unwrap();
+        install_opencode_hooks_in_dir(dir.path(), "/tmp/zedra", true).unwrap();
+        install_opencode_hooks_in_dir(dir.path(), "/tmp/zedra", true).unwrap();
 
         let plugin_path = opencode_hook_plugin_path(dir.path());
         let plugin = fs::read_to_string(&plugin_path).unwrap();

@@ -261,6 +261,10 @@ enum Commands {
         #[arg(long)]
         full_bin_path: bool,
 
+        /// Install hooks without --quiet so errors are visible (useful for local development)
+        #[arg(long)]
+        no_quiet: bool,
+
         #[command(subcommand)]
         agent: setup::SetupAgent,
     },
@@ -1262,9 +1266,10 @@ async fn main() -> Result<()> {
         Commands::Setup {
             yes,
             full_bin_path,
+            no_quiet,
             agent,
         } => {
-            setup::run(agent, yes, full_bin_path).await?;
+            setup::run(agent, yes, full_bin_path, no_quiet).await?;
         }
 
         Commands::List { stale } => {
