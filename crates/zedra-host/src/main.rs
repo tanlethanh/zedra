@@ -93,6 +93,10 @@ enum Commands {
         /// Deeplink to open from the notification
         #[arg(long)]
         deeplink: Option<String>,
+
+        /// Working directory of the workspace (used for anonymous Delta auth)
+        #[arg(short, long, default_value = ".")]
+        workdir: String,
     },
 
     /// Send a Live Activity update through Zedra Delta
@@ -120,6 +124,10 @@ enum Commands {
         /// End the Live Activity instead of updating it
         #[arg(long)]
         end: bool,
+
+        /// Working directory of the workspace (used for anonymous Delta auth)
+        #[arg(short, long, default_value = ".")]
+        workdir: String,
     },
 
     /// Start the Zedra daemon for this workspace
@@ -771,8 +779,15 @@ async fn main() -> Result<()> {
             body,
             category,
             deeplink,
+            workdir,
         } => {
-            let response = delta::DeltaClient::load()?
+            let workdir = resolve_workdir(workdir);
+            let client = delta::DeltaClient::try_load_for_workspace(&workdir).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Delta not configured. Sign in with `zedra auth login` or connect the mobile app first."
+                )
+            })?;
+            let response = client
                 .send_notification(id, title, body, category, deeplink)
                 .await?;
             utils::println_success("Notification accepted.");
@@ -792,9 +807,16 @@ async fn main() -> Result<()> {
             body,
             state,
             end,
+            workdir,
         } => {
+            let workdir = resolve_workdir(workdir);
+            let client = delta::DeltaClient::try_load_for_workspace(&workdir).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Delta not configured. Sign in with `zedra auth login` or connect the mobile app first."
+                )
+            })?;
             let content_state = parse_json_object(&state)?;
-            let response = delta::DeltaClient::load()?
+            let response = client
                 .update_live_activity(id, activity_id, title, body, content_state, end)
                 .await?;
             utils::println_success("Live Activity update accepted.");
@@ -941,7 +963,7 @@ async fn main() -> Result<()> {
                 prev_hook(info);
             }));
 
-            let delta_client = delta::DeltaClient::try_load();
+            let delta_client = delta::DeltaClient::try_load_for_workspace(&workdir);
 
             let state = Arc::new(rpc_daemon::DaemonState::new(
                 workdir.clone(),

@@ -882,8 +882,9 @@ pub struct DaemonState {
     /// When the daemon started; used to compute uptime.
     pub started_at: std::time::Instant,
     pub agent_cache: Arc<agent_cache::AgentCache>,
-    /// Delta client loaded at daemon startup. `None` if Delta is not configured.
-    pub delta: Option<Arc<crate::delta::DeltaClient>>,
+    /// Delta client; updated at runtime when a mobile client reports its
+    /// Delta info via `SetClientDeltaInfo`. `None` if Delta is not configured.
+    pub delta: Arc<tokio::sync::RwLock<Option<Arc<crate::delta::DeltaClient>>>>,
 }
 
 impl std::fmt::Debug for DaemonState {
@@ -906,7 +907,7 @@ impl DaemonState {
             identity,
             started_at: std::time::Instant::now(),
             agent_cache: agent_cache::AgentCache::new(),
-            delta,
+            delta: Arc::new(tokio::sync::RwLock::new(delta)),
         }
     }
 }
@@ -2091,6 +2092,30 @@ async fn dispatch(
                 "client app state updated"
             );
             let _ = msg.tx.send(SetAppStateResult {}).await;
+        }
+
+        ZedraMessage::SetClientDeltaInfo(msg) => {
+            let info = crate::delta::ClientDeltaInfo {
+                delta_url: msg.delta_url.clone(),
+                stack_id: msg.stack_id,
+                host_node_id: msg.host_node_id,
+                client_pubkey,
+            };
+            if let Err(err) = crate::delta::save_client_delta_info(&state.workdir, &info) {
+                tracing::warn!("Failed to persist client delta info: {err:#}");
+            }
+            match crate::delta::DeltaClient::from_client_info(&info) {
+                Ok(client) => {
+                    *state.delta.write().await = Some(client);
+                    tracing::info!(
+                        stack_id = %msg.stack_id,
+                        host_node_id = %msg.host_node_id,
+                        "Delta client updated from connected mobile client"
+                    );
+                }
+                Err(err) => tracing::warn!("Failed to build Delta client from client info: {err:#}"),
+            }
+            let _ = msg.tx.send(SetClientDeltaInfoResult {}).await;
         }
 
         ZedraMessage::FsRead(msg) => {

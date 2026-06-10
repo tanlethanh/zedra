@@ -530,7 +530,7 @@ async fn receive_agent_hook_handler(
         let addr = iroh::EndpointAddr::from(endpoint_id);
         zedra_rpc::encode_endpoint_addr(&addr).unwrap_or_default()
     };
-    let delta = s.daemon_state.delta.clone();
+    let delta = s.daemon_state.delta.read().await.clone();
     let workdir = s.daemon_state.workdir.clone();
     let payload = req.payload.clone();
 

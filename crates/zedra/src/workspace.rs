@@ -96,6 +96,9 @@ pub struct Workspace {
     /// Terminal to open immediately after the first sync completes (set by notification deeplink).
     pending_terminal_after_sync: Option<String>,
     _subscriptions: Vec<Subscription>,
+    /// Reset on each new connection; set after the host node is registered with
+    /// Delta so reconnects skip redundant re-registration.
+    host_delta_registered: bool,
 }
 
 pub(crate) enum PendingWorkspaceAction {
@@ -889,6 +892,7 @@ impl Workspace {
             pending_platform_action,
             _pending_platform_action_task: pending_platform_action_task,
             pending_terminal_after_sync: None,
+            host_delta_registered: false,
             _subscriptions: vec![
                 drawer_host_subscription,
                 workspace_state_subscription,
@@ -961,7 +965,7 @@ impl Workspace {
                         }
                         if let ConnectEvent::SyncComplete { sync, .. } = &event {
                             ws.seed_terminal_meta_from_sync(sync, cx);
-                            ws.register_delta_host_node_after_first_pairing(sync, &telemetry_state);
+                            ws.try_register_host_with_delta(sync);
                         }
                         sync_refresh_mode
                     }) {
@@ -1060,6 +1064,7 @@ impl Workspace {
         };
         self.connection_request = Some(request.clone());
         self.seen_reconnect = false;
+        self.host_delta_registered = false;
         self.active_reconnect_reason = None;
         self.latency_sampler.reset();
         self.start_connection(request);
@@ -1080,21 +1085,16 @@ impl Workspace {
         );
     }
 
-    fn register_delta_host_node_after_first_pairing(
-        &self,
-        sync: &SyncSessionResult,
-        state: &SessionState,
-    ) {
-        let snap = &state.snapshot;
-        if !snap.is_first_pairing
-            || !matches!(
-                &snap.auth_outcome,
-                Some(zedra_session::AuthOutcome::Registered)
-            )
-        {
+    /// Register the host's public key with Delta and report back the stack/node
+    /// info via `SetClientDeltaInfo` so the host daemon can send push
+    /// notifications without requiring the host to be signed in.
+    ///
+    /// Guarded by `host_delta_registered` which is reset on every new
+    /// connection, so this runs at most once per connection cycle.
+    fn try_register_host_with_delta(&mut self, sync: &SyncSessionResult) {
+        if self.host_delta_registered {
             return;
         }
-
         let Some(request) = self.connection_request.as_ref() else {
             return;
         };
@@ -1108,11 +1108,28 @@ impl Workspace {
             "os_version": sync.os_version.clone(),
             "host_version": sync.host_version.clone(),
         });
+        let handle = self.session.handle().clone();
+        // Optimistically mark registered so concurrent SyncComplete events
+        // don't race to issue duplicate registration calls.
+        self.host_delta_registered = true;
 
         zedra_session::session_runtime().spawn(async move {
             match crate::delta::register_paired_host_node(host_public_key, metadata).await {
-                Ok(true) => tracing::info!("Delta host node registered after first pairing"),
-                Ok(false) => {
+                Ok(Some(result)) => {
+                    tracing::info!(
+                        created = result.created,
+                        host_node_id = %result.host_node_id,
+                        "Delta host node registered"
+                    );
+                    handle
+                        .set_client_delta_info(
+                            result.delta_url,
+                            result.stack_id,
+                            result.host_node_id,
+                        )
+                        .await;
+                }
+                Ok(None) => {
                     tracing::debug!("Delta sign-in unavailable; skipped host registration")
                 }
                 Err(err) => tracing::warn!("Delta host node registration failed: {err:#}"),
@@ -1136,6 +1153,7 @@ impl Workspace {
 
         info!("restart connection requested");
         self.seen_reconnect = false;
+        self.host_delta_registered = false;
         self.active_reconnect_reason = None;
         self.latency_sampler.reset();
         self.start_connection(request);
@@ -1176,6 +1194,7 @@ impl Workspace {
         };
         self.connection_request = Some(request.clone());
         self.seen_reconnect = false;
+        self.host_delta_registered = false;
         self.active_reconnect_reason = None;
         self.latency_sampler.reset();
         self.start_connection(request);

@@ -64,6 +64,7 @@ enum NodeKind {
 #[derive(Deserialize)]
 struct NodeRegistrationResponse {
     node: NodeSummary,
+    created: bool,
 }
 
 #[derive(Deserialize)]
@@ -273,13 +274,26 @@ pub async fn register_push_token(
     Ok(state.status())
 }
 
-pub async fn register_paired_host_node(public_key: [u8; 32], metadata: Value) -> Result<bool> {
+/// Result returned when the mobile app registers a host node with Delta.
+pub struct HostNodeRegistrationResult {
+    pub delta_url: String,
+    pub stack_id: Uuid,
+    /// The host's node_id within this stack.
+    pub host_node_id: Uuid,
+    /// `true` if the host was newly registered; `false` if it was already known to Delta.
+    pub created: bool,
+}
+
+pub async fn register_paired_host_node(
+    public_key: [u8; 32],
+    metadata: Value,
+) -> Result<Option<HostNodeRegistrationResult>> {
     let mut state = load_state().unwrap_or_default();
     if state.access_token.is_none() {
-        return Ok(false);
+        return Ok(None);
     }
     let Some(stack_id) = state.stack_id else {
-        return Ok(false);
+        return Ok(None);
     };
 
     let req = NodeRegistrationRequest {
@@ -289,13 +303,14 @@ pub async fn register_paired_host_node(public_key: [u8; 32], metadata: Value) ->
         metadata,
         receive_notifications: false,
     };
-    post_bearer::<_, NodeRegistrationResponse>(
-        &mut state,
-        &format!("/v1/stacks/{stack_id}/nodes"),
-        &req,
-    )
-    .await?;
-    Ok(true)
+    let resp: NodeRegistrationResponse =
+        post_bearer(&mut state, &format!("/v1/stacks/{stack_id}/nodes"), &req).await?;
+    Ok(Some(HostNodeRegistrationResult {
+        delta_url: state.base_url.clone(),
+        stack_id,
+        host_node_id: resp.node.id,
+        created: resp.created,
+    }))
 }
 
 async fn register_mobile_node(

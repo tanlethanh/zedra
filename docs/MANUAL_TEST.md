@@ -187,6 +187,103 @@ Requires Delta sign-in, a registered push-enabled device, and hook setup
 2. Expected: no push notification is sent — hooks from terminals not registered in the daemon's session registry are silently dropped
 3. Confirm in daemon logs that the hook was received and discarded without an error
 
+## 0f-2. Delta Integration — Anonymous Host Registration
+
+Tests the path where the host has **not** run `zedra auth login` but the mobile
+app is signed in. On connect the app registers the host's public key with Delta
+and reports the result back to the daemon via `SetClientDeltaInfo`, enabling
+CLI push and Live Activity commands without host credentials.
+
+### Setup
+
+- Host daemon running with no `~/.config/zedra/delta.json` (or remove it with
+  `zedra auth logout` if previously signed in).
+- Mobile app signed in to Delta (`Settings → Delta → Sign In`).
+- At least one push-enabled mobile node registered (`zedra stack nodes` shows it
+  on the *mobile* app — host CLI doesn't need to be authed for this check).
+
+### 1. Host key registered on connect
+
+1. Start the daemon: `zedra start --workdir .`
+2. Scan QR from the mobile app and let the connection reach `Connected`.
+3. On the host, inspect the per-workspace config file:
+   ```sh
+   cat ~/.config/zedra/workspaces/$(zedra status --json | jq -r .workspace_hash)/delta_client.json
+   ```
+4. Expected: a JSON file exists with `delta_url`, `stack_id`, `host_node_id`,
+   and `client_pubkey` fields.
+5. Expected: host daemon log contains a line matching
+   `Delta host node registered  created=true host_node_id=…` (or `created=false`
+   if the same key was registered before).
+6. Check that the host node appears in the Delta stack from the mobile app's
+   `Settings → Delta → Stack Nodes`.
+7. Expected: the host node is listed with kind `host` and matches the machine
+   hostname.
+
+### 2. `zedra send` without host sign-in
+
+1. With the daemon still running and `delta_client.json` present, run:
+   ```sh
+   zedra send --workdir . --id <mobile-node-alias> --title "Test from host" --body "Anonymous path"
+   ```
+2. Expected: command exits 0 and prints `Notification accepted.` with
+   `recipients: 1` (or more if multiple push tokens exist).
+3. Expected: a push notification arrives on the mobile device with the exact
+   title and body.
+4. Stop and restart the daemon (no new QR scan):
+   ```sh
+   zedra stop --workdir .
+   zedra start --workdir .
+   ```
+5. Run the same `zedra send` command again without reconnecting the app.
+6. Expected: command succeeds — `delta_client.json` is loaded at daemon startup
+   so push works even before the next mobile reconnect.
+
+### 3. `zedra live-activity` without host sign-in
+
+1. Ensure a Live Activity is active on the device (trigger via
+   `zedra://la-test/start/x` deeplink or from an active agent hook).
+2. Run:
+   ```sh
+   zedra live-activity --workdir . --id <mobile-node-alias> \
+     --activity-id <activity-id> --title "Host update" --state '{}'
+   ```
+3. Expected: command exits 0, Live Activity on device updates its content state.
+
+### 4. Re-registration is idempotent (`created` flag)
+
+1. While the daemon is running and the app is connected, force a reconnect
+   (background and foreground the app, or run `zedra client --workdir . --count 1`
+   to verify the session is live).
+2. Expected: daemon log shows `created=false` on the second sync-complete after
+   the same mobile client reconnects — the existing host node is returned, not
+   duplicated.
+3. Pair a **new** device (different mobile) and let it connect.
+4. Expected: daemon log shows `created=true` for the new device's public key and
+   `delta_client.json` is updated with the new `client_pubkey`.
+
+### 5. Fallback to signed-in config when both exist
+
+1. Sign in the host: `zedra auth login`
+2. Connect the mobile app.
+3. Run `zedra send` and `zedra live-activity`.
+4. Expected: both commands use the signed-in bearer-token auth path (not the
+   anonymous key path), confirmed by `zedra auth status` showing the active
+   config.
+5. Log out: `zedra auth logout`
+6. Expected: subsequent `zedra send` falls back to `delta_client.json` from the
+   last connected mobile client without prompting for login.
+
+### 6. Error message when neither auth path is available
+
+1. Remove `delta.json` (`zedra auth logout`) and `delta_client.json`:
+   ```sh
+   rm ~/.config/zedra/workspaces/$(zedra status --json | jq -r .workspace_hash)/delta_client.json
+   ```
+2. Run `zedra send --workdir . --id any --title test`.
+3. Expected: command exits non-zero with the message:
+   `Delta not configured. Sign in with \`zedra auth login\` or connect the mobile app first.`
+
 ## 0g. Android Delta Push + In-App Banner
 
 Requires `android/google-services.json` from the Firebase project. Without it the

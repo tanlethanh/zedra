@@ -633,6 +633,20 @@ impl SessionHandle {
         }
     }
 
+    pub async fn set_client_delta_info(
+        &self,
+        delta_url: String,
+        stack_id: uuid::Uuid,
+        host_node_id: uuid::Uuid,
+    ) {
+        let result: Result<SetClientDeltaInfoResult> = self
+            .call(SetClientDeltaInfoReq { delta_url, stack_id, host_node_id })
+            .await;
+        if let Err(e) = result {
+            tracing::debug!(error = %e, "set_client_delta_info failed");
+        }
+    }
+
     pub async fn agent_sessions(
         &self,
         kind: AgentKind,

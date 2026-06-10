@@ -4,13 +4,14 @@ use ed25519_dalek::{Signature, Signer, SigningKey};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::identity;
 
 const CONFIG_FILE: &str = "delta.json";
+const CLIENT_DELTA_INFO_FILE: &str = "delta_client.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeltaConfig {
@@ -469,6 +470,41 @@ fn default_hostname() -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Per-workspace ClientDeltaInfo — persisted when a mobile client connects
+// ---------------------------------------------------------------------------
+
+/// Saved by the host daemon when the mobile client reports its Delta info.
+/// Allows the host to send push notifications without being signed in.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientDeltaInfo {
+    pub delta_url: String,
+    pub stack_id: Uuid,
+    pub host_node_id: Uuid,
+    /// The connected mobile client's iroh public key (used for ed25519 signing).
+    pub client_pubkey: [u8; 32],
+}
+
+pub fn client_delta_info_path(workdir: &Path) -> Result<PathBuf> {
+    Ok(identity::workspace_config_dir(workdir)?.join(CLIENT_DELTA_INFO_FILE))
+}
+
+pub fn save_client_delta_info(workdir: &Path, info: &ClientDeltaInfo) -> Result<()> {
+    let path = client_delta_info_path(workdir)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_vec_pretty(info)?;
+    identity::write_secret_file(&path, &json)?;
+    Ok(())
+}
+
+pub fn load_client_delta_info(workdir: &Path) -> Option<ClientDeltaInfo> {
+    let path = client_delta_info_path(workdir).ok()?;
+    let json = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&json).ok()
+}
+
+// ---------------------------------------------------------------------------
 // Public DeltaClient — holds config + signing key, exposes API methods
 // ---------------------------------------------------------------------------
 
@@ -502,6 +538,42 @@ impl DeltaClient {
                 None
             }
         }
+    }
+
+    /// Build an anonymous client from a `ClientDeltaInfo` saved by the daemon.
+    /// Uses the host's global signing key with the host_node_id from the info.
+    /// No bearer token — authentication is via ed25519 signed request headers.
+    pub fn from_client_info(info: &ClientDeltaInfo) -> Result<Arc<Self>> {
+        let signing_key = load_signing_key()?;
+        let config = DeltaConfig {
+            delta_url: info.delta_url.clone(),
+            stack_id: info.stack_id,
+            node_id: info.host_node_id,
+            access_token: String::new(),
+            refresh_token: String::new(),
+            token_expires_at: String::new(),
+        };
+        let http = DeltaHttp::new(&config.delta_url);
+        Ok(Arc::new(Self { config, signing_key, http }))
+    }
+
+    /// Try to load an anonymous client from per-workspace delta_client.json.
+    pub fn try_load_from_client_info(workdir: &Path) -> Option<Arc<Self>> {
+        let info = load_client_delta_info(workdir)?;
+        match Self::from_client_info(&info) {
+            Ok(client) => Some(client),
+            Err(err) => {
+                tracing::debug!("Failed to build Delta client from saved client info: {err:#}");
+                None
+            }
+        }
+    }
+
+    /// Load a Delta client for the given workspace.
+    /// Tries signed-in config (delta.json) first; falls back to the anonymous
+    /// client info reported by the last connected mobile client.
+    pub fn try_load_for_workspace(workdir: &Path) -> Option<Arc<Self>> {
+        Self::try_load().or_else(|| Self::try_load_from_client_info(workdir))
     }
 
     /// Signed request helper — pre-binds node_id and signing_key from this client.
@@ -900,6 +972,46 @@ fn request_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
+
+    fn sample_info() -> ClientDeltaInfo {
+        ClientDeltaInfo {
+            delta_url: "https://delta.example.com".into(),
+            stack_id: uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+            host_node_id: uuid::Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap(),
+            client_pubkey: [0u8; 32],
+        }
+    }
+
+    #[test]
+    fn client_delta_info_json_roundtrip() {
+        let info = sample_info();
+        let json = serde_json::to_string(&info).unwrap();
+        let decoded: ClientDeltaInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.delta_url, info.delta_url);
+        assert_eq!(decoded.stack_id, info.stack_id);
+        assert_eq!(decoded.host_node_id, info.host_node_id);
+        assert_eq!(decoded.client_pubkey, info.client_pubkey);
+    }
+
+    #[test]
+    fn client_delta_info_save_load_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let workdir = dir.path();
+        let info = sample_info();
+        save_client_delta_info(workdir, &info).unwrap();
+        let loaded = load_client_delta_info(workdir).expect("should load saved info");
+        assert_eq!(loaded.delta_url, info.delta_url);
+        assert_eq!(loaded.stack_id, info.stack_id);
+        assert_eq!(loaded.host_node_id, info.host_node_id);
+        assert_eq!(loaded.client_pubkey, info.client_pubkey);
+    }
+
+    #[test]
+    fn load_client_delta_info_returns_none_when_missing() {
+        let dir = TempDir::new().unwrap();
+        assert!(load_client_delta_info(dir.path()).is_none());
+    }
 
     #[test]
     fn canonical_payload_matches_delta_protocol() {

@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 use irpc::channel::{mpsc, oneshot};
 use irpc::rpc_requests;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Protocol enum
@@ -206,6 +207,12 @@ pub enum ZedraProto {
     /// Kept at enum tail because protocol variants are append-only.
     #[rpc(tx = oneshot::Sender<SetAppStateResult>)]
     SetAppState(SetAppStateReq),
+
+    /// Client reports its Delta stack/node info to the host so the host can
+    /// send push notifications without requiring the host to be signed in.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<SetClientDeltaInfoResult>)]
+    SetClientDeltaInfo(SetClientDeltaInfoReq),
 }
 
 // ---------------------------------------------------------------------------
@@ -572,6 +579,16 @@ pub struct SetAppStateReq {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SetAppStateResult {}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetClientDeltaInfoReq {
+    pub delta_url: String,
+    pub stack_id: Uuid,
+    pub host_node_id: Uuid,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetClientDeltaInfoResult {}
 
 /// A single fuzzy-search hit. `match_indices` are the host matcher's matched
 /// character positions into `rel_path`, so the client highlights exactly what
@@ -1601,6 +1618,20 @@ mod tests {
         let encoded = postcard::to_allocvec(&result).unwrap();
         let decoded: AgentListResult = postcard::from_bytes(&encoded).unwrap();
         assert_eq!(decoded, result);
+    }
+
+    #[test]
+    fn set_client_delta_info_roundtrip() {
+        let req = SetClientDeltaInfoReq {
+            delta_url: "https://delta.example.com".into(),
+            stack_id: Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+            host_node_id: Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap(),
+        };
+        let encoded = postcard::to_allocvec(&req).unwrap();
+        let decoded: SetClientDeltaInfoReq = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded.delta_url, req.delta_url);
+        assert_eq!(decoded.stack_id, req.stack_id);
+        assert_eq!(decoded.host_node_id, req.host_node_id);
     }
 
     #[test]
