@@ -423,9 +423,22 @@ enum NativePresentationBridge {
         }
     }
 
+    private static let actionIconPointSize: CGFloat = 22
+    private static let iconInsets: [String: CGFloat] = [
+        "Google": 2,
+    ]
+
     static func actionImage(named imageName: String) -> UIImage? {
-        let image = UIImage(named: imageName) ?? UIImage(systemName: imageName)
-        return image?.withRenderingMode(.alwaysTemplate)
+        var name = (imageName as NSString).lastPathComponent
+        if name.hasSuffix(".svg") { name = String(name.dropLast(4)) }
+        guard let raw = UIImage(named: name) else { return nil }
+        let inset = iconInsets[imageName] ?? 0
+        let canvas = CGSize(width: actionIconPointSize, height: actionIconPointSize)
+        let renderer = UIGraphicsImageRenderer(size: canvas)
+        let rendered = renderer.image { _ in
+            raw.draw(in: CGRect(x: inset, y: inset, width: canvas.width - inset * 2, height: canvas.height - inset * 2))
+        }
+        return rendered.withRenderingMode(.alwaysTemplate)
     }
 
     private static let actionListIconPointSize: CGFloat = 22
