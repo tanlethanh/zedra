@@ -1006,7 +1006,8 @@ fn hermes_hook_script_contents(cli_path: &str) -> String {
 # Zedra hook script for Hermes agent.
 # No-op outside a Zedra terminal (ZEDRA_TERMINAL_ID not set by the shell).
 [ -z "${{ZEDRA_TERMINAL_ID:-}}" ] && exit 0
-CLI="${{ZEDRA_CLI:-{cli}}}"
+CLI="${{ZEDRA_CLI:-}}"
+[ -n "$CLI" ] || CLI={cli}
 [ -x "$CLI" ] || CLI="zedra"
 exec "$CLI" agent hook receive --agent hermes --quiet
 "#,
@@ -1680,6 +1681,14 @@ mod tests {
         // Non-hooks keys must be preserved verbatim.
         assert!(patched.contains("model:\n  default: gpt-5\n"));
         assert!(patched.contains("hooks_auto_accept: false\n"));
+    }
+
+    #[test]
+    fn hermes_hook_script_preserves_quoted_binary_path() {
+        let script = hermes_hook_script_contents("/tmp/zedra build/zedra");
+        assert!(script.contains("CLI=\"${ZEDRA_CLI:-}\""));
+        assert!(script.contains("[ -n \"$CLI\" ] || CLI='/tmp/zedra build/zedra'"));
+        assert!(!script.contains("CLI=\"${ZEDRA_CLI:-'"));
     }
 
     #[test]

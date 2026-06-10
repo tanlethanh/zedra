@@ -31,8 +31,8 @@ use tokio::net::TcpListener;
 
 use crate::agent;
 use crate::agent_hook_recv::{
-    ClaudeHookReceiver, CodexHookReceiver, HookContext, HookReceiver, OpenCodeHookReceiver,
-    PiHookReceiver,
+    ClaudeHookReceiver, CodexHookReceiver, HermesHookReceiver, HookContext, HookReceiver,
+    OpenCodeHookReceiver, PiHookReceiver,
 };
 use crate::agent_utils::payload_string;
 use crate::metrics;
@@ -548,7 +548,7 @@ async fn receive_agent_hook_handler(
             AgentKind::Codex => CodexHookReceiver.receive(ctx).await,
             AgentKind::OpenCode => OpenCodeHookReceiver.receive(ctx).await,
             AgentKind::Pi => PiHookReceiver.receive(ctx).await,
-            _ => Ok(()),
+            AgentKind::Hermes => HermesHookReceiver.receive(ctx).await,
         };
         if let Err(err) = result {
             tracing::warn!(error = %err, "agent hook receiver failed");

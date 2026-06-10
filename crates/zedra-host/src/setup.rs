@@ -336,7 +336,11 @@ fn install_hermes_hooks(full_bin_path: bool) -> Result<()> {
     if let Some(parent) = script_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&script_path, &script)?;
+    let script_changed =
+        fs::read_to_string(&script_path).map_or(true, |existing| existing != script);
+    if script_changed {
+        fs::write(&script_path, &script)?;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -345,7 +349,11 @@ fn install_hermes_hooks(full_bin_path: bool) -> Result<()> {
         fs::set_permissions(&script_path, perms)?;
     }
     print_step_label("hooks");
-    print_success_detail(&format!("write {}", script_path.display()));
+    print_success_detail(&format!(
+        "{} {}",
+        if script_changed { "write" } else { "keep" },
+        script_path.display()
+    ));
 
     let config_path = hermes_home()?.join("config.yaml");
     let existing = fs::read_to_string(&config_path).unwrap_or_default();
@@ -353,9 +361,16 @@ fn install_hermes_hooks(full_bin_path: bool) -> Result<()> {
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&config_path, &patched)?;
+    let config_changed = patched != existing;
+    if config_changed {
+        fs::write(&config_path, &patched)?;
+    }
     print_step_label("config");
-    print_success_detail(&format!("write {}", config_path.display()));
+    print_success_detail(&format!(
+        "{} {}",
+        if config_changed { "write" } else { "keep" },
+        config_path.display()
+    ));
 
     Ok(())
 }
@@ -386,7 +401,8 @@ fn hermes_hook_script(binary: &str) -> String {
 # zedra-agent-hook (Hermes lifecycle hook)
 # No-op outside a Zedra terminal (ZEDRA_TERMINAL_ID not set by the shell).
 [ -z "${{ZEDRA_TERMINAL_ID:-}}" ] && exit 0
-CLI="${{ZEDRA_CLI:-{binary}}}"
+CLI="${{ZEDRA_CLI:-}}"
+[ -n "$CLI" ] || CLI={binary}
 [ -x "$CLI" ] || CLI="zedra"
 exec "$CLI" agent hook receive --agent hermes --quiet
 "#,
@@ -1306,6 +1322,14 @@ mod tests {
         let command = hook_command("Codex", true, true).unwrap();
         assert!(command.ends_with(" agent hook receive --agent codex --quiet"));
         assert_ne!(command, "zedra agent hook receive --agent codex --quiet");
+    }
+
+    #[test]
+    fn hermes_hook_script_preserves_quoted_binary_path() {
+        let script = hermes_hook_script("/tmp/zedra build/zedra");
+        assert!(script.contains("CLI=\"${ZEDRA_CLI:-}\""));
+        assert!(script.contains("[ -n \"$CLI\" ] || CLI='/tmp/zedra build/zedra'"));
+        assert!(!script.contains("CLI=\"${ZEDRA_CLI:-'"));
     }
 
     #[test]

@@ -401,6 +401,72 @@ fn opencode_agent_state(event_name: &str, payload: &serde_json::Value) -> Option
 
 pub struct PiHookReceiver;
 
+pub struct HermesHookReceiver;
+
+impl HookReceiver for HermesHookReceiver {
+    async fn receive(&self, ctx: HookContext) -> Result<()> {
+        // Hermes shell hooks pipe `hook_event_name` and place event-specific
+        // fields under `extra`.
+        let event_name =
+            agent_utils::payload_string(&ctx.payload, "hook_event_name").unwrap_or_default();
+        let agent_session_id = agent_utils::payload_string(&ctx.payload, "session_id")
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                ctx.payload
+                    .get("extra")
+                    .and_then(|extra| agent_utils::payload_string(extra, "session_key"))
+            });
+        let agent_state = hermes_agent_state(&event_name);
+        if !self
+            .apply_and_should_notify(
+                AgentKind::Hermes,
+                &event_name,
+                agent_state,
+                agent_session_id.as_deref(),
+                &ctx,
+            )
+            .await
+        {
+            return Ok(());
+        }
+        let Some(delta) = ctx.delta.clone() else {
+            return Ok(());
+        };
+
+        let name = agent_utils::display_name(AgentKind::Hermes);
+        // `on_session_end` follows every turn and would duplicate the successful
+        // completion notification already emitted for `post_llm_call`.
+        let Some(title) = (match event_name.as_str() {
+            "pre_approval_request" => Some(format!("{name} requires approval")),
+            "post_llm_call" => Some(format!("{name} completed")),
+            _ => None,
+        }) else {
+            return Ok(());
+        };
+
+        info!(event_name, "agent hook delta notification (hermes)");
+        self.send_notification(
+            &delta,
+            HookNotification {
+                title,
+                body: None,
+                deeplink: self.build_deeplink(&ctx),
+                content_state: self.content_state(name, &event_name),
+            },
+        )
+        .await
+    }
+}
+
+fn hermes_agent_state(event_name: &str) -> Option<AgentState> {
+    match event_name {
+        "on_session_start" | "post_approval_response" => Some(AgentState::Running),
+        "pre_approval_request" => Some(AgentState::WaitingApproval),
+        "post_llm_call" | "on_session_end" => Some(AgentState::Completed),
+        _ => None,
+    }
+}
+
 impl HookReceiver for PiHookReceiver {
     async fn receive(&self, ctx: HookContext) -> Result<()> {
         // The pi extension normalizes pi's native events to Claude-compatible
@@ -478,6 +544,7 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_registry::SessionRegistry;
     use serde_json::json;
 
     #[test]
@@ -510,6 +577,52 @@ mod tests {
         assert_eq!(
             opencode_agent_state("session.idle", &json!({})),
             Some(AgentState::Completed)
+        );
+    }
+
+    #[test]
+    fn hermes_lifecycle_events_map_to_agent_states() {
+        for (event, state) in [
+            ("on_session_start", AgentState::Running),
+            ("pre_approval_request", AgentState::WaitingApproval),
+            ("post_approval_response", AgentState::Running),
+            ("post_llm_call", AgentState::Completed),
+            ("on_session_end", AgentState::Completed),
+        ] {
+            assert_eq!(hermes_agent_state(event), Some(state), "{event}");
+        }
+        assert_eq!(hermes_agent_state("unknown"), None);
+    }
+
+    #[tokio::test]
+    async fn hermes_receiver_applies_state_to_terminal() {
+        let registry = SessionRegistry::new();
+        let session = registry
+            .create_named("test", PathBuf::from("/tmp/hermes-hook-test"))
+            .await;
+        HermesHookReceiver
+            .receive(HookContext {
+                payload: json!({
+                    "hook_event_name": "pre_approval_request",
+                    "session_id": "hermes-session",
+                }),
+                terminal_id: "terminal-1".to_string(),
+                endpoint_addr: String::new(),
+                session: session.clone(),
+                delta: None,
+                workdir: PathBuf::from("/tmp/hermes-hook-test"),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            session
+                .terminal_agent_states
+                .lock()
+                .await
+                .get("terminal-1")
+                .copied(),
+            Some(AgentState::WaitingApproval)
         );
     }
 }
