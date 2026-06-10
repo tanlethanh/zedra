@@ -112,7 +112,7 @@ impl WorkspaceDrawer {
         });
 
         Self {
-            current_tab: DrawerTab::FileExplorer,
+            current_tab: DrawerTab::Terminals,
             file_display_mode: FileDisplayMode::Explorer,
             focus_handle: cx.focus_handle(),
             file_explorer,
