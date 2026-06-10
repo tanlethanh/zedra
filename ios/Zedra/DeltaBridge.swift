@@ -1,3 +1,4 @@
+import AuthenticationServices
 import Foundation
 import GoogleSignIn
 import UIKit
@@ -28,6 +29,19 @@ private final class ZedraDeltaCStringStorage {
         return UnsafePointer(duplicated)
     }
 }
+
+@_silgen_name("zedra_ios_delta_apple_sign_in_result")
+private func zedra_ios_delta_apple_sign_in_result(
+    _ callbackID: UInt32,
+    _ idToken: UnsafePointer<CChar>,
+    _ email: UnsafePointer<CChar>?
+)
+
+@_silgen_name("zedra_ios_delta_apple_sign_in_error")
+private func zedra_ios_delta_apple_sign_in_error(
+    _ callbackID: UInt32,
+    _ message: UnsafePointer<CChar>
+)
 
 @_silgen_name("zedra_ios_delta_google_sign_in_result")
 private func zedra_ios_delta_google_sign_in_result(
@@ -253,6 +267,92 @@ private final class ZedraDeltaNotificationDelegate: NSObject, UNUserNotification
     ) async -> UNNotificationPresentationOptions {
         return [.banner, .list, .sound, .badge]
     }
+}
+
+private final class ZedraDeltaAppleSignInCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
+    let callbackID: UInt32
+
+    init(callbackID: UInt32) {
+        self.callbackID = callbackID
+    }
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
+        guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+            fail("Apple sign-in returned an unexpected credential type")
+            return
+        }
+        guard
+            let tokenData = credential.identityToken,
+            let idToken = String(data: tokenData, encoding: .utf8),
+            !idToken.isEmpty
+        else {
+            fail("Apple sign-in did not return an identity token")
+            return
+        }
+        let email = credential.email
+        idToken.withCString { tokenPtr in
+            if let email, !email.isEmpty {
+                email.withCString { emailPtr in
+                    zedra_ios_delta_apple_sign_in_result(callbackID, tokenPtr, emailPtr)
+                }
+            } else {
+                zedra_ios_delta_apple_sign_in_result(callbackID, tokenPtr, nil)
+            }
+        }
+        ZedraDeltaAppleSignIn.clearCoordinator()
+    }
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
+        let asError = error as? ASAuthorizationError
+        if asError?.code == .canceled {
+            fail("Apple sign-in was cancelled")
+        } else {
+            fail(error.localizedDescription)
+        }
+        ZedraDeltaAppleSignIn.clearCoordinator()
+    }
+
+    func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        return scenes.flatMap(\.windows).first(where: { $0.isKeyWindow }) ?? UIWindow()
+    }
+
+    private func fail(_ message: String) {
+        message.withCString { zedra_ios_delta_apple_sign_in_error(callbackID, $0) }
+    }
+}
+
+enum ZedraDeltaAppleSignIn {
+    private static let lock = NSLock()
+    private static var coordinator: ZedraDeltaAppleSignInCoordinator?
+
+    static func start(callbackID: UInt32) {
+        DispatchQueue.main.async {
+            let request = ASAuthorizationAppleIDProvider().createRequest()
+            request.requestedScopes = [.email]
+
+            let coord = ZedraDeltaAppleSignInCoordinator(callbackID: callbackID)
+            lock.lock()
+            coordinator = coord
+            lock.unlock()
+
+            let controller = ASAuthorizationController(authorizationRequests: [request])
+            controller.delegate = coord
+            controller.presentationContextProvider = coord
+            controller.performRequests()
+        }
+    }
+
+    static func clearCoordinator() {
+        lock.lock()
+        coordinator = nil
+        lock.unlock()
+    }
+}
+
+@_cdecl("ios_start_delta_apple_sign_in")
+func ios_start_delta_apple_sign_in(_ callbackID: UInt32) {
+    ZedraDeltaAppleSignIn.start(callbackID: callbackID)
 }
 
 @_cdecl("ios_start_delta_google_sign_in")

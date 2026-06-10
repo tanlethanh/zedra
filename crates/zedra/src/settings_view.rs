@@ -24,6 +24,8 @@ impl EventEmitter<SettingsEvent> for SettingsView {}
 enum DeltaSettingsEvent {
     StartGoogleSignIn,
     GoogleSignIn(Result<platform_bridge::DeltaGoogleSignInResult, String>),
+    StartAppleSignIn,
+    AppleSignIn(Result<platform_bridge::DeltaAppleSignInResult, String>),
     PushToken(Result<platform_bridge::DeltaPushTokenResult, String>),
     ConfirmLogout,
     OperationComplete {
@@ -74,18 +76,50 @@ impl SettingsView {
         }
     }
 
-    fn start_google_sign_in(&mut self, cx: &mut Context<Self>) {
+    fn start_oauth_sign_in(&mut self, cx: &mut Context<Self>, message: &str, start: impl FnOnce()) {
         if self.delta_busy {
             return;
         }
         self.delta_busy = true;
         self.delta_message_target = DeltaMessageTarget::Profile;
-        self.delta_message = Some("Opening Google sign-in".to_string());
+        self.delta_message = Some(message.to_string());
         platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-        platform_bridge::start_delta_google_sign_in(|result| {
-            PENDING_DELTA_EVENT.set(DeltaSettingsEvent::GoogleSignIn(result));
-        });
+        start();
         cx.notify();
+    }
+
+    fn start_apple_sign_in(&mut self, cx: &mut Context<Self>) {
+        self.start_oauth_sign_in(cx, "Opening Apple sign-in", || {
+            platform_bridge::start_delta_apple_sign_in(|result| {
+                PENDING_DELTA_EVENT.set(DeltaSettingsEvent::AppleSignIn(result));
+            });
+        });
+    }
+
+    fn start_google_sign_in(&mut self, cx: &mut Context<Self>) {
+        self.start_oauth_sign_in(cx, "Opening Google sign-in", || {
+            platform_bridge::start_delta_google_sign_in(|result| {
+                PENDING_DELTA_EVENT.set(DeltaSettingsEvent::GoogleSignIn(result));
+            });
+        });
+    }
+
+    fn spawn_sign_in_task(
+        &mut self,
+        sign_in: impl std::future::Future<Output = anyhow::Result<delta::DeltaStatus>>
+            + Send
+            + 'static,
+    ) {
+        self.delta_message_target = DeltaMessageTarget::Profile;
+        self.delta_message = Some("Registering Delta mobile node".to_string());
+        zedra_session::session_runtime().spawn(async move {
+            let result = sign_in.await.map_err(|err| format!("{err:#}"));
+            PENDING_DELTA_EVENT.set(DeltaSettingsEvent::OperationComplete {
+                result,
+                success_message: None,
+                target: DeltaMessageTarget::Profile,
+            });
+        });
     }
 
     fn show_sign_in_methods(&mut self, cx: &mut Context<Self>) {
@@ -98,11 +132,14 @@ impl SettingsView {
         platform_bridge::show_selection(
             "Sign In",
             "Choose a sign-in method for Delta.",
-            vec![AlertButton::default("Google")],
-            |result| {
-                if matches!(result, Some(0)) {
-                    PENDING_DELTA_EVENT.set(DeltaSettingsEvent::StartGoogleSignIn);
-                }
+            vec![
+                AlertButton::default("Sign in with Google").image("Google"),
+                AlertButton::default("Sign in with Apple").image("Apple"),
+            ],
+            |result| match result {
+                Some(0) => PENDING_DELTA_EVENT.set(DeltaSettingsEvent::StartGoogleSignIn),
+                Some(1) => PENDING_DELTA_EVENT.set(DeltaSettingsEvent::StartAppleSignIn),
+                _ => {}
             },
         );
         cx.notify();
@@ -131,22 +168,18 @@ impl SettingsView {
             DeltaSettingsEvent::StartGoogleSignIn => {
                 self.start_google_sign_in(cx);
             }
-            DeltaSettingsEvent::GoogleSignIn(Ok(result)) => {
-                self.delta_message_target = DeltaMessageTarget::Profile;
-                self.delta_message = Some("Registering Delta mobile node".to_string());
-                zedra_session::session_runtime().spawn(async move {
-                    let result = delta::sign_in_with_google(result.id_token, result.email)
-                        .await
-                        .map_err(|err| format!("{err:#}"));
-                    PENDING_DELTA_EVENT.set(DeltaSettingsEvent::OperationComplete {
-                        result,
-                        success_message: None,
-                        target: DeltaMessageTarget::Profile,
-                    });
-                });
+            DeltaSettingsEvent::StartAppleSignIn => {
+                self.start_apple_sign_in(cx);
             }
-            DeltaSettingsEvent::GoogleSignIn(Err(message)) => {
+            DeltaSettingsEvent::AppleSignIn(Ok(result)) => {
+                self.spawn_sign_in_task(delta::sign_in_with_apple(result.id_token, result.email));
+            }
+            DeltaSettingsEvent::AppleSignIn(Err(message))
+            | DeltaSettingsEvent::GoogleSignIn(Err(message)) => {
                 self.finish_delta_error(message);
+            }
+            DeltaSettingsEvent::GoogleSignIn(Ok(result)) => {
+                self.spawn_sign_in_task(delta::sign_in_with_google(result.id_token, result.email));
             }
             DeltaSettingsEvent::PushToken(Ok(result)) => {
                 self.delta_message_target = DeltaMessageTarget::Notifications;

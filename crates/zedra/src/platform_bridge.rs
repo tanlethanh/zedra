@@ -207,6 +207,12 @@ pub struct DeltaGoogleSignInResult {
 }
 
 #[derive(Clone, Debug)]
+pub struct DeltaAppleSignInResult {
+    pub id_token: String,
+    pub email: Option<String>,
+}
+
+#[derive(Clone, Debug)]
 pub struct DeltaPushTokenResult {
     pub provider: String,
     pub token: String,
@@ -249,11 +255,15 @@ static NEXT_NATIVE_DICTATION_PREVIEW_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_NATIVE_NOTIFICATION_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_NATIVE_EDIT_MENU_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_DELTA_GOOGLE_SIGN_IN_ID: AtomicU32 = AtomicU32::new(1);
+static NEXT_DELTA_APPLE_SIGN_IN_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_DELTA_PUSH_TOKEN_ID: AtomicU32 = AtomicU32::new(1);
 static NATIVE_NOTIFICATION_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce() + Send>>>> =
     OnceLock::new();
 static DELTA_GOOGLE_SIGN_IN_CALLBACKS: OnceLock<
     Mutex<HashMap<u32, Box<dyn FnOnce(Result<DeltaGoogleSignInResult, String>) + Send>>>,
+> = OnceLock::new();
+static DELTA_APPLE_SIGN_IN_CALLBACKS: OnceLock<
+    Mutex<HashMap<u32, Box<dyn FnOnce(Result<DeltaAppleSignInResult, String>) + Send>>>,
 > = OnceLock::new();
 static DELTA_PUSH_TOKEN_CALLBACKS: OnceLock<
     Mutex<HashMap<u32, Box<dyn FnOnce(Result<DeltaPushTokenResult, String>) + Send>>>,
@@ -280,6 +290,11 @@ fn native_notification_callbacks() -> &'static Mutex<HashMap<u32, Box<dyn FnOnce
 fn delta_google_sign_in_callbacks()
 -> &'static Mutex<HashMap<u32, Box<dyn FnOnce(Result<DeltaGoogleSignInResult, String>) + Send>>> {
     DELTA_GOOGLE_SIGN_IN_CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn delta_apple_sign_in_callbacks()
+-> &'static Mutex<HashMap<u32, Box<dyn FnOnce(Result<DeltaAppleSignInResult, String>) + Send>>> {
+    DELTA_APPLE_SIGN_IN_CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn delta_push_token_callbacks()
@@ -487,6 +502,17 @@ pub fn start_delta_google_sign_in(
     bridge().start_delta_google_sign_in(id);
 }
 
+pub fn start_delta_apple_sign_in(
+    on_result: impl FnOnce(Result<DeltaAppleSignInResult, String>) + Send + 'static,
+) {
+    let id = NEXT_DELTA_APPLE_SIGN_IN_ID.fetch_add(1, Ordering::Relaxed);
+    delta_apple_sign_in_callbacks()
+        .lock()
+        .unwrap()
+        .insert(id, Box::new(on_result));
+    bridge().start_delta_apple_sign_in(id);
+}
+
 pub fn request_delta_push_token(
     on_result: impl FnOnce(Result<DeltaPushTokenResult, String>) + Send + 'static,
 ) {
@@ -619,6 +645,30 @@ pub fn dispatch_delta_google_sign_in_error(callback_id: u32, message: String) {
     }
 }
 
+pub fn dispatch_delta_apple_sign_in_result(
+    callback_id: u32,
+    id_token: String,
+    email: Option<String>,
+) {
+    let cb = delta_apple_sign_in_callbacks()
+        .lock()
+        .unwrap()
+        .remove(&callback_id);
+    if let Some(cb) = cb {
+        cb(Ok(DeltaAppleSignInResult { id_token, email }));
+    }
+}
+
+pub fn dispatch_delta_apple_sign_in_error(callback_id: u32, message: String) {
+    let cb = delta_apple_sign_in_callbacks()
+        .lock()
+        .unwrap()
+        .remove(&callback_id);
+    if let Some(cb) = cb {
+        cb(Err(message));
+    }
+}
+
 pub fn dispatch_delta_push_token_result(
     callback_id: u32,
     provider: String,
@@ -700,6 +750,16 @@ pub fn clear_pending_alerts() {
         if count > 0 {
             tracing::debug!(
                 "clear_pending_alerts: dropped {} unacknowledged Delta Google sign-in request(s)",
+                count
+            );
+        }
+    }
+    if let Ok(mut map) = delta_apple_sign_in_callbacks().lock() {
+        let count = map.len();
+        map.clear();
+        if count > 0 {
+            tracing::info!(
+                "clear_pending_alerts: dropped {} unacknowledged Delta Apple sign-in request(s)",
                 count
             );
         }
@@ -878,6 +938,13 @@ pub trait PlatformBridge: Send + Sync + 'static {
         dispatch_delta_google_sign_in_error(
             id,
             "Google sign-in is not available on this platform".to_string(),
+        );
+    }
+    /// Start the platform Apple Sign-In flow for Delta account auth.
+    fn start_delta_apple_sign_in(&self, id: u32) {
+        dispatch_delta_apple_sign_in_error(
+            id,
+            "Apple sign-in is not available on this platform".to_string(),
         );
     }
     /// Request native push authorization and return the platform push token.

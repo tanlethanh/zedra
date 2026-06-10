@@ -213,6 +213,11 @@ extern void ios_present_native_notification(uint32_t callback_id,
 extern void ios_start_delta_google_sign_in(uint32_t callback_id);
 
 /**
+ * Start native Apple Sign-In for Delta account auth.
+ */
+extern void ios_start_delta_apple_sign_in(uint32_t callback_id);
+
+/**
  * Request push authorization and return the APNs token.
  */
 extern void ios_request_delta_push_token(uint32_t callback_id);
@@ -284,6 +289,12 @@ void zedra_ios_app_will_enter_foreground(void);
 void zedra_ios_native_notification_action(uint32_t callback_id);
 
 void zedra_ios_native_notification_dismiss(uint32_t callback_id);
+
+void zedra_ios_delta_apple_sign_in_result(uint32_t callback_id,
+                                          const char *id_token,
+                                          const char *email);
+
+void zedra_ios_delta_apple_sign_in_error(uint32_t callback_id, const char *message);
 
 void zedra_ios_delta_google_sign_in_result(uint32_t callback_id,
                                            const char *id_token,

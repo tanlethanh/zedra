@@ -165,6 +165,8 @@ unsafe extern "C" {
     );
     /// Start native Google Sign-In for Delta account auth.
     fn ios_start_delta_google_sign_in(callback_id: u32);
+    /// Start native Apple Sign-In for Delta account auth.
+    fn ios_start_delta_apple_sign_in(callback_id: u32);
     /// Request push authorization and return the APNs token.
     fn ios_request_delta_push_token(callback_id: u32);
     /// Present a native text-input dialog (UIAlertController with UITextField).
@@ -518,6 +520,10 @@ impl PlatformBridge for IosBridge {
         unsafe { ios_start_delta_google_sign_in(id) };
     }
 
+    fn start_delta_apple_sign_in(&self, id: u32) {
+        unsafe { ios_start_delta_apple_sign_in(id) };
+    }
+
     fn request_delta_push_token(&self, id: u32) {
         unsafe { ios_request_delta_push_token(id) };
     }
@@ -630,6 +636,36 @@ pub extern "C" fn zedra_ios_native_notification_action(callback_id: u32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_native_notification_dismiss(callback_id: u32) {
     platform_bridge::dispatch_native_notification_dismiss(callback_id);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_delta_apple_sign_in_result(
+    callback_id: u32,
+    id_token: *const std::ffi::c_char,
+    email: *const std::ffi::c_char,
+) {
+    let id_token = match c_string(id_token) {
+        Some(value) if !value.is_empty() => value,
+        _ => {
+            platform_bridge::dispatch_delta_apple_sign_in_error(
+                callback_id,
+                "Apple sign-in did not return an ID token".to_string(),
+            );
+            return;
+        }
+    };
+    platform_bridge::dispatch_delta_apple_sign_in_result(callback_id, id_token, c_string(email));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_delta_apple_sign_in_error(
+    callback_id: u32,
+    message: *const std::ffi::c_char,
+) {
+    platform_bridge::dispatch_delta_apple_sign_in_error(
+        callback_id,
+        c_string(message).unwrap_or_else(|| "Apple sign-in failed".to_string()),
+    );
 }
 
 #[unsafe(no_mangle)]

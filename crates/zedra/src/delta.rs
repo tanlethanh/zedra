@@ -209,17 +209,29 @@ pub fn sign_out() -> Result<DeltaStatus> {
 }
 
 pub async fn sign_in_with_google(id_token: String, email: Option<String>) -> Result<DeltaStatus> {
+    sign_in_with_oauth("google", id_token, email).await
+}
+
+pub async fn sign_in_with_apple(id_token: String, email: Option<String>) -> Result<DeltaStatus> {
+    sign_in_with_oauth("apple", id_token, email).await
+}
+
+async fn sign_in_with_oauth(
+    provider: &str,
+    id_token: String,
+    email: Option<String>,
+) -> Result<DeltaStatus> {
     let mut state = load_state().unwrap_or_default();
     state.base_url = normalize_base_url(&state.base_url);
 
     let auth: AuthResponse = http()
-        .post(format!("{}/v1/auth/oauth/google", state.base_url))
+        .post(format!("{}/v1/auth/oauth/{provider}", state.base_url))
         .json(&OAuthRequest { id_token })
         .send()
         .await
-        .context("send Google OAuth request to Delta")?
+        .context("send OAuth request to Delta")?
         .error_for_status()
-        .context("Delta rejected Google OAuth token")?
+        .context("Delta rejected OAuth token")?
         .json()
         .await
         .context("decode Delta OAuth response")?;
