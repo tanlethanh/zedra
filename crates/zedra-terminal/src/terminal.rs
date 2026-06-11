@@ -2635,7 +2635,10 @@ mod tests {
 
         terminal.advance_bytes(b"\x1b]10;?\x07\x1b]11;?\x1b\\\x1b]11;#112233\x1b\\\x1b]11;?\x1b\\");
 
-        assert!(input_rx.try_recv().is_err(), "client must not reply to OSC color queries");
+        assert!(
+            input_rx.try_recv().is_err(),
+            "client must not reply to OSC color queries"
+        );
     }
 
     #[test]

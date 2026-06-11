@@ -106,9 +106,7 @@ impl SettingsView {
 
     fn spawn_sign_in_task(
         &mut self,
-        sign_in: impl std::future::Future<Output = anyhow::Result<delta::DeltaStatus>>
-            + Send
-            + 'static,
+        sign_in: impl std::future::Future<Output = anyhow::Result<delta::DeltaStatus>> + Send + 'static,
     ) {
         self.delta_message_target = DeltaMessageTarget::Profile;
         self.delta_message = Some("Registering Delta mobile node".to_string());

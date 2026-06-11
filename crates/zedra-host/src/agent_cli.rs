@@ -738,12 +738,8 @@ fn install_hooks(args: AgentHookInstallArgs) -> Result<()> {
                 &script_path,
                 args.force,
             )?),
-            CliManagedAgentKind::Pi => {
-                written.push(write_pi_hook_extension(args.force)?)
-            }
-            CliManagedAgentKind::Hermes => {
-                written.extend(write_hermes_hook_config(args.force)?)
-            }
+            CliManagedAgentKind::Pi => written.push(write_pi_hook_extension(args.force)?),
+            CliManagedAgentKind::Hermes => written.extend(write_hermes_hook_config(args.force)?),
         }
     }
 
@@ -1045,18 +1041,15 @@ pub fn patch_hermes_config_hooks(config: &str, script_path: &Path) -> String {
     };
 
     // Is it the inline-empty form `hooks: {}` ?
-    let inline_empty = lines[hooks_idx].trim() == "hooks: {}"
-        || lines[hooks_idx].trim() == "hooks:{}";
+    let inline_empty =
+        lines[hooks_idx].trim() == "hooks: {}" || lines[hooks_idx].trim() == "hooks:{}";
 
     // Find the end of the hooks block: first subsequent top-level non-blank,
     // non-comment line (i.e. starts at column 0).
     let hooks_block_end = lines[hooks_idx + 1..]
         .iter()
         .position(|l| {
-            !l.is_empty()
-                && !l.starts_with(' ')
-                && !l.starts_with('\t')
-                && !l.starts_with('#')
+            !l.is_empty() && !l.starts_with(' ') && !l.starts_with('\t') && !l.starts_with('#')
         })
         .map(|i| hooks_idx + 1 + i)
         .unwrap_or(lines.len());
@@ -1103,8 +1096,11 @@ fn is_hooks_key_line(line: &str) -> bool {
         return false;
     }
     let t = line.trim();
-    t == "hooks: {}" || t == "hooks:{}" || t == "hooks:"
-        || (t.starts_with("hooks:") && matches!(t.as_bytes().get(6), Some(b' ') | Some(b'{') | None))
+    t == "hooks: {}"
+        || t == "hooks:{}"
+        || t == "hooks:"
+        || (t.starts_with("hooks:")
+            && matches!(t.as_bytes().get(6), Some(b' ') | Some(b'{') | None))
 }
 
 /// Remove event blocks whose key is in `remove_events` from the indented
@@ -1710,7 +1706,10 @@ mod tests {
         assert!(after_first.contains("/old/path/"));
         let after_second = patch_hermes_config_hooks(&after_first, new_script);
         // Old path gone, new path present.
-        assert!(!after_second.contains("/old/path/"), "old path still present");
+        assert!(
+            !after_second.contains("/old/path/"),
+            "old path still present"
+        );
         assert!(after_second.contains("/new/path/"));
         for event in HERMES_HOOK_EVENTS {
             let count = after_second.matches(event).count();
@@ -1724,7 +1723,10 @@ mod tests {
         let script = std::path::Path::new("/path/zedra-agent-hooks.sh");
         let patched = patch_hermes_config_hooks(config, script);
         assert!(patched.contains("user_event:"), "user event must survive");
-        assert!(patched.contains("user_script.sh"), "user script must survive");
+        assert!(
+            patched.contains("user_script.sh"),
+            "user script must survive"
+        );
         for event in HERMES_HOOK_EVENTS {
             assert!(patched.contains(event), "missing zedra event {event}");
         }

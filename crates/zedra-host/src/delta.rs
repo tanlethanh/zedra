@@ -554,7 +554,11 @@ impl DeltaClient {
             token_expires_at: String::new(),
         };
         let http = DeltaHttp::new(&config.delta_url);
-        Ok(Arc::new(Self { config, signing_key, http }))
+        Ok(Arc::new(Self {
+            config,
+            signing_key,
+            http,
+        }))
     }
 
     /// Try to load an anonymous client from per-workspace delta_client.json.

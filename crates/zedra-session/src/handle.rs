@@ -640,7 +640,11 @@ impl SessionHandle {
         host_node_id: uuid::Uuid,
     ) {
         let result: Result<SetClientDeltaInfoResult> = self
-            .call(SetClientDeltaInfoReq { delta_url, stack_id, host_node_id })
+            .call(SetClientDeltaInfoReq {
+                delta_url,
+                stack_id,
+                host_node_id,
+            })
             .await;
         if let Err(e) = result {
             tracing::debug!(error = %e, "set_client_delta_info failed");

@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use anyhow::Result;
 use tracing::{info, warn};
@@ -46,7 +47,11 @@ pub trait HookReceiver {
     ) -> bool {
         if let Some(state) = agent_state {
             ctx.session
-                .set_agent_state(ctx.terminal_id.clone(), agent_session_id.unwrap_or(""), state)
+                .set_agent_state(
+                    ctx.terminal_id.clone(),
+                    agent_session_id.unwrap_or(""),
+                    state,
+                )
                 .await;
         }
         self.push_rpc(kind, event_name, ctx).await;

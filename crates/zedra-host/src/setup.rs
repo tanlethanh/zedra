@@ -1,6 +1,6 @@
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Subcommand};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -125,7 +125,11 @@ enum SetupAction {
 
 impl SetupAction {
     fn from_remove_flag(remove: bool) -> Self {
-        if remove { Self::Remove } else { Self::Install }
+        if remove {
+            Self::Remove
+        } else {
+            Self::Install
+        }
     }
 }
 
@@ -1255,12 +1259,10 @@ mod tests {
                 .count(),
             1
         );
-        assert!(
-            root["hooks"]["PermissionRequest"][0]["hooks"][0]["command"]
-                .as_str()
-                .unwrap()
-                .contains(" agent hook receive --agent codex")
-        );
+        assert!(root["hooks"]["PermissionRequest"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains(" agent hook receive --agent codex"));
         assert_eq!(
             root["hooks"]["PermissionRequest"][0]["hooks"][0]["command"],
             "zedra agent hook receive --agent codex --quiet"
