@@ -126,6 +126,7 @@ object NativePresentations {
             .apply {
                 if (!title.isNullOrBlank()) setTitle(title)
                 if (!message.isNullOrBlank()) setMessage(message)
+                setCancelable(true)
                 setOnCancelListener { MainActivity.nativeAlertDismiss(callbackId) }
                 setPositiveButton(safeLabels[0]) { _, _ ->
                     MainActivity.nativeAlertResult(callbackId, 0)
@@ -142,21 +143,18 @@ object NativePresentations {
                 }
             }
             .create()
-        dialog.setOnShowListener {
-            applyDialogTheme(dialog)
-            safeStyles.forEachIndexed { index, style ->
-                val which = when (index) {
-                    0 -> android.content.DialogInterface.BUTTON_POSITIVE
-                    1 -> android.content.DialogInterface.BUTTON_NEGATIVE
-                    2 -> android.content.DialogInterface.BUTTON_NEUTRAL
-                    else -> 0
-                }
-                if (which != 0) {
-                    dialog.getButton(which)?.setTextColor(alertButtonColor(style))
-                }
-            }
-        }
+        dialog.setCanceledOnTouchOutside(false)
         dialog.show()
+        applyDialogTheme(dialog)
+        safeStyles.forEachIndexed { index, style ->
+            val which = when (index) {
+                0 -> android.content.DialogInterface.BUTTON_POSITIVE
+                1 -> android.content.DialogInterface.BUTTON_NEGATIVE
+                2 -> android.content.DialogInterface.BUTTON_NEUTRAL
+                else -> return@forEachIndexed
+            }
+            dialog.getButton(which)?.setTextColor(alertButtonColor(style))
+        }
     }
 
     @JvmStatic
@@ -694,12 +692,12 @@ object NativePresentations {
     private fun applyDialogTheme(dialog: AlertDialog) {
         dialog.window?.setBackgroundDrawable(roundedBackground(nativeTheme.overlay, 28f))
         dialog.getButton(android.content.DialogInterface.BUTTON_POSITIVE)
-            ?.setTextColor(nativeTheme.textSecondary)
+            ?.setTextColor(nativeTheme.textPrimary)
         dialog.getButton(android.content.DialogInterface.BUTTON_NEGATIVE)
             ?.setTextColor(nativeTheme.textSecondary)
         dialog.getButton(android.content.DialogInterface.BUTTON_NEUTRAL)
             ?.setTextColor(nativeTheme.textSecondary)
-        dialog.window?.decorView?.let { applyTextColors(it) }
+        dialog.findViewById<View>(android.R.id.content)?.let { applyTextColors(it) }
     }
 
     private fun applyTextColors(view: View) {
@@ -824,12 +822,10 @@ object NativePresentations {
         return agentIconRes(name)
     }
 
-    private fun alertButtonColor(style: Int): Int {
-        return if (style == 2) {
-            nativeTheme.accentRed
-        } else {
-            nativeTheme.textSecondary
-        }
+    private fun alertButtonColor(style: Int): Int = when (style) {
+        2 -> nativeTheme.accentRed       // Destructive
+        1 -> nativeTheme.textSecondary   // Cancel
+        else -> nativeTheme.textPrimary  // Default
     }
 
     private fun floatingButtonIconRes(name: String?): Int {
