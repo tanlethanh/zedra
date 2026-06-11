@@ -720,6 +720,8 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 15. Expected: the software keyboard appears without the terminal accessory bar, typing goes to the focused input, and the visible terminal does not resize or shift for that keyboard
 16. Tap the already-focused terminal while the keyboard is visible
 17. Expected: the software keyboard dismisses and the next terminal tap reopens it
+18. With terminal output filling the screen, tap the terminal so the keyboard appears
+19. Expected: the bottom terminal content lifts above the keyboard and accessory bar instead of staying hidden behind them
 
 ## 11a. Terminal Scroll To Bottom Native Button On iOS
 
@@ -1321,6 +1323,14 @@ id in production). The trailing shows the aggregate `done/total` rollup.
 4. Expected: UIKit presentation chrome uses light backgrounds and dark text/icons, matching the app theme.
 5. Toggle Appearance back to **Dark** and repeat the same presentations.
 6. Expected: UIKit presentation chrome returns to dark backgrounds and light text/icons without restarting the app.
+
+## 23. Agent Hook Notification Sound + Haptic (iOS and Android)
+
+1. Connect to a workspace and start an agent (for example Claude) in a terminal, keeping the app in the foreground.
+2. Send a prompt and wait for the agent to finish its turn (a `Stop` hook event).
+3. Expected: the device plays a notification sound and fires a short haptic at the same time.
+4. Background the app and trigger another hook event.
+5. Expected: no in-app sound or haptic fires while backgrounded.
 
 ## Floating File Search (cmd+P)
 
