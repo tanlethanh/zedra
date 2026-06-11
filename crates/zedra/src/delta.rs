@@ -57,7 +57,8 @@ struct NodeRegistrationRequest {
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum NodeKind {
-    Mobile,
+    Ios,
+    Android,
     Host,
 }
 
@@ -249,7 +250,10 @@ async fn sign_in_with_oauth(
     let mobile = register_mobile_node(&mut state, signer.pubkey(), &mobile_name).await?;
     state.mobile_node_id = Some(mobile.node.id);
     save_state(&state)?;
-    if should_refresh_mobile_alias(mobile.node.alias.as_deref(), &mobile_name) {
+    let alias_is_default = mobile.node.alias.as_deref()
+        .map(|a| matches!(a, "ios" | "android"))
+        .unwrap_or(true);
+    if !mobile.created && alias_is_default {
         if let Err(err) = update_mobile_alias(&mut state, mobile.node.id, &mobile_name).await {
             tracing::warn!("Delta mobile node alias update failed: {err:#}");
         }
@@ -331,13 +335,14 @@ async fn register_mobile_node(
     display_name: &str,
 ) -> Result<NodeRegistrationResponse> {
     let stack_id = state.stack_id.context("Delta stack id is missing")?;
+    let kind = if cfg!(target_os = "android") { NodeKind::Android } else { NodeKind::Ios };
     let req = NodeRegistrationRequest {
         public_key: encode_base64_no_pad(public_key),
-        kind: NodeKind::Mobile,
+        kind,
         display_name: Some(display_name.to_string()),
         metadata: json!({
             "device_name": display_name,
-            "platform": "ios",
+            "platform": match kind { NodeKind::Android => "android", _ => "ios" },
             "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
             "family": std::env::consts::FAMILY,
@@ -512,17 +517,6 @@ fn mobile_display_name() -> String {
     platform_bridge::device_name().unwrap_or_else(|| "zedra-ios".to_string())
 }
 
-fn should_refresh_mobile_alias(current_alias: Option<&str>, display_name: &str) -> bool {
-    let Some(display_alias) = normalize_alias_candidate(display_name) else {
-        return false;
-    };
-    match current_alias {
-        None => true,
-        Some(alias) if alias == display_alias => false,
-        Some("mobile" | "zedra-ios") => display_alias != "mobile" && display_alias != "zedra-ios",
-        Some(_) => false,
-    }
-}
 
 fn normalize_alias_candidate(source: &str) -> Option<String> {
     let mut alias = String::new();
@@ -618,7 +612,7 @@ fn write_private_file(path: &Path, data: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_alias_candidate, should_refresh_mobile_alias};
+    use super::normalize_alias_candidate;
 
     #[test]
     fn normalizes_alias_candidates_for_mobile_names() {
@@ -627,20 +621,5 @@ mod tests {
             Some("tan-s-iphone-15-pro")
         );
         assert_eq!(normalize_alias_candidate("!!!"), None);
-    }
-
-    #[test]
-    fn refreshes_only_default_mobile_aliases() {
-        assert!(should_refresh_mobile_alias(Some("zedra-ios"), "Tan iPhone"));
-        assert!(should_refresh_mobile_alias(Some("mobile"), "Tan iPhone"));
-        assert!(!should_refresh_mobile_alias(
-            Some("tan-iphone"),
-            "Tan iPhone"
-        ));
-        assert!(!should_refresh_mobile_alias(
-            Some("custom-phone"),
-            "Tan iPhone"
-        ));
-        assert!(!should_refresh_mobile_alias(Some("zedra-ios"), "zedra-ios"));
     }
 }

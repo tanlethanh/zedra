@@ -10138,10 +10138,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zedra-editor"
-version = "0.0.0"
-
-[[package]]
 name = "zedra-host"
 version = "0.2.6"
 dependencies = [

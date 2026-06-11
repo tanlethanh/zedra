@@ -125,4 +125,8 @@ impl PlatformBridge for AndroidBridge {
     fn request_delta_push_token(&self, id: u32) {
         jni::request_delta_push_token(id);
     }
+
+    fn start_delta_google_sign_in(&self, id: u32) {
+        jni::start_delta_google_sign_in(id);
+    }
 }

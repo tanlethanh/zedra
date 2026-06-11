@@ -8,6 +8,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Looper
 import android.util.Log
 import org.json.JSONObject
 import java.io.File
@@ -87,6 +88,7 @@ class MainActivity : AppCompatActivity() {
             updateKeyboardAccessoryVisibility()
             true
         }
+        surfaceView.isHapticFeedbackEnabled = true
         sSurfaceView = surfaceView
         sActivity = this
         NativePresentations.register(this, rootView)
@@ -546,8 +548,8 @@ class MainActivity : AppCompatActivity() {
 
         @JvmStatic
         fun triggerHaptic(kind: Int) {
-            val view = sSurfaceView ?: return
-            view.post {
+            val view = sSurfaceView ?: run { Log.w("HapticDebug", "triggerHaptic: view null kind=$kind"); return }
+            try {
                 val constant =
                     when (kind) {
                         0, 3, 5 -> HapticFeedbackConstants.KEYBOARD_TAP
@@ -566,9 +568,12 @@ class MainActivity : AppCompatActivity() {
                             } else {
                                 HapticFeedbackConstants.LONG_PRESS
                             }
-                        else -> return@post
+                        else -> return
                     }
-                view.performHapticFeedback(constant)
+                val result = view.performHapticFeedback(constant)
+                Log.d("HapticDebug", "performHapticFeedback kind=$kind constant=$constant result=$result attached=${view.isAttachedToWindow} windowToken=${view.windowToken != null}")
+            } catch (e: Throwable) {
+                Log.e("HapticDebug", "triggerHaptic threw", e)
             }
         }
     }
