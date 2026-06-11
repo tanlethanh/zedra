@@ -217,21 +217,13 @@ impl SettingsView {
             }
             DeltaSettingsEvent::OperationComplete {
                 result: Ok(status),
-                success_message,
+                success_message: _,
                 target,
             } => {
                 self.delta_status = status;
                 self.delta_busy = false;
                 self.delta_message_target = target;
                 self.delta_message = None;
-                if let Some(success_message) = success_message {
-                    platform_bridge::show_native_notification(
-                        NativeNotificationOptions::new(success_message)
-                            .kind(NativeNotificationKind::Success)
-                            .system_image("checkmark.circle")
-                            .duration_secs(2.6),
-                    );
-                }
             }
             DeltaSettingsEvent::OperationComplete {
                 result: Err(message),
