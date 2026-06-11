@@ -491,7 +491,18 @@ pub enum AgentState {
     Error,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Terminal shell run state tracked from shell-integration OSC events.
+/// Shared by the host's terminal metadata, the sync wire format, and the
+/// client's display state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TermShellState {
+    #[default]
+    Unknown,
+    Idle,
+    Running,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TerminalSyncEntry {
     /// Opaque host-generated UUID string.
     pub id: String,
@@ -501,6 +512,15 @@ pub struct TerminalSyncEntry {
     pub cwd: Option<String>,
     #[serde(default)]
     pub icon_name: Option<String>,
+    /// Foreground command line; survives prompt-ready between agent turns,
+    /// cleared on command end. Clients derive the agent identity (kind/icon)
+    /// from this after reconnect.
+    #[serde(default)]
+    pub agent_command: Option<String>,
+    #[serde(default)]
+    pub shell_state: TermShellState,
+    #[serde(default)]
+    pub last_exit_code: Option<i32>,
     #[serde(default)]
     pub agent_state: AgentState,
 }
@@ -1495,6 +1515,9 @@ mod tests {
                 title: Some("shell".into()),
                 cwd: Some("/workspace".into()),
                 icon_name: Some("codex".into()),
+                agent_command: Some("codex resume".into()),
+                shell_state: TermShellState::Idle,
+                last_exit_code: Some(0),
                 agent_state: AgentState::Idle,
             }],
         };
@@ -1506,6 +1529,12 @@ mod tests {
         assert_eq!(decoded.terminals[0].position, 0);
         assert_eq!(decoded.terminals[0].last_seq, 42);
         assert_eq!(decoded.terminals[0].icon_name.as_deref(), Some("codex"));
+        assert_eq!(
+            decoded.terminals[0].agent_command.as_deref(),
+            Some("codex resume")
+        );
+        assert_eq!(decoded.terminals[0].shell_state, TermShellState::Idle);
+        assert_eq!(decoded.terminals[0].last_exit_code, Some(0));
     }
 
     #[test]

@@ -22,7 +22,7 @@ use uuid::Uuid;
 use zedra_osc::{OscEvent, OscScanner};
 use zedra_rpc::proto::{
     AgentState, BacklogEntry, FsDocsTreeError, FsDocsTreeResult, HostEvent, SessionCloseReason,
-    TermOutput, TerminalSyncEntry,
+    TermOutput, TermShellState, TerminalSyncEntry,
 };
 use zedra_rpc::verify_registration_hmac;
 
@@ -357,8 +357,11 @@ pub struct HostTermMeta {
     pub title: Option<String>,
     pub icon_name: Option<String>,
     pub cwd: Option<String>,
+    /// Foreground command, cleared only on `CommandEnd`. Survives the
+    /// `PromptReady` agents emit between turns, so clients can restore the
+    /// agent identity after reconnect.
     pub current_command: Option<String>,
-    pub shell_state: HostShellState,
+    pub shell_state: TermShellState,
     pub last_exit_code: Option<i32>,
 }
 
@@ -370,18 +373,10 @@ impl Default for HostTermMeta {
             icon_name: None,
             cwd: None,
             current_command: None,
-            shell_state: HostShellState::Unknown,
+            shell_state: TermShellState::Unknown,
             last_exit_code: None,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum HostShellState {
-    #[default]
-    Unknown,
-    Idle,
-    Running,
 }
 
 impl HostTermMeta {
@@ -392,16 +387,14 @@ impl HostTermMeta {
             OscEvent::IconName(name) => self.icon_name = Some(name.clone()),
             OscEvent::Cwd(cwd) => self.cwd = Some(cwd.clone()),
             OscEvent::CommandLine(command) => self.current_command = Some(command.clone()),
-            OscEvent::CommandStart => self.shell_state = HostShellState::Running,
+            OscEvent::CommandStart => self.shell_state = TermShellState::Running,
             OscEvent::CommandEnd { exit_code } => {
-                self.shell_state = HostShellState::Idle;
+                self.shell_state = TermShellState::Idle;
                 self.last_exit_code = Some(*exit_code);
                 self.current_command = None;
             }
-            OscEvent::PromptReady => {
-                self.shell_state = HostShellState::Idle;
-                self.current_command = None;
-            }
+            // Keep current_command: the foreground command did not exit.
+            OscEvent::PromptReady => self.shell_state = TermShellState::Idle,
             _ => {}
         }
     }
@@ -1390,12 +1383,20 @@ impl ServerSession {
             let Some(term) = terms.get(&id) else {
                 continue;
             };
-            let (title, cwd, icon_name) = term
+            let meta_entry = term
                 .host_meta
                 .lock()
                 .ok()
-                .map(|meta| (meta.title.clone(), meta.cwd.clone(), meta.icon_name.clone()))
-                .unwrap_or((None, None, None));
+                .map(|meta| TerminalSyncEntry {
+                    title: meta.title.clone(),
+                    cwd: meta.cwd.clone(),
+                    icon_name: meta.icon_name.clone(),
+                    agent_command: meta.current_command.clone(),
+                    shell_state: meta.shell_state,
+                    last_exit_code: meta.last_exit_code,
+                    ..TerminalSyncEntry::default()
+                })
+                .unwrap_or_default();
             let last_seq = term
                 .backlog
                 .lock()
@@ -1406,10 +1407,8 @@ impl ServerSession {
                 id,
                 position: position as u64,
                 last_seq,
-                title,
-                cwd,
-                icon_name,
                 agent_state,
+                ..meta_entry
             });
         }
         entries

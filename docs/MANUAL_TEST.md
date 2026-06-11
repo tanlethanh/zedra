@@ -497,6 +497,15 @@ or beyond.
 5. Repeat with a non-alt AI CLI session such as `claude`, `codex`, or a `/zedra-start` resumed session
 6. Expected: resumed output uses the current device width without stale wrapping or dumped resize artifacts
 
+## 3b-1. Agent Icon Survives Reconnect
+
+1. Connect, open a terminal, and start an agent that uses shell integration for inner commands (`codex` or `pi`)
+2. While the agent is mid-task (running a tool command), background the app or toggle network to force a reconnect
+3. Expected: after reattach, the terminal card keeps the agent icon and the agent state dot
+4. Repeat while the agent is idle between turns (waiting at its prompt) and reconnect again
+5. Expected: the agent icon is still shown; it only clears after the agent process actually exits
+6. Repeat with `claude` as a control — icon persists in both cases
+
 ## 3c. Terminal Smooth Scroll Edge Rendering
 
 1. Connect via QR and open a terminal with enough output to fill the scrollback

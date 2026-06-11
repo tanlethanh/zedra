@@ -21,8 +21,8 @@ use crate::paths;
 use crate::pty::{ShellSession, SpawnOptions};
 use crate::session_registry::{
     finish_auth_failed_connection, finish_host_connection, ActiveClientConnection, AttachResult,
-    ConsumeSlotResult, HostShellState, HostTermMeta, OutputSenderSlot, PairingSlotMode,
-    ServerSession, SessionRegistry, TermBacklog, TermSession, MAX_WATCHED_PATHS_PER_SESSION,
+    ConsumeSlotResult, HostTermMeta, OutputSenderSlot, PairingSlotMode, ServerSession,
+    SessionRegistry, TermBacklog, TermSession, MAX_WATCHED_PATHS_PER_SESSION,
 };
 use crate::utils;
 use anyhow::Result;
@@ -129,7 +129,7 @@ fn encode_meta_preamble(meta: &HostTermMeta) -> Vec<u8> {
     }
 
     match meta.shell_state {
-        HostShellState::Running => {
+        TermShellState::Running => {
             if let Some(command) = &meta.current_command {
                 out.extend_from_slice(b"\x1b]633;E;");
                 out.extend_from_slice(escape_osc633(command).as_bytes());
@@ -137,8 +137,17 @@ fn encode_meta_preamble(meta: &HostTermMeta) -> Vec<u8> {
             }
             out.extend_from_slice(b"\x1b]633;C\x07");
         }
-        HostShellState::Idle => {
-            if let Some(exit_code) = meta.last_exit_code {
+        TermShellState::Idle => {
+            // Agent between turns: replay command + start + prompt-ready so
+            // the client reseeds agent identity; a stale CommandEnd would
+            // clear it.
+            if let Some(command) = &meta.current_command {
+                out.extend_from_slice(b"\x1b]633;E;");
+                out.extend_from_slice(escape_osc633(command).as_bytes());
+                out.push(0x07);
+                out.extend_from_slice(b"\x1b]633;C\x07");
+                out.extend_from_slice(b"\x1b]633;A\x07");
+            } else if let Some(exit_code) = meta.last_exit_code {
                 out.extend_from_slice(b"\x1b]633;D;");
                 out.extend_from_slice(exit_code.to_string().as_bytes());
                 out.push(0x07);
@@ -146,7 +155,7 @@ fn encode_meta_preamble(meta: &HostTermMeta) -> Vec<u8> {
                 out.extend_from_slice(b"\x1b]633;A\x07");
             }
         }
-        HostShellState::Unknown => {}
+        TermShellState::Unknown => {}
     }
     out
 }
@@ -179,8 +188,9 @@ fn initial_host_meta(opts: &SpawnOptions) -> HostTermMeta {
         .as_ref()
         .filter(|command| !command.is_empty())
     {
+        // Spawned terminals never emit 633;E for the launch command itself.
         meta.current_command = Some(command.clone());
-        meta.shell_state = HostShellState::Running;
+        meta.shell_state = TermShellState::Running;
     }
     meta
 }
@@ -356,7 +366,7 @@ mod terminal_meta_preamble_tests {
             icon_name: Some("codex".to_owned()),
             cwd: Some("/Users/thomasle/projects/zedra".to_owned()),
             current_command: Some("npx @openai/codex --prompt 'a;b'".to_owned()),
-            shell_state: HostShellState::Running,
+            shell_state: TermShellState::Running,
             last_exit_code: None,
             ..HostTermMeta::default()
         };
@@ -380,7 +390,7 @@ mod terminal_meta_preamble_tests {
     #[test]
     fn idle_preamble_replays_last_exit_code() {
         let meta = HostTermMeta {
-            shell_state: HostShellState::Idle,
+            shell_state: TermShellState::Idle,
             last_exit_code: Some(17),
             ..HostTermMeta::default()
         };
@@ -392,6 +402,33 @@ mod terminal_meta_preamble_tests {
             events.as_slice(),
             [OscEvent::CommandEnd { exit_code: 17 }]
         ));
+    }
+
+    #[test]
+    fn idle_preamble_with_current_command_reseeds_identity() {
+        // Agent between turns: prompt-ready after command start, no CommandEnd.
+        let mut meta = HostTermMeta::default();
+        meta.apply_osc_event(&OscEvent::CommandLine("codex".to_owned()));
+        meta.apply_osc_event(&OscEvent::CommandStart);
+        meta.apply_osc_event(&OscEvent::CommandEnd { exit_code: 0 });
+        meta.apply_osc_event(&OscEvent::CommandLine("pi".to_owned()));
+        meta.apply_osc_event(&OscEvent::CommandStart);
+        meta.apply_osc_event(&OscEvent::PromptReady);
+
+        let bytes = encode_meta_preamble(&meta);
+        let events = OscScanner::new().feed(&bytes);
+
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    OscEvent::CommandLine(cmd),
+                    OscEvent::CommandStart,
+                    OscEvent::PromptReady,
+                ] if cmd == "pi"
+            ),
+            "latched command must replay so a fresh client reseeds agent identity: {events:?}"
+        );
     }
 
     #[test]
@@ -413,7 +450,7 @@ mod terminal_meta_preamble_tests {
         );
         assert_eq!(
             initial_host_meta(&opts).shell_state,
-            HostShellState::Running
+            TermShellState::Running
         );
     }
 
@@ -2113,7 +2150,9 @@ async fn dispatch(
                         "Delta client updated from connected mobile client"
                     );
                 }
-                Err(err) => tracing::warn!("Failed to build Delta client from client info: {err:#}"),
+                Err(err) => {
+                    tracing::warn!("Failed to build Delta client from client info: {err:#}")
+                }
             }
             let _ = msg.tx.send(SetClientDeltaInfoResult {}).await;
         }

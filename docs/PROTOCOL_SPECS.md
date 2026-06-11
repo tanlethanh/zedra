@@ -304,11 +304,13 @@ Types that use non-string status fields or enum variants instead:
 - Host may replay missed output before live stream.
 - Host may send a synthetic metadata preamble as `TermOutput { seq: 0, ... }` before backlog replay. Clients must process the bytes as normal PTY output but must not use `seq=0` for backlog sequence tracking.
 - The synthetic preamble replays cached OSC metadata that may have fallen out of the backlog, including title, icon name, cwd, shell command line, command start/idle state, and last exit code.
+- While a foreground command is still latched (command start seen without a matching command end — e.g. an agent emitting prompt-ready between turns), an idle preamble replays the latched command line (`633;E`), command start (`633;C`), and prompt-ready (`633;A`) instead of the stale command end (`633;D`), so a freshly attached client re-derives the agent identity and keeps it across reattach.
 - Output `seq` is monotonic per session backlog stream and used for gap detection.
 - `SyncSessionResult.terminals` and `TermListResult.terminals` are ordered by host-owned terminal order. Creation order is the default until a client submits an explicit order.
 - `TerminalSyncEntry.position` and `TermListEntry.position` are zero-based positions in that host-owned order.
 - `TerminalSyncEntry.last_seq` is the host's latest backlog sequence observed for that terminal at sync time.
-- `TerminalSyncEntry.title`, `TerminalSyncEntry.cwd`, and `TerminalSyncEntry.icon_name` are the host's latest cached terminal metadata at sync time. `TermAttach` still replays the same metadata as PTY bytes so normal terminal-event consumers are seeded through one path.
+- `TerminalSyncEntry` carries the host's full cached terminal metadata at sync time: `title`, `cwd`, `icon_name`, `agent_command`, `shell_state`, `last_exit_code`, and `agent_state`. Clients seed their terminal metadata from this snapshot on every sync; the host is the source of truth across reconnects. `TermAttach` still replays the same metadata as PTY bytes so normal terminal-event consumers are seeded through one path.
+- `TerminalSyncEntry.agent_command` is the foreground command latched at command start (or from the spawn launch command). It survives prompt-ready between agent turns and clears only on command end, so clients derive the agent identity (kind/icon) from it after reconnect.
 - Clients should keep local terminal tabs keyed by terminal id and use `last_seq` to seed reconnect `TermAttach` calls.
 
 ### SyncSession conventions
@@ -534,6 +536,12 @@ Any protocol-layer change must include all applicable steps:
 ---
 
 ## 11) Protocol Changelog
+
+### 2026-06-11
+
+- Extended `TerminalSyncEntry` with the host's full cached terminal metadata: `agent_command`, `shell_state` (new `TermShellState` enum), and `last_exit_code`. Clients seed terminal metadata from the sync snapshot on reconnect instead of re-deriving it from replayed PTY bytes.
+- `agent_command` latches the foreground command at command start (or spawn launch command), survives prompt-ready between agent turns, and clears on command end — used to restore the agent icon after reconnect.
+- An idle `TermAttach` preamble with a latched foreground command replays command line + start + prompt-ready instead of a stale command end, so it never clears a client's latched agent identity.
 
 ### 2026-05-29
 

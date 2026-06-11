@@ -2372,16 +2372,7 @@ impl Workspace {
 
         self.terminal_state.update(cx, |state, cx| {
             for terminal in &sync.terminals {
-                state.set_title(&terminal.id, terminal.title.clone());
-                if let Some(cwd) = &terminal.cwd {
-                    state.set_cwd(&terminal.id, cwd.clone());
-                }
-                if let Some(icon_name) = &terminal.icon_name {
-                    state.set_icon_name(&terminal.id, icon_name.clone());
-                }
-                // Seed live agent state from the host snapshot so the dot survives
-                // app relaunch and reconnect, not just live AgentStateChanged events.
-                state.set_agent_state(&terminal.id, terminal.agent_state);
+                state.seed_host_meta(terminal);
             }
             cx.notify();
         });
