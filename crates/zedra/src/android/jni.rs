@@ -26,7 +26,7 @@ use crate::install_panic_hook;
 use crate::platform_bridge::{
     self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback, ListPickerItem,
     NativeDictationPreviewOptions, NativeFloatingButtonOptions, NativeNotificationOptions,
-    SystemTheme,
+    SoundEffect, SystemTheme,
 };
 
 // ============================================================================
@@ -1306,6 +1306,17 @@ pub fn trigger_haptic(feedback: HapticFeedback) {
             if let Err(e) = env.call_static_method(class, "triggerHaptic", "(I)V", &[(kind).into()])
             {
                 tracing::error!("jni: triggerHaptic failed: {:?}", e);
+            }
+        });
+    });
+}
+
+pub fn play_sound(sound: SoundEffect) {
+    let kind = sound.to_i32();
+    jni_call("play_sound", move || {
+        with_main_activity_class("play_sound", |env, class| {
+            if let Err(e) = env.call_static_method(class, "playSound", "(I)V", &[(kind).into()]) {
+                tracing::error!("jni: playSound failed: {:?}", e);
             }
         });
     });

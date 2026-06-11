@@ -23,7 +23,7 @@ use crate::editor::git_sidebar::GitFileSection;
 use crate::file_search::{FileSearchEvent, FileSearchPanel};
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
 use crate::placeholder::render_placeholder;
-use crate::platform_bridge::{self, AlertButton, HapticFeedback, status_bar_inset};
+use crate::platform_bridge::{self, AlertButton, HapticFeedback, SoundEffect, status_bar_inset};
 use crate::telemetry::view_telemetry;
 use crate::terminal_card::strip_ps1_prefix;
 use crate::terminal_state::TerminalState;
@@ -751,17 +751,21 @@ impl Workspace {
                         ..
                     }) => {
                         let should_notify = match agent_kind {
-                            AgentKind::Claude => matches!(
-                                event_name.as_str(),
-                                "Stop" | "TaskCompleted" | "PermissionRequest"
-                            ),
+                            AgentKind::Claude => {
+                                matches!(event_name.as_str(), "Stop" | "PermissionRequest")
+                            }
                             AgentKind::Codex => {
                                 matches!(event_name.as_str(), "Stop" | "PermissionRequest")
                             }
                             AgentKind::OpenCode => {
                                 matches!(event_name.as_str(), "session.idle" | "permission.asked")
                             }
-                            _ => false,
+                            // Pi exposes no approval hook; Stop is the only turn boundary.
+                            AgentKind::Pi => event_name == "Stop",
+                            AgentKind::Hermes => matches!(
+                                event_name.as_str(),
+                                "post_llm_call" | "pre_approval_request"
+                            ),
                         };
                         let in_foreground = platform_bridge::is_app_in_foreground();
                         tracing::info!(
@@ -772,10 +776,7 @@ impl Workspace {
                             "app received agent hook event"
                         );
                         if should_notify && in_foreground {
-                            tracing::info!("playing agent notification sound");
-                            platform_bridge::play_sound(
-                                platform_bridge::SoundEffect::AgentNotification,
-                            );
+                            platform_bridge::play_sound(SoundEffect::AgentNotification);
                         }
                     }
                     Ok(HostEvent::AgentStateChanged {

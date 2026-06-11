@@ -4,7 +4,8 @@
 use crate::android::jni;
 use crate::platform_bridge::{
     AlertButton, CustomSheetOptions, HapticFeedback, ListPickerItem, NativeDictationPreviewOptions,
-    NativeFloatingButtonOptions, NativeNotificationOptions, PlatformBridge, SystemTheme,
+    NativeFloatingButtonOptions, NativeNotificationOptions, PlatformBridge, SoundEffect,
+    SystemTheme,
 };
 
 pub struct AndroidBridge;
@@ -88,6 +89,10 @@ impl PlatformBridge for AndroidBridge {
 
     fn trigger_haptic(&self, feedback: HapticFeedback) {
         jni::trigger_haptic(feedback);
+    }
+
+    fn play_sound(&self, sound: SoundEffect) {
+        jni::play_sound(sound);
     }
 
     fn update_native_floating_button(&self, id: u32, options: &NativeFloatingButtonOptions) {

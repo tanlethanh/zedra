@@ -6,6 +6,9 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.res.Configuration
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.AudioManager
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -590,6 +593,44 @@ class MainActivity : AppCompatActivity() {
                 else ->
                     @Suppress("DEPRECATION")
                     vibrator.vibrate(fallbackMs)
+            }
+        }
+
+        // kind encoding matches SoundEffect::to_i32() in platform_bridge.rs.
+        @JvmStatic
+        fun playSound(kind: Int) {
+            when (kind) {
+                0 -> playBundledAudio("notification") // AgentNotification
+            }
+        }
+
+        private fun playBundledAudio(name: String) {
+            val activity = sActivity ?: return
+            try {
+                val context = activity.applicationContext
+                val resId = context.resources.getIdentifier(name, "raw", context.packageName)
+                if (resId == 0) {
+                    Log.w(TAG, "playBundledAudio: missing raw resource $name")
+                    return
+                }
+                val attrs =
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                val audioManager =
+                    context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                val player =
+                    MediaPlayer.create(
+                        context,
+                        resId,
+                        attrs,
+                        audioManager.generateAudioSessionId(),
+                    ) ?: return
+                player.setOnCompletionListener { it.release() }
+                player.start()
+            } catch (e: Exception) {
+                Log.w(TAG, "playBundledAudio failed", e)
             }
         }
     }

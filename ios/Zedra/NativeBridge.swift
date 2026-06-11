@@ -1,3 +1,4 @@
+import AVFoundation
 import AudioToolbox
 import FirebaseAnalytics
 import FirebaseCore
@@ -102,12 +103,32 @@ func zedra_firebase_initialize_bridge() {
     _ = ZedraFirebase.configureIfAvailable()
 }
 
+// Keeps the player alive for the duration of playback; AVAudioPlayer stops
+// when deallocated.
+private var bundledAudioPlayer: AVAudioPlayer?
+
+private func playBundledAudio(named name: String, withExtension ext: String = "mp3") {
+    guard let url = Bundle.main.url(forResource: name, withExtension: ext) else {
+        NSLog("playBundledAudio: missing bundle resource %@.%@", name, ext)
+        return
+    }
+    DispatchQueue.main.async {
+        // Ambient + mixWithOthers: respects the silent switch and does not
+        // interrupt other apps' audio.
+        try? AVAudioSession.sharedInstance().setCategory(.ambient, options: [.mixWithOthers])
+        bundledAudioPlayer = try? AVAudioPlayer(contentsOf: url)
+        bundledAudioPlayer?.play()
+    }
+}
+
 @_cdecl("ios_play_sound")
 func ios_play_sound(_ kind: Int32) {
-    // kind 0 = AgentNotification: system "Tock" (1057) — short, non-intrusive tick.
-    let soundID: SystemSoundID = 1057
-    DispatchQueue.main.async {
-        AudioServicesPlaySystemSound(soundID)
+    // kind encoding matches SoundEffect::to_i32() in platform_bridge.rs.
+    switch kind {
+    case 0: // AgentNotification
+        playBundledAudio(named: "notification")
+    default:
+        break
     }
 }
 
