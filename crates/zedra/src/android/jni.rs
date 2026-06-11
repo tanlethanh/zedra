@@ -636,8 +636,49 @@ pub fn show_selection(id: u32, title: &str, message: &str, buttons: &[AlertButto
             AlertButtonStyle::Destructive => 2,
         })
         .collect();
+    let image_names: Vec<String> = buttons
+        .iter()
+        .map(|b| b.image_name.clone().unwrap_or_default())
+        .collect();
     jni_call("show_selection", move || {
-        present_buttons("showSelection", id, title, message, labels, styles);
+        with_main_activity_class("show_selection", |env, class| {
+            let title_value = env.new_string(&title).expect("title");
+            let message_value = env.new_string(&message).expect("message");
+            let string_class = env.find_class("java/lang/String").expect("String");
+            let label_array = env
+                .new_object_array(labels.len() as i32, &string_class, JObject::null())
+                .expect("labels");
+            for (index, label) in labels.iter().enumerate() {
+                let label_value = env.new_string(label).expect("label");
+                env.set_object_array_element(&label_array, index as i32, label_value)
+                    .expect("set label");
+            }
+            let style_array = env.new_int_array(styles.len() as i32).expect("styles");
+            env.set_int_array_region(&style_array, 0, &styles)
+                .expect("populate styles");
+            let image_array = env
+                .new_object_array(image_names.len() as i32, &string_class, JObject::null())
+                .expect("images");
+            for (index, name) in image_names.iter().enumerate() {
+                let name_value = env.new_string(name).expect("image name");
+                env.set_object_array_element(&image_array, index as i32, name_value)
+                    .expect("set image name");
+            }
+            env.call_static_method(
+                class,
+                "showSelection",
+                "(ILjava/lang/String;Ljava/lang/String;[Ljava/lang/String;[I[Ljava/lang/String;)V",
+                &[
+                    JValue::Int(id as i32),
+                    JValue::Object(&title_value),
+                    JValue::Object(&message_value),
+                    JValue::Object(&label_array),
+                    JValue::Object(&style_array),
+                    JValue::Object(&image_array),
+                ],
+            )
+            .expect("showSelection");
+        });
     });
 }
 
@@ -956,15 +997,64 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeDeltaPushTokenError
     platform_bridge::dispatch_delta_push_token_error(callback_id as u32, message);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Trigger Google Sign-In via the Android Credential Manager.
+///
+/// The result is delivered asynchronously via `nativeDeltaGoogleSignInResult`
+/// or `nativeDeltaGoogleSignInError`.
+pub fn start_delta_google_sign_in(id: u32) {
+    jni_call("start_delta_google_sign_in", move || {
+        with_main_activity("start_delta_google_sign_in", |env, class| {
+            env.call_static_method(
+                class,
+                "startDeltaGoogleSignIn",
+                "(I)V",
+                &[(id as jint).into()],
+            )?;
+            Ok(())
+        });
+    });
+}
 
-    #[test]
-    fn test_jni_exports_exist() {
-        // This test just verifies the JNI exports compile
-        // Actual testing requires a JVM
+/// Delivered from `MainActivity` once Google Sign-In succeeds.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeDeltaGoogleSignInResult(
+    mut env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+    id_token: jni::objects::JString,
+    email: jni::objects::JString,
+) {
+    if callback_id <= 0 {
+        return;
     }
+    let id_token = match jstring_to_string(&mut env, &id_token) {
+        Some(t) if !t.is_empty() => t,
+        _ => {
+            platform_bridge::dispatch_delta_google_sign_in_error(
+                callback_id as u32,
+                "Google sign-in did not return an ID token".to_string(),
+            );
+            return;
+        }
+    };
+    let email = jstring_to_string(&mut env, &email).filter(|e| !e.is_empty());
+    platform_bridge::dispatch_delta_google_sign_in_result(callback_id as u32, id_token, email);
+}
+
+/// Delivered from `MainActivity` when Google Sign-In fails.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeDeltaGoogleSignInError(
+    mut env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+    message: jni::objects::JString,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    let message = jstring_to_string(&mut env, &message)
+        .unwrap_or_else(|| "Google sign-in failed".to_string());
+    platform_bridge::dispatch_delta_google_sign_in_error(callback_id as u32, message);
 }
 
 pub fn show_text_input(id: u32, title: &str, placeholder: &str, initial_value: &str) {

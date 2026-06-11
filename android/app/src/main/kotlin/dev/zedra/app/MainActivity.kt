@@ -1,6 +1,8 @@
 package dev.zedra.app
 
 import android.app.Activity
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.res.Configuration
 import android.content.Intent
 import android.net.Uri
@@ -16,9 +18,19 @@ import android.view.View
 import android.widget.FrameLayout
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.credentials.CredentialManager
+import androidx.credentials.CredentialManagerCallback
+import androidx.credentials.GetCredentialRequest
+import androidx.credentials.GetCredentialResponse
+import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
+import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
+import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
+import com.google.firebase.messaging.FirebaseMessaging
 import dev.zed.gpui.GpuiRuntimeController
 import dev.zed.gpui.GpuiSurfaceView
 
@@ -51,6 +63,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
 
         ZedraFirebase.initialize(this)
+        createDeltaNotificationChannel(this)
         bootstrap(this, APP_VERSION_VALUE, APP_BUILD_NUMBER_VALUE)
 
         runtime = GpuiRuntimeController(this)
@@ -218,6 +231,19 @@ class MainActivity : AppCompatActivity() {
         // Applied once onCreate finishes wiring views.
         private var pendingNativeIsDark: Boolean? = null
 
+        private fun createDeltaNotificationChannel(context: android.content.Context) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+            val channel = NotificationChannel(
+                ZedraMessagingService.CHANNEL_ID,
+                "Zedra Notifications",
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = "Agent and workspace notifications from Delta"
+            }
+            val manager = context.getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(channel)
+        }
+
         // ===== Native (downstream) =====
         @JvmStatic external fun bootstrap(
             activity: Activity,
@@ -259,7 +285,77 @@ class MainActivity : AppCompatActivity() {
 
         @JvmStatic external fun nativeSetAppForeground(foreground: Boolean)
 
+        @JvmStatic external fun nativeDeltaPushTokenResult(
+            callbackId: Int,
+            provider: String,
+            token: String,
+            environment: String,
+        )
+
+        @JvmStatic external fun nativeDeltaPushTokenError(callbackId: Int, message: String)
+
+        @JvmStatic external fun nativeDeltaGoogleSignInResult(
+            callbackId: Int,
+            idToken: String,
+            email: String,
+        )
+
+        @JvmStatic external fun nativeDeltaGoogleSignInError(callbackId: Int, message: String)
+
         // ===== Rust → Java callbacks =====
+
+        @JvmStatic
+        fun requestDeltaPushToken(callbackId: Int) {
+            FirebaseMessaging.getInstance().token
+                .addOnSuccessListener { token ->
+                    nativeDeltaPushTokenResult(callbackId, "fcm", token, "")
+                }
+                .addOnFailureListener { error ->
+                    nativeDeltaPushTokenError(
+                        callbackId,
+                        error.message ?: "FCM token fetch failed",
+                    )
+                }
+        }
+
+        @JvmStatic
+        fun startDeltaGoogleSignIn(callbackId: Int) {
+            val activity = sActivity ?: run {
+                nativeDeltaGoogleSignInError(callbackId, "Activity not available")
+                return
+            }
+            activity.runOnUiThread {
+                val webClientId = activity.getString(R.string.google_web_client_id)
+                val request = GetCredentialRequest.Builder()
+                    .addCredentialOption(GetSignInWithGoogleOption.Builder(webClientId).build())
+                    .build()
+                CredentialManager.create(activity).getCredentialAsync(
+                    activity,
+                    request,
+                    null,
+                    ContextCompat.getMainExecutor(activity),
+                    object : CredentialManagerCallback<GetCredentialResponse, GetCredentialException> {
+                        override fun onResult(result: GetCredentialResponse) {
+                            val credential = result.credential
+                            if (credential is GoogleIdTokenCredential) {
+                                nativeDeltaGoogleSignInResult(callbackId, credential.idToken, credential.id)
+                            } else {
+                                nativeDeltaGoogleSignInError(callbackId, "Unexpected credential type: ${credential.type}")
+                            }
+                        }
+                        override fun onError(e: GetCredentialException) {
+                            Log.e("Zedra", "Google sign-in failed", e)
+                            val message = if (e is GetCredentialCancellationException) {
+                                "Sign-in failed. Check your internet connection and try again."
+                            } else {
+                                e.message ?: "Google sign-in failed"
+                            }
+                            nativeDeltaGoogleSignInError(callbackId, message)
+                        }
+                    },
+                )
+            }
+        }
 
         @JvmStatic
         fun showKeyboard() {
@@ -338,9 +434,13 @@ class MainActivity : AppCompatActivity() {
             message: String?,
             labels: Array<String>,
             styles: IntArray,
+            imageNames: Array<String?>,
         ) {
-            NativePresentations.showSelection(callbackId, title, message, labels, styles)
+            NativePresentations.showSelection(callbackId, title, message, labels, styles, imageNames)
         }
+
+        @JvmStatic
+        fun getDeltaDeviceName(): String = android.os.Build.MODEL ?: ""
 
         @JvmStatic
         fun showListPicker(

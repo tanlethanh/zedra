@@ -78,6 +78,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 ## Platform Scope
 
 - iOS is the primary development path. See `docs/IOS_WORKFLOW.md` for build, install, launch, and logging commands.
+- To run the Android app on a connected device, use `./scripts/run-android.sh`. Do not use `adb shell am start` directly.
 - Native iOS presentations should keep UIKit responsible for alerts, sheets, and keyboard accessories.
 - `UIGlassEffect` is public UIKit on iOS 26+. Use `if #available(iOS 26.0, *)`, not runtime probing.
 - In Swift bridge code, keep access control consistent with helper type visibility.
