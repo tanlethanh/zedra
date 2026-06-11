@@ -250,12 +250,19 @@ async fn sign_in_with_oauth(
     let mobile = register_mobile_node(&mut state, signer.pubkey(), &mobile_name).await?;
     state.mobile_node_id = Some(mobile.node.id);
     save_state(&state)?;
-    let alias_is_default = mobile.node.alias.as_deref()
+    let alias_is_default = mobile
+        .node
+        .alias
+        .as_deref()
         .map(|a| matches!(a, "ios" | "android"))
         .unwrap_or(true);
     if !mobile.created && alias_is_default {
-        if let Err(err) = update_mobile_alias(&mut state, mobile.node.id, &mobile_name).await {
-            tracing::warn!("Delta mobile node alias update failed: {err:#}");
+        // Skip update when the device name has no alias-safe characters; the
+        // server-assigned default ("ios"/"android") stays in place.
+        if let Some(alias) = normalize_alias_candidate(&mobile_name) {
+            if let Err(err) = update_mobile_alias(&mut state, mobile.node.id, &alias).await {
+                tracing::warn!("Delta mobile node alias update failed: {err:#}");
+            }
         }
     }
 
@@ -335,7 +342,11 @@ async fn register_mobile_node(
     display_name: &str,
 ) -> Result<NodeRegistrationResponse> {
     let stack_id = state.stack_id.context("Delta stack id is missing")?;
-    let kind = if cfg!(target_os = "android") { NodeKind::Android } else { NodeKind::Ios };
+    let kind = if cfg!(target_os = "android") {
+        NodeKind::Android
+    } else {
+        NodeKind::Ios
+    };
     let req = NodeRegistrationRequest {
         public_key: encode_base64_no_pad(public_key),
         kind,
@@ -516,7 +527,6 @@ fn host_display_name(metadata: &Value) -> Option<String> {
 fn mobile_display_name() -> String {
     platform_bridge::device_name().unwrap_or_else(|| "zedra-ios".to_string())
 }
-
 
 fn normalize_alias_candidate(source: &str) -> Option<String> {
     let mut alias = String::new();
