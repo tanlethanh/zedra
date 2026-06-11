@@ -13,6 +13,10 @@
     <!-- Delta push notifications (Android 13+ runtime permission) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Haptics via Vibrator: performHapticFeedback is gated by the system
+         touch-feedback setting, which some OEMs (MIUI) disable by default -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"

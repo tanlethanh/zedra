@@ -1301,15 +1301,11 @@ pub fn present_native_notification(id: u32, options: &NativeNotificationOptions)
 
 pub fn trigger_haptic(feedback: HapticFeedback) {
     let kind = feedback.to_i32();
-    tracing::info!("[HapticDebug] trigger_haptic called feedback={:?} kind={}", feedback, kind);
     jni_call("trigger_haptic", move || {
         with_main_activity_class("trigger_haptic", |env, class| {
-            tracing::info!("[HapticDebug] calling triggerHaptic JNI kind={}", kind);
             if let Err(e) = env.call_static_method(class, "triggerHaptic", "(I)V", &[(kind).into()])
             {
-                tracing::error!("[HapticDebug] jni: triggerHaptic failed: {:?}", e);
-            } else {
-                tracing::info!("[HapticDebug] triggerHaptic JNI call succeeded kind={}", kind);
+                tracing::error!("jni: triggerHaptic failed: {:?}", e);
             }
         });
     });

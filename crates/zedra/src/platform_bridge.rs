@@ -786,7 +786,8 @@ pub fn clear_pending_alerts() {
 /// Haptic feedback patterns, mapped to native equivalents on each platform.
 ///
 /// iOS: UIImpactFeedbackGenerator, UISelectionFeedbackGenerator, UINotificationFeedbackGenerator.
-/// Android: View.performHapticFeedback with HapticFeedbackConstants (no VIBRATE permission needed).
+/// Android: Vibrator + VibrationEffect (VIBRATE permission; performHapticFeedback is
+/// gated by the system touch-feedback setting, which some OEMs disable by default).
 #[derive(Clone, Copy, Debug)]
 pub enum HapticFeedback {
     ImpactLight,

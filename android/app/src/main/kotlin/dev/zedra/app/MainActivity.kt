@@ -3,17 +3,19 @@ package dev.zedra.app
 import android.app.Activity
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.Context
 import android.content.res.Configuration
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.util.Log
 import org.json.JSONObject
 import java.io.File
 import android.view.Gravity
-import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.View
 import android.widget.FrameLayout
@@ -88,7 +90,6 @@ class MainActivity : AppCompatActivity() {
             updateKeyboardAccessoryVisibility()
             true
         }
-        surfaceView.isHapticFeedbackEnabled = true
         sSurfaceView = surfaceView
         sActivity = this
         NativePresentations.register(this, rootView)
@@ -546,34 +547,49 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
+        private var sVibrator: Vibrator? = null
+
+        private fun vibrator(): Vibrator? {
+            sVibrator?.let { return it }
+            val activity = sActivity ?: return null
+            val vibrator =
+                if (Build.VERSION.SDK_INT >= 31) {
+                    (activity.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager)
+                        ?.defaultVibrator
+                } else {
+                    @Suppress("DEPRECATION")
+                    activity.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+                }
+            sVibrator = vibrator?.takeIf { it.hasVibrator() }
+            return sVibrator
+        }
+
+        // performHapticFeedback is gated by the system touch-feedback setting,
+        // which some OEMs (MIUI) disable by default — use Vibrator directly.
+        // kind encoding matches HapticFeedback::to_i32() in platform_bridge.rs.
         @JvmStatic
         fun triggerHaptic(kind: Int) {
-            val view = sSurfaceView ?: run { Log.w("HapticDebug", "triggerHaptic: view null kind=$kind"); return }
-            try {
-                val constant =
-                    when (kind) {
-                        0, 3, 5 -> HapticFeedbackConstants.KEYBOARD_TAP
-                        1 -> HapticFeedbackConstants.VIRTUAL_KEY
-                        2, 4 -> HapticFeedbackConstants.LONG_PRESS
-                        6 ->
-                            if (Build.VERSION.SDK_INT >= 30) {
-                                HapticFeedbackConstants.CONFIRM
-                            } else {
-                                HapticFeedbackConstants.VIRTUAL_KEY
-                            }
-                        7 -> HapticFeedbackConstants.CONTEXT_CLICK
-                        8 ->
-                            if (Build.VERSION.SDK_INT >= 30) {
-                                HapticFeedbackConstants.REJECT
-                            } else {
-                                HapticFeedbackConstants.LONG_PRESS
-                            }
-                        else -> return
-                    }
-                val result = view.performHapticFeedback(constant)
-                Log.d("HapticDebug", "performHapticFeedback kind=$kind constant=$constant result=$result attached=${view.isAttachedToWindow} windowToken=${view.windowToken != null}")
-            } catch (e: Throwable) {
-                Log.e("HapticDebug", "triggerHaptic threw", e)
+            val vibrator = vibrator() ?: return
+            val (effect, fallbackMs) =
+                when (kind) {
+                    // ImpactLight, ImpactSoft, SelectionChanged
+                    0, 3, 5 -> VibrationEffect.EFFECT_TICK to 10L
+                    // ImpactMedium, ImpactRigid
+                    1, 4 -> VibrationEffect.EFFECT_CLICK to 20L
+                    // ImpactHeavy, NotificationWarning
+                    2, 7 -> VibrationEffect.EFFECT_HEAVY_CLICK to 30L
+                    // NotificationSuccess, NotificationError
+                    6, 8 -> VibrationEffect.EFFECT_DOUBLE_CLICK to 30L
+                    else -> return
+                }
+            when {
+                Build.VERSION.SDK_INT >= 29 ->
+                    vibrator.vibrate(VibrationEffect.createPredefined(effect))
+                Build.VERSION.SDK_INT >= 26 ->
+                    vibrator.vibrate(VibrationEffect.createOneShot(fallbackMs, VibrationEffect.DEFAULT_AMPLITUDE))
+                else ->
+                    @Suppress("DEPRECATION")
+                    vibrator.vibrate(fallbackMs)
             }
         }
     }
