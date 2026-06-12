@@ -28,6 +28,7 @@ enum DeltaSettingsEvent {
     AppleSignIn(Result<platform_bridge::DeltaAppleSignInResult, String>),
     PushToken(Result<platform_bridge::DeltaPushTokenResult, String>),
     ConfirmLogout,
+    ReconcileMobileNode(Result<delta::MobileNodeReconcileResult, String>),
     OperationComplete {
         result: Result<delta::DeltaStatus, String>,
         success_message: Option<&'static str>,
@@ -36,6 +37,15 @@ enum DeltaSettingsEvent {
 }
 
 static PENDING_DELTA_EVENT: PendingSlot<DeltaSettingsEvent> = PendingSlot::new();
+
+pub fn reconcile_delta_mobile_node_on_launch() {
+    zedra_session::session_runtime().spawn(async {
+        let result = delta::reconcile_mobile_node()
+            .await
+            .map_err(|error| format!("{error:#}"));
+        PENDING_DELTA_EVENT.set(DeltaSettingsEvent::ReconcileMobileNode(result));
+    });
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DeltaMessageTarget {
@@ -213,6 +223,17 @@ impl SettingsView {
                     }
                 }
             }
+            DeltaSettingsEvent::ReconcileMobileNode(result) => match result {
+                Ok(result) => {
+                    tracing::info!(?result, "Delta mobile node reconciliation completed");
+                    if result == delta::MobileNodeReconcileResult::SignedOut {
+                        self.delta_status = delta::status();
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!("Delta mobile node reconciliation failed: {error}")
+                }
+            },
             DeltaSettingsEvent::OperationComplete {
                 result: Ok(status),
                 success_message: _,

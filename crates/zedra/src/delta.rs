@@ -54,7 +54,7 @@ struct NodeRegistrationRequest {
     receive_notifications: bool,
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum NodeKind {
     Ios,
@@ -73,6 +73,15 @@ struct NodeSummary {
     id: Uuid,
     #[serde(default)]
     alias: Option<String>,
+    kind: NodeKind,
+    display_name: Option<String>,
+    #[serde(default)]
+    metadata: Value,
+}
+
+#[derive(Deserialize)]
+struct NodeDetailResponse {
+    node: NodeSummary,
 }
 
 #[derive(Serialize)]
@@ -209,6 +218,44 @@ pub fn sign_out() -> Result<DeltaStatus> {
     Ok(state.status())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum MobileNodeReconcileResult {
+    Skipped,
+    Unchanged,
+    Updated,
+    SignedOut,
+}
+
+pub async fn reconcile_mobile_node() -> Result<MobileNodeReconcileResult> {
+    let mut state = load_state().unwrap_or_default();
+    let (Some(stack_id), Some(node_id)) = (state.stack_id, state.mobile_node_id) else {
+        return Ok(MobileNodeReconcileResult::Skipped);
+    };
+    if state.access_token.is_none() {
+        return Ok(MobileNodeReconcileResult::Skipped);
+    }
+
+    let path = format!("/v1/stacks/{stack_id}/nodes/{node_id}");
+    let Some(stored) = get_bearer::<NodeDetailResponse>(&mut state, &path).await? else {
+        sign_out()?;
+        return Ok(MobileNodeReconcileResult::SignedOut);
+    };
+
+    let display_name = mobile_display_name();
+    let desired_kind = mobile_node_kind();
+    let desired_metadata = mobile_node_metadata(&display_name, desired_kind);
+    if mobile_node_matches(&stored.node, desired_kind, &display_name, &desired_metadata) {
+        save_state(&state)?;
+        return Ok(MobileNodeReconcileResult::Unchanged);
+    }
+
+    let mobile =
+        register_mobile_node(&mut state, load_mobile_signer()?.pubkey(), &display_name).await?;
+    state.mobile_node_id = Some(mobile.node.id);
+    save_state(&state)?;
+    Ok(MobileNodeReconcileResult::Updated)
+}
+
 pub async fn sign_in_with_google(id_token: String, email: Option<String>) -> Result<DeltaStatus> {
     sign_in_with_oauth("google", id_token, email).await
 }
@@ -342,23 +389,12 @@ async fn register_mobile_node(
     display_name: &str,
 ) -> Result<NodeRegistrationResponse> {
     let stack_id = state.stack_id.context("Delta stack id is missing")?;
-    let kind = if cfg!(target_os = "android") {
-        NodeKind::Android
-    } else {
-        NodeKind::Ios
-    };
+    let kind = mobile_node_kind();
     let req = NodeRegistrationRequest {
         public_key: encode_base64_no_pad(public_key),
         kind,
         display_name: Some(display_name.to_string()),
-        metadata: json!({
-            "device_name": display_name,
-            "platform": match kind { NodeKind::Android => "android", _ => "ios" },
-            "os": std::env::consts::OS,
-            "arch": std::env::consts::ARCH,
-            "family": std::env::consts::FAMILY,
-            "app_version": platform_bridge::app_version_with_build_number(),
-        }),
+        metadata: mobile_node_metadata(display_name, kind),
         receive_notifications: true,
     };
     post_bearer(state, &format!("/v1/stacks/{stack_id}/nodes"), &req).await
@@ -416,6 +452,40 @@ where
     T: serde::de::DeserializeOwned,
 {
     bearer_json(reqwest::Method::PATCH, state, path, body).await
+}
+
+async fn get_bearer<T>(state: &mut DeltaState, path: &str) -> Result<Option<T>>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let mut did_refresh = false;
+    loop {
+        let access_token = state
+            .access_token
+            .as_deref()
+            .context("Delta auth token is missing")?
+            .to_string();
+        let response = http()
+            .get(delta_url(state, path))
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .with_context(|| format!("send Delta request {path}"))?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED
+            && !did_refresh
+            && state.refresh_token.is_some()
+        {
+            did_refresh = true;
+            refresh_access_token(state).await?;
+            continue;
+        }
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        return decode_response(response, path).await.map(Some);
+    }
 }
 
 async fn bearer_json<B, T>(
@@ -528,6 +598,41 @@ fn mobile_display_name() -> String {
     platform_bridge::device_name().unwrap_or_else(mobile_fallback_display_name)
 }
 
+fn mobile_node_kind() -> NodeKind {
+    if cfg!(target_os = "android") {
+        NodeKind::Android
+    } else {
+        NodeKind::Ios
+    }
+}
+
+fn mobile_node_metadata(display_name: &str, kind: NodeKind) -> Value {
+    json!({
+        "device_name": display_name,
+        "platform": match kind { NodeKind::Android => "android", _ => "ios" },
+        "os": std::env::consts::OS,
+        "os_version": platform_bridge::os_version(),
+        "arch": std::env::consts::ARCH,
+        "family": std::env::consts::FAMILY,
+        "app_version": platform_bridge::app_version_with_build_number(),
+    })
+}
+
+fn mobile_node_matches(
+    stored: &NodeSummary,
+    desired_kind: NodeKind,
+    desired_display_name: &str,
+    desired_metadata: &Value,
+) -> bool {
+    stored.kind == desired_kind
+        && stored.display_name.as_deref() == Some(desired_display_name)
+        && desired_metadata.as_object().is_some_and(|desired| {
+            desired
+                .iter()
+                .all(|(key, value)| stored.metadata.get(key) == Some(value))
+        })
+}
+
 fn mobile_fallback_display_name() -> String {
     if cfg!(target_os = "android") {
         "zedra-android".to_string()
@@ -630,7 +735,10 @@ fn write_private_file(path: &Path, data: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_alias_candidate;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    use super::{NodeKind, NodeSummary, mobile_node_matches, normalize_alias_candidate};
 
     #[test]
     fn normalizes_alias_candidates_for_mobile_names() {
@@ -639,5 +747,48 @@ mod tests {
             Some("tan-s-iphone-15-pro")
         );
         assert_eq!(normalize_alias_candidate("!!!"), None);
+    }
+
+    #[test]
+    fn mobile_node_match_ignores_server_owned_metadata() {
+        let node = NodeSummary {
+            id: Uuid::nil(),
+            alias: None,
+            kind: NodeKind::Ios,
+            display_name: Some("Phone".into()),
+            metadata: json!({
+                "app_version": "1.0(1)",
+                "os_version": "26.0",
+                "server_owned": true,
+            }),
+        };
+
+        assert!(mobile_node_matches(
+            &node,
+            NodeKind::Ios,
+            "Phone",
+            &json!({
+                "app_version": "1.0(1)",
+                "os_version": "26.0",
+            }),
+        ));
+    }
+
+    #[test]
+    fn mobile_node_match_detects_mutable_metadata_changes() {
+        let node = NodeSummary {
+            id: Uuid::nil(),
+            alias: None,
+            kind: NodeKind::Android,
+            display_name: Some("Phone".into()),
+            metadata: json!({ "app_version": "1.0(1)" }),
+        };
+
+        assert!(!mobile_node_matches(
+            &node,
+            NodeKind::Android,
+            "Phone",
+            &json!({ "app_version": "1.1(2)" }),
+        ));
     }
 }

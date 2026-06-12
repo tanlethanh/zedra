@@ -54,6 +54,15 @@ impl PlatformBridge for AndroidBridge {
         }
     }
 
+    fn os_version(&self) -> Option<String> {
+        let version = jni::get_os_version();
+        if version.trim().is_empty() {
+            None
+        } else {
+            Some(version)
+        }
+    }
+
     fn data_directory(&self) -> Option<String> {
         jni::get_files_dir()
     }

@@ -38,6 +38,7 @@ static INIT: Once = Once::new();
 static FILES_DIR: Mutex<Option<String>> = Mutex::new(None);
 static APP_VERSION: Mutex<Option<String>> = Mutex::new(None);
 static APP_BUILD_NUMBER: Mutex<Option<String>> = Mutex::new(None);
+static OS_VERSION: Mutex<Option<String>> = Mutex::new(None);
 static DEVICE_NAME: Mutex<Option<String>> = Mutex::new(None);
 
 /// Display density, soft keyboard height, and system insets are owned by the
@@ -73,6 +74,14 @@ pub fn get_app_version() -> String {
 
 pub fn get_app_build_number() -> String {
     APP_BUILD_NUMBER
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_default()
+}
+
+pub fn get_os_version() -> String {
+    OS_VERSION
         .lock()
         .ok()
         .and_then(|g| g.clone())
@@ -197,7 +206,7 @@ pub extern "system" fn Java_dev_zedra_app_SheetHostView_nativeSheetProcessSurfac
 // ============================================================================
 
 /// Called from `MainActivity.onCreate` via
-/// `MainActivity.bootstrap(activity, appVersion, appBuildNumber, deviceName)`.
+/// `MainActivity.bootstrap(activity, appVersion, appBuildNumber, osVersion, deviceName)`.
 ///
 /// Captures the JVM (for Rust→Java callbacks), the files directory, and native
 /// app/device metadata. Pushing metadata in this direction (Java→Rust)
@@ -210,6 +219,7 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_bootstrap(
     activity: JObject,
     app_version: jni::objects::JString,
     app_build_number: jni::objects::JString,
+    os_version: jni::objects::JString,
     device_name: jni::objects::JString,
 ) {
     init_logging();
@@ -249,6 +259,13 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_bootstrap(
         let build: String = build.into();
         if let Ok(mut guard) = APP_BUILD_NUMBER.lock() {
             *guard = Some(build);
+        }
+    }
+
+    if let Ok(version) = env.get_string(&os_version) {
+        let version: String = version.into();
+        if let Ok(mut guard) = OS_VERSION.lock() {
+            *guard = Some(version);
         }
     }
 

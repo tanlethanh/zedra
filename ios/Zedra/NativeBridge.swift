@@ -73,6 +73,11 @@ func ios_get_app_build_number() -> UnsafePointer<CChar>? {
     return CStringStorage.shared.pointer(for: "app_build", value: build)
 }
 
+@_cdecl("ios_get_os_version")
+func ios_get_os_version() -> UnsafePointer<CChar>? {
+    CStringStorage.shared.pointer(for: "os_version", value: UIDevice.current.systemVersion)
+}
+
 @_cdecl("ios_get_documents_directory")
 func ios_get_documents_directory() -> UnsafePointer<CChar>? {
     let path = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path

@@ -72,6 +72,16 @@
 5. Sign in to Delta, then tap the logout icon in the profile row
 6. Expected: a native confirmation alert appears; cancelling keeps the profile signed in, and confirming returns the profile row to `Sign In`
 
+### Mobile node metadata reconciliation
+
+1. Sign in to Delta on iOS or Android and confirm the mobile node appears in the stack.
+2. Close and relaunch the app.
+3. Expected: logs contain `Delta mobile node reconciliation completed` with `Unchanged`.
+4. Change the app version, build number, OS version, or device name, then relaunch the app.
+5. Expected: reconciliation reports `Updated`, and the stack node contains the new metadata.
+6. Delete the mobile node from the Delta stack, then relaunch the app.
+7. Expected: reconciliation reports `SignedOut`, and Settings shows Delta as signed out.
+
 ## 0c-Android. Native Presentations And Embedded Sheet
 
 1. Run a Debug Android build and open Settings

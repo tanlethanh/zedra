@@ -89,6 +89,11 @@ extern const char *ios_get_app_version(void);
 extern const char *ios_get_app_build_number(void);
 
 /**
+ * Returns the native operating system version.
+ */
+extern const char *ios_get_os_version(void);
+
+/**
  * Returns the native device name for Delta node labels.
  */
 extern const char *ios_get_delta_device_name(void);

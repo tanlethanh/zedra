@@ -100,6 +100,7 @@ impl ZedraApp {
             platform: std::env::consts::OS,
             arch: std::env::consts::ARCH,
         });
+        crate::settings_view::reconcile_delta_mobile_node_on_launch();
 
         let app = Self {
             screen: AppScreen::Home,

@@ -43,6 +43,7 @@ __attribute__((weak)) void ios_request_delta_push_token(unsigned int callback_id
 __attribute__((weak)) const char *ios_get_documents_directory(void) { return 0; }
 __attribute__((weak)) const char *ios_get_app_version(void) { return 0; }
 __attribute__((weak)) const char *ios_get_app_build_number(void) { return 0; }
+__attribute__((weak)) const char *ios_get_os_version(void) { return 0; }
 __attribute__((weak)) const char *ios_get_delta_device_name(void) { return 0; }
 __attribute__((weak)) void ios_present_alert(
     unsigned int callback_id,

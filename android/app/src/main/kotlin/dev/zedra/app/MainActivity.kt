@@ -70,7 +70,7 @@ class MainActivity : AppCompatActivity() {
 
         ZedraFirebase.initialize(this)
         createDeltaNotificationChannel(this)
-        bootstrap(this, APP_VERSION_VALUE, APP_BUILD_NUMBER_VALUE, DEVICE_NAME_VALUE)
+        bootstrap(this, APP_VERSION_VALUE, APP_BUILD_NUMBER_VALUE, OS_VERSION_VALUE, DEVICE_NAME_VALUE)
 
         runtime = GpuiRuntimeController(this)
         runtime.initialize()
@@ -211,6 +211,7 @@ class MainActivity : AppCompatActivity() {
         // read.
         private val APP_VERSION_VALUE: String = (BuildConfig.VERSION_NAME ?: "").trim()
         private val APP_BUILD_NUMBER_VALUE: String = BuildConfig.VERSION_CODE.toString()
+        private val OS_VERSION_VALUE: String = (Build.VERSION.RELEASE ?: "").trim()
         private val DEVICE_NAME_VALUE: String = (Build.MODEL ?: "").trim()
 
         init {
@@ -256,6 +257,7 @@ class MainActivity : AppCompatActivity() {
             activity: Activity,
             appVersion: String,
             appBuildNumber: String,
+            osVersion: String,
             deviceName: String,
         )
 

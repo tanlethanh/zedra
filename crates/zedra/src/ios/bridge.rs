@@ -68,6 +68,8 @@ unsafe extern "C" {
     fn ios_get_app_version() -> *const std::ffi::c_char;
     /// Returns the app's build number string from Info.plist metadata.
     fn ios_get_app_build_number() -> *const std::ffi::c_char;
+    /// Returns the native operating system version.
+    fn ios_get_os_version() -> *const std::ffi::c_char;
     /// Returns the native device name for Delta node labels.
     fn ios_get_delta_device_name() -> *const std::ffi::c_char;
     /// Present a native UIAlertController with dynamic buttons.
@@ -229,6 +231,18 @@ impl PlatformBridge for IosBridge {
     fn app_build_number(&self) -> Option<String> {
         unsafe {
             let ptr = ios_get_app_build_number();
+            if ptr.is_null() {
+                return None;
+            }
+            let cstr = std::ffi::CStr::from_ptr(ptr);
+            let s = cstr.to_str().ok()?.trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        }
+    }
+
+    fn os_version(&self) -> Option<String> {
+        unsafe {
+            let ptr = ios_get_os_version();
             if ptr.is_null() {
                 return None;
             }

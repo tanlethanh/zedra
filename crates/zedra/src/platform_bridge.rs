@@ -889,6 +889,10 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn app_build_number(&self) -> Option<String> {
         None
     }
+    /// Returns the native operating system version.
+    fn os_version(&self) -> Option<String> {
+        None
+    }
     /// Returns the native device name suitable for user-visible Delta node labels.
     fn device_name(&self) -> Option<String> {
         None
@@ -1014,6 +1018,13 @@ pub fn device_name() -> Option<String> {
         .device_name()
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty())
+}
+
+pub fn os_version() -> Option<String> {
+    bridge()
+        .os_version()
+        .map(|version| version.trim().to_string())
+        .filter(|version| !version.is_empty())
 }
 
 /// Status bar top inset in logical pixels.
