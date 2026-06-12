@@ -70,7 +70,7 @@ class MainActivity : AppCompatActivity() {
 
         ZedraFirebase.initialize(this)
         createDeltaNotificationChannel(this)
-        bootstrap(this, APP_VERSION_VALUE, APP_BUILD_NUMBER_VALUE)
+        bootstrap(this, APP_VERSION_VALUE, APP_BUILD_NUMBER_VALUE, DEVICE_NAME_VALUE)
 
         runtime = GpuiRuntimeController(this)
         runtime.initialize()
@@ -211,6 +211,7 @@ class MainActivity : AppCompatActivity() {
         // read.
         private val APP_VERSION_VALUE: String = (BuildConfig.VERSION_NAME ?: "").trim()
         private val APP_BUILD_NUMBER_VALUE: String = BuildConfig.VERSION_CODE.toString()
+        private val DEVICE_NAME_VALUE: String = (Build.MODEL ?: "").trim()
 
         init {
             System.loadLibrary("zedra")
@@ -255,6 +256,7 @@ class MainActivity : AppCompatActivity() {
             activity: Activity,
             appVersion: String,
             appBuildNumber: String,
+            deviceName: String,
         )
 
         @JvmStatic external fun zedraLaunchGpui()
@@ -444,9 +446,6 @@ class MainActivity : AppCompatActivity() {
         ) {
             NativePresentations.showSelection(callbackId, title, message, labels, styles, imageNames)
         }
-
-        @JvmStatic
-        fun getDeltaDeviceName(): String = android.os.Build.MODEL ?: ""
 
         @JvmStatic
         fun showListPicker(

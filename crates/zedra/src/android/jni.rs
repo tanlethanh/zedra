@@ -38,6 +38,7 @@ static INIT: Once = Once::new();
 static FILES_DIR: Mutex<Option<String>> = Mutex::new(None);
 static APP_VERSION: Mutex<Option<String>> = Mutex::new(None);
 static APP_BUILD_NUMBER: Mutex<Option<String>> = Mutex::new(None);
+static DEVICE_NAME: Mutex<Option<String>> = Mutex::new(None);
 
 /// Display density, soft keyboard height, and system insets are owned by the
 /// `gpui_android` framework. These thin wrappers preserve the historical
@@ -72,6 +73,14 @@ pub fn get_app_version() -> String {
 
 pub fn get_app_build_number() -> String {
     APP_BUILD_NUMBER
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_default()
+}
+
+pub fn get_delta_device_name() -> String {
+    DEVICE_NAME
         .lock()
         .ok()
         .and_then(|g| g.clone())
@@ -188,10 +197,10 @@ pub extern "system" fn Java_dev_zedra_app_SheetHostView_nativeSheetProcessSurfac
 // ============================================================================
 
 /// Called from `MainActivity.onCreate` via
-/// `MainActivity.bootstrap(activity, appVersion, appBuildNumber)`.
+/// `MainActivity.bootstrap(activity, appVersion, appBuildNumber, deviceName)`.
 ///
-/// Captures the JVM (for Rust→Java callbacks), the files directory, and the
-/// app version metadata. Pushing app metadata in this direction (Java→Rust)
+/// Captures the JVM (for Rust→Java callbacks), the files directory, and native
+/// app/device metadata. Pushing metadata in this direction (Java→Rust)
 /// avoids deeply-nested Rust→Java JNI calls during render which can manifest
 /// as `StackOverflowError` once GPUI's element tree gets large.
 #[unsafe(no_mangle)]
@@ -201,6 +210,7 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_bootstrap(
     activity: JObject,
     app_version: jni::objects::JString,
     app_build_number: jni::objects::JString,
+    device_name: jni::objects::JString,
 ) {
     init_logging();
 
@@ -239,6 +249,13 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_bootstrap(
         let build: String = build.into();
         if let Ok(mut guard) = APP_BUILD_NUMBER.lock() {
             *guard = Some(build);
+        }
+    }
+
+    if let Ok(name) = env.get_string(&device_name) {
+        let name: String = name.into();
+        if let Ok(mut guard) = DEVICE_NAME.lock() {
+            *guard = Some(name);
         }
     }
 }
@@ -887,20 +904,6 @@ fn jstring_to_string(env: &mut JNIEnv, value: &jni::objects::JString) -> Option<
         return None;
     }
     env.get_string(value).ok().map(|value| value.into())
-}
-
-/// Get the native device name for Delta node labels (Build.MODEL).
-pub fn get_delta_device_name() -> String {
-    with_main_activity("get_delta_device_name", |env, class| {
-        let value =
-            env.call_static_method(class, "getDeltaDeviceName", "()Ljava/lang/String;", &[])?;
-        let obj = value.l()?;
-        if obj.is_null() {
-            return Ok(String::new());
-        }
-        Ok(env.get_string(&obj.into())?.into())
-    })
-    .unwrap_or_default()
 }
 
 /// Present a native in-app notification banner.

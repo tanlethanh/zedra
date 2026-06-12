@@ -254,7 +254,7 @@ async fn sign_in_with_oauth(
         .node
         .alias
         .as_deref()
-        .map(|a| matches!(a, "ios" | "android"))
+        .map(|a| matches!(a, "ios" | "android" | "zedra-ios" | "zedra-android"))
         .unwrap_or(true);
     if !mobile.created && alias_is_default {
         // Skip update when the device name has no alias-safe characters; the
@@ -525,7 +525,15 @@ fn host_display_name(metadata: &Value) -> Option<String> {
 }
 
 fn mobile_display_name() -> String {
-    platform_bridge::device_name().unwrap_or_else(|| "zedra-ios".to_string())
+    platform_bridge::device_name().unwrap_or_else(mobile_fallback_display_name)
+}
+
+fn mobile_fallback_display_name() -> String {
+    if cfg!(target_os = "android") {
+        "zedra-android".to_string()
+    } else {
+        "zedra-ios".to_string()
+    }
 }
 
 fn normalize_alias_candidate(source: &str) -> Option<String> {
