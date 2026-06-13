@@ -159,10 +159,7 @@ pub fn render_url_qr(url: &str) -> Result<String> {
 /// rows intact. Used to drop the QR quiet-zone top/bottom padding.
 fn trim_blank_lines(text: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
-    let start = lines
-        .iter()
-        .position(|l| !l.trim().is_empty())
-        .unwrap_or(0);
+    let start = lines.iter().position(|l| !l.trim().is_empty()).unwrap_or(0);
     let end = lines
         .iter()
         .rposition(|l| !l.trim().is_empty())
