@@ -60,76 +60,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Manage host auth with Zedra Delta
-    Auth {
-        #[command(subcommand)]
-        command: Option<AuthCommand>,
-    },
-
-    /// Show Delta stack information
-    Stack {
-        #[command(subcommand)]
-        command: Option<StackCommand>,
-    },
-
-    /// Send a test notification through Zedra Delta
-    Send {
-        /// Target node alias or UUID
-        #[arg(long = "id")]
-        id: String,
-
-        /// Notification title
-        #[arg(long)]
-        title: String,
-
-        /// Notification body
-        #[arg(long)]
-        body: Option<String>,
-
-        /// Notification category
-        #[arg(long)]
-        category: Option<String>,
-
-        /// Deeplink to open from the notification
-        #[arg(long)]
-        deeplink: Option<String>,
-
-        /// Working directory of the workspace (used for anonymous Delta auth)
-        #[arg(short, long, default_value = ".")]
-        workdir: String,
-    },
-
-    /// Send a Live Activity update through Zedra Delta
-    LiveActivity {
-        /// Target node alias or UUID
-        #[arg(long = "id")]
-        id: String,
-
-        /// Stable Live Activity id registered by the mobile app
-        #[arg(long)]
-        activity_id: String,
-
-        /// Optional alert title shown with the update
-        #[arg(long)]
-        title: Option<String>,
-
-        /// Optional alert body shown with the update
-        #[arg(long)]
-        body: Option<String>,
-
-        /// JSON object for ActivityKit content-state
-        #[arg(long, default_value = "{}")]
-        state: String,
-
-        /// End the Live Activity instead of updating it
-        #[arg(long)]
-        end: bool,
-
-        /// Working directory of the workspace (used for anonymous Delta auth)
-        #[arg(short, long, default_value = ".")]
-        workdir: String,
-    },
-
     /// Start the Zedra daemon for this workspace
     Start {
         /// Working directory to serve
@@ -166,8 +96,8 @@ enum Commands {
         #[arg(long)]
         relay_only: bool,
 
-        /// Generate a static QR that can be scanned repeatedly while this daemon runs.
-        /// Intended only for testing and store review.
+        /// Generate a reusable QR code that stays valid for repeated scans
+        /// while this daemon runs, instead of a fresh code per pairing
         #[arg(long = "static-qr")]
         static_qr: bool,
 
@@ -176,20 +106,6 @@ enum Commands {
         /// Default: 300 (5 minutes).
         #[arg(long = "usage-refresh-secs", default_value = "300")]
         usage_refresh_secs: u64,
-    },
-    /// Connect to a daemon and measure connection RTT
-    Client {
-        /// Working directory of the running daemon (must match `zedra start --workdir`)
-        #[arg(short, long, default_value = ".")]
-        workdir: String,
-
-        /// Number of pings to send (0 = run until Ctrl-C)
-        #[arg(short, long, default_value = "0")]
-        count: u32,
-
-        /// Force relay-only mode (disable P2P hole punching)
-        #[arg(long)]
-        relay_only: bool,
     },
     /// Stop the daemon for this workspace
     Stop {
@@ -216,7 +132,22 @@ enum Commands {
         workdir: String,
     },
 
-    /// Create a fresh pairing QR
+    /// Connect to a daemon and measure connection latency
+    Client {
+        /// Working directory of the running daemon (must match `zedra start --workdir`)
+        #[arg(short, long, default_value = ".")]
+        workdir: String,
+
+        /// Number of pings to send (0 = run until Ctrl-C)
+        #[arg(short, long, default_value = "0")]
+        count: u32,
+
+        /// Force relay-only mode (disable P2P hole punching)
+        #[arg(long)]
+        relay_only: bool,
+    },
+
+    /// Show a QR code to pair your phone
     Qr {
         /// Working directory of the running daemon
         #[arg(short, long, default_value = ".")]
@@ -226,8 +157,8 @@ enum Commands {
         #[arg(long)]
         json: bool,
 
-        /// Create a static QR that can be scanned repeatedly while this daemon runs.
-        /// Intended only for testing and store review.
+        /// Create a reusable QR code that stays valid for repeated scans
+        /// while this daemon runs, instead of a fresh code per pairing
         #[arg(long = "static")]
         static_qr: bool,
     },
@@ -253,13 +184,7 @@ enum Commands {
     /// Open or list terminals on the connected phone
     Terminal(terminal_cli::TerminalArgs),
 
-    /// Inspect and test managed AI-agent integration
-    Agent {
-        #[command(subcommand)]
-        command: agent_cli::AgentCommand,
-    },
-
-    /// Install Zedra for all detected agents, or a specific one
+    /// Set up Zedra for detected AI agents, or a specific one
     Setup {
         /// Skip interactive confirmation prompts
         #[arg(short, long)]
@@ -275,6 +200,67 @@ enum Commands {
 
         #[command(subcommand)]
         agent: Option<setup::SetupAgent>,
+    },
+
+    /// Inspect managed AI-agent integrations
+    Agent {
+        #[command(subcommand)]
+        command: agent_cli::AgentCommand,
+    },
+
+    /// Sign in to Zedra Delta
+    Auth {
+        #[command(subcommand)]
+        command: Option<AuthCommand>,
+    },
+
+    /// View and manage nodes in your Delta stack
+    Stack {
+        #[command(subcommand)]
+        command: Option<StackCommand>,
+    },
+
+    /// Send a notification or Live Activity to a node
+    #[command(override_usage = "zedra send <TARGET> [OPTIONS]")]
+    Send {
+        /// Target node id, name, or alias
+        target: String,
+
+        /// Send a Live Activity update instead of a push notification
+        #[arg(long = "live-activity", short = 'l', alias = "la")]
+        live_activity: bool,
+
+        /// Title (notification title, or Live Activity alert title)
+        #[arg(long, required_unless_present = "live_activity")]
+        title: Option<String>,
+
+        /// Body text
+        #[arg(long)]
+        body: Option<String>,
+
+        /// Notification category
+        #[arg(long, conflicts_with = "live_activity")]
+        category: Option<String>,
+
+        /// Deeplink to open from the notification
+        #[arg(long, conflicts_with = "live_activity")]
+        deeplink: Option<String>,
+
+        /// Stable Live Activity id registered by the mobile app
+        #[arg(long, required_if_eq("live_activity", "true"))]
+        activity_id: Option<String>,
+
+        /// JSON object for ActivityKit content-state (defaults to {})
+        #[arg(long, requires = "live_activity")]
+        state: Option<String>,
+
+        /// End the Live Activity instead of updating it
+        #[arg(long, requires = "live_activity")]
+        end: bool,
+
+        /// Working directory of the workspace (used for anonymous Delta auth)
+        #[arg(short, long, default_value = ".")]
+        workdir: String,
     },
 
     /// Update the Zedra CLI
@@ -892,37 +878,13 @@ async fn main() -> Result<()> {
         },
 
         Commands::Send {
-            id,
+            target,
+            live_activity,
             title,
             body,
             category,
             deeplink,
-            workdir,
-        } => {
-            let workdir = resolve_workdir(workdir);
-            let client = delta::DeltaClient::try_load_for_workspace(&workdir).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Delta not configured. Sign in with `zedra auth login` or connect the mobile app first."
-                )
-            })?;
-            let response = client
-                .send_notification(id, title, body, category, deeplink)
-                .await?;
-            utils::println_success("Notification accepted.");
-            println!();
-            utils::print_key_values(&[
-                ("Accepted", response.accepted.to_string()),
-                ("Recipients", response.recipients.to_string()),
-                ("Provider OK", response.provider_success.to_string()),
-                ("Provider Fail", response.provider_failure.to_string()),
-            ]);
-        }
-
-        Commands::LiveActivity {
-            id,
             activity_id,
-            title,
-            body,
             state,
             end,
             workdir,
@@ -933,18 +895,33 @@ async fn main() -> Result<()> {
                     "Delta not configured. Sign in with `zedra auth login` or connect the mobile app first."
                 )
             })?;
-            let content_state = parse_json_object(&state)?;
-            let response = client
-                .update_live_activity(id, activity_id, title, body, content_state, end)
-                .await?;
-            utils::println_success("Live Activity update accepted.");
-            println!();
-            utils::print_key_values(&[
-                ("Accepted", response.accepted.to_string()),
-                ("Recipients", response.recipients.to_string()),
-                ("Provider OK", response.provider_success.to_string()),
-                ("Provider Fail", response.provider_failure.to_string()),
-            ]);
+            if live_activity {
+                let activity_id =
+                    activity_id.expect("clap enforces --activity-id with --live-activity");
+                let content_state = parse_json_object(state.as_deref().unwrap_or("{}"))?;
+                let response = client
+                    .update_live_activity(target, activity_id, title, body, content_state, end)
+                    .await?;
+                utils::println_success("Live Activity update accepted.");
+                print_delta_send_result(
+                    response.accepted,
+                    response.recipients,
+                    response.provider_success,
+                    response.provider_failure,
+                );
+            } else {
+                let title = title.expect("clap enforces --title for notifications");
+                let response = client
+                    .send_notification(target, title, body, category, deeplink)
+                    .await?;
+                utils::println_success("Notification accepted.");
+                print_delta_send_result(
+                    response.accepted,
+                    response.recipients,
+                    response.provider_success,
+                    response.provider_failure,
+                );
+            }
         }
 
         Commands::Client {
@@ -1712,6 +1689,16 @@ fn print_delta_stack(config: &delta::DeltaConfig) {
         "Run `{}` to list stack nodes.",
         utils::command_text("zedra stack list")
     );
+}
+
+fn print_delta_send_result(accepted: bool, recipients: u32, provider_ok: u32, provider_fail: u32) {
+    println!();
+    utils::print_key_values(&[
+        ("Accepted", accepted.to_string()),
+        ("Recipients", recipients.to_string()),
+        ("Provider OK", provider_ok.to_string()),
+        ("Provider Fail", provider_fail.to_string()),
+    ]);
 }
 
 /// Sectioned node detail view. `self_config` is set when showing the authed
@@ -2831,6 +2818,66 @@ mod tests {
         }
         // Neither flag must fail.
         assert!(Cli::try_parse_from(["zedra", "stack", "update", "phone"]).is_err());
+    }
+
+    #[test]
+    fn send_defaults_to_notification_and_requires_title() {
+        match Cli::try_parse_from(["zedra", "send", "phone", "--title", "hi"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Send {
+                live_activity,
+                title,
+                ..
+            }) => {
+                assert!(!live_activity);
+                assert_eq!(title.as_deref(), Some("hi"));
+            }
+            other => panic!("expected send command, got {:?}", other.map(|_| "other")),
+        }
+        // Notification mode without --title must fail.
+        assert!(Cli::try_parse_from(["zedra", "send", "phone"]).is_err());
+        // Missing target must fail.
+        assert!(Cli::try_parse_from(["zedra", "send", "--title", "hi"]).is_err());
+    }
+
+    #[test]
+    fn send_live_activity_routes_with_flag() {
+        for flag in ["--live-activity", "--la", "-l"] {
+            match Cli::try_parse_from(["zedra", "send", "phone", flag, "--activity-id", "act-1"])
+                .unwrap()
+                .command
+            {
+                Some(Commands::Send {
+                    live_activity,
+                    activity_id,
+                    title,
+                    ..
+                }) => {
+                    assert!(live_activity);
+                    assert_eq!(activity_id.as_deref(), Some("act-1"));
+                    assert!(title.is_none(), "title optional in live activity mode");
+                }
+                other => panic!("expected send command, got {:?}", other.map(|_| "other")),
+            }
+        }
+        // Live activity mode requires --activity-id.
+        assert!(Cli::try_parse_from(["zedra", "send", "phone", "--live-activity"]).is_err());
+        // Notification-only flags conflict with --live-activity.
+        assert!(Cli::try_parse_from([
+            "zedra",
+            "send",
+            "phone",
+            "--live-activity",
+            "--activity-id",
+            "act-1",
+            "--category",
+            "task"
+        ])
+        .is_err());
+        // Live-activity-only flags require the flag.
+        assert!(Cli::try_parse_from(["zedra", "send", "phone", "--title", "hi", "--end"]).is_err());
     }
 
     #[test]
