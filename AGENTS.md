@@ -40,6 +40,12 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - `crates/zedra-telemetry/src/lib.rs` defines the canonical telemetry `Event` enum.
 - Telemetry must not include personal data. Use opaque IDs, durations, counts, enum labels, and booleans only.
 
+## Zedra Delta Backend
+
+- Zedra Delta is Zedra's cloud/backend service — push notifications, Live Activities, workspace sync signals, and any other backend capability the host or mobile app needs. See `docs/DELTA_INTEGRATION.md`.
+- The Delta source lives in a separate repo at the path in the `ZEDRA_DELTA_REPO` environment variable. When a task needs Delta backend behavior (read its code, or add/change a backend feature), open `$ZEDRA_DELTA_REPO` directly — read and edit it like part of the codebase.
+- Whenever this repo's work mentions the Delta backend or Zedra Delta, treat `$ZEDRA_DELTA_REPO` as the place those backend changes belong, and keep the host/mobile protocol contract in sync across both repos.
+
 ## Documentation
 
 - Write docs in a practical, direct style: start with the goal, put common actions first, and avoid promotional or apologetic wording.
