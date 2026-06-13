@@ -7,7 +7,6 @@ use crate::fonts;
 use crate::pending::{PendingSlot, spawn_periodic_task};
 use crate::platform_bridge::{
     self, AlertButton, CustomSheetDetent, CustomSheetOptions, HapticFeedback,
-    NativeNotificationKind, NativeNotificationOptions,
 };
 use crate::settings::ThemeState;
 use crate::sheet_demo_state::SheetDemoState;
@@ -263,14 +262,7 @@ impl SettingsView {
 
     fn finish_delta_error(&mut self, message: String) {
         self.delta_busy = false;
-        self.delta_message = Some(message.clone());
-        platform_bridge::show_native_notification(
-            NativeNotificationOptions::new("Delta setup failed")
-                .message(message)
-                .kind(NativeNotificationKind::Error)
-                .system_image("exclamationmark.triangle")
-                .duration_secs(4.2),
-        );
+        self.delta_message = Some(message);
     }
 
     fn profile_title(&self) -> String {
@@ -388,30 +380,6 @@ impl SettingsView {
             self.sheet_view.clone(),
         );
         view_telemetry::record(view_telemetry::CUSTOM_SHEET_DEMO);
-    }
-
-    fn show_test_native_notification(&self) {
-        platform_bridge::show_native_notification(
-            NativeNotificationOptions::new("Terminal created")
-                .message("Background mock notification for the bubble stack.")
-                .system_image("terminal")
-                .duration_secs(3.8),
-        );
-        platform_bridge::show_native_notification_with_action(
-            NativeNotificationOptions::new("Agent completed")
-                .message("Developer mock notification from Settings.")
-                .image("AgentCodex")
-                .kind(NativeNotificationKind::Success)
-                .duration_secs(3.4),
-            || {
-                platform_bridge::show_native_notification(
-                    NativeNotificationOptions::new("Notification tapped")
-                        .message("Callback action fired from the native banner.")
-                        .system_image("hand.tap")
-                        .duration_secs(2.4),
-                );
-            },
-        );
     }
 }
 
@@ -595,17 +563,6 @@ impl Render for SettingsView {
                                         )
                                         .on_press(cx.listener(|this, _event, _window, _cx| {
                                             this.show_test_selection();
-                                        })),
-                                    )
-                                    .child(
-                                        action_row(
-                                            cx,
-                                            "settings-test-native-notification",
-                                            "Native Notification",
-                                            "In-app glass banner presentation",
-                                        )
-                                        .on_press(cx.listener(|this, _event, _window, _cx| {
-                                            this.show_test_native_notification();
                                         })),
                                     )
                                     .child(
