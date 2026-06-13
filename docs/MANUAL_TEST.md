@@ -154,7 +154,7 @@
 
 ## 0f. Delta Agent Hooks
 
-1. Sign in the host with Delta and confirm `zedra stack nodes` lists at least one push-enabled mobile node
+1. Sign in the host with Delta and confirm `zedra stack list` lists at least one push-enabled mobile node
 2. Run `zedra setup claude`, `zedra setup codex`, `zedra setup opencode`, and `zedra setup pi`
 3. Start a new Claude, Codex, opencode, and pi session
 4. Submit a prompt, trigger a tool approval, use Add to Chat from a Zedra editor selection when an agent terminal is active, and let the task finish
@@ -209,32 +209,34 @@ CLI push and Live Activity commands without host credentials.
 - Host daemon running with no `~/.config/zedra/delta.json` (or remove it with
   `zedra auth logout` if previously signed in).
 - Mobile app signed in to Delta (`Settings → Delta → Sign In`).
-- At least one push-enabled mobile node registered (`zedra stack nodes` shows it
+- At least one push-enabled mobile node registered (`zedra stack list` shows it
   on the *mobile* app — host CLI doesn't need to be authed for this check).
 
-### 1. Host key registered on connect
+### 1. Dedicated Delta host key registered on connect
 
 1. Start the daemon: `zedra start --workdir .`
-2. Scan QR from the mobile app and let the connection reach `Connected`.
-3. On the host, inspect the per-workspace config file:
+2. Confirm `~/.config/zedra/delta.key` exists and is distinct from the
+   workspace `identity.key`.
+3. Scan QR from the mobile app and let the connection reach `Connected`.
+4. On the host, inspect the per-workspace config file:
    ```sh
    cat ~/.config/zedra/workspaces/$(zedra status --json | jq -r .workspace_hash)/delta_client.json
    ```
-4. Expected: a JSON file exists with `delta_url`, `stack_id`, `host_node_id`,
+5. Expected: a JSON file exists with `delta_url`, `stack_id`, `host_node_id`,
    and `client_pubkey` fields.
-5. Expected: host daemon log contains a line matching
+6. Expected: host daemon log contains a line matching
    `Delta host node registered  created=true host_node_id=…` (or `created=false`
    if the same key was registered before).
-6. Check that the host node appears in the Delta stack from the mobile app's
+7. Check that the host node appears in the Delta stack from the mobile app's
    `Settings → Delta → Stack Nodes`.
-7. Expected: the host node is listed with kind `host` and matches the machine
+8. Expected: the host node is listed with kind `host` and matches the machine
    hostname.
 
 ### 2. `zedra send` without host sign-in
 
 1. With the daemon still running and `delta_client.json` present, run:
    ```sh
-   zedra send --workdir . --id <mobile-node-alias> --title "Test from host" --body "Anonymous path"
+   zedra send <id|alias|name> --workdir . --title "Test from host" --body "Anonymous path"
    ```
 2. Expected: command exits 0 and prints `Notification accepted.` with
    `recipients: 1` (or more if multiple push tokens exist).
@@ -249,13 +251,13 @@ CLI push and Live Activity commands without host credentials.
 6. Expected: command succeeds — `delta_client.json` is loaded at daemon startup
    so push works even before the next mobile reconnect.
 
-### 3. `zedra live-activity` without host sign-in
+### 3. `zedra send --live-activity` without host sign-in
 
 1. Ensure a Live Activity is active on the device (trigger via
    `zedra://la-test/start/x` deeplink or from an active agent hook).
 2. Run:
    ```sh
-   zedra live-activity --workdir . --id <mobile-node-alias> \
+   zedra send <id|alias|name> --live-activity --workdir . \
      --activity-id <activity-id> --title "Host update" --state '{}'
    ```
 3. Expected: command exits 0, Live Activity on device updates its content state.
@@ -269,14 +271,15 @@ CLI push and Live Activity commands without host credentials.
    the same mobile client reconnects — the existing host node is returned, not
    duplicated.
 3. Pair a **new** device (different mobile) and let it connect.
-4. Expected: daemon log shows `created=true` for the new device's public key and
-   `delta_client.json` is updated with the new `client_pubkey`.
+4. Expected: daemon log shows `created=false` because both mobile clients
+   register the same host `delta.key` public key. No duplicate host node is
+   created.
 
 ### 5. Fallback to signed-in config when both exist
 
 1. Sign in the host: `zedra auth login`
 2. Connect the mobile app.
-3. Run `zedra send` and `zedra live-activity`.
+3. Run `zedra send` and `zedra send --live-activity`.
 4. Expected: both commands use the signed-in bearer-token auth path (not the
    anonymous key path), confirmed by `zedra auth status` showing the active
    config.
@@ -290,7 +293,7 @@ CLI push and Live Activity commands without host credentials.
    ```sh
    rm ~/.config/zedra/workspaces/$(zedra status --json | jq -r .workspace_hash)/delta_client.json
    ```
-2. Run `zedra send --workdir . --id any --title test`.
+2. Run `zedra send any --workdir . --title test`.
 3. Expected: command exits non-zero with the message:
    `Delta not configured. Sign in with \`zedra auth login\` or connect the mobile app first.`
 
@@ -302,7 +305,7 @@ app still builds, but push registration reports an error instead of a token.
 1. Drop `google-services.json` into `android/`, then build and install: `./scripts/build-android.sh && cd android && ./gradlew installDebug`
 2. Open Settings → Delta and tap the push token row
 3. On Android 13+, expected: the system prompts for the notification permission; grant it
-4. Expected: registration succeeds, the row shows provider `fcm`, and `zedra stack nodes` lists the device (labeled with its `Build.MODEL`) as push-enabled
+4. Expected: registration succeeds, the row shows provider `fcm`, and `zedra stack list` lists the device (labeled with its `Build.MODEL`) as push-enabled
 5. From the host, trigger a Delta notification while the app is backgrounded
 6. Expected: a system notification appears in the `Delta notifications` channel; tapping it opens the app (and follows the `deeplink` data field when present)
 7. Trigger a notification (or tap a Developer in-app notification action) while the app is foregrounded
