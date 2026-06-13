@@ -136,13 +136,15 @@ impl SettingsView {
         self.delta_message_target = DeltaMessageTarget::Profile;
         self.delta_message = None;
         platform_bridge::trigger_haptic(HapticFeedback::SelectionChanged);
+        let mut buttons = vec![AlertButton::default("Sign in with Google").image("Google")];
+        // Apple Sign-In is only available on iOS.
+        if cfg!(target_os = "ios") {
+            buttons.push(AlertButton::default("Sign in with Apple").image("Apple"));
+        }
         platform_bridge::show_selection(
             "Sign In",
             "Choose a sign-in method for Delta.",
-            vec![
-                AlertButton::default("Sign in with Google").image("Google"),
-                AlertButton::default("Sign in with Apple").image("Apple"),
-            ],
+            buttons,
             |result| match result {
                 Some(0) => PENDING_DELTA_EVENT.set(DeltaSettingsEvent::StartGoogleSignIn),
                 Some(1) => PENDING_DELTA_EVENT.set(DeltaSettingsEvent::StartAppleSignIn),
