@@ -145,6 +145,32 @@ pub fn print_pairing_json(info: &StartupInfo) {
     }
 }
 
+/// Render an arbitrary URL as a compact terminal QR code.
+///
+/// Used for headless auth: when a machine cannot open a browser, the user can
+/// scan this with a phone to open the sign-in URL there instead.
+pub fn render_url_qr(url: &str) -> Result<String> {
+    let code = QrCode::with_error_correction_level(url.as_bytes(), EcLevel::L)?;
+    let rendered = render_qr_compact(&code);
+    Ok(trim_blank_lines(&rendered))
+}
+
+/// Strip leading and trailing blank (whitespace-only) lines, keeping inner
+/// rows intact. Used to drop the QR quiet-zone top/bottom padding.
+fn trim_blank_lines(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| !l.trim().is_empty())
+        .unwrap_or(0);
+    let end = lines
+        .iter()
+        .rposition(|l| !l.trim().is_empty())
+        .map(|i| i + 1)
+        .unwrap_or(lines.len());
+    lines[start..end].join("\n")
+}
+
 /// Render a compact QR code for terminal display.
 fn render_qr_compact(code: &QrCode) -> String {
     code.render::<unicode::Dense1x2>()

@@ -743,12 +743,8 @@ async fn main() -> Result<()> {
                 } else {
                     let session = delta::start_browser_auth(&delta_url).await?;
                     print_delta_browser_auth_prompt(&session);
-                    if open_browser(&session.auth_url) {
-                        utils::println_note("Opened the approval page in your browser.");
-                    } else {
-                        utils::println_note("Open the approval URL in your browser to continue.");
-                    }
-                    utils::println_note("Waiting for approval...");
+                    // Best-effort browser open; silent on headless machines.
+                    open_browser(&session.auth_url);
                     delta::complete_browser_auth(&session).await?
                 };
                 utils::println_success("Authenticated with Zedra Delta.");
@@ -1645,6 +1641,27 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+fn open_browser(url: &str) -> bool {
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = ProcessCommand::new("open");
+        command.arg(url);
+        command
+    } else if cfg!(target_os = "windows") {
+        let mut command = ProcessCommand::new("cmd");
+        command.args(["/C", "start", "", url]);
+        command
+    } else {
+        let mut command = ProcessCommand::new("xdg-open");
+        command.arg(url);
+        command
+    };
+
+    command
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 fn parse_json_object(input: &str) -> Result<serde_json::Value> {
     let value: serde_json::Value = serde_json::from_str(input).context("parse --state JSON")?;
     if value.is_object() {
@@ -1657,12 +1674,16 @@ fn parse_json_object(input: &str) -> Result<serde_json::Value> {
 fn print_delta_browser_auth_prompt(session: &delta::CliAuthSession) {
     utils::println_heading("Zedra Delta Auth");
     println!();
-    utils::print_key_values(&[
-        ("URL", session.auth_url.clone()),
-        ("Code", session.user_code.clone()),
-        ("Expires", session.expires_at.clone()),
-    ]);
+    match qr::render_url_qr(&session.auth_url) {
+        Ok(qr) => println!("{qr}"),
+        Err(e) => tracing::warn!("failed to render auth QR code: {e}"),
+    }
     println!();
+    utils::println_note("Open URL in browser:");
+    println!("    {}", session.auth_url);
+    println!("    Expired at {}", format_node_date(&session.expires_at));
+    println!();
+    utils::println_note("Waiting...");
 }
 
 fn print_delta_auth_status(config: &delta::DeltaConfig) {
@@ -1935,27 +1956,6 @@ fn metadata_string(node: &delta::NodeSummary, key: &str) -> Option<String> {
         .and_then(|value| value.as_str())
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
-}
-
-fn open_browser(url: &str) -> bool {
-    let mut command = if cfg!(target_os = "macos") {
-        let mut command = ProcessCommand::new("open");
-        command.arg(url);
-        command
-    } else if cfg!(target_os = "windows") {
-        let mut command = ProcessCommand::new("cmd");
-        command.args(["/C", "start", "", url]);
-        command
-    } else {
-        let mut command = ProcessCommand::new("xdg-open");
-        command.arg(url);
-        command
-    };
-
-    command
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
 }
 
 fn print_command_help(command_path: &[String]) -> Result<()> {
