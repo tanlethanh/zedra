@@ -72,8 +72,8 @@ pub trait HookReceiver {
         }
     }
 
-    /// Shared Delta send: notification + live activity in parallel. Body is
-    /// reduced to its first non-empty line and truncated to 100 chars.
+    /// Shared Delta send: push notification to the stack. Body is reduced to
+    /// its first non-empty line and truncated to 100 chars.
     async fn send_notification(
         &self,
         client: &DeltaClient,
@@ -88,10 +88,10 @@ pub trait HookReceiver {
         // call and the `activity_result` handling below.
         let notify_result = client
             .send_notification_to_stack(
-                notification.title.clone(),
-                body.clone(),
+                notification.title,
+                body,
                 Some("agent".to_string()),
-                notification.deeplink.clone(),
+                notification.deeplink,
             )
             .await;
         match notify_result {
