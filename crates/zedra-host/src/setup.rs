@@ -960,9 +960,23 @@ function send(event, payload = {{}}) {{
   }});
 }}
 
+function shouldForward(event) {{
+  return event === "permission.asked"
+    || event === "permission.replied"
+    || event === "session.status"
+    || event === "session.idle"
+    || event === "session.error";
+}}
+
 export const ZedraAgentHooks = async () => {{
   return {{
-    event: async (input) => send(input.event?.type ?? "event", input),
+    event: async (input) => {{
+      const event = input.event?.type ?? "event";
+      if (!shouldForward(event)) {{
+        return;
+      }}
+      send(event, input);
+    }},
   }};
 }}
 "#
@@ -1347,6 +1361,8 @@ mod tests {
             r#"spawnSync(zedra, ["agent", "hook", "receive", "--agent", "opencode", "--quiet""#
         ));
         assert!(plugin.contains("JSON.stringify({ event_name: event, ...payload })"));
+        assert!(plugin.contains(r#"event === "permission.asked""#));
+        assert!(plugin.contains(r#"event === "session.error""#));
 
         remove_opencode_hooks_in_dir(dir.path()).unwrap();
 
