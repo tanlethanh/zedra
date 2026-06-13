@@ -8,7 +8,7 @@ use tracing::{info, warn};
 use zedra_rpc::proto::{AgentKind, AgentState, HostEvent};
 
 use crate::session_registry::ServerSession;
-use crate::{agent_utils, delta::DeltaClient};
+use crate::{agent_utils, delta::DeltaClient, utils};
 
 pub struct HookContext {
     pub payload: serde_json::Value,
@@ -81,7 +81,7 @@ pub trait HookReceiver {
     ) -> Result<()> {
         let body = notification.body.and_then(|b| {
             let first = b.lines().next().unwrap_or("").trim();
-            (!first.is_empty()).then(|| truncate_str(first, 100))
+            (!first.is_empty()).then(|| utils::truncate_chars(first, 100))
         });
         let (notify_result, activity_result) = tokio::join!(
             client.send_notification_to_stack(
@@ -531,17 +531,6 @@ impl HookReceiver for PiHookReceiver {
             },
         )
         .await
-    }
-}
-
-/// Truncate a string to at most `max_chars` Unicode scalar values, appending `…` if cut.
-fn truncate_str(s: &str, max_chars: usize) -> String {
-    let mut chars = s.chars();
-    let truncated: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{truncated}…")
-    } else {
-        truncated
     }
 }
 
