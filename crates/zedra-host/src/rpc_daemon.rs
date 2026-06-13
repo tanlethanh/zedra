@@ -3223,7 +3223,7 @@ fn run_lsp_check(path: &std::path::Path) -> Vec<DiagnosticEntry> {
     }
 }
 
-fn os_version_string() -> Option<String> {
+pub(crate) fn os_version_string() -> Option<String> {
     #[cfg(target_os = "linux")]
     {
         if let Ok(content) = std::fs::read_to_string("/etc/os-release") {

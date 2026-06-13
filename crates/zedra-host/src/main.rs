@@ -1084,6 +1084,27 @@ async fn main() -> Result<()> {
             let delta_pubkey =
                 delta::public_key().context("failed to load host Delta signing key")?;
 
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(20),
+                delta::reconcile_signed_in_host_metadata(),
+            )
+            .await
+            {
+                Ok(Ok(delta::HostMetadataReconcileResult::Missing)) => {
+                    tracing::info!("Delta signed-in host node is missing; reconciliation ignored")
+                }
+                Ok(Ok(result)) => {
+                    tracing::info!(
+                        ?result,
+                        "Delta signed-in host metadata reconciliation completed"
+                    )
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!("Delta signed-in host metadata reconciliation failed: {error:#}")
+                }
+                Err(_) => tracing::warn!("Delta signed-in host metadata reconciliation timed out"),
+            }
+
             let delta_client = delta::DeltaClient::try_load_for_workspace(&workdir);
 
             let state = Arc::new(rpc_daemon::DaemonState::new(

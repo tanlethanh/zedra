@@ -107,6 +107,11 @@ struct DevAuthRequest {
     display_name: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct RefreshRequest {
+    refresh_token: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct CliAuthSession {
     pub auth_url: String,
@@ -351,6 +356,73 @@ pub fn remove_config() -> Result<bool> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostMetadataReconcileResult {
+    Skipped,
+    Missing,
+    Unchanged,
+    Updated,
+}
+
+pub async fn reconcile_signed_in_host_metadata() -> Result<HostMetadataReconcileResult> {
+    if !config_path()?.exists() {
+        return Ok(HostMetadataReconcileResult::Skipped);
+    }
+
+    let mut config = load_config()?;
+    let client = DeltaHttp::new(&config.delta_url);
+    let path = format!("/v1/stacks/{}/nodes/{}", config.stack_id, config.node_id);
+    let stored = match client
+        .get_bearer_optional::<NodeDetailResponse>(&path, &config.access_token)
+        .await?
+    {
+        BearerGetResult::Found(detail) => detail,
+        BearerGetResult::Missing => return Ok(HostMetadataReconcileResult::Missing),
+        BearerGetResult::Unauthorized => {
+            refresh_host_access_token(&client, &mut config).await?;
+            match client
+                .get_bearer_optional::<NodeDetailResponse>(&path, &config.access_token)
+                .await?
+            {
+                BearerGetResult::Found(detail) => detail,
+                BearerGetResult::Missing => return Ok(HostMetadataReconcileResult::Missing),
+                BearerGetResult::Unauthorized => {
+                    anyhow::bail!("Delta rejected refreshed host access token")
+                }
+            }
+        }
+    };
+
+    let display_name = default_host_display_name();
+    let metadata = default_host_metadata();
+    let public_key = public_key()?;
+    let encoded_public_key = encode_base64_no_pad(public_key);
+    if stored.public_key == encoded_public_key
+        && host_metadata_matches(&stored.node, &display_name, &metadata)
+    {
+        return Ok(HostMetadataReconcileResult::Unchanged);
+    }
+
+    let registered = client
+        .register_node(
+            &config.access_token,
+            config.stack_id,
+            &NodeRegistrationRequest {
+                public_key: encoded_public_key,
+                kind: NodeKind::Host,
+                display_name: Some(display_name),
+                metadata,
+                receive_notifications: false,
+            },
+        )
+        .await?;
+    if config.node_id != registered.node.id {
+        config.node_id = registered.node.id;
+        save_config(&config)?;
+    }
+    Ok(HostMetadataReconcileResult::Updated)
+}
+
 pub async fn dev_auth(delta_url: &str, subject: &str) -> Result<DeltaConfig> {
     let config_dir = identity::host_config_dir()?;
     std::fs::create_dir_all(&config_dir)?;
@@ -589,10 +661,34 @@ fn default_host_metadata() -> Value {
         "source": "zedra_cli",
         "hostname": hostname,
         "os": std::env::consts::OS,
+        "os_version": crate::rpc_daemon::os_version_string(),
         "arch": std::env::consts::ARCH,
         "family": std::env::consts::FAMILY,
-        "zedra_version": env!("CARGO_PKG_VERSION"),
+        "host_version": env!("CARGO_PKG_VERSION"),
     })
+}
+
+fn host_metadata_matches(stored: &NodeSummary, display_name: &str, metadata: &Value) -> bool {
+    stored.kind == NodeKind::Host
+        && stored.display_name.as_deref() == Some(display_name)
+        && metadata.as_object().is_some_and(|desired| {
+            desired
+                .iter()
+                .all(|(key, value)| stored.metadata.get(key) == Some(value))
+        })
+}
+
+async fn refresh_host_access_token(client: &DeltaHttp, config: &mut DeltaConfig) -> Result<()> {
+    let auth = client
+        .refresh_auth(&RefreshRequest {
+            refresh_token: config.refresh_token.clone(),
+        })
+        .await?;
+    config.access_token = auth.access_token;
+    config.refresh_token = auth.refresh_token;
+    config.token_expires_at = auth.expires_at;
+    config.stack_id = auth.stack.id;
+    save_config(config)
 }
 
 fn default_hostname() -> Option<String> {
@@ -1098,6 +1194,35 @@ impl DeltaHttp {
         self.post_json("/v1/cli/auth/poll", None, req).await
     }
 
+    async fn refresh_auth(&self, req: &RefreshRequest) -> Result<AuthResponse> {
+        self.post_json("/v1/auth/refresh", None, req).await
+    }
+
+    async fn get_bearer_optional<T>(
+        &self,
+        path: &str,
+        access_token: &str,
+    ) -> Result<BearerGetResult<T>>
+    where
+        T: DeserializeOwned,
+    {
+        let response = self
+            .http
+            .get(self.url(path))
+            .header("accept", "application/json")
+            .header("x-request-id", request_id())
+            .bearer_auth(access_token)
+            .send()
+            .await?;
+        match response.status() {
+            reqwest::StatusCode::NOT_FOUND => Ok(BearerGetResult::Missing),
+            reqwest::StatusCode::UNAUTHORIZED => Ok(BearerGetResult::Unauthorized),
+            _ => decode_response("GET", path, response)
+                .await
+                .map(BearerGetResult::Found),
+        }
+    }
+
     async fn register_node(
         &self,
         access_token: &str,
@@ -1170,6 +1295,12 @@ impl DeltaHttp {
     fn url(&self, path: &str) -> String {
         format!("{}/{}", self.base_url, path.trim_start_matches('/'))
     }
+}
+
+enum BearerGetResult<T> {
+    Found(T),
+    Missing,
+    Unauthorized,
 }
 
 async fn decode_response<T>(method: &str, path: &str, response: reqwest::Response) -> Result<T>
@@ -1307,5 +1438,50 @@ mod tests {
         assert!(should_refresh_host_alias(None, "tanmacpro"));
         assert!(!should_refresh_host_alias(Some("tanmacpro"), "tanmacpro"));
         assert!(!should_refresh_host_alias(Some("tanmac"), "tanmacpro"));
+    }
+
+    #[test]
+    fn host_metadata_match_ignores_server_owned_metadata() {
+        let node = NodeSummary {
+            id: Uuid::nil(),
+            alias: None,
+            kind: NodeKind::Host,
+            display_name: Some("tanmacpro".into()),
+            metadata: serde_json::json!({
+                "host_version": "0.2.6",
+                "os_version": "macOS 26.0",
+                "server_owned": true,
+            }),
+            public_key_fingerprint: String::new(),
+            push_enabled: false,
+        };
+
+        assert!(host_metadata_matches(
+            &node,
+            "tanmacpro",
+            &serde_json::json!({
+                "host_version": "0.2.6",
+                "os_version": "macOS 26.0",
+            }),
+        ));
+    }
+
+    #[test]
+    fn host_metadata_match_detects_version_changes() {
+        let node = NodeSummary {
+            id: Uuid::nil(),
+            alias: None,
+            kind: NodeKind::Host,
+            display_name: Some("tanmacpro".into()),
+            metadata: serde_json::json!({ "host_version": "0.2.5" }),
+            public_key_fingerprint: String::new(),
+            push_enabled: false,
+        };
+
+        assert!(!host_metadata_matches(
+            &node,
+            "tanmacpro",
+            &serde_json::json!({ "host_version": "0.2.6" }),
+        ));
     }
 }
