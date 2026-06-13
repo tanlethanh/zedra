@@ -39,16 +39,19 @@ pub struct NodeSummary {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeKind {
-    Mobile,
+    Ios,
+    Android,
     Host,
     Agent,
+    #[serde(other)]
     External,
 }
 
 impl NodeKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Mobile => "mobile",
+            Self::Ios => "ios",
+            Self::Android => "android",
             Self::Host => "host",
             Self::Agent => "agent",
             Self::External => "external",
