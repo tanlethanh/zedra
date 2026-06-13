@@ -1419,6 +1419,7 @@ mod tests {
             }),
             public_key_fingerprint: String::new(),
             push_enabled: false,
+            joined_at: None,
         };
 
         assert!(host_metadata_matches(
@@ -1441,6 +1442,7 @@ mod tests {
             metadata: serde_json::json!({ "host_version": "0.2.5" }),
             public_key_fingerprint: String::new(),
             push_enabled: false,
+            joined_at: None,
         };
 
         assert!(!host_metadata_matches(
