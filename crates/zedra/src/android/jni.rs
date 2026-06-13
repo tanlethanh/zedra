@@ -676,29 +676,88 @@ pub fn show_selection(id: u32, title: &str, message: &str, buttons: &[AlertButto
         .collect();
     jni_call("show_selection", move || {
         with_main_activity_class("show_selection", |env, class| {
-            let title_value = env.new_string(&title).expect("title");
-            let message_value = env.new_string(&message).expect("message");
-            let string_class = env.find_class("java/lang/String").expect("String");
-            let label_array = env
-                .new_object_array(labels.len() as i32, &string_class, JObject::null())
-                .expect("labels");
+            let title_value = match env.new_string(&title) {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_selection title string failed");
+                    return;
+                }
+            };
+            let message_value = match env.new_string(&message) {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_selection message string failed");
+                    return;
+                }
+            };
+            let string_class = match env.find_class("java/lang/String") {
+                Ok(class) => class,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_selection find String class failed");
+                    return;
+                }
+            };
+            let label_array =
+                match env.new_object_array(labels.len() as i32, &string_class, JObject::null()) {
+                    Ok(array) => array,
+                    Err(error) => {
+                        tracing::error!(?error, "jni: show_selection label array failed");
+                        return;
+                    }
+                };
             for (index, label) in labels.iter().enumerate() {
-                let label_value = env.new_string(label).expect("label");
-                env.set_object_array_element(&label_array, index as i32, label_value)
-                    .expect("set label");
+                let label_value = match env.new_string(label) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        tracing::error!(?error, "jni: show_selection label string failed");
+                        return;
+                    }
+                };
+                if let Err(error) =
+                    env.set_object_array_element(&label_array, index as i32, label_value)
+                {
+                    tracing::error!(?error, "jni: show_selection set label failed");
+                    return;
+                }
             }
-            let style_array = env.new_int_array(styles.len() as i32).expect("styles");
-            env.set_int_array_region(&style_array, 0, &styles)
-                .expect("populate styles");
-            let image_array = env
-                .new_object_array(image_names.len() as i32, &string_class, JObject::null())
-                .expect("images");
+            let style_array = match env.new_int_array(styles.len() as i32) {
+                Ok(array) => array,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_selection style array failed");
+                    return;
+                }
+            };
+            if let Err(error) = env.set_int_array_region(&style_array, 0, &styles) {
+                tracing::error!(?error, "jni: show_selection populate styles failed");
+                return;
+            }
+            let image_array = match env.new_object_array(
+                image_names.len() as i32,
+                &string_class,
+                JObject::null(),
+            ) {
+                Ok(array) => array,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_selection image array failed");
+                    return;
+                }
+            };
             for (index, name) in image_names.iter().enumerate() {
-                let name_value = env.new_string(name).expect("image name");
-                env.set_object_array_element(&image_array, index as i32, name_value)
-                    .expect("set image name");
+                let name_value = match env.new_string(name) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        tracing::error!(?error, "jni: show_selection image name string failed");
+                        return;
+                    }
+                };
+                if let Err(error) =
+                    env.set_object_array_element(&image_array, index as i32, name_value)
+                {
+                    tracing::error!(?error, "jni: show_selection set image name failed");
+                    return;
+                }
             }
-            env.call_static_method(
+            if let Err(error) = env.call_static_method(
                 class,
                 "showSelection",
                 "(ILjava/lang/String;Ljava/lang/String;[Ljava/lang/String;[I[Ljava/lang/String;)V",
@@ -710,8 +769,9 @@ pub fn show_selection(id: u32, title: &str, message: &str, buttons: &[AlertButto
                     JValue::Object(&style_array),
                     JValue::Object(&image_array),
                 ],
-            )
-            .expect("showSelection");
+            ) {
+                tracing::error!(?error, "jni: showSelection call failed");
+            }
         });
     });
 }
@@ -730,34 +790,103 @@ pub fn show_list_picker(id: u32, title: &str, message: &str, items: &[ListPicker
         .collect();
     jni_call("show_list_picker", move || {
         with_main_activity_class("show_list_picker", |env, class| {
-            let title_value = env.new_string(&title).expect("title");
-            let message_value = env.new_string(&message).expect("message");
-            let string_class = env.find_class("java/lang/String").expect("String");
-            let label_array = env
-                .new_object_array(labels.len() as i32, &string_class, JObject::null())
-                .expect("labels");
+            let title_value = match env.new_string(&title) {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_list_picker title string failed");
+                    return;
+                }
+            };
+            let message_value = match env.new_string(&message) {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_list_picker message string failed");
+                    return;
+                }
+            };
+            let string_class = match env.find_class("java/lang/String") {
+                Ok(class) => class,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_list_picker find String class failed");
+                    return;
+                }
+            };
+            let label_array =
+                match env.new_object_array(labels.len() as i32, &string_class, JObject::null()) {
+                    Ok(array) => array,
+                    Err(error) => {
+                        tracing::error!(?error, "jni: show_list_picker label array failed");
+                        return;
+                    }
+                };
             for (index, label) in labels.iter().enumerate() {
-                let label_value = env.new_string(label).expect("label");
-                env.set_object_array_element(&label_array, index as i32, label_value)
-                    .expect("set label");
+                let label_value = match env.new_string(label) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        tracing::error!(?error, "jni: show_list_picker label string failed");
+                        return;
+                    }
+                };
+                if let Err(error) =
+                    env.set_object_array_element(&label_array, index as i32, label_value)
+                {
+                    tracing::error!(?error, "jni: show_list_picker set label failed");
+                    return;
+                }
             }
-            let subtitle_array = env
-                .new_object_array(subtitles.len() as i32, &string_class, JObject::null())
-                .expect("subtitles");
+            let subtitle_array = match env.new_object_array(
+                subtitles.len() as i32,
+                &string_class,
+                JObject::null(),
+            ) {
+                Ok(array) => array,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_list_picker subtitle array failed");
+                    return;
+                }
+            };
             for (index, subtitle) in subtitles.iter().enumerate() {
-                let subtitle_value = env.new_string(subtitle).expect("subtitle");
-                env.set_object_array_element(&subtitle_array, index as i32, subtitle_value)
-                    .expect("set subtitle");
+                let subtitle_value = match env.new_string(subtitle) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        tracing::error!(?error, "jni: show_list_picker subtitle string failed");
+                        return;
+                    }
+                };
+                if let Err(error) =
+                    env.set_object_array_element(&subtitle_array, index as i32, subtitle_value)
+                {
+                    tracing::error!(?error, "jni: show_list_picker set subtitle failed");
+                    return;
+                }
             }
-            let image_array = env
-                .new_object_array(image_names.len() as i32, &string_class, JObject::null())
-                .expect("images");
+            let image_array = match env.new_object_array(
+                image_names.len() as i32,
+                &string_class,
+                JObject::null(),
+            ) {
+                Ok(array) => array,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_list_picker image array failed");
+                    return;
+                }
+            };
             for (index, image) in image_names.iter().enumerate() {
-                let image_value = env.new_string(image).expect("image");
-                env.set_object_array_element(&image_array, index as i32, image_value)
-                    .expect("set image");
+                let image_value = match env.new_string(image) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        tracing::error!(?error, "jni: show_list_picker image string failed");
+                        return;
+                    }
+                };
+                if let Err(error) =
+                    env.set_object_array_element(&image_array, index as i32, image_value)
+                {
+                    tracing::error!(?error, "jni: show_list_picker set image failed");
+                    return;
+                }
             }
-            env.call_static_method(
+            if let Err(error) = env.call_static_method(
                 class,
                 "showListPicker",
                 "(ILjava/lang/String;Ljava/lang/String;[Ljava/lang/String;[Ljava/lang/String;[Ljava/lang/String;)V",
@@ -769,8 +898,9 @@ pub fn show_list_picker(id: u32, title: &str, message: &str, items: &[ListPicker
                     JValue::Object(&subtitle_array),
                     JValue::Object(&image_array),
                 ],
-            )
-            .expect("showListPicker");
+            ) {
+                tracing::error!(?error, "jni: showListPicker call failed");
+            }
         });
     });
 }

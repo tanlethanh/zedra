@@ -72,7 +72,12 @@ impl ShellSession {
                         | libc::ECHONL
                         | libc::ECHOCTL
                         | libc::ECHOKE);
-                    libc::tcsetattr(fd, libc::TCSANOW, &t);
+                    if libc::tcsetattr(fd, libc::TCSANOW, &t) != 0 {
+                        tracing::warn!(
+                            "tcsetattr failed to disable PTY echo: {}",
+                            std::io::Error::last_os_error()
+                        );
+                    }
                 }
             }
         }

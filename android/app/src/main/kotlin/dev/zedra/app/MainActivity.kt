@@ -33,6 +33,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.credentials.CredentialManager
 import androidx.credentials.CredentialManagerCallback
+import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.GetCredentialResponse
 import androidx.credentials.exceptions.GetCredentialCancellationException
@@ -402,8 +403,10 @@ class MainActivity : AppCompatActivity() {
                     object : CredentialManagerCallback<GetCredentialResponse, GetCredentialException> {
                         override fun onResult(result: GetCredentialResponse) {
                             val credential = result.credential
-                            if (credential is GoogleIdTokenCredential) {
-                                nativeDeltaGoogleSignInResult(callbackId, credential.idToken, credential.id)
+                            if (credential is CustomCredential &&
+                                credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+                                val gid = GoogleIdTokenCredential.createFrom(credential.data)
+                                nativeDeltaGoogleSignInResult(callbackId, gid.idToken, gid.id)
                             } else {
                                 nativeDeltaGoogleSignInError(callbackId, "Unexpected credential type: ${credential.type}")
                             }

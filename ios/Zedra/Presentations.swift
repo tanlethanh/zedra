@@ -432,7 +432,7 @@ enum NativePresentationBridge {
         var name = (imageName as NSString).lastPathComponent
         if name.hasSuffix(".svg") { name = String(name.dropLast(4)) }
         guard let raw = UIImage(named: name) else { return nil }
-        let inset = iconInsets[imageName] ?? 0
+        let inset = iconInsets[name] ?? 0
         let canvas = CGSize(width: actionIconPointSize, height: actionIconPointSize)
         let renderer = UIGraphicsImageRenderer(size: canvas)
         let rendered = renderer.image { _ in

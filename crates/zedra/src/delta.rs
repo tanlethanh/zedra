@@ -129,6 +129,12 @@ pub struct DeltaStatus {
     pub push_registered: bool,
 }
 
+pub struct CurrentClientDeltaInfo {
+    pub delta_url: String,
+    pub stack_id: Uuid,
+    pub client_node_id: Uuid,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct DeltaState {
     #[serde(default = "default_base_url")]
@@ -205,6 +211,16 @@ fn default_base_url() -> String {
 
 pub fn status() -> DeltaStatus {
     load_state().unwrap_or_default().status()
+}
+
+pub fn current_client_info() -> Option<CurrentClientDeltaInfo> {
+    let state = load_state().ok()?;
+    state.access_token.as_ref()?;
+    Some(CurrentClientDeltaInfo {
+        delta_url: state.base_url,
+        stack_id: state.stack_id?,
+        client_node_id: state.mobile_node_id?,
+    })
 }
 
 pub fn sign_out() -> Result<DeltaStatus> {
@@ -289,6 +305,7 @@ async fn sign_in_with_oauth(
     state.expires_at = Some(auth.expires_at);
     state.user_id = Some(auth.user.id);
     state.stack_id = Some(auth.stack.id);
+    state.mobile_node_id = None;
     state.email = email.or(state.email);
     save_state(&state)?;
 
@@ -346,8 +363,6 @@ pub async fn register_push_token(
 
 /// Result returned when the mobile app registers a host node with Delta.
 pub struct HostNodeRegistrationResult {
-    pub delta_url: String,
-    pub stack_id: Uuid,
     /// The host's node_id within this stack.
     pub host_node_id: Uuid,
     /// `true` if the host was newly registered; `false` if it was already known to Delta.
@@ -376,8 +391,6 @@ pub async fn register_paired_host_node(
     let resp: NodeRegistrationResponse =
         post_bearer(&mut state, &format!("/v1/stacks/{stack_id}/nodes"), &req).await?;
     Ok(Some(HostNodeRegistrationResult {
-        delta_url: state.base_url.clone(),
-        stack_id,
         host_node_id: resp.node.id,
         created: resp.created,
     }))
@@ -570,11 +583,18 @@ fn delta_url(state: &DeltaState, path: &str) -> String {
 }
 
 fn http() -> reqwest::Client {
+    let platform = if cfg!(target_os = "ios") {
+        "zedra-ios"
+    } else if cfg!(target_os = "android") {
+        "zedra-android"
+    } else {
+        "zedra"
+    };
     reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
-        .user_agent(format!("zedra-ios/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("{}/{}", platform, env!("CARGO_PKG_VERSION")))
         .build()
-        .expect("valid Delta HTTP client")
+        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 fn parse_push_provider(provider: &str) -> Result<PushProvider> {

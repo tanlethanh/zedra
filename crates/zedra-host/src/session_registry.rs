@@ -292,6 +292,10 @@ pub struct ServerSession {
     pub terminal_agent_states: Mutex<HashMap<String, AgentState>>,
     /// Per-terminal idle-revert timers. Aborted when a new state transition arrives.
     terminal_idle_timers: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
+    /// Per-terminal generation, bumped on every `set_agent_state`. The idle-revert
+    /// task captures the generation at spawn and only writes `Idle` if it still
+    /// matches, so a newer transition during the 30s sleep is not clobbered.
+    terminal_state_generation: Mutex<HashMap<String, u64>>,
 }
 
 #[derive(Clone)]
@@ -1151,6 +1155,35 @@ impl SessionRegistry {
         })
     }
 
+    /// Store `client_in_foreground` only while `(client_pubkey, connection_id)` is
+    /// still the active client. The dispatch gate validates the active client once
+    /// at entry; this re-checks under the `active_client` lock at write time so a
+    /// superseded connection cannot flip the foreground flag in the TOCTOU window.
+    pub async fn set_foreground_if_active(
+        &self,
+        session_id: &str,
+        client_pubkey: [u8; 32],
+        connection_id: u64,
+        in_foreground: bool,
+    ) {
+        let sessions = self.sessions.lock().await;
+        let session = sessions.get(session_id).cloned();
+        drop(sessions);
+        let Some(session) = session else {
+            return;
+        };
+        // Hold the active_client lock across the store so detach cannot race in.
+        let active = session.active_client.lock().await;
+        let is_active = active.as_ref().is_some_and(|active| {
+            active.client_pubkey() == client_pubkey && active.id() == connection_id
+        });
+        if is_active {
+            session
+                .client_in_foreground
+                .store(in_foreground, Ordering::Relaxed);
+        }
+    }
+
     /// Find the first session that has `client_pubkey` in its ACL.
     ///
     /// Used during reconnect when the client's stored session_id is stale
@@ -1341,6 +1374,7 @@ impl ServerSession {
             client_in_foreground: AtomicBool::new(true),
             terminal_agent_states: Mutex::new(HashMap::new()),
             terminal_idle_timers: Mutex::new(HashMap::new()),
+            terminal_state_generation: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1527,6 +1561,15 @@ impl ServerSession {
         agent_session_id: &str,
         state: AgentState,
     ) {
+        // Bump the generation for this terminal; the idle-revert task captures this
+        // value and only writes Idle if it still matches, so a newer transition
+        // during the 30s sleep is not clobbered.
+        let my_gen = {
+            let mut gens = self.terminal_state_generation.lock().await;
+            let entry = gens.entry(terminal_id.clone()).or_insert(0);
+            *entry = entry.wrapping_add(1);
+            *entry
+        };
         // Abort any existing idle-revert timer for this terminal.
         {
             let mut timers = self.terminal_idle_timers.lock().await;
@@ -1548,6 +1591,12 @@ impl ServerSession {
                 let Some(session) = weak.upgrade() else {
                     return;
                 };
+                // Hold the generation lock across the check and the Idle write so a
+                // newer set_agent_state cannot bump the generation in between.
+                let gens = session.terminal_state_generation.lock().await;
+                if gens.get(&tid).copied() != Some(my_gen) {
+                    return;
+                }
                 {
                     let mut timers = session.terminal_idle_timers.lock().await;
                     timers.remove(&tid);

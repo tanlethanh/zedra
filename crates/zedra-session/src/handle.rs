@@ -32,6 +32,7 @@ struct SessionHandleInner {
     observer_rpc_supported: AtomicBool,
     docs_tree_rpc_supported: AtomicBool,
     fs_search_rpc_supported: AtomicBool,
+    set_app_state_rpc_supported: AtomicBool,
 }
 
 impl Drop for SessionHandleInner {
@@ -67,6 +68,7 @@ impl SessionHandle {
             observer_rpc_supported: AtomicBool::new(true),
             docs_tree_rpc_supported: AtomicBool::new(true),
             fs_search_rpc_supported: AtomicBool::new(true),
+            set_app_state_rpc_supported: AtomicBool::new(true),
         }))
     }
 
@@ -474,6 +476,21 @@ impl SessionHandle {
         incompatible
     }
 
+    fn downgrade_set_app_state_rpc(&self, err: &str) -> bool {
+        let msg = err.to_lowercase();
+        let incompatible = msg.contains("unknown variant")
+            || msg.contains("deserialize")
+            || msg.contains("decode")
+            || msg.contains("invalid type");
+        if incompatible {
+            self.0
+                .set_app_state_rpc_supported
+                .store(false, Ordering::Release);
+            tracing::warn!("SetAppState RPC unsupported, disabling: {}", err);
+        }
+        incompatible
+    }
+
     // ─── RPC: git ────────────────────────────────────────────────────────────
 
     pub async fn git_status(&self) -> Result<GitStatusResult> {
@@ -627,9 +644,15 @@ impl SessionHandle {
     /// Notify the host of the app's foreground/background state.
     /// Fire-and-forget: errors are logged but not surfaced.
     pub async fn notify_app_state(&self, in_foreground: bool) {
+        if !self.0.set_app_state_rpc_supported.load(Ordering::Acquire) {
+            return;
+        }
         let result: Result<SetAppStateResult> = self.call(SetAppStateReq { in_foreground }).await;
         if let Err(e) = result {
-            tracing::debug!(error = %e, "notify_app_state failed");
+            // Stop re-issuing the RPC once the host proves it cannot handle it.
+            if !self.downgrade_set_app_state_rpc(&e.to_string()) {
+                tracing::debug!(error = %e, "notify_app_state failed");
+            }
         }
     }
 
@@ -637,12 +660,14 @@ impl SessionHandle {
         &self,
         delta_url: String,
         stack_id: uuid::Uuid,
+        client_node_id: uuid::Uuid,
         host_node_id: uuid::Uuid,
     ) {
         let result: Result<SetClientDeltaInfoResult> = self
             .call(SetClientDeltaInfoReq {
                 delta_url,
                 stack_id,
+                client_node_id,
                 host_node_id,
             })
             .await;

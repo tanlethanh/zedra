@@ -210,6 +210,11 @@ enum ZedraDeltaPushBridge {
                 }
 
                 lock.lock()
+                if pendingCallbackID != nil {
+                    lock.unlock()
+                    fail(callbackID, "Push token request already in progress")
+                    return
+                }
                 pendingCallbackID = callbackID
                 lock.unlock()
 
@@ -299,7 +304,7 @@ private final class ZedraDeltaAppleSignInCoordinator: NSObject, ASAuthorizationC
                 zedra_ios_delta_apple_sign_in_result(callbackID, tokenPtr, nil)
             }
         }
-        ZedraDeltaAppleSignIn.clearCoordinator()
+        ZedraDeltaAppleSignIn.clearCoordinator(callbackID: callbackID)
     }
 
     func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
@@ -309,7 +314,7 @@ private final class ZedraDeltaAppleSignInCoordinator: NSObject, ASAuthorizationC
         } else {
             fail(error.localizedDescription)
         }
-        ZedraDeltaAppleSignIn.clearCoordinator()
+        ZedraDeltaAppleSignIn.clearCoordinator(callbackID: callbackID)
     }
 
     func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
@@ -324,7 +329,7 @@ private final class ZedraDeltaAppleSignInCoordinator: NSObject, ASAuthorizationC
 
 enum ZedraDeltaAppleSignIn {
     private static let lock = NSLock()
-    private static var coordinator: ZedraDeltaAppleSignInCoordinator?
+    private static var coordinators: [UInt32: ZedraDeltaAppleSignInCoordinator] = [:]
 
     static func start(callbackID: UInt32) {
         DispatchQueue.main.async {
@@ -333,7 +338,7 @@ enum ZedraDeltaAppleSignIn {
 
             let coord = ZedraDeltaAppleSignInCoordinator(callbackID: callbackID)
             lock.lock()
-            coordinator = coord
+            coordinators[callbackID] = coord
             lock.unlock()
 
             let controller = ASAuthorizationController(authorizationRequests: [request])
@@ -343,9 +348,9 @@ enum ZedraDeltaAppleSignIn {
         }
     }
 
-    static func clearCoordinator() {
+    static func clearCoordinator(callbackID: UInt32) {
         lock.lock()
-        coordinator = nil
+        coordinators.removeValue(forKey: callbackID)
         lock.unlock()
     }
 }

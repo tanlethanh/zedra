@@ -2126,9 +2126,14 @@ async fn dispatch(
         }
 
         ZedraMessage::SetAppState(msg) => {
-            session
-                .client_in_foreground
-                .store(msg.in_foreground, Ordering::Relaxed);
+            registry
+                .set_foreground_if_active(
+                    &session.id,
+                    client_pubkey,
+                    active_connection_id,
+                    msg.in_foreground,
+                )
+                .await;
             tracing::info!(
                 in_foreground = msg.in_foreground,
                 "client app state updated"
@@ -2140,17 +2145,15 @@ async fn dispatch(
             let info = crate::delta::ClientDeltaInfo {
                 delta_url: msg.delta_url.clone(),
                 stack_id: msg.stack_id,
+                client_node_id: msg.client_node_id,
                 host_node_id: msg.host_node_id,
-                client_pubkey,
             };
-            if let Err(err) = crate::delta::save_client_delta_info(&state.workdir, &info) {
-                tracing::warn!("Failed to persist client delta info: {err:#}");
-            }
             match crate::delta::DeltaClient::from_client_info(&info) {
                 Ok(client) => {
                     *state.delta.write().await = Some(client);
                     tracing::info!(
                         stack_id = %msg.stack_id,
+                        client_node_id = %msg.client_node_id,
                         host_node_id = %msg.host_node_id,
                         "Delta client updated from connected mobile client"
                     );
@@ -2546,8 +2549,11 @@ async fn dispatch(
         ZedraMessage::Subscribe(msg) => {
             session.touch().await;
             // Assume the client is in the foreground on a fresh connection; the app
-            // will send SetAppState when it actually backgrounds.
-            session.client_in_foreground.store(true, Ordering::Relaxed);
+            // will send SetAppState when it actually backgrounds. Guard on the active
+            // client so a superseded Subscribe cannot force-foreground the session.
+            registry
+                .set_foreground_if_active(&session.id, client_pubkey, active_connection_id, true)
+                .await;
             // Bridge: store a regular tokio sender in the session; spawn a task
             // that forwards events from it to the irpc channel toward the client.
             let (bridge_tx, mut bridge_rx) = tokio::sync::mpsc::channel::<HostEvent>(32);

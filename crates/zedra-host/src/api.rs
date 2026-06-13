@@ -531,7 +531,12 @@ async fn receive_agent_hook_handler(
         zedra_rpc::encode_endpoint_addr(&addr).unwrap_or_default()
     };
     let delta = s.daemon_state.delta.read().await.clone();
-    let workdir = s.daemon_state.workdir.clone();
+    // Prefer the owning session's workdir so workspace-scoped hook lookups hit the
+    // right state DB; fall back to the daemon default for sessions without one.
+    let workdir = session
+        .workdir
+        .clone()
+        .unwrap_or_else(|| s.daemon_state.workdir.clone());
     let payload = req.payload.clone();
 
     tokio::spawn(async move {

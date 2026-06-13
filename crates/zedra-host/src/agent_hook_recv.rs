@@ -72,7 +72,7 @@ pub trait HookReceiver {
         }
     }
 
-    /// Shared Delta send: push notification to the stack. Body is reduced to
+    /// Shared Delta send: push notification to the previous signed-in client. Body is reduced to
     /// its first non-empty line and truncated to 100 chars.
     async fn send_notification(
         &self,
@@ -87,7 +87,7 @@ pub trait HookReceiver {
         // Re-enable by restoring the parallel `update_live_activity_for_stack`
         // call and the `activity_result` handling below.
         let notify_result = client
-            .send_notification_to_stack(
+            .send_notification_to_client(
                 notification.title,
                 body,
                 Some("agent".to_string()),
@@ -169,10 +169,8 @@ impl HookReceiver for ClaudeHookReceiver {
     async fn receive(&self, ctx: HookContext) -> Result<()> {
         // Claude Code pipes hook JSON with `hook_event_name` and snake_case `session_id`.
         let Some(event_name) = agent_utils::payload_string(&ctx.payload, "hook_event_name") else {
-            warn!(
-                "Claude hook payload missing or empty hook_event_name; ignoring, {:?}",
-                ctx.payload
-            );
+            // Do not log ctx.payload: it can carry user content (telemetry-privacy rule).
+            warn!("Claude hook payload missing or empty hook_event_name; ignoring");
             return Ok(());
         };
         let agent_session_id = agent_utils::payload_string(&ctx.payload, "session_id");

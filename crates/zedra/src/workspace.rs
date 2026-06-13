@@ -101,6 +101,16 @@ pub struct Workspace {
     host_delta_registered: bool,
 }
 
+impl Drop for Workspace {
+    fn drop(&mut self) {
+        // GPUI Task<()> fields cancel on drop, but the raw tokio JoinHandle does
+        // not — abort it so the foreground listener does not outlive the workspace.
+        if let Some(handle) = self._foreground_state_listener.take() {
+            handle.abort();
+        }
+    }
+}
+
 pub(crate) enum PendingWorkspaceAction {
     DisconnectSession,
     DeleteTerminal {
@@ -1119,10 +1129,17 @@ impl Workspace {
                         host_node_id = %result.host_node_id,
                         "Delta host node registered"
                     );
+                    let Some(client_info) = crate::delta::current_client_info() else {
+                        tracing::warn!(
+                            "Delta current client info unavailable after host registration"
+                        );
+                        return;
+                    };
                     handle
                         .set_client_delta_info(
-                            result.delta_url,
-                            result.stack_id,
+                            client_info.delta_url,
+                            client_info.stack_id,
+                            client_info.client_node_id,
                             result.host_node_id,
                         )
                         .await;

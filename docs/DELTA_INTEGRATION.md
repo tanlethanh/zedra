@@ -29,13 +29,13 @@ Host operator runs `zedra auth login` → full `DeltaConfig` saved to `~/.config
 
 ### Anonymous (signed only, no sign-in)
 
-Mobile client connects, its Delta sign-in active → registers host `delta.key` public key with own Delta stack, then sends `SetClientDeltaInfo` to host via RPC. Host persists to `~/.config/zedra/workspaces/<hash>/delta_client.json`, constructs `DeltaClient` using only `delta.key` plus `stack_id` / `node_id`. No bearer token needed — subsequent host-to-Delta calls use signed-request path.
+Mobile client connects, its Delta sign-in active → registers host `delta.key` public key with own Delta stack, then sends `SetClientDeltaInfo` with `stack_id`, `client_node_id`, and `host_node_id` to host via RPC. Host persists to `~/.config/zedra/workspaces/<hash>/delta_client.json`, constructs `DeltaClient` using only `delta.key` plus the Delta node IDs. No bearer token needed — subsequent host-to-Delta calls use signed-request path.
 
 **Priority**: signed-in (`delta.json`) beats anonymous (`delta_client.json`). On daemon startup, `DeltaClient::try_load_for_workspace` tries signed-in first, then anonymous.
 
 ## Host node registration flow
 
-```
+```text
 Mobile app signs in to Delta
         │
         ▼
@@ -48,10 +48,12 @@ try_register_host_with_delta()
   → POST /v1/stacks/{stack_id}/nodes  (upsert, bearer auth)
         │
         ▼
- HostNodeRegistrationResult { delta_url, stack_id, host_node_id }
+ HostNodeRegistrationResult { host_node_id }
         │
         ▼
-session_handle.set_client_delta_info(...)
+app reads current client info from DeltaState
+  → { delta_url, stack_id, client_node_id }
+  → session_handle.set_client_delta_info(...)
   → SetClientDeltaInfo RPC → host
         │
         ▼
@@ -67,7 +69,7 @@ Signed-in daemon starts → fetches its host node, compares host-owned metadata 
 
 ## Push notifications
 
-Agent hook receivers (`ClaudeHookReceiver`, `CodexHookReceiver`, `OpenCodeHookReceiver`, `PiHookReceiver`, `HermesHookReceiver`) call `DeltaClient::send_notification_to_stack` when mobile client backgrounded. `DeltaClient` read from `DaemonState.delta` (an `Arc<RwLock<...>>`), updated when client sends `SetClientDeltaInfo`.
+Agent hook receivers (`ClaudeHookReceiver`, `CodexHookReceiver`, `OpenCodeHookReceiver`, `PiHookReceiver`, `HermesHookReceiver`) call `DeltaClient::send_notification_to_client` when the mobile client is backgrounded. Delivery targets the previous signed-in mobile client's persisted `client_node_id`; it never broadcasts to the stack. `DeltaClient` is read from `DaemonState.delta` (an `Arc<RwLock<...>>`) and updated when the client sends `SetClientDeltaInfo`.
 
 Notifications sent only when `session.client_in_foreground == false` (updated by mobile app via `SetAppState`).
 
@@ -97,9 +99,10 @@ For `zedra send` (notification or `--live-activity`), pass `--workdir` pointing 
 
 ## Key types
 
-```
+```text
 DeltaClient               — reusable API client; works in both signed-in and anonymous modes
 DeltaConfig               — loaded from delta.json; access_token empty in anonymous mode
-ClientDeltaInfo           — saved from SetClientDeltaInfo RPC; identifies the host node in the client's stack
-HostNodeRegistrationResult — returned by register_paired_host_node; carries delta_url, stack_id, host_node_id
+ClientDeltaInfo           — saved from SetClientDeltaInfo RPC; identifies the previous client and host nodes in the stack
+CurrentClientDeltaInfo     — app-owned current mobile Delta info read from DeltaState
+HostNodeRegistrationResult — returned by register_paired_host_node; carries host_node_id and created
 ```

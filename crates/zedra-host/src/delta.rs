@@ -12,7 +12,6 @@ use crate::identity;
 
 const CONFIG_FILE: &str = "delta.json";
 const SIGNING_KEY_FILE: &str = "delta.key";
-const CLIENT_DELTA_INFO_FILE: &str = "delta_client.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeltaConfig {
@@ -702,38 +701,20 @@ fn default_hostname() -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Per-workspace ClientDeltaInfo — persisted when a mobile client connects
+// ClientDeltaInfo — reported by a mobile client, held in server memory only
 // ---------------------------------------------------------------------------
 
-/// Saved by the host daemon when the mobile client reports its Delta info.
-/// Allows the host to send push notifications without being signed in.
+/// Reported by the mobile client when it connects. Lets the host send push
+/// notifications without being signed in. Held in `DaemonState.delta` for the
+/// life of the daemon and never written to disk; a reconnecting client
+/// re-sends it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientDeltaInfo {
     pub delta_url: String,
     pub stack_id: Uuid,
+    /// The last connected signed-in mobile client's node ID.
+    pub client_node_id: Uuid,
     pub host_node_id: Uuid,
-    /// The connected mobile client's iroh public key (used for ed25519 signing).
-    pub client_pubkey: [u8; 32],
-}
-
-pub fn client_delta_info_path(workdir: &Path) -> Result<PathBuf> {
-    Ok(identity::workspace_config_dir(workdir)?.join(CLIENT_DELTA_INFO_FILE))
-}
-
-pub fn save_client_delta_info(workdir: &Path, info: &ClientDeltaInfo) -> Result<()> {
-    let path = client_delta_info_path(workdir)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_vec_pretty(info)?;
-    identity::write_secret_file(&path, &json)?;
-    Ok(())
-}
-
-pub fn load_client_delta_info(workdir: &Path) -> Option<ClientDeltaInfo> {
-    let path = client_delta_info_path(workdir).ok()?;
-    let json = std::fs::read_to_string(&path).ok()?;
-    serde_json::from_str(&json).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -744,6 +725,7 @@ pub fn load_client_delta_info(workdir: &Path) -> Option<ClientDeltaInfo> {
 /// share across calls to avoid repeated config and key reads.
 pub struct DeltaClient {
     config: DeltaConfig,
+    client_node_id: Option<Uuid>,
     signing_key: SigningKey,
     http: DeltaHttp,
 }
@@ -756,6 +738,7 @@ impl DeltaClient {
         let http = DeltaHttp::new(&config.delta_url);
         Ok(Self {
             config,
+            client_node_id: None,
             signing_key,
             http,
         })
@@ -788,28 +771,10 @@ impl DeltaClient {
         let http = DeltaHttp::new(&config.delta_url);
         Ok(Arc::new(Self {
             config,
+            client_node_id: Some(info.client_node_id),
             signing_key,
             http,
         }))
-    }
-
-    /// Try to load an anonymous client from per-workspace delta_client.json.
-    pub fn try_load_from_client_info(workdir: &Path) -> Option<Arc<Self>> {
-        let info = load_client_delta_info(workdir)?;
-        match Self::from_client_info(&info) {
-            Ok(client) => Some(client),
-            Err(err) => {
-                tracing::debug!("Failed to build Delta client from saved client info: {err:#}");
-                None
-            }
-        }
-    }
-
-    /// Load a Delta client for the given workspace.
-    /// Tries signed-in config (delta.json) first; falls back to the anonymous
-    /// client info reported by the last connected mobile client.
-    pub fn try_load_for_workspace(workdir: &Path) -> Option<Arc<Self>> {
-        Self::try_load().or_else(|| Self::try_load_from_client_info(workdir))
     }
 
     /// Signed request helper — pre-binds node_id and signing_key from this client.
@@ -994,19 +959,22 @@ impl DeltaClient {
         .await
     }
 
-    /// Broadcast a push notification to all nodes in this stack.
-    pub async fn send_notification_to_stack(
+    /// Send a push notification to the last connected signed-in mobile client.
+    pub async fn send_notification_to_client(
         &self,
         title: String,
         body: Option<String>,
         category: Option<String>,
         deeplink: Option<String>,
     ) -> Result<NotificationSendResponse> {
+        let client_node_id = self
+            .client_node_id
+            .context("no previous signed-in mobile client is known for this workspace")?;
         self.signed(
             "POST",
             &format!("/v1/stacks/{}/notifications", self.config.stack_id),
             Some(&NotificationSendRequest {
-                target_node_id: None,
+                target_node_id: Some(client_node_id),
                 title,
                 body,
                 category,
@@ -1174,9 +1142,13 @@ struct DeltaHttp {
 
 impl DeltaHttp {
     fn new(base_url: &str) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
-            http: reqwest::Client::new(),
+            http,
         }
     }
 
@@ -1366,14 +1338,12 @@ mod tests {
         assert_eq!(first.to_bytes(), second.to_bytes());
         assert_eq!(std::fs::read(path).unwrap(), first.to_bytes());
     }
-    use tempfile::TempDir;
-
     fn sample_info() -> ClientDeltaInfo {
         ClientDeltaInfo {
             delta_url: "https://delta.example.com".into(),
             stack_id: uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+            client_node_id: uuid::Uuid::parse_str("33333333-3333-3333-3333-333333333333").unwrap(),
             host_node_id: uuid::Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap(),
-            client_pubkey: [0u8; 32],
         }
     }
 
@@ -1384,27 +1354,8 @@ mod tests {
         let decoded: ClientDeltaInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.delta_url, info.delta_url);
         assert_eq!(decoded.stack_id, info.stack_id);
+        assert_eq!(decoded.client_node_id, info.client_node_id);
         assert_eq!(decoded.host_node_id, info.host_node_id);
-        assert_eq!(decoded.client_pubkey, info.client_pubkey);
-    }
-
-    #[test]
-    fn client_delta_info_save_load_roundtrip() {
-        let dir = TempDir::new().unwrap();
-        let workdir = dir.path();
-        let info = sample_info();
-        save_client_delta_info(workdir, &info).unwrap();
-        let loaded = load_client_delta_info(workdir).expect("should load saved info");
-        assert_eq!(loaded.delta_url, info.delta_url);
-        assert_eq!(loaded.stack_id, info.stack_id);
-        assert_eq!(loaded.host_node_id, info.host_node_id);
-        assert_eq!(loaded.client_pubkey, info.client_pubkey);
-    }
-
-    #[test]
-    fn load_client_delta_info_returns_none_when_missing() {
-        let dir = TempDir::new().unwrap();
-        assert!(load_client_delta_info(dir.path()).is_none());
     }
 
     #[test]

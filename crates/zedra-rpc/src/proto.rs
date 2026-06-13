@@ -606,6 +606,7 @@ pub struct SetAppStateResult {}
 pub struct SetClientDeltaInfoReq {
     pub delta_url: String,
     pub stack_id: Uuid,
+    pub client_node_id: Uuid,
     pub host_node_id: Uuid,
 }
 
@@ -1658,12 +1659,14 @@ mod tests {
         let req = SetClientDeltaInfoReq {
             delta_url: "https://delta.example.com".into(),
             stack_id: Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+            client_node_id: Uuid::parse_str("33333333-3333-3333-3333-333333333333").unwrap(),
             host_node_id: Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap(),
         };
         let encoded = postcard::to_allocvec(&req).unwrap();
         let decoded: SetClientDeltaInfoReq = postcard::from_bytes(&encoded).unwrap();
         assert_eq!(decoded.delta_url, req.delta_url);
         assert_eq!(decoded.stack_id, req.stack_id);
+        assert_eq!(decoded.client_node_id, req.client_node_id);
         assert_eq!(decoded.host_node_id, req.host_node_id);
     }
 

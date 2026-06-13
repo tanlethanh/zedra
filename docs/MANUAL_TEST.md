@@ -158,7 +158,7 @@
 2. Run `zedra setup claude`, `zedra setup codex`, `zedra setup opencode`, and `zedra setup pi`
 3. Start a new Claude, Codex, opencode, and pi session
 4. Submit a prompt, trigger a tool approval, use Add to Chat from a Zedra editor selection when an agent terminal is active, and let the task finish
-5. Expected: each agent event produces a Delta notification without exposing prompt, tool output, diff, file path, or terminal contents
+5. Expected: each agent event produces a Delta notification only on the previous signed-in mobile client, without notifying other devices in the stack or exposing prompt, tool output, diff, file path, or terminal contents
 6. Expected for pi: the working indicator turns on when a prompt is submitted and a `Pi completed` notification fires on turn end; pi has no approval event, so no waiting/approval notification is expected
 7. If an iOS Live Activity token is registered for the same `activity_id`, expected: the Live Activity changes to working, waiting, selection, and done/end states as the hooks fire
 8. Run each setup command again
@@ -222,8 +222,8 @@ CLI push and Live Activity commands without host credentials.
    ```sh
    cat ~/.config/zedra/workspaces/$(zedra status --json | jq -r .workspace_hash)/delta_client.json
    ```
-5. Expected: a JSON file exists with `delta_url`, `stack_id`, `host_node_id`,
-   and `client_pubkey` fields.
+5. Expected: a JSON file exists with `delta_url`, `stack_id`, `client_node_id`,
+   and `host_node_id` fields, with no transport client public key.
 6. Expected: host daemon log contains a line matching
    `Delta host node registered  created=true host_node_id=…` (or `created=false`
    if the same key was registered before).
@@ -1373,3 +1373,36 @@ id in production). The trailing shows the aggregate `done/total` rollup.
    stuck closed.
 8. Confirm the old inline search bar no longer appears at the top of the file
    explorer list.
+
+## Delta Sign-In and Notification Channel (iOS and Android)
+
+### Google sign-in (Android)
+1. On a fresh install, open the Delta sign-in sheet and choose **Continue with Google**.
+2. Pick a Google account in the system credential dialog.
+3. Expected: sign-in completes (the ID token reaches `nativeDeltaGoogleSignInResult`);
+   no "Unexpected credential type" error. Previously every attempt fell through to the
+   error branch because the credential is a `CustomCredential`.
+
+### Apple sign-in (iOS)
+1. Open the Delta sign-in sheet and choose **Continue with Apple**.
+2. Cancel the system sheet, then immediately start Apple sign-in again and complete it.
+3. Expected: the second flow completes and delivers its callback; cancelling the first
+   does not orphan or cross-wire the second (coordinators are now keyed per `callbackID`).
+
+### Push-token request overlap (iOS)
+1. Trigger push-token registration twice in quick succession (e.g. rapid re-entry of the
+   notifications prompt).
+2. Expected: the second request fails fast with "Push token request already in progress"
+   rather than silently orphaning the first callback.
+
+### FCM notification before first launch (Android)
+1. Force-stop the app so `MainActivity.onCreate` has not run since install/clear-data.
+2. Send a Delta push (or use the backend test hook) while the app is not running.
+3. Expected: the notification appears. In logcat, confirm `ZedraMessagingService` creates the
+   `zedra_delta` channel before `notify(...)`. Without this, the first notification was dropped
+   on Android O+ because the channel did not exist yet.
+
+### Google action icon inset (iOS)
+1. Present a native selection/list picker whose Google action image is passed as `"Google.svg"`
+   or a path-prefixed name.
+2. Expected: the Google glyph keeps its 2pt inset (the inset lookup now uses the normalized name).

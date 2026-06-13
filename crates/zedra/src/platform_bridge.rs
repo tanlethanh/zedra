@@ -758,7 +758,7 @@ pub fn clear_pending_alerts() {
         let count = map.len();
         map.clear();
         if count > 0 {
-            tracing::info!(
+            tracing::debug!(
                 "clear_pending_alerts: dropped {} unacknowledged Delta Apple sign-in request(s)",
                 count
             );

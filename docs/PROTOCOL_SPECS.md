@@ -319,6 +319,7 @@ Types that use non-string status fields or enum variants instead:
 - Host rotates and returns a fresh `session_token` on every successful `SyncSession`, token-accepted `Connect`, and `AuthProve` attach.
 - `session_id` in `SyncSessionResult` is authoritative and must replace any stale client-side session id.
 - `SyncSessionResult.delta_pubkey` is the dedicated host Delta node authorization public key. Mobile uses it when registering the host with Delta; it is not a Zedra transport or telemetry identity.
+- A signed-in mobile client sends `SetClientDeltaInfo { delta_url, stack_id, client_node_id, host_node_id }` after registering the host node. The host persists these Delta IDs per workspace so agent-hook notifications target the previous known mobile client without persisting transport identity or broadcasting to the stack.
 - `SyncSessionResult.terminals` is the authoritative server-side terminal set at bootstrap time. During reconnect, clients preserve the existing local order for terminals still present in that set and append any newly discovered host terminals unless the client has submitted an explicit host order.
 - `TermReorderReq.ordered_ids` must be an exact permutation of the current active terminal ids. The host rejects partial, duplicate, or unknown-id orders.
 - `ConnectReq.session_token` and `SyncSessionResult.session_token` are opaque, host-issued, session-bound, and client-bound.

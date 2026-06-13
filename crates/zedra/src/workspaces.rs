@@ -247,14 +247,16 @@ impl Workspaces {
                 return;
             };
             entry.update(cx, |ws, cx| {
-                // Reconnect a stale entry before queuing the terminal, otherwise the
-                // pending nav never resolves on a Failed/Disconnected workspace.
+                // Only restart genuinely stale entries. In-flight connecting phases
+                // are active and will resolve on their own; restarting them would
+                // tear down a connection that is mid-handshake (AGENTS.md invariant:
+                // only Failed/Disconnected are stale reconnect candidates).
                 let phase = ws.workspace_state(cx).connect_phase.clone();
-                let healthy = matches!(
+                let stale = matches!(
                     phase,
-                    Some(ConnectPhase::Connected) | Some(ConnectPhase::Idle { .. })
+                    None | Some(ConnectPhase::Disconnected) | Some(ConnectPhase::Failed(_))
                 );
-                if !healthy {
+                if stale {
                     ws.restart_connection(cx);
                 }
                 ws.open_terminal_after_sync(terminal_id, cx);
@@ -277,8 +279,16 @@ impl Workspaces {
 
         self.connect_saved(state_index, window, cx);
 
-        // The workspace entity was just pushed by connect_saved.
-        if let Some(entry) = self.entries.last().cloned() {
+        // connect_saved can early-return without pushing an entry (bad index, decode
+        // error), so re-resolve by endpoint instead of trusting entries.last().
+        let Some(index) = self.entry_index_by_endpoint_addr(&endpoint_addr, cx) else {
+            warn!(
+                "navigate_terminal: connect_saved did not open an entry for endpoint {}",
+                &endpoint_addr[..endpoint_addr.len().min(20)]
+            );
+            return;
+        };
+        if let Some(entry) = self.entries.get(index).cloned() {
             entry.update(cx, |ws, cx| {
                 ws.open_terminal_after_sync(terminal_id, cx);
             });
