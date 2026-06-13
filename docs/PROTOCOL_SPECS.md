@@ -318,6 +318,7 @@ Types that use non-string status fields or enum variants instead:
 - `SyncSession` is a mid-session state refresh; connect-time bootstrap is piggybacked on `ConnectResult::Ok` and `AuthProveResult::Ok`.
 - Host rotates and returns a fresh `session_token` on every successful `SyncSession`, token-accepted `Connect`, and `AuthProve` attach.
 - `session_id` in `SyncSessionResult` is authoritative and must replace any stale client-side session id.
+- `SyncSessionResult.delta_pubkey` is the dedicated host Delta node authorization public key. Mobile uses it when registering the host with Delta; it is not a Zedra transport or telemetry identity.
 - `SyncSessionResult.terminals` is the authoritative server-side terminal set at bootstrap time. During reconnect, clients preserve the existing local order for terminals still present in that set and append any newly discovered host terminals unless the client has submitted an explicit host order.
 - `TermReorderReq.ordered_ids` must be an exact permutation of the current active terminal ids. The host rejects partial, duplicate, or unknown-id orders.
 - `ConnectReq.session_token` and `SyncSessionResult.session_token` are opaque, host-issued, session-bound, and client-bound.

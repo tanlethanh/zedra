@@ -11,6 +11,7 @@ use uuid::Uuid;
 use crate::identity;
 
 const CONFIG_FILE: &str = "delta.json";
+const SIGNING_KEY_FILE: &str = "delta.key";
 const CLIENT_DELTA_INFO_FILE: &str = "delta_client.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -442,10 +443,36 @@ fn save_config(config: &DeltaConfig) -> Result<()> {
 }
 
 fn load_signing_key() -> Result<SigningKey> {
-    let identity = identity::HostIdentity::load_or_generate()?;
-    Ok(SigningKey::from_bytes(
-        &identity.iroh_secret_key().to_bytes(),
-    ))
+    let path = identity::host_config_dir()?.join(SIGNING_KEY_FILE);
+    load_signing_key_at(&path)
+}
+
+fn load_signing_key_at(path: &Path) -> Result<SigningKey> {
+    let signing_key = if path.exists() {
+        let bytes = std::fs::read(&path)
+            .with_context(|| format!("failed to read Delta signing key from {}", path.display()))?;
+        let bytes: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
+            anyhow::anyhow!(
+                "invalid Delta signing key at {}: expected 32 bytes, got {}",
+                path.display(),
+                bytes.len()
+            )
+        })?;
+        SigningKey::from_bytes(&bytes)
+    } else {
+        let signing_key = SigningKey::generate(&mut rand::thread_rng());
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        identity::write_secret_file(&path, &signing_key.to_bytes())?;
+        tracing::info!("Generated Delta signing key at {}", path.display());
+        signing_key
+    };
+    Ok(signing_key)
+}
+
+pub fn public_key() -> Result<[u8; 32]> {
+    Ok(load_signing_key()?.verifying_key().to_bytes())
 }
 
 fn default_host_display_name() -> String {
@@ -544,7 +571,7 @@ impl DeltaClient {
     }
 
     /// Build an anonymous client from a `ClientDeltaInfo` saved by the daemon.
-    /// Uses the host's global signing key with the host_node_id from the info.
+    /// Uses the host's Delta signing key with the host_node_id from the info.
     /// No bearer token — authentication is via ed25519 signed request headers.
     pub fn from_client_info(info: &ClientDeltaInfo) -> Result<Arc<Self>> {
         let signing_key = load_signing_key()?;
@@ -979,6 +1006,18 @@ fn request_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delta_signing_key_is_persistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SIGNING_KEY_FILE);
+
+        let first = load_signing_key_at(&path).unwrap();
+        let second = load_signing_key_at(&path).unwrap();
+
+        assert_eq!(first.to_bytes(), second.to_bytes());
+        assert_eq!(std::fs::read(path).unwrap(), first.to_bytes());
+    }
     use tempfile::TempDir;
 
     fn sample_info() -> ClientDeltaInfo {

@@ -471,6 +471,8 @@ pub struct SyncSessionResult {
     pub arch: Option<String>,
     pub os_version: Option<String>,
     pub host_version: Option<String>,
+    /// Dedicated host Delta node authorization public key.
+    pub delta_pubkey: [u8; 32],
     /// Ordered by host-owned terminal order. Creation order is the default.
     pub terminals: Vec<TerminalSyncEntry>,
 }
@@ -1508,6 +1510,7 @@ mod tests {
             arch: Some("x86_64".into()),
             os_version: Some("6.12".into()),
             host_version: Some("0.1.1".into()),
+            delta_pubkey: [7u8; 32],
             terminals: vec![TerminalSyncEntry {
                 id: "term-1".into(),
                 position: 0,
@@ -1525,6 +1528,7 @@ mod tests {
         let decoded: SyncSessionResult = postcard::from_bytes(&encoded).unwrap();
         assert_eq!(decoded.session_id, "sess-1");
         assert_eq!(decoded.session_token, [9u8; 32]);
+        assert_eq!(decoded.delta_pubkey, [7u8; 32]);
         assert_eq!(decoded.terminals.len(), 1);
         assert_eq!(decoded.terminals[0].position, 0);
         assert_eq!(decoded.terminals[0].last_seq, 42);

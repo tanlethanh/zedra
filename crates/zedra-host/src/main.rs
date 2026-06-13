@@ -963,11 +963,15 @@ async fn main() -> Result<()> {
                 prev_hook(info);
             }));
 
+            let delta_pubkey =
+                delta::public_key().context("failed to load host Delta signing key")?;
+
             let delta_client = delta::DeltaClient::try_load_for_workspace(&workdir);
 
             let state = Arc::new(rpc_daemon::DaemonState::new(
                 workdir.clone(),
                 host_identity.clone(),
+                delta_pubkey,
                 delta_client,
             ));
             state

@@ -608,6 +608,7 @@ mod tests {
         let daemon_state = Arc::new(DaemonState::new(
             dir.path().to_path_buf(),
             identity.clone(),
+            [7; 32],
             None,
         ));
         let endpoint = iroh::Endpoint::builder()

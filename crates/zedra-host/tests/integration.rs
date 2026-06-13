@@ -86,6 +86,7 @@ async fn setup_host(
     let state = Arc::new(DaemonState::new(
         dir.path().to_path_buf(),
         identity.clone(),
+        [7; 32],
         None,
     ));
     let registry = Arc::new(SessionRegistry::new());

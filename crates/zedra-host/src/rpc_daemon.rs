@@ -90,6 +90,7 @@ async fn build_sync_result(
         arch: Some(std::env::consts::ARCH.to_string()),
         os_version: os_version_string(),
         host_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        delta_pubkey: state.delta_pubkey,
         terminals: session.terminal_sync_entries().await,
     }
 }
@@ -916,6 +917,8 @@ pub struct DaemonState {
     pub workdir: std::path::PathBuf,
     /// Host identity for signing challenges in the Authenticate step.
     pub identity: SharedIdentity,
+    /// Dedicated host Delta node authorization public key.
+    pub delta_pubkey: [u8; 32],
     /// When the daemon started; used to compute uptime.
     pub started_at: std::time::Instant,
     pub agent_cache: Arc<agent_cache::AgentCache>,
@@ -936,12 +939,14 @@ impl DaemonState {
     pub fn new(
         workdir: std::path::PathBuf,
         identity: SharedIdentity,
+        delta_pubkey: [u8; 32],
         delta: Option<Arc<crate::delta::DeltaClient>>,
     ) -> Self {
         Self {
             fs: Arc::new(LocalFs),
             workdir,
             identity,
+            delta_pubkey,
             started_at: std::time::Instant::now(),
             agent_cache: agent_cache::AgentCache::new(),
             delta: Arc::new(tokio::sync::RwLock::new(delta)),
