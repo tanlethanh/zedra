@@ -45,7 +45,6 @@ pub enum WorkspaceMainView {
     AgentDetail {
         kind: AgentKind,
     },
-    NoActiveTerminal,
 }
 
 impl WorkspaceMainView {
@@ -363,6 +362,14 @@ impl WorkspaceState {
         self.active_main_view.terminal_id()
     }
 
+    /// Drop back to the workspace start view. `Default` is the base of the
+    /// navigation stack, never a pushed route, so this clears the stack rather
+    /// than navigating onto it.
+    pub fn reset_to_default(&mut self, cx: &mut Context<Self>) {
+        self.main_view_stack.reset(WorkspaceMainView::Default);
+        self.set_active_main_view(WorkspaceMainView::Default, cx);
+    }
+
     pub fn navigate(&mut self, route: WorkspaceMainView, cx: &mut Context<Self>) {
         self.main_view_stack.open(route.clone());
         if let WorkspaceMainView::Terminal { ref id } = route {
@@ -643,9 +650,9 @@ mod tests {
             id: "terminal-1".into(),
         });
         stack.open(file.clone());
-        stack.replace(WorkspaceMainView::NoActiveTerminal);
+        stack.replace(WorkspaceMainView::AgentSessions);
 
-        assert_eq!(stack.active(), WorkspaceMainView::NoActiveTerminal);
+        assert_eq!(stack.active(), WorkspaceMainView::AgentSessions);
         assert_eq!(
             stack.go_back(),
             Some(WorkspaceMainView::Terminal {

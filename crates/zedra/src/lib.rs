@@ -50,6 +50,7 @@ pub mod workspace_connecting;
 pub mod workspace_drawer;
 pub mod workspace_editor;
 pub mod workspace_gitdiff;
+pub mod workspace_start;
 pub mod workspace_state;
 pub mod workspace_terminal;
 pub mod workspaces;

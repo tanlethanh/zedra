@@ -42,6 +42,7 @@ use crate::workspace_connecting::WorkspaceConnecting;
 use crate::workspace_drawer::WorkspaceDrawer;
 use crate::workspace_editor::WorkspaceEditor;
 use crate::workspace_gitdiff::{GitdiffHeaderChanged, WorkspaceGitdiff};
+use crate::workspace_start::WorkspaceStart;
 use crate::workspace_state::{WorkspaceMainView, WorkspaceState, WorkspaceStateEvent};
 use crate::workspace_terminal::{TERMINAL_PENDING_ID, WorkspaceTerminal};
 use zedra_terminal::view::TerminalView;
@@ -265,11 +266,10 @@ fn should_initialize_terminals_after_sync(
     match mode {
         SyncRefreshMode::InitialConnect => true,
         SyncRefreshMode::Reconnect => {
-            let recovered_without_terminals = terminal_ids.is_empty()
-                && !matches!(active_main_view, WorkspaceMainView::NoActiveTerminal);
-            let main_view_was_reset = matches!(active_main_view, WorkspaceMainView::Default);
-
-            recovered_without_terminals || main_view_was_reset
+            // Re-open content on reconnect only when sitting on the start view, or
+            // when the host has no terminals left to anchor the current view.
+            // An open file/terminal/agent view is preserved.
+            matches!(active_main_view, WorkspaceMainView::Default) || terminal_ids.is_empty()
         }
     }
 }
@@ -1594,12 +1594,12 @@ impl Workspace {
     ) {
         match route {
             WorkspaceMainView::Default => {
-                let editor = self.editor.clone();
                 self.content.update(cx, |c, cx| {
                     c.clear_subtitle(cx);
-                    c.set_main_view(editor.into(), cx);
+                    c.set_workspace_start_view(cx);
                     c.hide_connecting_view(cx);
                 });
+                view_telemetry::record(view_telemetry::WORKSPACE_START);
             }
             WorkspaceMainView::File { path } => {
                 self.editor.update(cx, |e, cx| {
@@ -1625,13 +1625,6 @@ impl Workspace {
                     c.hide_connecting_view(cx);
                 });
                 view_telemetry::record(view_telemetry::WORKSPACE_GIT_DIFF);
-            }
-            WorkspaceMainView::NoActiveTerminal => {
-                self.content.update(cx, |c, cx| {
-                    c.set_no_active_terminal_view(cx);
-                    c.hide_connecting_view(cx);
-                });
-                view_telemetry::record(view_telemetry::WORKSPACE_NO_ACTIVE_TERMINAL);
             }
             WorkspaceMainView::Terminal { id } => {
                 if let Some(entity) = self.terminal_by_id(&id, cx) {
@@ -2064,15 +2057,6 @@ impl Workspace {
         .detach();
     }
 
-    fn create_new_terminal(
-        &mut self,
-        telemetry_source: &'static str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.spawn_terminal(telemetry_source, None, None, window, cx);
-    }
-
     fn handle_navigate_back(
         &mut self,
         _action: &NavigateBack,
@@ -2317,7 +2301,7 @@ impl Workspace {
                 state.active_terminal_id = None;
             }
             if was_active_main_terminal && !has_replacement_terminal {
-                state.navigate(WorkspaceMainView::NoActiveTerminal, cx);
+                state.reset_to_default(cx);
             }
             cx.notify();
         });
@@ -2325,7 +2309,7 @@ impl Workspace {
         if let Some(replacement_id) = replacement_terminal_id {
             self.navigate_to(WorkspaceMainView::Terminal { id: replacement_id }, cx);
         } else if was_active_main_terminal {
-            self.apply_route(WorkspaceMainView::NoActiveTerminal, None, cx);
+            self.apply_route(WorkspaceMainView::Default, None, cx);
         }
 
         let remaining = self.workspace_state.read(cx).terminal_ids.len();
@@ -2560,8 +2544,10 @@ impl Workspace {
             info!("auto-opening terminal on connect: {}", id);
             self.handle_open_terminal(&OpenTerminal { id }, window, cx);
         } else {
-            info!("no terminals on connect, creating new terminal");
-            self.create_new_terminal("new_session", window, cx);
+            info!("no terminals on connect, showing workspace start");
+            self.workspace_state
+                .update(cx, |state, cx| state.reset_to_default(cx));
+            self.apply_route(WorkspaceMainView::Default, None, cx);
         }
     }
 }
@@ -2882,11 +2868,11 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
-    fn reconnect_sync_preserves_no_active_terminal_empty_state() {
-        assert!(!should_initialize_terminals_after_sync(
+    fn reconnect_sync_reinitializes_when_host_has_no_terminals() {
+        assert!(should_initialize_terminals_after_sync(
             SyncRefreshMode::Reconnect,
             &[],
-            &WorkspaceMainView::NoActiveTerminal,
+            &WorkspaceMainView::AgentSessions,
         ));
     }
 
@@ -3193,9 +3179,9 @@ impl WorkspaceContent {
         cx.notify();
     }
 
-    pub fn set_no_active_terminal_view(&mut self, cx: &mut Context<Self>) {
+    pub fn set_workspace_start_view(&mut self, cx: &mut Context<Self>) {
         self.subtitle = WorkspaceSubtitle::Default;
-        self.main_view = cx.new(|_cx| NoActiveTerminalView).into();
+        self.main_view = cx.new(|_cx| WorkspaceStart).into();
         cx.notify();
     }
 
