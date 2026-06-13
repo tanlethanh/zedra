@@ -1874,24 +1874,21 @@ fn print_delta_nodes(nodes: &[delta::NodeSummary]) {
         .map(|node| {
             vec![
                 node.alias.clone().unwrap_or_else(|| "-".to_string()),
-                node.kind.as_str().to_string(),
                 metadata_string(node, "os")
                     .or_else(|| metadata_string(node, "platform"))
                     .unwrap_or_else(|| "-".to_string()),
-                metadata_string(node, "arch").unwrap_or_else(|| "-".to_string()),
                 if node.push_enabled { "yes" } else { "no" }.to_string(),
                 node.id.to_string(),
-                node.public_key_fingerprint.clone(),
-                node.display_name.clone().unwrap_or_else(|| "-".to_string()),
+                node.joined_at
+                    .as_deref()
+                    .map(format_node_date)
+                    .unwrap_or_else(|| "-".to_string()),
             ]
         })
         .collect::<Vec<_>>();
     println!(
         "{}",
-        utils::render_table(
-            &["ALIAS", "KIND", "OS", "ARCH", "PUSH", "ID", "KEY", "NAME"],
-            &rows
-        )
+        utils::render_table(&["ALIAS", "OS", "PUSH", "ID", "DATE"], &rows)
     );
 }
 
@@ -1918,6 +1915,18 @@ fn print_delta_node_keys(keys: &[delta::NodeKeySummary]) {
         "{}",
         utils::render_table(&["ALIAS", "KIND", "ID", "FINGERPRINT", "PUBLIC KEY"], &rows)
     );
+}
+
+/// Format an RFC3339 timestamp as a local `YYYY-MM-DD HH:MM`; falls back to the
+/// raw string when it cannot be parsed.
+fn format_node_date(raw: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .map(|dt| {
+            dt.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|_| raw.to_string())
 }
 
 fn metadata_string(node: &delta::NodeSummary, key: &str) -> Option<String> {

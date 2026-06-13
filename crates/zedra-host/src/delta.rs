@@ -35,6 +35,8 @@ pub struct NodeSummary {
     pub metadata: Value,
     pub public_key_fingerprint: String,
     pub push_enabled: bool,
+    #[serde(default)]
+    pub joined_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
