@@ -170,9 +170,112 @@ struct NodeListResponse {
     nodes: Vec<NodeSummary>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct NodeKeySummary {
+    pub node_id: Uuid,
+    #[serde(default)]
+    pub alias: Option<String>,
+    pub kind: NodeKind,
+    /// Ed25519 public key, base64 without padding.
+    pub public_key: String,
+    pub public_key_fingerprint: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct NodeKeyListResponse {
+    keys: Vec<NodeKeySummary>,
+}
+
+/// One active grant where the queried node is the subject — an ability it holds.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NodeAbilitySummary {
+    pub ability: String,
+    pub object_kind: String,
+    pub object_id: Uuid,
+    #[serde(default)]
+    pub object_alias: Option<String>,
+    pub created_at: String,
+    /// Operational status declared by the ability spec; absent for
+    /// pure-permission abilities.
+    #[serde(default)]
+    pub status: Option<AbilityStatus>,
+}
+
+/// Non-sensitive readiness info for an ability (never tokens or secrets).
+#[derive(Debug, Clone, Deserialize)]
+pub struct AbilityStatus {
+    pub ready: bool,
+    #[serde(default)]
+    pub detail: serde_json::Value,
+}
+
+/// One active grant where the queried node is the object — what others may do to it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NodeInboundGrantSummary {
+    pub ability: String,
+    pub subject_kind: String,
+    pub subject_id: Uuid,
+    #[serde(default)]
+    pub subject_alias: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NodeDetailResponse {
+    pub node: NodeSummary,
+    /// Ed25519 public key, base64 without padding.
+    pub public_key: String,
+    pub abilities: Vec<NodeAbilitySummary>,
+    pub grants: Vec<NodeInboundGrantSummary>,
+}
+
+/// Stack-level ability state, merged per ability by the server.
+#[derive(Debug, Deserialize)]
+pub struct AbilityStateRollupResponse {
+    pub states: std::collections::HashMap<String, Value>,
+}
+
+/// One grant edge from the grant management API.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GrantSummary {
+    pub id: Uuid,
+    pub subject_kind: String,
+    pub subject_id: Uuid,
+    #[serde(default)]
+    pub subject_alias: Option<String>,
+    pub ability: String,
+    pub object_kind: String,
+    pub object_id: Uuid,
+    #[serde(default)]
+    pub object_alias: Option<String>,
+    pub created_at: String,
+    #[serde(default)]
+    pub granted_by_kind: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GrantListResponse {
+    grants: Vec<GrantSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GrantCreateResponse {
+    grant: GrantSummary,
+}
+
+#[derive(Debug, Serialize)]
+struct GrantCreateRequest {
+    subject_kind: &'static str,
+    subject_id: Uuid,
+    ability: String,
+}
+
 #[derive(Debug, Serialize)]
 struct NodeUpdateRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
     alias: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -395,6 +498,7 @@ async fn refresh_host_alias_if_default(
             signing_key,
             Some(&NodeUpdateRequest {
                 alias: Some(display_name.to_string()),
+                display_name: None,
             }),
         )
         .await?;
@@ -632,26 +736,133 @@ impl DeltaClient {
         Ok(response.nodes)
     }
 
-    pub async fn update_node_alias(&self, target: String, alias: String) -> Result<NodeSummary> {
+    pub async fn list_node_keys(&self) -> Result<Vec<NodeKeySummary>> {
+        let response: NodeKeyListResponse = self
+            .signed(
+                "GET",
+                &format!("/v1/stacks/{}/nodes/keys", self.config.stack_id),
+                None::<&serde_json::Value>,
+            )
+            .await?;
+        Ok(response.keys)
+    }
+
+    /// Full node details (metadata, key, abilities, inbound grants).
+    /// `None` targets the authenticated host node.
+    pub async fn node_detail(&self, target: Option<String>) -> Result<NodeDetailResponse> {
+        let node_id = match target {
+            Some(target) => self.resolve_target(&target).await?,
+            None => self.config.node_id,
+        };
+        self.signed(
+            "GET",
+            &format!("/v1/stacks/{}/nodes/{node_id}", self.config.stack_id),
+            None::<&serde_json::Value>,
+        )
+        .await
+    }
+
+    pub async fn update_node(
+        &self,
+        target: String,
+        alias: Option<String>,
+        display_name: Option<String>,
+    ) -> Result<NodeSummary> {
         let target_id = self.resolve_target(&target).await?;
         let response: NodeUpdateResponse = self
             .signed(
                 "PATCH",
                 &format!("/v1/stacks/{}/nodes/{target_id}", self.config.stack_id),
-                Some(&NodeUpdateRequest { alias: Some(alias) }),
+                Some(&NodeUpdateRequest {
+                    alias,
+                    display_name,
+                }),
             )
             .await?;
         Ok(response.node)
     }
 
-    pub async fn delete_node(&self, target: String) -> Result<NodeDeleteResponse> {
+    /// Stack-level ability state, merged across nodes by each ability spec.
+    pub async fn stack_ability_states(&self) -> Result<AbilityStateRollupResponse> {
+        self.signed(
+            "GET",
+            &format!("/v1/stacks/{}/ability-states", self.config.stack_id),
+            None::<&serde_json::Value>,
+        )
+        .await
+    }
+
+    /// Grant an ability to a node. The server derives the object from the
+    /// ability's declared edge shape.
+    pub async fn grant_ability(&self, target: String, ability: String) -> Result<GrantSummary> {
+        let subject_id = self.resolve_target(&target).await?;
+        let response: GrantCreateResponse = self
+            .signed(
+                "POST",
+                &format!("/v1/stacks/{}/grants", self.config.stack_id),
+                Some(&GrantCreateRequest {
+                    subject_kind: "node",
+                    subject_id,
+                    ability,
+                }),
+            )
+            .await?;
+        Ok(response.grant)
+    }
+
+    /// Revoke every active grant of `ability` held by the target node.
+    /// Returns the revoked grants.
+    pub async fn revoke_ability(
+        &self,
+        target: String,
+        ability: String,
+    ) -> Result<Vec<GrantSummary>> {
+        let subject_id = self.resolve_target(&target).await?;
+        let response: GrantListResponse = self
+            .signed(
+                "GET",
+                &format!("/v1/stacks/{}/grants", self.config.stack_id),
+                None::<&serde_json::Value>,
+            )
+            .await?;
+        let matched: Vec<GrantSummary> = response
+            .grants
+            .into_iter()
+            .filter(|grant| {
+                grant.subject_kind == "node"
+                    && grant.subject_id == subject_id
+                    && grant.ability == ability
+            })
+            .collect();
+        if matched.is_empty() {
+            anyhow::bail!(
+                "node holds no `{ability}` grant; run `zedra stack show {target}` to list its abilities"
+            );
+        }
+        for grant in &matched {
+            let _: serde_json::Value = self
+                .signed(
+                    "DELETE",
+                    &format!("/v1/stacks/{}/grants/{}", self.config.stack_id, grant.id),
+                    None::<&serde_json::Value>,
+                )
+                .await?;
+        }
+        Ok(matched)
+    }
+
+    pub async fn delete_node(&self, target: String, force: bool) -> Result<NodeDeleteResponse> {
         let target_id = self.resolve_target(&target).await?;
         if target_id == self.config.node_id {
             anyhow::bail!("refusing to delete the authenticated host node");
         }
+        let force_query = if force { "?force=true" } else { "" };
         self.signed(
             "DELETE",
-            &format!("/v1/stacks/{}/nodes/{target_id}", self.config.stack_id),
+            &format!(
+                "/v1/stacks/{}/nodes/{target_id}{force_query}",
+                self.config.stack_id
+            ),
             None::<&serde_json::Value>,
         )
         .await
@@ -825,6 +1036,10 @@ impl DeltaClient {
                     || normalized
                         .as_deref()
                         .is_some_and(|alias| node.alias.as_deref() == Some(alias))
+                    || node
+                        .display_name
+                        .as_deref()
+                        .is_some_and(|name| name.eq_ignore_ascii_case(target))
             })
             .collect::<Vec<_>>();
         match matches.as_slice() {
@@ -836,15 +1051,15 @@ impl DeltaClient {
                     .filter_map(|node| node.alias.as_deref())
                     .collect::<Vec<_>>();
                 if aliases.is_empty() {
-                    anyhow::bail!("unknown Delta node alias `{target}`; run `zedra stack nodes`");
+                    anyhow::bail!("unknown Delta node `{target}`; run `zedra stack list`");
                 }
                 anyhow::bail!(
-                    "unknown Delta node alias `{target}`; available aliases: {}",
+                    "unknown Delta node `{target}`; available aliases: {}",
                     aliases.join(", ")
                 );
             }
             _ => {
-                anyhow::bail!("Delta node alias `{target}` is ambiguous; use the node id instead")
+                anyhow::bail!("Delta node `{target}` is ambiguous; use the node id instead")
             }
         }
     }

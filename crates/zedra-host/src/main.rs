@@ -318,23 +318,70 @@ enum AuthCommand {
 
 #[derive(Subcommand)]
 enum StackCommand {
-    /// List nodes in the authed Delta stack
-    Nodes,
+    /// List all nodes in delta stack
+    List,
 
-    /// Update a node in the authed Delta stack
+    /// List all registered node pubkey
+    Keys,
+
+    /// Show stack-level ability state aggregated across nodes
+    State,
+
+    /// Show details of a node (defaults to this host)
+    Show {
+        /// Target node id, name, or alias (defaults to the authed host node)
+        target: Option<String>,
+
+        /// Show only this ability; exits non-zero when the node does not
+        /// hold it or it is not ready
+        #[arg(long)]
+        ability: Option<String>,
+    },
+
+    /// Update a node in delta stack
+    #[command(
+        override_usage = "zedra stack update <TARGET> [OPTIONS]",
+        group = clap::ArgGroup::new("update_fields").required(true).multiple(true)
+    )]
     Update {
-        /// Target node alias or UUID
+        /// Target node id, name, or alias
         target: String,
 
         /// New stack-scoped node alias
-        #[arg(long = "name")]
-        name: String,
+        #[arg(long, group = "update_fields")]
+        alias: Option<String>,
+
+        /// New node display name
+        #[arg(long = "name", group = "update_fields")]
+        name: Option<String>,
     },
 
-    /// Delete a node from the authed Delta stack
-    Delete {
-        /// Target node alias or UUID
+    /// Grant an ability to a node
+    Grant {
+        /// Target node id, name, or alias
         target: String,
+
+        /// Ability name, e.g. notification.send (see `zedra stack show`)
+        ability: String,
+    },
+
+    /// Revoke an ability from a node
+    Revoke {
+        /// Target node id, name, or alias
+        target: String,
+
+        /// Ability name, e.g. notification.send (see `zedra stack show`)
+        ability: String,
+    },
+
+    /// Remove a node from delta stack
+    Remove {
+        /// Target node id, name, or alias
+        target: String,
+
+        /// Permanently remove this node identity so re-registration creates a new node id
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -742,28 +789,99 @@ async fn main() -> Result<()> {
         },
 
         Commands::Stack { command } => match command {
-            Some(StackCommand::Nodes) => {
+            Some(StackCommand::List) => {
                 let nodes = delta::DeltaClient::load()?.list_nodes().await?;
                 print_delta_nodes(&nodes);
             }
-            Some(StackCommand::Update { target, name }) => {
+            Some(StackCommand::Keys) => {
+                let keys = delta::DeltaClient::load()?.list_node_keys().await?;
+                print_delta_node_keys(&keys);
+            }
+            Some(StackCommand::State) => {
+                let rollup = delta::DeltaClient::load()?.stack_ability_states().await?;
+                print_delta_stack_state(&rollup);
+            }
+            Some(StackCommand::Show { target, ability }) => {
+                let config = delta::load_config()?;
+                let client = delta::DeltaClient::load()?;
+                let is_self = target.is_none();
+                let detail = client.node_detail(target).await?;
+                match ability {
+                    Some(ability_name) => {
+                        let matched: Vec<_> = detail
+                            .abilities
+                            .iter()
+                            .filter(|entry| entry.ability == ability_name)
+                            .collect();
+                        if matched.is_empty() {
+                            anyhow::bail!(
+                                "node does not hold ability `{ability_name}`; \
+                                 run `zedra stack show` to list its abilities"
+                            );
+                        }
+                        for entry in &matched {
+                            print_delta_ability_line(entry);
+                        }
+                        let ready = matched
+                            .iter()
+                            .all(|entry| entry.status.as_ref().is_none_or(|s| s.ready));
+                        if !ready {
+                            std::process::exit(1);
+                        }
+                    }
+                    None => print_delta_node_show(&detail, is_self.then_some(&config)),
+                }
+            }
+            Some(StackCommand::Update {
+                target,
+                alias,
+                name,
+            }) => {
                 let node = delta::DeltaClient::load()?
-                    .update_node_alias(target, name)
+                    .update_node(target, alias, name)
                     .await?;
-                utils::println_success("Updated Delta node alias.");
+                utils::println_success("Updated Delta node.");
                 println!();
                 utils::print_key_values(&[
                     ("Alias", node.alias.unwrap_or_else(|| "-".to_string())),
+                    ("Name", node.display_name.unwrap_or_else(|| "-".to_string())),
                     ("Node", node.id.to_string()),
                     ("Kind", node.kind.as_str().to_string()),
                 ]);
             }
-            Some(StackCommand::Delete { target }) => {
-                let response = delta::DeltaClient::load()?.delete_node(target).await?;
-                utils::println_success("Deleted Delta node from stack.");
+            Some(StackCommand::Grant { target, ability }) => {
+                let grant = delta::DeltaClient::load()?
+                    .grant_ability(target, ability)
+                    .await?;
+                let subject = grant
+                    .subject_alias
+                    .clone()
+                    .unwrap_or_else(|| grant.subject_id.to_string());
+                utils::println_success(&format!("Granted {} to node:{subject}.", grant.ability));
+            }
+            Some(StackCommand::Revoke { target, ability }) => {
+                let revoked = delta::DeltaClient::load()?
+                    .revoke_ability(target, ability)
+                    .await?;
+                for grant in &revoked {
+                    let subject = grant
+                        .subject_alias
+                        .clone()
+                        .unwrap_or_else(|| grant.subject_id.to_string());
+                    utils::println_success(&format!(
+                        "Revoked {} from node:{subject}.",
+                        grant.ability
+                    ));
+                }
+            }
+            Some(StackCommand::Remove { target, force }) => {
+                let response = delta::DeltaClient::load()?
+                    .delete_node(target, force)
+                    .await?;
+                utils::println_success("Removed Delta node from stack.");
                 println!();
                 utils::print_key_values(&[
-                    ("Deleted", response.deleted.to_string()),
+                    ("Removed", response.deleted.to_string()),
                     ("Node", response.node_id.to_string()),
                 ]);
             }
@@ -1571,8 +1689,169 @@ fn print_delta_stack(config: &delta::DeltaConfig) {
     println!();
     println!(
         "Run `{}` to list stack nodes.",
-        utils::command_text("zedra stack nodes")
+        utils::command_text("zedra stack list")
     );
+}
+
+/// Sectioned node detail view. `self_config` is set when showing the authed
+/// host node itself, adding the Stack section.
+fn print_delta_node_show(
+    detail: &delta::NodeDetailResponse,
+    self_config: Option<&delta::DeltaConfig>,
+) {
+    let node = &detail.node;
+    let label = node.alias.clone().unwrap_or_else(|| node.id.to_string());
+    let suffix = if self_config.is_some() {
+        " (this host)"
+    } else {
+        ""
+    };
+    utils::println_heading(&format!("Zedra Delta Node — {label}{suffix}"));
+
+    println!();
+    utils::println_heading("Node");
+    utils::print_key_values(&[
+        (
+            "Alias",
+            node.alias.clone().unwrap_or_else(|| "-".to_string()),
+        ),
+        (
+            "Name",
+            node.display_name.clone().unwrap_or_else(|| "-".to_string()),
+        ),
+        ("Kind", node.kind.as_str().to_string()),
+        ("ID", node.id.to_string()),
+        (
+            "Push",
+            if node.push_enabled { "yes" } else { "no" }.to_string(),
+        ),
+    ]);
+
+    if let Some(metadata) = node.metadata.as_object().filter(|map| !map.is_empty()) {
+        println!();
+        utils::println_heading("Metadata");
+        let entries = metadata
+            .iter()
+            .map(|(key, value)| {
+                let value = match value.as_str() {
+                    Some(text) => text.to_string(),
+                    None => value.to_string(),
+                };
+                (key.as_str(), value)
+            })
+            .collect::<Vec<_>>();
+        utils::print_key_values(&entries);
+    }
+
+    println!();
+    utils::println_heading("Key");
+    utils::print_key_values(&[
+        ("Fingerprint", node.public_key_fingerprint.clone()),
+        ("Public key", detail.public_key.clone()),
+    ]);
+
+    println!();
+    utils::println_heading("Abilities (what this node can do)");
+    if detail.abilities.is_empty() {
+        println!("  none");
+    }
+    for ability in &detail.abilities {
+        print_delta_ability_line(ability);
+    }
+
+    println!();
+    utils::println_heading("Grants (who can act on this node)");
+    if detail.grants.is_empty() {
+        println!("  none");
+    }
+    for grant in &detail.grants {
+        let subject = match (&grant.subject_kind[..], &grant.subject_alias) {
+            ("node", Some(alias)) => format!("node:{alias}"),
+            ("node", None) => format!("node:{}", grant.subject_id),
+            (kind, _) => kind.to_string(),
+        };
+        println!("  {:<28} ← {subject}", grant.ability);
+    }
+
+    if let Some(config) = self_config {
+        println!();
+        utils::println_heading("Stack");
+        utils::print_key_values(&[
+            ("Stack", config.stack_id.to_string()),
+            ("Delta URL", config.delta_url.clone()),
+        ]);
+    }
+}
+
+/// Stack-level ability state, one section per ability with generic
+/// key/value rendering of the rolled-up object.
+fn print_delta_stack_state(rollup: &delta::AbilityStateRollupResponse) {
+    if rollup.states.is_empty() {
+        utils::println_note("No ability state recorded in this stack.");
+        return;
+    }
+    utils::println_heading("Zedra Delta Stack State");
+    let mut abilities: Vec<_> = rollup.states.keys().collect();
+    abilities.sort();
+    for ability in abilities {
+        println!();
+        utils::println_heading(ability);
+        let Some(map) = rollup.states[ability].as_object() else {
+            println!("  {}", json_inline(&rollup.states[ability]));
+            continue;
+        };
+        for (key, value) in map {
+            if value.is_null() {
+                continue;
+            }
+            println!("  {key}: {}", json_inline(value));
+        }
+    }
+}
+
+/// One ability line plus its self-declared status, when present.
+fn print_delta_ability_line(ability: &delta::NodeAbilitySummary) {
+    let object = match (&ability.object_kind[..], &ability.object_alias) {
+        ("node", Some(alias)) => format!("node:{alias}"),
+        ("node", None) => format!("node:{}", ability.object_id),
+        (kind, _) => kind.to_string(),
+    };
+    println!("  {:<28} → {object}", ability.ability);
+    let Some(status) = &ability.status else {
+        return;
+    };
+    println!("      ready: {}", if status.ready { "yes" } else { "no" });
+    let Some(detail) = status.detail.as_object() else {
+        return;
+    };
+    for (key, value) in detail {
+        match value {
+            serde_json::Value::Null => {}
+            serde_json::Value::Array(items) if items.is_empty() => {
+                println!("      {key}: none");
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    println!("      {key}: {}", json_inline(item));
+                }
+            }
+            other => println!("      {key}: {}", json_inline(other)),
+        }
+    }
+}
+
+/// Compact one-line rendering of a JSON value for status detail output.
+fn json_inline(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Object(map) => map
+            .iter()
+            .filter(|(_, v)| !v.is_null())
+            .map(|(k, v)| format!("{k}={}", json_inline(v)))
+            .collect::<Vec<_>>()
+            .join(" "),
+        other => other.to_string(),
+    }
 }
 
 fn print_delta_nodes(nodes: &[delta::NodeSummary]) {
@@ -1605,6 +1884,31 @@ fn print_delta_nodes(nodes: &[delta::NodeSummary]) {
             &["ALIAS", "KIND", "OS", "ARCH", "PUSH", "ID", "KEY", "NAME"],
             &rows
         )
+    );
+}
+
+fn print_delta_node_keys(keys: &[delta::NodeKeySummary]) {
+    if keys.is_empty() {
+        utils::println_note("No nodes found.");
+        return;
+    }
+    utils::println_heading("Zedra Delta Node Keys");
+    println!();
+    let rows = keys
+        .iter()
+        .map(|key| {
+            vec![
+                key.alias.clone().unwrap_or_else(|| "-".to_string()),
+                key.kind.as_str().to_string(),
+                key.node_id.to_string(),
+                key.public_key_fingerprint.clone(),
+                key.public_key.clone(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "{}",
+        utils::render_table(&["ALIAS", "KIND", "ID", "FINGERPRINT", "PUBLIC KEY"], &rows)
     );
 }
 
@@ -2428,19 +2732,213 @@ mod tests {
     }
 
     #[test]
-    fn stack_delete_parses_target() {
-        match Cli::try_parse_from(["zedra", "stack", "delete", "zedra-ios"])
+    fn stack_remove_parses_target() {
+        match Cli::try_parse_from(["zedra", "stack", "remove", "zedra-ios"])
             .unwrap()
             .command
         {
             Some(Commands::Stack {
-                command: Some(StackCommand::Delete { target }),
-            }) => assert_eq!(target, "zedra-ios"),
+                command: Some(StackCommand::Remove { target, force }),
+            }) => {
+                assert_eq!(target, "zedra-ios");
+                assert!(!force);
+            }
             other => panic!(
-                "expected stack delete command, got {:?}",
+                "expected stack remove command, got {:?}",
                 other.map(|_| "other")
             ),
         }
+
+        match Cli::try_parse_from(["zedra", "stack", "remove", "zedra-ios", "--force"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Stack {
+                command: Some(StackCommand::Remove { target, force }),
+            }) => {
+                assert_eq!(target, "zedra-ios");
+                assert!(force);
+            }
+            other => panic!(
+                "expected forced stack remove command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+    }
+
+    #[test]
+    fn stack_update_requires_alias_or_name() {
+        // Either flag alone or both together parse.
+        match Cli::try_parse_from(["zedra", "stack", "update", "phone", "--alias", "my-phone"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Stack {
+                command: Some(StackCommand::Update { alias, name, .. }),
+            }) => {
+                assert_eq!(alias.as_deref(), Some("my-phone"));
+                assert!(name.is_none());
+            }
+            other => panic!(
+                "expected stack update command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+        match Cli::try_parse_from([
+            "zedra",
+            "stack",
+            "update",
+            "phone",
+            "--name",
+            "Tan iPhone",
+            "--alias",
+            "my-phone",
+        ])
+        .unwrap()
+        .command
+        {
+            Some(Commands::Stack {
+                command: Some(StackCommand::Update { alias, name, .. }),
+            }) => {
+                assert_eq!(alias.as_deref(), Some("my-phone"));
+                assert_eq!(name.as_deref(), Some("Tan iPhone"));
+            }
+            other => panic!(
+                "expected stack update command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+        // Neither flag must fail.
+        assert!(Cli::try_parse_from(["zedra", "stack", "update", "phone"]).is_err());
+    }
+
+    #[test]
+    fn stack_list_parses() {
+        match Cli::try_parse_from(["zedra", "stack", "list"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Stack {
+                command: Some(StackCommand::List),
+            }) => {}
+            other => panic!(
+                "expected stack list command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+    }
+
+    #[test]
+    fn stack_keys_parses() {
+        match Cli::try_parse_from(["zedra", "stack", "keys"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Stack {
+                command: Some(StackCommand::Keys),
+            }) => {}
+            other => panic!(
+                "expected stack keys command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+    }
+
+    #[test]
+    fn stack_show_parses_optional_target() {
+        match Cli::try_parse_from(["zedra", "stack", "show"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Stack {
+                command:
+                    Some(StackCommand::Show {
+                        target: None,
+                        ability: None,
+                    }),
+            }) => {}
+            other => panic!(
+                "expected stack show command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+        match Cli::try_parse_from(["zedra", "stack", "show", "zedra-ios"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Stack {
+                command:
+                    Some(StackCommand::Show {
+                        target: Some(target),
+                        ability: None,
+                    }),
+            }) => assert_eq!(target, "zedra-ios"),
+            other => panic!(
+                "expected stack show command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+        match Cli::try_parse_from([
+            "zedra",
+            "stack",
+            "show",
+            "zedra-ios",
+            "--ability",
+            "notification.receive",
+        ])
+        .unwrap()
+        .command
+        {
+            Some(Commands::Stack {
+                command:
+                    Some(StackCommand::Show {
+                        target: Some(target),
+                        ability: Some(ability),
+                    }),
+            }) => {
+                assert_eq!(target, "zedra-ios");
+                assert_eq!(ability, "notification.receive");
+            }
+            other => panic!(
+                "expected stack show command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+    }
+
+    #[test]
+    fn stack_grant_and_revoke_parse_target_and_ability() {
+        match Cli::try_parse_from(["zedra", "stack", "grant", "agent-1", "notification.send"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Stack {
+                command: Some(StackCommand::Grant { target, ability }),
+            }) => {
+                assert_eq!(target, "agent-1");
+                assert_eq!(ability, "notification.send");
+            }
+            other => panic!(
+                "expected stack grant command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+        match Cli::try_parse_from(["zedra", "stack", "revoke", "agent-1", "notification.send"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Stack {
+                command: Some(StackCommand::Revoke { target, ability }),
+            }) => {
+                assert_eq!(target, "agent-1");
+                assert_eq!(ability, "notification.send");
+            }
+            other => panic!(
+                "expected stack revoke command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+        assert!(Cli::try_parse_from(["zedra", "stack", "grant", "agent-1"]).is_err());
     }
 
     #[test]
