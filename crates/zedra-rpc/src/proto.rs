@@ -213,6 +213,12 @@ pub enum ZedraProto {
     /// Kept at enum tail because protocol variants are append-only.
     #[rpc(tx = oneshot::Sender<SetClientDeltaInfoResult>)]
     SetClientDeltaInfo(SetClientDeltaInfoReq),
+
+    /// Client clears the host's in-memory Delta binding when it signs out or
+    /// otherwise loses a signed-in Delta identity.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<ClearClientDeltaInfoResult>)]
+    ClearClientDeltaInfo(ClearClientDeltaInfoReq),
 }
 
 // ---------------------------------------------------------------------------
@@ -612,6 +618,12 @@ pub struct SetClientDeltaInfoReq {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SetClientDeltaInfoResult {}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClearClientDeltaInfoReq {}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClearClientDeltaInfoResult {}
 
 /// A single fuzzy-search hit. `match_indices` are the host matcher's matched
 /// character positions into `rel_path`, so the client highlights exactly what

@@ -2155,14 +2155,38 @@ async fn dispatch(
                         stack_id = %msg.stack_id,
                         client_node_id = %msg.client_node_id,
                         host_node_id = %msg.host_node_id,
+                        delta_url = %msg.delta_url,
                         "Delta client updated from connected mobile client"
                     );
                 }
                 Err(err) => {
-                    tracing::warn!("Failed to build Delta client from client info: {err:#}")
+                    tracing::warn!(
+                        stack_id = %msg.stack_id,
+                        client_node_id = %msg.client_node_id,
+                        host_node_id = %msg.host_node_id,
+                        error = %err,
+                        "Failed to build Delta client from client info"
+                    )
                 }
             }
             let _ = msg.tx.send(SetClientDeltaInfoResult {}).await;
+        }
+
+        ZedraMessage::ClearClientDeltaInfo(msg) => {
+            if let Some(delta) = state.delta.read().await.as_ref() {
+                tracing::info!(
+                    stack_id = %delta.stack_id(),
+                    client_node_id = ?delta.client_node_id(),
+                    host_node_id = %delta.host_node_id(),
+                    "Delta client cleared from connected mobile client"
+                );
+            } else {
+                tracing::info!(
+                    "Delta client clear requested but no in-memory client delta was set"
+                );
+            }
+            *state.delta.write().await = None;
+            let _ = msg.tx.send(ClearClientDeltaInfoResult {}).await;
         }
 
         ZedraMessage::FsRead(msg) => {

@@ -777,6 +777,18 @@ impl DeltaClient {
         }))
     }
 
+    pub fn stack_id(&self) -> Uuid {
+        self.config.stack_id
+    }
+
+    pub fn host_node_id(&self) -> Uuid {
+        self.config.node_id
+    }
+
+    pub fn client_node_id(&self) -> Option<Uuid> {
+        self.client_node_id
+    }
+
     /// Signed request helper — pre-binds node_id and signing_key from this client.
     async fn signed<B, T>(&self, method: &str, path: &str, body: Option<&B>) -> Result<T>
     where

@@ -55,15 +55,19 @@ impl ZedraApp {
         let theme_state = cx.new(ThemeState::new);
         ThemeState::register_global(theme_state.downgrade(), cx);
 
+        // --- Delta client state (shared across settings + workspaces) ---
+        let delta_state = cx.new(|_cx| crate::delta::DeltaState::load());
+
         // --- Workspaces ---
-        let workspaces = cx.new(|cx| Workspaces::new(cx));
+        let workspaces = cx.new(|cx| Workspaces::new(delta_state.clone(), cx));
 
         // --- Home view ---
         let home_view = cx.new(|cx| HomeView::new(workspaces.clone(), cx));
         let sub = cx.subscribe(&home_view, Self::on_home_event);
         subscriptions.push(sub);
 
-        let settings_view = cx.new(|cx| SettingsView::new(theme_state.clone(), cx));
+        let settings_view =
+            cx.new(|cx| SettingsView::new(theme_state.clone(), delta_state.clone(), cx));
         let sub = cx.subscribe(&settings_view, Self::on_settings_event);
         subscriptions.push(sub);
 
@@ -100,7 +104,7 @@ impl ZedraApp {
             platform: std::env::consts::OS,
             arch: std::env::consts::ARCH,
         });
-        crate::settings_view::reconcile_delta_mobile_node_on_launch();
+        crate::settings_view::reconcile_delta_on_launch(delta_state.clone(), cx);
 
         let app = Self {
             screen: AppScreen::Home,

@@ -10,6 +10,8 @@ Zedra Delta is the backend service for push notifications, Live Activities, work
 | `ios` | iOS app on Delta sign-in | Receives push notifications and Live Activity updates |
 | `android` | Android app on Delta sign-in | Receives push notifications and Live Activity updates |
 
+Host nodes are workspace-scoped in Zedra even though the Delta identity key is global. A single app can manage multiple workspaces, and each workspace may point at a different host node id.
+
 ## Identity boundaries
 
 Zedra transport PKI and Delta node authorization = separate systems. No reuse keys across boundaries:
@@ -29,26 +31,39 @@ Host operator runs `zedra auth login` → full `DeltaConfig` saved to `~/.config
 
 ### Anonymous (signed only, no sign-in)
 
-Mobile client connects, its Delta sign-in active → registers host `delta.key` public key with own Delta stack, then sends `SetClientDeltaInfo` with `stack_id`, `client_node_id`, and `host_node_id` to host via RPC. Host persists to `~/.config/zedra/workspaces/<hash>/delta_client.json`, constructs `DeltaClient` using only `delta.key` plus the Delta node IDs. No bearer token needed — subsequent host-to-Delta calls use signed-request path.
+Mobile client connects, its Delta sign-in active, and the connected workspace provides the host Delta pubkey. Zedra reads the current `stack_id` and `client_node_id` from app-owned `DeltaState`, ensures the host pubkey is registered for that workspace, then sends `SetClientDeltaInfo` with `stack_id`, `client_node_id`, and `host_node_id` to the host via RPC. The host holds this info in daemon memory and constructs `DeltaClient` using only `delta.key` plus the Delta node IDs. No bearer token needed. Subsequent host-to-Delta calls use the signed-request path.
 
-**Priority**: signed-in (`delta.json`) beats anonymous (`delta_client.json`). On daemon startup, `DeltaClient::try_load_for_workspace` tries signed-in first, then anonymous.
+Workspace state persists the host Delta pubkey and the resolved `host_node_id`. `DeltaState` keeps a pubkey-keyed cache of host-node records so later app launch, reconnect, or late sign-in can reuse the existing host node metadata without re-registering if the mapping is already known.
+
+On daemon startup, only signed-in host config (`delta.json`) is loaded. Mobile-assisted client info is restored when the app reconnects and sends `SetClientDeltaInfo`, or when the workspace later replays the cached host mapping after Delta sign-in becomes available.
 
 ## Host node registration flow
 
 ```text
-Mobile app signs in to Delta
+Mobile app signs in to Delta or launches with a persisted workspace host binding
         │
         ▼
-workspace connects / reconnects
-  (host_delta_registered == false)
+workspace connects / reconnects / emits refreshed sync state
         │
         ▼
-try_register_host_with_delta()
-  → register_paired_host_node(sync.delta_pubkey, metadata)
+workspace learns the host pubkey from `SyncSessionResult.delta_pubkey`
+  and persists it alongside `host_node_id` on `WorkspaceState`
+        │
+        ▼
+`DeltaState` checks its pubkey-keyed host cache
+  ├─ cache hit: reuse the stored `host_node_id`
+  └─ cache miss: register the host pubkey with Delta
+        │
+        ▼
+register_paired_host_node(sync.delta_pubkey, metadata)
   → POST /v1/stacks/{stack_id}/nodes  (upsert, bearer auth)
         │
         ▼
- HostNodeRegistrationResult { host_node_id }
+HostNodeRegistrationResult { host_node_id }
+        │
+        ▼
+workspace persists `{ delta_host_pubkey, host_node_id }`
+and `DeltaState` caches the mapping by pubkey
         │
         ▼
 app reads current client info from DeltaState
@@ -57,13 +72,12 @@ app reads current client info from DeltaState
   → SetClientDeltaInfo RPC → host
         │
         ▼
-host saves delta_client.json, updates DeltaClient in memory
-  host_delta_registered = true  (mobile side, per connection)
+host updates DeltaClient in memory
 ```
 
-`try_register_host_with_delta` called on every `SyncComplete` event while `host_delta_registered` false. Flag reset on each new connection start so re-pair or post-sign-in reconnect retries registration. Server call = upsert, so calling multiple times safe.
+`reconcile_delta_host_binding` is driven by workspace connect/sync state and Delta auth changes. It runs when the workspace first learns a host pubkey, when Delta sign-in becomes available later, and when persisted workspace state needs to be replayed after launch. Host registration remains idempotent because the server upserts by host public key.
 
-Mobile registers host before host signs in → later host sign-in resolves to same node when both use same Delta stack: both paths register `delta.key`, Delta identifies active nodes by public key. Repeated registration preserves node ID and active grants; default-grant writes idempotent. Signing into another stack adds same node to that stack with separate stack-scoped grants. Re-registration currently restores any revoked default host grants.
+Mobile registers host before host signs in → later host sign-in resolves to same node when both use same Delta stack: both paths register `delta.key`, Delta identifies active nodes by public key. Repeated registration preserves node ID and active grants; default-grant writes idempotent. Signing into another stack adds same node to that stack with separate stack-scoped grants. Re-registration currently restores any revoked default host grants. Zedra keeps the per-workspace `host_node_id` persisted so a later app launch or reconnect can reuse the same node id without needing to rediscover it.
 
 Signed-in daemon starts → fetches its host node, compares host-owned metadata and registered public key. Changed metadata or old authorization key upserted under `delta.key`; when this returns different node ID, `delta.json` updated. Missing node logged and ignored without removing local Delta config. Anonymous per-workspace Delta clients do not run this startup reconciliation.
 
@@ -84,10 +98,10 @@ Same agent hook receivers also call `DeltaClient::update_live_activity_for_stack
 | `zedra auth login` | — | Browser auth, writes `delta.json` |
 | `zedra auth status` | — | Reads `delta.json` if present |
 | `zedra stack list` | signed-in | Lists all nodes in stack |
-| `zedra send <node> --title <text> [--workdir <dir>]` | signed-in **or** anonymous | Falls back to `delta_client.json` for `--workdir` |
-| `zedra send <node> --live-activity ... [--workdir <dir>]` | signed-in **or** anonymous | Falls back to `delta_client.json` for `--workdir` |
+| `zedra send <node> --title <text> [--workdir <dir>]` | signed-in | Sends with host Delta config |
+| `zedra send <node> --live-activity ... [--workdir <dir>]` | signed-in | Sends with host Delta config |
 
-For `zedra send` (notification or `--live-activity`), pass `--workdir` pointing to workspace directory to use anonymous path when host has not signed in but mobile client previously connected.
+Mobile-assisted Delta access is used by the running daemon after a signed-in app connects; it is not persisted for standalone CLI sends.
 
 ## Persistent files
 
@@ -95,14 +109,13 @@ For `zedra send` (notification or `--live-activity`), pass `--workdir` pointing 
 |------|-------|----------|
 | `~/.config/zedra/delta.key` | global | Host Delta node authorization key |
 | `~/.config/zedra/delta.json` | global | Signed-in DeltaConfig (stack_id, node_id, tokens) |
-| `~/.config/zedra/workspaces/<hash>/delta_client.json` | per workspace | ClientDeltaInfo from last connected mobile client |
 
 ## Key types
 
 ```text
 DeltaClient               — reusable API client; works in both signed-in and anonymous modes
 DeltaConfig               — loaded from delta.json; access_token empty in anonymous mode
-ClientDeltaInfo           — saved from SetClientDeltaInfo RPC; identifies the previous client and host nodes in the stack
+ClientDeltaInfo           — held in host daemon memory after SetClientDeltaInfo RPC
 CurrentClientDeltaInfo     — app-owned current mobile Delta info read from DeltaState
 HostNodeRegistrationResult — returned by register_paired_host_node; carries host_node_id and created
 ```

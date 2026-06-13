@@ -662,7 +662,7 @@ impl SessionHandle {
         stack_id: uuid::Uuid,
         client_node_id: uuid::Uuid,
         host_node_id: uuid::Uuid,
-    ) {
+    ) -> Result<()> {
         let result: Result<SetClientDeltaInfoResult> = self
             .call(SetClientDeltaInfoReq {
                 delta_url,
@@ -673,7 +673,19 @@ impl SessionHandle {
             .await;
         if let Err(e) = result {
             tracing::debug!(error = %e, "set_client_delta_info failed");
+            return Err(e);
         }
+        Ok(())
+    }
+
+    pub async fn clear_client_delta_info(&self) -> Result<()> {
+        let result: Result<ClearClientDeltaInfoResult> =
+            self.call(ClearClientDeltaInfoReq {}).await;
+        if let Err(e) = result {
+            tracing::debug!(error = %e, "clear_client_delta_info failed");
+            return Err(e);
+        }
+        Ok(())
     }
 
     pub async fn agent_sessions(

@@ -5,6 +5,7 @@ use tracing::*;
 use zedra_rpc::ZedraPairingTicket;
 use zedra_session::{ConnectPhase, signer::ClientSigner};
 
+use crate::delta::DeltaState;
 use crate::pending::PendingSlot;
 use crate::platform_bridge::{self, HapticFeedback};
 use crate::workspace::{Workspace, WorkspaceEvent};
@@ -41,11 +42,12 @@ pub struct Workspaces {
     states: Vec<Entity<WorkspaceState>>,
     active_index: Option<usize>,
     signer: Option<Arc<dyn ClientSigner>>,
+    delta_state: Entity<DeltaState>,
     _subscriptions: Vec<(Entity<Workspace>, Subscription)>,
 }
 
 impl Workspaces {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(delta_state: Entity<DeltaState>, cx: &mut Context<Self>) -> Self {
         let signer = load_client_signer();
 
         let states = WorkspaceState::load()
@@ -63,6 +65,7 @@ impl Workspaces {
             entries: Vec::new(),
             states,
             signer,
+            delta_state,
             active_index: None,
             _subscriptions: Vec::new(),
         };
@@ -430,7 +433,9 @@ impl Workspaces {
         });
 
         // Create workspace entity
-        let workspace = cx.new(|cx| Workspace::new(workspace_state.clone(), window, cx));
+        let delta_state = self.delta_state.clone();
+        let workspace =
+            cx.new(|cx| Workspace::new(workspace_state.clone(), delta_state, window, cx));
         let sub = self.subscribe_workspace_event(&workspace, cx);
         self._subscriptions.push((workspace.clone(), sub));
 

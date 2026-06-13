@@ -6,6 +6,7 @@ use anyhow::{Result as AnyhowResult, anyhow};
 use gpui::{prelude::FluentBuilder as _, *};
 use tokio::sync::{broadcast, mpsc};
 use tracing::*;
+use uuid::Uuid;
 use zedra_rpc::ZedraPairingTicket;
 use zedra_rpc::proto::{AgentKind, HostEvent, SyncSessionResult};
 use zedra_session::{
@@ -19,6 +20,7 @@ use crate::agent_manage::AgentManage;
 use crate::agent_picker::AgentPicker;
 use crate::agent_sessions::AgentSessions;
 use crate::agent_ui::managed_agent_name;
+use crate::delta::{ClientDeltaInfo, DeltaState};
 use crate::editor::git_sidebar::GitFileSection;
 use crate::file_search::{FileSearchEvent, FileSearchPanel};
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
@@ -66,6 +68,7 @@ pub struct Workspace {
     workspace_state: Entity<WorkspaceState>,
     session_state: Entity<SessionState>,
     terminal_state: Entity<TerminalState>,
+    delta_state: Entity<DeltaState>,
     session: Session,
     editor: Entity<WorkspaceEditor>,
     gitdiff: Entity<WorkspaceGitdiff>,
@@ -97,9 +100,7 @@ pub struct Workspace {
     /// Terminal to open immediately after the first sync completes (set by notification deeplink).
     pending_terminal_after_sync: Option<String>,
     _subscriptions: Vec<Subscription>,
-    /// Reset on each new connection; set after the host node is registered with
-    /// Delta so reconnects skip redundant re-registration.
-    host_delta_registered: bool,
+    delta_host_reconciling: bool,
 }
 
 impl Drop for Workspace {
@@ -652,6 +653,7 @@ fn replacement_terminal_id_after_close(closed_id: &str, terminal_ids: &[String])
 impl Workspace {
     pub fn new(
         workspace_state: Entity<WorkspaceState>,
+        delta_state: Entity<DeltaState>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -710,6 +712,14 @@ impl Workspace {
                     WorkspaceState::upsert(workspace_state.read(_cx).clone())
                         .map_err(|e| warn!("failed to upsert workspace state: {}", e))
                         .ok();
+                }
+            },
+        );
+        let delta_state_subscription = cx.subscribe(
+            &delta_state,
+            |workspace, _delta_state, event: &crate::delta::DeltaStateEvent, cx| {
+                if matches!(event, crate::delta::DeltaStateEvent::DeltaStateChanged) {
+                    workspace.reconcile_delta_host_binding(cx);
                 }
             },
         );
@@ -820,6 +830,12 @@ impl Workspace {
         let foreground_handle = session.handle().clone();
         let mut foreground_rx = platform_bridge::subscribe_foreground_state();
         let foreground_state_listener = zedra_session::session_runtime().spawn(async move {
+            // Seed the host with the current app state so a workspace that
+            // starts while already backgrounded does not stay pinned to the
+            // default foreground=true state.
+            foreground_handle
+                .notify_app_state(platform_bridge::is_app_in_foreground())
+                .await;
             loop {
                 match foreground_rx.recv().await {
                     Ok(in_foreground) => {
@@ -882,6 +898,7 @@ impl Workspace {
             workspace_state,
             session_state,
             terminal_state,
+            delta_state,
             session,
             editor,
             gitdiff,
@@ -903,10 +920,11 @@ impl Workspace {
             pending_platform_action,
             _pending_platform_action_task: pending_platform_action_task,
             pending_terminal_after_sync: None,
-            host_delta_registered: false,
+            delta_host_reconciling: false,
             _subscriptions: vec![
                 drawer_host_subscription,
                 workspace_state_subscription,
+                delta_state_subscription,
                 gitdiff_subscription,
                 file_search_subscription,
             ],
@@ -976,7 +994,10 @@ impl Workspace {
                         }
                         if let ConnectEvent::SyncComplete { sync, .. } = &event {
                             ws.seed_terminal_meta_from_sync(sync, cx);
-                            ws.try_register_host_with_delta(sync);
+                            ws.workspace_state.update(cx, |state, cx| {
+                                state.set_delta_host_pubkey(sync.delta_pubkey, cx);
+                            });
+                            ws.reconcile_delta_host_binding(cx);
                         }
                         sync_refresh_mode
                     }) {
@@ -1075,7 +1096,7 @@ impl Workspace {
         };
         self.connection_request = Some(request.clone());
         self.seen_reconnect = false;
-        self.host_delta_registered = false;
+        self.delta_host_reconciling = false;
         self.active_reconnect_reason = None;
         self.latency_sampler.reset();
         self.start_connection(request);
@@ -1096,60 +1117,203 @@ impl Workspace {
         );
     }
 
-    /// Register the host's public key with Delta and report back the stack/node
-    /// info via `SetClientDeltaInfo` so the host daemon can send push
-    /// notifications without requiring the host to be signed in.
-    ///
-    /// Guarded by `host_delta_registered` which is reset on every new
-    /// connection, so this runs at most once per connection cycle.
-    fn try_register_host_with_delta(&mut self, sync: &SyncSessionResult) {
-        if self.host_delta_registered {
+    /// Sync the current workspace host binding to Delta and the host daemon.
+    /// The workspace persists the host pubkey/node id, while DeltaState caches
+    /// host node ids by pubkey so later reconnects or delayed sign-in can reuse
+    /// the same host node.
+    fn reconcile_delta_host_binding(&mut self, cx: &mut Context<Self>) {
+        let (host_pubkey, host_node_id) = {
+            let state = self.workspace_state.read(cx);
+            (state.delta_host_pubkey, state.delta_host_node_id)
+        };
+        let client_info_snapshot = self.client_delta_info_snapshot(cx);
+        let Some(host_pubkey) = host_pubkey else {
+            return;
+        };
+
+        let host_node = self
+            .delta_state
+            .read(cx)
+            .host_node_for_pubkey(host_pubkey)
+            .or_else(|| host_node_id.map(crate::delta::DeltaHostNode::from_host_node_id));
+        if let Some(host_node) = host_node {
+            self.apply_delta_host_binding(host_pubkey, host_node, client_info_snapshot, cx);
             return;
         }
-        let host_public_key = sync.delta_pubkey;
-        let metadata = serde_json::json!({
-            "hostname": sync.hostname.clone(),
-            "username": sync.username.clone(),
-            "workdir": sync.workdir.clone(),
-            "os": sync.os.clone(),
-            "arch": sync.arch.clone(),
-            "os_version": sync.os_version.clone(),
-            "host_version": sync.host_version.clone(),
-        });
-        let handle = self.session.handle().clone();
-        // Optimistically mark registered so concurrent SyncComplete events
-        // don't race to issue duplicate registration calls.
-        self.host_delta_registered = true;
 
-        zedra_session::session_runtime().spawn(async move {
-            match crate::delta::register_paired_host_node(host_public_key, metadata).await {
-                Ok(Some(result)) => {
-                    tracing::info!(
-                        created = result.created,
-                        host_node_id = %result.host_node_id,
-                        "Delta host node registered"
-                    );
-                    let Some(client_info) = crate::delta::current_client_info() else {
-                        tracing::warn!(
-                            "Delta current client info unavailable after host registration"
+        if self.delta_host_reconciling {
+            return;
+        }
+
+        let client_snapshot = self.delta_state.read(cx).snapshot();
+        let Some(client_info) = client_snapshot.current_client_info() else {
+            return;
+        };
+
+        self.delta_host_reconciling = true;
+        let snapshot = self.delta_state.read(cx).snapshot();
+        let metadata = self.delta_registration_metadata(cx);
+        let delta_state = self.delta_state.clone();
+        let host_pubkey = host_pubkey;
+
+        cx.spawn(async move |workspace, cx| {
+            let result = crate::delta::offload(crate::delta::register_paired_host_node(
+                snapshot.clone(),
+                host_pubkey,
+                metadata,
+            ))
+            .await;
+            match result {
+                Ok((Some(result), next)) => {
+                    let applied = delta_state.update(cx, |state, cx| {
+                        // Skip stale host registration results if Delta auth state changed mid-flight.
+                        state.apply_if_current(&snapshot, next, cx)
+                    });
+                    let _ = workspace.update(cx, |ws, cx| {
+                        ws.delta_host_reconciling = false;
+                        if !applied {
+                            return;
+                        }
+
+                        ws.apply_delta_host_binding(
+                            host_pubkey,
+                            result.node.clone(),
+                            Some(client_info.clone()),
+                            cx,
                         );
-                        return;
-                    };
-                    handle
-                        .set_client_delta_info(
-                            client_info.delta_url,
-                            client_info.stack_id,
-                            client_info.client_node_id,
-                            result.host_node_id,
-                        )
-                        .await;
+                    });
                 }
-                Ok(None) => {
-                    tracing::debug!("Delta sign-in unavailable; skipped host registration")
+                Ok((None, _)) => {
+                    let _ = workspace.update(cx, |ws, _cx| {
+                        ws.delta_host_reconciling = false;
+                    });
                 }
-                Err(err) => tracing::warn!("Delta host node registration failed: {err:#}"),
+                Err(err) => {
+                    let _ = workspace.update(cx, |ws, _cx| {
+                        ws.delta_host_reconciling = false;
+                    });
+                    tracing::warn!("Delta host node registration failed: {err:#}");
+                }
             }
+        })
+        .detach();
+    }
+
+    fn client_delta_info_snapshot(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<crate::delta::ClientDeltaInfo> {
+        self.delta_state.read(cx).snapshot().current_client_info()
+    }
+
+    fn delta_registration_metadata(&self, cx: &mut Context<Self>) -> serde_json::Value {
+        let s = &self.session_state.read(cx).snapshot;
+        serde_json::json!({
+            "hostname": s.hostname,
+            "username": s.username,
+            "workdir": s.workdir,
+            "os": s.os,
+            "arch": s.arch,
+            "os_version": s.os_version,
+            "host_version": s.host_version,
+        })
+    }
+
+    fn apply_delta_host_binding(
+        &mut self,
+        host_pubkey: [u8; 32],
+        host_node: crate::delta::DeltaHostNode,
+        client_info: Option<crate::delta::ClientDeltaInfo>,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspace_state.update(cx, |state, cx| {
+            state.set_delta_host_pubkey(host_pubkey, cx);
+            state.set_delta_host_node_id(host_node.host_node_id(), cx);
         });
+        self.delta_state.update(cx, |state, cx| {
+            state.remember_host_node(host_pubkey, host_node.clone(), cx)
+        });
+
+        match client_info {
+            Some(client_info) => {
+                self.send_client_delta_info(client_info, host_node.host_node_id(), cx);
+            }
+            None => {
+                self.clear_client_delta_info(cx);
+            }
+        }
+    }
+
+    fn send_client_delta_info(
+        &self,
+        client_info: ClientDeltaInfo,
+        host_node_id: Uuid,
+        cx: &mut Context<Self>,
+    ) {
+        self.spawn_client_delta_handoff(
+            cx,
+            "Delta client info handoff to host failed",
+            move |handle| async move {
+                handle
+                    .set_client_delta_info(
+                        client_info.delta_url,
+                        client_info.stack_id,
+                        client_info.node_id,
+                        host_node_id,
+                    )
+                    .await
+            },
+        );
+    }
+
+    fn clear_client_delta_info(&self, cx: &mut Context<Self>) {
+        self.spawn_client_delta_handoff(
+            cx,
+            "Delta client info clear failed",
+            move |handle| async move { handle.clear_client_delta_info().await },
+        );
+    }
+
+    /// Spawn a detached Delta client-info handoff to the host. Skips if the
+    /// binding state has changed since this call was scheduled, then waits up
+    /// to ~2s for the session handle to attach a client before running `op`.
+    fn spawn_client_delta_handoff<F, Fut>(
+        &self,
+        cx: &mut Context<Self>,
+        error_context: &'static str,
+        op: F,
+    ) where
+        F: FnOnce(SessionHandle) -> Fut + 'static,
+        Fut: std::future::Future<Output = anyhow::Result<()>>,
+    {
+        let delta_state = self.delta_state.clone();
+        let client_snapshot = delta_state.read(cx).snapshot();
+        let handle = self.session.handle().clone();
+
+        cx.spawn(async move |_workspace, cx| {
+            if !delta_state.read_with(cx, |state, _| {
+                state.matches_client_binding_state(&client_snapshot)
+            }) {
+                return;
+            }
+            let mut ready = false;
+            for _ in 0..200 {
+                if handle.has_client() {
+                    ready = true;
+                    break;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(10))
+                    .await;
+            }
+            if !ready {
+                return;
+            }
+            if let Err(err) = op(handle).await {
+                tracing::warn!("{error_context}: {err:#}");
+            }
+        })
+        .detach();
     }
 
     pub fn restart_connection(&mut self, cx: &mut Context<Self>) {
@@ -1168,7 +1332,7 @@ impl Workspace {
 
         info!("restart connection requested");
         self.seen_reconnect = false;
-        self.host_delta_registered = false;
+        self.delta_host_reconciling = false;
         self.active_reconnect_reason = None;
         self.latency_sampler.reset();
         self.start_connection(request);
@@ -1209,7 +1373,7 @@ impl Workspace {
         };
         self.connection_request = Some(request.clone());
         self.seen_reconnect = false;
-        self.host_delta_registered = false;
+        self.delta_host_reconciling = false;
         self.active_reconnect_reason = None;
         self.latency_sampler.reset();
         self.start_connection(request);

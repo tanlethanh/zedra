@@ -1,10 +1,9 @@
-use std::time::Duration;
-
 use gpui::{prelude::FluentBuilder as _, *};
 
-use crate::delta;
+use futures::channel::oneshot;
+
+use crate::delta::{self, DeltaState};
 use crate::fonts;
-use crate::pending::{PendingSlot, spawn_periodic_task};
 use crate::platform_bridge::{
     self, AlertButton, CustomSheetDetent, CustomSheetOptions, HapticFeedback,
 };
@@ -20,30 +19,32 @@ pub enum SettingsEvent {
 
 impl EventEmitter<SettingsEvent> for SettingsView {}
 
-enum DeltaSettingsEvent {
-    StartGoogleSignIn,
-    GoogleSignIn(Result<platform_bridge::DeltaGoogleSignInResult, String>),
-    StartAppleSignIn,
-    AppleSignIn(Result<platform_bridge::DeltaAppleSignInResult, String>),
-    PushToken(Result<platform_bridge::DeltaPushTokenResult, String>),
-    ConfirmLogout,
-    ReconcileMobileNode(Result<delta::MobileNodeReconcileResult, String>),
-    OperationComplete {
-        result: Result<delta::DeltaStatus, String>,
-        success_message: Option<&'static str>,
-        target: DeltaMessageTarget,
-    },
-}
-
-static PENDING_DELTA_EVENT: PendingSlot<DeltaSettingsEvent> = PendingSlot::new();
-
-pub fn reconcile_delta_mobile_node_on_launch() {
-    zedra_session::session_runtime().spawn(async {
-        let result = delta::reconcile_mobile_node()
-            .await
-            .map_err(|error| format!("{error:#}"));
-        PENDING_DELTA_EVENT.set(DeltaSettingsEvent::ReconcileMobileNode(result));
-    });
+/// Reconcile the persisted mobile node against Delta at launch and fold the
+/// result back into the shared state entity.
+pub fn reconcile_delta_on_launch<T: 'static>(delta_state: Entity<DeltaState>, cx: &mut Context<T>) {
+    let snapshot = delta_state.read(cx).snapshot();
+    cx.spawn(async move |_owner, cx| {
+        match delta::offload(delta::reconcile_mobile_node(snapshot.clone())).await {
+            Ok((outcome, next)) => {
+                let applied = delta_state.update(cx, |state, cx| {
+                    // Skip launch-time reconciliation if Delta state changed while it was in flight.
+                    state.apply_if_current(&snapshot, next, cx)
+                });
+                if applied {
+                    tracing::info!(?outcome, "Delta mobile node reconciliation completed");
+                } else {
+                    tracing::debug!(
+                        ?outcome,
+                        "Delta mobile node reconciliation completed after state changed; skipping stale update"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!("Delta mobile node reconciliation failed: {error:#}");
+            }
+        }
+    })
+    .detach();
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -52,81 +53,129 @@ enum DeltaMessageTarget {
     Notifications,
 }
 
+#[derive(Clone, Copy)]
+enum OAuthProvider {
+    Google,
+    Apple,
+}
+
 pub struct SettingsView {
     focus_handle: FocusHandle,
     theme_state: Entity<ThemeState>,
     sheet_state: Entity<SheetDemoState>,
     sheet_view: Entity<crate::sheet_demo_view::SheetDemoView>,
-    delta_status: delta::DeltaStatus,
+    delta_state: Entity<DeltaState>,
     delta_message: Option<String>,
     delta_message_target: DeltaMessageTarget,
     delta_busy: bool,
-    _delta_task: Task<()>,
+    _delta_observe: Subscription,
 }
 
 impl SettingsView {
-    pub fn new(theme_state: Entity<ThemeState>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        theme_state: Entity<ThemeState>,
+        delta_state: Entity<DeltaState>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let sheet_state = cx.new(|cx| SheetDemoState::new(cx));
         let sheet_view =
             cx.new(|cx| crate::sheet_demo_view::SheetDemoView::new(sheet_state.clone(), cx));
-        let delta_task = spawn_periodic_task(cx, Duration::from_millis(120), |this, cx| {
-            this.process_delta_events(cx);
-        });
+        // Re-render when the shared Delta state changes from anywhere.
+        let observe = cx.observe(&delta_state, |_, _, cx| cx.notify());
         Self {
             focus_handle: cx.focus_handle(),
             theme_state,
             sheet_state,
             sheet_view,
-            delta_status: delta::status(),
+            delta_state,
             delta_message: None,
             delta_message_target: DeltaMessageTarget::Profile,
             delta_busy: false,
-            _delta_task: delta_task,
+            _delta_observe: observe,
         }
     }
 
-    fn start_oauth_sign_in(&mut self, cx: &mut Context<Self>, message: &str, start: impl FnOnce()) {
+    fn status(&self, cx: &App) -> delta::DeltaStatus {
+        self.delta_state.read(cx).status()
+    }
+
+    fn start_apple_sign_in(&mut self, cx: &mut Context<Self>) {
         if self.delta_busy {
             return;
         }
+        self.begin_profile_op("Opening Apple sign-in");
+        let (tx, rx) = oneshot::channel();
+        platform_bridge::start_delta_apple_sign_in(move |result| {
+            let _ = tx.send(result.map(|r| (r.id_token, r.email)));
+        });
+        self.spawn_oauth_sign_in(rx, OAuthProvider::Apple, cx);
+        cx.notify();
+    }
+
+    fn start_google_sign_in(&mut self, cx: &mut Context<Self>) {
+        if self.delta_busy {
+            return;
+        }
+        self.begin_profile_op("Opening Google sign-in");
+        let (tx, rx) = oneshot::channel();
+        platform_bridge::start_delta_google_sign_in(move |result| {
+            let _ = tx.send(result.map(|r| (r.id_token, r.email)));
+        });
+        self.spawn_oauth_sign_in(rx, OAuthProvider::Google, cx);
+        cx.notify();
+    }
+
+    fn begin_profile_op(&mut self, message: &str) {
         self.delta_busy = true;
         self.delta_message_target = DeltaMessageTarget::Profile;
         self.delta_message = Some(message.to_string());
         platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-        start();
-        cx.notify();
     }
 
-    fn start_apple_sign_in(&mut self, cx: &mut Context<Self>) {
-        self.start_oauth_sign_in(cx, "Opening Apple sign-in", || {
-            platform_bridge::start_delta_apple_sign_in(|result| {
-                PENDING_DELTA_EVENT.set(DeltaSettingsEvent::AppleSignIn(result));
-            });
-        });
-    }
-
-    fn start_google_sign_in(&mut self, cx: &mut Context<Self>) {
-        self.start_oauth_sign_in(cx, "Opening Google sign-in", || {
-            platform_bridge::start_delta_google_sign_in(|result| {
-                PENDING_DELTA_EVENT.set(DeltaSettingsEvent::GoogleSignIn(result));
-            });
-        });
-    }
-
-    fn spawn_sign_in_task(
+    /// Await an OAuth provider callback, then run the network sign-in on the
+    /// session runtime and apply the result back onto the shared entity.
+    fn spawn_oauth_sign_in(
         &mut self,
-        sign_in: impl std::future::Future<Output = anyhow::Result<delta::DeltaStatus>> + Send + 'static,
+        rx: oneshot::Receiver<Result<(String, Option<String>), String>>,
+        provider: OAuthProvider,
+        cx: &mut Context<Self>,
     ) {
-        self.delta_message_target = DeltaMessageTarget::Profile;
-        self.delta_message = Some("Registering Delta mobile node".to_string());
-        zedra_session::session_runtime().spawn(async move {
-            let result = sign_in.await.map_err(|err| format!("{err:#}"));
-            PENDING_DELTA_EVENT.set(DeltaSettingsEvent::OperationComplete {
-                result,
-                success_message: None,
-                target: DeltaMessageTarget::Profile,
+        let delta_state = self.delta_state.clone();
+        cx.spawn(async move |this, cx| {
+            let (id_token, email) = match rx.await {
+                Ok(Ok(creds)) => creds,
+                Ok(Err(message)) => return Self::report_error(&this, cx, message),
+                Err(_) => return,
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.delta_message = Some("Registering Delta mobile node".to_string());
+                cx.notify();
             });
-        });
+            let snapshot = delta_state.read_with(cx, |state, _| state.snapshot());
+            let result = match provider {
+                OAuthProvider::Google => {
+                    delta::offload(delta::sign_in_with_google(
+                        snapshot.clone(),
+                        id_token,
+                        email,
+                    ))
+                    .await
+                }
+                OAuthProvider::Apple => {
+                    delta::offload(delta::sign_in_with_apple(snapshot.clone(), id_token, email))
+                        .await
+                }
+            };
+            Self::apply_delta_result(
+                &this,
+                &delta_state,
+                cx,
+                snapshot,
+                result,
+                DeltaMessageTarget::Profile,
+            );
+        })
+        .detach();
     }
 
     fn show_sign_in_methods(&mut self, cx: &mut Context<Self>) {
@@ -141,16 +190,26 @@ impl SettingsView {
         if cfg!(target_os = "ios") {
             buttons.push(AlertButton::default("Sign in with Apple").image("Apple"));
         }
+        let (tx, rx) = oneshot::channel();
         platform_bridge::show_selection(
             "Sign In",
             "Choose a sign-in method for Delta.",
             buttons,
-            |result| match result {
-                Some(0) => PENDING_DELTA_EVENT.set(DeltaSettingsEvent::StartGoogleSignIn),
-                Some(1) => PENDING_DELTA_EVENT.set(DeltaSettingsEvent::StartAppleSignIn),
-                _ => {}
+            move |result| {
+                let _ = tx.send(result);
             },
         );
+        cx.spawn(async move |this, cx| {
+            let Ok(choice) = rx.await else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| match choice {
+                Some(0) => this.start_google_sign_in(cx),
+                Some(1) => this.start_apple_sign_in(cx),
+                _ => {}
+            });
+        })
+        .detach();
         cx.notify();
     }
 
@@ -162,104 +221,104 @@ impl SettingsView {
         self.delta_message_target = DeltaMessageTarget::Notifications;
         self.delta_message = Some("Requesting notification permission".to_string());
         platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-        platform_bridge::request_delta_push_token(|result| {
-            PENDING_DELTA_EVENT.set(DeltaSettingsEvent::PushToken(result));
+        let (tx, rx) = oneshot::channel();
+        platform_bridge::request_delta_push_token(move |result| {
+            let _ = tx.send(result);
         });
+        let delta_state = self.delta_state.clone();
+        cx.spawn(async move |this, cx| {
+            let token = match rx.await {
+                Ok(Ok(token)) => token,
+                Ok(Err(message)) => {
+                    tracing::error!(error = %message, "Push token acquisition failed before Delta registration");
+                    return Self::report_error(&this, cx, message);
+                }
+                Err(_) => return,
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.delta_message = Some("Registering push token".to_string());
+                cx.notify();
+            });
+            let snapshot = delta_state.read_with(cx, |state, _| state.snapshot());
+            let result = delta::offload(delta::register_push_token(
+                snapshot.clone(),
+                token.provider,
+                token.token,
+                token.environment,
+            ))
+            .await;
+            Self::apply_delta_result(
+                &this,
+                &delta_state,
+                cx,
+                snapshot,
+                result,
+                DeltaMessageTarget::Notifications,
+            );
+        })
+        .detach();
         cx.notify();
     }
 
-    fn process_delta_events(&mut self, cx: &mut Context<Self>) {
-        let Some(event) = PENDING_DELTA_EVENT.take() else {
-            return;
-        };
-
-        match event {
-            DeltaSettingsEvent::StartGoogleSignIn => {
-                self.start_google_sign_in(cx);
-            }
-            DeltaSettingsEvent::StartAppleSignIn => {
-                self.start_apple_sign_in(cx);
-            }
-            DeltaSettingsEvent::AppleSignIn(Ok(result)) => {
-                self.spawn_sign_in_task(delta::sign_in_with_apple(result.id_token, result.email));
-            }
-            DeltaSettingsEvent::AppleSignIn(Err(message))
-            | DeltaSettingsEvent::GoogleSignIn(Err(message)) => {
-                self.finish_delta_error(message);
-            }
-            DeltaSettingsEvent::GoogleSignIn(Ok(result)) => {
-                self.spawn_sign_in_task(delta::sign_in_with_google(result.id_token, result.email));
-            }
-            DeltaSettingsEvent::PushToken(Ok(result)) => {
-                self.delta_message_target = DeltaMessageTarget::Notifications;
-                self.delta_message = Some("Registering push token".to_string());
-                zedra_session::session_runtime().spawn(async move {
-                    let result = delta::register_push_token(
-                        result.provider,
-                        result.token,
-                        result.environment,
-                    )
-                    .await
-                    .map_err(|err| format!("{err:#}"));
-                    PENDING_DELTA_EVENT.set(DeltaSettingsEvent::OperationComplete {
-                        result,
-                        success_message: Some("Notifications enabled"),
-                        target: DeltaMessageTarget::Notifications,
-                    });
-                });
-            }
-            DeltaSettingsEvent::PushToken(Err(message)) => {
-                tracing::error!(error = %message, "Push token acquisition failed before Delta registration");
-                self.finish_delta_error(message);
-            }
-            DeltaSettingsEvent::ConfirmLogout => {
-                self.delta_message_target = DeltaMessageTarget::Profile;
-                match delta::sign_out().map_err(|err| format!("{err:#}")) {
-                    Ok(status) => {
-                        self.delta_status = status;
-                        self.delta_busy = false;
-                        self.delta_message = Some("Signed out of Delta".to_string());
-                    }
-                    Err(message) => {
-                        self.finish_delta_error(message);
-                    }
-                }
-            }
-            DeltaSettingsEvent::ReconcileMobileNode(result) => match result {
-                Ok(result) => {
-                    tracing::info!(?result, "Delta mobile node reconciliation completed");
-                    if result == delta::MobileNodeReconcileResult::SignedOut {
-                        self.delta_status = delta::status();
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!("Delta mobile node reconciliation failed: {error}")
-                }
-            },
-            DeltaSettingsEvent::OperationComplete {
-                result: Ok(status),
-                success_message: _,
-                target,
-            } => {
-                self.delta_status = status;
+    fn confirm_logout(&mut self, cx: &mut Context<Self>) {
+        self.delta_message_target = DeltaMessageTarget::Profile;
+        let snapshot = self.delta_state.read(cx).snapshot();
+        match delta::sign_out(snapshot) {
+            Ok(next) => {
+                self.delta_state
+                    .update(cx, |state, cx| state.apply(next, cx));
                 self.delta_busy = false;
-                self.delta_message_target = target;
-                self.delta_message = None;
+                self.delta_message = Some("Signed out of Delta".to_string());
             }
-            DeltaSettingsEvent::OperationComplete {
-                result: Err(message),
-                target,
-                ..
-            } => {
-                if target == DeltaMessageTarget::Notifications {
-                    tracing::error!(error = %message, "Delta push token registration failed");
-                } else {
-                    tracing::error!(error = %message, "Delta setup operation failed");
-                }
-                self.finish_delta_error(message);
-            }
+            Err(error) => self.finish_delta_error(format!("{error:#}")),
         }
         cx.notify();
+    }
+
+    /// Apply a completed network result onto the shared entity, clearing the
+    /// busy state, or surface the error.
+    fn apply_delta_result(
+        this: &WeakEntity<Self>,
+        delta_state: &Entity<DeltaState>,
+        cx: &mut AsyncApp,
+        snapshot: DeltaState,
+        result: anyhow::Result<DeltaState>,
+        target: DeltaMessageTarget,
+    ) {
+        match result {
+            Ok(next) => {
+                let applied = delta_state.update(cx, |state, cx| {
+                    // Keep newer Delta state changes from being overwritten by a stale async result.
+                    state.apply_if_current(&snapshot, next, cx)
+                });
+                let _ = this.update(cx, |this, cx| {
+                    this.delta_busy = false;
+                    this.delta_message_target = target;
+                    this.delta_message = None;
+                    cx.notify();
+                });
+                if !applied {
+                    tracing::debug!(
+                        "Delta async result completed after state changed; skipping stale update"
+                    );
+                }
+            }
+            Err(error) => {
+                if target == DeltaMessageTarget::Notifications {
+                    tracing::error!(error = %error, "Delta push token registration failed");
+                } else {
+                    tracing::error!(error = %error, "Delta setup operation failed");
+                }
+                Self::report_error(this, cx, format!("{error:#}"));
+            }
+        }
+    }
+
+    fn report_error(this: &WeakEntity<Self>, cx: &mut AsyncApp, message: String) {
+        let _ = this.update(cx, |this, cx| {
+            this.finish_delta_error(message);
+            cx.notify();
+        });
     }
 
     fn finish_delta_error(&mut self, message: String) {
@@ -267,33 +326,31 @@ impl SettingsView {
         self.delta_message = Some(message);
     }
 
-    fn profile_title(&self) -> String {
-        self.delta_status
+    fn profile_title(status: &delta::DeltaStatus) -> String {
+        status
             .email
             .clone()
             .unwrap_or_else(|| "Signed in".to_string())
     }
 
-    fn profile_summary(&self) -> String {
-        let stack = self
-            .delta_status
+    fn profile_summary(status: &delta::DeltaStatus) -> String {
+        let stack = status
             .stack_id
             .map(short_id)
             .unwrap_or_else(|| "no stack".to_string());
-        let node = self
-            .delta_status
-            .mobile_node_id
+        let node = status
+            .node_id
             .map(short_id)
             .unwrap_or_else(|| "no node".to_string());
         format!("Stack {stack} · Node {node}")
     }
 
-    fn push_summary(&self) -> String {
+    fn push_summary(status: &delta::DeltaStatus) -> String {
         match (
-            self.delta_status.push_registered,
-            self.delta_status.push_provider.as_deref(),
-            self.delta_status.push_environment.as_deref(),
-            self.delta_status.signed_in,
+            status.push_registered,
+            status.push_provider.as_deref(),
+            status.push_environment.as_deref(),
+            status.signed_in,
         ) {
             (true, Some(provider), Some(environment), _) => {
                 format!("{provider} {environment} token registered")
@@ -307,8 +364,9 @@ impl SettingsView {
         }
     }
 
-    fn show_logout_confirmation(&self) {
+    fn show_logout_confirmation(&self, cx: &mut Context<Self>) {
         platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+        let (tx, rx) = oneshot::channel();
         platform_bridge::show_alert(
             "",
             "Log out of Delta?",
@@ -316,12 +374,16 @@ impl SettingsView {
                 AlertButton::destructive("Log Out"),
                 AlertButton::cancel("Cancel"),
             ],
-            |button_index| {
-                if button_index == 0 {
-                    PENDING_DELTA_EVENT.set(DeltaSettingsEvent::ConfirmLogout);
-                }
+            move |button_index| {
+                let _ = tx.send(button_index);
             },
         );
+        cx.spawn(async move |this, cx| {
+            if let Ok(0) = rx.await {
+                let _ = this.update(cx, |this, cx| this.confirm_logout(cx));
+            }
+        })
+        .detach();
     }
 
     fn set_theme_preference(&self, preference: ThemePreference, cx: &mut Context<Self>) {
@@ -395,8 +457,9 @@ impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let top_inset = platform_bridge::status_bar_inset();
         let bottom_inset = platform_bridge::home_indicator_inset();
+        let status = self.status(cx);
         let delta_message = self.delta_message.clone();
-        let profile_title = self.profile_title();
+        let profile_title = Self::profile_title(&status);
         let profile_initial = profile_title
             .chars()
             .next()
@@ -404,7 +467,7 @@ impl Render for SettingsView {
             .to_ascii_uppercase()
             .to_string();
         let profile_summary = status_or_summary(
-            self.profile_summary(),
+            Self::profile_summary(&status),
             delta_message.as_deref(),
             self.delta_message_target,
             DeltaMessageTarget::Profile,
@@ -416,11 +479,12 @@ impl Render for SettingsView {
             DeltaMessageTarget::Profile,
         );
         let push_summary = status_or_summary(
-            self.push_summary(),
+            Self::push_summary(&status),
             delta_message.as_deref(),
             self.delta_message_target,
             DeltaMessageTarget::Notifications,
         );
+        let signed_in = status.signed_in;
         let sign_in_title = if self.delta_busy {
             "Signing in..."
         } else {
@@ -494,19 +558,19 @@ impl Render for SettingsView {
                             .flex_col()
                             .gap(px(theme::SPACING_MD))
                             .child(section_header(cx, "Profile"))
-                            .when(self.delta_status.signed_in, |this| {
+                            .when(signed_in, |this| {
                                 this.child(profile_info_row(
                                     cx,
                                     "settings-delta-profile",
                                     profile_initial,
                                     profile_title,
                                     profile_summary,
-                                    Some(cx.listener(|this, _event, _window, _cx| {
-                                        this.show_logout_confirmation();
+                                    Some(cx.listener(|this, _event, _window, cx| {
+                                        this.show_logout_confirmation(cx);
                                     })),
                                 ))
                             })
-                            .when(!self.delta_status.signed_in, |this| {
+                            .when(!signed_in, |this| {
                                 this.child(
                                     action_row(
                                         cx,

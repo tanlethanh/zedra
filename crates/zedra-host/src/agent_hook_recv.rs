@@ -131,6 +131,16 @@ pub trait HookReceiver {
         Ok(())
     }
 
+    /// Return the in-memory Delta client, logging a skip when Delta is not
+    /// configured. Callers early-return when this yields `None`.
+    fn require_delta(&self, ctx: &HookContext) -> Option<Arc<DeltaClient>> {
+        if ctx.delta.is_none() {
+            // TODO: host side might still be able to send a notification without Delta configured.
+            warn!("agent hook Delta notification skipped: no in-memory client delta");
+        }
+        ctx.delta.clone()
+    }
+
     /// Live Activity content state shared by every agent notification.
     fn content_state(&self, agent: &str, event_name: &str) -> serde_json::Value {
         serde_json::json!({ "agent": agent, "event": event_name })
@@ -194,9 +204,7 @@ impl HookReceiver for ClaudeHookReceiver {
             return Ok(());
         }
 
-        // If Delta is not configured, skip sending a notification.
-        // TODO: host side might still able to send notification without Delta being configured.
-        let Some(delta) = ctx.delta.clone() else {
+        let Some(delta) = self.require_delta(&ctx) else {
             return Ok(());
         };
 
@@ -210,7 +218,6 @@ impl HookReceiver for ClaudeHookReceiver {
         };
 
         let body = self.read_transcript_title(&ctx.payload).await;
-        info!(event_name, "agent hook delta notification (claude)");
         self.send_notification(
             &delta,
             HookNotification {
@@ -251,7 +258,7 @@ impl HookReceiver for CodexHookReceiver {
         {
             return Ok(());
         }
-        let Some(delta) = ctx.delta.clone() else {
+        let Some(delta) = self.require_delta(&ctx) else {
             return Ok(());
         };
 
@@ -275,7 +282,6 @@ impl HookReceiver for CodexHookReceiver {
         .await
         .unwrap_or(None);
 
-        info!(event_name, "agent hook delta notification (codex)");
         self.send_notification(
             &delta,
             HookNotification {
@@ -316,7 +322,7 @@ impl HookReceiver for OpenCodeHookReceiver {
         {
             return Ok(());
         }
-        let Some(delta) = ctx.delta.clone() else {
+        let Some(delta) = self.require_delta(&ctx) else {
             return Ok(());
         };
 
@@ -330,7 +336,6 @@ impl HookReceiver for OpenCodeHookReceiver {
             return Ok(());
         };
 
-        info!(event_name, "agent hook delta notification (opencode)");
         self.send_notification(
             &delta,
             HookNotification {
@@ -411,7 +416,7 @@ impl HookReceiver for HermesHookReceiver {
         {
             return Ok(());
         }
-        let Some(delta) = ctx.delta.clone() else {
+        let Some(delta) = self.require_delta(&ctx) else {
             return Ok(());
         };
 
@@ -426,7 +431,6 @@ impl HookReceiver for HermesHookReceiver {
             return Ok(());
         };
 
-        info!(event_name, "agent hook delta notification (hermes)");
         self.send_notification(
             &delta,
             HookNotification {
@@ -474,7 +478,7 @@ impl HookReceiver for PiHookReceiver {
         {
             return Ok(());
         }
-        let Some(delta) = ctx.delta.clone() else {
+        let Some(delta) = self.require_delta(&ctx) else {
             return Ok(());
         };
 
@@ -498,7 +502,6 @@ impl HookReceiver for PiHookReceiver {
         .await
         .unwrap_or(None);
 
-        info!(event_name, "agent hook delta notification (pi)");
         self.send_notification(
             &delta,
             HookNotification {

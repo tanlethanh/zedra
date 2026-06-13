@@ -883,13 +883,10 @@ async fn main() -> Result<()> {
             activity_id,
             state,
             end,
-            workdir,
+            workdir: _,
         } => {
-            let workdir = resolve_workdir(workdir);
-            let client = delta::DeltaClient::try_load_for_workspace(&workdir).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Delta not configured. Sign in with `zedra auth login` or connect the mobile app first."
-                )
+            let client = delta::DeltaClient::try_load().ok_or_else(|| {
+                anyhow::anyhow!("Delta not configured. Sign in with `zedra auth login`.")
             })?;
             if live_activity {
                 let activity_id =
@@ -1078,7 +1075,7 @@ async fn main() -> Result<()> {
                 Err(_) => tracing::warn!("Delta signed-in host metadata reconciliation timed out"),
             }
 
-            let delta_client = delta::DeltaClient::try_load_for_workspace(&workdir);
+            let delta_client = delta::DeltaClient::try_load();
 
             let state = Arc::new(rpc_daemon::DaemonState::new(
                 workdir.clone(),

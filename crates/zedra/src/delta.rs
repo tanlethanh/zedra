@@ -1,8 +1,12 @@
+use std::collections::HashMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context as _, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
+use futures::channel::oneshot;
+use gpui::{Context, EventEmitter};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -123,20 +127,93 @@ pub struct DeltaStatus {
     pub signed_in: bool,
     pub email: Option<String>,
     pub stack_id: Option<Uuid>,
-    pub mobile_node_id: Option<Uuid>,
+    pub node_id: Option<Uuid>,
     pub push_provider: Option<String>,
     pub push_environment: Option<String>,
     pub push_registered: bool,
 }
 
-pub struct CurrentClientDeltaInfo {
+#[derive(Clone)]
+pub struct ClientDeltaInfo {
     pub delta_url: String,
     pub stack_id: Uuid,
-    pub client_node_id: Uuid,
+    pub node_id: Uuid,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-struct DeltaState {
+#[derive(Clone, Debug)]
+pub enum DeltaStateEvent {
+    DeltaStateChanged,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeltaHostNode {
+    host_node_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hostname: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workdir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    os_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host_version: Option<String>,
+}
+
+impl DeltaHostNode {
+    fn from_response(node: &NodeSummary) -> Self {
+        let metadata = node.metadata.as_object();
+        Self {
+            host_node_id: node.id,
+            display_name: node.display_name.clone().or_else(|| node.alias.clone()),
+            hostname: metadata
+                .and_then(|value| value.get("hostname"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            username: metadata
+                .and_then(|value| value.get("username"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            workdir: metadata
+                .and_then(|value| value.get("workdir"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            os_version: metadata
+                .and_then(|value| value.get("os_version"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            host_version: metadata
+                .and_then(|value| value.get("host_version"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+        }
+    }
+
+    pub fn from_host_node_id(host_node_id: Uuid) -> Self {
+        Self {
+            host_node_id,
+            display_name: None,
+            hostname: None,
+            username: None,
+            workdir: None,
+            os_version: None,
+            host_version: None,
+        }
+    }
+
+    pub fn host_node_id(&self) -> Uuid {
+        self.host_node_id
+    }
+}
+
+/// Canonical Delta client state. The live copy lives in a GPUI entity
+/// (`Entity<DeltaState>`) shared across features; async network calls take a
+/// `clone()` snapshot in and return the mutated value, which the caller applies
+/// back to the entity via [`DeltaState::apply`]. Also serialized to disk.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeltaState {
     #[serde(default = "default_base_url")]
     base_url: String,
     #[serde(default)]
@@ -150,14 +227,16 @@ struct DeltaState {
     #[serde(default)]
     stack_id: Option<Uuid>,
     #[serde(default)]
-    mobile_node_id: Option<Uuid>,
+    node_id: Option<Uuid>,
     #[serde(default)]
     email: Option<String>,
     #[serde(default)]
     push_token: Option<StoredPushToken>,
+    #[serde(default)]
+    host_nodes_by_pubkey: HashMap<String, DeltaHostNode>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 struct StoredPushToken {
     provider: String,
     token: String,
@@ -176,21 +255,79 @@ impl Default for DeltaState {
             expires_at: None,
             user_id: None,
             stack_id: None,
-            mobile_node_id: None,
+            node_id: None,
             email: None,
             push_token: None,
+            host_nodes_by_pubkey: HashMap::new(),
         }
     }
 }
 
 impl DeltaState {
-    fn status(&self) -> DeltaStatus {
+    /// Load the persisted state from disk, falling back to defaults. Used to
+    /// seed the shared entity at app launch.
+    pub fn load() -> Self {
+        load_state_from_disk().unwrap_or_else(|error| {
+            tracing::warn!("Delta state load failed; using defaults: {error:#}");
+            DeltaState::default()
+        })
+    }
+
+    /// Snapshot for handing to async network operations off the UI thread.
+    pub fn snapshot(&self) -> DeltaState {
+        self.clone()
+    }
+
+    /// Apply a snapshot produced by an async operation back onto the shared
+    /// entity, notifying observers.
+    pub fn apply(&mut self, next: DeltaState, cx: &mut Context<Self>) {
+        *self = next;
+        cx.emit(DeltaStateEvent::DeltaStateChanged);
+        cx.notify();
+    }
+
+    /// Apply a snapshot only if the entity still matches the state that
+    /// produced it. This avoids stale async results overwriting newer user
+    /// changes like sign-out or push settings edits.
+    pub fn apply_if_current(
+        &mut self,
+        expected: &DeltaState,
+        next: DeltaState,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.matches_client_state(expected) {
+            self.apply(next, cx);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn matches_client_state(&self, expected: &DeltaState) -> bool {
+        self.matches_client_binding_state(expected) && self.push_token == expected.push_token
+    }
+
+    /// Compare only the fields that affect the host/client handoff. Push-token
+    /// registration may mutate DeltaState independently and should not cancel a
+    /// valid host notification replay.
+    pub(crate) fn matches_client_binding_state(&self, expected: &DeltaState) -> bool {
+        self.base_url == expected.base_url
+            && self.access_token == expected.access_token
+            && self.refresh_token == expected.refresh_token
+            && self.expires_at == expected.expires_at
+            && self.user_id == expected.user_id
+            && self.stack_id == expected.stack_id
+            && self.node_id == expected.node_id
+            && self.email == expected.email
+    }
+
+    pub fn status(&self) -> DeltaStatus {
         DeltaStatus {
             base_url: self.base_url.clone(),
             signed_in: self.access_token.is_some() && self.stack_id.is_some(),
             email: self.email.clone(),
             stack_id: self.stack_id,
-            mobile_node_id: self.mobile_node_id,
+            node_id: self.node_id,
             push_provider: self.push_token.as_ref().map(|token| token.provider.clone()),
             push_environment: self
                 .push_token
@@ -203,35 +340,74 @@ impl DeltaState {
                 .unwrap_or(false),
         }
     }
+
+    /// Stack/node identity to hand to a paired host so it can address push
+    /// notifications at this client. `None` until signed in with a node id.
+    pub fn current_client_info(&self) -> Option<ClientDeltaInfo> {
+        self.access_token.as_ref()?;
+        Some(ClientDeltaInfo {
+            delta_url: self.base_url.clone(),
+            stack_id: self.stack_id?,
+            node_id: self.node_id?,
+        })
+    }
+
+    pub fn host_node_for_pubkey(&self, pubkey: [u8; 32]) -> Option<DeltaHostNode> {
+        self.host_nodes_by_pubkey
+            .get(&encode_base64_no_pad(pubkey))
+            .cloned()
+    }
+
+    pub fn remember_host_node(
+        &mut self,
+        pubkey: [u8; 32],
+        host_node: DeltaHostNode,
+        cx: &mut Context<Self>,
+    ) {
+        let key = encode_base64_no_pad(pubkey);
+        let changed = self
+            .host_nodes_by_pubkey
+            .get(&key)
+            .map(|entry| entry != &host_node)
+            .unwrap_or(true);
+        if changed {
+            self.host_nodes_by_pubkey.insert(key, host_node);
+            cx.emit(DeltaStateEvent::DeltaStateChanged);
+            cx.notify();
+        }
+    }
 }
+
+impl EventEmitter<DeltaStateEvent> for DeltaState {}
 
 fn default_base_url() -> String {
     DEFAULT_BASE_URL.to_string()
 }
 
-pub fn status() -> DeltaStatus {
-    load_state().unwrap_or_default().status()
+/// Run a Delta network operation on the session (Tokio) runtime and await the
+/// result on the caller's executor. Delta's HTTP client requires a Tokio
+/// reactor, so async ops cannot run directly on the GPUI executor.
+pub async fn offload<T>(fut: impl Future<Output = Result<T>> + Send + 'static) -> Result<T>
+where
+    T: Send + 'static,
+{
+    let (tx, rx) = oneshot::channel();
+    zedra_session::session_runtime().spawn(async move {
+        let _ = tx.send(fut.await);
+    });
+    rx.await
+        .map_err(|_| anyhow::anyhow!("Delta runtime task was dropped"))?
 }
 
-pub fn current_client_info() -> Option<CurrentClientDeltaInfo> {
-    let state = load_state().ok()?;
-    state.access_token.as_ref()?;
-    Some(CurrentClientDeltaInfo {
-        delta_url: state.base_url,
-        stack_id: state.stack_id?,
-        client_node_id: state.mobile_node_id?,
-    })
-}
-
-pub fn sign_out() -> Result<DeltaStatus> {
+/// Clear all signed-in state, preserving the configured base URL. Persists to
+/// disk and returns the cleared snapshot to apply back onto the entity.
+pub fn sign_out(current: DeltaState) -> Result<DeltaState> {
     let state = DeltaState {
-        base_url: load_state()
-            .map(|state| state.base_url)
-            .unwrap_or_else(|_| default_base_url()),
+        base_url: current.base_url,
         ..DeltaState::default()
     };
     save_state(&state)?;
-    Ok(state.status())
+    Ok(state)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -242,19 +418,20 @@ pub enum MobileNodeReconcileResult {
     SignedOut,
 }
 
-pub async fn reconcile_mobile_node() -> Result<MobileNodeReconcileResult> {
-    let mut state = load_state().unwrap_or_default();
-    let (Some(stack_id), Some(node_id)) = (state.stack_id, state.mobile_node_id) else {
-        return Ok(MobileNodeReconcileResult::Skipped);
+pub async fn reconcile_mobile_node(
+    mut state: DeltaState,
+) -> Result<(MobileNodeReconcileResult, DeltaState)> {
+    let (Some(stack_id), Some(node_id)) = (state.stack_id, state.node_id) else {
+        return Ok((MobileNodeReconcileResult::Skipped, state));
     };
     if state.access_token.is_none() {
-        return Ok(MobileNodeReconcileResult::Skipped);
+        return Ok((MobileNodeReconcileResult::Skipped, state));
     }
 
     let path = format!("/v1/stacks/{stack_id}/nodes/{node_id}");
     let Some(stored) = get_bearer::<NodeDetailResponse>(&mut state, &path).await? else {
-        sign_out()?;
-        return Ok(MobileNodeReconcileResult::SignedOut);
+        let state = sign_out(state)?;
+        return Ok((MobileNodeReconcileResult::SignedOut, state));
     };
 
     let display_name = mobile_display_name();
@@ -262,30 +439,38 @@ pub async fn reconcile_mobile_node() -> Result<MobileNodeReconcileResult> {
     let desired_metadata = mobile_node_metadata(&display_name, desired_kind);
     if mobile_node_matches(&stored.node, desired_kind, &display_name, &desired_metadata) {
         save_state(&state)?;
-        return Ok(MobileNodeReconcileResult::Unchanged);
+        return Ok((MobileNodeReconcileResult::Unchanged, state));
     }
 
     let mobile =
         register_mobile_node(&mut state, load_mobile_signer()?.pubkey(), &display_name).await?;
-    state.mobile_node_id = Some(mobile.node.id);
+    state.node_id = Some(mobile.node.id);
     save_state(&state)?;
-    Ok(MobileNodeReconcileResult::Updated)
+    Ok((MobileNodeReconcileResult::Updated, state))
 }
 
-pub async fn sign_in_with_google(id_token: String, email: Option<String>) -> Result<DeltaStatus> {
-    sign_in_with_oauth("google", id_token, email).await
+pub async fn sign_in_with_google(
+    state: DeltaState,
+    id_token: String,
+    email: Option<String>,
+) -> Result<DeltaState> {
+    sign_in_with_oauth("google", state, id_token, email).await
 }
 
-pub async fn sign_in_with_apple(id_token: String, email: Option<String>) -> Result<DeltaStatus> {
-    sign_in_with_oauth("apple", id_token, email).await
+pub async fn sign_in_with_apple(
+    state: DeltaState,
+    id_token: String,
+    email: Option<String>,
+) -> Result<DeltaState> {
+    sign_in_with_oauth("apple", state, id_token, email).await
 }
 
 async fn sign_in_with_oauth(
     provider: &str,
+    mut state: DeltaState,
     id_token: String,
     email: Option<String>,
-) -> Result<DeltaStatus> {
-    let mut state = load_state().unwrap_or_default();
+) -> Result<DeltaState> {
     state.base_url = normalize_base_url(&state.base_url);
 
     let auth: AuthResponse = http()
@@ -305,14 +490,14 @@ async fn sign_in_with_oauth(
     state.expires_at = Some(auth.expires_at);
     state.user_id = Some(auth.user.id);
     state.stack_id = Some(auth.stack.id);
-    state.mobile_node_id = None;
+    state.node_id = None;
     state.email = email.or(state.email);
     save_state(&state)?;
 
     let signer = load_mobile_signer()?;
     let mobile_name = mobile_display_name();
     let mobile = register_mobile_node(&mut state, signer.pubkey(), &mobile_name).await?;
-    state.mobile_node_id = Some(mobile.node.id);
+    state.node_id = Some(mobile.node.id);
     save_state(&state)?;
     let alias_is_default = mobile
         .node
@@ -337,15 +522,15 @@ async fn sign_in_with_oauth(
         }
     }
 
-    Ok(state.status())
+    Ok(state)
 }
 
 pub async fn register_push_token(
+    mut state: DeltaState,
     provider: String,
     token: String,
     environment: Option<String>,
-) -> Result<DeltaStatus> {
-    let mut state = load_state().unwrap_or_default();
+) -> Result<DeltaState> {
     state.push_token = Some(StoredPushToken {
         provider,
         token,
@@ -353,32 +538,32 @@ pub async fn register_push_token(
         registered: false,
     });
 
-    if state.access_token.is_some() && state.stack_id.is_some() && state.mobile_node_id.is_some() {
+    if state.access_token.is_some() && state.stack_id.is_some() && state.node_id.is_some() {
         register_stored_push_token(&mut state).await?;
     }
 
     save_state(&state)?;
-    Ok(state.status())
+    Ok(state)
 }
 
 /// Result returned when the mobile app registers a host node with Delta.
 pub struct HostNodeRegistrationResult {
-    /// The host's node_id within this stack.
-    pub host_node_id: Uuid,
+    /// The host node record returned by Delta for this stack.
+    pub node: DeltaHostNode,
     /// `true` if the host was newly registered; `false` if it was already known to Delta.
     pub created: bool,
 }
 
 pub async fn register_paired_host_node(
+    mut state: DeltaState,
     public_key: [u8; 32],
     metadata: Value,
-) -> Result<Option<HostNodeRegistrationResult>> {
-    let mut state = load_state().unwrap_or_default();
+) -> Result<(Option<HostNodeRegistrationResult>, DeltaState)> {
     if state.access_token.is_none() {
-        return Ok(None);
+        return Ok((None, state));
     }
     let Some(stack_id) = state.stack_id else {
-        return Ok(None);
+        return Ok((None, state));
     };
 
     let req = NodeRegistrationRequest {
@@ -390,10 +575,13 @@ pub async fn register_paired_host_node(
     };
     let resp: NodeRegistrationResponse =
         post_bearer(&mut state, &format!("/v1/stacks/{stack_id}/nodes"), &req).await?;
-    Ok(Some(HostNodeRegistrationResult {
-        host_node_id: resp.node.id,
-        created: resp.created,
-    }))
+    Ok((
+        Some(HostNodeRegistrationResult {
+            node: DeltaHostNode::from_response(&resp.node),
+            created: resp.created,
+        }),
+        state,
+    ))
 }
 
 async fn register_mobile_node(
@@ -428,9 +616,7 @@ async fn update_mobile_alias(state: &mut DeltaState, node_id: Uuid, alias: &str)
 
 async fn register_stored_push_token(state: &mut DeltaState) -> Result<()> {
     let stack_id = state.stack_id.context("Delta stack id is missing")?;
-    let node_id = state
-        .mobile_node_id
-        .context("Delta mobile node id is missing")?;
+    let node_id = state.node_id.context("Delta mobile node id is missing")?;
     let Some(push_token) = state.push_token.as_ref() else {
         return Ok(());
     };
@@ -697,7 +883,7 @@ fn load_mobile_signer() -> Result<zedra_session::signer::FileClientSigner> {
         .context("load Zedra mobile identity key")
 }
 
-fn load_state() -> Result<DeltaState> {
+fn load_state_from_disk() -> Result<DeltaState> {
     let path = state_path()?;
     if !path.exists() {
         return Ok(DeltaState::default());
@@ -715,7 +901,8 @@ fn save_state(state: &DeltaState) -> Result<()> {
         std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     let bytes = serde_json::to_vec_pretty(state)?;
-    write_private_file(&path, &bytes).with_context(|| format!("write {}", path.display()))
+    write_private_file(&path, &bytes).with_context(|| format!("write {}", path.display()))?;
+    Ok(())
 }
 
 fn state_path() -> Result<PathBuf> {
