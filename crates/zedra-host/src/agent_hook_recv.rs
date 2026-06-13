@@ -83,21 +83,17 @@ pub trait HookReceiver {
             let first = b.lines().next().unwrap_or("").trim();
             (!first.is_empty()).then(|| utils::truncate_chars(first, 100))
         });
-        let (notify_result, activity_result) = tokio::join!(
-            client.send_notification_to_stack(
+        // TODO: Live Activity send temporarily disabled — feature incomplete.
+        // Re-enable by restoring the parallel `update_live_activity_for_stack`
+        // call and the `activity_result` handling below.
+        let notify_result = client
+            .send_notification_to_stack(
                 notification.title.clone(),
                 body.clone(),
                 Some("agent".to_string()),
                 notification.deeplink.clone(),
-            ),
-            client.update_live_activity_for_stack(
-                "zedra-agent".to_string(),
-                Some(notification.title),
-                body,
-                notification.content_state,
-                false,
-            ),
-        );
+            )
+            .await;
         match notify_result {
             Ok(response) if response.recipients == 0 => {
                 warn!(
@@ -130,22 +126,6 @@ pub trait HookReceiver {
             }
             Err(err) => {
                 warn!(error = %err, "agent hook Delta notification failed");
-            }
-        }
-        match activity_result {
-            Ok(response) if response.provider_failure > 0 || response.provider_success == 0 => {
-                warn!(
-                    accepted = response.accepted,
-                    recipients = response.recipients,
-                    provider_success = response.provider_success,
-                    provider_failure = response.provider_failure,
-                    errors = ?response.errors,
-                    "agent hook Delta live activity completed without full provider delivery"
-                );
-            }
-            Ok(_) => {}
-            Err(err) => {
-                warn!(error = %err, "agent hook Delta live activity failed");
             }
         }
         Ok(())
