@@ -208,6 +208,7 @@ impl SettingsView {
                 });
             }
             DeltaSettingsEvent::PushToken(Err(message)) => {
+                tracing::error!(error = %message, "Push token acquisition failed before Delta registration");
                 self.finish_delta_error(message);
             }
             DeltaSettingsEvent::ConfirmLogout => {
@@ -246,8 +247,14 @@ impl SettingsView {
             }
             DeltaSettingsEvent::OperationComplete {
                 result: Err(message),
+                target,
                 ..
             } => {
+                if target == DeltaMessageTarget::Notifications {
+                    tracing::error!(error = %message, "Delta push token registration failed");
+                } else {
+                    tracing::error!(error = %message, "Delta setup operation failed");
+                }
                 self.finish_delta_error(message);
             }
         }

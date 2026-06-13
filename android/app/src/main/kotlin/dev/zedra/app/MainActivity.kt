@@ -1,11 +1,13 @@
 package dev.zedra.app
 
+import android.Manifest
 import android.app.Activity
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.content.res.Configuration
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
@@ -22,6 +24,7 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.widget.FrameLayout
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
@@ -53,6 +56,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var surfaceView: GpuiSurfaceView
     private lateinit var keyboardAccessoryBar: KeyboardAccessoryBar
     private var keyboardImeBottom = 0
+    private var pendingDeltaPushTokenCallbackId: Int? = null
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val callbackId = pendingDeltaPushTokenCallbackId ?: return@registerForActivityResult
+            pendingDeltaPushTokenCallbackId = null
+            if (granted) {
+                fetchDeltaPushToken(callbackId)
+            } else {
+                nativeDeltaPushTokenError(callbackId, "Notification permission was denied")
+            }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // Apply the persisted theme before super.onCreate so AppCompat picks up
@@ -158,6 +172,50 @@ class MainActivity : AppCompatActivity() {
         val uri = intent.data ?: return
         Log.d(TAG, "Deeplink received: $uri")
         nativeDeeplinkReceived(uri.toString())
+    }
+
+    private fun requestDeltaPushTokenOnMain(callbackId: Int) {
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
+        ) {
+            if (pendingDeltaPushTokenCallbackId != null) {
+                nativeDeltaPushTokenError(callbackId, "Notification permission request already in progress")
+                return
+            }
+            pendingDeltaPushTokenCallbackId = callbackId
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            return
+        }
+        fetchDeltaPushToken(callbackId)
+    }
+
+    private fun fetchDeltaPushToken(callbackId: Int) {
+        val tokenTask = try {
+            FirebaseMessaging.getInstance().token
+        } catch (error: Throwable) {
+            reportDeltaPushTokenError(callbackId, error)
+            return
+        }
+        tokenTask
+            .addOnSuccessListener { token ->
+                nativeDeltaPushTokenResult(callbackId, "fcm", token, "")
+            }
+            .addOnFailureListener { error ->
+                reportDeltaPushTokenError(callbackId, error)
+            }
+    }
+
+    private fun reportDeltaPushTokenError(callbackId: Int, error: Throwable) {
+        Log.e(TAG, "FCM token fetch failed", error)
+        val rootCause = generateSequence(error) { it.cause }.last()
+        val message = if (rootCause.message == "SERVICE_NOT_AVAILABLE") {
+            "FCM service unavailable. Check the network and Google Play services, then retry."
+        } else {
+            rootCause.message ?: "FCM token fetch failed (${rootCause.javaClass.simpleName})"
+        }
+        nativeDeltaPushTokenError(callbackId, message)
     }
 
     // dispatchKeyEvent runs before the view hierarchy, so it intercepts KEYCODE_BACK before
@@ -316,16 +374,13 @@ class MainActivity : AppCompatActivity() {
 
         @JvmStatic
         fun requestDeltaPushToken(callbackId: Int) {
-            FirebaseMessaging.getInstance().token
-                .addOnSuccessListener { token ->
-                    nativeDeltaPushTokenResult(callbackId, "fcm", token, "")
-                }
-                .addOnFailureListener { error ->
-                    nativeDeltaPushTokenError(
-                        callbackId,
-                        error.message ?: "FCM token fetch failed",
-                    )
-                }
+            val activity = sActivity as? MainActivity ?: run {
+                nativeDeltaPushTokenError(callbackId, "Activity not available")
+                return
+            }
+            activity.runOnUiThread {
+                activity.requestDeltaPushTokenOnMain(callbackId)
+            }
         }
 
         @JvmStatic
