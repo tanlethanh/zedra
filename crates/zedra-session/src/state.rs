@@ -631,6 +631,7 @@ mod tests {
             arch: Some("aarch64".into()),
             os_version: Some("26.0".into()),
             host_version: Some("0.1.1".into()),
+            delta_pubkey: [7; 32],
             terminals: Vec::new(),
         }
     }

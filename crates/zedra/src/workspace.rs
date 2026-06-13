@@ -1096,10 +1096,7 @@ impl Workspace {
         if self.host_delta_registered {
             return;
         }
-        let Some(request) = self.connection_request.as_ref() else {
-            return;
-        };
-        let host_public_key = *request.addr.id.as_bytes();
+        let host_public_key = sync.delta_pubkey;
         let metadata = serde_json::json!({
             "hostname": sync.hostname.clone(),
             "username": sync.username.clone(),
@@ -2714,6 +2711,7 @@ mod tests {
                 arch: Some("aarch64".into()),
                 os_version: Some("26.0".into()),
                 host_version: Some("0.1.1".into()),
+                delta_pubkey: [7; 32],
                 terminals: Vec::new(),
             },
             sync_ms: 7,
