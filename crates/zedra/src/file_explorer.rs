@@ -70,6 +70,8 @@ pub struct FileExplorer {
     focus_handle: FocusHandle,
     scroll_handle: UniformListScrollHandle,
     focused_path: Option<String>,
+    /// Bumped on every focus change; stale async reveals skip writing focus.
+    focus_epoch: u64,
     /// Whether entries were loaded from the remote host
     remote_loaded: bool,
     /// Total root entries on the server (may exceed `entries.len()` when paginated)
@@ -132,6 +134,7 @@ impl FileExplorer {
             focus_handle: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
             focused_path: None,
+            focus_epoch: 0,
             remote_loaded: false,
             root_total: 0,
             workdir,
@@ -170,6 +173,8 @@ impl FileExplorer {
         }
 
         self.focus_handle.focus(window, cx);
+        self.focus_epoch = self.focus_epoch.wrapping_add(1);
+        let focus_epoch = self.focus_epoch;
         self.focused_path = Some(target_path.clone());
 
         if target_path == "." || target_path == self.workdir {
@@ -232,7 +237,7 @@ impl FileExplorer {
                                 }
                             }
                         }
-                        if is_target {
+                        if is_target && this.focus_epoch == focus_epoch {
                             this.focused_path = Some(target_path.clone());
                             this.scroll_to_entry_path(&target_path);
                         }
@@ -269,8 +274,10 @@ impl FileExplorer {
                                 }
                                 this.expand_ancestors(&index_path, cx);
                             }
-                            this.focused_path = Some(target_path.clone());
-                            this.scroll_to_entry_path(&target_path);
+                            if this.focus_epoch == focus_epoch {
+                                this.focused_path = Some(target_path.clone());
+                                this.scroll_to_entry_path(&target_path);
+                            }
                             cx.notify();
                         });
                     }
@@ -282,7 +289,6 @@ impl FileExplorer {
             }
 
             let _ = this.update(cx, |this, cx| {
-                this.focused_path = Some(target_path.clone());
                 if let Some(index_path) = this.find_index_path_by_path(&target_path) {
                     if let Some(entry) = this.entry_at_path_mut(&index_path) {
                         if entry.is_dir {
@@ -291,7 +297,10 @@ impl FileExplorer {
                     }
                     this.expand_ancestors(&index_path, cx);
                 }
-                this.scroll_to_entry_path(&target_path);
+                if this.focus_epoch == focus_epoch {
+                    this.focused_path = Some(target_path.clone());
+                    this.scroll_to_entry_path(&target_path);
+                }
                 cx.notify();
             });
         });
@@ -1074,19 +1083,16 @@ impl FileExplorer {
                 .into_any_element()
         };
 
-        let is_selected = !is_dir
-            && !row_path.is_empty()
+        // Single focus highlight at a time: both press-to-open and search reveal
+        // set `focused_path`, so the row highlight is driven solely by it.
+        let is_focused_path = !row_path.is_empty()
             && self
-                .workspace_state
-                .read(cx)
-                .active_main_view
-                .is_file_path(&row_path);
-        let is_focused_path = self
-            .focused_path
-            .as_ref()
-            .is_some_and(|focused_path| focused_path == &row_path);
+                .focused_path
+                .as_ref()
+                .is_some_and(|focused_path| focused_path == &row_path);
 
         let index_path_for_toggle = index_path.clone();
+        let focus_path = row_path.clone();
         let mut row = div()
             .id(flat_idx)
             .w_full()
@@ -1102,6 +1108,9 @@ impl FileExplorer {
                 if is_dir {
                     this.toggle_dir(&index_path_for_toggle, cx);
                 } else if !row_path.is_empty() {
+                    // Bump epoch so an in-flight reveal can't overwrite this focus.
+                    this.focus_epoch = this.focus_epoch.wrapping_add(1);
+                    this.focused_path = Some(focus_path.clone());
                     window.dispatch_action(
                         workspace_action::OpenFile {
                             path: row_path.clone(),
@@ -1121,7 +1130,7 @@ impl FileExplorer {
                     .text_size(px(theme::FONT_BODY))
                     .child(name),
             );
-        if is_selected || is_focused_path {
+        if is_focused_path {
             row = row.bg(theme::row_pressed_bg(cx));
         }
         row.into_any_element()
