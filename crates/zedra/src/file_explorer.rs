@@ -1074,19 +1074,16 @@ impl FileExplorer {
                 .into_any_element()
         };
 
-        let is_selected = !is_dir
-            && !row_path.is_empty()
+        // Single focus highlight at a time: both press-to-open and search reveal
+        // set `focused_path`, so the row highlight is driven solely by it.
+        let is_focused_path = !row_path.is_empty()
             && self
-                .workspace_state
-                .read(cx)
-                .active_main_view
-                .is_file_path(&row_path);
-        let is_focused_path = self
-            .focused_path
-            .as_ref()
-            .is_some_and(|focused_path| focused_path == &row_path);
+                .focused_path
+                .as_ref()
+                .is_some_and(|focused_path| focused_path == &row_path);
 
         let index_path_for_toggle = index_path.clone();
+        let focus_path = row_path.clone();
         let mut row = div()
             .id(flat_idx)
             .w_full()
@@ -1102,6 +1099,7 @@ impl FileExplorer {
                 if is_dir {
                     this.toggle_dir(&index_path_for_toggle, cx);
                 } else if !row_path.is_empty() {
+                    this.focused_path = Some(focus_path.clone());
                     window.dispatch_action(
                         workspace_action::OpenFile {
                             path: row_path.clone(),
@@ -1121,7 +1119,7 @@ impl FileExplorer {
                     .text_size(px(theme::FONT_BODY))
                     .child(name),
             );
-        if is_selected || is_focused_path {
+        if is_focused_path {
             row = row.bg(theme::row_pressed_bg(cx));
         }
         row.into_any_element()
