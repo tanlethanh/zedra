@@ -1002,6 +1002,18 @@ printf '/tmp/zedra-markdown-links.md:1\n'
 7. Tap slightly outside the visible `Zed` link text
 8. Expected: the link still opens, without starting text selection
 
+## 15e. Markdown Frontmatter In Preview
+
+1. Connect to a session and open the terminal view
+2. Create a Markdown file with YAML (`---`) frontmatter followed by a heading and body
+3. Open the file from a terminal file link and from the workspace docs tree
+4. Expected: the preview renders the frontmatter as a metadata block above the heading, with a narrow key column
+5. Use `examples/frontmatter.md` (nested `owner`, `status`, list values)
+6. Expected: nested objects/lists render their key on its own line with the value indented below; leaf `key: value` pairs render inline without a reserved column
+7. Expected: plain text values (including the folded `description`) wrap within the available width; only unbreakable content (URLs) overflows and scrolls the metadata block horizontally like a Markdown table
+8. Select body text and tap `Add to Chat`
+9. Expected: the attached source line range points to the original lines after the frontmatter
+
 ## 16. iOS Native Selection In Markdown Preview
 
 1. Connect to a session on iPhone or iOS simulator and open the terminal view
