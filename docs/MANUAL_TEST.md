@@ -549,9 +549,10 @@ or beyond.
 2. Disable the host network interface or disconnect the client from the network without closing the app
 3. Expected within about 4 seconds: session badge changes to "Idle Ns" while the session is still present; workspace status dots turn yellow and blink
 4. Keep waiting
-5. Expected later: normal reconnect flow still takes over (`Idle` -> `Reconnecting` -> `Disconnected` or `Connected`, depending on recovery)
-6. Restore network before reconnect exhausts
-7. Expected: badge returns from `Idle` to `Connected` before or during reconnect recovery
+5. Background the app, then bring it back to the foreground while the badge is still `Idle`
+6. Expected: reconnect starts immediately on resume (`Idle` -> `Reconnecting` -> `Connected` or `Disconnected`), without waiting for the idle loop to time out
+7. Restore network before reconnect exhausts
+8. Expected: badge returns from `Idle` to `Connected` before or during reconnect recovery
 
 ## 5b. Path Changes Do Not False Idle
 

@@ -12,7 +12,8 @@ use zedra_rpc::proto::{
 
 use crate::RemoteTerminal;
 use crate::{
-    ConnectEvent, Connector, SessionHandle, SessionState, session_runtime, signer::ClientSigner,
+    ConnectEvent, Connector, ReconnectReason, SessionHandle, SessionState, session_runtime,
+    signer::ClientSigner,
 };
 
 const AUTO_RECONNECT_MAX_ATTEMPTS: u32 = 3;
@@ -332,6 +333,13 @@ impl Session {
     pub fn close_transport_for_lifecycle(&self, reason: &'static [u8]) {
         self.handle.detach_terminals();
         self.handle.close_active_connection(reason);
+    }
+
+    /// Force a reconnect on the next transport close and preserve the caller's
+    /// reconnect reason for telemetry/UI.
+    pub fn request_reconnect(&self, reason: ReconnectReason) {
+        info!(?reason, "requesting reconnect");
+        self.handle.close_active_connection(b"client reconnect");
     }
 
     fn reset_abort_signal(&self) -> CancellationToken {

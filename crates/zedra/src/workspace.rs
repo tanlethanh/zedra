@@ -84,6 +84,8 @@ pub struct Workspace {
     _host_event_listener: Option<Task<()>>,
     /// Listens for periodic host resource snapshots.
     _host_info_listener: Option<Task<()>>,
+    /// Listens for foreground resume events and checks the live session phase.
+    _foreground_resume_listener: Option<Task<()>>,
     /// Notifies the host when app foreground/background state changes.
     _foreground_state_listener: Option<tokio::task::JoinHandle<()>>,
     agent_picker: Entity<AgentPicker>,
@@ -826,6 +828,40 @@ impl Workspace {
         // between RPC-only delivery and Delta push notifications.
         // Run on Tokio, not GPUI: the GPUI executor pauses when the app backgrounds,
         // which is exactly when we need this listener to fire and call notify_app_state.
+        let mut foreground_resume_rx = platform_bridge::subscribe_foreground_state();
+        let foreground_resume_listener = cx.spawn_in(window, async move |ws, cx| {
+            loop {
+                match foreground_resume_rx.recv().await {
+                    Ok(in_foreground) => {
+                        if !in_foreground {
+                            continue;
+                        }
+
+                        let phase = match ws.update(cx, |ws, cx| ws.session_state.read(cx).phase())
+                        {
+                            Ok(value) => value,
+                            Err(_) => break,
+                        };
+
+                        // Trigger reconnect from foregrounding but not connected
+                        if !phase.is_connected() {
+                            ws.update(cx, |ws, _cx| {
+                                ws.session
+                                    .request_reconnect(ReconnectReason::AppForegrounded);
+                            })
+                            .ok();
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                }
+            }
+        });
+
+        // Notify host when app foreground state changes so it can switch
+        // between RPC-only delivery and Delta push notifications.
+        // Run on Tokio, not GPUI: the GPUI executor pauses when the app backgrounds,
+        // which is exactly when we need this listener to fire and call notify_app_state.
         let foreground_handle = session.handle().clone();
         let mut foreground_rx = platform_bridge::subscribe_foreground_state();
         let foreground_state_listener = zedra_session::session_runtime().spawn(async move {
@@ -838,6 +874,7 @@ impl Workspace {
             loop {
                 match foreground_rx.recv().await {
                     Ok(in_foreground) => {
+                        info!(in_foreground, "app foreground state changed");
                         foreground_handle.notify_app_state(in_foreground).await;
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
@@ -911,6 +948,7 @@ impl Workspace {
             _connect_listener: None,
             _host_event_listener: Some(host_event_listener),
             _host_info_listener: Some(host_info_listener),
+            _foreground_resume_listener: Some(foreground_resume_listener),
             _foreground_state_listener: Some(foreground_state_listener.into()),
             agent_picker,
             file_search,
