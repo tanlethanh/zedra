@@ -14,7 +14,7 @@ use crate::workspace_state::WorkspaceState;
 static PENDING_TICKET: PendingSlot<ZedraPairingTicket> = PendingSlot::new();
 
 // (endpoint_addr, terminal_id) from a notification deeplink tap.
-static PENDING_TERMINAL_NAV: PendingSlot<(String, String)> = PendingSlot::new();
+static PENDING_WORKSPACE_NAV: PendingSlot<(String, Option<String>)> = PendingSlot::new();
 
 #[derive(Clone, Debug)]
 pub enum WorkspacesEvent {
@@ -177,10 +177,11 @@ impl Workspaces {
         cx: &mut Context<Self>,
     ) {
         let addr = iroh::EndpointAddr::from(ticket.endpoint_id);
-        let encoded_addr = match zedra_rpc::pairing::encode_endpoint_addr(&addr) {
+        // Identity string goes through the shared id-only encoder; `addr` is kept for dialing.
+        let encoded_addr = match zedra_rpc::encode_endpoint_identity(ticket.endpoint_id) {
             Ok(s) => s,
             Err(e) => {
-                error!("Failed to encode endpoint address: {e}");
+                error!("Failed to encode endpoint identity: {e}");
                 return;
             }
         };
@@ -219,28 +220,30 @@ impl Workspaces {
         }
     }
 
-    /// Queue a terminal navigation from a notification deeplink (deferred until window is ready).
-    pub fn navigate_terminal_deferred(
+    /// Queue a workspace navigation from a deeplink (deferred until window is ready).
+    /// `terminal_id` is optional: `None` navigates to the workspace only.
+    pub fn navigate_workspace_deferred(
         &mut self,
         endpoint_addr: String,
-        terminal_id: String,
+        terminal_id: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        PENDING_TERMINAL_NAV.set((endpoint_addr, terminal_id));
+        PENDING_WORKSPACE_NAV.set((endpoint_addr, terminal_id));
         cx.notify();
     }
 
-    pub fn has_pending_terminal_nav() -> bool {
-        PENDING_TERMINAL_NAV.has_pending()
+    pub fn has_pending_workspace_nav() -> bool {
+        PENDING_WORKSPACE_NAV.has_pending()
     }
 
-    /// Process a pending terminal nav. Call this when window is available.
-    pub fn process_pending_terminal_nav(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((endpoint_addr, terminal_id)) = PENDING_TERMINAL_NAV.take() else {
+    /// Process a pending workspace nav. Call this when window is available.
+    pub fn process_pending_workspace_nav(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((endpoint_addr, terminal_id)) = PENDING_WORKSPACE_NAV.take() else {
             return;
         };
 
-        // Workspace already open for this endpoint.
+        // Workspace already open for this endpoint: switch to it (connecting if stale),
+        // then open the requested terminal if one was specified.
         if let Some(index) = self.entry_index_by_endpoint_addr(&endpoint_addr, cx) {
             self.switch_to(index, cx);
             platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
@@ -262,20 +265,22 @@ impl Workspaces {
                 if stale {
                     ws.restart_connection(cx);
                 }
-                ws.open_terminal_after_sync(terminal_id, cx);
+                if let Some(terminal_id) = terminal_id {
+                    ws.open_terminal_after_sync(terminal_id, cx);
+                }
             });
             return;
         }
 
-        // Saved (registered) workspace: reconnect then queue the terminal.
+        // Saved (registered) workspace: reconnect, then queue the terminal if specified.
         let state_index = self
             .states
             .iter()
             .position(|s| s.read(cx).endpoint_addr == endpoint_addr);
         let Some(state_index) = state_index else {
             warn!(
-                "navigate_terminal: no workspace or saved state for endpoint {}",
-                &endpoint_addr[..endpoint_addr.len().min(20)]
+                "navigate_workspace: no workspace or saved state for endpoint {:?}",
+                endpoint_addr
             );
             return;
         };
@@ -286,15 +291,17 @@ impl Workspaces {
         // error), so re-resolve by endpoint instead of trusting entries.last().
         let Some(index) = self.entry_index_by_endpoint_addr(&endpoint_addr, cx) else {
             warn!(
-                "navigate_terminal: connect_saved did not open an entry for endpoint {}",
-                &endpoint_addr[..endpoint_addr.len().min(20)]
+                "navigate_workspace: connect_saved did not open an entry for endpoint {:?}",
+                endpoint_addr
             );
             return;
         };
-        if let Some(entry) = self.entries.get(index).cloned() {
-            entry.update(cx, |ws, cx| {
-                ws.open_terminal_after_sync(terminal_id, cx);
-            });
+        if let Some(terminal_id) = terminal_id {
+            if let Some(entry) = self.entries.get(index).cloned() {
+                entry.update(cx, |ws, cx| {
+                    ws.open_terminal_after_sync(terminal_id, cx);
+                });
+            }
         }
     }
 

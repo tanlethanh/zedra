@@ -334,8 +334,12 @@ enum LiveActivityEvent {
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum NotificationPriority {
+pub(crate) enum NotificationPriority {
     Normal,
+    /// Higher delivery priority. Delta maps this to FCM `android.priority=high` and
+    /// APNS priority 10, so the push wakes the device promptly (e.g. deeplink taps that
+    /// must navigate). Chosen by the caller, not fixed in the backend.
+    High,
 }
 
 pub fn config_path() -> Result<PathBuf> {
@@ -993,6 +997,7 @@ impl DeltaClient {
         body: Option<String>,
         category: Option<String>,
         deeplink: Option<String>,
+        priority: NotificationPriority,
     ) -> Result<NotificationSendResponse> {
         let client_node_id = self
             .client_node_id
@@ -1005,7 +1010,7 @@ impl DeltaClient {
                 title,
                 body,
                 category,
-                priority: NotificationPriority::Normal,
+                priority,
                 ttl_seconds: None,
                 collapse_key: None,
                 deeplink,

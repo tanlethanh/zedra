@@ -832,7 +832,7 @@ pub extern "C" fn zedra_deeplink_received(url: *const std::ffi::c_char) {
             Ok(action) => deeplink::enqueue(action),
             Err(e) => error!("Invalid deeplink URL: {}", e),
         },
-        Err(e) => error!("Deeplink: invalid UTF-8: {}", e),
+        Err(e) => error!("Invalid deeplink UTF-8: {}", e),
     }
 }
 

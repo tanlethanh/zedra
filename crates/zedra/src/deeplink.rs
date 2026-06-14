@@ -7,8 +7,9 @@
 ///
 /// Supported actions:
 ///   - `connect?ticket=<ticket>` — pair/connect with a host via pairing ticket
-///   - `open-terminal?endpoint=<addr>&terminal_id=<id>` — navigate to a specific terminal,
-///     connecting to the workspace first if needed
+///   - `open?endpoint_addr=<addr>&terminal_id=<id>` — navigate to a workspace, connecting
+///     first if needed. `terminal_id` is optional; when present, navigate to that terminal
+///     once the workspace is synced.
 use anyhow::{Result, anyhow};
 
 use crate::pending::PendingSlot;
@@ -17,10 +18,10 @@ use crate::pending::PendingSlot;
 pub enum DeeplinkAction {
     /// Connect to a host via a pairing ticket.
     Connect(zedra_rpc::ZedraPairingTicket),
-    /// Navigate to a specific terminal on a known workspace.
-    OpenTerminal {
+    /// Navigate to a workspace, optionally to a specific terminal within it.
+    Open {
         endpoint_addr: String,
-        terminal_id: String,
+        terminal_id: Option<String>,
     },
 }
 
@@ -45,17 +46,15 @@ pub fn parse(url: &str) -> Result<DeeplinkAction> {
             let ticket = zedra_rpc::ZedraPairingTicket::decode(&ticket_str)?;
             Ok(DeeplinkAction::Connect(ticket))
         }
-        "open-terminal" => {
-            let endpoint_addr = parse_query_param(query, "endpoint")
-                .ok_or_else(|| anyhow!("open-terminal: missing endpoint parameter"))?;
-            let terminal_id = parse_query_param(query, "terminal_id")
-                .ok_or_else(|| anyhow!("open-terminal: missing terminal_id parameter"))?;
-            if endpoint_addr.is_empty() || terminal_id.is_empty() {
-                return Err(anyhow!(
-                    "open-terminal: endpoint and terminal_id must be non-empty"
-                ));
+        "open" => {
+            let endpoint_addr = parse_query_param(query, "endpoint_addr")
+                .ok_or_else(|| anyhow!("open: missing endpoint_addr parameter"))?;
+            if endpoint_addr.is_empty() {
+                return Err(anyhow!("open: endpoint_addr must be non-empty"));
             }
-            Ok(DeeplinkAction::OpenTerminal {
+            // terminal_id is optional: absent means navigate to the workspace only.
+            let terminal_id = parse_query_param(query, "terminal_id").filter(|t| !t.is_empty());
+            Ok(DeeplinkAction::Open {
                 endpoint_addr,
                 terminal_id,
             })

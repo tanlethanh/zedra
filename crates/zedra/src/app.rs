@@ -148,7 +148,7 @@ impl ZedraApp {
             self.handle_deeplink_deferred(action, cx);
         }
         self.process_pending_ticket_if_ready(window, cx);
-        self.process_pending_terminal_nav_if_ready(window, cx);
+        self.process_pending_workspace_nav_if_ready(window, cx);
     }
 
     fn handle_deeplink_deferred(&mut self, action: DeeplinkAction, cx: &mut Context<Self>) {
@@ -160,13 +160,12 @@ impl ZedraApp {
                     ws.connect_ticket_deferred(ticket, cx);
                 });
             }
-            DeeplinkAction::OpenTerminal {
+            DeeplinkAction::Open {
                 endpoint_addr,
                 terminal_id,
             } => {
-                tracing::info!("Deeplink: open-terminal action (deferred)");
                 self.workspaces.update(cx, |ws, cx| {
-                    ws.navigate_terminal_deferred(endpoint_addr, terminal_id, cx);
+                    ws.navigate_workspace_deferred(endpoint_addr, terminal_id, cx);
                 });
             }
         }
@@ -352,10 +351,12 @@ impl ZedraApp {
         }
     }
 
-    fn process_pending_terminal_nav_if_ready(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if Workspaces::has_pending_terminal_nav() && window.is_window_active() {
+    fn process_pending_workspace_nav_if_ready(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let has_pending = Workspaces::has_pending_workspace_nav();
+        let active = window.is_window_active();
+        if has_pending && active {
             self.workspaces
-                .update(cx, |ws, cx| ws.process_pending_terminal_nav(window, cx));
+                .update(cx, |ws, cx| ws.process_pending_workspace_nav(window, cx));
         }
     }
 

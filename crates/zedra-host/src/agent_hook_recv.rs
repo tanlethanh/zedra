@@ -8,7 +8,11 @@ use tracing::{info, warn};
 use zedra_rpc::proto::{AgentKind, AgentState, HostEvent};
 
 use crate::session_registry::ServerSession;
-use crate::{agent_utils, delta::DeltaClient, utils};
+use crate::{
+    agent_utils,
+    delta::{DeltaClient, NotificationPriority},
+    utils,
+};
 
 pub struct HookContext {
     pub payload: serde_json::Value,
@@ -83,6 +87,14 @@ pub trait HookReceiver {
             let first = b.lines().next().unwrap_or("").trim();
             (!first.is_empty()).then(|| utils::truncate_chars(first, 100))
         });
+        // Deeplink pushes go out at high priority so a backgrounded device wakes promptly
+        // and the tap navigates; plain notifications stay normal. The caller (host) picks
+        // the priority — Delta only relays it to the provider header.
+        let priority = if notification.deeplink.is_some() {
+            NotificationPriority::High
+        } else {
+            NotificationPriority::Normal
+        };
         // TODO: Live Activity send temporarily disabled — feature incomplete.
         // Re-enable by restoring the parallel `update_live_activity_for_stack`
         // call and the `activity_result` handling below.
@@ -92,6 +104,7 @@ pub trait HookReceiver {
                 body,
                 Some("agent".to_string()),
                 notification.deeplink,
+                priority,
             )
             .await;
         match notify_result {
@@ -152,7 +165,7 @@ pub trait HookReceiver {
             return None;
         }
         Some(format!(
-            "zedra://open-terminal?endpoint={}&terminal_id={}",
+            "zedra://open?endpoint_addr={}&terminal_id={}",
             ctx.endpoint_addr, ctx.terminal_id
         ))
     }
