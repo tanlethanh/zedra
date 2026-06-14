@@ -681,7 +681,10 @@ fn build_frontmatter_selection_segments(
     map: &mut Vec<MarkdownSelectionSegment>,
 ) {
     for row in &frontmatter.rows {
-        push_selection_segment(map, &format!("{}: ", row.key), row.key_range.clone());
+        // A top-level key renders as `key` plus a "\n" separator (see render_frontmatter),
+        // not `key: `. The selection map must mirror that exactly or body offsets drift.
+        push_selection_segment(map, &row.key, row.key_range.clone());
+        push_selection_segment(map, "\n", row.key_range.clone());
         match &row.value {
             FrontmatterValue::Scalar { text, source_range } => {
                 push_selection_segment(map, text, source_range.clone());
@@ -758,8 +761,11 @@ fn split_frontmatter(source: &str) -> (Option<FrontmatterBlock>, &str, usize) {
     };
 
     let frontmatter_source = &source[content_start..frontmatter_end];
-    let frontmatter = parse_yaml_frontmatter(frontmatter_source, content_start)
-        .unwrap_or_else(|| FrontmatterBlock { rows: Vec::new() });
+    let Some(frontmatter) = parse_yaml_frontmatter(frontmatter_source, content_start) else {
+        // Preserve the original markdown when frontmatter is invalid or unhandled,
+        // rather than stripping it into an empty metadata block.
+        return (None, source, 0);
+    };
     (Some(frontmatter), &source[body_offset..], body_offset)
 }
 
@@ -2676,7 +2682,9 @@ aliases:
     fn maps_markdown_selection_after_frontmatter_to_source_lines() {
         let document = parse_document("---\ntitle: Guide\n---\n\n# Body\n");
 
-        assert_eq!(document.line_range_for_selection(13..14), Some((5, 5)));
+        // Frontmatter selection text is "title\nGuide\n" (12 chars), so the first
+        // body character is at offset 12. A wrong key segment would shift this.
+        assert_eq!(document.line_range_for_selection(12..13), Some((5, 5)));
     }
 
     #[test]

@@ -1010,7 +1010,7 @@ printf '/tmp/zedra-markdown-links.md:1\n'
 4. Expected: the preview renders the frontmatter as a metadata block above the heading, with a narrow key column
 5. Use `examples/frontmatter.md` (nested `owner`, `status`, list values)
 6. Expected: nested objects/lists render their key on its own line with the value indented below; leaf `key: value` pairs render inline without a reserved column
-7. Expected: long values (folded `description`, URLs) overflow horizontally and scroll the metadata block like a Markdown table instead of wrapping
+7. Expected: plain text values (including the folded `description`) wrap within the available width; only unbreakable content (URLs) overflows and scrolls the metadata block horizontally like a Markdown table
 8. Select body text and tap `Add to Chat`
 9. Expected: the attached source line range points to the original lines after the frontmatter
 
