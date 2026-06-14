@@ -12,6 +12,7 @@ use crate::identity;
 
 const CONFIG_FILE: &str = "delta.json";
 const SIGNING_KEY_FILE: &str = "delta.key";
+const DELTA_SIGN_IN_HINT: &str = "Not authenticated with Zedra Delta. Run `zedra auth login` to sign in this host.";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeltaConfig {
@@ -342,8 +343,20 @@ pub fn config_path() -> Result<PathBuf> {
 
 pub fn load_config() -> Result<DeltaConfig> {
     let path = config_path()?;
-    let json = std::fs::read_to_string(&path)
-        .with_context(|| format!("Delta auth config not found at {}", path.display()))?;
+    load_config_at(&path)
+}
+
+fn load_config_at(path: &Path) -> Result<DeltaConfig> {
+    let json = match std::fs::read_to_string(path) {
+        Ok(json) => json,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!(DELTA_SIGN_IN_HINT);
+        }
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("failed to read Delta auth config from {}", path.display()));
+        }
+    };
     serde_json::from_str(&json).context("failed to parse Delta auth config")
 }
 
@@ -1350,6 +1363,17 @@ mod tests {
         assert_eq!(first.to_bytes(), second.to_bytes());
         assert_eq!(std::fs::read(path).unwrap(), first.to_bytes());
     }
+
+    #[test]
+    fn missing_delta_config_reports_sign_in_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(CONFIG_FILE);
+
+        let err = load_config_at(&path).unwrap_err();
+
+        assert_eq!(err.to_string(), DELTA_SIGN_IN_HINT);
+    }
+
     fn sample_info() -> ClientDeltaInfo {
         ClientDeltaInfo {
             delta_url: "https://delta.example.com".into(),
