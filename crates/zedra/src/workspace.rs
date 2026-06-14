@@ -24,7 +24,6 @@ use crate::delta::{ClientDeltaInfo, DeltaState};
 use crate::editor::git_sidebar::GitFileSection;
 use crate::file_search::{FileSearchEvent, FileSearchPanel};
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
-use crate::placeholder::render_placeholder;
 use crate::platform_bridge::{self, AlertButton, HapticFeedback, SoundEffect, status_bar_inset};
 use crate::telemetry::view_telemetry;
 use crate::terminal_card::strip_ps1_prefix;
@@ -3448,14 +3447,6 @@ impl WorkspaceContent {
         }
 
         self.mainview_bounds = Some(bounds);
-    }
-}
-
-struct NoActiveTerminalView;
-
-impl Render for NoActiveTerminalView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        render_placeholder(_cx, "No active terminal")
     }
 }
 
