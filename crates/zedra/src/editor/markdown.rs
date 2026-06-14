@@ -1433,6 +1433,30 @@ fn parse_blocks(events: &[Event<'_>], cursor: &mut usize, end: Option<TagEnd>) -
                 blocks.push(Block::Rule);
                 *cursor += 1;
             }
+            // pulldown emits each line of an HTML block as a separate Html event;
+            // join them into one block so comments render as a single unit.
+            Event::Start(Tag::HtmlBlock) => {
+                *cursor += 1;
+                let mut html = String::new();
+                while *cursor < events.len() {
+                    match &events[*cursor] {
+                        Event::End(TagEnd::HtmlBlock) => {
+                            *cursor += 1;
+                            break;
+                        }
+                        Event::Html(value) | Event::InlineHtml(value) => {
+                            html.push_str(value);
+                            *cursor += 1;
+                        }
+                        Event::SoftBreak | Event::HardBreak => {
+                            html.push('\n');
+                            *cursor += 1;
+                        }
+                        _ => *cursor += 1,
+                    }
+                }
+                blocks.push(Block::Html(html));
+            }
             Event::Html(html) | Event::InlineHtml(html) => {
                 blocks.push(Block::Html(html.to_string()));
                 *cursor += 1;
@@ -1893,12 +1917,7 @@ fn render_block(
         }
         Block::CodeBlock { text, .. } => render_code_block_content(text, &key, cx),
         Block::Table(table) => render_table(table, key, cx),
-        Block::Html(text) => render_inline_block(
-            &[Inline::Html(text.clone())],
-            InlineBlockStyle::Html,
-            key,
-            cx,
-        ),
+        Block::Html(text) => render_html_block(text, key, cx),
         Block::Rule => div()
             .w_full()
             .h(px(1.0))
@@ -1927,6 +1946,39 @@ fn code_block_display_columns(line: &str) -> usize {
         }
     }
     columns
+}
+
+// HTML comments carry meaningful prose in some docs (e.g. SOUL.md), so render the
+// inner content as a clean muted block instead of literal `<!--` markers split
+// across per-line boxes. Other raw HTML keeps the inline fallback.
+fn render_html_block(text: &str, key: String, cx: &App) -> AnyElement {
+    let trimmed = text.trim();
+    if let Some(inner) = trimmed
+        .strip_prefix("<!--")
+        .and_then(|rest| rest.strip_suffix("-->"))
+    {
+        return render_html_comment(inner.trim(), key, cx);
+    }
+    render_inline_block(
+        &[Inline::Html(text.to_string())],
+        InlineBlockStyle::Html,
+        key,
+        cx,
+    )
+}
+
+fn render_html_comment(inner: &str, _key: String, cx: &App) -> AnyElement {
+    div()
+        .w_full()
+        .border_l_2()
+        .border_color(rgb(theme::border_subtle(cx)))
+        .pl(px(10.0))
+        .text_color(rgb(theme::text_muted(cx)))
+        .text_size(px(theme::FONT_DETAIL))
+        .line_height(px(theme::FONT_DETAIL + 5.0))
+        .font_family(fonts::MONO_FONT_FAMILY)
+        .child(markdown_text(StyledText::new(inner.to_string()), "\n"))
+        .into_any_element()
 }
 
 fn render_table(table: &TableBlock, key: String, cx: &App) -> AnyElement {
