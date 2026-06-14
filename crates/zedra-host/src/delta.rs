@@ -12,7 +12,8 @@ use crate::identity;
 
 const CONFIG_FILE: &str = "delta.json";
 const SIGNING_KEY_FILE: &str = "delta.key";
-const DELTA_SIGN_IN_HINT: &str = "Not authenticated with Zedra Delta. Run `zedra auth login` to sign in this host.";
+const DELTA_SIGN_IN_HINT: &str =
+    "Not authenticated with Zedra Delta. Run `zedra auth login` to sign in this host.";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeltaConfig {
@@ -353,8 +354,9 @@ fn load_config_at(path: &Path) -> Result<DeltaConfig> {
             anyhow::bail!(DELTA_SIGN_IN_HINT);
         }
         Err(err) => {
-            return Err(err)
-                .with_context(|| format!("failed to read Delta auth config from {}", path.display()));
+            return Err(err).with_context(|| {
+                format!("failed to read Delta auth config from {}", path.display())
+            });
         }
     };
     serde_json::from_str(&json).context("failed to parse Delta auth config")
