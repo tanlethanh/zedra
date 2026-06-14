@@ -105,7 +105,7 @@ problem has to be removed at the encoding layer. Candidate techniques:
 - **Versioned variants.** Add `FooReqV2` / `FooResultV2` rather than mutating a
   shipped struct (the `TermCreateReq` → `TermCreateReqV2` pattern).
 
-These are documented as the intended direction; `ManagedAgentKind` and the other
+These are documented as the intended direction; `AgentKind` and the other
 growable enums currently use the plain derived discriminant and are gated by the
 ALPN bump above. Migrating them is tracked in issue #140.
 
@@ -304,11 +304,13 @@ Types that use non-string status fields or enum variants instead:
 - Host may replay missed output before live stream.
 - Host may send a synthetic metadata preamble as `TermOutput { seq: 0, ... }` before backlog replay. Clients must process the bytes as normal PTY output but must not use `seq=0` for backlog sequence tracking.
 - The synthetic preamble replays cached OSC metadata that may have fallen out of the backlog, including title, icon name, cwd, shell command line, command start/idle state, and last exit code.
+- While a foreground command is still latched (command start seen without a matching command end — e.g. an agent emitting prompt-ready between turns), an idle preamble replays the latched command line (`633;E`), command start (`633;C`), and prompt-ready (`633;A`) instead of the stale command end (`633;D`), so a freshly attached client re-derives the agent identity and keeps it across reattach.
 - Output `seq` is monotonic per session backlog stream and used for gap detection.
 - `SyncSessionResult.terminals` and `TermListResult.terminals` are ordered by host-owned terminal order. Creation order is the default until a client submits an explicit order.
 - `TerminalSyncEntry.position` and `TermListEntry.position` are zero-based positions in that host-owned order.
 - `TerminalSyncEntry.last_seq` is the host's latest backlog sequence observed for that terminal at sync time.
-- `TerminalSyncEntry.title`, `TerminalSyncEntry.cwd`, and `TerminalSyncEntry.icon_name` are the host's latest cached terminal metadata at sync time. `TermAttach` still replays the same metadata as PTY bytes so normal terminal-event consumers are seeded through one path.
+- `TerminalSyncEntry` carries the host's full cached terminal metadata at sync time: `title`, `cwd`, `icon_name`, `agent_command`, `shell_state`, `last_exit_code`, and `agent_state`. Clients seed their terminal metadata from this snapshot on every sync; the host is the source of truth across reconnects. `TermAttach` still replays the same metadata as PTY bytes so normal terminal-event consumers are seeded through one path.
+- `TerminalSyncEntry.agent_command` is the foreground command latched at command start (or from the spawn launch command). It survives prompt-ready between agent turns and clears only on command end, so clients derive the agent identity (kind/icon) from it after reconnect.
 - Clients should keep local terminal tabs keyed by terminal id and use `last_seq` to seed reconnect `TermAttach` calls.
 
 ### SyncSession conventions
@@ -316,6 +318,10 @@ Types that use non-string status fields or enum variants instead:
 - `SyncSession` is a mid-session state refresh; connect-time bootstrap is piggybacked on `ConnectResult::Ok` and `AuthProveResult::Ok`.
 - Host rotates and returns a fresh `session_token` on every successful `SyncSession`, token-accepted `Connect`, and `AuthProve` attach.
 - `session_id` in `SyncSessionResult` is authoritative and must replace any stale client-side session id.
+- `SyncSessionResult.delta_pubkey` is the dedicated host Delta node authorization public key. Mobile uses it when registering the host with Delta; it is not a Zedra transport or telemetry identity.
+- Zedra persists the host Delta pubkey and resolved host node id per workspace, then reuses that binding on later reconnects or after app launch. If Delta sign-in appears later, the client can replay the same workspace-scoped binding without inventing a new host identity.
+- A signed-in mobile client reads its current `stack_id` and `client_node_id` from app-owned Delta state, then sends `SetClientDeltaInfo { delta_url, stack_id, client_node_id, host_node_id }` after registering the host node or after reloading a persisted workspace binding. The host holds these Delta IDs in daemon memory so agent-hook notifications target the previous known mobile client without persisting transport identity or broadcasting to the stack.
+- When the client signs out of Delta, it clears the host-side in-memory Delta binding so later agent-hook notifications do not target stale client IDs until the client signs back in and replays the workspace binding.
 - `SyncSessionResult.terminals` is the authoritative server-side terminal set at bootstrap time. During reconnect, clients preserve the existing local order for terminals still present in that set and append any newly discovered host terminals unless the client has submitted an explicit host order.
 - `TermReorderReq.ordered_ids` must be an exact permutation of the current active terminal ids. The host rejects partial, duplicate, or unknown-id orders.
 - `ConnectReq.session_token` and `SyncSessionResult.session_token` are opaque, host-issued, session-bound, and client-bound.
@@ -365,7 +371,7 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
 
 ### Managed agent conventions
 
-**Terminology:** A *managed agent* is one of `ManagedAgentKind`: Claude Code (`Claude`), Codex (`Codex`), OpenCode (`OpenCode`), Pi (`Pi`), and Hermes (`Hermes`). This is narrower than `AgentInstalledList`, which lists every terminal agent CLI the host can launch (Amp, Cline, Cursor, etc.). Most agents scope sessions per workspace; `Hermes` is a global personal agent whose sessions are workspace-independent.
+**Terminology:** A *managed agent* is one of `AgentKind`: Claude Code (`Claude`), Codex (`Codex`), OpenCode (`OpenCode`), Pi (`Pi`), and Hermes (`Hermes`). This is narrower than `AgentInstalledList`, which lists every terminal agent CLI the host can launch (Amp, Cline, Cursor, etc.). Most agents scope sessions per workspace; `Hermes` is a global personal agent whose sessions are workspace-independent.
 
 - `AgentListResult.agents` returns one `AgentSummary` for every managed agent, even when the CLI is missing or no sessions exist.
 - `AgentListReq.refresh` and `AgentInstalledListReq.refresh` default to `false`. When `false`, the host serves its startup cache; when `true`, the host rescans synchronous fields before responding.
@@ -385,7 +391,7 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
   - **Codex**: Logged in, Account (name from JWT), Plan, Plan until (from `~/.codex/auth.json` `id_token` payload, re-read on async refresh); Model, Personality, Reasoning effort (from `~/.codex/config.toml`); Week threads, Total threads (from `~/.codex/state_5.sqlite`).
   - **OpenCode**: Config dir presence (from `~/.config/opencode`).
   - **Pi**: Logged in (presence of `~/.pi/agent/sessions/`). Sessions are scanned from `~/.pi/agent/sessions/--<workdir>--/<timestamp>_<uuid>.jsonl`; resume uses `pi --session <id>`. No lifecycle hooks; live binding falls back to terminal command detection (`pi` as first token).
-  - **Hermes**: per-provider auth + active provider (from `$HERMES_HOME/auth.json`, default `~/.hermes`), Default model / Default provider (from `config.yaml` `model:` block), Skills count (`$HERMES_HOME/skills/**/SKILL.md`), and `state.db` rollups (Total spend, Platforms = `DISTINCT source`). Sessions are **global** (not workspace-scoped): read from `$HERMES_HOME/state.db` (`sessions` table — curated title, `source` platform, `tool_call_count`, per-session cost, model; falls back to `sessions/session_*.json` only when the db is absent), so `AgentSessionsReq.kind == Hermes` ignores the workdir and returns all sessions incl. gateway/ACP; resume uses `hermes --resume <session_id>`. No lifecycle hooks; live binding falls back to terminal command detection (`hermes` as first token). `AgentFiles` exposes `SOUL.md`/`USER.md`/`MEMORY.md`/`config.yaml`/`.env`/`cron/jobs.json` read-only.
+  - **Hermes**: per-provider auth + active provider (from `$HERMES_HOME/auth.json`, default `~/.hermes`), Default model / Default provider (from `config.yaml` `model:` block), Skills count (`$HERMES_HOME/skills/**/SKILL.md`), and `state.db` rollups (Total spend, Platforms = `DISTINCT source`). Sessions are **global** (not workspace-scoped): read from `$HERMES_HOME/state.db` (`sessions` table — curated title, `source` platform, `tool_call_count`, per-session cost, model; falls back to `sessions/session_*.json` only when the db is absent), so `AgentSessionsReq.kind == Hermes` ignores the workdir and returns all sessions incl. gateway/ACP; resume uses `hermes --resume <session_id>`. Shell hooks map `on_session_start` and `post_approval_response` to Running, `pre_approval_request` to WaitingApproval, and `post_llm_call`/`on_session_end` to Completed. `AgentFiles` exposes `SOUL.md`/`USER.md`/`MEMORY.md`/`config.yaml`/`.env`/`cron/jobs.json` read-only.
 - `AgentFiles(AgentFilesReq{kind}) -> AgentFilesResult{files}` returns an agent's host-side config/memory files **read-only** for detail views. Each `AgentFile` carries `label`, absolute `path`, `content` (host-capped at 256 KiB; `truncated` flags clipping), and `missing` (file absent). Only `Hermes` exposes a set today (`SOUL.md`, `USER.md`, `MEMORY.md`, `config.yaml`, `.env`, `cron/jobs.json`); other kinds return an empty list. The client never writes these files. `.env` and other credential-bearing files are returned verbatim — acceptable because the RPC transport is end-to-end encrypted and a client only views its own host's config; treat the contents as sensitive at rest.
 - `AgentSessionSummary.title` uses provider-stored titles when available, otherwise `"Unknown"`.
 - `AgentSessionSummary.transcript_size_bytes` reports transcript file size when the host scan has a local file path.
@@ -534,6 +540,12 @@ Any protocol-layer change must include all applicable steps:
 ---
 
 ## 11) Protocol Changelog
+
+### 2026-06-11
+
+- Extended `TerminalSyncEntry` with the host's full cached terminal metadata: `agent_command`, `shell_state` (new `TermShellState` enum), and `last_exit_code`. Clients seed terminal metadata from the sync snapshot on reconnect instead of re-deriving it from replayed PTY bytes.
+- `agent_command` latches the foreground command at command start (or spawn launch command), survives prompt-ready between agent turns, and clears on command end — used to restore the agent icon after reconnect.
+- An idle `TermAttach` preamble with a latched foreground command replays command line + start + prompt-ready instead of a stale command end, so it never clears a client's latched agent identity.
 
 ### 2026-05-29
 

@@ -11,8 +11,8 @@ use serde_json::Value;
 use zedra_rpc::proto::*;
 
 use crate::agent_utils::{
-    command_on_path, empty_session_live, file_size_bytes, home_path, info_field, mtime_unix_secs,
-    read_json_file, resume_summary, session_title, user_message_text,
+    command_on_path, file_size_bytes, home_path, info_field, mtime_unix_secs, read_json_file,
+    resume_summary, session_title, user_message_text,
 };
 
 /// Cap per-file content shipped to the client. Hermes `.env` and memory files
@@ -31,12 +31,6 @@ pub struct SessionCounts {
 struct HermesSession {
     session_id: String,
     title: Option<String>,
-    model: Option<String>,
-    model_provider: Option<String>,
-    /// Platform the session ran on (cli, acp, telegram, discord, …).
-    source: Option<String>,
-    message_count: u64,
-    tool_count: u64,
     cost_usd: Option<f64>,
     created_at: Option<DateTime<Utc>>,
     last_activity_at: Option<DateTime<Utc>>,
@@ -48,10 +42,6 @@ pub fn cli_available() -> bool {
     // `state.db` alone is enough to serve history even without the CLI or a
     // sessions dir, so treat its presence as availability.
     command_on_path("hermes") || sessions_dir().is_dir() || state_db_path().is_file()
-}
-
-pub fn normalize_event(_event_name: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
-    None
 }
 
 /// Sessions are global, so `workdir` is intentionally ignored.
@@ -205,7 +195,7 @@ fn config_files_in(home: &Path) -> Vec<AgentFile> {
 // Session scan (global)
 // ---------------------------------------------------------------------------
 
-fn hermes_home() -> PathBuf {
+pub fn hermes_home() -> PathBuf {
     std::env::var_os("HERMES_HOME")
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
@@ -284,21 +274,6 @@ fn read_session(path: &Path, mtime_secs: Option<u64>) -> Option<HermesSession> {
                 .unwrap_or("unknown")
                 .to_string()
         });
-    let model = value
-        .get("model")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let message_count = value
-        .get("message_count")
-        .and_then(Value::as_u64)
-        .or_else(|| {
-            value
-                .get("messages")
-                .and_then(Value::as_array)
-                .map(|m| m.len() as u64)
-        })
-        .unwrap_or(0);
     let created_at = parse_timestamp(value.get("session_start"));
     let last_activity_at = parse_timestamp(value.get("last_updated"))
         .or_else(|| mtime_secs.and_then(|s| DateTime::<Utc>::from_timestamp(s as i64, 0)));
@@ -307,8 +282,6 @@ fn read_session(path: &Path, mtime_secs: Option<u64>) -> Option<HermesSession> {
     Some(HermesSession {
         session_id,
         title,
-        model,
-        message_count,
         created_at,
         last_activity_at,
         transcript_path: Some(path.to_path_buf()),
@@ -323,11 +296,6 @@ fn read_session(path: &Path, mtime_secs: Option<u64>) -> Option<HermesSession> {
 struct DbRow {
     id: String,
     title: Option<String>,
-    model: Option<String>,
-    billing_provider: Option<String>,
-    source: Option<String>,
-    message_count: i64,
-    tool_count: i64,
     cost: Option<f64>,
     started_at: Option<f64>,
     ended_at: Option<f64>,
@@ -355,8 +323,7 @@ fn collect_sessions_from_db(limit: Option<usize>) -> Option<Vec<HermesSession>> 
     let rows: Vec<DbRow> = {
         let mut stmt = conn
             .prepare(
-                "SELECT id, title, model, billing_provider, source, message_count, \
-                 tool_call_count, COALESCE(actual_cost_usd, estimated_cost_usd), \
+                "SELECT id, title, COALESCE(actual_cost_usd, estimated_cost_usd), \
                  started_at, ended_at \
                  FROM sessions ORDER BY COALESCE(ended_at, started_at) DESC LIMIT ?1",
             )
@@ -366,14 +333,9 @@ fn collect_sessions_from_db(limit: Option<usize>) -> Option<Vec<HermesSession>> 
                 Ok(DbRow {
                     id: row.get(0)?,
                     title: row.get(1)?,
-                    model: row.get(2)?,
-                    billing_provider: row.get(3)?,
-                    source: row.get(4)?,
-                    message_count: row.get::<_, Option<i64>>(5)?.unwrap_or(0),
-                    tool_count: row.get::<_, Option<i64>>(6)?.unwrap_or(0),
-                    cost: row.get(7)?,
-                    started_at: row.get(8)?,
-                    ended_at: row.get(9)?,
+                    cost: row.get(2)?,
+                    started_at: row.get(3)?,
+                    ended_at: row.get(4)?,
                 })
             })
             .ok()?;
@@ -391,11 +353,6 @@ fn collect_sessions_from_db(limit: Option<usize>) -> Option<Vec<HermesSession>> 
             HermesSession {
                 session_id: r.id,
                 title,
-                model: r.model.filter(|s| !s.is_empty()),
-                model_provider: r.billing_provider.filter(|s| !s.is_empty()),
-                source: r.source.filter(|s| !s.is_empty()),
-                message_count: r.message_count.max(0) as u64,
-                tool_count: r.tool_count.max(0) as u64,
                 cost_usd: r.cost,
                 created_at: r.started_at.and_then(epoch_to_dt),
                 last_activity_at: r.ended_at.or(r.started_at).and_then(epoch_to_dt),
@@ -430,29 +387,16 @@ fn epoch_to_dt(secs: f64) -> Option<DateTime<Utc>> {
     DateTime::<Utc>::from_timestamp(secs.trunc() as i64, nanos)
 }
 
-fn session_summary(session: &HermesSession, cli: &AgentCliSummary) -> AgentSessionSummary {
+fn session_summary(session: &HermesSession, _cli: &AgentCliSummary) -> AgentSessionSummary {
     AgentSessionSummary {
-        kind: ManagedAgentKind::Hermes,
+        kind: AgentKind::Hermes,
         session_id: session.session_id.clone(),
         title: session_title(session.title.clone()),
         cwd: None,
         created_at: session.created_at,
         last_activity_at: session.last_activity_at,
-        resume: resume_summary(ManagedAgentKind::Hermes, &session.session_id),
-        live: empty_session_live(),
-        provider: AgentProviderSessionInfo {
-            model: session.model.clone(),
-            permission_mode: None,
-            cli_version: cli.version.clone(),
-            origin: None,
-            // The platform the session ran on (cli / acp / telegram / …).
-            source: session.source.clone(),
-            entrypoint: None,
-            native_project_id: None,
-            model_provider: session.model_provider.clone(),
-        },
+        resume: resume_summary(AgentKind::Hermes, &session.session_id),
         git: None,
-        // Per-session spend, when the host tracked a cost.
         usage: session
             .cost_usd
             .filter(|c| *c > 0.0)
@@ -460,25 +404,6 @@ fn session_summary(session: &HermesSession, cli: &AgentCliSummary) -> AgentSessi
                 total_cost_usd: Some(cost),
                 ..Default::default()
             }),
-        counters: AgentSessionCounters {
-            record_count: session.message_count,
-            message_count: session.message_count,
-            turn_count: 0,
-            tool_count: session.tool_count,
-            tool_failure_count: 0,
-            hook_success_count: 0,
-            hook_failure_count: 0,
-            malformed_record_count: 0,
-        },
-        flags: AgentSessionFlags {
-            is_sidechain: false,
-            is_subagent: false,
-            is_archived: false,
-            historical_only: true,
-            live_bound: false,
-        },
-        data_sources: vec![AgentDataSource::HistoricalScan],
-        warnings: Vec::new(),
         transcript_size_bytes: session.transcript_path.as_deref().and_then(file_size_bytes),
     }
 }

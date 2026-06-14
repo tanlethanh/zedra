@@ -298,6 +298,14 @@ pub fn is_subagent_transcript(path: &Path) -> bool {
         .is_some_and(|stem| stem.starts_with("agent-"))
 }
 
+/// Extract the session title from a transcript file path.
+/// Returns `None` if the file cannot be read or has no title recorded yet.
+pub fn title_from_transcript_path(path: &Path) -> Option<String> {
+    read_transcript_list_metadata(path, None, TranscriptScanMode::List)
+        .ok()
+        .and_then(|meta| meta.title)
+}
+
 fn read_transcript_list_metadata(
     path: &Path,
     worktree: Option<&str>,
@@ -715,9 +723,8 @@ fn apply_sessions_index(
 // ---------- agent dispatcher integration ----------
 
 use crate::agent_utils::{
-    empty_session_live, file_size_bytes, home_path, humanize_plan_token, parse_rfc3339,
-    parse_usage_window_resets_at, push_json_string, read_json_file, resume_summary, session_title,
-    string_field,
+    file_size_bytes, home_path, humanize_plan_token, parse_rfc3339, parse_usage_window_resets_at,
+    push_json_string, read_json_file, resume_summary, session_title, string_field,
 };
 use zedra_rpc::proto::*;
 
@@ -732,67 +739,6 @@ pub struct SessionCounts {
 pub fn cli_available(workdir: &Path) -> bool {
     crate::agent_utils::command_on_path("claude")
         || project_dir_for_workdir(&home_path(&[".claude"]), workdir).is_dir()
-}
-
-pub fn normalize_event(event_name: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
-    Some(match event_name {
-        "Setup" | "InstructionsLoaded" => (
-            AgentEventKind::SessionUpdated,
-            AgentLifecycleStatus::Starting,
-        ),
-        "SessionStart" => (
-            AgentEventKind::SessionStarted,
-            AgentLifecycleStatus::Starting,
-        ),
-        "SessionEnd" => (AgentEventKind::SessionUpdated, AgentLifecycleStatus::Idle),
-        "UserPromptSubmit" | "UserPromptExpansion" => {
-            (AgentEventKind::TurnStarted, AgentLifecycleStatus::Running)
-        }
-        "PreToolUse" => (AgentEventKind::ToolStarted, AgentLifecycleStatus::Running),
-        "PermissionRequest" => (
-            AgentEventKind::PermissionRequested,
-            AgentLifecycleStatus::WaitingForPermission,
-        ),
-        "PermissionDenied" => (
-            AgentEventKind::PermissionResolved,
-            AgentLifecycleStatus::Failed,
-        ),
-        "TaskCreated" | "SubagentStart" => {
-            (AgentEventKind::TaskCreated, AgentLifecycleStatus::Running)
-        }
-        "TaskCompleted" | "SubagentStop" => (
-            AgentEventKind::TaskCompleted,
-            AgentLifecycleStatus::Completed,
-        ),
-        "PostToolUse" => (AgentEventKind::ToolCompleted, AgentLifecycleStatus::Running),
-        "PostToolUseFailure" => (AgentEventKind::ToolFailed, AgentLifecycleStatus::Failed),
-        "PostToolBatch" => (AgentEventKind::ToolCompleted, AgentLifecycleStatus::Running),
-        "Stop" => (
-            AgentEventKind::TurnCompleted,
-            AgentLifecycleStatus::Completed,
-        ),
-        "StopFailure" => (AgentEventKind::TurnFailed, AgentLifecycleStatus::Failed),
-        "TeammateIdle" => (AgentEventKind::SessionUpdated, AgentLifecycleStatus::Idle),
-        "PreCompact" => (
-            AgentEventKind::SessionUpdated,
-            AgentLifecycleStatus::Running,
-        ),
-        "PostCompact" => (AgentEventKind::SessionUpdated, AgentLifecycleStatus::Idle),
-        "ConfigChange" | "CwdChanged" | "WorktreeCreate" | "WorktreeRemove" => (
-            AgentEventKind::SessionUpdated,
-            AgentLifecycleStatus::Running,
-        ),
-        "Elicitation" => (
-            AgentEventKind::PermissionRequested,
-            AgentLifecycleStatus::WaitingForUser,
-        ),
-        "ElicitationResult" => (
-            AgentEventKind::PermissionResolved,
-            AgentLifecycleStatus::Running,
-        ),
-        "Notification" => (AgentEventKind::Notification, AgentLifecycleStatus::Idle),
-        _ => return None,
-    })
 }
 
 pub fn session_counts(workdir: &Path) -> Result<SessionCounts, String> {
@@ -820,30 +766,16 @@ pub fn sessions(
     Ok((sessions, list.total))
 }
 
-fn session_summary(session: &ClaudeSessionMetadata, cli: &AgentCliSummary) -> AgentSessionSummary {
+fn session_summary(session: &ClaudeSessionMetadata, _cli: &AgentCliSummary) -> AgentSessionSummary {
     let pr = session.pr_links.first();
     AgentSessionSummary {
-        kind: ManagedAgentKind::Claude,
+        kind: AgentKind::Claude,
         session_id: session.session_id.clone(),
         title: session_title(session.title.clone()),
         cwd: session.cwd.clone(),
         created_at: parse_rfc3339(session.created_at.as_deref()),
         last_activity_at: parse_rfc3339(session.last_activity_at.as_deref()),
-        resume: resume_summary(ManagedAgentKind::Claude, &session.session_id),
-        live: empty_session_live(),
-        provider: AgentProviderSessionInfo {
-            model: None,
-            permission_mode: session.permission_mode.clone(),
-            cli_version: session
-                .claude_version
-                .clone()
-                .or_else(|| cli.version.clone()),
-            origin: session.user_type.clone(),
-            source: None,
-            entrypoint: session.entrypoint.clone(),
-            native_project_id: None,
-            model_provider: Some("anthropic".to_string()),
-        },
+        resume: resume_summary(AgentKind::Claude, &session.session_id),
         git: Some(AgentGitSummary {
             branch: session.git_branch.clone(),
             worktree: session.worktree.clone(),
@@ -854,25 +786,6 @@ fn session_summary(session: &ClaudeSessionMetadata, cli: &AgentCliSummary) -> Ag
             pr_repository: pr.and_then(|pr| pr.repository.clone()),
         }),
         usage: None,
-        counters: AgentSessionCounters {
-            record_count: session.message_count as u64,
-            message_count: session.message_count as u64,
-            turn_count: 0,
-            tool_count: 0,
-            tool_failure_count: session.task_failed_count as u64,
-            hook_success_count: session.hook_success_count as u64,
-            hook_failure_count: session.hook_failure_count as u64,
-            malformed_record_count: session.malformed_line_count as u64,
-        },
-        flags: AgentSessionFlags {
-            is_sidechain: session.is_sidechain,
-            is_subagent: false,
-            is_archived: false,
-            historical_only: true,
-            live_bound: false,
-        },
-        data_sources: vec![AgentDataSource::HistoricalScan],
-        warnings: crate::agent_utils::malformed_warning(session.malformed_line_count),
         transcript_size_bytes: file_size_bytes(&session.transcript_path),
     }
 }
@@ -1586,7 +1499,7 @@ mod tests {
         )
         .unwrap();
         filetime::set_file_mtime(
-            &project_dir.join("older.jsonl"),
+            project_dir.join("older.jsonl"),
             filetime::FileTime::from_unix_time(1_700_000_000, 0),
         )
         .unwrap();

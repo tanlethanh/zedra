@@ -8,8 +8,8 @@ use serde_json::Value;
 use zedra_rpc::proto::*;
 
 use crate::agent_utils::{
-    command_on_path, empty_session_live, file_size_bytes, home_path, info_field, mtime_unix_secs,
-    parse_rfc3339, read_json_file, resume_summary, session_title, string_field, user_message_text,
+    command_on_path, file_size_bytes, home_path, info_field, mtime_unix_secs, parse_rfc3339,
+    read_json_file, resume_summary, session_title, string_field, user_message_text,
 };
 
 const LIST_HEAD_SCAN_MAX_LINES: usize = 32;
@@ -30,16 +30,12 @@ struct PiSessionFile {
     created_at: Option<DateTime<Utc>>,
     last_activity_at: Option<DateTime<Utc>>,
     title: Option<String>,
-    message_count: u64,
-    malformed_line_count: u64,
+    _message_count: u64,
+    _malformed_line_count: u64,
 }
 
 pub fn cli_available() -> bool {
     command_on_path("pi") || pi_sessions_root().is_dir()
-}
-
-pub fn normalize_event(_event_name: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
-    None
 }
 
 pub fn session_counts(workdir: &Path) -> Result<SessionCounts, String> {
@@ -69,6 +65,14 @@ pub fn sessions(
         .map(|file| session_summary(file, cli))
         .collect();
     Ok((summaries, total))
+}
+
+/// Title of a single pi session, looked up by id within the workdir's project
+/// transcripts. Used to fill the notification body on a `Stop` hook.
+pub fn title_for_session(workdir: &Path, session_id: &str) -> Option<String> {
+    let files = collect_session_files(workdir, None, false).ok()?;
+    let file = files.into_iter().find(|f| f.session_id == session_id)?;
+    session_title(file.title)
 }
 
 pub fn account_fields(workdir: &Path) -> Vec<AgentInfoField> {
@@ -304,52 +308,22 @@ fn read_session_file(
         created_at,
         last_activity_at,
         title,
-        message_count,
-        malformed_line_count,
+        _message_count: message_count,
+        _malformed_line_count: malformed_line_count,
     })
 }
 
-fn session_summary(file: &PiSessionFile, cli: &AgentCliSummary) -> AgentSessionSummary {
+fn session_summary(file: &PiSessionFile, _cli: &AgentCliSummary) -> AgentSessionSummary {
     AgentSessionSummary {
-        kind: ManagedAgentKind::Pi,
+        kind: AgentKind::Pi,
         session_id: file.session_id.clone(),
         title: session_title(file.title.clone()),
         cwd: file.cwd.clone(),
         created_at: file.created_at,
         last_activity_at: file.last_activity_at,
-        resume: resume_summary(ManagedAgentKind::Pi, &file.session_id),
-        live: empty_session_live(),
-        provider: AgentProviderSessionInfo {
-            model: None,
-            permission_mode: None,
-            cli_version: cli.version.clone(),
-            origin: None,
-            source: None,
-            entrypoint: None,
-            native_project_id: None,
-            model_provider: None,
-        },
+        resume: resume_summary(AgentKind::Pi, &file.session_id),
         git: None,
         usage: None,
-        counters: AgentSessionCounters {
-            record_count: file.message_count,
-            message_count: file.message_count,
-            turn_count: 0,
-            tool_count: 0,
-            tool_failure_count: 0,
-            hook_success_count: 0,
-            hook_failure_count: 0,
-            malformed_record_count: file.malformed_line_count,
-        },
-        flags: AgentSessionFlags {
-            is_sidechain: false,
-            is_subagent: false,
-            is_archived: false,
-            historical_only: true,
-            live_bound: false,
-        },
-        data_sources: vec![AgentDataSource::HistoricalScan],
-        warnings: crate::agent_utils::malformed_warning(file.malformed_line_count as usize),
         transcript_size_bytes: file_size_bytes(&file.path),
     }
 }
@@ -621,8 +595,8 @@ mod tests {
         assert_eq!(file.session_id, "abc");
         assert_eq!(file.cwd.as_deref(), Some("/Users/me/project"));
         assert_eq!(file.title.as_deref(), Some("Refactor terminal scrollback"));
-        assert_eq!(file.message_count, 2);
-        assert_eq!(file.malformed_line_count, 0);
+        assert_eq!(file._message_count, 2);
+        assert_eq!(file._malformed_line_count, 0);
     }
 
     #[test]
@@ -664,11 +638,11 @@ mod tests {
             head.last_activity_at,
             DateTime::<Utc>::from_timestamp(1_700_000_000, 0)
         );
-        assert!(head.message_count < (LIST_HEAD_SCAN_MAX_LINES as u64));
+        assert!(head._message_count < (LIST_HEAD_SCAN_MAX_LINES as u64));
 
         // Full scan: sees the latest turn timestamp and every message.
         let full = read_session_file(&path, Some(1_700_000_000), false).unwrap();
-        assert_eq!(full.message_count, (LIST_HEAD_SCAN_MAX_LINES + 11) as u64);
+        assert_eq!(full._message_count, (LIST_HEAD_SCAN_MAX_LINES + 11) as u64);
         assert!(full.last_activity_at.unwrap() > head.last_activity_at.unwrap());
     }
 }

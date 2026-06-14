@@ -29,6 +29,9 @@ private func zedra_firebase_initialize()
 @_silgen_name("zedra_ios_app_will_terminate")
 private func zedra_ios_app_will_terminate()
 
+@_silgen_name("zedra_ios_app_will_enter_foreground")
+private func zedra_ios_app_will_enter_foreground()
+
 final class GPUIRuntimeController: NSObject {
     private static weak var activeController: GPUIRuntimeController?
 
@@ -77,10 +80,11 @@ final class GPUIRuntimeController: NSObject {
     }
 
     func handleOpenURL(_ url: URL) {
-        url.absoluteString.withCString { zedra_deeplink_received($0) }
+        ZedraDeeplink.route(url: url)
     }
 
     func applicationWillEnterForeground() {
+        zedra_ios_app_will_enter_foreground()
         gpui_ios_will_enter_foreground(gpuiApp)
         if displayLink == nil, gpuiWindow != nil {
             startDisplayLink()

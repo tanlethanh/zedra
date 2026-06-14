@@ -1,7 +1,7 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use tracing::error;
-use zedra_rpc::proto::{AgentFile, AgentSummary, HostEvent, ManagedAgentKind};
+use zedra_rpc::proto::{AgentFile, AgentKind, AgentSummary, HostEvent};
 use zedra_session::{Session, SessionHandle};
 
 use crate::agent_ui::{
@@ -28,7 +28,7 @@ enum LoadState {
 
 pub struct AgentDetail {
     session_handle: SessionHandle,
-    kind: ManagedAgentKind,
+    kind: AgentKind,
     agent: Option<AgentSummary>,
     sessions: Vec<zedra_rpc::proto::AgentSessionSummary>,
     /// Read-only config/memory files (Hermes). Empty for agents without a set.
@@ -45,7 +45,7 @@ impl AgentDetail {
     pub fn new(
         session_handle: SessionHandle,
         session: Session,
-        kind: ManagedAgentKind,
+        kind: AgentKind,
         workspace_state: Entity<WorkspaceState>,
         cx: &mut Context<Self>,
     ) -> Self {

@@ -13,12 +13,10 @@ buildscript {
 
 apply plugin: 'com.android.application'
 apply plugin: 'org.jetbrains.kotlin.android'
+apply plugin: 'com.google.gms.google-services'
+apply plugin: 'com.google.firebase.crashlytics'
 
 def requestedReleaseTask = gradle.startParameter.taskNames.any { it.toLowerCase().contains('release') }
-if (requestedReleaseTask) {
-    apply plugin: 'com.google.gms.google-services'
-    apply plugin: 'com.google.firebase.crashlytics'
-}
 
 repositories {
     google()
@@ -163,6 +161,7 @@ dependencies {
     implementation 'com.google.firebase:firebase-analytics'
     implementation 'com.google.firebase:firebase-crashlytics'
     implementation 'com.google.firebase:firebase-crashlytics-ndk'
+    implementation 'com.google.firebase:firebase-messaging'
 
     // CameraX for QR scanning
     def camerax_version = "1.4.0"
@@ -176,6 +175,11 @@ dependencies {
 
     // Lifecycle (needed for CameraX)
     implementation 'androidx.lifecycle:lifecycle-runtime:2.7.0'
+
+    // Credential Manager for Google Sign-In (Delta authentication).
+    implementation 'androidx.credentials:credentials:1.3.0'
+    implementation 'androidx.credentials:credentials-play-services-auth:1.3.0'
+    implementation 'com.google.android.libraries.identity.googleid:googleid:1.1.1'
 }
 
 // Resolve adb from Android SDK (Android Studio doesn't inherit shell PATH)

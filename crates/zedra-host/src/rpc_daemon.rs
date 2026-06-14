@@ -21,18 +21,18 @@ use crate::paths;
 use crate::pty::{ShellSession, SpawnOptions};
 use crate::session_registry::{
     finish_auth_failed_connection, finish_host_connection, ActiveClientConnection, AttachResult,
-    ConsumeSlotResult, HostShellState, HostTermMeta, OutputSenderSlot, PairingSlotMode,
-    ServerSession, SessionRegistry, TermBacklog, TermSession, MAX_WATCHED_PATHS_PER_SESSION,
+    ConsumeSlotResult, HostTermMeta, OutputSenderSlot, PairingSlotMode, ServerSession,
+    SessionRegistry, TermBacklog, TermSession, MAX_WATCHED_PATHS_PER_SESSION,
 };
 use crate::utils;
 use anyhow::Result;
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zedra_rpc::proto::*;
@@ -90,6 +90,7 @@ async fn build_sync_result(
         arch: Some(std::env::consts::ARCH.to_string()),
         os_version: os_version_string(),
         host_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        delta_pubkey: state.delta_pubkey,
         terminals: session.terminal_sync_entries().await,
     }
 }
@@ -129,7 +130,7 @@ fn encode_meta_preamble(meta: &HostTermMeta) -> Vec<u8> {
     }
 
     match meta.shell_state {
-        HostShellState::Running => {
+        TermShellState::Running => {
             if let Some(command) = &meta.current_command {
                 out.extend_from_slice(b"\x1b]633;E;");
                 out.extend_from_slice(escape_osc633(command).as_bytes());
@@ -137,8 +138,17 @@ fn encode_meta_preamble(meta: &HostTermMeta) -> Vec<u8> {
             }
             out.extend_from_slice(b"\x1b]633;C\x07");
         }
-        HostShellState::Idle => {
-            if let Some(exit_code) = meta.last_exit_code {
+        TermShellState::Idle => {
+            // Agent between turns: replay command + start + prompt-ready so
+            // the client reseeds agent identity; a stale CommandEnd would
+            // clear it.
+            if let Some(command) = &meta.current_command {
+                out.extend_from_slice(b"\x1b]633;E;");
+                out.extend_from_slice(escape_osc633(command).as_bytes());
+                out.push(0x07);
+                out.extend_from_slice(b"\x1b]633;C\x07");
+                out.extend_from_slice(b"\x1b]633;A\x07");
+            } else if let Some(exit_code) = meta.last_exit_code {
                 out.extend_from_slice(b"\x1b]633;D;");
                 out.extend_from_slice(exit_code.to_string().as_bytes());
                 out.push(0x07);
@@ -146,7 +156,7 @@ fn encode_meta_preamble(meta: &HostTermMeta) -> Vec<u8> {
                 out.extend_from_slice(b"\x1b]633;A\x07");
             }
         }
-        HostShellState::Unknown => {}
+        TermShellState::Unknown => {}
     }
     out
 }
@@ -166,19 +176,22 @@ fn escape_osc633(raw: &str) -> String {
 }
 
 fn initial_host_meta(opts: &SpawnOptions) -> HostTermMeta {
-    let mut meta = HostTermMeta::default();
     // Launch commands can run before a prompt emits OSC 7; seed cwd from the spawn request.
-    meta.cwd = opts
-        .workdir
-        .as_ref()
-        .map(|path| paths::user_path_string(path));
+    let mut meta = HostTermMeta {
+        cwd: opts
+            .workdir
+            .as_ref()
+            .map(|path| paths::user_path_string(path)),
+        ..Default::default()
+    };
     if let Some(command) = opts
         .launch_cmd
         .as_ref()
         .filter(|command| !command.is_empty())
     {
+        // Spawned terminals never emit 633;E for the launch command itself.
         meta.current_command = Some(command.clone());
-        meta.shell_state = HostShellState::Running;
+        meta.shell_state = TermShellState::Running;
     }
     meta
 }
@@ -354,7 +367,7 @@ mod terminal_meta_preamble_tests {
             icon_name: Some("codex".to_owned()),
             cwd: Some("/Users/thomasle/projects/zedra".to_owned()),
             current_command: Some("npx @openai/codex --prompt 'a;b'".to_owned()),
-            shell_state: HostShellState::Running,
+            shell_state: TermShellState::Running,
             last_exit_code: None,
             ..HostTermMeta::default()
         };
@@ -378,7 +391,7 @@ mod terminal_meta_preamble_tests {
     #[test]
     fn idle_preamble_replays_last_exit_code() {
         let meta = HostTermMeta {
-            shell_state: HostShellState::Idle,
+            shell_state: TermShellState::Idle,
             last_exit_code: Some(17),
             ..HostTermMeta::default()
         };
@@ -390,6 +403,33 @@ mod terminal_meta_preamble_tests {
             events.as_slice(),
             [OscEvent::CommandEnd { exit_code: 17 }]
         ));
+    }
+
+    #[test]
+    fn idle_preamble_with_current_command_reseeds_identity() {
+        // Agent between turns: prompt-ready after command start, no CommandEnd.
+        let mut meta = HostTermMeta::default();
+        meta.apply_osc_event(&OscEvent::CommandLine("codex".to_owned()));
+        meta.apply_osc_event(&OscEvent::CommandStart);
+        meta.apply_osc_event(&OscEvent::CommandEnd { exit_code: 0 });
+        meta.apply_osc_event(&OscEvent::CommandLine("pi".to_owned()));
+        meta.apply_osc_event(&OscEvent::CommandStart);
+        meta.apply_osc_event(&OscEvent::PromptReady);
+
+        let bytes = encode_meta_preamble(&meta);
+        let events = OscScanner::new().feed(&bytes);
+
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    OscEvent::CommandLine(cmd),
+                    OscEvent::CommandStart,
+                    OscEvent::PromptReady,
+                ] if cmd == "pi"
+            ),
+            "latched command must replay so a fresh client reseeds agent identity: {events:?}"
+        );
     }
 
     #[test]
@@ -411,7 +451,7 @@ mod terminal_meta_preamble_tests {
         );
         assert_eq!(
             initial_host_meta(&opts).shell_state,
-            HostShellState::Running
+            TermShellState::Running
         );
     }
 
@@ -804,18 +844,16 @@ async fn run_observer(session: Arc<ServerSession>, workdir: PathBuf, my_gen: u64
             break;
         }
 
-        if let Ok(git_hash) = tokio::task::spawn_blocking({
+        if let Ok(Some(git_hash)) = tokio::task::spawn_blocking({
             let workdir = workdir.clone();
             move || git_status_fingerprint(&workdir)
         })
         .await
         {
-            if let Some(git_hash) = git_hash {
-                if last_git.is_some() && last_git != Some(git_hash) {
-                    let _ = session.push_event(HostEvent::GitChanged).await;
-                }
-                last_git = Some(git_hash);
+            if last_git.is_some() && last_git != Some(git_hash) {
+                let _ = session.push_event(HostEvent::GitChanged).await;
             }
+            last_git = Some(git_hash);
         }
 
         let watched: Vec<String> = {
@@ -854,7 +892,7 @@ async fn run_observer(session: Arc<ServerSession>, workdir: PathBuf, my_gen: u64
         fs_snapshots = retained;
 
         tick_count += 1;
-        if tick_count % 30 == 0 {
+        if tick_count.is_multiple_of(30) {
             tracing::info!(
                 "observer metrics: session={} watched={} sent={} dropped_full={} dropped_no_subscriber={} rate_limited={} quota_rejected={}",
                 session.id,
@@ -879,11 +917,14 @@ pub struct DaemonState {
     pub workdir: std::path::PathBuf,
     /// Host identity for signing challenges in the Authenticate step.
     pub identity: SharedIdentity,
+    /// Dedicated host Delta node authorization public key.
+    pub delta_pubkey: [u8; 32],
     /// When the daemon started; used to compute uptime.
     pub started_at: std::time::Instant,
-    pub agent_hook_events: tokio::sync::Mutex<VecDeque<AgentHookEventRecord>>,
     pub agent_cache: Arc<agent_cache::AgentCache>,
-    next_agent_hook_event_seq: AtomicU64,
+    /// Delta client; updated at runtime when a mobile client reports its
+    /// Delta info via `SetClientDeltaInfo`. `None` if Delta is not configured.
+    pub delta: Arc<tokio::sync::RwLock<Option<Arc<crate::delta::DeltaClient>>>>,
 }
 
 impl std::fmt::Debug for DaemonState {
@@ -895,78 +936,22 @@ impl std::fmt::Debug for DaemonState {
 }
 
 impl DaemonState {
-    pub fn new(workdir: std::path::PathBuf, identity: SharedIdentity) -> Self {
+    pub fn new(
+        workdir: std::path::PathBuf,
+        identity: SharedIdentity,
+        delta_pubkey: [u8; 32],
+        delta: Option<Arc<crate::delta::DeltaClient>>,
+    ) -> Self {
         Self {
             fs: Arc::new(LocalFs),
             workdir,
             identity,
+            delta_pubkey,
             started_at: std::time::Instant::now(),
-            agent_hook_events: tokio::sync::Mutex::new(VecDeque::new()),
             agent_cache: agent_cache::AgentCache::new(),
-            next_agent_hook_event_seq: AtomicU64::new(1),
+            delta: Arc::new(tokio::sync::RwLock::new(delta)),
         }
     }
-
-    pub async fn record_agent_hook_event(&self, mut event: AgentHookEventRecord) -> u64 {
-        let seq = self
-            .next_agent_hook_event_seq
-            .fetch_add(1, Ordering::Relaxed);
-        event.seq = seq;
-        let mut events = self.agent_hook_events.lock().await;
-        events.push_back(event);
-        while events.len() > MAX_AGENT_HOOK_EVENTS {
-            events.pop_front();
-        }
-        seq
-    }
-
-    pub async fn list_agent_hook_events(
-        &self,
-        terminal_id: Option<&str>,
-        after_seq: u64,
-        limit: usize,
-    ) -> Vec<AgentHookEventRecord> {
-        let limit = limit.clamp(1, MAX_AGENT_HOOK_EVENTS);
-        self.agent_hook_events
-            .lock()
-            .await
-            .iter()
-            .filter(|event| event.seq > after_seq)
-            .filter(|event| {
-                terminal_id
-                    .map(|terminal_id| event.terminal_id.as_deref() == Some(terminal_id))
-                    .unwrap_or(true)
-            })
-            .take(limit)
-            .cloned()
-            .collect()
-    }
-}
-
-const MAX_AGENT_HOOK_EVENTS: usize = 512;
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct AgentHookEventRecord {
-    pub seq: u64,
-    pub kind: ManagedAgentKind,
-    pub provider_event_name: String,
-    pub provider_ids: AgentHookProviderIds,
-    pub normalized: Option<AgentEventSummary>,
-    pub terminal_id: Option<String>,
-    pub terminal_bound: bool,
-    pub warning: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, serde::Serialize)]
-pub struct AgentHookProviderIds {
-    pub session_id: Option<String>,
-    pub turn_id: Option<String>,
-    pub tool_use_id: Option<String>,
-    pub task_id: Option<String>,
-    pub agent_id: Option<String>,
-    pub elicitation_id: Option<String>,
-    pub transcript_id: Option<String>,
-    pub batch_tool_use_ids: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2140,6 +2125,70 @@ async fn dispatch(
             }
         }
 
+        ZedraMessage::SetAppState(msg) => {
+            registry
+                .set_foreground_if_active(
+                    &session.id,
+                    client_pubkey,
+                    active_connection_id,
+                    msg.in_foreground,
+                )
+                .await;
+            tracing::info!(
+                in_foreground = msg.in_foreground,
+                "client app state updated"
+            );
+            let _ = msg.tx.send(SetAppStateResult {}).await;
+        }
+
+        ZedraMessage::SetClientDeltaInfo(msg) => {
+            let info = crate::delta::ClientDeltaInfo {
+                delta_url: msg.delta_url.clone(),
+                stack_id: msg.stack_id,
+                client_node_id: msg.client_node_id,
+                host_node_id: msg.host_node_id,
+            };
+            match crate::delta::DeltaClient::from_client_info(&info) {
+                Ok(client) => {
+                    *state.delta.write().await = Some(client);
+                    tracing::info!(
+                        stack_id = %msg.stack_id,
+                        client_node_id = %msg.client_node_id,
+                        host_node_id = %msg.host_node_id,
+                        delta_url = %msg.delta_url,
+                        "Delta client updated from connected mobile client"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        stack_id = %msg.stack_id,
+                        client_node_id = %msg.client_node_id,
+                        host_node_id = %msg.host_node_id,
+                        error = %err,
+                        "Failed to build Delta client from client info"
+                    )
+                }
+            }
+            let _ = msg.tx.send(SetClientDeltaInfoResult {}).await;
+        }
+
+        ZedraMessage::ClearClientDeltaInfo(msg) => {
+            if let Some(delta) = state.delta.read().await.as_ref() {
+                tracing::info!(
+                    stack_id = %delta.stack_id(),
+                    client_node_id = ?delta.client_node_id(),
+                    host_node_id = %delta.host_node_id(),
+                    "Delta client cleared from connected mobile client"
+                );
+            } else {
+                tracing::info!(
+                    "Delta client clear requested but no in-memory client delta was set"
+                );
+            }
+            *state.delta.write().await = None;
+            let _ = msg.tx.send(ClearClientDeltaInfoResult {}).await;
+        }
+
         ZedraMessage::FsRead(msg) => {
             session.rpc_fs_reads.fetch_add(1, Ordering::Relaxed);
             let path = match resolve_path(&state.workdir, &msg.path) {
@@ -2523,6 +2572,12 @@ async fn dispatch(
 
         ZedraMessage::Subscribe(msg) => {
             session.touch().await;
+            // Assume the client is in the foreground on a fresh connection; the app
+            // will send SetAppState when it actually backgrounds. Guard on the active
+            // client so a superseded Subscribe cannot force-foreground the session.
+            registry
+                .set_foreground_if_active(&session.id, client_pubkey, active_connection_id, true)
+                .await;
             // Bridge: store a regular tokio sender in the session; spawn a task
             // that forwards events from it to the irpc channel toward the client.
             let (bridge_tx, mut bridge_rx) = tokio::sync::mpsc::channel::<HostEvent>(32);
@@ -2965,10 +3020,9 @@ async fn dispatch(
             })
             .await
             .unwrap_or_else(|e| {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("AI prompt worker failed: {e}"),
-                ))
+                Err(std::io::Error::other(format!(
+                    "AI prompt worker failed: {e}"
+                )))
             });
             let duration_ms = ai_start.elapsed().as_millis() as u64;
 
@@ -3199,7 +3253,7 @@ fn run_lsp_check(path: &std::path::Path) -> Vec<DiagnosticEntry> {
     }
 }
 
-fn os_version_string() -> Option<String> {
+pub(crate) fn os_version_string() -> Option<String> {
     #[cfg(target_os = "linux")]
     {
         if let Ok(content) = std::fs::read_to_string("/etc/os-release") {

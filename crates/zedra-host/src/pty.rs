@@ -7,6 +7,13 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use std::io::{Read, Write};
 use zedra_rpc::proto::TerminalColorScheme;
 
+pub type PtyParts = (
+    Box<dyn Read + Send>,
+    Box<dyn Write + Send>,
+    Box<dyn MasterPty + Send>,
+    Box<dyn Child + Send + Sync>,
+);
+
 /// A spawned shell session with PTY
 pub struct ShellSession {
     master: Box<dyn MasterPty + Send>,
@@ -48,6 +55,32 @@ impl ShellSession {
         let pair = pty_system
             .openpty(pty_size)
             .map_err(|e| anyhow::anyhow!("Failed to open PTY: {}", e))?;
+
+        // Disable PTY echo before spawning. When the host (or client VTE) writes an OSC
+        // color query reply to PTY master, an echo-on line discipline bounces those bytes
+        // back out as caret-notation text (ESC → "^["), which the mobile VTE then renders
+        // as garbage at the prompt. Disabling ECHO/ECHOCTL/ECHOKE fixes this without
+        // touching OPOST/ONLCR, so newline translation stays intact for non-TUI output.
+        #[cfg(unix)]
+        if let Some(fd) = pair.master.as_raw_fd() {
+            unsafe {
+                let mut t: libc::termios = std::mem::MaybeUninit::zeroed().assume_init();
+                if libc::tcgetattr(fd, &mut t) == 0 {
+                    t.c_lflag &= !(libc::ECHO
+                        | libc::ECHOE
+                        | libc::ECHOK
+                        | libc::ECHONL
+                        | libc::ECHOCTL
+                        | libc::ECHOKE);
+                    if libc::tcsetattr(fd, libc::TCSANOW, &t) != 0 {
+                        tracing::warn!(
+                            "tcsetattr failed to disable PTY echo: {}",
+                            std::io::Error::last_os_error()
+                        );
+                    }
+                }
+            }
+        }
 
         let shell = default_shell();
         let mut cmd = CommandBuilder::new(&shell);
@@ -99,14 +132,7 @@ impl ShellSession {
     }
 
     /// Split the session into its raw components for async I/O.
-    pub fn take_reader(
-        self,
-    ) -> (
-        Box<dyn Read + Send>,
-        Box<dyn Write + Send>,
-        Box<dyn MasterPty + Send>,
-        Box<dyn Child + Send + Sync>,
-    ) {
+    pub fn take_reader(self) -> PtyParts {
         (self.reader, self.writer, self.master, self.child)
     }
 }

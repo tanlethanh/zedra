@@ -1,3 +1,5 @@
+import AVFoundation
+import AudioToolbox
 import FirebaseAnalytics
 import FirebaseCore
 import FirebaseCrashlytics
@@ -71,6 +73,11 @@ func ios_get_app_build_number() -> UnsafePointer<CChar>? {
     return CStringStorage.shared.pointer(for: "app_build", value: build)
 }
 
+@_cdecl("ios_get_os_version")
+func ios_get_os_version() -> UnsafePointer<CChar>? {
+    CStringStorage.shared.pointer(for: "os_version", value: UIDevice.current.systemVersion)
+}
+
 @_cdecl("ios_get_documents_directory")
 func ios_get_documents_directory() -> UnsafePointer<CChar>? {
     let path = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path
@@ -99,6 +106,35 @@ func ios_set_keyboard_accessory_theme(_ isDark: Bool) {
 @_cdecl("zedra_firebase_initialize")
 func zedra_firebase_initialize_bridge() {
     _ = ZedraFirebase.configureIfAvailable()
+}
+
+// Keeps the player alive for the duration of playback; AVAudioPlayer stops
+// when deallocated.
+private var bundledAudioPlayer: AVAudioPlayer?
+
+private func playBundledAudio(named name: String, withExtension ext: String = "mp3") {
+    guard let url = Bundle.main.url(forResource: name, withExtension: ext) else {
+        NSLog("playBundledAudio: missing bundle resource %@.%@", name, ext)
+        return
+    }
+    DispatchQueue.main.async {
+        // Ambient + mixWithOthers: respects the silent switch and does not
+        // interrupt other apps' audio.
+        try? AVAudioSession.sharedInstance().setCategory(.ambient, options: [.mixWithOthers])
+        bundledAudioPlayer = try? AVAudioPlayer(contentsOf: url)
+        bundledAudioPlayer?.play()
+    }
+}
+
+@_cdecl("ios_play_sound")
+func ios_play_sound(_ kind: Int32) {
+    // kind encoding matches SoundEffect::to_i32() in platform_bridge.rs.
+    switch kind {
+    case 0: // AgentNotification
+        playBundledAudio(named: "notification")
+    default:
+        break
+    }
 }
 
 @_cdecl("ios_trigger_haptic")

@@ -13,12 +13,13 @@ use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 use std::sync::Arc;
 use zedra_host::client as zedra_client;
 use zedra_host::ga4::Ga4;
 use zedra_host::{
-    api, identity, iroh_listener, metrics, net_monitor, paths, qr, rpc_daemon, session_registry,
-    utils, version_check, workspace_lock,
+    api, delta, identity, iroh_listener, metrics, net_monitor, paths, qr, rpc_daemon,
+    session_registry, utils, version_check, workspace_lock,
 };
 use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
@@ -95,8 +96,8 @@ enum Commands {
         #[arg(long)]
         relay_only: bool,
 
-        /// Generate a static QR that can be scanned repeatedly while this daemon runs.
-        /// Intended only for testing and store review.
+        /// Generate a reusable QR code that stays valid for repeated scans
+        /// while this daemon runs, instead of a fresh code per pairing
         #[arg(long = "static-qr")]
         static_qr: bool,
 
@@ -105,20 +106,6 @@ enum Commands {
         /// Default: 300 (5 minutes).
         #[arg(long = "usage-refresh-secs", default_value = "300")]
         usage_refresh_secs: u64,
-    },
-    /// Connect to a daemon and measure connection RTT
-    Client {
-        /// Working directory of the running daemon (must match `zedra start --workdir`)
-        #[arg(short, long, default_value = ".")]
-        workdir: String,
-
-        /// Number of pings to send (0 = run until Ctrl-C)
-        #[arg(short, long, default_value = "0")]
-        count: u32,
-
-        /// Force relay-only mode (disable P2P hole punching)
-        #[arg(long)]
-        relay_only: bool,
     },
     /// Stop the daemon for this workspace
     Stop {
@@ -145,7 +132,22 @@ enum Commands {
         workdir: String,
     },
 
-    /// Create a fresh pairing QR
+    /// Connect to a daemon and measure connection latency
+    Client {
+        /// Working directory of the running daemon (must match `zedra start --workdir`)
+        #[arg(short, long, default_value = ".")]
+        workdir: String,
+
+        /// Number of pings to send (0 = run until Ctrl-C)
+        #[arg(short, long, default_value = "0")]
+        count: u32,
+
+        /// Force relay-only mode (disable P2P hole punching)
+        #[arg(long)]
+        relay_only: bool,
+    },
+
+    /// Show a QR code to pair your phone
     Qr {
         /// Working directory of the running daemon
         #[arg(short, long, default_value = ".")]
@@ -155,8 +157,8 @@ enum Commands {
         #[arg(long)]
         json: bool,
 
-        /// Create a static QR that can be scanned repeatedly while this daemon runs.
-        /// Intended only for testing and store review.
+        /// Create a reusable QR code that stays valid for repeated scans
+        /// while this daemon runs, instead of a fresh code per pairing
         #[arg(long = "static")]
         static_qr: bool,
     },
@@ -182,20 +184,83 @@ enum Commands {
     /// Open or list terminals on the connected phone
     Terminal(terminal_cli::TerminalArgs),
 
-    /// Inspect and test managed AI-agent integration
-    Agent {
-        #[command(subcommand)]
-        command: agent_cli::AgentCommand,
-    },
-
-    /// Install Zedra skills or plugins for an AI coding agent
+    /// Set up Zedra for detected AI agents, or a specific one
     Setup {
         /// Skip interactive confirmation prompts
         #[arg(short, long)]
         yes: bool,
 
+        /// Use absolute path to this binary in hooks instead of `zedra`
+        #[arg(long)]
+        full_bin_path: bool,
+
+        /// Show hook output (skip --quiet)
+        #[arg(long)]
+        no_quiet: bool,
+
         #[command(subcommand)]
-        agent: setup::SetupAgent,
+        agent: Option<setup::SetupAgent>,
+    },
+
+    /// Inspect managed AI-agent integrations
+    Agent {
+        #[command(subcommand)]
+        command: agent_cli::AgentCommand,
+    },
+
+    /// Sign in to Zedra Delta
+    Auth {
+        #[command(subcommand)]
+        command: Option<AuthCommand>,
+    },
+
+    /// View and manage nodes in your Delta stack
+    Stack {
+        #[command(subcommand)]
+        command: Option<StackCommand>,
+    },
+
+    /// Send a notification or Live Activity to a node
+    #[command(override_usage = "zedra send <TARGET> [OPTIONS]")]
+    Send {
+        /// Target node id, name, or alias
+        target: String,
+
+        /// Send a Live Activity update instead of a push notification
+        #[arg(long = "live-activity", short = 'l', alias = "la")]
+        live_activity: bool,
+
+        /// Title (notification title, or Live Activity alert title)
+        #[arg(long, required_unless_present = "live_activity")]
+        title: Option<String>,
+
+        /// Body text
+        #[arg(long)]
+        body: Option<String>,
+
+        /// Notification category
+        #[arg(long, conflicts_with = "live_activity")]
+        category: Option<String>,
+
+        /// Deeplink to open from the notification
+        #[arg(long, conflicts_with = "live_activity")]
+        deeplink: Option<String>,
+
+        /// Stable Live Activity id registered by the mobile app
+        #[arg(long, required_if_eq("live_activity", "true"))]
+        activity_id: Option<String>,
+
+        /// JSON object for ActivityKit content-state (defaults to {})
+        #[arg(long, requires = "live_activity")]
+        state: Option<String>,
+
+        /// End the Live Activity instead of updating it
+        #[arg(long, requires = "live_activity")]
+        end: bool,
+
+        /// Working directory of the workspace (used for anonymous Delta auth)
+        #[arg(short, long, default_value = ".")]
+        workdir: String,
     },
 
     /// Update the Zedra CLI
@@ -214,6 +279,95 @@ enum Commands {
         /// Command to show help for
         #[arg(value_name = "COMMAND")]
         command: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum AuthCommand {
+    /// Sign in this host with Zedra Delta
+    Login {
+        /// Delta API origin
+        #[arg(long, default_value = "https://delta.zedra.dev")]
+        delta_url: String,
+
+        /// Use local dev auth with this subject instead of browser auth
+        #[arg(long)]
+        dev_subject: Option<String>,
+    },
+
+    /// Show Delta auth status
+    Status,
+
+    /// Remove stored Delta auth config
+    Logout,
+}
+
+#[derive(Subcommand)]
+enum StackCommand {
+    /// List all nodes in delta stack
+    List,
+
+    /// List all registered node pubkey
+    Keys,
+
+    /// Show stack-level ability state aggregated across nodes
+    State,
+
+    /// Show details of a node (defaults to this host)
+    Show {
+        /// Target node id, name, or alias (defaults to the authed host node)
+        target: Option<String>,
+
+        /// Show only this ability; exits non-zero when the node does not
+        /// hold it or it is not ready
+        #[arg(long)]
+        ability: Option<String>,
+    },
+
+    /// Update a node in delta stack
+    #[command(
+        override_usage = "zedra stack update <TARGET> [OPTIONS]",
+        group = clap::ArgGroup::new("update_fields").required(true).multiple(true)
+    )]
+    Update {
+        /// Target node id, name, or alias
+        target: String,
+
+        /// New stack-scoped node alias
+        #[arg(long, group = "update_fields")]
+        alias: Option<String>,
+
+        /// New node display name
+        #[arg(long = "name", group = "update_fields")]
+        name: Option<String>,
+    },
+
+    /// Grant an ability to a node
+    Grant {
+        /// Target node id, name, or alias
+        target: String,
+
+        /// Ability name, e.g. notification.send (see `zedra stack show`)
+        ability: String,
+    },
+
+    /// Revoke an ability from a node
+    Revoke {
+        /// Target node id, name, or alias
+        target: String,
+
+        /// Ability name, e.g. notification.send (see `zedra stack show`)
+        ability: String,
+    },
+
+    /// Remove a node from delta stack
+    Remove {
+        /// Target node id, name, or alias
+        target: String,
+
+        /// Permanently remove this node identity so re-registration creates a new node id
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -579,6 +733,190 @@ async fn main() -> Result<()> {
     }
 
     match command {
+        Commands::Auth { command } => match command {
+            Some(AuthCommand::Login {
+                delta_url,
+                dev_subject,
+            }) => {
+                let config = if let Some(dev_subject) = dev_subject {
+                    delta::dev_auth(&delta_url, &dev_subject).await?
+                } else {
+                    let session = delta::start_browser_auth(&delta_url).await?;
+                    print_delta_browser_auth_prompt(&session);
+                    // Best-effort browser open; silent on headless machines.
+                    open_browser(&session.auth_url);
+                    delta::complete_browser_auth(&session).await?
+                };
+                utils::println_success("Authenticated with Zedra Delta.");
+                println!();
+                print_delta_auth_status(&config);
+            }
+            Some(AuthCommand::Status) | None => match delta::load_config() {
+                Ok(config) => print_delta_auth_status(&config),
+                Err(_) => {
+                    utils::println_note("Not authenticated with Zedra Delta.");
+                    utils::println_note(format!(
+                        "Run `{}` to sign in this host.",
+                        utils::command_text("zedra auth login")
+                    ));
+                }
+            },
+            Some(AuthCommand::Logout) => {
+                if delta::remove_config()? {
+                    utils::println_success("Signed out of Zedra Delta.");
+                } else {
+                    utils::println_note("No Delta auth config found.");
+                }
+            }
+        },
+
+        Commands::Stack { command } => match command {
+            Some(StackCommand::List) => {
+                let nodes = delta::DeltaClient::load()?.list_nodes().await?;
+                print_delta_nodes(&nodes);
+            }
+            Some(StackCommand::Keys) => {
+                let keys = delta::DeltaClient::load()?.list_node_keys().await?;
+                print_delta_node_keys(&keys);
+            }
+            Some(StackCommand::State) => {
+                let rollup = delta::DeltaClient::load()?.stack_ability_states().await?;
+                print_delta_stack_state(&rollup);
+            }
+            Some(StackCommand::Show { target, ability }) => {
+                let config = delta::load_config()?;
+                let client = delta::DeltaClient::load()?;
+                let is_self = target.is_none();
+                let detail = client.node_detail(target).await?;
+                match ability {
+                    Some(ability_name) => {
+                        let matched: Vec<_> = detail
+                            .abilities
+                            .iter()
+                            .filter(|entry| entry.ability == ability_name)
+                            .collect();
+                        if matched.is_empty() {
+                            anyhow::bail!(
+                                "node does not hold ability `{ability_name}`; \
+                                 run `zedra stack show` to list its abilities"
+                            );
+                        }
+                        for entry in &matched {
+                            print_delta_ability_line(entry);
+                        }
+                        let ready = matched
+                            .iter()
+                            .all(|entry| entry.status.as_ref().is_none_or(|s| s.ready));
+                        if !ready {
+                            std::process::exit(1);
+                        }
+                    }
+                    None => print_delta_node_show(&detail, is_self.then_some(&config)),
+                }
+            }
+            Some(StackCommand::Update {
+                target,
+                alias,
+                name,
+            }) => {
+                let node = delta::DeltaClient::load()?
+                    .update_node(target, alias, name)
+                    .await?;
+                utils::println_success("Updated Delta node.");
+                println!();
+                utils::print_key_values(&[
+                    ("Alias", node.alias.unwrap_or_else(|| "-".to_string())),
+                    ("Name", node.display_name.unwrap_or_else(|| "-".to_string())),
+                    ("Node", node.id.to_string()),
+                    ("Kind", node.kind.as_str().to_string()),
+                ]);
+            }
+            Some(StackCommand::Grant { target, ability }) => {
+                let grant = delta::DeltaClient::load()?
+                    .grant_ability(target, ability)
+                    .await?;
+                let subject = grant
+                    .subject_alias
+                    .clone()
+                    .unwrap_or_else(|| grant.subject_id.to_string());
+                utils::println_success(&format!("Granted {} to node:{subject}.", grant.ability));
+            }
+            Some(StackCommand::Revoke { target, ability }) => {
+                let revoked = delta::DeltaClient::load()?
+                    .revoke_ability(target, ability)
+                    .await?;
+                for grant in &revoked {
+                    let subject = grant
+                        .subject_alias
+                        .clone()
+                        .unwrap_or_else(|| grant.subject_id.to_string());
+                    utils::println_success(&format!(
+                        "Revoked {} from node:{subject}.",
+                        grant.ability
+                    ));
+                }
+            }
+            Some(StackCommand::Remove { target, force }) => {
+                let response = delta::DeltaClient::load()?
+                    .delete_node(target, force)
+                    .await?;
+                utils::println_success("Removed Delta node from stack.");
+                println!();
+                utils::print_key_values(&[
+                    ("Removed", response.deleted.to_string()),
+                    ("Node", response.node_id.to_string()),
+                ]);
+            }
+            None => {
+                let config = delta::load_config()?;
+                print_delta_stack(&config);
+            }
+        },
+
+        Commands::Send {
+            target,
+            live_activity,
+            title,
+            body,
+            category,
+            deeplink,
+            activity_id,
+            state,
+            end,
+            workdir: _,
+        } => {
+            let client = delta::DeltaClient::try_load().ok_or_else(|| {
+                anyhow::anyhow!("Delta not configured. Sign in with `zedra auth login`.")
+            })?;
+            if live_activity {
+                let activity_id =
+                    activity_id.expect("clap enforces --activity-id with --live-activity");
+                let content_state = parse_json_object(state.as_deref().unwrap_or("{}"))?;
+                let response = client
+                    .update_live_activity(target, activity_id, title, body, content_state, end)
+                    .await?;
+                utils::println_success("Live Activity update accepted.");
+                print_delta_send_result(
+                    response.accepted,
+                    response.recipients,
+                    response.provider_success,
+                    response.provider_failure,
+                );
+            } else {
+                let title = title.expect("clap enforces --title for notifications");
+                let response = client
+                    .send_notification(target, title, body, category, deeplink)
+                    .await?;
+                utils::println_success("Notification accepted.");
+                print_delta_send_result(
+                    response.accepted,
+                    response.recipients,
+                    response.provider_success,
+                    response.provider_failure,
+                );
+            }
+        }
+
         Commands::Client {
             workdir,
             count,
@@ -713,9 +1051,37 @@ async fn main() -> Result<()> {
                 prev_hook(info);
             }));
 
+            let delta_pubkey =
+                delta::public_key().context("failed to load host Delta signing key")?;
+
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(20),
+                delta::reconcile_signed_in_host_metadata(),
+            )
+            .await
+            {
+                Ok(Ok(delta::HostMetadataReconcileResult::Missing)) => {
+                    tracing::info!("Delta signed-in host node is missing; reconciliation ignored")
+                }
+                Ok(Ok(result)) => {
+                    tracing::info!(
+                        ?result,
+                        "Delta signed-in host metadata reconciliation completed"
+                    )
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!("Delta signed-in host metadata reconciliation failed: {error:#}")
+                }
+                Err(_) => tracing::warn!("Delta signed-in host metadata reconciliation timed out"),
+            }
+
+            let delta_client = delta::DeltaClient::try_load();
+
             let state = Arc::new(rpc_daemon::DaemonState::new(
                 workdir.clone(),
                 host_identity.clone(),
+                delta_pubkey,
+                delta_client,
             ));
             state
                 .agent_cache
@@ -833,17 +1199,17 @@ async fn main() -> Result<()> {
             // resolves addresses at connect time via pkarr. STUN runs in the
             // background and PkarrPublisher will republish once the public IP is
             // discovered, before any user could reasonably scan and connect.
-            if let Err(e) = generate_pairing_qr(
-                &registry,
-                &session_id,
+            if let Err(e) = generate_pairing_qr(PairingQrRequest {
+                registry: &registry,
+                session_id: &session_id,
                 endpoint_id,
-                &endpoint,
-                &endpoint_relay_urls,
+                endpoint: &endpoint,
+                relay_urls: &endpoint_relay_urls,
                 json,
-                Some(&workdir),
-                Some(&workdir),
-                pairing_mode,
-            )
+                started_workdir: Some(&workdir),
+                metrics_workdir: Some(&workdir),
+                mode: pairing_mode,
+            })
             .await
             {
                 tracing::warn!("Failed to generate QR code: {}", e);
@@ -1032,9 +1398,15 @@ async fn main() -> Result<()> {
             agent_cli::run(command).await?;
         }
 
-        Commands::Setup { yes, agent } => {
-            setup::run(agent, yes).await?;
-        }
+        Commands::Setup {
+            yes,
+            full_bin_path,
+            no_quiet,
+            agent,
+        } => match agent {
+            Some(agent) => setup::run(agent, yes, full_bin_path, no_quiet).await?,
+            None => setup::run_all(yes, full_bin_path, no_quiet).await?,
+        },
 
         Commands::List { stale } => {
             let instances = workspace_lock::scan_all_instances();
@@ -1266,6 +1638,323 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+fn open_browser(url: &str) -> bool {
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = ProcessCommand::new("open");
+        command.arg(url);
+        command
+    } else if cfg!(target_os = "windows") {
+        let mut command = ProcessCommand::new("cmd");
+        command.args(["/C", "start", "", url]);
+        command
+    } else {
+        let mut command = ProcessCommand::new("xdg-open");
+        command.arg(url);
+        command
+    };
+
+    command
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn parse_json_object(input: &str) -> Result<serde_json::Value> {
+    let value: serde_json::Value = serde_json::from_str(input).context("parse --state JSON")?;
+    if value.is_object() {
+        Ok(value)
+    } else {
+        anyhow::bail!("--state must be a JSON object");
+    }
+}
+
+fn print_delta_browser_auth_prompt(session: &delta::CliAuthSession) {
+    utils::println_heading("Zedra Delta Auth");
+    println!();
+    match qr::render_url_qr(&session.auth_url) {
+        Ok(qr) => println!("{qr}"),
+        Err(e) => tracing::warn!("failed to render auth QR code: {e}"),
+    }
+    println!();
+    utils::println_note("Open URL in browser:");
+    println!("    {}", session.auth_url);
+    println!("    Expired at {}", format_node_date(&session.expires_at));
+    println!();
+    utils::println_note("Waiting...");
+}
+
+fn print_delta_auth_status(config: &delta::DeltaConfig) {
+    utils::println_heading("Zedra Delta Auth");
+    println!();
+    utils::print_key_values(&[
+        ("Delta URL", config.delta_url.clone()),
+        ("Stack", config.stack_id.to_string()),
+        ("Node", config.node_id.to_string()),
+        ("Expires", config.token_expires_at.clone()),
+    ]);
+}
+
+fn print_delta_stack(config: &delta::DeltaConfig) {
+    utils::println_heading("Zedra Delta Stack");
+    println!();
+    utils::print_key_values(&[
+        ("Delta URL", config.delta_url.clone()),
+        ("Stack", config.stack_id.to_string()),
+        ("Host Node", config.node_id.to_string()),
+    ]);
+    println!();
+    println!(
+        "Run `{}` to list stack nodes.",
+        utils::command_text("zedra stack list")
+    );
+}
+
+fn print_delta_send_result(accepted: bool, recipients: u32, provider_ok: u32, provider_fail: u32) {
+    println!();
+    utils::print_key_values(&[
+        ("Accepted", accepted.to_string()),
+        ("Recipients", recipients.to_string()),
+        ("Provider OK", provider_ok.to_string()),
+        ("Provider Fail", provider_fail.to_string()),
+    ]);
+}
+
+/// Sectioned node detail view. `self_config` is set when showing the authed
+/// host node itself, adding the Stack section.
+fn print_delta_node_show(
+    detail: &delta::NodeDetailResponse,
+    self_config: Option<&delta::DeltaConfig>,
+) {
+    let node = &detail.node;
+    let label = node.alias.clone().unwrap_or_else(|| node.id.to_string());
+    let suffix = if self_config.is_some() {
+        " (this host)"
+    } else {
+        ""
+    };
+    utils::println_heading(&format!("Zedra Delta Node — {label}{suffix}"));
+
+    println!();
+    utils::println_heading("Node");
+    utils::print_key_values(&[
+        (
+            "Alias",
+            node.alias.clone().unwrap_or_else(|| "-".to_string()),
+        ),
+        (
+            "Name",
+            node.display_name.clone().unwrap_or_else(|| "-".to_string()),
+        ),
+        ("Kind", node.kind.as_str().to_string()),
+        ("ID", node.id.to_string()),
+        (
+            "Push",
+            if node.push_enabled { "yes" } else { "no" }.to_string(),
+        ),
+    ]);
+
+    if let Some(metadata) = node.metadata.as_object().filter(|map| !map.is_empty()) {
+        println!();
+        utils::println_heading("Metadata");
+        let entries = metadata
+            .iter()
+            .map(|(key, value)| {
+                let value = match value.as_str() {
+                    Some(text) => text.to_string(),
+                    None => value.to_string(),
+                };
+                (key.as_str(), value)
+            })
+            .collect::<Vec<_>>();
+        utils::print_key_values(&entries);
+    }
+
+    println!();
+    utils::println_heading("Key");
+    utils::print_key_values(&[
+        ("Fingerprint", node.public_key_fingerprint.clone()),
+        ("Public key", detail.public_key.clone()),
+    ]);
+
+    println!();
+    utils::println_heading("Abilities (what this node can do)");
+    if detail.abilities.is_empty() {
+        println!("  none");
+    }
+    for ability in &detail.abilities {
+        print_delta_ability_line(ability);
+    }
+
+    println!();
+    utils::println_heading("Grants (who can act on this node)");
+    if detail.grants.is_empty() {
+        println!("  none");
+    }
+    for grant in &detail.grants {
+        let subject = match (&grant.subject_kind[..], &grant.subject_alias) {
+            ("node", Some(alias)) => format!("node:{alias}"),
+            ("node", None) => format!("node:{}", grant.subject_id),
+            (kind, _) => kind.to_string(),
+        };
+        println!("  {:<28} ← {subject}", grant.ability);
+    }
+
+    if let Some(config) = self_config {
+        println!();
+        utils::println_heading("Stack");
+        utils::print_key_values(&[
+            ("Stack", config.stack_id.to_string()),
+            ("Delta URL", config.delta_url.clone()),
+        ]);
+    }
+}
+
+/// Stack-level ability state, one section per ability with generic
+/// key/value rendering of the rolled-up object.
+fn print_delta_stack_state(rollup: &delta::AbilityStateRollupResponse) {
+    if rollup.states.is_empty() {
+        utils::println_note("No ability state recorded in this stack.");
+        return;
+    }
+    utils::println_heading("Zedra Delta Stack State");
+    let mut abilities: Vec<_> = rollup.states.keys().collect();
+    abilities.sort();
+    for ability in abilities {
+        println!();
+        utils::println_heading(ability);
+        let Some(map) = rollup.states[ability].as_object() else {
+            println!("  {}", json_inline(&rollup.states[ability]));
+            continue;
+        };
+        for (key, value) in map {
+            if value.is_null() {
+                continue;
+            }
+            println!("  {key}: {}", json_inline(value));
+        }
+    }
+}
+
+/// One ability line plus its self-declared status, when present.
+fn print_delta_ability_line(ability: &delta::NodeAbilitySummary) {
+    let object = match (&ability.object_kind[..], &ability.object_alias) {
+        ("node", Some(alias)) => format!("node:{alias}"),
+        ("node", None) => format!("node:{}", ability.object_id),
+        (kind, _) => kind.to_string(),
+    };
+    println!("  {:<28} → {object}", ability.ability);
+    let Some(status) = &ability.status else {
+        return;
+    };
+    println!("      ready: {}", if status.ready { "yes" } else { "no" });
+    let Some(detail) = status.detail.as_object() else {
+        return;
+    };
+    for (key, value) in detail {
+        match value {
+            serde_json::Value::Null => {}
+            serde_json::Value::Array(items) if items.is_empty() => {
+                println!("      {key}: none");
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    println!("      {key}: {}", json_inline(item));
+                }
+            }
+            other => println!("      {key}: {}", json_inline(other)),
+        }
+    }
+}
+
+/// Compact one-line rendering of a JSON value for status detail output.
+fn json_inline(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Object(map) => map
+            .iter()
+            .filter(|(_, v)| !v.is_null())
+            .map(|(k, v)| format!("{k}={}", json_inline(v)))
+            .collect::<Vec<_>>()
+            .join(" "),
+        other => other.to_string(),
+    }
+}
+
+fn print_delta_nodes(nodes: &[delta::NodeSummary]) {
+    if nodes.is_empty() {
+        utils::println_note("No nodes found.");
+        return;
+    }
+    utils::println_heading("Zedra Delta Nodes");
+    println!();
+    let rows = nodes
+        .iter()
+        .map(|node| {
+            vec![
+                node.alias.clone().unwrap_or_else(|| "-".to_string()),
+                metadata_string(node, "os")
+                    .or_else(|| metadata_string(node, "platform"))
+                    .unwrap_or_else(|| "-".to_string()),
+                if node.push_enabled { "yes" } else { "no" }.to_string(),
+                node.id.to_string(),
+                node.joined_at
+                    .as_deref()
+                    .map(format_node_date)
+                    .unwrap_or_else(|| "-".to_string()),
+            ]
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "{}",
+        utils::render_table(&["ALIAS", "OS", "PUSH", "ID", "DATE"], &rows)
+    );
+}
+
+fn print_delta_node_keys(keys: &[delta::NodeKeySummary]) {
+    if keys.is_empty() {
+        utils::println_note("No nodes found.");
+        return;
+    }
+    utils::println_heading("Zedra Delta Node Keys");
+    println!();
+    let rows = keys
+        .iter()
+        .map(|key| {
+            vec![
+                key.alias.clone().unwrap_or_else(|| "-".to_string()),
+                key.kind.as_str().to_string(),
+                key.node_id.to_string(),
+                key.public_key_fingerprint.clone(),
+                key.public_key.clone(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "{}",
+        utils::render_table(&["ALIAS", "KIND", "ID", "FINGERPRINT", "PUBLIC KEY"], &rows)
+    );
+}
+
+/// Format an RFC3339 timestamp as a local `YYYY-MM-DD HH:MM`; falls back to the
+/// raw string when it cannot be parsed.
+fn format_node_date(raw: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .map(|dt| {
+            dt.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|_| raw.to_string())
+}
+
+fn metadata_string(node: &delta::NodeSummary, key: &str) -> Option<String> {
+    node.metadata
+        .get(key)
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
 fn print_command_help(command_path: &[String]) -> Result<()> {
     let mut command = Cli::command();
     let target = find_command_help_mut(&mut command, command_path)
@@ -1351,7 +2040,11 @@ fn render_detached_followup_commands() -> String {
 fn render_status_output(status: &serde_json::Value) -> String {
     let version = status["version"].as_str().unwrap_or("?");
     let workdir = status["workdir"].as_str().unwrap_or("?");
-    let endpoint_id = status["endpoint_id"].as_str().unwrap_or("?");
+    let endpoint_addr = status
+        .get("endpoint_addr")
+        .and_then(|value| value.as_str())
+        .or_else(|| status["endpoint_id"].as_str())
+        .unwrap_or("?");
     let uptime = status["uptime_secs"]
         .as_u64()
         .map(utils::format_duration)
@@ -1376,7 +2069,7 @@ fn render_status_output(status: &serde_json::Value) -> String {
             ("Version", format!("v{version}")),
             ("Uptime", uptime),
             ("Workdir", workdir.to_string()),
-            ("Endpoint", short_id(endpoint_id)),
+            ("Endpoint", endpoint_addr.to_string()),
             ("Sessions", session_count.to_string()),
             ("Connected", connected_sessions.to_string()),
             ("Terminals", terminal_count.to_string()),
@@ -1388,7 +2081,7 @@ fn render_status_output(status: &serde_json::Value) -> String {
             sections.push(String::new());
             sections.push("Sessions".to_string());
             sections.push(utils::render_table(
-                &["ID", "NAME", "STATE", "TERMS", "UPTIME", "IDLE", "WORKDIR"],
+                &["ID", "NAME", "STATE", "TERMS", "UPTIME", "IDLE"],
                 &sessions.iter().map(session_status_row).collect::<Vec<_>>(),
             ));
         }
@@ -1585,7 +2278,6 @@ fn session_status_row(session: &serde_json::Value) -> Vec<String> {
         .as_u64()
         .map(utils::format_duration)
         .unwrap_or_else(|| "-".to_string());
-    let workdir = non_empty_str(&session["workdir"]).unwrap_or("-");
 
     vec![
         id,
@@ -1594,7 +2286,6 @@ fn session_status_row(session: &serde_json::Value) -> Vec<String> {
         terminal_count,
         uptime,
         idle,
-        workdir.to_string(),
     ]
 }
 
@@ -1802,17 +2493,30 @@ fn elapsed_since_unix_secs(started_secs: u64) -> u64 {
         .unwrap_or(0)
 }
 
-async fn generate_pairing_qr(
-    registry: &Arc<session_registry::SessionRegistry>,
-    session_id: &str,
+struct PairingQrRequest<'a> {
+    registry: &'a Arc<session_registry::SessionRegistry>,
+    session_id: &'a str,
     endpoint_id: iroh::PublicKey,
-    endpoint: &iroh::Endpoint,
-    relay_urls: &[String],
+    endpoint: &'a iroh::Endpoint,
+    relay_urls: &'a [String],
     json: bool,
-    started_workdir: Option<&Path>,
-    metrics_workdir: Option<&Path>,
+    started_workdir: Option<&'a Path>,
+    metrics_workdir: Option<&'a Path>,
     mode: session_registry::PairingSlotMode,
-) -> Result<()> {
+}
+
+async fn generate_pairing_qr(request: PairingQrRequest<'_>) -> Result<()> {
+    let PairingQrRequest {
+        registry,
+        session_id,
+        endpoint_id,
+        endpoint,
+        relay_urls,
+        json,
+        started_workdir,
+        metrics_workdir,
+        mode,
+    } = request;
     let ticket = ZedraPairingTicket {
         endpoint_id,
         handshake_secret: rand::random(),
@@ -1881,7 +2585,17 @@ async fn run_qr_key_listener(
                     break;
                 };
                 if matches!(key, b'r' | b'R') {
-                    if let Err(e) = generate_pairing_qr(&registry, &session_id, endpoint_id, &endpoint, &relay_urls, false, None, Some(&workdir), mode).await {
+                    if let Err(e) = generate_pairing_qr(PairingQrRequest {
+                        registry: &registry,
+                        session_id: &session_id,
+                        endpoint_id,
+                        endpoint: &endpoint,
+                        relay_urls: &relay_urls,
+                        json: false,
+                        started_workdir: None,
+                        metrics_workdir: Some(&workdir),
+                        mode,
+                    }).await {
                         tracing::warn!("Failed to regenerate QR code: {}", e);
                     } else {
                         utils::eprintln_success("Regenerated pairing QR. Press 'r' again to refresh.");
@@ -2034,6 +2748,276 @@ mod tests {
     }
 
     #[test]
+    fn stack_remove_parses_target() {
+        match Cli::try_parse_from(["zedra", "stack", "remove", "zedra-ios"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Stack {
+                command: Some(StackCommand::Remove { target, force }),
+            }) => {
+                assert_eq!(target, "zedra-ios");
+                assert!(!force);
+            }
+            other => panic!(
+                "expected stack remove command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+
+        match Cli::try_parse_from(["zedra", "stack", "remove", "zedra-ios", "--force"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Stack {
+                command: Some(StackCommand::Remove { target, force }),
+            }) => {
+                assert_eq!(target, "zedra-ios");
+                assert!(force);
+            }
+            other => panic!(
+                "expected forced stack remove command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+    }
+
+    #[test]
+    fn stack_update_requires_alias_or_name() {
+        // Either flag alone or both together parse.
+        match Cli::try_parse_from(["zedra", "stack", "update", "phone", "--alias", "my-phone"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Stack {
+                command: Some(StackCommand::Update { alias, name, .. }),
+            }) => {
+                assert_eq!(alias.as_deref(), Some("my-phone"));
+                assert!(name.is_none());
+            }
+            other => panic!(
+                "expected stack update command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+        match Cli::try_parse_from([
+            "zedra",
+            "stack",
+            "update",
+            "phone",
+            "--name",
+            "Tan iPhone",
+            "--alias",
+            "my-phone",
+        ])
+        .unwrap()
+        .command
+        {
+            Some(Commands::Stack {
+                command: Some(StackCommand::Update { alias, name, .. }),
+            }) => {
+                assert_eq!(alias.as_deref(), Some("my-phone"));
+                assert_eq!(name.as_deref(), Some("Tan iPhone"));
+            }
+            other => panic!(
+                "expected stack update command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+        // Neither flag must fail.
+        assert!(Cli::try_parse_from(["zedra", "stack", "update", "phone"]).is_err());
+    }
+
+    #[test]
+    fn send_defaults_to_notification_and_requires_title() {
+        match Cli::try_parse_from(["zedra", "send", "phone", "--title", "hi"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Send {
+                live_activity,
+                title,
+                ..
+            }) => {
+                assert!(!live_activity);
+                assert_eq!(title.as_deref(), Some("hi"));
+            }
+            other => panic!("expected send command, got {:?}", other.map(|_| "other")),
+        }
+        // Notification mode without --title must fail.
+        assert!(Cli::try_parse_from(["zedra", "send", "phone"]).is_err());
+        // Missing target must fail.
+        assert!(Cli::try_parse_from(["zedra", "send", "--title", "hi"]).is_err());
+    }
+
+    #[test]
+    fn send_live_activity_routes_with_flag() {
+        for flag in ["--live-activity", "--la", "-l"] {
+            match Cli::try_parse_from(["zedra", "send", "phone", flag, "--activity-id", "act-1"])
+                .unwrap()
+                .command
+            {
+                Some(Commands::Send {
+                    live_activity,
+                    activity_id,
+                    title,
+                    ..
+                }) => {
+                    assert!(live_activity);
+                    assert_eq!(activity_id.as_deref(), Some("act-1"));
+                    assert!(title.is_none(), "title optional in live activity mode");
+                }
+                other => panic!("expected send command, got {:?}", other.map(|_| "other")),
+            }
+        }
+        // Live activity mode requires --activity-id.
+        assert!(Cli::try_parse_from(["zedra", "send", "phone", "--live-activity"]).is_err());
+        // Notification-only flags conflict with --live-activity.
+        assert!(Cli::try_parse_from([
+            "zedra",
+            "send",
+            "phone",
+            "--live-activity",
+            "--activity-id",
+            "act-1",
+            "--category",
+            "task"
+        ])
+        .is_err());
+        // Live-activity-only flags require the flag.
+        assert!(Cli::try_parse_from(["zedra", "send", "phone", "--title", "hi", "--end"]).is_err());
+    }
+
+    #[test]
+    fn stack_list_parses() {
+        match Cli::try_parse_from(["zedra", "stack", "list"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Stack {
+                command: Some(StackCommand::List),
+            }) => {}
+            other => panic!(
+                "expected stack list command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+    }
+
+    #[test]
+    fn stack_keys_parses() {
+        match Cli::try_parse_from(["zedra", "stack", "keys"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Stack {
+                command: Some(StackCommand::Keys),
+            }) => {}
+            other => panic!(
+                "expected stack keys command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+    }
+
+    #[test]
+    fn stack_show_parses_optional_target() {
+        match Cli::try_parse_from(["zedra", "stack", "show"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Stack {
+                command:
+                    Some(StackCommand::Show {
+                        target: None,
+                        ability: None,
+                    }),
+            }) => {}
+            other => panic!(
+                "expected stack show command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+        match Cli::try_parse_from(["zedra", "stack", "show", "zedra-ios"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Stack {
+                command:
+                    Some(StackCommand::Show {
+                        target: Some(target),
+                        ability: None,
+                    }),
+            }) => assert_eq!(target, "zedra-ios"),
+            other => panic!(
+                "expected stack show command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+        match Cli::try_parse_from([
+            "zedra",
+            "stack",
+            "show",
+            "zedra-ios",
+            "--ability",
+            "notification.receive",
+        ])
+        .unwrap()
+        .command
+        {
+            Some(Commands::Stack {
+                command:
+                    Some(StackCommand::Show {
+                        target: Some(target),
+                        ability: Some(ability),
+                    }),
+            }) => {
+                assert_eq!(target, "zedra-ios");
+                assert_eq!(ability, "notification.receive");
+            }
+            other => panic!(
+                "expected stack show command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+    }
+
+    #[test]
+    fn stack_grant_and_revoke_parse_target_and_ability() {
+        match Cli::try_parse_from(["zedra", "stack", "grant", "agent-1", "notification.send"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Stack {
+                command: Some(StackCommand::Grant { target, ability }),
+            }) => {
+                assert_eq!(target, "agent-1");
+                assert_eq!(ability, "notification.send");
+            }
+            other => panic!(
+                "expected stack grant command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+        match Cli::try_parse_from(["zedra", "stack", "revoke", "agent-1", "notification.send"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::Stack {
+                command: Some(StackCommand::Revoke { target, ability }),
+            }) => {
+                assert_eq!(target, "agent-1");
+                assert_eq!(ability, "notification.send");
+            }
+            other => panic!(
+                "expected stack revoke command, got {:?}",
+                other.map(|_| "other")
+            ),
+        }
+        assert!(Cli::try_parse_from(["zedra", "stack", "grant", "agent-1"]).is_err());
+    }
+
+    #[test]
     fn detached_start_child_args_preserve_start_options() {
         let args = detached_start_child_args(&DetachedStartOptions {
             workdir: PathBuf::from("project"),
@@ -2131,6 +3115,7 @@ mod tests {
             "version": "0.2.0",
             "workdir": "/repo",
             "endpoint_id": "abcdef123456",
+            "endpoint_addr": "endpoint-addr-full-value",
             "uptime_secs": 65,
             "sessions": [
                 {
@@ -2158,7 +3143,7 @@ mod tests {
 
         assert!(output.contains("Zedra Daemon"));
         assert!(output.contains("  Version    v0.2.0"));
-        assert!(output.contains("  Endpoint   abcdef12"));
+        assert!(output.contains("  Endpoint   endpoint-addr-full-value"));
         assert!(output.contains("Sessions"));
         assert!(output.contains("connected"));
         assert!(output.contains("Terminals"));

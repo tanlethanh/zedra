@@ -26,7 +26,7 @@ use crate::install_panic_hook;
 use crate::platform_bridge::{
     self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback, ListPickerItem,
     NativeDictationPreviewOptions, NativeFloatingButtonOptions, NativeNotificationOptions,
-    SystemTheme,
+    SoundEffect, SystemTheme,
 };
 
 // ============================================================================
@@ -38,6 +38,8 @@ static INIT: Once = Once::new();
 static FILES_DIR: Mutex<Option<String>> = Mutex::new(None);
 static APP_VERSION: Mutex<Option<String>> = Mutex::new(None);
 static APP_BUILD_NUMBER: Mutex<Option<String>> = Mutex::new(None);
+static OS_VERSION: Mutex<Option<String>> = Mutex::new(None);
+static DEVICE_NAME: Mutex<Option<String>> = Mutex::new(None);
 
 /// Display density, soft keyboard height, and system insets are owned by the
 /// `gpui_android` framework. These thin wrappers preserve the historical
@@ -72,6 +74,22 @@ pub fn get_app_version() -> String {
 
 pub fn get_app_build_number() -> String {
     APP_BUILD_NUMBER
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_default()
+}
+
+pub fn get_os_version() -> String {
+    OS_VERSION
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_default()
+}
+
+pub fn get_delta_device_name() -> String {
+    DEVICE_NAME
         .lock()
         .ok()
         .and_then(|g| g.clone())
@@ -188,10 +206,10 @@ pub extern "system" fn Java_dev_zedra_app_SheetHostView_nativeSheetProcessSurfac
 // ============================================================================
 
 /// Called from `MainActivity.onCreate` via
-/// `MainActivity.bootstrap(activity, appVersion, appBuildNumber)`.
+/// `MainActivity.bootstrap(activity, appVersion, appBuildNumber, osVersion, deviceName)`.
 ///
-/// Captures the JVM (for Rust→Java callbacks), the files directory, and the
-/// app version metadata. Pushing app metadata in this direction (Java→Rust)
+/// Captures the JVM (for Rust→Java callbacks), the files directory, and native
+/// app/device metadata. Pushing metadata in this direction (Java→Rust)
 /// avoids deeply-nested Rust→Java JNI calls during render which can manifest
 /// as `StackOverflowError` once GPUI's element tree gets large.
 #[unsafe(no_mangle)]
@@ -201,6 +219,8 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_bootstrap(
     activity: JObject,
     app_version: jni::objects::JString,
     app_build_number: jni::objects::JString,
+    os_version: jni::objects::JString,
+    device_name: jni::objects::JString,
 ) {
     init_logging();
 
@@ -239,6 +259,20 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_bootstrap(
         let build: String = build.into();
         if let Ok(mut guard) = APP_BUILD_NUMBER.lock() {
             *guard = Some(build);
+        }
+    }
+
+    if let Ok(version) = env.get_string(&os_version) {
+        let version: String = version.into();
+        if let Ok(mut guard) = OS_VERSION.lock() {
+            *guard = Some(version);
+        }
+    }
+
+    if let Ok(name) = env.get_string(&device_name) {
+        let name: String = name.into();
+        if let Ok(mut guard) = DEVICE_NAME.lock() {
+            *guard = Some(name);
         }
     }
 }
@@ -467,6 +501,18 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeSystemBackPressed(
     crate::android::entry::handle_system_back() as jboolean
 }
 
+/// Foreground/background state from the Android activity lifecycle
+/// (onResume → true, onStop → false). Mirrors the iOS bridge so the host can
+/// decide between RPC-only delivery and Delta push notifications.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeSetAppForeground(
+    _env: JNIEnv,
+    _class: JClass,
+    foreground: jboolean,
+) {
+    platform_bridge::set_app_in_foreground(foreground != 0);
+}
+
 fn dispatch_deeplink(url: String) {
     tracing::info!(url = &url[..url.len().min(80)], "jni: deeplink");
     match crate::deeplink::parse(&url) {
@@ -624,8 +670,109 @@ pub fn show_selection(id: u32, title: &str, message: &str, buttons: &[AlertButto
             AlertButtonStyle::Destructive => 2,
         })
         .collect();
+    let image_names: Vec<String> = buttons
+        .iter()
+        .map(|b| b.image_name.clone().unwrap_or_default())
+        .collect();
     jni_call("show_selection", move || {
-        present_buttons("showSelection", id, title, message, labels, styles);
+        with_main_activity_class("show_selection", |env, class| {
+            let title_value = match env.new_string(&title) {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_selection title string failed");
+                    return;
+                }
+            };
+            let message_value = match env.new_string(&message) {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_selection message string failed");
+                    return;
+                }
+            };
+            let string_class = match env.find_class("java/lang/String") {
+                Ok(class) => class,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_selection find String class failed");
+                    return;
+                }
+            };
+            let label_array =
+                match env.new_object_array(labels.len() as i32, &string_class, JObject::null()) {
+                    Ok(array) => array,
+                    Err(error) => {
+                        tracing::error!(?error, "jni: show_selection label array failed");
+                        return;
+                    }
+                };
+            for (index, label) in labels.iter().enumerate() {
+                let label_value = match env.new_string(label) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        tracing::error!(?error, "jni: show_selection label string failed");
+                        return;
+                    }
+                };
+                if let Err(error) =
+                    env.set_object_array_element(&label_array, index as i32, label_value)
+                {
+                    tracing::error!(?error, "jni: show_selection set label failed");
+                    return;
+                }
+            }
+            let style_array = match env.new_int_array(styles.len() as i32) {
+                Ok(array) => array,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_selection style array failed");
+                    return;
+                }
+            };
+            if let Err(error) = env.set_int_array_region(&style_array, 0, &styles) {
+                tracing::error!(?error, "jni: show_selection populate styles failed");
+                return;
+            }
+            let image_array = match env.new_object_array(
+                image_names.len() as i32,
+                &string_class,
+                JObject::null(),
+            ) {
+                Ok(array) => array,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_selection image array failed");
+                    return;
+                }
+            };
+            for (index, name) in image_names.iter().enumerate() {
+                let name_value = match env.new_string(name) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        tracing::error!(?error, "jni: show_selection image name string failed");
+                        return;
+                    }
+                };
+                if let Err(error) =
+                    env.set_object_array_element(&image_array, index as i32, name_value)
+                {
+                    tracing::error!(?error, "jni: show_selection set image name failed");
+                    return;
+                }
+            }
+            if let Err(error) = env.call_static_method(
+                class,
+                "showSelection",
+                "(ILjava/lang/String;Ljava/lang/String;[Ljava/lang/String;[I[Ljava/lang/String;)V",
+                &[
+                    JValue::Int(id as i32),
+                    JValue::Object(&title_value),
+                    JValue::Object(&message_value),
+                    JValue::Object(&label_array),
+                    JValue::Object(&style_array),
+                    JValue::Object(&image_array),
+                ],
+            ) {
+                tracing::error!(?error, "jni: showSelection call failed");
+            }
+        });
     });
 }
 
@@ -643,34 +790,103 @@ pub fn show_list_picker(id: u32, title: &str, message: &str, items: &[ListPicker
         .collect();
     jni_call("show_list_picker", move || {
         with_main_activity_class("show_list_picker", |env, class| {
-            let title_value = env.new_string(&title).expect("title");
-            let message_value = env.new_string(&message).expect("message");
-            let string_class = env.find_class("java/lang/String").expect("String");
-            let label_array = env
-                .new_object_array(labels.len() as i32, &string_class, JObject::null())
-                .expect("labels");
+            let title_value = match env.new_string(&title) {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_list_picker title string failed");
+                    return;
+                }
+            };
+            let message_value = match env.new_string(&message) {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_list_picker message string failed");
+                    return;
+                }
+            };
+            let string_class = match env.find_class("java/lang/String") {
+                Ok(class) => class,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_list_picker find String class failed");
+                    return;
+                }
+            };
+            let label_array =
+                match env.new_object_array(labels.len() as i32, &string_class, JObject::null()) {
+                    Ok(array) => array,
+                    Err(error) => {
+                        tracing::error!(?error, "jni: show_list_picker label array failed");
+                        return;
+                    }
+                };
             for (index, label) in labels.iter().enumerate() {
-                let label_value = env.new_string(label).expect("label");
-                env.set_object_array_element(&label_array, index as i32, label_value)
-                    .expect("set label");
+                let label_value = match env.new_string(label) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        tracing::error!(?error, "jni: show_list_picker label string failed");
+                        return;
+                    }
+                };
+                if let Err(error) =
+                    env.set_object_array_element(&label_array, index as i32, label_value)
+                {
+                    tracing::error!(?error, "jni: show_list_picker set label failed");
+                    return;
+                }
             }
-            let subtitle_array = env
-                .new_object_array(subtitles.len() as i32, &string_class, JObject::null())
-                .expect("subtitles");
+            let subtitle_array = match env.new_object_array(
+                subtitles.len() as i32,
+                &string_class,
+                JObject::null(),
+            ) {
+                Ok(array) => array,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_list_picker subtitle array failed");
+                    return;
+                }
+            };
             for (index, subtitle) in subtitles.iter().enumerate() {
-                let subtitle_value = env.new_string(subtitle).expect("subtitle");
-                env.set_object_array_element(&subtitle_array, index as i32, subtitle_value)
-                    .expect("set subtitle");
+                let subtitle_value = match env.new_string(subtitle) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        tracing::error!(?error, "jni: show_list_picker subtitle string failed");
+                        return;
+                    }
+                };
+                if let Err(error) =
+                    env.set_object_array_element(&subtitle_array, index as i32, subtitle_value)
+                {
+                    tracing::error!(?error, "jni: show_list_picker set subtitle failed");
+                    return;
+                }
             }
-            let image_array = env
-                .new_object_array(image_names.len() as i32, &string_class, JObject::null())
-                .expect("images");
+            let image_array = match env.new_object_array(
+                image_names.len() as i32,
+                &string_class,
+                JObject::null(),
+            ) {
+                Ok(array) => array,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_list_picker image array failed");
+                    return;
+                }
+            };
             for (index, image) in image_names.iter().enumerate() {
-                let image_value = env.new_string(image).expect("image");
-                env.set_object_array_element(&image_array, index as i32, image_value)
-                    .expect("set image");
+                let image_value = match env.new_string(image) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        tracing::error!(?error, "jni: show_list_picker image string failed");
+                        return;
+                    }
+                };
+                if let Err(error) =
+                    env.set_object_array_element(&image_array, index as i32, image_value)
+                {
+                    tracing::error!(?error, "jni: show_list_picker set image failed");
+                    return;
+                }
             }
-            env.call_static_method(
+            if let Err(error) = env.call_static_method(
                 class,
                 "showListPicker",
                 "(ILjava/lang/String;Ljava/lang/String;[Ljava/lang/String;[Ljava/lang/String;[Ljava/lang/String;)V",
@@ -682,8 +898,9 @@ pub fn show_list_picker(id: u32, title: &str, message: &str, items: &[ListPicker
                     JValue::Object(&subtitle_array),
                     JValue::Object(&image_array),
                 ],
-            )
-            .expect("showListPicker");
+            ) {
+                tracing::error!(?error, "jni: showListPicker call failed");
+            }
         });
     });
 }
@@ -771,6 +988,223 @@ fn present_buttons(
             );
         }
     });
+}
+
+// =============================================================================
+// Delta notification bridge (push token registration + in-app banners)
+// =============================================================================
+
+/// Acquire a `JNIEnv` for the current thread plus the `MainActivity` class, then
+/// run `f`. Logs and clears any pending Java exception. Keeps the Delta bridge
+/// calls below concise instead of repeating the JVM/env/class boilerplate.
+fn with_main_activity<R>(
+    name: &'static str,
+    f: impl FnOnce(&mut JNIEnv, &JClass) -> Result<R, jni::errors::Error>,
+) -> Option<R> {
+    let jvm = match JVM.lock() {
+        Ok(guard) => guard.as_ref()?.clone(),
+        Err(e) => {
+            tracing::error!(name, "jni: lock JVM failed: {:?}", e);
+            return None;
+        }
+    };
+
+    let mut env = match jvm.get_env() {
+        Ok(env) => env,
+        Err(_) => match jvm.attach_current_thread_as_daemon() {
+            Ok(env) => env,
+            Err(e) => {
+                tracing::error!(name, "jni: attach thread failed: {:?}", e);
+                return None;
+            }
+        },
+    };
+
+    let class = match env.find_class("dev/zedra/app/MainActivity") {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(name, "jni: find MainActivity failed: {:?}", e);
+            if env.exception_check().unwrap_or(false) {
+                env.exception_describe().ok();
+                env.exception_clear().ok();
+            }
+            return None;
+        }
+    };
+
+    match f(&mut env, &class) {
+        Ok(value) => Some(value),
+        Err(e) => {
+            tracing::error!(name, "jni: call failed: {:?}", e);
+            if env.exception_check().unwrap_or(false) {
+                env.exception_describe().ok();
+                env.exception_clear().ok();
+            }
+            None
+        }
+    }
+}
+
+/// Convert a (possibly null) Java string into an owned Rust `String`.
+fn jstring_to_string(env: &mut JNIEnv, value: &jni::objects::JString) -> Option<String> {
+    if value.is_null() {
+        return None;
+    }
+    env.get_string(value).ok().map(|value| value.into())
+}
+
+/// Present a native in-app notification banner.
+pub fn show_native_notification(id: u32, options: &NativeNotificationOptions) {
+    let title = options.title.clone();
+    let message = options.message.clone().unwrap_or_default();
+    let kind = options.kind.as_i32();
+    let duration_secs = options.duration_secs;
+    let auto_close = options.auto_close;
+    jni_call("show_native_notification", move || {
+        with_main_activity("show_native_notification", |env, class| {
+            let title = env.new_string(&title)?;
+            let message = env.new_string(&message)?;
+            env.call_static_method(
+                class,
+                "showNativeNotification",
+                "(ILjava/lang/String;Ljava/lang/String;IFZ)V",
+                &[
+                    (id as jint).into(),
+                    (&title).into(),
+                    (&message).into(),
+                    (kind as jint).into(),
+                    (duration_secs as jfloat).into(),
+                    auto_close.into(),
+                ],
+            )?;
+            Ok(())
+        });
+    });
+}
+
+/// Request the FCM registration token for Delta push notifications.
+///
+/// The result is delivered asynchronously via `nativeDeltaPushTokenResult` or
+/// `nativeDeltaPushTokenError`.
+pub fn request_delta_push_token(id: u32) {
+    jni_call("request_delta_push_token", move || {
+        with_main_activity("request_delta_push_token", |env, class| {
+            env.call_static_method(
+                class,
+                "requestDeltaPushToken",
+                "(I)V",
+                &[(id as jint).into()],
+            )?;
+            Ok(())
+        });
+    });
+}
+
+/// Delivered from `MainActivity` once the FCM token resolves.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeDeltaPushTokenResult(
+    mut env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+    provider: jni::objects::JString,
+    token: jni::objects::JString,
+    environment: jni::objects::JString,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    let provider = jstring_to_string(&mut env, &provider).unwrap_or_else(|| "fcm".to_string());
+    let token = jstring_to_string(&mut env, &token).unwrap_or_default();
+    if token.is_empty() {
+        platform_bridge::dispatch_delta_push_token_error(
+            callback_id as u32,
+            "Push registration did not return a token".to_string(),
+        );
+        return;
+    }
+    let environment = jstring_to_string(&mut env, &environment).filter(|value| !value.is_empty());
+    platform_bridge::dispatch_delta_push_token_result(
+        callback_id as u32,
+        provider,
+        token,
+        environment,
+    );
+}
+
+/// Delivered from `MainActivity` when FCM token registration fails.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeDeltaPushTokenError(
+    mut env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+    message: jni::objects::JString,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    let message = jstring_to_string(&mut env, &message)
+        .unwrap_or_else(|| "Push registration failed".to_string());
+    platform_bridge::dispatch_delta_push_token_error(callback_id as u32, message);
+}
+
+/// Trigger Google Sign-In via the Android Credential Manager.
+///
+/// The result is delivered asynchronously via `nativeDeltaGoogleSignInResult`
+/// or `nativeDeltaGoogleSignInError`.
+pub fn start_delta_google_sign_in(id: u32) {
+    jni_call("start_delta_google_sign_in", move || {
+        with_main_activity("start_delta_google_sign_in", |env, class| {
+            env.call_static_method(
+                class,
+                "startDeltaGoogleSignIn",
+                "(I)V",
+                &[(id as jint).into()],
+            )?;
+            Ok(())
+        });
+    });
+}
+
+/// Delivered from `MainActivity` once Google Sign-In succeeds.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeDeltaGoogleSignInResult(
+    mut env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+    id_token: jni::objects::JString,
+    email: jni::objects::JString,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    let id_token = match jstring_to_string(&mut env, &id_token) {
+        Some(t) if !t.is_empty() => t,
+        _ => {
+            platform_bridge::dispatch_delta_google_sign_in_error(
+                callback_id as u32,
+                "Google sign-in did not return an ID token".to_string(),
+            );
+            return;
+        }
+    };
+    let email = jstring_to_string(&mut env, &email).filter(|e| !e.is_empty());
+    platform_bridge::dispatch_delta_google_sign_in_result(callback_id as u32, id_token, email);
+}
+
+/// Delivered from `MainActivity` when Google Sign-In fails.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeDeltaGoogleSignInError(
+    mut env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+    message: jni::objects::JString,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    let message = jstring_to_string(&mut env, &message)
+        .unwrap_or_else(|| "Google sign-in failed".to_string());
+    platform_bridge::dispatch_delta_google_sign_in_error(callback_id as u32, message);
 }
 
 pub fn show_text_input(id: u32, title: &str, placeholder: &str, initial_value: &str) {
@@ -1022,6 +1456,17 @@ pub fn trigger_haptic(feedback: HapticFeedback) {
             if let Err(e) = env.call_static_method(class, "triggerHaptic", "(I)V", &[(kind).into()])
             {
                 tracing::error!("jni: triggerHaptic failed: {:?}", e);
+            }
+        });
+    });
+}
+
+pub fn play_sound(sound: SoundEffect) {
+    let kind = sound.to_i32();
+    jni_call("play_sound", move || {
+        with_main_activity_class("play_sound", |env, class| {
+            if let Err(e) = env.call_static_method(class, "playSound", "(I)V", &[(kind).into()]) {
+                tracing::error!("jni: playSound failed: {:?}", e);
             }
         });
     });

@@ -6,12 +6,7 @@ use zedra_rpc::proto::*;
 
 use crate::agent::home_path;
 
-const SKILL_NAMES: &[&str] = &[
-    "zedra-start",
-    "zedra-status",
-    "zedra-stop",
-    "zedra-terminal",
-];
+const SKILL_NAMES: &[&str] = &["zedra-start"];
 
 /// Temporary kill-switch for hooks setup/detection in release builds.
 /// Flip to `true` (or remove the gate) when re-enabling.
@@ -19,11 +14,7 @@ pub const fn hooks_enabled() -> bool {
     cfg!(debug_assertions)
 }
 
-pub fn setup_summary(
-    kind: ManagedAgentKind,
-    cli_available: bool,
-    workdir: &Path,
-) -> AgentSetupSummary {
+pub fn setup_summary(kind: AgentKind, cli_available: bool, workdir: &Path) -> AgentSetupSummary {
     if !cli_available {
         return AgentSetupSummary {
             state: AgentSetupState::MissingCli,
@@ -36,7 +27,7 @@ pub fn setup_summary(
 
     let mut error = None;
     let (skills_installed, plugin_installed, hooks_installed) = match kind {
-        ManagedAgentKind::Claude => {
+        AgentKind::Claude => {
             let status = claude_plugin_status();
             error = status.error;
             (
@@ -46,20 +37,24 @@ pub fn setup_summary(
                     && (status.hooks_installed || claude_local_hooks_installed(workdir)),
             )
         }
-        ManagedAgentKind::Codex => (
-            skills_installed_at(&home_path(&[".agents", "skills"])),
-            false,
-            hooks_enabled() && (codex_hooks_installed() || codex_local_hooks_installed(workdir)),
-        ),
-        ManagedAgentKind::OpenCode => (
+        AgentKind::Codex => {
+            let plugin_installed = codex_plugin_installed();
+            (
+                false,
+                plugin_installed,
+                hooks_enabled()
+                    && (codex_hooks_installed() || codex_local_hooks_installed(workdir)),
+            )
+        }
+        AgentKind::OpenCode => (
             skills_installed_at(&home_path(&[".config", "opencode", "skills"])),
             opencode_plugin_installed(),
             hooks_enabled()
                 && (opencode_hooks_installed() || opencode_local_hooks_installed(workdir)),
         ),
-        ManagedAgentKind::Pi => (false, false, false),
+        AgentKind::Pi => (false, false, hooks_enabled() && pi_hooks_installed()),
         // Hermes has its own hook system, but Zedra doesn't install into it yet.
-        ManagedAgentKind::Hermes => (false, false, false),
+        AgentKind::Hermes => (false, false, false),
     };
     let state = if error.is_some() {
         AgentSetupState::Error
@@ -155,6 +150,26 @@ fn codex_hooks_installed() -> bool {
         .unwrap_or(false)
 }
 
+fn codex_plugin_installed() -> bool {
+    std::fs::read_to_string(home_path(&[".codex", "config.toml"]))
+        .map(|contents| codex_plugin_installed_from_config(&contents))
+        .unwrap_or(false)
+}
+
+pub fn codex_plugin_installed_from_config(contents: &str) -> bool {
+    let mut in_plugin_section = false;
+    for line in contents.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_plugin_section = line == r#"[plugins."zedra@zedra"]"#;
+            continue;
+        }
+        if in_plugin_section && line == "enabled = true" {
+            return true;
+        }
+    }
+    false
+}
+
 fn claude_local_hooks_installed(workdir: &Path) -> bool {
     hook_file_mentions_zedra(&workdir.join(".claude/settings.local.json"))
 }
@@ -164,10 +179,7 @@ fn codex_local_hooks_installed(workdir: &Path) -> bool {
 }
 
 fn opencode_plugin_installed() -> bool {
-    let plugin_dir = home_path(&[".config", "opencode", "plugins"]);
-    ["zedra.js", "zedra.ts", "zedra.mjs"]
-        .iter()
-        .any(|name| plugin_dir.join(name).is_file())
+    home_path(&[".config", "opencode", "plugins", "zedra-agent-hooks.js"]).is_file()
 }
 
 fn opencode_hooks_installed() -> bool {
@@ -176,6 +188,15 @@ fn opencode_hooks_installed() -> bool {
 
 fn opencode_local_hooks_installed(workdir: &Path) -> bool {
     hook_file_mentions_zedra(&workdir.join(".opencode/plugins/zedra.js"))
+}
+
+fn pi_hooks_installed() -> bool {
+    hook_file_mentions_zedra(&home_path(&[
+        ".pi",
+        "agent",
+        "extensions",
+        "zedra-agent-hooks.ts",
+    ]))
 }
 
 fn hook_file_mentions_zedra(path: &Path) -> bool {

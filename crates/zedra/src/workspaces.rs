@@ -5,12 +5,16 @@ use tracing::*;
 use zedra_rpc::ZedraPairingTicket;
 use zedra_session::{ConnectPhase, signer::ClientSigner};
 
+use crate::delta::DeltaState;
 use crate::pending::PendingSlot;
 use crate::platform_bridge::{self, HapticFeedback};
 use crate::workspace::{Workspace, WorkspaceEvent};
 use crate::workspace_state::WorkspaceState;
 
 static PENDING_TICKET: PendingSlot<ZedraPairingTicket> = PendingSlot::new();
+
+// (endpoint_addr, terminal_id) from a notification deeplink tap.
+static PENDING_WORKSPACE_NAV: PendingSlot<(String, Option<String>)> = PendingSlot::new();
 
 #[derive(Clone, Debug)]
 pub enum WorkspacesEvent {
@@ -38,11 +42,12 @@ pub struct Workspaces {
     states: Vec<Entity<WorkspaceState>>,
     active_index: Option<usize>,
     signer: Option<Arc<dyn ClientSigner>>,
+    delta_state: Entity<DeltaState>,
     _subscriptions: Vec<(Entity<Workspace>, Subscription)>,
 }
 
 impl Workspaces {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(delta_state: Entity<DeltaState>, cx: &mut Context<Self>) -> Self {
         let signer = load_client_signer();
 
         let states = WorkspaceState::load()
@@ -60,6 +65,7 @@ impl Workspaces {
             entries: Vec::new(),
             states,
             signer,
+            delta_state,
             active_index: None,
             _subscriptions: Vec::new(),
         };
@@ -171,10 +177,11 @@ impl Workspaces {
         cx: &mut Context<Self>,
     ) {
         let addr = iroh::EndpointAddr::from(ticket.endpoint_id);
-        let encoded_addr = match zedra_rpc::pairing::encode_endpoint_addr(&addr) {
+        // Identity string goes through the shared id-only encoder; `addr` is kept for dialing.
+        let encoded_addr = match zedra_rpc::encode_endpoint_identity(ticket.endpoint_id) {
             Ok(s) => s,
             Err(e) => {
-                error!("Failed to encode endpoint address: {e}");
+                error!("Failed to encode endpoint identity: {e}");
                 return;
             }
         };
@@ -210,6 +217,91 @@ impl Workspaces {
     pub fn process_pending_ticket(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ticket) = PENDING_TICKET.take() {
             self.connect_ticket(ticket, window, cx);
+        }
+    }
+
+    /// Queue a workspace navigation from a deeplink (deferred until window is ready).
+    /// `terminal_id` is optional: `None` navigates to the workspace only.
+    pub fn navigate_workspace_deferred(
+        &mut self,
+        endpoint_addr: String,
+        terminal_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        PENDING_WORKSPACE_NAV.set((endpoint_addr, terminal_id));
+        cx.notify();
+    }
+
+    pub fn has_pending_workspace_nav() -> bool {
+        PENDING_WORKSPACE_NAV.has_pending()
+    }
+
+    /// Process a pending workspace nav. Call this when window is available.
+    pub fn process_pending_workspace_nav(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((endpoint_addr, terminal_id)) = PENDING_WORKSPACE_NAV.take() else {
+            return;
+        };
+
+        // Workspace already open for this endpoint: switch to it (connecting if stale),
+        // then open the requested terminal if one was specified.
+        if let Some(index) = self.entry_index_by_endpoint_addr(&endpoint_addr, cx) {
+            self.switch_to(index, cx);
+            platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+            cx.emit(WorkspacesEvent::Connected { index });
+
+            let Some(entry) = self.entries.get(index).cloned() else {
+                return;
+            };
+            entry.update(cx, |ws, cx| {
+                // Only restart genuinely stale entries. In-flight connecting phases
+                // are active and will resolve on their own; restarting them would
+                // tear down a connection that is mid-handshake (AGENTS.md invariant:
+                // only Failed/Disconnected are stale reconnect candidates).
+                let phase = ws.workspace_state(cx).connect_phase.clone();
+                let stale = matches!(
+                    phase,
+                    None | Some(ConnectPhase::Disconnected) | Some(ConnectPhase::Failed(_))
+                );
+                if stale {
+                    ws.restart_connection(cx);
+                }
+                if let Some(terminal_id) = terminal_id {
+                    ws.open_terminal_after_sync(terminal_id, cx);
+                }
+            });
+            return;
+        }
+
+        // Saved (registered) workspace: reconnect, then queue the terminal if specified.
+        let state_index = self
+            .states
+            .iter()
+            .position(|s| s.read(cx).endpoint_addr == endpoint_addr);
+        let Some(state_index) = state_index else {
+            warn!(
+                "navigate_workspace: no workspace or saved state for endpoint {:?}",
+                endpoint_addr
+            );
+            return;
+        };
+
+        self.connect_saved(state_index, window, cx);
+
+        // connect_saved can early-return without pushing an entry (bad index, decode
+        // error), so re-resolve by endpoint instead of trusting entries.last().
+        let Some(index) = self.entry_index_by_endpoint_addr(&endpoint_addr, cx) else {
+            warn!(
+                "navigate_workspace: connect_saved did not open an entry for endpoint {:?}",
+                endpoint_addr
+            );
+            return;
+        };
+        if let Some(terminal_id) = terminal_id {
+            if let Some(entry) = self.entries.get(index).cloned() {
+                entry.update(cx, |ws, cx| {
+                    ws.open_terminal_after_sync(terminal_id, cx);
+                });
+            }
         }
     }
 
@@ -348,7 +440,9 @@ impl Workspaces {
         });
 
         // Create workspace entity
-        let workspace = cx.new(|cx| Workspace::new(workspace_state.clone(), window, cx));
+        let delta_state = self.delta_state.clone();
+        let workspace =
+            cx.new(|cx| Workspace::new(workspace_state.clone(), delta_state, window, cx));
         let sub = self.subscribe_workspace_event(&workspace, cx);
         self._subscriptions.push((workspace.clone(), sub));
 

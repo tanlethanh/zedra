@@ -17,6 +17,7 @@ pub const SPACING_XS: f32 = 4.0;
 pub const SPACING_SM: f32 = 8.0;
 pub const SPACING_MD: f32 = 12.0;
 pub const SPACING_LG: f32 = 16.0;
+pub const SPACING_XL: f32 = 20.0;
 
 /// Horizontal padding for subscreen pages (manage agents, agent history).
 /// `SPACING_MD + SPACING_XS` (~4px extra) lines scroll content up with the workspace

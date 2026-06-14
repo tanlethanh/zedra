@@ -23,6 +23,7 @@ google-services.json
 
 # iOS — binary build artifacts (rebuilt by scripts/build-ios.sh)
 ios/ZedraFFI.xcframework/**/*.a
+ios/build
 GoogleService-Info.plist
 
 # CocoaPods — generated artifacts, not committed (Podfile.lock IS committed)

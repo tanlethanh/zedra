@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status bar notification icon. Android masks the small icon by its ALPHA channel only:
+     the background must be transparent and the glyph opaque white, or the whole icon
+     renders as a solid white square. Keep this a white-on-transparent silhouette.
+     Source: Downloads/zedra-white (1).svg (padding already baked into the viewport). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="128"
+    android:viewportHeight="128">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M7.78232,64.0106L89.092,0.177139L69.2966,41.3242L122.666,41.3242L37.7902,127.452L61.6762,64.0107L7.78232,64.0106Z" />
+</vector>

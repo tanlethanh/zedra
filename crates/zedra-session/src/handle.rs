@@ -32,6 +32,7 @@ struct SessionHandleInner {
     observer_rpc_supported: AtomicBool,
     docs_tree_rpc_supported: AtomicBool,
     fs_search_rpc_supported: AtomicBool,
+    set_app_state_rpc_supported: AtomicBool,
 }
 
 impl Drop for SessionHandleInner {
@@ -67,6 +68,7 @@ impl SessionHandle {
             observer_rpc_supported: AtomicBool::new(true),
             docs_tree_rpc_supported: AtomicBool::new(true),
             fs_search_rpc_supported: AtomicBool::new(true),
+            set_app_state_rpc_supported: AtomicBool::new(true),
         }))
     }
 
@@ -474,6 +476,21 @@ impl SessionHandle {
         incompatible
     }
 
+    fn downgrade_set_app_state_rpc(&self, err: &str) -> bool {
+        let msg = err.to_lowercase();
+        let incompatible = msg.contains("unknown variant")
+            || msg.contains("deserialize")
+            || msg.contains("decode")
+            || msg.contains("invalid type");
+        if incompatible {
+            self.0
+                .set_app_state_rpc_supported
+                .store(false, Ordering::Release);
+            tracing::warn!("SetAppState RPC unsupported, disabling: {}", err);
+        }
+        incompatible
+    }
+
     // ─── RPC: git ────────────────────────────────────────────────────────────
 
     pub async fn git_status(&self) -> Result<GitStatusResult> {
@@ -616,7 +633,7 @@ impl SessionHandle {
     }
 
     /// Read-only config/memory files for an agent's detail view (Hermes today).
-    pub async fn agent_files(&self, kind: ManagedAgentKind) -> Result<Vec<AgentFile>> {
+    pub async fn agent_files(&self, kind: AgentKind) -> Result<Vec<AgentFile>> {
         let result: AgentFilesResult = self.call(AgentFilesReq { kind }).await?;
         if let Some(e) = result.error {
             return Err(anyhow::anyhow!(e));
@@ -624,9 +641,56 @@ impl SessionHandle {
         Ok(result.files)
     }
 
+    /// Notify the host of the app's foreground/background state.
+    /// Fire-and-forget: errors are logged but not surfaced.
+    pub async fn notify_app_state(&self, in_foreground: bool) {
+        if !self.0.set_app_state_rpc_supported.load(Ordering::Acquire) {
+            return;
+        }
+        let result: Result<SetAppStateResult> = self.call(SetAppStateReq { in_foreground }).await;
+        if let Err(e) = result {
+            // Stop re-issuing the RPC once the host proves it cannot handle it.
+            if !self.downgrade_set_app_state_rpc(&e.to_string()) {
+                tracing::debug!(error = %e, "notify_app_state failed");
+            }
+        }
+    }
+
+    pub async fn set_client_delta_info(
+        &self,
+        delta_url: String,
+        stack_id: uuid::Uuid,
+        client_node_id: uuid::Uuid,
+        host_node_id: uuid::Uuid,
+    ) -> Result<()> {
+        let result: Result<SetClientDeltaInfoResult> = self
+            .call(SetClientDeltaInfoReq {
+                delta_url,
+                stack_id,
+                client_node_id,
+                host_node_id,
+            })
+            .await;
+        if let Err(e) = result {
+            tracing::debug!(error = %e, "set_client_delta_info failed");
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    pub async fn clear_client_delta_info(&self) -> Result<()> {
+        let result: Result<ClearClientDeltaInfoResult> =
+            self.call(ClearClientDeltaInfoReq {}).await;
+        if let Err(e) = result {
+            tracing::debug!(error = %e, "clear_client_delta_info failed");
+            return Err(e);
+        }
+        Ok(())
+    }
+
     pub async fn agent_sessions(
         &self,
-        kind: ManagedAgentKind,
+        kind: AgentKind,
         refresh: bool,
         limit: u32,
     ) -> Result<Vec<AgentSessionSummary>> {
@@ -645,7 +709,7 @@ impl SessionHandle {
 
     pub async fn agent_resume_session(
         &self,
-        kind: ManagedAgentKind,
+        kind: AgentKind,
         session_id: String,
         cols: u16,
         rows: u16,

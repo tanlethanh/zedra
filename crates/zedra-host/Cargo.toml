@@ -34,19 +34,21 @@ portable-pty = "0.8"
 qrcode = "0.14"
 
 # CLI
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 # Serialization
 base64-url.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["std"] }
+data-encoding.workspace = true
 chrono.workspace = true
 
 # Random/crypto
 rand.workspace = true
 ed25519-dalek.workspace = true
 sha2.workspace = true
-uuid = { version = "1", features = ["v4"] }
+hex.workspace = true
+uuid = { version = "1", features = ["v4", "serde"] }
 
 # Archive extraction (for self-update)
 flate2 = "1"

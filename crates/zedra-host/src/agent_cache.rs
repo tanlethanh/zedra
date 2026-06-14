@@ -21,10 +21,10 @@ struct CachedAgentData {
     workdir: Option<PathBuf>,
     installed: Option<AgentInstalledListResult>,
     agents: Option<AgentListResult>,
-    cli_versions: HashMap<ManagedAgentKind, AgentCliSummary>,
-    account_usage: HashMap<ManagedAgentKind, AgentUsageSnapshot>,
-    account_plans: HashMap<ManagedAgentKind, Vec<AgentInfoField>>,
-    sessions: HashMap<ManagedAgentKind, CachedSessions>,
+    cli_versions: HashMap<AgentKind, AgentCliSummary>,
+    account_usage: HashMap<AgentKind, AgentUsageSnapshot>,
+    account_plans: HashMap<AgentKind, Vec<AgentInfoField>>,
+    sessions: HashMap<AgentKind, CachedSessions>,
 }
 
 #[derive(Default)]
@@ -118,9 +118,9 @@ impl AgentCache {
 
     pub async fn sessions(
         self: &Arc<Self>,
-        kind: ManagedAgentKind,
+        kind: AgentKind,
         workdir: &Path,
-        session: Option<&Arc<ServerSession>>,
+        _session: Option<&Arc<ServerSession>>,
         limit: u32,
         refresh: bool,
     ) -> AgentSessionsResult {
@@ -129,7 +129,7 @@ impl AgentCache {
         } else {
             self.ensure_sessions(kind, workdir, limit).await;
         }
-        if let Some(mut result) = self
+        if let Some(result) = self
             .inner
             .lock()
             .await
@@ -137,7 +137,6 @@ impl AgentCache {
             .get(&kind)
             .map(|cached| cached.result.clone())
         {
-            agent::merge_live_into_sessions(&mut result.sessions, kind, session).await;
             return result;
         }
         AgentSessionsResult {
@@ -194,7 +193,7 @@ impl AgentCache {
         inner.agents = Some(agents);
     }
 
-    async fn refresh_sessions(&self, kind: ManagedAgentKind, workdir: &Path, limit: u32) {
+    async fn refresh_sessions(&self, kind: AgentKind, workdir: &Path, limit: u32) {
         let effective_limit = agent::agent_session_limit(limit) as u32;
         let workdir = workdir.to_path_buf();
         let scan_workdir = workdir.clone();
@@ -243,7 +242,7 @@ impl AgentCache {
         self.inner.lock().await.agents.is_some()
     }
 
-    async fn ensure_sessions(&self, kind: ManagedAgentKind, workdir: &Path, limit: u32) -> bool {
+    async fn ensure_sessions(&self, kind: AgentKind, workdir: &Path, limit: u32) -> bool {
         // A cache hit must cover the requested limit: a scan run at a smaller
         // limit would silently truncate the result for a larger request.
         let needed = agent::agent_session_limit(limit) as u32;
@@ -288,7 +287,7 @@ impl AgentCache {
 
     async fn agent_list_result(
         self: &Arc<Self>,
-        session: Option<&Arc<ServerSession>>,
+        _session: Option<&Arc<ServerSession>>,
     ) -> AgentListResult {
         let (result, versions, usage, plans) = {
             let inner = self.inner.lock().await;
@@ -308,14 +307,13 @@ impl AgentCache {
         agent::apply_cached_cli_versions(&mut result.agents, &versions);
         agent::apply_cached_account_usage(&mut result.agents, &usage);
         agent::apply_cached_account_plans(&mut result.agents, &plans);
-        agent::merge_live_into_agent_list(&mut result.agents, session).await;
         result
     }
 
     async fn cached_agent_summary(
         self: &Arc<Self>,
-        kind: ManagedAgentKind,
-        session: Option<&Arc<ServerSession>>,
+        kind: AgentKind,
+        _session: Option<&Arc<ServerSession>>,
     ) -> Option<AgentSummary> {
         let (mut agents, versions, usage, plans) = {
             let inner = self.inner.lock().await;
@@ -330,10 +328,7 @@ impl AgentCache {
         agent::apply_cached_cli_versions(&mut agents, &versions);
         agent::apply_cached_account_usage(&mut agents, &usage);
         agent::apply_cached_account_plans(&mut agents, &plans);
-        let summary = agents.into_iter().find(|agent| agent.kind == kind)?;
-        let mut agents = [summary];
-        agent::merge_live_into_agent_list(&mut agents, session).await;
-        Some(agents.into_iter().next()?)
+        agents.into_iter().find(|agent| agent.kind == kind)
     }
 
     async fn request_version_refresh(self: &Arc<Self>, session: Option<Arc<ServerSession>>) {
@@ -487,8 +482,7 @@ impl AgentCache {
             let mut coord = self.usage_refresh.lock().await;
             coord.pending_sessions.drain().collect::<Vec<_>>()
         };
-        let mut by_id: HashMap<String, Arc<ServerSession>> =
-            pending.into_iter().map(|(id, s)| (id, s)).collect();
+        let mut by_id: HashMap<String, Arc<ServerSession>> = pending.into_iter().collect();
         if let Some(registry) = self.registry.lock().await.as_ref().and_then(Weak::upgrade) {
             for session in registry.sessions_with_event_subscribers().await {
                 by_id.insert(session.id.clone(), session);
@@ -502,8 +496,7 @@ impl AgentCache {
             let mut coord = self.version_refresh.lock().await;
             coord.pending_sessions.drain().collect::<Vec<_>>()
         };
-        let mut by_id: HashMap<String, Arc<ServerSession>> =
-            pending.into_iter().map(|(id, s)| (id, s)).collect();
+        let mut by_id: HashMap<String, Arc<ServerSession>> = pending.into_iter().collect();
 
         if let Some(registry) = self.registry.lock().await.as_ref().and_then(Weak::upgrade) {
             for session in registry.sessions_with_event_subscribers().await {

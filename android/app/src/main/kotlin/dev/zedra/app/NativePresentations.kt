@@ -126,6 +126,7 @@ object NativePresentations {
             .apply {
                 if (!title.isNullOrBlank()) setTitle(title)
                 if (!message.isNullOrBlank()) setMessage(message)
+                setCancelable(true)
                 setOnCancelListener { MainActivity.nativeAlertDismiss(callbackId) }
                 setPositiveButton(safeLabels[0]) { _, _ ->
                     MainActivity.nativeAlertResult(callbackId, 0)
@@ -142,21 +143,18 @@ object NativePresentations {
                 }
             }
             .create()
-        dialog.setOnShowListener {
-            applyDialogTheme(dialog)
-            safeStyles.forEachIndexed { index, style ->
-                val which = when (index) {
-                    0 -> android.content.DialogInterface.BUTTON_POSITIVE
-                    1 -> android.content.DialogInterface.BUTTON_NEGATIVE
-                    2 -> android.content.DialogInterface.BUTTON_NEUTRAL
-                    else -> 0
-                }
-                if (which != 0) {
-                    dialog.getButton(which)?.setTextColor(alertButtonColor(style))
-                }
-            }
-        }
+        dialog.setCanceledOnTouchOutside(false)
         dialog.show()
+        applyDialogTheme(dialog)
+        safeStyles.forEachIndexed { index, style ->
+            val which = when (index) {
+                0 -> android.content.DialogInterface.BUTTON_POSITIVE
+                1 -> android.content.DialogInterface.BUTTON_NEGATIVE
+                2 -> android.content.DialogInterface.BUTTON_NEUTRAL
+                else -> return@forEachIndexed
+            }
+            dialog.getButton(which)?.setTextColor(alertButtonColor(style))
+        }
     }
 
     @JvmStatic
@@ -166,6 +164,7 @@ object NativePresentations {
         message: String?,
         labels: Array<String>?,
         styles: IntArray?,
+        imageNames: Array<String?>,
     ) = onUi {
         val safeLabels = labels?.takeIf { it.isNotEmpty() } ?: arrayOf("OK")
         val safeStyles = styles
@@ -183,19 +182,13 @@ object NativePresentations {
                 addView(selectionHeader(message, primary = title.isNullOrBlank()))
             }
             safeLabels.forEachIndexed { index, label ->
-                addView(TextView(activity).apply {
-                    text = label
-                    textSize = 16f
+                val imageName = imageNames?.getOrNull(index)
+                val iconRes = selectionIconRes(imageName)
+                val row = LinearLayout(activity).apply {
+                    orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
-                    minHeight = dp(56f)
+                    minimumHeight = dp(56f)
                     setPadding(dp(24f), 0, dp(24f), 0)
-                    setTextColor(
-                        if (safeStyles[index] == 2) {
-                            nativeTheme.accentRed
-                        } else {
-                            nativeTheme.textPrimary
-                        }
-                    )
                     setSelectableItemBackground(this)
                     setOnClickListener {
                         if (safeStyles[index] == 1) {
@@ -205,7 +198,29 @@ object NativePresentations {
                         }
                         dialog.dismiss()
                     }
+                }
+                if (iconRes != 0) {
+                    row.addView(ImageView(activity).apply {
+                        layoutParams = LinearLayout.LayoutParams(dp(20f), dp(20f)).apply {
+                            marginEnd = dp(14f)
+                        }
+                        setImageResource(iconRes)
+                        imageTintList = ColorStateList.valueOf(nativeTheme.textPrimary)
+                    })
+                }
+                row.addView(TextView(activity).apply {
+                    text = label
+                    textSize = 16f
+                    setTextColor(
+                        if (safeStyles[index] == 2) nativeTheme.accentRed
+                        else nativeTheme.textPrimary
+                    )
                 }, LinearLayout.LayoutParams(
+                    0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    1f,
+                ))
+                addView(row, LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                 ))
@@ -220,8 +235,6 @@ object NativePresentations {
         }
         dialog = MaterialAlertDialogBuilder(activity)
             .apply {
-                // Keep the header and list in one Material custom view so
-                // the dialog title/message panels cannot create a false gap.
                 setView(content)
                 setOnCancelListener { MainActivity.nativeSelectionDismiss(callbackId) }
             }
@@ -679,12 +692,12 @@ object NativePresentations {
     private fun applyDialogTheme(dialog: AlertDialog) {
         dialog.window?.setBackgroundDrawable(roundedBackground(nativeTheme.overlay, 28f))
         dialog.getButton(android.content.DialogInterface.BUTTON_POSITIVE)
-            ?.setTextColor(nativeTheme.textSecondary)
+            ?.setTextColor(nativeTheme.textPrimary)
         dialog.getButton(android.content.DialogInterface.BUTTON_NEGATIVE)
             ?.setTextColor(nativeTheme.textSecondary)
         dialog.getButton(android.content.DialogInterface.BUTTON_NEUTRAL)
             ?.setTextColor(nativeTheme.textSecondary)
-        dialog.window?.decorView?.let { applyTextColors(it) }
+        dialog.findViewById<View>(android.R.id.content)?.let { applyTextColors(it) }
     }
 
     private fun applyTextColors(view: View) {
@@ -758,11 +771,11 @@ object NativePresentations {
             if (!message.isNullOrBlank()) {
                 addView(TextView(activity).apply {
                     text = message
-                    textSize = 12f
+                    textSize = 13f
                     setTextColor(nativeTheme.textSecondary)
                     typeface = loraTypeface(activity)
                     includeFontPadding = false
-                    setPadding(0, dp(4f), 0, 0)
+                    setPadding(0, dp(8f), 0, 0)
                 })
             }
         }
@@ -777,9 +790,9 @@ object NativePresentations {
             typeface = loraTypeface(activity)
             setPadding(
                 dp(24f),
-                if (primary) dp(24f) else 0,
+                if (primary) dp(24f) else dp(8f),
                 dp(24f),
-                if (primary) dp(16f) else dp(12f),
+                if (primary) dp(4f) else dp(16f),
             )
             maxLines = 2
         }
@@ -800,12 +813,19 @@ object NativePresentations {
         return activity.resources.getIdentifier(snake, "drawable", activity.packageName)
     }
 
-    private fun alertButtonColor(style: Int): Int {
-        return if (style == 2) {
-            nativeTheme.accentRed
-        } else {
-            nativeTheme.textSecondary
-        }
+    private fun selectionIconRes(name: String?): Int {
+        if (name.isNullOrBlank()) return 0
+        val activity = activity ?: return 0
+        val snake = name.replace(Regex("(?<!^)(?=[A-Z])"), "_").lowercase()
+        val icRes = activity.resources.getIdentifier("ic_$snake", "drawable", activity.packageName)
+        if (icRes != 0) return icRes
+        return agentIconRes(name)
+    }
+
+    private fun alertButtonColor(style: Int): Int = when (style) {
+        2 -> nativeTheme.accentRed       // Destructive
+        1 -> nativeTheme.textSecondary   // Cancel
+        else -> nativeTheme.textPrimary  // Default
     }
 
     private fun floatingButtonIconRes(name: String?): Int {

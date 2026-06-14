@@ -1,6 +1,6 @@
 use gpui::*;
 use tracing::error;
-use zedra_rpc::proto::ManagedAgentKind;
+use zedra_rpc::proto::AgentKind;
 use zedra_session::SessionHandle;
 
 use crate::agent_ui::{
@@ -50,20 +50,20 @@ impl AgentSessions {
         let handle = self.session_handle.clone();
         let task = cx.spawn(async move |this, cx| {
             let (claude, codex, opencode, pi, hermes) = tokio::join!(
-                handle.agent_sessions(ManagedAgentKind::Claude, refresh, 0),
-                handle.agent_sessions(ManagedAgentKind::Codex, refresh, 0),
-                handle.agent_sessions(ManagedAgentKind::OpenCode, refresh, 0),
-                handle.agent_sessions(ManagedAgentKind::Pi, refresh, 0),
-                handle.agent_sessions(ManagedAgentKind::Hermes, refresh, 0),
+                handle.agent_sessions(AgentKind::Claude, refresh, 0),
+                handle.agent_sessions(AgentKind::Codex, refresh, 0),
+                handle.agent_sessions(AgentKind::OpenCode, refresh, 0),
+                handle.agent_sessions(AgentKind::Pi, refresh, 0),
+                handle.agent_sessions(AgentKind::Hermes, refresh, 0),
             );
             let mut sessions = Vec::new();
             let mut errors = Vec::new();
             for (kind, result) in [
-                (ManagedAgentKind::Claude, claude),
-                (ManagedAgentKind::Codex, codex),
-                (ManagedAgentKind::OpenCode, opencode),
-                (ManagedAgentKind::Pi, pi),
-                (ManagedAgentKind::Hermes, hermes),
+                (AgentKind::Claude, claude),
+                (AgentKind::Codex, codex),
+                (AgentKind::OpenCode, opencode),
+                (AgentKind::Pi, pi),
+                (AgentKind::Hermes, hermes),
             ] {
                 match result {
                     Ok(mut rows) => sessions.append(&mut rows),

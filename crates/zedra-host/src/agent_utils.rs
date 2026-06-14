@@ -115,37 +115,31 @@ pub fn sql_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-pub fn kind_slug(kind: ManagedAgentKind) -> &'static str {
+pub fn kind_slug(kind: AgentKind) -> &'static str {
     match kind {
-        ManagedAgentKind::Claude => "claude",
-        ManagedAgentKind::Codex => "codex",
-        ManagedAgentKind::OpenCode => "opencode",
-        ManagedAgentKind::Pi => "pi",
-        ManagedAgentKind::Hermes => "hermes",
+        AgentKind::Claude => "claude",
+        AgentKind::Codex => "codex",
+        AgentKind::OpenCode => "opencode",
+        AgentKind::Pi => "pi",
+        AgentKind::Hermes => "hermes",
     }
 }
 
-pub fn program_name(kind: ManagedAgentKind) -> &'static str {
+pub fn program_name(kind: AgentKind) -> &'static str {
+    kind_slug(kind)
+}
+
+pub fn display_name(kind: AgentKind) -> &'static str {
     match kind {
-        ManagedAgentKind::Claude => "claude",
-        ManagedAgentKind::Codex => "codex",
-        ManagedAgentKind::OpenCode => "opencode",
-        ManagedAgentKind::Pi => "pi",
-        ManagedAgentKind::Hermes => "hermes",
+        AgentKind::Claude => "Claude",
+        AgentKind::Codex => "Codex",
+        AgentKind::OpenCode => "OpenCode",
+        AgentKind::Pi => "Pi",
+        AgentKind::Hermes => "Hermes",
     }
 }
 
-pub fn display_name(kind: ManagedAgentKind) -> &'static str {
-    match kind {
-        ManagedAgentKind::Claude => "Claude",
-        ManagedAgentKind::Codex => "Codex",
-        ManagedAgentKind::OpenCode => "OpenCode",
-        ManagedAgentKind::Pi => "Pi",
-        ManagedAgentKind::Hermes => "Hermes",
-    }
-}
-
-pub fn capabilities(kind: ManagedAgentKind) -> AgentCapabilities {
+pub fn capabilities(kind: AgentKind) -> AgentCapabilities {
     AgentCapabilities {
         list_sessions: true,
         resume_session: true,
@@ -153,7 +147,7 @@ pub fn capabilities(kind: ManagedAgentKind) -> AgentCapabilities {
         confirm_action: true,
         select_action: true,
         lifecycle_events: true,
-        usage_snapshot: matches!(kind, ManagedAgentKind::Claude),
+        usage_snapshot: matches!(kind, AgentKind::Claude),
     }
 }
 
@@ -171,33 +165,12 @@ pub fn session_title(stored: Option<String>) -> Option<String> {
         .or_else(|| Some("Unknown".to_string()))
 }
 
-pub fn resume_summary(kind: ManagedAgentKind, session_id: &str) -> AgentResumeSummary {
+pub fn resume_summary(kind: AgentKind, session_id: &str) -> AgentResumeSummary {
     let available = !session_id.trim().is_empty();
     AgentResumeSummary {
         available,
         unavailable_reason: (!available).then(|| "missing session id".to_string()),
         action_id: available.then(|| format!("{}:{session_id}", kind_slug(kind))),
-    }
-}
-
-pub fn empty_session_live() -> AgentSessionLiveSummary {
-    AgentSessionLiveSummary {
-        terminal_id: None,
-        status: AgentLifecycleStatus::Unknown,
-        pending_action_count: 0,
-        current_turn_id: None,
-        latest_event: None,
-    }
-}
-
-pub fn malformed_warning(count: usize) -> Vec<AgentWarning> {
-    if count == 0 {
-        Vec::new()
-    } else {
-        vec![AgentWarning {
-            code: "malformed_records".to_string(),
-            message: format!("{count} malformed records were ignored"),
-        }]
     }
 }
 
@@ -389,6 +362,15 @@ pub fn humanize_plan_token(raw: &str) -> String {
         out.push(ch);
     }
     out
+}
+
+/// Extract a non-empty string value from a JSON object by key.
+pub fn payload_string(payload: &Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 
 pub fn toml_value(line: &str) -> String {

@@ -55,15 +55,19 @@ impl ZedraApp {
         let theme_state = cx.new(ThemeState::new);
         ThemeState::register_global(theme_state.downgrade(), cx);
 
+        // --- Delta client state (shared across settings + workspaces) ---
+        let delta_state = cx.new(|_cx| crate::delta::DeltaState::load());
+
         // --- Workspaces ---
-        let workspaces = cx.new(|cx| Workspaces::new(cx));
+        let workspaces = cx.new(|cx| Workspaces::new(delta_state.clone(), cx));
 
         // --- Home view ---
         let home_view = cx.new(|cx| HomeView::new(workspaces.clone(), cx));
         let sub = cx.subscribe(&home_view, Self::on_home_event);
         subscriptions.push(sub);
 
-        let settings_view = cx.new(|cx| SettingsView::new(theme_state.clone(), cx));
+        let settings_view =
+            cx.new(|cx| SettingsView::new(theme_state.clone(), delta_state.clone(), cx));
         let sub = cx.subscribe(&settings_view, Self::on_settings_event);
         subscriptions.push(sub);
 
@@ -100,6 +104,7 @@ impl ZedraApp {
             platform: std::env::consts::OS,
             arch: std::env::consts::ARCH,
         });
+        crate::settings_view::reconcile_delta_on_launch(delta_state.clone(), cx);
 
         let app = Self {
             screen: AppScreen::Home,
@@ -143,6 +148,7 @@ impl ZedraApp {
             self.handle_deeplink_deferred(action, cx);
         }
         self.process_pending_ticket_if_ready(window, cx);
+        self.process_pending_workspace_nav_if_ready(window, cx);
     }
 
     fn handle_deeplink_deferred(&mut self, action: DeeplinkAction, cx: &mut Context<Self>) {
@@ -152,6 +158,14 @@ impl ZedraApp {
                 // Store ticket for processing when a window-aware tick or activation is available.
                 self.workspaces.update(cx, |ws, cx| {
                     ws.connect_ticket_deferred(ticket, cx);
+                });
+            }
+            DeeplinkAction::Open {
+                endpoint_addr,
+                terminal_id,
+            } => {
+                self.workspaces.update(cx, |ws, cx| {
+                    ws.navigate_workspace_deferred(endpoint_addr, terminal_id, cx);
                 });
             }
         }
@@ -334,6 +348,15 @@ impl ZedraApp {
         ) {
             self.workspaces
                 .update(cx, |ws, cx| ws.process_pending_ticket(window, cx));
+        }
+    }
+
+    fn process_pending_workspace_nav_if_ready(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let has_pending = Workspaces::has_pending_workspace_nav();
+        let active = window.is_window_active();
+        if has_pending && active {
+            self.workspaces
+                .update(cx, |ws, cx| ws.process_pending_workspace_nav(window, cx));
         }
     }
 

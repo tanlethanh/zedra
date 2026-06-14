@@ -7,6 +7,9 @@
 ///
 /// Supported actions:
 ///   - `connect?ticket=<ticket>` — pair/connect with a host via pairing ticket
+///   - `open?endpoint_addr=<addr>&terminal_id=<id>` — navigate to a workspace, connecting
+///     first if needed. `terminal_id` is optional; when present, navigate to that terminal
+///     once the workspace is synced.
 use anyhow::{Result, anyhow};
 
 use crate::pending::PendingSlot;
@@ -15,6 +18,11 @@ use crate::pending::PendingSlot;
 pub enum DeeplinkAction {
     /// Connect to a host via a pairing ticket.
     Connect(zedra_rpc::ZedraPairingTicket),
+    /// Navigate to a workspace, optionally to a specific terminal within it.
+    Open {
+        endpoint_addr: String,
+        terminal_id: Option<String>,
+    },
 }
 
 static PENDING_DEEPLINK: PendingSlot<DeeplinkAction> = PendingSlot::new();
@@ -37,6 +45,19 @@ pub fn parse(url: &str) -> Result<DeeplinkAction> {
                 .ok_or_else(|| anyhow!("connect: missing ticket parameter"))?;
             let ticket = zedra_rpc::ZedraPairingTicket::decode(&ticket_str)?;
             Ok(DeeplinkAction::Connect(ticket))
+        }
+        "open" => {
+            let endpoint_addr = parse_query_param(query, "endpoint_addr")
+                .ok_or_else(|| anyhow!("open: missing endpoint_addr parameter"))?;
+            if endpoint_addr.is_empty() {
+                return Err(anyhow!("open: endpoint_addr must be non-empty"));
+            }
+            // terminal_id is optional: absent means navigate to the workspace only.
+            let terminal_id = parse_query_param(query, "terminal_id").filter(|t| !t.is_empty());
+            Ok(DeeplinkAction::Open {
+                endpoint_addr,
+                terminal_id,
+            })
         }
         other => Err(anyhow!("unknown deeplink action: {}", other)),
     }
@@ -82,6 +103,7 @@ mod tests {
         let action = parse(&url).unwrap();
         match action {
             DeeplinkAction::Connect(t) => assert_eq!(t, ticket),
+            other => panic!("expected Connect, got {other:?}"),
         }
     }
 

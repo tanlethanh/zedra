@@ -3,9 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use tracing::*;
+use uuid::Uuid;
 use zedra_rpc::proto::HostInfoSnapshot;
 
-use zedra_rpc::proto::ManagedAgentKind;
+use zedra_rpc::proto::AgentKind;
 use zedra_session::*;
 
 use crate::platform_bridge;
@@ -43,9 +44,8 @@ pub enum WorkspaceMainView {
     AgentSessions,
     AgentManage,
     AgentDetail {
-        kind: ManagedAgentKind,
+        kind: AgentKind,
     },
-    NoActiveTerminal,
 }
 
 impl WorkspaceMainView {
@@ -151,6 +151,10 @@ pub struct WorkspaceState {
     // Workspace-relative docs tree directories hidden by the user.
     #[serde(default)]
     pub docs_tree_collapsed_dirs: Vec<String>,
+    #[serde(default)]
+    pub delta_host_pubkey: Option<[u8; 32]>,
+    #[serde(default)]
+    pub delta_host_node_id: Option<Uuid>,
     pub created_at: u64,
     pub updated_at: u64,
 
@@ -180,6 +184,8 @@ struct WorkspaceStateSyncSnapshot {
     active_terminal_id: Option<String>,
     terminal_ids: Vec<String>,
     host_info: Option<HostInfoSnapshot>,
+    delta_host_pubkey: Option<[u8; 32]>,
+    delta_host_node_id: Option<Uuid>,
 }
 
 /// PartialEq implementation for WorkspaceState.
@@ -195,6 +201,8 @@ impl PartialEq for WorkspaceState {
             && self.homedir == other.homedir
             && self.hostname == other.hostname
             && self.docs_tree_collapsed_dirs == other.docs_tree_collapsed_dirs
+            && self.delta_host_pubkey == other.delta_host_pubkey
+            && self.delta_host_node_id == other.delta_host_node_id
             && self.created_at == other.created_at
             && self.updated_at == other.updated_at
     }
@@ -249,6 +257,8 @@ impl WorkspaceState {
             active_terminal_id: self.active_terminal_id.clone(),
             terminal_ids: self.terminal_ids.clone(),
             host_info: self.host_info.clone(),
+            delta_host_pubkey: self.delta_host_pubkey,
+            delta_host_node_id: self.delta_host_node_id,
         }
     }
 
@@ -346,6 +356,25 @@ impl WorkspaceState {
         cx.emit(WorkspaceStateEvent::HostInfoChanged);
     }
 
+    pub fn set_delta_host_pubkey(&mut self, delta_host_pubkey: [u8; 32], cx: &mut Context<Self>) {
+        if self.delta_host_pubkey == Some(delta_host_pubkey) {
+            return;
+        }
+        self.delta_host_pubkey = Some(delta_host_pubkey);
+        self.delta_host_node_id = None;
+        cx.emit(WorkspaceStateEvent::StateChanged);
+        cx.notify();
+    }
+
+    pub fn set_delta_host_node_id(&mut self, delta_host_node_id: Uuid, cx: &mut Context<Self>) {
+        if self.delta_host_node_id == Some(delta_host_node_id) {
+            return;
+        }
+        self.delta_host_node_id = Some(delta_host_node_id);
+        cx.emit(WorkspaceStateEvent::StateChanged);
+        cx.notify();
+    }
+
     pub fn set_active_main_view(
         &mut self,
         active_main_view: WorkspaceMainView,
@@ -361,6 +390,14 @@ impl WorkspaceState {
 
     pub fn active_main_view_terminal_id(&self) -> Option<&str> {
         self.active_main_view.terminal_id()
+    }
+
+    /// Drop back to the workspace start view. `Default` is the base of the
+    /// navigation stack, never a pushed route, so this clears the stack rather
+    /// than navigating onto it.
+    pub fn reset_to_default(&mut self, cx: &mut Context<Self>) {
+        self.main_view_stack.reset(WorkspaceMainView::Default);
+        self.set_active_main_view(WorkspaceMainView::Default, cx);
     }
 
     pub fn navigate(&mut self, route: WorkspaceMainView, cx: &mut Context<Self>) {
@@ -643,9 +680,9 @@ mod tests {
             id: "terminal-1".into(),
         });
         stack.open(file.clone());
-        stack.replace(WorkspaceMainView::NoActiveTerminal);
+        stack.replace(WorkspaceMainView::AgentSessions);
 
-        assert_eq!(stack.active(), WorkspaceMainView::NoActiveTerminal);
+        assert_eq!(stack.active(), WorkspaceMainView::AgentSessions);
         assert_eq!(
             stack.go_back(),
             Some(WorkspaceMainView::Terminal {
@@ -828,6 +865,25 @@ mod tests {
             loaded[0].docs_tree_collapsed_dirs,
             vec!["crates/zedra", "vendor/zed/docs"]
         );
+    }
+
+    #[test]
+    fn upsert_persists_delta_host_binding() {
+        let _guard = set_test_data_directory("upsert-persists-delta-host-binding");
+        let delta_host_pubkey = [7u8; 32];
+        let delta_host_node_id = Uuid::parse_str("33333333-3333-3333-3333-333333333333").unwrap();
+
+        WorkspaceState::upsert(WorkspaceState {
+            endpoint_addr: "endpoint-a".into(),
+            delta_host_pubkey: Some(delta_host_pubkey),
+            delta_host_node_id: Some(delta_host_node_id),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let loaded = WorkspaceState::load().unwrap();
+        assert_eq!(loaded[0].delta_host_pubkey, Some(delta_host_pubkey));
+        assert_eq!(loaded[0].delta_host_node_id, Some(delta_host_node_id));
     }
 
     #[test]
