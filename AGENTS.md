@@ -5,6 +5,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 ## Agent Workflow
 
 - Inspect the relevant code paths first and infer local patterns before proposing or making changes.
+- When a request mentions the Zedra CLI or `zedra` command-line behavior, inspect `crates/zedra-host` first; that crate owns the daemon and CLI entrypoints.
 - Ask before making any meaningful product or architectural decision. Tiny details may follow existing patterns without approval.
 - For normal feature work, prefer the smallest diff that fits the current design.
 - If the current structure is blocking quality, propose the refactor and wait for approval before doing broader cleanup.
@@ -45,6 +46,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - Zedra Delta is Zedra's cloud/backend service — push notifications, Live Activities, workspace sync signals, and any other backend capability the host or mobile app needs. See `docs/DELTA_INTEGRATION.md`.
 - The Delta source lives in a separate repo at the path in the `ZEDRA_DELTA_REPO` environment variable. When a task needs Delta backend behavior (read its code, or add/change a backend feature), open `$ZEDRA_DELTA_REPO` directly — read and edit it like part of the codebase.
 - Whenever this repo's work mentions the Delta backend or Zedra Delta, treat `$ZEDRA_DELTA_REPO` as the place those backend changes belong, and keep the host/mobile protocol contract in sync across both repos.
+- On the app side, Delta represents auth and backend interaction only (sign-in, push-token registration, backend calls) — not app features that merely arrive over Delta. 
 
 ## Documentation
 
