@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
+use tree_sitter::Parser as TreeSitterParser;
 
 use crate::editor::merge_highlights;
 use crate::editor::mermaid::{self, MermaidDiagram};
@@ -30,6 +31,17 @@ const TABLE_CELL_MAX_WIDTH: f32 = 220.0;
 const TABLE_CELL_CHAR_WIDTH_FACTOR: f32 = 0.62;
 const TABLE_CELL_PADDING_X: f32 = CODE_BLOCK_PADDING_X;
 const TABLE_CELL_PADDING_Y: f32 = CODE_BLOCK_PADDING_Y;
+// Frontmatter title column width and the 4-space indent used for nested values.
+const FRONTMATTER_KEY_WIDTH: f32 = 104.0;
+const FRONTMATTER_KEY_MIN_WIDTH: f32 = 72.0;
+const FRONTMATTER_NEST_INDENT: f32 = theme::FONT_BODY * TABLE_CELL_CHAR_WIDTH_FACTOR * 4.0;
+const FRONTMATTER_CHAR_WIDTH: f32 = theme::FONT_BODY * TABLE_CELL_CHAR_WIDTH_FACTOR;
+// Bullet column (min_w 12) plus its 4px gap; leaf `key:`/value gap.
+const FRONTMATTER_BULLET_WIDTH: f32 = 16.0;
+const FRONTMATTER_KV_GAP: f32 = 4.0;
+// Wrapping text paragraphs cap at this width for readability and never force
+// horizontal overflow; only unbreakable content (URLs, structure) does.
+const FRONTMATTER_TEXT_MAX_WIDTH: f32 = 560.0;
 const MERMAID_PENDING_HEIGHT: f32 = 120.0;
 const MERMAID_DISPLAY_SCALE: f32 = 0.5;
 const MERMAID_MIN_DISPLAY_HEIGHT: f32 = 80.0;
@@ -240,6 +252,7 @@ struct MarkdownSelectionSegment {
 
 #[derive(Clone, Debug)]
 enum Block {
+    Frontmatter(FrontmatterBlock),
     Paragraph(Vec<Inline>),
     Heading {
         level: HeadingLevel,
@@ -282,6 +295,34 @@ impl Block {
 struct TableBlock {
     headers: Vec<Vec<Inline>>,
     rows: Vec<Vec<Vec<Inline>>>,
+}
+
+#[derive(Clone, Debug)]
+struct FrontmatterBlock {
+    rows: Vec<FrontmatterRow>,
+}
+
+#[derive(Clone, Debug)]
+struct FrontmatterRow {
+    key: String,
+    key_range: Range<usize>,
+    value: FrontmatterValue,
+}
+
+#[derive(Clone, Debug)]
+enum FrontmatterValue {
+    Scalar {
+        text: String,
+        source_range: Range<usize>,
+    },
+    List {
+        items: Vec<FrontmatterValue>,
+        source_range: Range<usize>,
+    },
+    Mapping {
+        rows: Vec<FrontmatterRow>,
+        source_range: Range<usize>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -397,6 +438,8 @@ impl Render for MarkdownView {
 }
 
 fn parse_document(source: &str) -> MarkdownDocument {
+    let (frontmatter, body_source, body_offset) = split_frontmatter(source);
+
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TABLES);
@@ -405,7 +448,7 @@ fn parse_document(source: &str) -> MarkdownDocument {
     options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
     options.insert(Options::ENABLE_GFM);
 
-    let offset_events = Parser::new_ext(source, options)
+    let offset_events = Parser::new_ext(body_source, options)
         .into_offset_iter()
         .collect::<Vec<_>>();
     let events = offset_events
@@ -416,16 +459,30 @@ fn parse_document(source: &str) -> MarkdownDocument {
     let mut selection_cursor = 0;
     let mut selection_map = Vec::new();
     build_selection_blocks(
-        source,
+        body_source,
         &offset_events,
         &mut selection_cursor,
         None,
         &mut selection_map,
     );
+    if body_offset > 0 {
+        shift_selection_segments(&mut selection_map, body_offset);
+    }
+    if let Some(frontmatter) = &frontmatter {
+        let mut frontmatter_selection_map = Vec::new();
+        build_frontmatter_selection_segments(frontmatter, &mut frontmatter_selection_map);
+        frontmatter_selection_map.extend(selection_map);
+        selection_map = frontmatter_selection_map;
+    }
 
+    let mut blocks = Vec::new();
+    if let Some(frontmatter) = frontmatter {
+        blocks.push(Block::Frontmatter(frontmatter));
+    }
+    blocks.extend(parse_blocks(&events, &mut cursor, None));
     MarkdownDocument {
         source: Arc::from(source),
-        blocks: parse_blocks(&events, &mut cursor, None).into(),
+        blocks: blocks.into(),
         selection_map: selection_map.into(),
     }
 }
@@ -570,6 +627,18 @@ fn build_selection_blocks(
                     build_selection_table(events, cursor, map).unwrap_or(table_start_range);
                 merge_source_range(&mut source_range, table_range);
             }
+            Event::Start(Tag::MetadataBlock(kind)) => {
+                let end = TagEnd::MetadataBlock(*kind);
+                *cursor += 1;
+                while *cursor < events.len() {
+                    let is_end =
+                        matches!(&events[*cursor].0, Event::End(tag_end) if *tag_end == end);
+                    *cursor += 1;
+                    if is_end {
+                        break;
+                    }
+                }
+            }
             Event::Rule => {
                 merge_source_range(&mut source_range, event_range.clone());
                 *cursor += 1;
@@ -598,6 +667,320 @@ fn build_selection_blocks(
     }
 
     source_range
+}
+
+fn shift_selection_segments(segments: &mut [MarkdownSelectionSegment], offset: usize) {
+    for segment in segments {
+        segment.source_range.start += offset;
+        segment.source_range.end += offset;
+    }
+}
+
+fn build_frontmatter_selection_segments(
+    frontmatter: &FrontmatterBlock,
+    map: &mut Vec<MarkdownSelectionSegment>,
+) {
+    for row in &frontmatter.rows {
+        push_selection_segment(map, &format!("{}: ", row.key), row.key_range.clone());
+        match &row.value {
+            FrontmatterValue::Scalar { text, source_range } => {
+                push_selection_segment(map, text, source_range.clone());
+                push_selection_segment(map, "\n", source_range.clone());
+            }
+            FrontmatterValue::List {
+                items,
+                source_range,
+            } => {
+                for item in items {
+                    push_selection_segment(map, "• ", source_range.clone());
+                    build_frontmatter_value_selection_segments(item, map);
+                }
+                push_selection_segment(map, "\n", source_range.clone());
+            }
+            FrontmatterValue::Mapping { rows, source_range } => {
+                for nested_row in rows {
+                    push_selection_segment(
+                        map,
+                        &format!("{}: ", nested_row.key),
+                        nested_row.key_range.clone(),
+                    );
+                    build_frontmatter_value_selection_segments(&nested_row.value, map);
+                }
+                push_selection_segment(map, "\n", source_range.clone());
+            }
+        }
+    }
+}
+
+fn build_frontmatter_value_selection_segments(
+    value: &FrontmatterValue,
+    map: &mut Vec<MarkdownSelectionSegment>,
+) {
+    match value {
+        FrontmatterValue::Scalar { text, source_range } => {
+            push_selection_segment(map, text, source_range.clone());
+            push_selection_segment(map, "\n", source_range.clone());
+        }
+        FrontmatterValue::List {
+            items,
+            source_range,
+        } => {
+            for item in items {
+                push_selection_segment(map, "• ", source_range.clone());
+                build_frontmatter_value_selection_segments(item, map);
+            }
+            push_selection_segment(map, "\n", source_range.clone());
+        }
+        FrontmatterValue::Mapping { rows, source_range } => {
+            for row in rows {
+                push_selection_segment(map, &format!("{}: ", row.key), row.key_range.clone());
+                build_frontmatter_value_selection_segments(&row.value, map);
+            }
+            push_selection_segment(map, "\n", source_range.clone());
+        }
+    }
+}
+
+fn split_frontmatter(source: &str) -> (Option<FrontmatterBlock>, &str, usize) {
+    let Some(rest) = source.strip_prefix("---") else {
+        return (None, source, 0);
+    };
+    let content_start = if rest.starts_with("\r\n") {
+        5
+    } else if rest.starts_with('\n') {
+        4
+    } else {
+        return (None, source, 0);
+    };
+
+    let Some((frontmatter_end, body_offset)) = find_frontmatter_end(source, content_start) else {
+        return (None, source, 0);
+    };
+
+    let frontmatter_source = &source[content_start..frontmatter_end];
+    let frontmatter = parse_yaml_frontmatter(frontmatter_source, content_start)
+        .unwrap_or_else(|| FrontmatterBlock { rows: Vec::new() });
+    (Some(frontmatter), &source[body_offset..], body_offset)
+}
+
+fn find_frontmatter_end(source: &str, start_offset: usize) -> Option<(usize, usize)> {
+    let mut offset = start_offset;
+    while offset <= source.len() {
+        let line_end = source[offset..]
+            .find('\n')
+            .map(|ix| offset + ix)
+            .unwrap_or(source.len());
+        let line = source[offset..line_end].trim_end_matches('\r');
+        if line == "---" || line == "..." {
+            let body_offset = line_end + usize::from(line_end < source.len());
+            return Some((line_end, body_offset));
+        }
+        if line_end == source.len() {
+            break;
+        }
+        offset = line_end + 1;
+    }
+    None
+}
+
+fn parse_yaml_frontmatter(source: &str, source_offset: usize) -> Option<FrontmatterBlock> {
+    let mut parser = TreeSitterParser::new();
+    parser
+        .set_language(&tree_sitter_yaml::LANGUAGE.into())
+        .ok()?;
+    let tree = parser.parse(source, None)?;
+    let root = tree.root_node();
+    let mapping = find_yaml_mapping_node(root)?;
+    let rows = parse_yaml_mapping_rows(mapping, source, source_offset);
+    Some(FrontmatterBlock { rows })
+}
+
+fn find_yaml_mapping_node(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    if node.kind() == "block_mapping" {
+        return Some(node);
+    }
+
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if let Some(mapping) = find_yaml_mapping_node(child) {
+            return Some(mapping);
+        }
+    }
+
+    None
+}
+
+fn parse_yaml_mapping_rows(
+    node: tree_sitter::Node<'_>,
+    source: &str,
+    source_offset: usize,
+) -> Vec<FrontmatterRow> {
+    let mut rows = Vec::new();
+    let mut cursor = node.walk();
+
+    for child in node.named_children(&mut cursor) {
+        if let Some(row) = parse_yaml_mapping_row(child, source, source_offset) {
+            rows.push(row);
+        }
+    }
+
+    rows
+}
+
+fn parse_yaml_mapping_row(
+    node: tree_sitter::Node<'_>,
+    source: &str,
+    source_offset: usize,
+) -> Option<FrontmatterRow> {
+    if !matches!(node.kind(), "block_mapping_pair" | "flow_pair") {
+        return None;
+    }
+
+    let key_node = node.child_by_field_name("key")?;
+    let key_text = yaml_scalar_text(key_node, source);
+    let key_range = offset_range(key_node.byte_range(), source_offset);
+    let value = node
+        .child_by_field_name("value")
+        .map(|value_node| parse_yaml_value(value_node, source, source_offset))
+        .unwrap_or(FrontmatterValue::Scalar {
+            text: String::new(),
+            source_range: key_range.clone(),
+        });
+
+    Some(FrontmatterRow {
+        key: key_text,
+        key_range,
+        value,
+    })
+}
+
+fn parse_yaml_value(
+    node: tree_sitter::Node<'_>,
+    source: &str,
+    source_offset: usize,
+) -> FrontmatterValue {
+    let source_range = offset_range(node.byte_range(), source_offset);
+    match node.kind() {
+        // block_node / flow_node are transparent wrapper nodes; descend into content.
+        "block_node" | "flow_node" => {
+            if let Some(child) = node.named_child(0) {
+                parse_yaml_value(child, source, source_offset)
+            } else {
+                FrontmatterValue::Scalar {
+                    text: yaml_scalar_text(node, source),
+                    source_range,
+                }
+            }
+        }
+        "block_mapping" | "flow_mapping" => FrontmatterValue::Mapping {
+            rows: parse_yaml_mapping_rows(node, source, source_offset),
+            source_range,
+        },
+        "block_sequence" | "flow_sequence" => FrontmatterValue::List {
+            items: parse_yaml_sequence_items(node, source, source_offset),
+            source_range,
+        },
+        "block_scalar" => FrontmatterValue::Scalar {
+            text: yaml_block_scalar_text(source[node.byte_range()].trim()),
+            source_range,
+        },
+        "double_quote_scalar" => FrontmatterValue::Scalar {
+            text: yaml_scalar_text(node, source)
+                .trim_matches('"')
+                .replace("\\\"", "\""),
+            source_range,
+        },
+        "single_quote_scalar" => FrontmatterValue::Scalar {
+            text: yaml_scalar_text(node, source)
+                .trim_matches('\'')
+                .replace("''", "'"),
+            source_range,
+        },
+        "plain_scalar" | "boolean_scalar" | "float_scalar" | "integer_scalar" | "null_scalar"
+        | "timestamp_scalar" => FrontmatterValue::Scalar {
+            text: yaml_scalar_text(node, source),
+            source_range,
+        },
+        "block_mapping_pair" | "flow_pair" => {
+            let rows = parse_yaml_mapping_row(node, source, source_offset)
+                .into_iter()
+                .collect::<Vec<_>>();
+            FrontmatterValue::Mapping { rows, source_range }
+        }
+        _ => FrontmatterValue::Scalar {
+            text: yaml_scalar_text(node, source),
+            source_range,
+        },
+    }
+}
+
+fn offset_range(range: Range<usize>, offset: usize) -> Range<usize> {
+    (range.start + offset)..(range.end + offset)
+}
+
+fn parse_yaml_sequence_items(
+    node: tree_sitter::Node<'_>,
+    source: &str,
+    source_offset: usize,
+) -> Vec<FrontmatterValue> {
+    let mut items = Vec::new();
+    let mut cursor = node.walk();
+
+    for child in node.named_children(&mut cursor) {
+        let value_node = child.named_child(0).unwrap_or(child);
+        items.push(parse_yaml_value(value_node, source, source_offset));
+    }
+
+    items
+}
+
+fn yaml_scalar_text(node: tree_sitter::Node<'_>, source: &str) -> String {
+    source[node.byte_range()].trim().to_string()
+}
+
+fn yaml_block_scalar_text(source: &str) -> String {
+    let mut lines = source.lines();
+    let Some(header) = lines.next() else {
+        return String::new();
+    };
+    let style = if header.contains('|') { '|' } else { '>' };
+    let body_lines = lines.collect::<Vec<_>>();
+    let indent = body_lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            line.chars()
+                .take_while(|ch| *ch == ' ' || *ch == '\t')
+                .count()
+        })
+        .min()
+        .unwrap_or_default();
+    let normalized = body_lines
+        .iter()
+        .map(|line| line.get(indent..).unwrap_or(line).trim_end_matches('\r'))
+        .collect::<Vec<_>>();
+
+    match style {
+        '|' => normalized.join("\n").trim_matches('\n').to_string(),
+        _ => {
+            let mut paragraphs = Vec::new();
+            let mut current = Vec::new();
+            for line in normalized {
+                if line.trim().is_empty() {
+                    if !current.is_empty() {
+                        paragraphs.push(current.join(" "));
+                        current.clear();
+                    }
+                } else {
+                    current.push(line.trim().to_string());
+                }
+            }
+            if !current.is_empty() {
+                paragraphs.push(current.join(" "));
+            }
+            paragraphs.join("\n")
+        }
+    }
 }
 
 fn build_selection_table(
@@ -1029,6 +1412,17 @@ fn parse_blocks(events: &[Event<'_>], cursor: &mut usize, end: Option<TagEnd>) -
                 *cursor += 1;
                 blocks.push(Block::Table(parse_table(events, cursor)));
             }
+            Event::Start(Tag::MetadataBlock(kind)) => {
+                let end = TagEnd::MetadataBlock(*kind);
+                *cursor += 1;
+                while *cursor < events.len() {
+                    let is_end = matches!(&events[*cursor], Event::End(tag_end) if *tag_end == end);
+                    *cursor += 1;
+                    if is_end {
+                        break;
+                    }
+                }
+            }
             Event::Rule => {
                 blocks.push(Block::Rule);
                 *cursor += 1;
@@ -1313,6 +1707,7 @@ fn render_block(
 ) -> AnyElement {
     match block {
         Block::Paragraph(content) => render_inline_block(content, InlineBlockStyle::Body, key, cx),
+        Block::Frontmatter(frontmatter) => render_frontmatter(frontmatter, key, cx),
         Block::Heading { level, content } => {
             let style = match level {
                 HeadingLevel::H1 => InlineBlockStyle::Title,
@@ -1595,6 +1990,251 @@ fn render_table(table: &TableBlock, key: String, cx: &App) -> AnyElement {
     container.style().restrict_scroll_to_axis = Some(true);
 
     container.into_any_element()
+}
+
+fn is_frontmatter_url(text: &str) -> bool {
+    text.starts_with("http://") || text.starts_with("https://")
+}
+
+// Estimate the minimum width a value needs to render without horizontal overflow.
+// Only unbreakable content counts (URLs, keys, structural indentation); plain text
+// paragraphs return 0 because they wrap, so they never widen the block.
+fn frontmatter_value_min_width(value: &FrontmatterValue) -> f32 {
+    match value {
+        FrontmatterValue::Scalar { text, .. } => {
+            if is_frontmatter_url(text) {
+                text.chars().count() as f32 * FRONTMATTER_CHAR_WIDTH
+            } else {
+                0.0
+            }
+        }
+        FrontmatterValue::List { items, .. } => items
+            .iter()
+            .map(|item| FRONTMATTER_BULLET_WIDTH + frontmatter_value_min_width(item))
+            .fold(0.0_f32, f32::max),
+        FrontmatterValue::Mapping { rows, .. } => rows
+            .iter()
+            .map(|row| {
+                let key_width = (row.key.chars().count() + 1) as f32 * FRONTMATTER_CHAR_WIDTH;
+                match row.value {
+                    // Leaf `key: value` shares one line.
+                    FrontmatterValue::Scalar { .. } => {
+                        key_width + FRONTMATTER_KV_GAP + frontmatter_value_min_width(&row.value)
+                    }
+                    // Nested value sits on its own indented line below the key.
+                    _ => key_width
+                        .max(FRONTMATTER_NEST_INDENT + frontmatter_value_min_width(&row.value)),
+                }
+            })
+            .fold(0.0_f32, f32::max),
+    }
+}
+
+fn render_frontmatter(frontmatter: &FrontmatterBlock, key: String, cx: &App) -> AnyElement {
+    // The body is at least as wide as the unbreakable content requires; when that
+    // exceeds the viewport the outer overflow_x_scroll container scrolls (like the
+    // Markdown table). Plain paragraphs contribute nothing here, so they wrap to
+    // the available width instead of forcing horizontal overflow.
+    let value_min_width = frontmatter
+        .rows
+        .iter()
+        .map(|row| frontmatter_value_min_width(&row.value))
+        .fold(0.0_f32, f32::max);
+    let body_width = FRONTMATTER_KEY_WIDTH + TABLE_CELL_PADDING_X * 2.0 + value_min_width;
+
+    let rows = div()
+        .w_full()
+        .min_w(px(body_width))
+        .flex()
+        .flex_col()
+        .children(frontmatter.rows.iter().enumerate().map(|(row_ix, row)| {
+            let is_last_row = row_ix + 1 == frontmatter.rows.len();
+            div()
+                .w_full()
+                .flex()
+                .border_b_1()
+                .when(is_last_row, |this| {
+                    this.border_color(rgb(theme::border_subtle(cx)))
+                })
+                .border_color(rgb(theme::border_subtle(cx)))
+                .children([
+                    div()
+                        .flex_none()
+                        .w(px(FRONTMATTER_KEY_WIDTH))
+                        .min_w(px(FRONTMATTER_KEY_MIN_WIDTH))
+                        .px(px(TABLE_CELL_PADDING_X))
+                        .py(px(TABLE_CELL_PADDING_Y))
+                        .border_r_1()
+                        .border_color(rgb(theme::border_subtle(cx)))
+                        .text_color(rgb(theme::text_muted(cx)))
+                        .text_size(px(theme::FONT_BODY))
+                        .line_height(px(theme::FONT_BODY + 6.0))
+                        .font_family(fonts::MONO_FONT_FAMILY)
+                        .child(markdown_text(StyledText::new(row.key.clone()), "\n")),
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .px(px(TABLE_CELL_PADDING_X))
+                        .py(px(TABLE_CELL_PADDING_Y))
+                        .child(render_frontmatter_value(
+                            &row.value,
+                            format!("{key}-row-{row_ix}"),
+                            cx,
+                        )),
+                ])
+        }));
+
+    let mut container = div()
+        .id(format!("{key}-frontmatter"))
+        .w_full()
+        .bg(rgb(theme::bg_card(cx)))
+        .border_1()
+        .border_color(rgb(theme::border_default(cx)))
+        .rounded(px(6.0))
+        .overflow_x_scroll()
+        .child(rows);
+    container.style().restrict_scroll_to_axis = Some(true);
+
+    container.into_any_element()
+}
+
+// URL scalars render with whitespace_nowrap and natural width so the unbreakable
+// link overflows horizontally (scrolled by the outer container) instead of
+// wrapping into unbounded height. The URL becomes a clickable link.
+fn render_frontmatter_url(text: &str, key: String, cx: &App) -> AnyElement {
+    let inlines = vec![Inline::Link {
+        url: text.to_string(),
+        content: vec![Inline::Text(text.to_string())],
+    }];
+    let mut buf = InlineRenderBuffer::default();
+    flatten_inlines(&inlines, &mut buf, InlineMarks::default(), cx);
+    let base = block_style(InlineBlockStyle::Body, cx);
+    let styled = StyledText::new(buf.text.clone())
+        .with_highlights(merge_highlights(
+            buf.highlights
+                .into_iter()
+                .map(|r| (r.range, r.style))
+                .collect(),
+        ))
+        .selectable()
+        .selection_separator_after("\n");
+    let link_urls = buf.links.iter().map(|l| l.url.clone()).collect::<Vec<_>>();
+    let link_ranges = buf
+        .links
+        .iter()
+        .map(|l| l.range.clone())
+        .collect::<Vec<_>>();
+    let text_element: AnyElement = if link_ranges.is_empty() {
+        styled.into_any_element()
+    } else {
+        InteractiveText::new(key, styled)
+            .hit_slop(px(MARKDOWN_LINK_HIT_SLOP))
+            .on_click(link_ranges, move |ix, _window, _cx| {
+                if let Some(url) = link_urls.get(ix) {
+                    platform_bridge::bridge().open_url(url);
+                }
+            })
+            .into_any_element()
+    };
+    div()
+        .flex_none()
+        .text_color(base.color)
+        .text_size(px(base.size))
+        .line_height(px(base.line_height))
+        .font_family(base.font_family)
+        .whitespace_nowrap()
+        .child(text_element)
+        .into_any_element()
+}
+
+fn frontmatter_key_label(text: String, cx: &App) -> Div {
+    div()
+        .flex_none()
+        .text_color(rgb(theme::text_muted(cx)))
+        .text_size(px(theme::FONT_BODY))
+        .line_height(px(theme::FONT_BODY + 6.0))
+        .font_family(fonts::MONO_FONT_FAMILY)
+        .child(markdown_text(StyledText::new(text), " "))
+}
+
+// Plain text values wrap within the available width and cap at a readable max,
+// so they never force the metadata block to overflow horizontally.
+fn render_frontmatter_paragraph(text: &str, key: String, cx: &App) -> AnyElement {
+    div()
+        .w_full()
+        .max_w(px(FRONTMATTER_TEXT_MAX_WIDTH))
+        .child(render_inline_block(
+            &[Inline::Text(text.to_string())],
+            InlineBlockStyle::Body,
+            key,
+            cx,
+        ))
+        .into_any_element()
+}
+
+// Flexible slot for an inline value: fills remaining width so paragraphs wrap,
+// while min_w_0 lets the row shrink without clipping the fixed key label.
+fn frontmatter_value_slot(value: &FrontmatterValue, key: String, cx: &App) -> Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .child(render_frontmatter_value(value, key, cx))
+}
+
+fn render_frontmatter_value(value: &FrontmatterValue, key: String, cx: &App) -> AnyElement {
+    match value {
+        FrontmatterValue::Scalar { text, .. } => {
+            if is_frontmatter_url(text) {
+                render_frontmatter_url(text, key, cx)
+            } else {
+                render_frontmatter_paragraph(text, key, cx)
+            }
+        }
+        FrontmatterValue::List { items, .. } => div()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .children(items.iter().enumerate().map(|(ix, item)| {
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(4.0))
+                    .child(frontmatter_key_label("•".into(), cx).min_w(px(12.0)))
+                    .child(frontmatter_value_slot(item, format!("{key}-item-{ix}"), cx))
+            }))
+            .into_any_element(),
+        FrontmatterValue::Mapping { rows, .. } => div()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .children(rows.iter().enumerate().map(|(row_ix, row)| {
+                let child_key = format!("{key}-row-{row_ix}");
+                let is_scalar = matches!(row.value, FrontmatterValue::Scalar { .. });
+                if is_scalar {
+                    // Leaf: render inline as `key: value` without a reserved column.
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap(px(4.0))
+                        .child(frontmatter_key_label(format!("{}:", row.key), cx))
+                        .child(frontmatter_value_slot(&row.value, child_key, cx))
+                } else {
+                    // Nested list/object: key on its own line, value indented below.
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(frontmatter_key_label(format!("{}:", row.key), cx))
+                        .child(
+                            div()
+                                .w_full()
+                                .pl(px(FRONTMATTER_NEST_INDENT))
+                                .child(render_frontmatter_value(&row.value, child_key, cx)),
+                        )
+                }
+            }))
+            .into_any_element(),
+    }
 }
 
 fn table_column_widths(table: &TableBlock) -> Vec<f32> {
@@ -1985,6 +2625,58 @@ fn main() {}
         ));
         assert!(matches!(document.blocks[5], Block::Table(_)));
         assert!(document.total_block_count() > document.blocks.len());
+    }
+
+    #[test]
+    fn renders_yaml_frontmatter_as_metadata() {
+        let document = parse_document(
+            r#"---
+title: Markdown Frontmatter Example
+description: >
+  Verifies that frontmatter is hidden from the rendered preview, even when the
+  metadata includes nested objects and multiline values.
+tags:
+  - markdown
+  - frontmatter
+draft: true
+owner:
+  name: Zedra Docs
+  roles:
+    - editor
+    - reviewer
+  links:
+    home: https://zed.dev
+    repo: https://github.com/zed-industries/zedra
+status:
+  published: false
+  archived: false
+aliases:
+  - markdown-frontmatter
+  - preview-frontmatter
+---
+
+# Markdown Frontmatter Example
+"#,
+        );
+
+        assert_eq!(document.blocks.len(), 2);
+        assert!(matches!(document.blocks[0], Block::Frontmatter(_)));
+        let Block::Frontmatter(frontmatter) = &document.blocks[0] else {
+            panic!("expected frontmatter block");
+        };
+        assert_eq!(frontmatter.rows.len(), 7);
+        assert_eq!(frontmatter.rows[0].key, "title");
+        assert_eq!(frontmatter.rows[1].key, "description");
+        assert_eq!(frontmatter.rows[4].key, "owner");
+        assert_eq!(frontmatter.rows[6].key, "aliases");
+        assert!(matches!(document.blocks[1], Block::Heading { .. }));
+    }
+
+    #[test]
+    fn maps_markdown_selection_after_frontmatter_to_source_lines() {
+        let document = parse_document("---\ntitle: Guide\n---\n\n# Body\n");
+
+        assert_eq!(document.line_range_for_selection(13..14), Some((5, 5)));
     }
 
     #[test]
