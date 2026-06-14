@@ -1,6 +1,5 @@
 package dev.zedra.app;
 
-import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -26,6 +25,10 @@ public class ZedraMessagingService extends FirebaseMessagingService {
 
     // Must match MainActivity.DELTA_NOTIFICATION_CHANNEL_ID.
     static final String CHANNEL_ID = "zedra_delta";
+
+    // Fixed id paired with the deeplink tag: same target replaces, different targets
+    // (distinct tags) coexist.
+    private static final int DEEPLINK_NOTIFICATION_ID = 1;
 
     @Override
     public void onNewToken(String token) {
@@ -69,10 +72,11 @@ public class ZedraMessagingService extends FirebaseMessagingService {
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title != null ? title : "Zedra")
             .setContentText(body)
             .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(pendingIntent);
@@ -81,7 +85,14 @@ public class ZedraMessagingService extends FirebaseMessagingService {
             (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (manager != null) {
             ensureChannel(manager);
-            manager.notify((int) (System.currentTimeMillis() % Integer.MAX_VALUE), builder.build());
+            // Tag by deeplink so repeated pushes for the same target (terminal/workspace)
+            // replace the prior notification instead of stacking. Non-deeplink pushes have
+            // no stable identity, so they keep a unique id and stack as before.
+            if (deeplink != null && !deeplink.isEmpty()) {
+                manager.notify(deeplink, DEEPLINK_NOTIFICATION_ID, builder.build());
+            } else {
+                manager.notify((int) (System.currentTimeMillis() % Integer.MAX_VALUE), builder.build());
+            }
         }
     }
 
