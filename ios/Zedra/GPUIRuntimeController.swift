@@ -80,7 +80,7 @@ final class GPUIRuntimeController: NSObject {
     }
 
     func handleOpenURL(_ url: URL) {
-        url.absoluteString.withCString { zedra_deeplink_received($0) }
+        ZedraDeeplink.route(url: url)
     }
 
     func applicationWillEnterForeground() {

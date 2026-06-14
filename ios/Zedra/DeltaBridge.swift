@@ -191,11 +191,6 @@ enum ZedraDeltaGoogleSignIn {
 enum ZedraDeltaPushBridge {
     private static let lock = NSLock()
     private static var pendingCallbackID: UInt32?
-    private static let notificationDelegate = ZedraDeltaNotificationDelegate()
-
-    static func configure() {
-        UNUserNotificationCenter.current().delegate = notificationDelegate
-    }
 
     static func requestToken(callbackID: UInt32) {
         DispatchQueue.main.async {
@@ -262,15 +257,6 @@ enum ZedraDeltaPushBridge {
 
     private static func fail(_ callbackID: UInt32, _ message: String) {
         message.withCString { zedra_ios_delta_push_token_error(callbackID, $0) }
-    }
-}
-
-private final class ZedraDeltaNotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
-    func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification
-    ) async -> UNNotificationPresentationOptions {
-        return [.banner, .list, .sound, .badge]
     }
 }
 

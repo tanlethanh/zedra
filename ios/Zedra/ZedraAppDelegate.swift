@@ -8,7 +8,7 @@ final class ZedraAppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        ZedraDeltaPushBridge.configure()
+        ZedraDeeplink.installNotificationDelegate()
         runtime.launch()
         return true
     }
