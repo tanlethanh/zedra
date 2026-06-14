@@ -2040,7 +2040,11 @@ fn render_detached_followup_commands() -> String {
 fn render_status_output(status: &serde_json::Value) -> String {
     let version = status["version"].as_str().unwrap_or("?");
     let workdir = status["workdir"].as_str().unwrap_or("?");
-    let endpoint_id = status["endpoint_id"].as_str().unwrap_or("?");
+    let endpoint_addr = status
+        .get("endpoint_addr")
+        .and_then(|value| value.as_str())
+        .or_else(|| status["endpoint_id"].as_str())
+        .unwrap_or("?");
     let uptime = status["uptime_secs"]
         .as_u64()
         .map(utils::format_duration)
@@ -2065,7 +2069,7 @@ fn render_status_output(status: &serde_json::Value) -> String {
             ("Version", format!("v{version}")),
             ("Uptime", uptime),
             ("Workdir", workdir.to_string()),
-            ("Endpoint", short_id(endpoint_id)),
+            ("Endpoint", endpoint_addr.to_string()),
             ("Sessions", session_count.to_string()),
             ("Connected", connected_sessions.to_string()),
             ("Terminals", terminal_count.to_string()),
@@ -2077,7 +2081,7 @@ fn render_status_output(status: &serde_json::Value) -> String {
             sections.push(String::new());
             sections.push("Sessions".to_string());
             sections.push(utils::render_table(
-                &["ID", "NAME", "STATE", "TERMS", "UPTIME", "IDLE", "WORKDIR"],
+                &["ID", "NAME", "STATE", "TERMS", "UPTIME", "IDLE"],
                 &sessions.iter().map(session_status_row).collect::<Vec<_>>(),
             ));
         }
@@ -2274,7 +2278,6 @@ fn session_status_row(session: &serde_json::Value) -> Vec<String> {
         .as_u64()
         .map(utils::format_duration)
         .unwrap_or_else(|| "-".to_string());
-    let workdir = non_empty_str(&session["workdir"]).unwrap_or("-");
 
     vec![
         id,
@@ -2283,7 +2286,6 @@ fn session_status_row(session: &serde_json::Value) -> Vec<String> {
         terminal_count,
         uptime,
         idle,
-        workdir.to_string(),
     ]
 }
 
@@ -3113,6 +3115,7 @@ mod tests {
             "version": "0.2.0",
             "workdir": "/repo",
             "endpoint_id": "abcdef123456",
+            "endpoint_addr": "endpoint-addr-full-value",
             "uptime_secs": 65,
             "sessions": [
                 {
@@ -3140,7 +3143,7 @@ mod tests {
 
         assert!(output.contains("Zedra Daemon"));
         assert!(output.contains("  Version    v0.2.0"));
-        assert!(output.contains("  Endpoint   abcdef12"));
+        assert!(output.contains("  Endpoint   endpoint-addr-full-value"));
         assert!(output.contains("Sessions"));
         assert!(output.contains("connected"));
         assert!(output.contains("Terminals"));

@@ -8,7 +8,7 @@ pub mod proto;
 
 pub use pairing::{
     ZedraPairingTicket, compute_registration_hmac, decode_endpoint_addr, encode_endpoint_addr,
-    generate_session_id, verify_registration_hmac,
+    encode_endpoint_identity, generate_session_id, verify_registration_hmac,
 };
 
 /// All known Zedra relay URLs, ordered by priority.

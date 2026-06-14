@@ -126,13 +126,40 @@ pub fn verify_registration_hmac(
 // Legacy helpers (kept for QR display in qr.rs)
 // ---------------------------------------------------------------------------
 
-/// Encode an iroh EndpointAddr to a compact string for QR display.
+/// Encode an iroh `EndpointAddr` to a compact `base64_url(postcard(addr))` string.
+///
+/// Naming caveat: throughout Zedra the resulting string is called `endpoint_addr`
+/// (URL params, `WorkspaceState.endpoint_addr`, deeplinks, saved-state JSON), but it
+/// is used as the **workspace identity**, not a network address. Callers that produce
+/// the canonical identity pass an **id-only** `EndpointAddr` (`EndpointAddr::from(endpoint_id)`,
+/// no relay url / no direct socket addresses) so the string stays stable across network
+/// changes and can be matched by equality for persistence, reconnect, and deeplinks.
+///
+/// Do NOT encode a full `endpoint.addr()` (which includes relay/direct addresses) where an
+/// identity is expected: it yields a different string for the same node and breaks matching.
+/// The encoded form is also distinct from the raw `endpoint_id.to_string()` (plain base32 of
+/// the node id); it is the postcard-encoded id-only `EndpointAddr`.
 pub fn encode_endpoint_addr(addr: &iroh::EndpointAddr) -> Result<String> {
     let bytes = postcard::to_allocvec(addr)?;
     Ok(base64_url::encode(&bytes))
 }
 
-/// Decode an iroh EndpointAddr from a compact string.
+/// Encode the canonical **workspace identity** string from an `endpoint_id`.
+///
+/// This is the single source of truth for the "`endpoint_addr` carries id-only identity"
+/// convention: it builds an id-only `EndpointAddr` (no relay url / direct addresses) and
+/// encodes it via [`encode_endpoint_addr`]. Use this everywhere an `endpoint_addr` identity
+/// is produced (status, deeplinks, saved state, pairing) so the convention stays in one
+/// place and is matched by equality.
+///
+/// TODO(https://github.com/tanlethanh/zedra/issues/146): `endpoint_addr` is a misnomer — it
+/// is an identity, not a network address. When that issue lands, rename this and the
+/// `endpoint_addr` field/params to an id-reflecting name and make callers go through here.
+pub fn encode_endpoint_identity(endpoint_id: iroh::PublicKey) -> Result<String> {
+    encode_endpoint_addr(&iroh::EndpointAddr::from(endpoint_id))
+}
+
+/// Decode an iroh `EndpointAddr` from a compact string produced by [`encode_endpoint_addr`].
 pub fn decode_endpoint_addr(s: &str) -> Result<iroh::EndpointAddr> {
     let bytes = base64_url::decode(s).map_err(|e| anyhow::anyhow!("invalid base64-url: {}", e))?;
     let addr: iroh::EndpointAddr = postcard::from_bytes(&bytes)?;

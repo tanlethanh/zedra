@@ -40,6 +40,7 @@ use crate::pty::SpawnOptions;
 use crate::qr;
 use crate::rpc_daemon::{create_terminal, DaemonState};
 use crate::session_registry::{PairingSlotMode, ServerSession, SessionRegistry};
+use zedra_rpc::encode_endpoint_identity;
 use zedra_rpc::proto::{AgentKind, AgentResumeResult, HostEvent, TerminalColorScheme};
 use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
@@ -104,6 +105,7 @@ struct StatusResp {
     ok: bool,
     version: &'static str,
     endpoint_id: String,
+    endpoint_addr: String,
     workdir: String,
     uptime_secs: u64,
     sessions: Vec<StatusSession>,
@@ -120,6 +122,9 @@ async fn status(State(s): State<ApiState>, headers: HeaderMap) -> impl IntoRespo
     }
 
     let endpoint_id = s.daemon_state.identity.endpoint_id().to_string();
+    // Identity string (id-only) so `status` matches the deeplink/app/saved-state form.
+    let endpoint_addr =
+        encode_endpoint_identity(s.daemon_state.identity.endpoint_id()).unwrap_or_default();
     let workdir = s.daemon_state.workdir.to_string_lossy().to_string();
     let version = env!("CARGO_PKG_VERSION");
     let uptime_secs = s.daemon_state.started_at.elapsed().as_secs();
@@ -165,6 +170,7 @@ async fn status(State(s): State<ApiState>, headers: HeaderMap) -> impl IntoRespo
         ok: true,
         version,
         endpoint_id,
+        endpoint_addr,
         workdir,
         uptime_secs,
         sessions,
@@ -525,11 +531,8 @@ async fn receive_agent_hook_handler(
         return Json(serde_json::json!({"ok": true})).into_response();
     };
 
-    let endpoint_addr = {
-        let endpoint_id = s.daemon_state.identity.endpoint_id();
-        let addr = iroh::EndpointAddr::from(endpoint_id);
-        zedra_rpc::encode_endpoint_addr(&addr).unwrap_or_default()
-    };
+    let endpoint_addr =
+        encode_endpoint_identity(s.daemon_state.identity.endpoint_id()).unwrap_or_default();
     let delta = s.daemon_state.delta.read().await.clone();
     // Prefer the owning session's workdir so workspace-scoped hook lookups hit the
     // right state DB; fall back to the daemon default for sessions without one.
