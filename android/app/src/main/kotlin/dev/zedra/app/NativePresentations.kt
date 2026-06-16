@@ -17,6 +17,7 @@ import android.widget.EditText
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.PopupWindow
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.res.ResourcesCompat
@@ -37,6 +38,7 @@ object NativePresentations {
     private val dictationPreviews = mutableMapOf<Int, TextView>()
     private val notifications = mutableMapOf<Int, View>()
     private var sheetDialog: BottomSheetDialog? = null
+    private var editMenuPopup: PopupWindow? = null
     private var nativeTheme = NativeTheme.dark()
 
     private data class NativeTheme(
@@ -90,6 +92,8 @@ object NativePresentations {
     fun unregister() {
         sheetDialog?.dismiss()
         sheetDialog = null
+        editMenuPopup?.dismiss()
+        editMenuPopup = null
         floatingButtons.values.forEach { rootView?.removeView(it) }
         floatingButtons.clear()
         dictationPreviews.values.forEach { rootView?.removeView(it) }
@@ -342,6 +346,87 @@ object NativePresentations {
         sheet.findViewById<FrameLayout>(
             com.google.android.material.R.id.design_bottom_sheet,
         )?.background = roundedBackground(nativeTheme.background, 18f)
+    }
+
+    // Floating contextual edit menu (e.g. Paste) anchored at a window point.
+    // Mirrors the iOS UIEditMenuInteraction path; x/y arrive as GPUI logical
+    // points already shifted above the touch by the Rust caller.
+    @JvmStatic
+    fun showNativeEditMenu(
+        callbackId: Int,
+        x: Float,
+        y: Float,
+        labels: Array<String>,
+        imageNames: Array<String>,
+    ) = onUi {
+        if (labels.isEmpty()) {
+            MainActivity.nativeEditMenuDismiss(callbackId)
+            return@onUi
+        }
+        val root = requireRoot()
+        editMenuPopup?.dismiss()
+
+        val row = LinearLayout(requireActivity()).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = roundedBackground(withAlpha(nativeTheme.overlay, 242), 12f)
+            elevation = dp(12f).toFloat()
+            setPadding(dp(4f), dp(4f), dp(4f), dp(4f))
+        }
+
+        // A single flag guards the result/dismiss callbacks so the popup's
+        // onDismiss (which also fires after a selection) never double-reports.
+        var resolved = false
+        val popup = PopupWindow(
+            row,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            true,
+        ).apply {
+            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+            isOutsideTouchable = true
+        }
+
+        labels.forEachIndexed { index, label ->
+            if (index > 0) {
+                row.addView(View(requireActivity()).apply {
+                    setBackgroundColor(withAlpha(nativeTheme.border, 200))
+                    layoutParams = LinearLayout.LayoutParams(dp(1f), dp(20f))
+                })
+            }
+            row.addView(TextView(requireActivity()).apply {
+                text = label
+                setTextColor(nativeTheme.textPrimary)
+                textSize = 15f
+                gravity = Gravity.CENTER
+                setPadding(dp(16f), dp(10f), dp(16f), dp(10f))
+                isClickable = true
+                setOnClickListener {
+                    resolved = true
+                    popup.dismiss()
+                    MainActivity.nativeEditMenuResult(callbackId, index)
+                }
+            })
+        }
+
+        popup.setOnDismissListener {
+            if (editMenuPopup === popup) editMenuPopup = null
+            if (!resolved) {
+                resolved = true
+                MainActivity.nativeEditMenuDismiss(callbackId)
+            }
+        }
+
+        // Measure so the bubble sits above the anchor and stays on-screen.
+        row.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+        val anchorX = dp(x)
+        val anchorY = dp(y)
+        val left = (anchorX - row.measuredWidth / 2)
+            .coerceIn(dp(8f), max(dp(8f), root.width - row.measuredWidth - dp(8f)))
+        val top = (anchorY - row.measuredHeight).coerceAtLeast(dp(8f))
+
+        editMenuPopup = popup
+        popup.showAtLocation(root, Gravity.NO_GRAVITY, left, top)
     }
 
     @JvmStatic
