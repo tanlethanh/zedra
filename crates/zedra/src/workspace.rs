@@ -1614,8 +1614,8 @@ impl Workspace {
 
         let pending_platform_action = self.pending_platform_action.clone();
         platform_bridge::show_alert(
-            "",
             "Disconnect this session?",
+            "",
             vec![
                 AlertButton::destructive("Disconnect"),
                 AlertButton::cancel("Cancel"),
@@ -2638,8 +2638,8 @@ impl Workspace {
     fn request_terminal_delete_confirmation(&self, terminal_id: String) {
         let pending_platform_action = self.pending_platform_action.clone();
         platform_bridge::show_alert(
-            "",
             "Delete this terminal?",
+            "",
             vec![
                 AlertButton::destructive("Delete"),
                 AlertButton::cancel("Cancel"),
