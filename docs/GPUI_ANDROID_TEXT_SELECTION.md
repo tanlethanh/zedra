@@ -110,14 +110,25 @@ subset of hooks its native machinery needs — the same way iOS calls the
 keyboard-accessory and IME-trait hooks that Android does not. The trait stays
 generic with sane defaults; "iOS doesn't call it" is not a special case.
 
-One hook follows from this split: `initial_native_selection_range` (widen a
-long-press seed to its enclosing word). Android calls it because it synthesizes
-the initial selection itself; iOS does not, because UIKit's `UITextInteraction`
-supplies long-press granularity natively. Consequence to keep in mind: iOS word
-boundaries come from the UIKit tokenizer while Android's come from GPUI's
-`unicode-segmentation`, so the two platforms can pick slightly different word
-edges. Unifying that would mean routing iOS through the same GPUI word policy —
-deliberately not done, to avoid disturbing the working UIKit selection path.
+### Granularity is owned natively, not by GPUI
+
+Word/character granularity is a native-presenter concern on both platforms, so
+GPUI ships no word logic. The contract above is geometry, text, hit-testing, and
+set-range only; given a hit index, each backend decides the range to commit:
+
+- iOS: UIKit's `UITextInteraction` drives selection through the default
+  `UITextInputStringTokenizer`, which computes word boundaries by probing the
+  contract (`text_for_range`, position APIs) and commits a non-empty word range
+  via `setSelectedTextRange:`.
+- Android: `SelectionController` fetches a text window through `text_for_range`
+  and runs `java.text.BreakIterator` (the OS peer of UIKit's tokenizer) to widen
+  the hit index to its word, then commits via the bridge.
+
+Both derive word edges from the same neutral text through an OS tokenizer, so
+they stay consistent without GPUI carrying any word policy. (This replaced an
+earlier `initial_native_selection_range` hook that only Android used; it and
+GPUI's `unicode-segmentation` dependency were removed once Android moved to
+`BreakIterator`.)
 
 ## Ownership
 
@@ -128,7 +139,7 @@ deliberately not done, to avoid disturbing the working UIKit selection path.
 - UTF-16 document ranges
 - active selected range and direction
 - point-to-character hit testing
-- range adjustment, including word expansion
+- range clamping and validation (no word/granularity policy)
 - selection bounds and per-line rectangles
 - clipping and occlusion decisions
 - copy text
@@ -198,10 +209,12 @@ path. Terminal native selection starts only after long press.
    recognition without consuming the ordinary GPUI touch stream.
 3. Movement beyond touch slop, cancellation, or a claimed scroll cancels the
    pending long press.
-4. When long press fires, `SelectionController` asks GPUI for
-   `character_index_for_point`.
-5. If GPUI returns an index, the controller sets a collapsed range.
-6. GPUI returns the adjusted range, such as a terminal word selection.
+4. When long press fires, `SelectionController` hit-tests through the bridge,
+   which establishes the active source and returns the UTF-16 index.
+5. The controller fetches a text window for that index (`text_for_range`) and
+   runs `BreakIterator` to widen it to the enclosing word (falling back to a
+   single character on whitespace).
+6. The controller commits that word range; GPUI clamps and sets it.
 7. The controller captures the touch stream and presents native selection UI.
 
 If hit testing returns no index, selection does not start.
@@ -212,8 +225,10 @@ While a handle is dragged:
 
 1. Convert the Android touch point into GPUI logical coordinates.
 2. Query `nearest_character_index_for_point`.
-3. Build a proposed range while preserving selection direction.
-4. Ask GPUI to set and adjust the range.
+3. Snap the moving endpoint with `BreakIterator` — to the word while expanding
+   away from the anchor, to the exact character while contracting — and build a
+   range with the fixed anchor.
+4. Ask GPUI to clamp and set the range.
 5. Query the resulting selected range and geometry.
 6. Refresh highlights, handles, magnifier, and toolbar position.
 
@@ -281,9 +296,11 @@ Use `ActionMode.Callback2` for the native contextual toolbar.
 
 The toolbar includes:
 
-- `Copy` for any non-empty selection
-- `Select all` when the active document exposes a larger selectable range
-- custom actions from `selection_action_presentations`
+- default native actions owned by Android, including `Copy`, `Share`, and
+  `Search`
+- custom actions from `selection_action_presentations`, added as overflow
+  `MenuItem`s so Android renders the native vertical-dots affordance and
+  vertical overflow list
 
 `onGetContentRect(...)` uses the active selection bounds. Geometry changes
 invalidate the action mode content rectangle.
@@ -329,16 +346,19 @@ The Android bridge should expose selection operations by behavior, not by IME
 method names:
 
 ```text
-selectionCanStartAt(x, y) -> boolean
-selectionStartAt(x, y) -> boolean
+selectionStartAt(x, y) -> int?          // hit-test, establish source, return index
 selectionNearestIndexAt(x, y) -> int?
-selectionSetRange(start, end, reversed) -> SelectionSnapshot?
+selectionTextForRange(start, end) -> string?   // neutral text for word lookup
+selectionSetRange(start, end) -> boolean       // clamp + set; no granularity policy
 selectionSnapshot() -> SelectionSnapshot?
 selectionClear()
 selectionCopy() -> boolean
 selectionActions() -> SelectionAction[]
 selectionPerformAction(index) -> boolean
 ```
+
+`selectionSetRange` carries no direction or granularity flag: the controller has
+already resolved the final range natively (`BreakIterator`) before committing.
 
 `SelectionSnapshot` should include:
 
