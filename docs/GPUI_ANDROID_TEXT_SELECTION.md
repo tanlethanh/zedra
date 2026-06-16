@@ -180,7 +180,41 @@ AndroidWindowState
 touches. It must not obscure ordinary GPUI touches when selection is inactive.
 
 `SelectionController` coordinates the overlay, magnifier, toolbar, and bridge
-calls. It should be framework-owned by `gpui_android`, not app-owned by Zedra.
+calls. It is framework-owned by `gpui_android`, not app-owned by Zedra, and is
+attached to a host surface through the `SelectionHost` interface.
+
+### Multiple surfaces and opaque window handles
+
+GPUI runs more than one Android window: the root surface (`GpuiSurfaceView`) and
+the embedded custom sheet surface (Zedra's `SheetHostView`). Both implement
+`SelectionHost` and each owns its own `SelectionController` bound to its surface
+and overlay parent.
+
+Selection is the one input modality routed by an **opaque window handle**, not by
+a window-kind enum, so it generalizes to any number of GPUI surfaces without the
+bridge enumerating window kinds. Each `AndroidWindowState` carries a stable
+`window_handle: u64` (`0` = root/primary; non-root windows get unique non-zero
+handles assigned via `prepare_window` at open). The Kotlin `nativeSelection*`
+externals take a leading `windowHandle: Long`; the Rust FFI resolves
+`window_for_handle(handle)`.
+
+A surface reports its handle through `SelectionHost.selectionWindowHandle`, read
+lazily at selection start:
+
+- `GpuiSurfaceView` returns the root handle (`0`).
+- `SheetHostView` **fetches** its window's handle from Rust
+  (`nativeSheetWindowHandle()` → `sheet_window_handle()`) rather than generating
+  one in Kotlin. The GPUI sheet window outlives its native surface (re-shown
+  sheets reuse the same window), so a Kotlin-generated per-surface id would
+  desync on re-creation; the Rust-owned handle stays stable.
+
+`SelectionController` pins the resolved handle at long-press start (`activeHandle`)
+so a drag never switches windows, and claims the global active-controller slot
+then (not at construction), so the controller with the live selection always wins
+when multiple surfaces each own one.
+
+`AndroidWindowRole` still exists, but only for the per-surface lifecycle/touch
+entry points; it is no longer part of the selection contract.
 
 ## Active Selection Source
 

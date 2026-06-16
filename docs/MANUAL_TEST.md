@@ -108,6 +108,11 @@
 10. Expected: a Material bottom sheet appears with a grabber when requested and GPUI-rendered preview content inside the embedded sheet surface
 11. From a fresh sheet open, swipe the preview content upward and downward before it reaches top, then drag downward from the top of the preview
 12. Expected: inner content scrolls while not at top; when it is at top, the bottom sheet can take the downward drag for detent/dismiss handoff without preview repaint glitches during the drag or dismissal
+13. Long press selectable text inside the embedded sheet (markdown preview / editor content)
+14. Expected: native selection highlight, handles, and the floating `Copy`/`Share`/`Search` toolbar appear over the sheet; dragging handles extends the selection and `Copy` copies the sheet's GPUI text. A normal tap still scrolls and does not start selection
+14a. Drag a selection handle up and down across the sheet (and continue the same long-press gesture into a drag-to-extend)
+14b. Expected: only the selection endpoint moves — the bottom sheet does not drag, change detent, or dismiss during the handle/extend drag, and sheet dragging works normally again after the selection is dismissed
+15. Expected: dismissing or closing the sheet leaves no stale selection overlay, and root-window text selection still works after the sheet has been opened and closed
 13. Trigger the scroll-to-bottom floating button
 14. Expected: the native floating button appears at the GPUI wrapper bounds and pressing it runs the Rust callback
 15. Trigger dictation preview events if the call site is available

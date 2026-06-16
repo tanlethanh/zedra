@@ -16,7 +16,7 @@
 use jni::{
     JNIEnv, JavaVM,
     objects::{GlobalRef, JClass, JObject, JValue},
-    sys::{jboolean, jfloat, jint},
+    sys::{jboolean, jfloat, jint, jlong},
 };
 use ndk::native_window::NativeWindow;
 use std::sync::{Arc, Mutex, Once};
@@ -186,6 +186,16 @@ pub extern "system" fn Java_dev_zedra_app_SheetHostView_nativeSheetFlingEvent(
     velocity_y: jfloat,
 ) {
     sheet::handle_fling(velocity_x, velocity_y);
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_SheetHostView_nativeSheetWindowHandle(
+    _env: JNIEnv,
+    _this: JObject,
+) -> jlong {
+    // Opaque selection-routing handle of the sheet's GPUI window. Fetched (not
+    // generated in Kotlin) so it stays correct across sheet surface re-creation.
+    gpui_android::with_platform(|platform| platform.sheet_window_handle()).unwrap_or(0) as jlong
 }
 
 #[unsafe(no_mangle)]

@@ -7,8 +7,11 @@ import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.VelocityTracker
+import android.view.View
 import android.view.ViewConfiguration
 import com.google.android.material.bottomsheet.BottomSheetBehavior
+import dev.zed.gpui.SelectionController
+import dev.zed.gpui.SelectionHost
 import kotlin.math.abs
 
 /**
@@ -20,8 +23,18 @@ import kotlin.math.abs
  * BottomSheetBehavior; all other gestures temporarily disable sheet dragging
  * and are forwarded to GPUI.
  */
-class SheetHostView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
+class SheetHostView(context: Context) : SurfaceView(context), SurfaceHolder.Callback, SelectionHost {
     var bottomSheetBehavior: BottomSheetBehavior<*>? = null
+
+    // Native text selection for the embedded sheet GPUI window. Set by the host
+    // once an overlay parent exists; drives long-press selection on sheet content.
+    var selectionController: SelectionController? = null
+
+    override val selectionView: View get() = this
+
+    // Fetched from Rust (not generated here) so it stays correct across sheet
+    // surface re-creation; the GPUI sheet window outlives the native surface.
+    override val selectionWindowHandle: Long get() = nativeSheetWindowHandle()
 
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private var velocityTracker: VelocityTracker? = null
@@ -63,13 +76,37 @@ class SheetHostView(context: Context) : SurfaceView(context), SurfaceHolder.Call
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         Log.d(TAG, "sheet surfaceDestroyed")
+        selectionController?.dismiss(clearGpui = true)
         nativeSheetSurfaceDestroyed()
         nativeSheetProcessSurfaceCommands()
+    }
+
+    // --- Selection ----------------------------------------------------------
+
+    // Cancel the in-flight sheet touch once a long press promotes to selection,
+    // so the same gesture does not also tap or scroll the GPUI sheet content.
+    // Keep sheet-drag protection on: the selection now owns the gesture (and the
+    // drag-to-extend that follows) and releases protection when the gesture ends.
+    override fun cancelGpuiTouchForSelection() {
+        if (nativeGestureActive) {
+            nativeSheetTouchEvent(ACTION_CANCEL, downX, downY, 0)
+            nativeGestureActive = false
+        }
     }
 
     // --- Touch --------------------------------------------------------------
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        // Let the selection presenter recognize long press / drive handle drags
+        // before the gesture is treated as sheet content scrolling.
+        if (selectionController?.onSurfaceTouch(event) == true) {
+            // Selection owns this gesture (long press + drag-to-extend); release
+            // the sheet-drag protection taken at ACTION_DOWN once it ends.
+            when (event.actionMasked) {
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> releaseSheetGesture()
+            }
+            return true
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = event.x
@@ -165,6 +202,7 @@ class SheetHostView(context: Context) : SurfaceView(context), SurfaceHolder.Call
     private external fun nativeSheetTouchEvent(action: Int, x: Float, y: Float, pointerId: Int)
     private external fun nativeSheetFlingEvent(velocityX: Float, velocityY: Float)
     private external fun nativeSheetProcessSurfaceCommands()
+    private external fun nativeSheetWindowHandle(): Long
 
     companion object {
         private const val TAG = "SheetHostView"

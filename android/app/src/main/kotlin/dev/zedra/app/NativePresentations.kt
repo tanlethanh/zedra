@@ -26,6 +26,7 @@ import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.divider.MaterialDivider
+import dev.zed.gpui.SelectionController
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -515,14 +516,25 @@ object NativePresentations {
             })
         }
 
-        val surface = SheetHostView(activity).apply {
+        val surface = SheetHostView(activity)
+        // Wrap the surface so the native selection overlay (added by the
+        // SelectionController) can sit above only the GPUI sheet content.
+        val surfaceWrap = FrameLayout(activity).apply {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 0,
                 1f,
             )
+            addView(
+                surface,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                ),
+            )
         }
-        container.addView(surface)
+        container.addView(surfaceWrap)
+        surface.selectionController = SelectionController(surfaceWrap, surface)
 
         // No explicit theme: BottomSheetDialog resolves `bottomSheetDialogTheme`
         // from the activity theme, which points at ZedraBottomSheetDialog.
@@ -538,6 +550,8 @@ object NativePresentations {
                     WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN,
             )
             setOnDismissListener {
+                surface.selectionController?.destroy()
+                surface.selectionController = null
                 if (sheetDialog === this) sheetDialog = null
             }
         }
