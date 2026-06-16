@@ -2982,6 +2982,7 @@ dependencies = [
  "taffy",
  "thiserror 2.0.18",
  "ttf-parser 0.25.1",
+ "unicode-segmentation",
  "url",
  "usvg",
  "util_macros",

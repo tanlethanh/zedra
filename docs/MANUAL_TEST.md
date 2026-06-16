@@ -134,6 +134,21 @@
 15. In the terminal, render `✔ ✘ ⚠ ⏺ ⏹ ⏸` and a real emoji such as `😀`
 16. Expected: terminal/UI symbols render as monochrome symbol glyphs, while the real emoji renders through Android color emoji fallback before and after attempting rotation
 
+## 0c-Android-Selection. Native Text Selection
+
+1. Open the Home install guide and long press selectable command or comment text
+2. Expected: Android-native selection highlights, handles, and floating `Copy` toolbar appear without opening the software keyboard
+3. Drag both handles across multiple lines
+4. Expected: highlights and handles follow the selected GPUI text without scrolling the content underneath the dragged handle
+5. Tap `Copy`
+6. Expected: the exact selected text is written to the Android clipboard and the native selection UI dismisses
+7. Open a terminal with visible output and tap normally
+8. Expected: existing terminal focus and keyboard behavior remains unchanged
+9. Long press terminal output, then drag both handles across rows
+10. Expected: native selection starts only after long press and terminal output selection follows the handles
+11. Tap outside an active selection, scroll selected content, then switch views
+12. Expected: selection dismisses or refreshes cleanly without stale highlights, handles, or toolbar
+
 ## 0c-Android-AppIds. Debug And Release Application IDs
 
 1. Run `./scripts/run-android.sh --target arm64-v8a`
