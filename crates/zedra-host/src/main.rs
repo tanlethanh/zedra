@@ -901,6 +901,7 @@ async fn main() -> Result<()> {
                     response.recipients,
                     response.provider_success,
                     response.provider_failure,
+                    &response.errors,
                 );
             } else {
                 let title = title.expect("clap enforces --title for notifications");
@@ -913,6 +914,7 @@ async fn main() -> Result<()> {
                     response.recipients,
                     response.provider_success,
                     response.provider_failure,
+                    &response.errors,
                 );
             }
         }
@@ -1709,7 +1711,13 @@ fn print_delta_stack(config: &delta::DeltaConfig) {
     );
 }
 
-fn print_delta_send_result(accepted: bool, recipients: u32, provider_ok: u32, provider_fail: u32) {
+fn print_delta_send_result(
+    accepted: bool,
+    recipients: u32,
+    provider_ok: u32,
+    provider_fail: u32,
+    errors: &[delta::ProviderError],
+) {
     println!();
     utils::print_key_values(&[
         ("Accepted", accepted.to_string()),
@@ -1717,6 +1725,13 @@ fn print_delta_send_result(accepted: bool, recipients: u32, provider_ok: u32, pr
         ("Provider OK", provider_ok.to_string()),
         ("Provider Fail", provider_fail.to_string()),
     ]);
+    for err in errors {
+        println!(
+            "  [{provider}] {msg}",
+            provider = err.provider,
+            msg = err.message
+        );
+    }
 }
 
 /// Sectioned node detail view. `self_config` is set when showing the authed
