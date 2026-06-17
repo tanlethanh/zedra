@@ -4,8 +4,8 @@
 use crate::android::jni;
 use crate::platform_bridge::{
     AlertButton, CustomSheetOptions, HapticFeedback, ListPickerItem, NativeDictationPreviewOptions,
-    NativeFloatingButtonOptions, NativeNotificationOptions, PlatformBridge, SoundEffect,
-    SystemTheme,
+    NativeEditMenuItem, NativeFloatingButtonOptions, NativeNotificationOptions, PlatformBridge,
+    SoundEffect, SystemTheme,
 };
 
 pub struct AndroidBridge;
@@ -92,8 +92,21 @@ impl PlatformBridge for AndroidBridge {
         jni::show_list_picker(id, title, message, items);
     }
 
+    fn present_native_edit_menu(
+        &self,
+        id: u32,
+        position: gpui::Point<gpui::Pixels>,
+        items: &[NativeEditMenuItem],
+    ) {
+        jni::show_native_edit_menu(id, position, items);
+    }
+
     fn present_custom_sheet(&self, options: &CustomSheetOptions) {
         jni::present_custom_sheet(options);
+    }
+
+    fn dismiss_custom_sheet(&self) {
+        jni::dismiss_custom_sheet();
     }
 
     fn trigger_haptic(&self, feedback: HapticFeedback) {

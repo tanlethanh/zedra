@@ -108,10 +108,15 @@
 10. Expected: a Material bottom sheet appears with a grabber when requested and GPUI-rendered preview content inside the embedded sheet surface
 11. From a fresh sheet open, swipe the preview content upward and downward before it reaches top, then drag downward from the top of the preview
 12. Expected: inner content scrolls while not at top; when it is at top, the bottom sheet can take the downward drag for detent/dismiss handoff without preview repaint glitches during the drag or dismissal
-13. Trigger the scroll-to-bottom floating button
-14. Expected: the native floating button appears at the GPUI wrapper bounds and pressing it runs the Rust callback
-15. Trigger dictation preview events if the call site is available
-16. Expected: Android displays the preview overlay and dismiss callback, without attempting iOS-specific dictation stream interpretation
+13. Long press selectable text inside the embedded sheet (markdown preview / editor content)
+14. Expected: native selection highlight, handles, and the floating `Copy`/`Share`/`Search` toolbar appear over the sheet; dragging handles extends the selection and `Copy` copies the sheet's GPUI text. A normal tap still scrolls and does not start selection
+14a. Drag a selection handle up and down across the sheet (and continue the same long-press gesture into a drag-to-extend)
+14b. Expected: only the selection endpoint moves — the bottom sheet does not drag, change detent, or dismiss during the handle/extend drag, and sheet dragging works normally again after the selection is dismissed
+15. Expected: dismissing or closing the sheet leaves no stale selection overlay, and root-window text selection still works after the sheet has been opened and closed
+16. Trigger the scroll-to-bottom floating button
+17. Expected: the native floating button appears at the GPUI wrapper bounds and pressing it runs the Rust callback
+18. Trigger dictation preview events if the call site is available
+19. Expected: Android displays the preview overlay and dismiss callback, without attempting iOS-specific dictation stream interpretation
 
 ## 0c-Android-Renderer. GPUI Surface Lifecycle
 
@@ -133,6 +138,21 @@
 14. Confirm outlined buttons, cards, and input borders are visible even when their background is transparent
 15. In the terminal, render `✔ ✘ ⚠ ⏺ ⏹ ⏸` and a real emoji such as `😀`
 16. Expected: terminal/UI symbols render as monochrome symbol glyphs, while the real emoji renders through Android color emoji fallback before and after attempting rotation
+
+## 0c-Android-Selection. Native Text Selection
+
+1. Open the Home install guide and long press selectable command or comment text
+2. Expected: Android-native selection highlights, handles, and floating `Copy` toolbar appear without opening the software keyboard
+3. Drag both handles across multiple lines
+4. Expected: highlights and handles follow the selected GPUI text without scrolling the content underneath the dragged handle
+5. Tap `Copy`
+6. Expected: the exact selected text is written to the Android clipboard and the native selection UI dismisses
+7. Open a terminal with visible output and tap normally
+8. Expected: existing terminal focus and keyboard behavior remains unchanged
+9. Long press terminal output, then drag both handles across rows
+10. Expected: native selection starts only after long press and terminal output selection follows the handles
+11. Tap outside an active selection, scroll selected content, then switch views
+12. Expected: selection dismisses or refreshes cleanly without stale highlights, handles, or toolbar
 
 ## 0c-Android-AppIds. Debug And Release Application IDs
 
@@ -1104,6 +1124,9 @@ printf '\033]8;;file:///tmp/zedra-code-selection.rs:1:1\033\\/tmp/zedra-code-sel
 13. Tap `Add to Chat`, pick an agent terminal, and verify the selected source lines are pasted into that terminal
 14. Exit all supported AI-agent CLIs, select editor text, and tap `Add to Chat`
 15. Expected: the native selection sheet shows `No AI agent detected` and no text is inserted
+16. Restart an agent CLI, open the agent detail view, and tap a config/memory file to open it in the native file-preview sheet
+17. Select text in the preview sheet and tap `Add to Chat`, then pick an agent terminal
+18. Expected: the agent-target picker appears and the selected range is pasted into the chosen terminal, the same as an editor selection — the agent-detail preview routes through the foreground workspace, not just terminal-link previews
 
 ## 16c. Workspace Markdown File Rendering
 

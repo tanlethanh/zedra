@@ -16,7 +16,7 @@
 use jni::{
     JNIEnv, JavaVM,
     objects::{GlobalRef, JClass, JObject, JValue},
-    sys::{jboolean, jfloat, jint},
+    sys::{jboolean, jfloat, jint, jlong},
 };
 use ndk::native_window::NativeWindow;
 use std::sync::{Arc, Mutex, Once};
@@ -25,8 +25,8 @@ use crate::android::sheet;
 use crate::install_panic_hook;
 use crate::platform_bridge::{
     self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback, ListPickerItem,
-    NativeDictationPreviewOptions, NativeFloatingButtonOptions, NativeNotificationOptions,
-    SoundEffect, SystemTheme,
+    NativeDictationPreviewOptions, NativeEditMenuItem, NativeFloatingButtonOptions,
+    NativeNotificationOptions, SoundEffect, SystemTheme,
 };
 
 // ============================================================================
@@ -186,6 +186,16 @@ pub extern "system" fn Java_dev_zedra_app_SheetHostView_nativeSheetFlingEvent(
     velocity_y: jfloat,
 ) {
     sheet::handle_fling(velocity_x, velocity_y);
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_SheetHostView_nativeSheetWindowHandle(
+    _env: JNIEnv,
+    _this: JObject,
+) -> jlong {
+    // Opaque selection-routing handle of the sheet's GPUI window. Fetched (not
+    // generated in Kotlin) so it stays correct across sheet surface re-creation.
+    gpui_android::with_platform(|platform| platform.sheet_window_handle()).unwrap_or(0) as jlong
 }
 
 #[unsafe(no_mangle)]
@@ -363,6 +373,38 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeSelectionDismiss(
         return;
     }
     platform_bridge::dispatch_selection_dismiss(callback_id as u32);
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeEditMenuResult(
+    _env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+    item_index: jint,
+) {
+    if callback_id <= 0 || item_index < 0 {
+        return;
+    }
+    if let Some(app_cell) = crate::android::entry::app_cell() {
+        let mut app = app_cell.borrow_mut();
+        platform_bridge::dispatch_native_edit_menu_result(
+            callback_id as u32,
+            item_index as usize,
+            &mut **app,
+        );
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeEditMenuDismiss(
+    _env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    platform_bridge::dispatch_native_edit_menu_dismiss(callback_id as u32);
 }
 
 #[unsafe(no_mangle)]
@@ -905,6 +947,75 @@ pub fn show_list_picker(id: u32, title: &str, message: &str, items: &[ListPicker
     });
 }
 
+fn new_string_array<'local>(
+    env: &mut JNIEnv<'local>,
+    string_class: &JClass<'local>,
+    values: &[String],
+) -> Result<jni::objects::JObjectArray<'local>, jni::errors::Error> {
+    let array = env.new_object_array(values.len() as i32, string_class, JObject::null())?;
+    for (index, value) in values.iter().enumerate() {
+        let value = env.new_string(value)?;
+        env.set_object_array_element(&array, index as i32, value)?;
+    }
+    Ok(array)
+}
+
+pub fn show_native_edit_menu(
+    id: u32,
+    position: gpui::Point<gpui::Pixels>,
+    items: &[NativeEditMenuItem],
+) {
+    let x = f32::from(position.x);
+    let y = f32::from(position.y);
+    let labels: Vec<String> = items.iter().map(|item| item.label.clone()).collect();
+    let image_names: Vec<String> = items
+        .iter()
+        .map(|item| item.image_name.clone().unwrap_or_default())
+        .collect();
+    jni_call("show_native_edit_menu", move || {
+        with_main_activity_class("show_native_edit_menu", |env, class| {
+            let string_class = match env.find_class("java/lang/String") {
+                Ok(class) => class,
+                Err(error) => {
+                    tracing::error!(
+                        ?error,
+                        "jni: show_native_edit_menu find String class failed"
+                    );
+                    return;
+                }
+            };
+            let label_array = match new_string_array(env, &string_class, &labels) {
+                Ok(array) => array,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_native_edit_menu label array failed");
+                    return;
+                }
+            };
+            let image_array = match new_string_array(env, &string_class, &image_names) {
+                Ok(array) => array,
+                Err(error) => {
+                    tracing::error!(?error, "jni: show_native_edit_menu image array failed");
+                    return;
+                }
+            };
+            if let Err(error) = env.call_static_method(
+                class,
+                "showNativeEditMenu",
+                "(IFF[Ljava/lang/String;[Ljava/lang/String;)V",
+                &[
+                    (id as jint).into(),
+                    x.into(),
+                    y.into(),
+                    JValue::Object(&label_array),
+                    JValue::Object(&image_array),
+                ],
+            ) {
+                tracing::error!(?error, "jni: showNativeEditMenu call failed");
+            }
+        });
+    });
+}
+
 fn present_buttons(
     method_name: &str,
     id: u32,
@@ -1291,6 +1402,16 @@ pub fn present_custom_sheet(options: &CustomSheetOptions) {
                 ],
             ) {
                 tracing::error!(?error, "jni: presentCustomSheet failed");
+            }
+        });
+    });
+}
+
+pub fn dismiss_custom_sheet() {
+    jni_call("dismiss_custom_sheet", move || {
+        with_main_activity_class("dismiss_custom_sheet", |env, class| {
+            if let Err(error) = env.call_static_method(class, "dismissCustomSheet", "()V", &[]) {
+                tracing::error!(?error, "jni: dismissCustomSheet failed");
             }
         });
     });

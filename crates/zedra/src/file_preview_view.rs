@@ -1,5 +1,5 @@
 use gpui::*;
-use tracing::error;
+use tracing::{error, warn};
 use zedra_session::SessionHandle;
 use zedra_terminal::terminal::{TerminalHyperlink, TerminalHyperlinkTarget};
 
@@ -9,6 +9,9 @@ use crate::fonts;
 use crate::native_presentation;
 use crate::placeholder::render_placeholder;
 use crate::theme;
+use crate::workspace::ActiveWorkspace;
+use crate::workspace_action::AddSelectionToChat;
+use crate::workspace_editor::{EditorSelection, resolve_read_only_selection};
 use crate::workspace_state::WorkspaceState;
 
 #[derive(Clone, Debug)]
@@ -67,6 +70,37 @@ impl FilePreviewView {
             read_task: None,
             open_epoch: 0,
         }
+    }
+
+    /// Resolve this sheet window's active read-only selection into an
+    /// [`EditorSelection`] against the preview's own editor/markdown views.
+    fn selected_agent_context(&self, window: &Window, cx: &App) -> Option<EditorSelection> {
+        if !matches!(self.state, PreviewState::Loaded) {
+            return None;
+        }
+        let path = self.active_path.clone()?;
+        resolve_read_only_selection(&self.editor_view, &self.markdown_view, path, window, cx)
+    }
+
+    fn handle_add_selection_to_chat(
+        &mut self,
+        _action: &AddSelectionToChat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(selection) = self.selected_agent_context(window, cx) else {
+            warn!("agent: add selection to chat (preview) missing selection");
+            return;
+        };
+        // The selection lives in this sheet window; clear it here, then route to
+        // the foreground workspace's agent-target picker via ambient context.
+        window.clear_read_only_selection_cache();
+        let Some(workspace) = ActiveWorkspace::get(cx) else {
+            return;
+        };
+        workspace.update(cx, |workspace, cx| {
+            workspace.present_add_to_chat(selection, cx);
+        });
     }
 
     pub fn open_hyperlink(&mut self, hyperlink: TerminalHyperlink, cx: &mut Context<Self>) {
@@ -382,6 +416,7 @@ impl Render for FilePreviewView {
 
         div()
             .id("file-preview-sheet")
+            .on_action(cx.listener(Self::handle_add_selection_to_chat))
             .size_full()
             .bg(rgb(theme::bg_primary(cx)))
             .flex()

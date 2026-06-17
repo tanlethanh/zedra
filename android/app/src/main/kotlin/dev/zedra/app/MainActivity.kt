@@ -332,6 +332,10 @@ class MainActivity : AppCompatActivity() {
 
         @JvmStatic external fun nativeSelectionDismiss(callbackId: Int)
 
+        @JvmStatic external fun nativeEditMenuResult(callbackId: Int, itemIndex: Int)
+
+        @JvmStatic external fun nativeEditMenuDismiss(callbackId: Int)
+
         @JvmStatic external fun nativeTextInputResult(callbackId: Int, value: String)
 
         @JvmStatic external fun nativeTextInputDismiss(callbackId: Int)
@@ -520,6 +524,17 @@ class MainActivity : AppCompatActivity() {
         }
 
         @JvmStatic
+        fun showNativeEditMenu(
+            callbackId: Int,
+            x: Float,
+            y: Float,
+            labels: Array<String>,
+            imageNames: Array<String>,
+        ) {
+            NativePresentations.showNativeEditMenu(callbackId, x, y, labels, imageNames)
+        }
+
+        @JvmStatic
         fun showTextInput(
             callbackId: Int,
             title: String?,
@@ -546,6 +561,11 @@ class MainActivity : AppCompatActivity() {
                 modalInPresentation,
                 cornerRadius,
             )
+        }
+
+        @JvmStatic
+        fun dismissCustomSheet() {
+            NativePresentations.dismissCustomSheet()
         }
 
         @JvmStatic

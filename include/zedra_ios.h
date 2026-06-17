@@ -154,6 +154,8 @@ extern void ios_present_custom_sheet(int32_t detent_count,
                                      float corner_radius,
                                      bool modal_in_presentation);
 
+extern void ios_dismiss_custom_sheet(void);
+
 /**
  * Open a URL in the system browser via UIApplication.
  */

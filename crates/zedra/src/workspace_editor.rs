@@ -178,27 +178,13 @@ impl WorkspaceEditor {
         if !matches!(&self.state, FileState::Loaded) {
             return None;
         }
-
-        let selection = window.latest_read_only_selection()?;
-        let area_id = selection.area_id.to_string();
-        let (start, end) = match self.content {
-            EditorContent::Code if area_id == CODE_EDITOR_SELECTION_AREA_ID => self
-                .editor_view
-                .read(cx)
-                .line_range_for_selection(selection.range_utf16)?,
-            EditorContent::Markdown if area_id == MARKDOWN_SELECTION_AREA_ID => self
-                .markdown_view
-                .read(cx)
-                .line_range_for_selection(selection.range_utf16)?,
-            _ => return None,
-        };
-
-        Some(EditorSelection {
-            path: self.path.clone(),
-            start,
-            end,
-            text: selection.text,
-        })
+        resolve_read_only_selection(
+            &self.editor_view,
+            &self.markdown_view,
+            self.path.clone(),
+            window,
+            cx,
+        )
     }
 }
 
@@ -208,6 +194,34 @@ pub struct EditorSelection {
     pub start: u32,
     pub end: u32,
     pub text: String,
+}
+
+/// Resolve the window's active read-only selection against the editor/markdown
+/// view pair shared by the main editor and the file-preview sheet. The selection
+/// area id alone picks the source view, so callers don't track content kind here.
+pub(crate) fn resolve_read_only_selection(
+    editor_view: &Entity<EditorView>,
+    markdown_view: &Entity<MarkdownView>,
+    path: String,
+    window: &Window,
+    cx: &App,
+) -> Option<EditorSelection> {
+    let selection = window.latest_read_only_selection()?;
+    let (start, end) = match selection.area_id.to_string().as_str() {
+        CODE_EDITOR_SELECTION_AREA_ID => editor_view
+            .read(cx)
+            .line_range_for_selection(selection.range_utf16)?,
+        MARKDOWN_SELECTION_AREA_ID => markdown_view
+            .read(cx)
+            .line_range_for_selection(selection.range_utf16)?,
+        _ => return None,
+    };
+    Some(EditorSelection {
+        path,
+        start,
+        end,
+        text: selection.text,
+    })
 }
 
 impl Render for WorkspaceEditor {

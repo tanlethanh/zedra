@@ -40,6 +40,15 @@ final class GPUIRuntimeController: NSObject {
     private var displayLink: CADisplayLink?
     private let keyboardAccessoryController = KeyboardSupporter()
 
+    /// Dismiss the main GPUI window's software keyboard. Manual-focus surfaces
+    /// (the terminal) keep `keyboard_session_requested` set, so a native sheet
+    /// presented over them leaves the keyboard up and re-shows it each frame.
+    /// Clearing the request here lets a presentation resign it cleanly.
+    static func dismissMainWindowKeyboard() {
+        guard let window = activeController?.gpuiWindow else { return }
+        gpui_ios_hide_keyboard(window)
+    }
+
     func launch() {
         Self.activeController = self
         zedra_firebase_initialize()
@@ -168,7 +177,7 @@ final class GPUIRuntimeController: NSObject {
             _ = gpui_ios_handle_keyboard_accessory_action(gpuiWindow, action)
         }
         if key == "dismiss_keyboard" {
-            gpui_ios_hide_keyboard(gpuiWindow)
+            Self.dismissMainWindowKeyboard()
         }
     }
 

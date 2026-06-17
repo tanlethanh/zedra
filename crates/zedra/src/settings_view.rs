@@ -368,8 +368,8 @@ impl SettingsView {
         platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
         let (tx, rx) = oneshot::channel();
         platform_bridge::show_alert(
-            "",
             "Log out of Delta?",
+            "",
             vec![
                 AlertButton::destructive("Log Out"),
                 AlertButton::cancel("Cancel"),

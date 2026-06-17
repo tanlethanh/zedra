@@ -187,8 +187,8 @@ impl HomeView {
             } => {
                 let tx = self.action_tx.clone();
                 platform_bridge::show_alert(
-                    "",
                     &format!("Disconnect from {}?", display_name),
+                    "",
                     vec![
                         AlertButton::destructive("Disconnect"),
                         AlertButton::cancel("Cancel"),
@@ -212,8 +212,8 @@ impl HomeView {
             } => {
                 let tx = self.action_tx.clone();
                 platform_bridge::show_alert(
-                    "",
                     &format!("Remove {} workspace?", display_name),
+                    "",
                     vec![
                         AlertButton::destructive("Delete"),
                         AlertButton::cancel("Cancel"),

@@ -41,7 +41,7 @@ use crate::workspace_action::{
 };
 use crate::workspace_connecting::WorkspaceConnecting;
 use crate::workspace_drawer::WorkspaceDrawer;
-use crate::workspace_editor::WorkspaceEditor;
+use crate::workspace_editor::{EditorSelection, WorkspaceEditor};
 use crate::workspace_gitdiff::{GitdiffHeaderChanged, WorkspaceGitdiff};
 use crate::workspace_start::WorkspaceStart;
 use crate::workspace_state::{WorkspaceMainView, WorkspaceState, WorkspaceStateEvent};
@@ -58,6 +58,30 @@ pub enum WorkspaceEvent {
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
+
+/// Ambient handle to the foreground workspace, kept in sync by [`Workspaces`].
+/// Surfaces that run detached from the main window — e.g. the native
+/// file-preview sheet — read this to route actions back to the active
+/// workspace instead of threading its entity through every owner.
+///
+/// [`Workspaces`]: crate::workspaces::Workspaces
+#[derive(Default)]
+pub struct ActiveWorkspace(Option<WeakEntity<Workspace>>);
+
+impl Global for ActiveWorkspace {}
+
+impl ActiveWorkspace {
+    pub fn set(workspace: Option<WeakEntity<Workspace>>, cx: &mut App) {
+        cx.set_global(ActiveWorkspace(workspace));
+    }
+
+    /// The current foreground workspace, if one is set and still alive.
+    pub fn get(cx: &App) -> Option<Entity<Workspace>> {
+        cx.try_global::<ActiveWorkspace>()
+            .and_then(|active| active.0.clone())
+            .and_then(|workspace| workspace.upgrade())
+    }
+}
 
 pub struct Workspace {
     drawer_host: Entity<DrawerHost>,
@@ -1614,8 +1638,8 @@ impl Workspace {
 
         let pending_platform_action = self.pending_platform_action.clone();
         platform_bridge::show_alert(
-            "",
             "Disconnect this session?",
+            "",
             vec![
                 AlertButton::destructive("Disconnect"),
                 AlertButton::cancel("Cancel"),
@@ -1898,6 +1922,23 @@ impl Workspace {
             return;
         };
 
+        // Selection lives in this (main) window; the sheet path clears its own.
+        window.clear_read_only_selection_cache();
+        self.present_add_to_chat(selection, cx);
+    }
+
+    /// Present the "Add to Chat" agent-target picker for an already-resolved
+    /// selection. Shared by the main editor and the file-preview sheet (via
+    /// [`FilePreviewEvent`]); each caller clears its own window's read-only
+    /// selection before delegating here so the picker machinery lives in one
+    /// place and stays window-agnostic.
+    ///
+    /// [`FilePreviewEvent`]: crate::file_preview_view::FilePreviewEvent
+    pub(crate) fn present_add_to_chat(
+        &mut self,
+        selection: EditorSelection,
+        cx: &mut Context<Self>,
+    ) {
         let workdir = self.workspace_state.read(cx).workdir.clone();
         let input = agent::AddToChat {
             rel: PathBuf::from(workspace_relative_path(&selection.path, &workdir)),
@@ -1909,7 +1950,6 @@ impl Workspace {
 
         let targets = self.add_to_chat_targets(cx);
         if targets.is_empty() {
-            window.clear_read_only_selection_cache();
             platform_bridge::show_selection(
                 "Add to Chat",
                 "No AI agent detected",
@@ -1943,7 +1983,6 @@ impl Workspace {
                     .set(PendingWorkspaceAction::AddSelectionToChat { target, input });
             },
         );
-        window.clear_read_only_selection_cache();
     }
 
     fn handle_open_git_diff(
@@ -2588,6 +2627,7 @@ impl Workspace {
             PendingWorkspaceAction::AddSelectionToChat { target, input } => {
                 self.activate_existing_terminal(target.terminal_id.clone(), cx);
                 self.schedule_add_to_chat_after_activation(target, input, cx);
+                platform_bridge::dismiss_custom_sheet();
             }
             PendingWorkspaceAction::SpawnAgentTerminal {
                 launch_cmd,
@@ -2638,8 +2678,8 @@ impl Workspace {
     fn request_terminal_delete_confirmation(&self, terminal_id: String) {
         let pending_platform_action = self.pending_platform_action.clone();
         platform_bridge::show_alert(
-            "",
             "Delete this terminal?",
+            "",
             vec![
                 AlertButton::destructive("Delete"),
                 AlertButton::cancel("Cancel"),
