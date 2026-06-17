@@ -1791,6 +1791,8 @@ private enum PresentationCoordinator {
     ) {
         DispatchQueue.main.async {
             guard let presenter = NativePresentationBridge.topViewController() else { return }
+            // Resign the terminal keyboard or it re-shows each frame over the sheet.
+            GPUIRuntimeController.dismissMainWindowKeyboard()
             let sheet = CustomSheetViewController(configuration: configuration)
             presenter.present(sheet, animated: true)
         }
