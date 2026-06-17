@@ -6,41 +6,44 @@ use anyhow::{Result as AnyhowResult, anyhow};
 use gpui::{prelude::FluentBuilder as _, *};
 use tokio::sync::{broadcast, mpsc};
 use tracing::*;
+use uuid::Uuid;
 use zedra_rpc::ZedraPairingTicket;
-use zedra_rpc::proto::{HostEvent, ManagedAgentKind, SyncSessionResult};
+use zedra_rpc::proto::{AgentKind, HostEvent, SyncSessionResult};
 use zedra_session::{
     ConnectEvent, ConnectPhase, ConnectSnapshot, ReconnectReason, Session, SessionHandle,
     SessionState, signer::ClientSigner,
 };
 
-use crate::active_terminal;
 use crate::agent;
 use crate::agent_detail::AgentDetail;
 use crate::agent_manage::AgentManage;
 use crate::agent_picker::AgentPicker;
 use crate::agent_sessions::AgentSessions;
 use crate::agent_ui::managed_agent_name;
+use crate::delta::{ClientDeltaInfo, DeltaState};
 use crate::editor::git_sidebar::GitFileSection;
+use crate::file_search::{FileSearchEvent, FileSearchPanel};
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
-use crate::placeholder::render_placeholder;
-use crate::platform_bridge::{self, AlertButton, HapticFeedback, status_bar_inset};
+use crate::platform_bridge::{self, AlertButton, HapticFeedback, SoundEffect, status_bar_inset};
 use crate::telemetry::view_telemetry;
 use crate::terminal_card::strip_ps1_prefix;
 use crate::terminal_state::TerminalState;
 use crate::theme;
 use crate::transport_badge::ConnectionStatusIndicator;
 use crate::ui::{DrawerEvent, DrawerHost, DrawerSide};
-use crate::workspace_action::{self, GoHome, OpenQuickAction, RequestDisconnect};
+use crate::workspace_action::{self, GoHome, OpenFileSearch, OpenQuickAction, RequestDisconnect};
 use crate::workspace_action::{
     AddSelectionToChat, CloseDrawer, CloseTerminal, CreateAgent, CreateNewTerminal, GitCommit,
     GitShowItemActions, GitStage, GitUnstage, HideConnecting, NavigateBack, OpenAgentDetail,
-    OpenAgentManage, OpenAgentSessions, OpenFile, OpenGitDiff, OpenTerminal, RestartConnection,
-    ResumeAgentSession, ShowConnecting, SpawnAgentTerminal, ToggleDrawer,
+    OpenAgentManage, OpenAgentSessions, OpenDrawer, OpenFile, OpenGitDiff, OpenTerminal,
+    RestartConnection, ResumeAgentSession, RevealInFileExplorer, ShowConnecting,
+    SpawnAgentTerminal, ToggleDrawer,
 };
 use crate::workspace_connecting::WorkspaceConnecting;
 use crate::workspace_drawer::WorkspaceDrawer;
-use crate::workspace_editor::WorkspaceEditor;
+use crate::workspace_editor::{EditorSelection, WorkspaceEditor};
 use crate::workspace_gitdiff::{GitdiffHeaderChanged, WorkspaceGitdiff};
+use crate::workspace_start::WorkspaceStart;
 use crate::workspace_state::{WorkspaceMainView, WorkspaceState, WorkspaceStateEvent};
 use crate::workspace_terminal::{TERMINAL_PENDING_ID, WorkspaceTerminal};
 use zedra_terminal::view::TerminalView;
@@ -56,6 +59,30 @@ pub enum WorkspaceEvent {
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
 
+/// Ambient handle to the foreground workspace, kept in sync by [`Workspaces`].
+/// Surfaces that run detached from the main window — e.g. the native
+/// file-preview sheet — read this to route actions back to the active
+/// workspace instead of threading its entity through every owner.
+///
+/// [`Workspaces`]: crate::workspaces::Workspaces
+#[derive(Default)]
+pub struct ActiveWorkspace(Option<WeakEntity<Workspace>>);
+
+impl Global for ActiveWorkspace {}
+
+impl ActiveWorkspace {
+    pub fn set(workspace: Option<WeakEntity<Workspace>>, cx: &mut App) {
+        cx.set_global(ActiveWorkspace(workspace));
+    }
+
+    /// The current foreground workspace, if one is set and still alive.
+    pub fn get(cx: &App) -> Option<Entity<Workspace>> {
+        cx.try_global::<ActiveWorkspace>()
+            .and_then(|active| active.0.clone())
+            .and_then(|workspace| workspace.upgrade())
+    }
+}
+
 pub struct Workspace {
     drawer_host: Entity<DrawerHost>,
     #[allow(dead_code)]
@@ -64,6 +91,7 @@ pub struct Workspace {
     workspace_state: Entity<WorkspaceState>,
     session_state: Entity<SessionState>,
     terminal_state: Entity<TerminalState>,
+    delta_state: Entity<DeltaState>,
     session: Session,
     editor: Entity<WorkspaceEditor>,
     gitdiff: Entity<WorkspaceGitdiff>,
@@ -80,10 +108,34 @@ pub struct Workspace {
     _host_event_listener: Option<Task<()>>,
     /// Listens for periodic host resource snapshots.
     _host_info_listener: Option<Task<()>>,
+    /// Listens for foreground resume events and checks the live session phase.
+    _foreground_resume_listener: Option<Task<()>>,
+    /// Notifies the host when app foreground/background state changes.
+    _foreground_state_listener: Option<tokio::task::JoinHandle<()>>,
     agent_picker: Entity<AgentPicker>,
+    /// Floating global file search overlay; shown above the drawer when open.
+    file_search: Entity<FileSearchPanel>,
+    file_search_open: bool,
+    /// Focus to restore when the file search overlay is dismissed, so action
+    /// dispatch keeps routing through the workspace (the search input takes
+    /// focus while open and would otherwise leave focus dangling on close).
+    file_search_prev_focus: Option<FocusHandle>,
     pending_platform_action: SharedPendingSlot<PendingWorkspaceAction>,
     _pending_platform_action_task: Task<()>,
+    /// Terminal to open immediately after the first sync completes (set by notification deeplink).
+    pending_terminal_after_sync: Option<String>,
     _subscriptions: Vec<Subscription>,
+    delta_host_reconciling: bool,
+}
+
+impl Drop for Workspace {
+    fn drop(&mut self) {
+        // GPUI Task<()> fields cancel on drop, but the raw tokio JoinHandle does
+        // not — abort it so the foreground listener does not outlive the workspace.
+        if let Some(handle) = self._foreground_state_listener.take() {
+            handle.abort();
+        }
+    }
 }
 
 pub(crate) enum PendingWorkspaceAction {
@@ -240,11 +292,10 @@ fn should_initialize_terminals_after_sync(
     match mode {
         SyncRefreshMode::InitialConnect => true,
         SyncRefreshMode::Reconnect => {
-            let recovered_without_terminals = terminal_ids.is_empty()
-                && !matches!(active_main_view, WorkspaceMainView::NoActiveTerminal);
-            let main_view_was_reset = matches!(active_main_view, WorkspaceMainView::Default);
-
-            recovered_without_terminals || main_view_was_reset
+            // Re-open content on reconnect only when sitting on the start view, or
+            // when the host has no terminals left to anchor the current view.
+            // An open file/terminal/agent view is preserved.
+            matches!(active_main_view, WorkspaceMainView::Default) || terminal_ids.is_empty()
         }
     }
 }
@@ -593,11 +644,13 @@ fn seed_pending_launch_terminal_meta(
     }
 }
 
-fn managed_agent_command_hint(kind: ManagedAgentKind) -> &'static str {
+fn managed_agent_command_hint(kind: AgentKind) -> &'static str {
     match kind {
-        ManagedAgentKind::Claude => "claude",
-        ManagedAgentKind::Codex => "codex",
-        ManagedAgentKind::OpenCode => "opencode",
+        AgentKind::Claude => "claude",
+        AgentKind::Codex => "codex",
+        AgentKind::OpenCode => "opencode",
+        AgentKind::Pi => "pi",
+        AgentKind::Hermes => "hermes",
     }
 }
 
@@ -625,6 +678,7 @@ fn replacement_terminal_id_after_close(closed_id: &str, terminal_ids: &[String])
 impl Workspace {
     pub fn new(
         workspace_state: Entity<WorkspaceState>,
+        delta_state: Entity<DeltaState>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -686,6 +740,14 @@ impl Workspace {
                 }
             },
         );
+        let delta_state_subscription = cx.subscribe(
+            &delta_state,
+            |workspace, _delta_state, event: &crate::delta::DeltaStateEvent, cx| {
+                if matches!(event, crate::delta::DeltaStateEvent::DeltaStateChanged) {
+                    workspace.reconcile_delta_host_binding(cx);
+                }
+            },
+        );
         let gitdiff_subscription = cx.subscribe(
             &gitdiff,
             |this, _gitdiff, event: &GitdiffHeaderChanged, cx| {
@@ -728,11 +790,119 @@ impl Workspace {
                             break;
                         }
                     }
+                    Ok(HostEvent::AgentHookReceived {
+                        agent_kind,
+                        event_name,
+                        ..
+                    }) => {
+                        let should_notify = match agent_kind {
+                            AgentKind::Claude => {
+                                matches!(event_name.as_str(), "Stop" | "PermissionRequest")
+                            }
+                            AgentKind::Codex => {
+                                matches!(event_name.as_str(), "Stop" | "PermissionRequest")
+                            }
+                            AgentKind::OpenCode => {
+                                matches!(event_name.as_str(), "session.idle" | "permission.asked")
+                            }
+                            // Pi exposes no approval hook; Stop is the only turn boundary.
+                            AgentKind::Pi => event_name == "Stop",
+                            AgentKind::Hermes => matches!(
+                                event_name.as_str(),
+                                "post_llm_call" | "pre_approval_request"
+                            ),
+                        };
+                        let in_foreground = platform_bridge::is_app_in_foreground();
+                        tracing::info!(
+                            ?agent_kind,
+                            event_name,
+                            should_notify,
+                            in_foreground,
+                            "app received agent hook event"
+                        );
+                        if should_notify && in_foreground {
+                            platform_bridge::play_sound(SoundEffect::AgentNotification);
+                        }
+                    }
+                    Ok(HostEvent::AgentStateChanged {
+                        terminal_id, state, ..
+                    }) => {
+                        let should_break = workspace
+                            .update(cx, |ws, cx| {
+                                ws.terminal_state.update(cx, |tstate, cx| {
+                                    tstate.set_agent_state(&terminal_id, state);
+                                    cx.notify();
+                                });
+                            })
+                            .is_err();
+                        if should_break {
+                            break;
+                        }
+                    }
                     Ok(_) => {}
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
                         tracing::warn!("workspace host event listener lagged by {}", skipped);
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+
+        // Notify host when app foreground state changes so it can switch
+        // between RPC-only delivery and Delta push notifications.
+        // Run on Tokio, not GPUI: the GPUI executor pauses when the app backgrounds,
+        // which is exactly when we need this listener to fire and call notify_app_state.
+        let mut foreground_resume_rx = platform_bridge::subscribe_foreground_state();
+        let foreground_resume_listener = cx.spawn_in(window, async move |ws, cx| {
+            loop {
+                match foreground_resume_rx.recv().await {
+                    Ok(in_foreground) => {
+                        if !in_foreground {
+                            continue;
+                        }
+
+                        let phase = match ws.update(cx, |ws, cx| ws.session_state.read(cx).phase())
+                        {
+                            Ok(value) => value,
+                            Err(_) => break,
+                        };
+
+                        // Trigger reconnect from foregrounding but not connected
+                        if !phase.is_connected() {
+                            ws.update(cx, |ws, _cx| {
+                                ws.session
+                                    .request_reconnect(ReconnectReason::AppForegrounded);
+                            })
+                            .ok();
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                }
+            }
+        });
+
+        // Notify host when app foreground state changes so it can switch
+        // between RPC-only delivery and Delta push notifications.
+        // Run on Tokio, not GPUI: the GPUI executor pauses when the app backgrounds,
+        // which is exactly when we need this listener to fire and call notify_app_state.
+        let foreground_handle = session.handle().clone();
+        let mut foreground_rx = platform_bridge::subscribe_foreground_state();
+        let foreground_state_listener = zedra_session::session_runtime().spawn(async move {
+            // Seed the host with the current app state so a workspace that
+            // starts while already backgrounded does not stay pinned to the
+            // default foreground=true state.
+            foreground_handle
+                .notify_app_state(platform_bridge::is_app_in_foreground())
+                .await;
+            loop {
+                match foreground_rx.recv().await {
+                    Ok(in_foreground) => {
+                        info!(in_foreground, "app foreground state changed");
+                        foreground_handle.notify_app_state(in_foreground).await;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
                 }
             }
         });
@@ -766,6 +936,13 @@ impl Workspace {
             shared_pending_slot();
         let agent_picker = cx
             .new(|_cx| AgentPicker::new(session.handle().clone(), pending_platform_action.clone()));
+        let file_search = cx.new(|cx| FileSearchPanel::new(session.handle().clone(), cx));
+        let file_search_subscription = cx.subscribe(
+            &file_search,
+            |workspace, _panel, event: &FileSearchEvent, cx| match event {
+                FileSearchEvent::Close => workspace.close_file_search(cx),
+            },
+        );
         let platform_action_slot = pending_platform_action.clone();
         let pending_platform_action_task =
             spawn_periodic_task(cx, Duration::from_millis(50), move |this, cx| {
@@ -781,6 +958,7 @@ impl Workspace {
             workspace_state,
             session_state,
             terminal_state,
+            delta_state,
             session,
             editor,
             gitdiff,
@@ -794,13 +972,22 @@ impl Workspace {
             _connect_listener: None,
             _host_event_listener: Some(host_event_listener),
             _host_info_listener: Some(host_info_listener),
+            _foreground_resume_listener: Some(foreground_resume_listener),
+            _foreground_state_listener: Some(foreground_state_listener.into()),
             agent_picker,
+            file_search,
+            file_search_open: false,
+            file_search_prev_focus: None,
             pending_platform_action,
             _pending_platform_action_task: pending_platform_action_task,
+            pending_terminal_after_sync: None,
+            delta_host_reconciling: false,
             _subscriptions: vec![
                 drawer_host_subscription,
                 workspace_state_subscription,
+                delta_state_subscription,
                 gitdiff_subscription,
+                file_search_subscription,
             ],
         }
     }
@@ -868,6 +1055,10 @@ impl Workspace {
                         }
                         if let ConnectEvent::SyncComplete { sync, .. } = &event {
                             ws.seed_terminal_meta_from_sync(sync, cx);
+                            ws.workspace_state.update(cx, |state, cx| {
+                                state.set_delta_host_pubkey(sync.delta_pubkey, cx);
+                            });
+                            ws.reconcile_delta_host_binding(cx);
                         }
                         sync_refresh_mode
                     }) {
@@ -966,6 +1157,7 @@ impl Workspace {
         };
         self.connection_request = Some(request.clone());
         self.seen_reconnect = false;
+        self.delta_host_reconciling = false;
         self.active_reconnect_reason = None;
         self.latency_sampler.reset();
         self.start_connection(request);
@@ -986,6 +1178,205 @@ impl Workspace {
         );
     }
 
+    /// Sync the current workspace host binding to Delta and the host daemon.
+    /// The workspace persists the host pubkey/node id, while DeltaState caches
+    /// host node ids by pubkey so later reconnects or delayed sign-in can reuse
+    /// the same host node.
+    fn reconcile_delta_host_binding(&mut self, cx: &mut Context<Self>) {
+        let (host_pubkey, host_node_id) = {
+            let state = self.workspace_state.read(cx);
+            (state.delta_host_pubkey, state.delta_host_node_id)
+        };
+        let client_info_snapshot = self.client_delta_info_snapshot(cx);
+        let Some(host_pubkey) = host_pubkey else {
+            return;
+        };
+
+        let host_node = self
+            .delta_state
+            .read(cx)
+            .host_node_for_pubkey(host_pubkey)
+            .or_else(|| host_node_id.map(crate::delta::DeltaHostNode::from_host_node_id));
+        if let Some(host_node) = host_node {
+            self.apply_delta_host_binding(host_pubkey, host_node, client_info_snapshot, cx);
+            return;
+        }
+
+        if self.delta_host_reconciling {
+            return;
+        }
+
+        let client_snapshot = self.delta_state.read(cx).snapshot();
+        let Some(client_info) = client_snapshot.current_client_info() else {
+            return;
+        };
+
+        self.delta_host_reconciling = true;
+        let snapshot = self.delta_state.read(cx).snapshot();
+        let metadata = self.delta_registration_metadata(cx);
+        let delta_state = self.delta_state.clone();
+        let host_pubkey = host_pubkey;
+
+        cx.spawn(async move |workspace, cx| {
+            let result = crate::delta::offload(crate::delta::register_paired_host_node(
+                snapshot.clone(),
+                host_pubkey,
+                metadata,
+            ))
+            .await;
+            match result {
+                Ok((Some(result), next)) => {
+                    let applied = delta_state.update(cx, |state, cx| {
+                        // Skip stale host registration results if Delta auth state changed mid-flight.
+                        state.apply_if_current(&snapshot, next, cx)
+                    });
+                    let _ = workspace.update(cx, |ws, cx| {
+                        ws.delta_host_reconciling = false;
+                        if !applied {
+                            return;
+                        }
+
+                        ws.apply_delta_host_binding(
+                            host_pubkey,
+                            result.node.clone(),
+                            Some(client_info.clone()),
+                            cx,
+                        );
+                    });
+                }
+                Ok((None, _)) => {
+                    let _ = workspace.update(cx, |ws, _cx| {
+                        ws.delta_host_reconciling = false;
+                    });
+                }
+                Err(err) => {
+                    let _ = workspace.update(cx, |ws, _cx| {
+                        ws.delta_host_reconciling = false;
+                    });
+                    tracing::warn!("Delta host node registration failed: {err:#}");
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn client_delta_info_snapshot(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<crate::delta::ClientDeltaInfo> {
+        self.delta_state.read(cx).snapshot().current_client_info()
+    }
+
+    fn delta_registration_metadata(&self, cx: &mut Context<Self>) -> serde_json::Value {
+        let s = &self.session_state.read(cx).snapshot;
+        serde_json::json!({
+            "hostname": s.hostname,
+            "username": s.username,
+            "workdir": s.workdir,
+            "os": s.os,
+            "arch": s.arch,
+            "os_version": s.os_version,
+            "host_version": s.host_version,
+        })
+    }
+
+    fn apply_delta_host_binding(
+        &mut self,
+        host_pubkey: [u8; 32],
+        host_node: crate::delta::DeltaHostNode,
+        client_info: Option<crate::delta::ClientDeltaInfo>,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspace_state.update(cx, |state, cx| {
+            state.set_delta_host_pubkey(host_pubkey, cx);
+            state.set_delta_host_node_id(host_node.host_node_id(), cx);
+        });
+        self.delta_state.update(cx, |state, cx| {
+            state.remember_host_node(host_pubkey, host_node.clone(), cx)
+        });
+
+        match client_info {
+            Some(client_info) => {
+                self.send_client_delta_info(client_info, host_node.host_node_id(), cx);
+            }
+            None => {
+                self.clear_client_delta_info(cx);
+            }
+        }
+    }
+
+    fn send_client_delta_info(
+        &self,
+        client_info: ClientDeltaInfo,
+        host_node_id: Uuid,
+        cx: &mut Context<Self>,
+    ) {
+        self.spawn_client_delta_handoff(
+            cx,
+            "Delta client info handoff to host failed",
+            move |handle| async move {
+                handle
+                    .set_client_delta_info(
+                        client_info.delta_url,
+                        client_info.stack_id,
+                        client_info.node_id,
+                        host_node_id,
+                    )
+                    .await
+            },
+        );
+    }
+
+    fn clear_client_delta_info(&self, cx: &mut Context<Self>) {
+        self.spawn_client_delta_handoff(
+            cx,
+            "Delta client info clear failed",
+            move |handle| async move { handle.clear_client_delta_info().await },
+        );
+    }
+
+    /// Spawn a detached Delta client-info handoff to the host. Skips if the
+    /// binding state has changed since this call was scheduled, then waits up
+    /// to ~2s for the session handle to attach a client before running `op`.
+    fn spawn_client_delta_handoff<F, Fut>(
+        &self,
+        cx: &mut Context<Self>,
+        error_context: &'static str,
+        op: F,
+    ) where
+        F: FnOnce(SessionHandle) -> Fut + 'static,
+        Fut: std::future::Future<Output = anyhow::Result<()>>,
+    {
+        let delta_state = self.delta_state.clone();
+        let client_snapshot = delta_state.read(cx).snapshot();
+        let handle = self.session.handle().clone();
+
+        cx.spawn(async move |_workspace, cx| {
+            if !delta_state.read_with(cx, |state, _| {
+                state.matches_client_binding_state(&client_snapshot)
+            }) {
+                return;
+            }
+            let mut ready = false;
+            for _ in 0..200 {
+                if handle.has_client() {
+                    ready = true;
+                    break;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(10))
+                    .await;
+            }
+            if !ready {
+                return;
+            }
+            if let Err(err) = op(handle).await {
+                tracing::warn!("{error_context}: {err:#}");
+            }
+        })
+        .detach();
+    }
+
     pub fn restart_connection(&mut self, cx: &mut Context<Self>) {
         let Some(mut request) = self.connection_request.clone() else {
             warn!("restart connection requested without a connection request");
@@ -1002,6 +1393,7 @@ impl Workspace {
 
         info!("restart connection requested");
         self.seen_reconnect = false;
+        self.delta_host_reconciling = false;
         self.active_reconnect_reason = None;
         self.latency_sampler.reset();
         self.start_connection(request);
@@ -1042,6 +1434,7 @@ impl Workspace {
         };
         self.connection_request = Some(request.clone());
         self.seen_reconnect = false;
+        self.delta_host_reconciling = false;
         self.active_reconnect_reason = None;
         self.latency_sampler.reset();
         self.start_connection(request);
@@ -1107,6 +1500,17 @@ impl Workspace {
         self.latency_sampler.reset();
     }
 
+    /// Queue a terminal to open as soon as the next sync completes.
+    /// If the workspace is already synced and the terminal is known, navigate immediately.
+    pub fn open_terminal_after_sync(&mut self, terminal_id: String, cx: &mut Context<Self>) {
+        let terminal_ids = self.workspace_state.read(cx).terminal_ids.clone();
+        if terminal_ids.contains(&terminal_id) {
+            self.activate_existing_terminal(terminal_id, cx);
+        } else {
+            self.pending_terminal_after_sync = Some(terminal_id);
+        }
+    }
+
     pub fn open_terminal_from_quick_action(&mut self, id: String, cx: &mut Context<Self>) {
         self.activate_existing_terminal(id, cx);
     }
@@ -1146,6 +1550,11 @@ impl Workspace {
     }
 
     pub fn handle_system_back(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.file_search_open {
+            self.dismiss_file_search(window, cx);
+            return true;
+        }
+
         if self.drawer_host.read(cx).is_open() {
             self.drawer_host
                 .update(cx, |host, cx| host.close_with_window(window, cx));
@@ -1180,6 +1589,44 @@ impl Workspace {
         cx.emit(WorkspaceEvent::OpenQuickAction);
     }
 
+    fn handle_open_file_search(
+        &mut self,
+        _action: &OpenFileSearch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!("handle OpenFileSearch from workspace");
+        if !self.file_search_open {
+            self.file_search_prev_focus = window.focused(cx);
+        }
+        self.file_search_open = true;
+        self.file_search
+            .update(cx, |panel, cx| panel.open(window, cx));
+        cx.notify();
+    }
+
+    /// State-only close. Used when the next focus owner is already taking over
+    /// (e.g. tapping a result opens and focuses the editor).
+    fn close_file_search(&mut self, cx: &mut Context<Self>) {
+        if !self.file_search_open {
+            return;
+        }
+        self.file_search_open = false;
+        self.file_search_prev_focus = None;
+        cx.notify();
+    }
+
+    /// Close and return focus to whatever held it before the overlay opened, so
+    /// workspace action dispatch (e.g. reopening search) keeps working.
+    fn dismiss_file_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let prev = self.file_search_prev_focus.take();
+        window.hide_soft_keyboard();
+        self.close_file_search(cx);
+        if let Some(handle) = prev {
+            window.focus(&handle, cx);
+        }
+    }
+
     fn handle_request_disconnect(
         &mut self,
         _action: &RequestDisconnect,
@@ -1191,8 +1638,8 @@ impl Workspace {
 
         let pending_platform_action = self.pending_platform_action.clone();
         platform_bridge::show_alert(
-            "",
             "Disconnect this session?",
+            "",
             vec![
                 AlertButton::destructive("Disconnect"),
                 AlertButton::cancel("Cancel"),
@@ -1220,6 +1667,17 @@ impl Workspace {
                 host.open_with_window(&mut *window, cx);
             }
         });
+    }
+
+    fn handle_open_drawer(
+        &mut self,
+        _action: &OpenDrawer,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!("handle OpenDrawer from workspace");
+        self.drawer_host
+            .update(cx, |host, cx| host.open_with_window(window, cx));
     }
 
     fn handle_close_drawer(
@@ -1287,6 +1745,18 @@ impl Workspace {
         self.navigate_to(WorkspaceMainView::File { path }, cx);
     }
 
+    fn handle_reveal_in_file_explorer(
+        &mut self,
+        action: &RevealInFileExplorer,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!("handle RevealInFileExplorer from workspace");
+        self.drawer.update(cx, |drawer, cx| {
+            drawer.reveal_path(action.path.clone(), window, cx)
+        });
+    }
+
     /// Forward navigation: push route onto the nav stack and apply the view.
     fn navigate_to(&mut self, route: WorkspaceMainView, cx: &mut Context<Self>) {
         // Guard: entity must exist before mutating state to keep stack ↔ active_main_view in sync.
@@ -1349,12 +1819,12 @@ impl Workspace {
     ) {
         match route {
             WorkspaceMainView::Default => {
-                let editor = self.editor.clone();
                 self.content.update(cx, |c, cx| {
                     c.clear_subtitle(cx);
-                    c.set_main_view(editor.into(), cx);
+                    c.set_workspace_start_view(cx);
                     c.hide_connecting_view(cx);
                 });
+                view_telemetry::record(view_telemetry::WORKSPACE_START);
             }
             WorkspaceMainView::File { path } => {
                 self.editor.update(cx, |e, cx| {
@@ -1380,13 +1850,6 @@ impl Workspace {
                     c.hide_connecting_view(cx);
                 });
                 view_telemetry::record(view_telemetry::WORKSPACE_GIT_DIFF);
-            }
-            WorkspaceMainView::NoActiveTerminal => {
-                self.content.update(cx, |c, cx| {
-                    c.set_no_active_terminal_view(cx);
-                    c.hide_connecting_view(cx);
-                });
-                view_telemetry::record(view_telemetry::WORKSPACE_NO_ACTIVE_TERMINAL);
             }
             WorkspaceMainView::Terminal { id } => {
                 if let Some(entity) = self.terminal_by_id(&id, cx) {
@@ -1430,6 +1893,7 @@ impl Workspace {
                         self.session.handle().clone(),
                         self.session.clone(),
                         kind,
+                        self.workspace_state.clone(),
                         cx,
                     )
                 });
@@ -1458,6 +1922,23 @@ impl Workspace {
             return;
         };
 
+        // Selection lives in this (main) window; the sheet path clears its own.
+        window.clear_read_only_selection_cache();
+        self.present_add_to_chat(selection, cx);
+    }
+
+    /// Present the "Add to Chat" agent-target picker for an already-resolved
+    /// selection. Shared by the main editor and the file-preview sheet (via
+    /// [`FilePreviewEvent`]); each caller clears its own window's read-only
+    /// selection before delegating here so the picker machinery lives in one
+    /// place and stays window-agnostic.
+    ///
+    /// [`FilePreviewEvent`]: crate::file_preview_view::FilePreviewEvent
+    pub(crate) fn present_add_to_chat(
+        &mut self,
+        selection: EditorSelection,
+        cx: &mut Context<Self>,
+    ) {
         let workdir = self.workspace_state.read(cx).workdir.clone();
         let input = agent::AddToChat {
             rel: PathBuf::from(workspace_relative_path(&selection.path, &workdir)),
@@ -1469,7 +1950,6 @@ impl Workspace {
 
         let targets = self.add_to_chat_targets(cx);
         if targets.is_empty() {
-            window.clear_read_only_selection_cache();
             platform_bridge::show_selection(
                 "Add to Chat",
                 "No AI agent detected",
@@ -1503,7 +1983,6 @@ impl Workspace {
                     .set(PendingWorkspaceAction::AddSelectionToChat { target, input });
             },
         );
-        window.clear_read_only_selection_cache();
     }
 
     fn handle_open_git_diff(
@@ -1818,15 +2297,6 @@ impl Workspace {
         .detach();
     }
 
-    fn create_new_terminal(
-        &mut self,
-        telemetry_source: &'static str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.spawn_terminal(telemetry_source, None, None, window, cx);
-    }
-
     fn handle_navigate_back(
         &mut self,
         _action: &NavigateBack,
@@ -1888,7 +2358,7 @@ impl Workspace {
 
     fn resume_agent_session(
         &mut self,
-        kind: ManagedAgentKind,
+        kind: AgentKind,
         session_id: String,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -2069,10 +2539,9 @@ impl Workspace {
                 .prune_stale_terminals(&state.terminal_ids);
             if was_active_terminal || state.terminal_ids.is_empty() {
                 state.active_terminal_id = None;
-                active_terminal::clear_active_input();
             }
             if was_active_main_terminal && !has_replacement_terminal {
-                state.navigate(WorkspaceMainView::NoActiveTerminal, cx);
+                state.reset_to_default(cx);
             }
             cx.notify();
         });
@@ -2080,7 +2549,7 @@ impl Workspace {
         if let Some(replacement_id) = replacement_terminal_id {
             self.navigate_to(WorkspaceMainView::Terminal { id: replacement_id }, cx);
         } else if was_active_main_terminal {
-            self.apply_route(WorkspaceMainView::NoActiveTerminal, None, cx);
+            self.apply_route(WorkspaceMainView::Default, None, cx);
         }
 
         let remaining = self.workspace_state.read(cx).terminal_ids.len();
@@ -2118,7 +2587,6 @@ impl Workspace {
             self.workspace_state.update(cx, |state, cx| {
                 if active_terminal_is_stale {
                     state.active_terminal_id = None;
-                    active_terminal::clear_active_input();
                 }
                 if active_main_terminal_is_stale {
                     state
@@ -2142,13 +2610,7 @@ impl Workspace {
 
         self.terminal_state.update(cx, |state, cx| {
             for terminal in &sync.terminals {
-                state.set_title(&terminal.id, terminal.title.clone());
-                if let Some(cwd) = &terminal.cwd {
-                    state.set_cwd(&terminal.id, cwd.clone());
-                }
-                if let Some(icon_name) = &terminal.icon_name {
-                    state.set_icon_name(&terminal.id, icon_name.clone());
-                }
+                state.seed_host_meta(terminal);
             }
             cx.notify();
         });
@@ -2165,6 +2627,7 @@ impl Workspace {
             PendingWorkspaceAction::AddSelectionToChat { target, input } => {
                 self.activate_existing_terminal(target.terminal_id.clone(), cx);
                 self.schedule_add_to_chat_after_activation(target, input, cx);
+                platform_bridge::dismiss_custom_sheet();
             }
             PendingWorkspaceAction::SpawnAgentTerminal {
                 launch_cmd,
@@ -2215,8 +2678,8 @@ impl Workspace {
     fn request_terminal_delete_confirmation(&self, terminal_id: String) {
         let pending_platform_action = self.pending_platform_action.clone();
         platform_bridge::show_alert(
-            "",
             "Delete this terminal?",
+            "",
             vec![
                 AlertButton::destructive("Delete"),
                 AlertButton::cancel("Cancel"),
@@ -2300,24 +2763,32 @@ impl Workspace {
             .unwrap_or_else(|| WorkspaceContent::fallback_mainview_viewport(window))
     }
 
-    /// Pre-create WorkspaceTerminal entities for all known IDs so their
-    /// Open or create the first terminal.
+    /// Pre-create WorkspaceTerminal entities for all known IDs and open the initial terminal.
+    /// If `pending_terminal_after_sync` names a terminal in the synced list, open that one;
+    /// otherwise fall back to the first terminal or create a new one.
     fn initialize_workspace_terminals(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let terminal_ids = self.workspace_state.read(cx).terminal_ids.clone();
-        let first_id = terminal_ids.first().cloned();
 
-        for id in terminal_ids {
-            if self.terminal_by_id(&id, cx).is_none() {
+        for id in &terminal_ids {
+            if self.terminal_by_id(id, cx).is_none() {
                 self.create_terminal_entity(id.clone(), window, cx);
             }
         }
 
-        if let Some(first_id) = first_id {
-            info!("auto-opening first terminal on connect: {}", first_id);
-            self.handle_open_terminal(&OpenTerminal { id: first_id }, window, cx);
+        let target = self
+            .pending_terminal_after_sync
+            .take()
+            .filter(|id| terminal_ids.contains(id))
+            .or_else(|| terminal_ids.first().cloned());
+
+        if let Some(id) = target {
+            info!("auto-opening terminal on connect: {}", id);
+            self.handle_open_terminal(&OpenTerminal { id }, window, cx);
         } else {
-            info!("no terminals on connect, creating new terminal");
-            self.create_new_terminal("new_session", window, cx);
+            info!("no terminals on connect, showing workspace start");
+            self.workspace_state
+                .update(cx, |state, cx| state.reset_to_default(cx));
+            self.apply_route(WorkspaceMainView::Default, None, cx);
         }
     }
 }
@@ -2329,13 +2800,16 @@ impl Render for Workspace {
             .key_context("workspace")
             .on_action(cx.listener(Self::handle_go_home))
             .on_action(cx.listener(Self::handle_open_quick_action))
+            .on_action(cx.listener(Self::handle_open_file_search))
             .on_action(cx.listener(Self::handle_request_disconnect))
             .on_action(cx.listener(Self::handle_toggle_drawer))
+            .on_action(cx.listener(Self::handle_open_drawer))
             .on_action(cx.listener(Self::handle_close_drawer))
             .on_action(cx.listener(Self::handle_show_connecting))
             .on_action(cx.listener(Self::handle_hide_connecting))
             .on_action(cx.listener(Self::handle_restart_connection))
             .on_action(cx.listener(Self::handle_open_file))
+            .on_action(cx.listener(Self::handle_reveal_in_file_explorer))
             .on_action(cx.listener(Self::handle_add_selection_to_chat))
             .on_action(cx.listener(Self::handle_open_git_diff))
             .on_action(cx.listener(Self::handle_git_stage))
@@ -2354,6 +2828,36 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_close_terminal))
             .size_full()
             .child(self.drawer_host.clone())
+            .when(self.file_search_open, |el| {
+                let panel = self.file_search.clone();
+                el.child(
+                    deferred(
+                        div()
+                            .id("file-search-overlay")
+                            .occlude()
+                            .absolute()
+                            .inset_0()
+                            .bg(theme::overlay_backdrop_with_opacity(
+                                theme::overlay_backdrop(cx),
+                                0.4,
+                            ))
+                            .on_pointer_down(cx.listener(|this, _event, window, cx| {
+                                this.dismiss_file_search(window, cx);
+                            }))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top(px(status_bar_inset() + 60.0))
+                                    .left(px(theme::SPACING_LG))
+                                    .right(px(theme::SPACING_LG))
+                                    .flex()
+                                    .justify_center()
+                                    .child(div().w_full().max_w(px(560.0)).child(panel)),
+                            ),
+                    )
+                    .with_priority(1000),
+                )
+            })
     }
 }
 
@@ -2451,6 +2955,7 @@ mod tests {
                 arch: Some("aarch64".into()),
                 os_version: Some("26.0".into()),
                 host_version: Some("0.1.1".into()),
+                delta_pubkey: [7; 32],
                 terminals: Vec::new(),
             },
             sync_ms: 7,
@@ -2604,11 +3109,11 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
-    fn reconnect_sync_preserves_no_active_terminal_empty_state() {
-        assert!(!should_initialize_terminals_after_sync(
+    fn reconnect_sync_reinitializes_when_host_has_no_terminals() {
+        assert!(should_initialize_terminals_after_sync(
             SyncRefreshMode::Reconnect,
             &[],
-            &WorkspaceMainView::NoActiveTerminal,
+            &WorkspaceMainView::AgentSessions,
         ));
     }
 
@@ -2915,9 +3420,9 @@ impl WorkspaceContent {
         cx.notify();
     }
 
-    pub fn set_no_active_terminal_view(&mut self, cx: &mut Context<Self>) {
+    pub fn set_workspace_start_view(&mut self, cx: &mut Context<Self>) {
         self.subtitle = WorkspaceSubtitle::Default;
-        self.main_view = cx.new(|_cx| NoActiveTerminalView).into();
+        self.main_view = cx.new(|_cx| WorkspaceStart).into();
         cx.notify();
     }
 
@@ -3020,14 +3525,6 @@ impl WorkspaceContent {
         }
 
         self.mainview_bounds = Some(bounds);
-    }
-}
-
-struct NoActiveTerminalView;
-
-impl Render for NoActiveTerminalView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        render_placeholder(_cx, "No active terminal")
     }
 }
 

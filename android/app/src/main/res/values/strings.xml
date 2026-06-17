@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Zedra</string>
+    <!-- Web OAuth client ID from google-services.json (client_type 3). Used as
+         serverClientId in Credential Manager so the returned ID token can be
+         verified by the Delta server. -->
+    <string name="google_web_client_id">170964208395-3ueelu5a0uc3l0vlorn2o8tbhrodu4qt.apps.googleusercontent.com</string>
 </resources>

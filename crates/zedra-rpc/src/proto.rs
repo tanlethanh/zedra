@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 use irpc::channel::{mpsc, oneshot};
 use irpc::rpc_requests;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Protocol enum
@@ -190,16 +191,50 @@ pub enum ZedraProto {
     /// gated on the client by `host_version`.
     #[rpc(tx = oneshot::Sender<TermCreateResult>)]
     TermCreateV2(TermCreateReqV2),
+
+    /// Read an agent's host-side config/memory files (read-only).
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<AgentFilesResult>)]
+    AgentFiles(AgentFilesReq),
+
+    /// Search files and directories by name under a workspace path.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<FsSearchResult>)]
+    FsSearch(FsSearchReq),
+
+    /// Client notifies host of its foreground/background state.
+    /// Host uses this to decide whether to send Delta push notifications.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<SetAppStateResult>)]
+    SetAppState(SetAppStateReq),
+
+    /// Client reports its Delta stack/node info to the host so the host can
+    /// send push notifications without requiring the host to be signed in.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<SetClientDeltaInfoResult>)]
+    SetClientDeltaInfo(SetClientDeltaInfoReq),
+
+    /// Client clears the host's in-memory Delta binding when it signs out or
+    /// otherwise loses a signed-in Delta identity.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<ClearClientDeltaInfoResult>)]
+    ClearClientDeltaInfo(ClearClientDeltaInfoReq),
 }
 
 // ---------------------------------------------------------------------------
 // ALPN protocol identifier
 // ---------------------------------------------------------------------------
 
-pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/2";
+pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/3";
 
 /// Default page size for `FsList` requests (host uses this when `limit == 0`).
 pub const FS_LIST_DEFAULT_LIMIT: u32 = 50;
+/// Default result cap for host-side file search.
+pub const FS_SEARCH_DEFAULT_LIMIT: u32 = 100;
+/// Maximum result cap for host-side file search.
+pub const FS_SEARCH_MAX_LIMIT: u32 = 200;
+/// Maximum filesystem entries visited for one host-side file search.
+pub const FS_SEARCH_MAX_VISITED_ENTRIES: u32 = 20_000;
 /// Default page size for host-built docs tree requests.
 pub const FS_DOCS_TREE_DEFAULT_LIMIT: u32 = 200;
 /// Maximum page size for host-built docs tree requests.
@@ -442,11 +477,40 @@ pub struct SyncSessionResult {
     pub arch: Option<String>,
     pub os_version: Option<String>,
     pub host_version: Option<String>,
+    /// Dedicated host Delta node authorization public key.
+    pub delta_pubkey: [u8; 32],
     /// Ordered by host-owned terminal order. Creation order is the default.
     pub terminals: Vec<TerminalSyncEntry>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Live state of a managed agent running in a terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AgentState {
+    /// No agent activity; initial state or after idle timeout.
+    #[default]
+    Idle,
+    /// Agent is processing a user prompt.
+    Running,
+    /// Agent is waiting for the user to approve a permission request.
+    WaitingApproval,
+    /// Agent finished its last task.
+    Completed,
+    /// Agent encountered an error.
+    Error,
+}
+
+/// Terminal shell run state tracked from shell-integration OSC events.
+/// Shared by the host's terminal metadata, the sync wire format, and the
+/// client's display state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TermShellState {
+    #[default]
+    Unknown,
+    Idle,
+    Running,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TerminalSyncEntry {
     /// Opaque host-generated UUID string.
     pub id: String,
@@ -456,6 +520,17 @@ pub struct TerminalSyncEntry {
     pub cwd: Option<String>,
     #[serde(default)]
     pub icon_name: Option<String>,
+    /// Foreground command line; survives prompt-ready between agent turns,
+    /// cleared on command end. Clients derive the agent identity (kind/icon)
+    /// from this after reconnect.
+    #[serde(default)]
+    pub agent_command: Option<String>,
+    #[serde(default)]
+    pub shell_state: TermShellState,
+    #[serde(default)]
+    pub last_exit_code: Option<i32>,
+    #[serde(default)]
+    pub agent_state: AgentState,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -509,6 +584,60 @@ pub struct FsListResult {
     pub total: u32,
     pub has_more: bool,
     pub error: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsSearchReq {
+    pub path: String,
+    pub query: String,
+    pub limit: u32,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsSearchResult {
+    pub entries: Vec<FsSearchEntry>,
+    pub truncated: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetAppStateReq {
+    pub in_foreground: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetAppStateResult {}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetClientDeltaInfoReq {
+    pub delta_url: String,
+    pub stack_id: Uuid,
+    pub client_node_id: Uuid,
+    pub host_node_id: Uuid,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetClientDeltaInfoResult {}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClearClientDeltaInfoReq {}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClearClientDeltaInfoResult {}
+
+/// A single fuzzy-search hit. `match_indices` are the host matcher's matched
+/// character positions into `rel_path`, so the client highlights exactly what
+/// the host scored instead of re-running a divergent matcher.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsSearchEntry {
+    /// Absolute path, used to open the file.
+    pub path: String,
+    /// Search-root-relative path; the string `match_indices` reference. The
+    /// filename is its last component, so it is not sent separately.
+    pub rel_path: String,
+    pub is_dir: bool,
+    /// Sorted, deduplicated character indices into `rel_path` that matched.
+    pub match_indices: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -676,6 +805,23 @@ pub enum HostEvent {
     FsChanged { path: String },
     /// Cached managed-agent summary updated after an async fetch (for example CLI version).
     AgentInfoChanged { info: AgentSummary },
+    /// A hook event fired by a managed agent (Claude Code, Codex, etc.) in a terminal.
+    /// Carries the raw event name and the agent's original JSON payload so the
+    /// app-side handler for each agent can parse what it needs directly.
+    /// Payload is a raw JSON string — postcard cannot serialize `serde_json::Value`
+    /// directly (unknown-length maps/arrays are unsupported).
+    AgentHookReceived {
+        agent_kind: AgentKind,
+        event_name: String,
+        payload: String,
+    },
+    /// Agent state changed for a terminal (derived from hook events).
+    AgentStateChanged {
+        terminal_id: String,
+        /// The agent's own session identifier (e.g. Claude conversation id, Codex thread id).
+        agent_session_id: String,
+        state: AgentState,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -962,11 +1108,22 @@ pub struct AiPromptResult {
 // Managed AI agent types
 // ---------------------------------------------------------------------------
 
+/// Managed agent kind.
+///
+/// Wire form is a bare postcard varint discriminant. postcard is not
+/// self-describing, so a discriminant a build lacks fails decode and bricks the
+/// whole enclosing response. Cross-version skew is gated by `ZEDRA_ALPN`: a host
+/// and client only connect on a matching protocol version, so within a version
+/// the variant set is fixed. Append new known variants only; never reorder or
+/// remove, and bump the ALPN when the set changes. A non-versioned forward-compat
+/// decoding scheme is tracked in `docs/PROTOCOL_SPECS.md` §2.4 (issue #140).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum ManagedAgentKind {
+pub enum AgentKind {
     Claude,
     Codex,
     OpenCode,
+    Pi,
+    Hermes,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -983,7 +1140,7 @@ pub struct AgentListResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentSessionsReq {
-    pub kind: ManagedAgentKind,
+    pub kind: AgentKind,
     /// When false, return the host cache populated at daemon start unless missing.
     #[serde(default)]
     pub refresh: bool,
@@ -1002,7 +1159,7 @@ pub struct AgentSessionsResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentResumeReq {
-    pub kind: ManagedAgentKind,
+    pub kind: AgentKind,
     pub session_id: String,
     pub cols: u16,
     pub rows: u16,
@@ -1038,14 +1195,13 @@ pub struct InstalledAgentEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentSummary {
-    pub kind: ManagedAgentKind,
+    pub kind: AgentKind,
     pub display_name: String,
     pub cli: AgentCliSummary,
     pub setup: AgentSetupSummary,
     pub capabilities: AgentCapabilities,
     pub workspace: AgentWorkspaceSummary,
     pub sessions: AgentSessionCounts,
-    pub live: AgentLiveSummary,
     pub last_activity_at: Option<DateTime<Utc>>,
     pub updated_at: DateTime<Utc>,
     pub data_sources: Vec<AgentDataSource>,
@@ -1064,6 +1220,31 @@ pub struct AgentAccountSummary {
 pub struct AgentInfoField {
     pub label: String,
     pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentFilesReq {
+    pub kind: AgentKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct AgentFilesResult {
+    pub files: Vec<AgentFile>,
+    pub error: Option<String>,
+}
+
+/// One host-side config/memory file exposed read-only to the client.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentFile {
+    /// Human label for the UI (e.g. "SOUL.md").
+    pub label: String,
+    /// Absolute host path, for display/context.
+    pub path: String,
+    /// File contents, capped host-side; `truncated` flags when clipped.
+    pub content: String,
+    pub truncated: bool,
+    /// True when the file is absent on the host (content empty).
+    pub missing: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1113,35 +1294,21 @@ pub struct AgentWorkspaceSummary {
 pub struct AgentSessionCounts {
     pub total: usize,
     pub resumable: usize,
-    pub active_live: usize,
     pub latest_session_id: Option<String>,
     pub latest_session_title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AgentLiveSummary {
-    pub active_terminal_ids: Vec<String>,
-    pub pending_action_count: usize,
-    pub latest_event: Option<AgentEventSummary>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentSessionSummary {
-    pub kind: ManagedAgentKind,
+    pub kind: AgentKind,
     pub session_id: String,
     pub title: Option<String>,
     pub cwd: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
     pub last_activity_at: Option<DateTime<Utc>>,
     pub resume: AgentResumeSummary,
-    pub live: AgentSessionLiveSummary,
-    pub provider: AgentProviderSessionInfo,
     pub git: Option<AgentGitSummary>,
     pub usage: Option<AgentUsageSnapshot>,
-    pub counters: AgentSessionCounters,
-    pub flags: AgentSessionFlags,
-    pub data_sources: Vec<AgentDataSource>,
-    pub warnings: Vec<AgentWarning>,
     pub transcript_size_bytes: Option<u64>,
 }
 
@@ -1150,27 +1317,6 @@ pub struct AgentResumeSummary {
     pub available: bool,
     pub unavailable_reason: Option<String>,
     pub action_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AgentSessionLiveSummary {
-    pub terminal_id: Option<String>,
-    pub status: AgentLifecycleStatus,
-    pub pending_action_count: usize,
-    pub current_turn_id: Option<String>,
-    pub latest_event: Option<AgentEventSummary>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AgentProviderSessionInfo {
-    pub model: Option<String>,
-    pub permission_mode: Option<String>,
-    pub cli_version: Option<String>,
-    pub origin: Option<String>,
-    pub source: Option<String>,
-    pub entrypoint: Option<String>,
-    pub native_project_id: Option<String>,
-    pub model_provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1184,7 +1330,7 @@ pub struct AgentGitSummary {
     pub pr_repository: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AgentUsageSnapshot {
     pub context_used_percent: Option<f32>,
     pub total_cost_usd: Option<f64>,
@@ -1198,74 +1344,6 @@ pub struct AgentUsageSnapshot {
     pub rate_limit_five_hour_resets_at: Option<i64>,
     /// Unix seconds at which the 7-day rate-limit window resets. None when not provided by the API.
     pub rate_limit_seven_day_resets_at: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AgentSessionCounters {
-    pub record_count: u64,
-    pub message_count: u64,
-    pub turn_count: u64,
-    pub tool_count: u64,
-    pub tool_failure_count: u64,
-    pub hook_success_count: u64,
-    pub hook_failure_count: u64,
-    pub malformed_record_count: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AgentSessionFlags {
-    pub is_sidechain: bool,
-    pub is_subagent: bool,
-    pub is_archived: bool,
-    pub historical_only: bool,
-    pub live_bound: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AgentEventSummary {
-    pub kind: AgentEventKind,
-    pub status: AgentLifecycleStatus,
-    pub at: Option<DateTime<Utc>>,
-    pub terminal_id: Option<String>,
-    pub session_id: Option<String>,
-    pub turn_id: Option<String>,
-    pub tool_name: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum AgentLifecycleStatus {
-    Unknown,
-    Starting,
-    Running,
-    WaitingForUser,
-    WaitingForPermission,
-    Idle,
-    Completed,
-    Failed,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum AgentEventKind {
-    SessionStarted,
-    SessionUpdated,
-    TurnStarted,
-    TurnCompleted,
-    TurnFailed,
-    TaskCreated,
-    TaskCompleted,
-    TaskFailed,
-    ToolStarted,
-    ToolCompleted,
-    ToolFailed,
-    PermissionRequested,
-    PermissionResolved,
-    Notification,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum AgentActionKind {
-    Confirm,
-    Select,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1445,6 +1523,7 @@ mod tests {
             arch: Some("x86_64".into()),
             os_version: Some("6.12".into()),
             host_version: Some("0.1.1".into()),
+            delta_pubkey: [7u8; 32],
             terminals: vec![TerminalSyncEntry {
                 id: "term-1".into(),
                 position: 0,
@@ -1452,16 +1531,58 @@ mod tests {
                 title: Some("shell".into()),
                 cwd: Some("/workspace".into()),
                 icon_name: Some("codex".into()),
+                agent_command: Some("codex resume".into()),
+                shell_state: TermShellState::Idle,
+                last_exit_code: Some(0),
+                agent_state: AgentState::Idle,
             }],
         };
         let encoded = postcard::to_allocvec(&result).unwrap();
         let decoded: SyncSessionResult = postcard::from_bytes(&encoded).unwrap();
         assert_eq!(decoded.session_id, "sess-1");
         assert_eq!(decoded.session_token, [9u8; 32]);
+        assert_eq!(decoded.delta_pubkey, [7u8; 32]);
         assert_eq!(decoded.terminals.len(), 1);
         assert_eq!(decoded.terminals[0].position, 0);
         assert_eq!(decoded.terminals[0].last_seq, 42);
         assert_eq!(decoded.terminals[0].icon_name.as_deref(), Some("codex"));
+        assert_eq!(
+            decoded.terminals[0].agent_command.as_deref(),
+            Some("codex resume")
+        );
+        assert_eq!(decoded.terminals[0].shell_state, TermShellState::Idle);
+        assert_eq!(decoded.terminals[0].last_exit_code, Some(0));
+    }
+
+    #[test]
+    fn fs_search_wire_types_roundtrip() {
+        let req = FsSearchReq {
+            path: ".".into(),
+            query: "fsr".into(),
+            limit: 20,
+        };
+        let encoded = postcard::to_allocvec(&req).unwrap();
+        let decoded: FsSearchReq = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded, req);
+
+        let entry = FsSearchEntry {
+            path: "/repo/src/file_search.rs".into(),
+            rel_path: "src/file_search.rs".into(),
+            is_dir: false,
+            match_indices: vec![4, 5, 6],
+        };
+        let encoded = postcard::to_allocvec(&entry).unwrap();
+        let decoded: FsSearchEntry = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded, entry);
+
+        let result = FsSearchResult {
+            entries: vec![entry],
+            truncated: true,
+            error: Some("fixture".into()),
+        };
+        let encoded = postcard::to_allocvec(&result).unwrap();
+        let decoded: FsSearchResult = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded, result);
     }
 
     #[test]
@@ -1493,7 +1614,7 @@ mod tests {
         let now = Utc::now();
         let result = AgentListResult {
             agents: vec![AgentSummary {
-                kind: ManagedAgentKind::Claude,
+                kind: AgentKind::Claude,
                 display_name: "Claude".into(),
                 cli: AgentCliSummary {
                     available: true,
@@ -1524,22 +1645,8 @@ mod tests {
                 sessions: AgentSessionCounts {
                     total: 1,
                     resumable: 1,
-                    active_live: 0,
                     latest_session_id: Some("session".into()),
                     latest_session_title: None,
-                },
-                live: AgentLiveSummary {
-                    active_terminal_ids: vec!["term".into()],
-                    pending_action_count: 1,
-                    latest_event: Some(AgentEventSummary {
-                        kind: AgentEventKind::PermissionRequested,
-                        status: AgentLifecycleStatus::WaitingForPermission,
-                        at: Some(now),
-                        terminal_id: Some("term".into()),
-                        session_id: Some("session".into()),
-                        turn_id: Some("turn".into()),
-                        tool_name: Some("Bash".into()),
-                    }),
                 },
                 last_activity_at: Some(now),
                 updated_at: now,
@@ -1560,10 +1667,26 @@ mod tests {
     }
 
     #[test]
+    fn set_client_delta_info_roundtrip() {
+        let req = SetClientDeltaInfoReq {
+            delta_url: "https://delta.example.com".into(),
+            stack_id: Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+            client_node_id: Uuid::parse_str("33333333-3333-3333-3333-333333333333").unwrap(),
+            host_node_id: Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap(),
+        };
+        let encoded = postcard::to_allocvec(&req).unwrap();
+        let decoded: SetClientDeltaInfoReq = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded.delta_url, req.delta_url);
+        assert_eq!(decoded.stack_id, req.stack_id);
+        assert_eq!(decoded.client_node_id, req.client_node_id);
+        assert_eq!(decoded.host_node_id, req.host_node_id);
+    }
+
+    #[test]
     fn agent_session_summary_roundtrip() {
         let now = Utc::now();
         let session = AgentSessionSummary {
-            kind: ManagedAgentKind::Codex,
+            kind: AgentKind::Codex,
             session_id: "019e".into(),
             title: Some("Work session".into()),
             cwd: Some("/repo".into()),
@@ -1573,23 +1696,6 @@ mod tests {
                 available: true,
                 unavailable_reason: None,
                 action_id: Some("codex:019e".into()),
-            },
-            live: AgentSessionLiveSummary {
-                terminal_id: Some("term".into()),
-                status: AgentLifecycleStatus::Running,
-                pending_action_count: 0,
-                current_turn_id: Some("turn".into()),
-                latest_event: None,
-            },
-            provider: AgentProviderSessionInfo {
-                model: Some("gpt-5.3-codex".into()),
-                permission_mode: Some("on-request".into()),
-                cli_version: Some("0.130.0".into()),
-                origin: Some("codex_cli".into()),
-                source: Some("cli".into()),
-                entrypoint: None,
-                native_project_id: None,
-                model_provider: Some("openai".into()),
             },
             git: Some(AgentGitSummary {
                 branch: Some("main".into()),
@@ -1612,25 +1718,6 @@ mod tests {
                 rate_limit_five_hour_resets_at: None,
                 rate_limit_seven_day_resets_at: None,
             }),
-            counters: AgentSessionCounters {
-                record_count: 3,
-                message_count: 0,
-                turn_count: 1,
-                tool_count: 0,
-                tool_failure_count: 0,
-                hook_success_count: 0,
-                hook_failure_count: 0,
-                malformed_record_count: 0,
-            },
-            flags: AgentSessionFlags {
-                is_sidechain: false,
-                is_subagent: false,
-                is_archived: false,
-                historical_only: true,
-                live_bound: false,
-            },
-            data_sources: vec![AgentDataSource::HistoricalScan],
-            warnings: vec![],
             transcript_size_bytes: Some(4096),
         };
 

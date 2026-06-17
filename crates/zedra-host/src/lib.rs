@@ -6,12 +6,16 @@ pub mod agent_claude;
 #[cfg(unix)]
 mod agent_claude_probe;
 pub mod agent_codex;
+pub mod agent_hermes;
+pub mod agent_hook_recv;
 pub mod agent_installed;
 pub mod agent_opencode;
+pub mod agent_pi;
 pub mod agent_setup;
 pub mod agent_utils;
 pub mod api;
 pub mod client;
+pub mod delta;
 pub mod docs_tree;
 pub mod fs;
 pub mod ga4;

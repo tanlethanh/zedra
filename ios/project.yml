@@ -22,7 +22,9 @@ targets:
       - path: Zedra
         excludes:
           - GoogleService-Info.plist
+      - path: Shared
     dependencies:
+      - target: ZedraTaskWidget
       - target: ZedraRustFFI
         link: false
       - framework: ZedraFFI.xcframework
@@ -41,6 +43,7 @@ targets:
     info:
       path: Zedra/Info.plist
       properties:
+        NSSupportsLiveActivities: true
         CFBundleURLTypes:
           - CFBundleURLSchemes: [zedra]
             CFBundleURLName: dev.zedra.app
@@ -69,6 +72,38 @@ targets:
               ;;
           esac
         basedOnDependencyAnalysis: false
+      - name: "Google OAuth URL Scheme"
+        script: |
+          set -eu
+
+          GOOGLE_SERVICE_PLIST="${SRCROOT}/Zedra/GoogleService-Info.plist"
+          APP_INFO_PLIST="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"
+
+          if [ ! -f "$GOOGLE_SERVICE_PLIST" ]; then
+            echo "warning: Missing $GOOGLE_SERVICE_PLIST. Delta Google sign-in is disabled for this build."
+            exit 0
+          fi
+
+          REVERSED_CLIENT_ID="$(/usr/libexec/PlistBuddy -c 'Print :REVERSED_CLIENT_ID' "$GOOGLE_SERVICE_PLIST" 2>/dev/null || true)"
+          if [ -z "$REVERSED_CLIENT_ID" ]; then
+            echo "error: Missing REVERSED_CLIENT_ID in $GOOGLE_SERVICE_PLIST."
+            exit 1
+          fi
+
+          /usr/libexec/PlistBuddy -c "Delete :CFBundleURLTypes" "$APP_INFO_PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes array" "$APP_INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0 dict" "$APP_INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLName string dev.zedra.app" "$APP_INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" "$APP_INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string zedra" "$APP_INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:1 dict" "$APP_INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:1:CFBundleURLName string google" "$APP_INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:1:CFBundleURLSchemes array" "$APP_INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:1:CFBundleURLSchemes:0 string $REVERSED_CLIENT_ID" "$APP_INFO_PLIST"
+        basedOnDependencyAnalysis: false
+        inputFiles:
+          - "$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)"
+          - "$(SRCROOT)/Zedra/GoogleService-Info.plist"
       - name: "Firebase Crashlytics dSYM Upload"
         script: |
           set -eu
@@ -96,10 +131,11 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
-        MARKETING_VERSION: "1.3"
-        CURRENT_PROJECT_VERSION: "11"
+        MARKETING_VERSION: "1.4"
+        CURRENT_PROJECT_VERSION: "12"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: GHV27CNR5U
+        CODE_SIGN_ENTITLEMENTS: Zedra/Zedra.entitlements
         INFOPLIST_KEY_CFBundleDisplayName: Zedra
         INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.developer-tools"
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
@@ -117,6 +153,7 @@ targets:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: dev.zedra.app.debug
           INFOPLIST_KEY_CFBundleDisplayName: "Zedra Dev"
+          APS_ENVIRONMENT: development
           COPY_PHASE_STRIP: NO
           DEBUG_INFORMATION_FORMAT: dwarf
           ENABLE_TESTABILITY: YES
@@ -127,6 +164,7 @@ targets:
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"
         Release:
           PRODUCT_BUNDLE_IDENTIFIER: dev.zedra.app
+          APS_ENVIRONMENT: production
           COPY_PHASE_STRIP: YES
           DEBUG_INFORMATION_FORMAT: "dwarf-with-dsym"
           DEPLOYMENT_POSTPROCESSING: YES
@@ -138,6 +176,35 @@ targets:
           SWIFT_COMPILATION_MODE: wholemodule
           SWIFT_OPTIMIZATION_LEVEL: "-O"
           VALIDATE_PRODUCT: YES
+
+  ZedraTaskWidget:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "16.1"
+    sources:
+      - path: ZedraTaskWidget
+      - path: Shared
+    dependencies:
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+    info:
+      path: ZedraTaskWidget/Info.plist
+      properties:
+        CFBundleDisplayName: "Zedra Tasks"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: GHV27CNR5U
+        SKIP_INSTALL: YES
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: dev.zedra.app.debug.ZedraTaskWidget
+        Release:
+          PRODUCT_BUNDLE_IDENTIFIER: dev.zedra.app.ZedraTaskWidget
 
 schemes:
   Zedra:

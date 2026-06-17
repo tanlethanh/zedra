@@ -230,6 +230,27 @@ The main app and the sheet content run inside the same GPUI app runtime.
 
 Current custom sheet content reads shared state from the main app, then renders that state inside the native sheet host.
 
+## Routing actions back to the workspace
+
+Sheet content runs in a detached window, so its actions and events do not bubble
+to the main window's `Workspace`. Route back through the `ActiveWorkspace`
+ambient global instead of threading a `WeakEntity<Workspace>` through every sheet
+owner.
+
+- `ActiveWorkspace` (`crates/zedra/src/workspace.rs`) holds the foreground
+  workspace's weak handle. `Workspaces` keeps it in sync after every
+  `active_index` change via `sync_active_workspace`.
+- Sheet content resolves the target with `ActiveWorkspace::get(cx)` and calls the
+  workspace method directly (window-agnostic), e.g. the file-preview sheet reads
+  its own window's read-only selection and routes "Add to Chat" through
+  `Workspace::present_add_to_chat`.
+- Anything genuinely window-bound (clearing the read-only selection cache) stays
+  on the sheet side; only the window-free workspace action crosses over.
+
+This keeps detached surfaces workspace-aware without per-owner plumbing, so new
+sheets (file preview from terminal links or agent-detail files, future surfaces)
+reach the workspace the same way.
+
 ## Practical rule
 
 Use native components for native behavior.

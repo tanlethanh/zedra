@@ -5,6 +5,14 @@ import ZedraFFI
 @_silgen_name("gpui_ios_set_keyboard_accessory_view")
 private func gpui_ios_set_keyboard_accessory_view(_ viewPtr: UnsafeMutableRawPointer?)
 
+@_silgen_name("gpui_ios_handle_keyboard_accessory_action")
+private func gpui_ios_handle_keyboard_accessory_action(
+    _ windowPtr: UnsafeMutableRawPointer?, _ action: UnsafePointer<CChar>?
+) -> Bool
+
+@_silgen_name("gpui_ios_hide_keyboard")
+private func gpui_ios_hide_keyboard(_ windowPtr: UnsafeMutableRawPointer?)
+
 @_silgen_name("gpui_ios_request_frame_forced")
 private func gpui_ios_request_frame_forced(_ windowPtr: UnsafeMutableRawPointer?)
 
@@ -18,11 +26,11 @@ private func gpui_ios_set_software_keyboard_visible(_ visible: Bool)
 @_silgen_name("zedra_firebase_initialize")
 private func zedra_firebase_initialize()
 
-@_silgen_name("zedra_ios_send_key_input")
-private func zedra_ios_send_key_input(_ key: UnsafePointer<CChar>)
-
 @_silgen_name("zedra_ios_app_will_terminate")
 private func zedra_ios_app_will_terminate()
+
+@_silgen_name("zedra_ios_app_will_enter_foreground")
+private func zedra_ios_app_will_enter_foreground()
 
 final class GPUIRuntimeController: NSObject {
     private static weak var activeController: GPUIRuntimeController?
@@ -31,6 +39,15 @@ final class GPUIRuntimeController: NSObject {
     private var gpuiWindow: UnsafeMutableRawPointer?
     private var displayLink: CADisplayLink?
     private let keyboardAccessoryController = KeyboardSupporter()
+
+    /// Dismiss the main GPUI window's software keyboard. Manual-focus surfaces
+    /// (the terminal) keep `keyboard_session_requested` set, so a native sheet
+    /// presented over them leaves the keyboard up and re-shows it each frame.
+    /// Clearing the request here lets a presentation resign it cleanly.
+    static func dismissMainWindowKeyboard() {
+        guard let window = activeController?.gpuiWindow else { return }
+        gpui_ios_hide_keyboard(window)
+    }
 
     func launch() {
         Self.activeController = self
@@ -72,10 +89,11 @@ final class GPUIRuntimeController: NSObject {
     }
 
     func handleOpenURL(_ url: URL) {
-        url.absoluteString.withCString { zedra_deeplink_received($0) }
+        ZedraDeeplink.route(url: url)
     }
 
     func applicationWillEnterForeground() {
+        zedra_ios_app_will_enter_foreground()
         gpui_ios_will_enter_foreground(gpuiApp)
         if displayLink == nil, gpuiWindow != nil {
             startDisplayLink()
@@ -154,7 +172,13 @@ final class GPUIRuntimeController: NSObject {
     }
 
     private func sendKeyboardAccessoryKey(_ key: String) {
-        key.withCString { zedra_ios_send_key_input($0) }
+        guard let gpuiWindow else { return }
+        key.withCString { action in
+            _ = gpui_ios_handle_keyboard_accessory_action(gpuiWindow, action)
+        }
+        if key == "dismiss_keyboard" {
+            Self.dismissMainWindowKeyboard()
+        }
     }
 
     @objc

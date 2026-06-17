@@ -3,6 +3,7 @@ use std::ops::Range;
 use gpui::*;
 use smallvec::SmallVec;
 
+use crate::keyboard_accessory::AccessoryKey;
 use crate::selection::TerminalSelectionDocument;
 use crate::terminal::Terminal;
 
@@ -50,6 +51,10 @@ impl TerminalInputHandler {
     }
 
     fn accepts_text_input_policy() -> bool {
+        true
+    }
+
+    fn keyboard_accessory_policy() -> bool {
         true
     }
 
@@ -1058,6 +1063,26 @@ impl InputHandler for TerminalInputHandler {
 
     fn handles_native_selection(&mut self, _window: &mut Window, cx: &mut App) -> bool {
         self.selection_enabled || self.using_selection_document(cx)
+    }
+
+    fn keyboard_accessory(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
+        Self::keyboard_accessory_policy()
+    }
+
+    fn handle_keyboard_accessory_action(
+        &mut self,
+        action: &str,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        let Some(keystroke) = AccessoryKey::from_name(action).map(|action| action.keystroke())
+        else {
+            return false;
+        };
+        let entity = self.entity.clone();
+        entity
+            .update(cx, |term, _cx| term.handle_keystroke(&keystroke))
+            .is_ok()
     }
 
     fn text_input_traits(

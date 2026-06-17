@@ -1,5 +1,5 @@
 use gpui::*;
-use tracing::error;
+use tracing::{error, warn};
 use zedra_session::SessionHandle;
 use zedra_terminal::terminal::{TerminalHyperlink, TerminalHyperlinkTarget};
 
@@ -9,6 +9,9 @@ use crate::fonts;
 use crate::native_presentation;
 use crate::placeholder::render_placeholder;
 use crate::theme;
+use crate::workspace::ActiveWorkspace;
+use crate::workspace_action::AddSelectionToChat;
+use crate::workspace_editor::{EditorSelection, resolve_read_only_selection};
 use crate::workspace_state::WorkspaceState;
 
 #[derive(Clone, Debug)]
@@ -26,7 +29,15 @@ enum PreviewContent {
     Markdown,
 }
 
-pub struct TerminalPreviewView {
+/// File preview rendered in a native sheet. Shared by the terminal (file links,
+/// loaded lazily via [`open_hyperlink`]) and the agent detail view (read-only
+/// config/memory files whose contents arrive with the listing, shown via
+/// [`open_content`]). Both render through the same editor/markdown views and
+/// native scroll-boundary handoff.
+///
+/// [`open_hyperlink`]: FilePreviewView::open_hyperlink
+/// [`open_content`]: FilePreviewView::open_content
+pub struct FilePreviewView {
     session_handle: SessionHandle,
     workspace_state: Entity<WorkspaceState>,
     editor_view: Entity<EditorView>,
@@ -40,7 +51,7 @@ pub struct TerminalPreviewView {
     open_epoch: u64,
 }
 
-impl TerminalPreviewView {
+impl FilePreviewView {
     pub fn new(
         session_handle: SessionHandle,
         workspace_state: Entity<WorkspaceState>,
@@ -59,6 +70,37 @@ impl TerminalPreviewView {
             read_task: None,
             open_epoch: 0,
         }
+    }
+
+    /// Resolve this sheet window's active read-only selection into an
+    /// [`EditorSelection`] against the preview's own editor/markdown views.
+    fn selected_agent_context(&self, window: &Window, cx: &App) -> Option<EditorSelection> {
+        if !matches!(self.state, PreviewState::Loaded) {
+            return None;
+        }
+        let path = self.active_path.clone()?;
+        resolve_read_only_selection(&self.editor_view, &self.markdown_view, path, window, cx)
+    }
+
+    fn handle_add_selection_to_chat(
+        &mut self,
+        _action: &AddSelectionToChat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(selection) = self.selected_agent_context(window, cx) else {
+            warn!("agent: add selection to chat (preview) missing selection");
+            return;
+        };
+        // The selection lives in this sheet window; clear it here, then route to
+        // the foreground workspace's agent-target picker via ambient context.
+        window.clear_read_only_selection_cache();
+        let Some(workspace) = ActiveWorkspace::get(cx) else {
+            return;
+        };
+        workspace.update(cx, |workspace, cx| {
+            workspace.present_add_to_chat(selection, cx);
+        });
     }
 
     pub fn open_hyperlink(&mut self, hyperlink: TerminalHyperlink, cx: &mut Context<Self>) {
@@ -224,6 +266,99 @@ impl TerminalPreviewView {
         }
     }
 
+    /// Preview a file whose contents are already in hand, with no `fs/read`.
+    /// Used for files sourced outside the workspace — e.g. an agent's read-only
+    /// config/memory files delivered alongside its listing. `path` drives only
+    /// the editor-vs-markdown choice and syntax detection.
+    pub fn open_content(
+        &mut self,
+        title: impl Into<SharedString>,
+        subtitle: impl Into<SharedString>,
+        path: &str,
+        content: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_epoch = self.open_epoch.wrapping_add(1);
+        let epoch = self.open_epoch;
+        native_presentation::set_sheet_content_at_top(true);
+
+        let prev_task = self.read_task.take();
+        drop(prev_task);
+
+        self.active_path = Some(path.to_string());
+        self.title = title.into();
+        self.subtitle = subtitle.into();
+        self.content = preview_content_for_path(path);
+        self.state = PreviewState::Loading;
+        self.update_sheet_scroll_boundary(cx);
+        cx.notify();
+
+        self.apply_loaded_content(epoch, path.to_string(), content, cx);
+    }
+
+    /// Render already-loaded `content` into the active view and parse syntax /
+    /// markdown in the background. The caller must have set `active_path`,
+    /// `content`, and bumped `open_epoch` first. Installs a fresh `read_task`,
+    /// so call it from a main-thread context — never from inside the current
+    /// `read_task`, which the assignment would cancel.
+    fn apply_loaded_content(
+        &mut self,
+        epoch: u64,
+        path: String,
+        content: String,
+        cx: &mut Context<Self>,
+    ) {
+        match self.content {
+            PreviewContent::Editor => {
+                self.state = PreviewState::Loaded;
+                let filename = self.title.to_string();
+                let content_for_syntax = content.clone();
+                self.editor_view.update(cx, |editor_view, _cx| {
+                    editor_view.set_content_with_initial_line(&filename, content, None);
+                    native_presentation::set_sheet_content_at_top(
+                        editor_view.is_scrolled_to_file_top(),
+                    );
+                });
+                self.update_sheet_scroll_boundary(cx);
+                cx.notify();
+                self.read_task = Some(cx.spawn(async move |this, cx| {
+                    let parsed = cx
+                        .background_spawn(async move {
+                            ParsedEditorSyntax::build(&filename, content_for_syntax)
+                        })
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        if this.should_ignore_load_result(epoch, &path, PreviewContent::Editor) {
+                            return;
+                        }
+                        this.editor_view.update(cx, |editor_view, _cx| {
+                            editor_view.apply_parsed_syntax(parsed)
+                        });
+                        cx.notify();
+                    });
+                }));
+            }
+            PreviewContent::Markdown => {
+                self.read_task = Some(cx.spawn(async move |this, cx| {
+                    let parsed = cx
+                        .background_spawn(async move { parse_markdown_source(content) })
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        if this.should_ignore_load_result(epoch, &path, PreviewContent::Markdown) {
+                            return;
+                        }
+                        this.state = PreviewState::Loaded;
+                        this.markdown_view.update(cx, |markdown_view, cx| {
+                            markdown_view.set_parsed_source(parsed, cx);
+                        });
+                        this.update_sheet_scroll_boundary(cx);
+                        cx.notify();
+                    });
+                }));
+            }
+        }
+    }
+
     fn should_ignore_load_result(&self, epoch: u64, path: &str, content: PreviewContent) -> bool {
         self.open_epoch != epoch
             || self.active_path.as_deref() != Some(path)
@@ -253,7 +388,7 @@ fn preview_content_for_path(path: &str) -> PreviewContent {
     }
 }
 
-impl Render for TerminalPreviewView {
+impl Render for FilePreviewView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let body: AnyElement = match &self.state {
             PreviewState::Idle => {
@@ -269,7 +404,7 @@ impl Render for TerminalPreviewView {
             PreviewState::Loaded => match self.content {
                 PreviewContent::Editor => self.editor_view.clone().into_any_element(),
                 PreviewContent::Markdown => div()
-                    .id("terminal-preview-markdown-viewport")
+                    .id("file-preview-markdown-viewport")
                     .size_full()
                     .flex()
                     .flex_col()
@@ -280,7 +415,8 @@ impl Render for TerminalPreviewView {
         };
 
         div()
-            .id("terminal-preview-sheet")
+            .id("file-preview-sheet")
+            .on_action(cx.listener(Self::handle_add_selection_to_chat))
             .size_full()
             .bg(rgb(theme::bg_primary(cx)))
             .flex()
@@ -314,7 +450,7 @@ impl Render for TerminalPreviewView {
             )
             .child(
                 div()
-                    .id("terminal-preview-body")
+                    .id("file-preview-body")
                     .flex_1()
                     .min_h_0()
                     .flex()

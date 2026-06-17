@@ -156,11 +156,8 @@ pub mod view_telemetry {
         "Workspace Agent Detail",
         "AgentDetail",
     );
-    pub const WORKSPACE_NO_ACTIVE_TERMINAL: ViewDescriptor = ViewDescriptor::new(
-        "workspace_no_active_terminal",
-        "Workspace No Active Terminal",
-        "NoActiveTerminalView",
-    );
+    pub const WORKSPACE_START: ViewDescriptor =
+        ViewDescriptor::new("workspace_start", "Workspace Start", "WorkspaceStart");
 
     pub const DRAWER_FILES: ViewDescriptor =
         ViewDescriptor::new("drawer_files", "Drawer Files", "WorkspaceDrawer");
@@ -176,12 +173,12 @@ pub mod view_telemetry {
     pub const CUSTOM_SHEET_EDITOR: ViewDescriptor = ViewDescriptor::new(
         "custom_sheet_editor",
         "Custom Sheet Editor",
-        "TerminalPreviewView",
+        "FilePreviewView",
     );
     pub const CUSTOM_SHEET_MARKDOWN: ViewDescriptor = ViewDescriptor::new(
         "custom_sheet_markdown",
         "Custom Sheet Markdown",
-        "TerminalPreviewView",
+        "FilePreviewView",
     );
     pub const CUSTOM_SHEET_DEMO: ViewDescriptor =
         ViewDescriptor::new("custom_sheet_demo", "Custom Sheet Demo", "SheetDemoView");
@@ -204,14 +201,13 @@ pub mod view_telemetry {
 
     pub fn workspace_main_view(view: &WorkspaceMainView) -> Option<ViewDescriptor> {
         match view {
-            WorkspaceMainView::Default => None,
+            WorkspaceMainView::Default => Some(WORKSPACE_START),
             WorkspaceMainView::File { path } => Some(workspace_file(path)),
             WorkspaceMainView::GitDiff { .. } => Some(WORKSPACE_GIT_DIFF),
             WorkspaceMainView::Terminal { .. } => Some(WORKSPACE_TERMINAL),
             WorkspaceMainView::AgentSessions => Some(WORKSPACE_AGENT_SESSIONS),
             WorkspaceMainView::AgentManage => Some(WORKSPACE_AGENT_MANAGE),
             WorkspaceMainView::AgentDetail { .. } => Some(WORKSPACE_AGENT_DETAIL),
-            WorkspaceMainView::NoActiveTerminal => Some(WORKSPACE_NO_ACTIVE_TERMINAL),
         }
     }
 
@@ -256,14 +252,13 @@ pub mod view_telemetry {
                 Some(WORKSPACE_TERMINAL)
             );
             assert_eq!(
-                workspace_main_view(&WorkspaceMainView::NoActiveTerminal),
-                Some(WORKSPACE_NO_ACTIVE_TERMINAL)
-            );
-            assert_eq!(
                 workspace_main_view(&WorkspaceMainView::AgentManage),
                 Some(WORKSPACE_AGENT_MANAGE)
             );
-            assert_eq!(workspace_main_view(&WorkspaceMainView::Default), None);
+            assert_eq!(
+                workspace_main_view(&WorkspaceMainView::Default),
+                Some(WORKSPACE_START)
+            );
         }
 
         #[test]

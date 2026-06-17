@@ -100,9 +100,9 @@ impl GitRepo {
             if line.len() < 3 {
                 continue;
             }
-            if line.starts_with("?? ") {
+            if let Some(path) = line.strip_prefix("?? ") {
                 entries.push(StatusEntry {
-                    path: parse_status_path(&line[3..]),
+                    path: parse_status_path(path),
                     staged_status: None,
                     unstaged_status: Some(FileStatus::Untracked),
                 });

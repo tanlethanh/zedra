@@ -1,5 +1,5 @@
 use gpui::Action;
-use zedra_rpc::proto::ManagedAgentKind;
+use zedra_rpc::proto::AgentKind;
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
@@ -8,6 +8,12 @@ pub struct GoHome;
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
 pub struct OpenFile {
+    pub path: String,
+}
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct RevealInFileExplorer {
     pub path: String,
 }
 
@@ -101,7 +107,7 @@ pub struct OpenAgentManage;
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
 pub struct OpenAgentDetail {
-    pub kind: ManagedAgentKind,
+    pub kind: AgentKind,
 }
 
 #[derive(Clone, PartialEq, Action)]
@@ -118,7 +124,7 @@ pub struct SpawnAgentTerminal {
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
 pub struct ResumeAgentSession {
-    pub kind: ManagedAgentKind,
+    pub kind: AgentKind,
     pub session_id: String,
 }
 
@@ -140,7 +146,15 @@ pub struct ToggleDrawer;
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
+pub struct OpenDrawer;
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
 pub struct OpenQuickAction;
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct OpenFileSearch;
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]

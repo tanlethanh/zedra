@@ -314,4 +314,19 @@ mod tests {
         assert!(output.contains("1m5s"));
         assert!(output.contains("session-full-id"));
     }
+
+    #[test]
+    fn terminal_created_output_summarizes_api_response() {
+        let response = serde_json::json!({
+            "id": "terminal-id",
+            "session_id": "session-id"
+        });
+
+        let output = render_terminal_created_output(&response, Some("claude"));
+
+        assert!(output.contains("Terminal Opened"));
+        assert!(output.contains("  ID       terminal-id"));
+        assert!(output.contains("  Session  session-id"));
+        assert!(output.contains("  Command  claude"));
+    }
 }

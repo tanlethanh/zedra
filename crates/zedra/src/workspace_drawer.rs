@@ -112,7 +112,7 @@ impl WorkspaceDrawer {
         });
 
         Self {
-            current_tab: DrawerTab::FileExplorer,
+            current_tab: DrawerTab::Terminals,
             file_display_mode: FileDisplayMode::Explorer,
             focus_handle: cx.focus_handle(),
             file_explorer,
@@ -132,6 +132,16 @@ impl WorkspaceDrawer {
             return;
         }
         self.current_tab = tab;
+        self.record_current_view();
+        cx.notify();
+    }
+
+    pub fn reveal_path(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.current_tab = DrawerTab::FileExplorer;
+        self.file_display_mode = FileDisplayMode::Explorer;
+        self.file_explorer.update(cx, |file_explorer, cx| {
+            file_explorer.reveal_path(path, window, cx)
+        });
         self.record_current_view();
         cx.notify();
     }
@@ -298,6 +308,31 @@ impl WorkspaceDrawer {
             )
     }
 
+    /// Opens the global floating file search (handled at the workspace root).
+    fn file_search_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("file-search-open")
+            .w(px(32.0))
+            .h(px(32.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hit_slop(px(8.0))
+            .on_pointer_down(|_, _, cx| cx.stop_propagation())
+            .on_press(cx.listener(|_this, _event, window, cx| {
+                platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+                window.dispatch_action(workspace_action::OpenFileSearch.boxed_clone(), cx);
+                cx.stop_propagation();
+            }))
+            .child(
+                svg()
+                    .path("icons/search.svg")
+                    .size(px(theme::ICON_XS))
+                    .text_color(rgb(theme::text_muted(cx))),
+            )
+    }
+
     fn render_file_mode_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("file-display-mode-toggle")
@@ -316,6 +351,7 @@ impl WorkspaceDrawer {
             .flex_col()
             .child(self.file_mode_button(FileDisplayMode::Explorer, cx))
             .child(self.file_mode_button(FileDisplayMode::DocsTree, cx))
+            .child(self.file_search_button(cx))
     }
 }
 

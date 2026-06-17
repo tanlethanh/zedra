@@ -12,7 +12,8 @@ use zedra_rpc::proto::{
 
 use crate::RemoteTerminal;
 use crate::{
-    ConnectEvent, Connector, SessionHandle, SessionState, session_runtime, signer::ClientSigner,
+    ConnectEvent, Connector, ReconnectReason, SessionHandle, SessionState, session_runtime,
+    signer::ClientSigner,
 };
 
 const AUTO_RECONNECT_MAX_ATTEMPTS: u32 = 3;
@@ -187,7 +188,6 @@ impl Session {
                         handle.set_rpc_client(client.clone());
                         handle.set_session_id(Some(sync.session_id.clone()));
                         handle.set_session_token(Some(sync.session_token));
-                        handle.set_host_version(sync.host_version.clone());
                         handle.set_terminals(terminals);
                         on_connected(&handle);
 
@@ -335,6 +335,13 @@ impl Session {
         self.handle.close_active_connection(reason);
     }
 
+    /// Force a reconnect on the next transport close and preserve the caller's
+    /// reconnect reason for telemetry/UI.
+    pub fn request_reconnect(&self, reason: ReconnectReason) {
+        info!(?reason, "requesting reconnect");
+        self.handle.close_active_connection(b"client reconnect");
+    }
+
     fn reset_abort_signal(&self) -> CancellationToken {
         let mut guard = self.abort_signal.lock().unwrap();
         guard.cancel();
@@ -380,6 +387,23 @@ impl Session {
             }
             HostEvent::AgentInfoChanged { info } => {
                 info!("HostEvent: agent info changed {:?}", info.kind);
+            }
+            HostEvent::AgentHookReceived {
+                agent_kind,
+                event_name,
+                ..
+            } => {
+                info!("HostEvent: agent hook received kind={agent_kind:?} event={event_name}");
+            }
+            HostEvent::AgentStateChanged {
+                terminal_id,
+                agent_session_id,
+                state,
+            } => {
+                info!(
+                    "HostEvent: agent state changed terminal={terminal_id} \
+                     agent_session={agent_session_id} state={state:?}"
+                );
             }
         }
 

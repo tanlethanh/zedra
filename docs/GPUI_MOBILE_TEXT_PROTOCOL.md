@@ -531,7 +531,9 @@ Android should use the same GPUI group model but a different backend strategy.
 Suggested responsibilities:
 
 - detect long press and drag handles in GPUI/native bridge
-- show contextual copy/select-all actions with `ActionMode`
+- show contextual default actions like `Copy`, `Share`, and `Search` with
+  `ActionMode`
+- present GPUI custom selection actions in the same native toolbar flow
 - provide content rect updates with `ActionMode.Callback2`
 - use magnifier support where needed for handle dragging
 - manage handles without implying editable input

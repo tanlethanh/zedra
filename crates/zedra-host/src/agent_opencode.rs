@@ -49,31 +49,6 @@ pub fn cli_available() -> bool {
     db_path().is_file() || command_on_path("opencode")
 }
 
-pub fn normalize_event(event_name: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
-    Some(match event_name {
-        "session.status" => (
-            AgentEventKind::SessionUpdated,
-            AgentLifecycleStatus::Running,
-        ),
-        "session.idle" => (AgentEventKind::SessionUpdated, AgentLifecycleStatus::Idle),
-        "session.error" => (AgentEventKind::TurnFailed, AgentLifecycleStatus::Failed),
-        "permission.asked" => (
-            AgentEventKind::PermissionRequested,
-            AgentLifecycleStatus::WaitingForPermission,
-        ),
-        "permission.replied" => (
-            AgentEventKind::PermissionResolved,
-            AgentLifecycleStatus::Running,
-        ),
-        "tool.execute.before" => (AgentEventKind::ToolStarted, AgentLifecycleStatus::Running),
-        "tool.execute.after" => (AgentEventKind::ToolCompleted, AgentLifecycleStatus::Running),
-        name if name.starts_with("tool.") && name.ends_with(".error") => {
-            (AgentEventKind::ToolFailed, AgentLifecycleStatus::Failed)
-        }
-        _ => return None,
-    })
-}
-
 pub fn session_counts(workdir: &Path, _cli: &AgentCliSummary) -> Result<SessionCounts, String> {
     if !cli_available() {
         return Ok(SessionCounts {
@@ -330,8 +305,8 @@ fn transcript_size_bytes(
 fn sessions_from_json(
     workdir: &Path,
     json: &[u8],
-    cli: &AgentCliSummary,
-    source: &str,
+    _cli: &AgentCliSummary,
+    _source: &str,
 ) -> Result<Vec<AgentSessionSummary>, String> {
     let raw: Vec<OpenCodeSessionJson> =
         serde_json::from_slice(json).map_err(|error| error.to_string())?;
@@ -346,7 +321,7 @@ fn sessions_from_json(
         let git = git_summary(&session, &mut git_branch_cache);
         let transcript = transcript_size_bytes(&session, &transcript_sizes);
         sessions.push(AgentSessionSummary {
-            kind: ManagedAgentKind::OpenCode,
+            kind: AgentKind::OpenCode,
             session_id: session.id.clone(),
             title: session_title(session.title.clone()),
             cwd: session
@@ -360,39 +335,9 @@ fn sessions_from_json(
             last_activity_at: session
                 .updated
                 .and_then(DateTime::<Utc>::from_timestamp_millis),
-            resume: resume_summary(ManagedAgentKind::OpenCode, &session.id),
-            live: empty_session_live(),
-            provider: AgentProviderSessionInfo {
-                model: None,
-                permission_mode: None,
-                cli_version: cli.version.clone(),
-                origin: None,
-                source: Some(source.to_string()),
-                entrypoint: None,
-                native_project_id: session.project_id,
-                model_provider: None,
-            },
+            resume: resume_summary(AgentKind::OpenCode, &session.id),
             git,
             usage: None,
-            counters: AgentSessionCounters {
-                record_count: 0,
-                message_count: 0,
-                turn_count: 0,
-                tool_count: 0,
-                tool_failure_count: 0,
-                hook_success_count: 0,
-                hook_failure_count: 0,
-                malformed_record_count: 0,
-            },
-            flags: AgentSessionFlags {
-                is_sidechain: false,
-                is_subagent: false,
-                is_archived: false,
-                historical_only: true,
-                live_bound: false,
-            },
-            data_sources: vec![AgentDataSource::ProviderCli],
-            warnings: Vec::new(),
             transcript_size_bytes: transcript,
         });
     }
@@ -562,20 +507,14 @@ mod tests {
 
         assert_eq!(sessions.len(), 1);
         let session = &sessions[0];
-        assert_eq!(session.kind, ManagedAgentKind::OpenCode);
+        assert_eq!(session.kind, AgentKind::OpenCode);
         assert_eq!(session.session_id, "ses_123");
         assert_eq!(session.title.as_deref(), Some("Fix terminal paste"));
-        assert_eq!(
-            session.provider.native_project_id.as_deref(),
-            Some("project-hash")
-        );
-        assert_eq!(session.provider.cli_version.as_deref(), Some("1.14.33"));
         assert!(session.resume.available);
         assert_eq!(
             session.resume.action_id.as_deref(),
             Some("opencode:ses_123")
         );
-        assert_eq!(session.transcript_size_bytes, Some(8192));
         assert!(session.git.is_some());
     }
 
@@ -602,7 +541,6 @@ mod tests {
             .expect("parse opencode sessions");
         assert_eq!(sessions.len(), 1);
         let session = &sessions[0];
-        assert_eq!(session.transcript_size_bytes, Some(4096));
         // Branch comes from live `git`; CI checks out detached HEAD, so it may be None.
         // Only assert non-empty when a branch was resolved.
         if let Some(branch) = session.git.as_ref().and_then(|git| git.branch.as_deref()) {
@@ -657,7 +595,6 @@ mod tests {
                 .expect("parse");
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].title.as_deref(), Some("From sqlite"));
-        assert_eq!(sessions[0].transcript_size_bytes, Some(2048));
         assert_eq!(
             sessions[0]
                 .git

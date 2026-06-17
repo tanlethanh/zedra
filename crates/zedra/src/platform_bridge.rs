@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
+use tokio::sync::broadcast;
 
 use gpui::{AnyView, App, Bounds, Entity, Pixels, Point, Render};
 
@@ -199,6 +200,25 @@ impl NativeNotificationOptions {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct DeltaGoogleSignInResult {
+    pub id_token: String,
+    pub email: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DeltaAppleSignInResult {
+    pub id_token: String,
+    pub email: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DeltaPushTokenResult {
+    pub provider: String,
+    pub token: String,
+    pub environment: Option<String>,
+}
+
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum NativeFloatingButtonIconWeight {
@@ -234,8 +254,20 @@ static NEXT_NATIVE_FLOATING_BUTTON_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_NATIVE_DICTATION_PREVIEW_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_NATIVE_NOTIFICATION_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_NATIVE_EDIT_MENU_ID: AtomicU32 = AtomicU32::new(1);
+static NEXT_DELTA_GOOGLE_SIGN_IN_ID: AtomicU32 = AtomicU32::new(1);
+static NEXT_DELTA_APPLE_SIGN_IN_ID: AtomicU32 = AtomicU32::new(1);
+static NEXT_DELTA_PUSH_TOKEN_ID: AtomicU32 = AtomicU32::new(1);
 static NATIVE_NOTIFICATION_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce() + Send>>>> =
     OnceLock::new();
+static DELTA_GOOGLE_SIGN_IN_CALLBACKS: OnceLock<
+    Mutex<HashMap<u32, Box<dyn FnOnce(Result<DeltaGoogleSignInResult, String>) + Send>>>,
+> = OnceLock::new();
+static DELTA_APPLE_SIGN_IN_CALLBACKS: OnceLock<
+    Mutex<HashMap<u32, Box<dyn FnOnce(Result<DeltaAppleSignInResult, String>) + Send>>>,
+> = OnceLock::new();
+static DELTA_PUSH_TOKEN_CALLBACKS: OnceLock<
+    Mutex<HashMap<u32, Box<dyn FnOnce(Result<DeltaPushTokenResult, String>) + Send>>>,
+> = OnceLock::new();
 thread_local! {
     static PENDING_CUSTOM_SHEET_VIEW: std::cell::RefCell<Option<AnyView>> = const { std::cell::RefCell::new(None) };
     static NATIVE_FLOATING_BUTTON_CALLBACKS: RefCell<HashMap<u32, Box<dyn FnMut(&mut App)>>> = RefCell::new(HashMap::new());
@@ -253,6 +285,21 @@ fn selection_callbacks() -> &'static Mutex<HashMap<u32, Box<dyn FnOnce(Option<us
 
 fn native_notification_callbacks() -> &'static Mutex<HashMap<u32, Box<dyn FnOnce() + Send>>> {
     NATIVE_NOTIFICATION_CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn delta_google_sign_in_callbacks()
+-> &'static Mutex<HashMap<u32, Box<dyn FnOnce(Result<DeltaGoogleSignInResult, String>) + Send>>> {
+    DELTA_GOOGLE_SIGN_IN_CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn delta_apple_sign_in_callbacks()
+-> &'static Mutex<HashMap<u32, Box<dyn FnOnce(Result<DeltaAppleSignInResult, String>) + Send>>> {
+    DELTA_APPLE_SIGN_IN_CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn delta_push_token_callbacks()
+-> &'static Mutex<HashMap<u32, Box<dyn FnOnce(Result<DeltaPushTokenResult, String>) + Send>>> {
+    DELTA_PUSH_TOKEN_CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn text_input_callbacks() -> &'static Mutex<HashMap<u32, Box<dyn FnOnce(Option<String>) + Send>>> {
@@ -367,6 +414,10 @@ where
     bridge().present_custom_sheet(&options);
 }
 
+pub fn dismiss_custom_sheet() {
+    bridge().dismiss_custom_sheet();
+}
+
 pub fn take_pending_custom_sheet_view() -> Option<AnyView> {
     PENDING_CUSTOM_SHEET_VIEW.with(|pending| pending.borrow_mut().take())
 }
@@ -442,6 +493,39 @@ pub fn show_native_notification_with_action(
         .unwrap()
         .insert(id, Box::new(on_action));
     bridge().present_native_notification(id, &options);
+}
+
+pub fn start_delta_google_sign_in(
+    on_result: impl FnOnce(Result<DeltaGoogleSignInResult, String>) + Send + 'static,
+) {
+    let id = NEXT_DELTA_GOOGLE_SIGN_IN_ID.fetch_add(1, Ordering::Relaxed);
+    delta_google_sign_in_callbacks()
+        .lock()
+        .unwrap()
+        .insert(id, Box::new(on_result));
+    bridge().start_delta_google_sign_in(id);
+}
+
+pub fn start_delta_apple_sign_in(
+    on_result: impl FnOnce(Result<DeltaAppleSignInResult, String>) + Send + 'static,
+) {
+    let id = NEXT_DELTA_APPLE_SIGN_IN_ID.fetch_add(1, Ordering::Relaxed);
+    delta_apple_sign_in_callbacks()
+        .lock()
+        .unwrap()
+        .insert(id, Box::new(on_result));
+    bridge().start_delta_apple_sign_in(id);
+}
+
+pub fn request_delta_push_token(
+    on_result: impl FnOnce(Result<DeltaPushTokenResult, String>) + Send + 'static,
+) {
+    let id = NEXT_DELTA_PUSH_TOKEN_ID.fetch_add(1, Ordering::Relaxed);
+    delta_push_token_callbacks()
+        .lock()
+        .unwrap()
+        .insert(id, Box::new(on_result));
+    bridge().request_delta_push_token(id);
 }
 
 pub fn show_native_edit_menu(
@@ -541,6 +625,83 @@ pub fn dispatch_native_notification_dismiss(callback_id: u32) {
         .remove(&callback_id);
 }
 
+pub fn dispatch_delta_google_sign_in_result(
+    callback_id: u32,
+    id_token: String,
+    email: Option<String>,
+) {
+    let cb = delta_google_sign_in_callbacks()
+        .lock()
+        .unwrap()
+        .remove(&callback_id);
+    if let Some(cb) = cb {
+        cb(Ok(DeltaGoogleSignInResult { id_token, email }));
+    }
+}
+
+pub fn dispatch_delta_google_sign_in_error(callback_id: u32, message: String) {
+    let cb = delta_google_sign_in_callbacks()
+        .lock()
+        .unwrap()
+        .remove(&callback_id);
+    if let Some(cb) = cb {
+        cb(Err(message));
+    }
+}
+
+pub fn dispatch_delta_apple_sign_in_result(
+    callback_id: u32,
+    id_token: String,
+    email: Option<String>,
+) {
+    let cb = delta_apple_sign_in_callbacks()
+        .lock()
+        .unwrap()
+        .remove(&callback_id);
+    if let Some(cb) = cb {
+        cb(Ok(DeltaAppleSignInResult { id_token, email }));
+    }
+}
+
+pub fn dispatch_delta_apple_sign_in_error(callback_id: u32, message: String) {
+    let cb = delta_apple_sign_in_callbacks()
+        .lock()
+        .unwrap()
+        .remove(&callback_id);
+    if let Some(cb) = cb {
+        cb(Err(message));
+    }
+}
+
+pub fn dispatch_delta_push_token_result(
+    callback_id: u32,
+    provider: String,
+    token: String,
+    environment: Option<String>,
+) {
+    let cb = delta_push_token_callbacks()
+        .lock()
+        .unwrap()
+        .remove(&callback_id);
+    if let Some(cb) = cb {
+        cb(Ok(DeltaPushTokenResult {
+            provider,
+            token,
+            environment,
+        }));
+    }
+}
+
+pub fn dispatch_delta_push_token_error(callback_id: u32, message: String) {
+    let cb = delta_push_token_callbacks()
+        .lock()
+        .unwrap()
+        .remove(&callback_id);
+    if let Some(cb) = cb {
+        cb(Err(message));
+    }
+}
+
 /// Discard all pending native presentation callbacks without invoking them.
 ///
 /// Call this when the app enters the background or is paused, so closures
@@ -587,6 +748,36 @@ pub fn clear_pending_alerts() {
             );
         }
     }
+    if let Ok(mut map) = delta_google_sign_in_callbacks().lock() {
+        let count = map.len();
+        map.clear();
+        if count > 0 {
+            tracing::debug!(
+                "clear_pending_alerts: dropped {} unacknowledged Delta Google sign-in request(s)",
+                count
+            );
+        }
+    }
+    if let Ok(mut map) = delta_apple_sign_in_callbacks().lock() {
+        let count = map.len();
+        map.clear();
+        if count > 0 {
+            tracing::debug!(
+                "clear_pending_alerts: dropped {} unacknowledged Delta Apple sign-in request(s)",
+                count
+            );
+        }
+    }
+    if let Ok(mut map) = delta_push_token_callbacks().lock() {
+        let count = map.len();
+        map.clear();
+        if count > 0 {
+            tracing::debug!(
+                "clear_pending_alerts: dropped {} unacknowledged Delta push-token request(s)",
+                count
+            );
+        }
+    }
     NATIVE_EDIT_MENU_CALLBACKS.with(|callbacks| {
         callbacks.borrow_mut().clear();
     });
@@ -599,7 +790,8 @@ pub fn clear_pending_alerts() {
 /// Haptic feedback patterns, mapped to native equivalents on each platform.
 ///
 /// iOS: UIImpactFeedbackGenerator, UISelectionFeedbackGenerator, UINotificationFeedbackGenerator.
-/// Android: View.performHapticFeedback with HapticFeedbackConstants (no VIBRATE permission needed).
+/// Android: Vibrator + VibrationEffect (VIBRATE permission; performHapticFeedback is
+/// gated by the system touch-feedback setting, which some OEMs disable by default).
 #[derive(Clone, Copy, Debug)]
 pub enum HapticFeedback {
     ImpactLight,
@@ -634,6 +826,46 @@ pub fn trigger_haptic(feedback: HapticFeedback) {
     bridge().trigger_haptic(feedback);
 }
 
+/// Sound effects the app can play through the platform bridge.
+#[derive(Clone, Copy, Debug)]
+pub enum SoundEffect {
+    /// Short tick played on agent state transitions (WaitingApproval, Completed).
+    AgentNotification,
+}
+
+impl SoundEffect {
+    pub fn to_i32(self) -> i32 {
+        match self {
+            SoundEffect::AgentNotification => 0,
+        }
+    }
+}
+
+static APP_IN_FOREGROUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+static FOREGROUND_TX: OnceLock<broadcast::Sender<bool>> = OnceLock::new();
+
+fn foreground_tx() -> &'static broadcast::Sender<bool> {
+    FOREGROUND_TX.get_or_init(|| broadcast::channel(4).0)
+}
+
+pub fn subscribe_foreground_state() -> broadcast::Receiver<bool> {
+    foreground_tx().subscribe()
+}
+
+pub fn set_app_in_foreground(value: bool) {
+    APP_IN_FOREGROUND.store(value, std::sync::atomic::Ordering::Relaxed);
+    let _ = foreground_tx().send(value);
+}
+
+pub fn is_app_in_foreground() -> bool {
+    APP_IN_FOREGROUND.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn play_sound(sound: SoundEffect) {
+    bridge().play_sound(sound);
+}
+
 /// OS color scheme reported by the platform bridge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SystemTheme {
@@ -661,6 +893,14 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn app_build_number(&self) -> Option<String> {
         None
     }
+    /// Returns the native operating system version.
+    fn os_version(&self) -> Option<String> {
+        None
+    }
+    /// Returns the native device name suitable for user-visible Delta node labels.
+    fn device_name(&self) -> Option<String> {
+        None
+    }
     /// Returns the app's writable data directory for persisting workspace state.
     /// On iOS: Documents directory. On Android: internal files directory.
     fn data_directory(&self) -> Option<String> {
@@ -686,10 +926,14 @@ pub trait PlatformBridge: Send + Sync + 'static {
     }
     /// Display a configurable native custom sheet that hosts GPUI content.
     fn present_custom_sheet(&self, _options: &CustomSheetOptions) {}
+    /// Dismiss the active native custom sheet, if any.
+    fn dismiss_custom_sheet(&self) {}
     /// Open a URL in the system browser.
     fn open_url(&self, _url: &str) {}
     /// Trigger a haptic feedback pattern. No-op on platforms without haptic hardware.
     fn trigger_haptic(&self, _feedback: HapticFeedback) {}
+    /// Play a short UI sound effect. No-op on platforms without audio or when silent.
+    fn play_sound(&self, _sound: SoundEffect) {}
     /// Position or update a native floating icon button that is anchored by a GPUI wrapper.
     fn update_native_floating_button(&self, _id: u32, _options: &NativeFloatingButtonOptions) {}
     /// Hide a native floating icon button.
@@ -700,6 +944,27 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn hide_native_dictation_preview(&self, _id: u32) {}
     /// Display a native in-app notification banner.
     fn present_native_notification(&self, _id: u32, _options: &NativeNotificationOptions) {}
+    /// Start the platform Google Sign-In flow for Delta account auth.
+    fn start_delta_google_sign_in(&self, id: u32) {
+        dispatch_delta_google_sign_in_error(
+            id,
+            "Google sign-in is not available on this platform".to_string(),
+        );
+    }
+    /// Start the platform Apple Sign-In flow for Delta account auth.
+    fn start_delta_apple_sign_in(&self, id: u32) {
+        dispatch_delta_apple_sign_in_error(
+            id,
+            "Apple sign-in is not available on this platform".to_string(),
+        );
+    }
+    /// Request native push authorization and return the platform push token.
+    fn request_delta_push_token(&self, id: u32) {
+        dispatch_delta_push_token_error(
+            id,
+            "Push notifications are not available on this platform".to_string(),
+        );
+    }
     /// Display a native edit menu anchored in window coordinates.
     fn present_native_edit_menu(
         &self,
@@ -752,6 +1017,20 @@ pub fn app_version_with_build_number() -> String {
         (None, Some(build_number)) => build_number,
         (None, None) => env!("CARGO_PKG_VERSION").to_string(),
     }
+}
+
+pub fn device_name() -> Option<String> {
+    bridge()
+        .device_name()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+}
+
+pub fn os_version() -> Option<String> {
+    bridge()
+        .os_version()
+        .map(|version| version.trim().to_string())
+        .filter(|version| !version.is_empty())
 }
 
 /// Status bar top inset in logical pixels.

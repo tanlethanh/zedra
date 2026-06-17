@@ -569,7 +569,7 @@ impl Connector {
                 session_id,
             })
             .await
-            .map_err(|e| ConnectError::RequestError(e.to_string()))?
+            .map_err(|e| ConnectError::RequestError(crate::handle::rpc_error_message(&e)))?
         {
             RegisterResult::Ok => {
                 let register_ms = t.elapsed().as_millis() as u64;
@@ -599,7 +599,7 @@ impl Connector {
                 session_token,
             })
             .await
-            .map_err(|e| ConnectError::RequestError(e.to_string()))?
+            .map_err(|e| ConnectError::RequestError(crate::handle::rpc_error_message(&e)))?
         {
             ConnectResult::Ok(sync) => {
                 info!(
@@ -645,7 +645,7 @@ impl Connector {
                 session_id: session_id.clone(),
             })
             .await
-            .map_err(|e| ConnectError::RequestError(e.to_string()))?
+            .map_err(|e| ConnectError::RequestError(crate::handle::rpc_error_message(&e)))?
         {
             AuthProveResult::Ok(sync) => {
                 info!("authenticated, session={}", session_id);
@@ -1081,17 +1081,13 @@ mod tests {
                     id: "term-2".to_string(),
                     position: 0,
                     last_seq: 4,
-                    title: None,
-                    cwd: None,
-                    icon_name: None,
+                    ..Default::default()
                 },
                 TerminalSyncEntry {
                     id: "term-3".to_string(),
                     position: 0,
                     last_seq: 9,
-                    title: None,
-                    cwd: None,
-                    icon_name: None,
+                    ..Default::default()
                 },
             ],
             None,
@@ -1116,9 +1112,7 @@ mod tests {
                 id: "term-1".to_string(),
                 position: 0,
                 last_seq: 0,
-                title: None,
-                cwd: None,
-                icon_name: None,
+                ..Default::default()
             }],
             Some(std::slice::from_ref(&old_terminal)),
         );
@@ -1138,9 +1132,7 @@ mod tests {
                 id: "term-1".to_string(),
                 position: 0,
                 last_seq: 5,
-                title: None,
-                cwd: None,
-                icon_name: None,
+                ..Default::default()
             }],
             Some(std::slice::from_ref(&existing)),
         );
@@ -1160,17 +1152,13 @@ mod tests {
                     id: "term-a".to_string(),
                     position: 0,
                     last_seq: 0,
-                    title: None,
-                    cwd: None,
-                    icon_name: None,
+                    ..Default::default()
                 },
                 TerminalSyncEntry {
                     id: "term-b".to_string(),
                     position: 0,
                     last_seq: 0,
-                    title: None,
-                    cwd: None,
-                    icon_name: None,
+                    ..Default::default()
                 },
             ],
             Some(&[existing_first, existing_second]),
@@ -1195,25 +1183,19 @@ mod tests {
                     id: "term-a".to_string(),
                     position: 0,
                     last_seq: 0,
-                    title: None,
-                    cwd: None,
-                    icon_name: None,
+                    ..Default::default()
                 },
                 TerminalSyncEntry {
                     id: "term-b".to_string(),
                     position: 0,
                     last_seq: 0,
-                    title: None,
-                    cwd: None,
-                    icon_name: None,
+                    ..Default::default()
                 },
                 TerminalSyncEntry {
                     id: "term-c".to_string(),
                     position: 0,
                     last_seq: 0,
-                    title: None,
-                    cwd: None,
-                    icon_name: None,
+                    ..Default::default()
                 },
             ],
             Some(&[existing]),
@@ -1238,9 +1220,7 @@ mod tests {
                 id: "active-remote".to_string(),
                 position: 0,
                 last_seq: 0,
-                title: None,
-                cwd: None,
-                icon_name: None,
+                ..Default::default()
             }],
             Some(&[local_only, active_remote]),
         );

@@ -5,6 +5,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 ## Agent Workflow
 
 - Inspect the relevant code paths first and infer local patterns before proposing or making changes.
+- When a request mentions the Zedra CLI or `zedra` command-line behavior, inspect `crates/zedra-host` first; that crate owns the daemon and CLI entrypoints.
 - Ask before making any meaningful product or architectural decision. Tiny details may follow existing patterns without approval.
 - For normal feature work, prefer the smallest diff that fits the current design.
 - If the current structure is blocking quality, propose the refactor and wait for approval before doing broader cleanup.
@@ -39,6 +40,13 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - `docs/PROTOCOL_SPECS.md` is canonical. Any protocol change must update `zedra-rpc/src/proto.rs`, the relevant host and client handlers, and `docs/PROTOCOL_SPECS.md` in the same change.
 - `crates/zedra-telemetry/src/lib.rs` defines the canonical telemetry `Event` enum.
 - Telemetry must not include personal data. Use opaque IDs, durations, counts, enum labels, and booleans only.
+
+## Zedra Delta Backend
+
+- Zedra Delta is Zedra's cloud/backend service — push notifications, Live Activities, workspace sync signals, and any other backend capability the host or mobile app needs. See `docs/DELTA_INTEGRATION.md`.
+- The Delta source lives in a separate repo at the path in the `ZEDRA_DELTA_REPO` environment variable. When a task needs Delta backend behavior (read its code, or add/change a backend feature), open `$ZEDRA_DELTA_REPO` directly — read and edit it like part of the codebase.
+- Whenever this repo's work mentions the Delta backend or Zedra Delta, treat `$ZEDRA_DELTA_REPO` as the place those backend changes belong, and keep the host/mobile protocol contract in sync across both repos.
+- On the app side, Delta represents auth and backend interaction only (sign-in, push-token registration, backend calls) — not app features that merely arrive over Delta. 
 
 ## Documentation
 
@@ -78,6 +86,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 ## Platform Scope
 
 - iOS is the primary development path. See `docs/IOS_WORKFLOW.md` for build, install, launch, and logging commands.
+- To run the Android app on a connected device, use `./scripts/run-android.sh`. Do not use `adb shell am start` directly.
 - Native iOS presentations should keep UIKit responsible for alerts, sheets, and keyboard accessories.
 - `UIGlassEffect` is public UIKit on iOS 26+. Use `if #available(iOS 26.0, *)`, not runtime probing.
 - In Swift bridge code, keep access control consistent with helper type visibility.
@@ -106,6 +115,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 ## Recent Learnings
 
 - GPUI scroll containers need an explicit `.id(...)`. In nested flex layouts, also constrain the full parent chain with `size_full()` and `min_h_0()` or scrolling can silently fail.
+- In GPUI `flex_col()` children, avoid `w_full()` for width fill; let stretch work with `min_w_0()`. For right-aligned row actions, make the left text column `flex_1()` and the action `flex_none()`.
 - GPUI text wrapping requires definite width constraints. Use `.w(px(width))` not `.max_w(px(width))` for text containers or text wraps at viewport width.
 - Prefer `cx.spawn(...)` for UI-thread async work and `session_runtime().spawn(...)` for Tokio session or network work when `cx` is unavailable.
 - Session-to-UI flow is `Session / SessionHandle -> ConnectEvent -> SessionState -> WorkspaceState -> Views`. Preserve that layering.

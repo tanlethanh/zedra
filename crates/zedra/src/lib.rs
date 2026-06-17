@@ -30,6 +30,8 @@ pub mod settings_view;
 
 // Semantic components
 pub mod file_explorer;
+pub mod file_preview_view;
+pub mod file_search;
 pub mod git_panel;
 pub mod quick_action_panel;
 pub mod session_panel;
@@ -38,7 +40,6 @@ pub mod sheet_demo_view;
 pub mod sheet_host_view;
 pub mod terminal_card;
 pub mod terminal_panel;
-pub mod terminal_preview_view;
 pub mod terminal_state;
 pub mod transport_badge;
 
@@ -49,12 +50,14 @@ pub mod workspace_connecting;
 pub mod workspace_drawer;
 pub mod workspace_editor;
 pub mod workspace_gitdiff;
+pub mod workspace_start;
 pub mod workspace_state;
 pub mod workspace_terminal;
 pub mod workspaces;
 
 pub mod active_terminal;
 pub mod deeplink;
+pub mod delta;
 pub mod native_presentation;
 pub mod platform_bridge;
 pub mod telemetry;

@@ -63,6 +63,37 @@
 12. Tap `Native Notification` repeatedly
 13. Expected: multiple notifications collect into the same bubble stack and all auto-close after their configured durations by default
 
+## 0c-Settings. Delta Settings Flow
+
+1. Run a Debug build and open Settings
+2. Expected: `Profile` and `Notifications` appear above `Appearance`
+3. Start sign-in or notification registration
+4. Expected: progress or error status replaces the relevant row description, with no separate `Status` row and no combined status/description text
+5. Sign in to Delta, then tap the logout icon in the profile row
+6. Expected: a native confirmation alert appears; cancelling keeps the profile signed in, and confirming returns the profile row to `Sign In`
+
+### Mobile node metadata reconciliation
+
+1. Sign in to Delta on iOS or Android and confirm the mobile node appears in the stack.
+2. Close and relaunch the app.
+3. Expected: logs contain `Delta mobile node reconciliation completed` with `Unchanged`.
+4. Change the app version, build number, OS version, or device name, then relaunch the app.
+5. Expected: reconciliation reports `Updated`, and the stack node contains the new metadata.
+6. Delete the mobile node from the Delta stack, then relaunch the app.
+7. Expected: reconciliation reports `SignedOut`, and Settings shows Delta as signed out.
+
+### Workspace host binding reconciliation
+
+1. Connect to a workspace while Delta is signed out.
+2. Sign in to Delta after the workspace is already connected.
+3. Expected: the app registers or reuses the workspace's host Delta node, then updates the host-side `DeltaClient` without requiring a full reconnect.
+4. Quit and relaunch the app with the workspace still saved.
+5. Expected: the workspace reloads its persisted host pubkey and host node id, and the host binding is restored once Delta sign-in is available again.
+6. If the host node is deleted from Delta, reconnect the workspace.
+7. Expected: the app registers a fresh host node id for that workspace and persists the new binding.
+8. Sign out of Delta while the workspace remains connected.
+9. Expected: the host-side in-memory Delta binding is cleared, and new agent-hook notifications stop until the workspace binding is replayed after sign-in.
+
 ## 0c-Android. Native Presentations And Embedded Sheet
 
 1. Run a Debug Android build and open Settings
@@ -77,10 +108,15 @@
 10. Expected: a Material bottom sheet appears with a grabber when requested and GPUI-rendered preview content inside the embedded sheet surface
 11. From a fresh sheet open, swipe the preview content upward and downward before it reaches top, then drag downward from the top of the preview
 12. Expected: inner content scrolls while not at top; when it is at top, the bottom sheet can take the downward drag for detent/dismiss handoff without preview repaint glitches during the drag or dismissal
-13. Trigger the scroll-to-bottom floating button
-14. Expected: the native floating button appears at the GPUI wrapper bounds and pressing it runs the Rust callback
-15. Trigger dictation preview events if the call site is available
-16. Expected: Android displays the preview overlay and dismiss callback, without attempting iOS-specific dictation stream interpretation
+13. Long press selectable text inside the embedded sheet (markdown preview / editor content)
+14. Expected: native selection highlight, handles, and the floating `Copy`/`Share`/`Search` toolbar appear over the sheet; dragging handles extends the selection and `Copy` copies the sheet's GPUI text. A normal tap still scrolls and does not start selection
+14a. Drag a selection handle up and down across the sheet (and continue the same long-press gesture into a drag-to-extend)
+14b. Expected: only the selection endpoint moves — the bottom sheet does not drag, change detent, or dismiss during the handle/extend drag, and sheet dragging works normally again after the selection is dismissed
+15. Expected: dismissing or closing the sheet leaves no stale selection overlay, and root-window text selection still works after the sheet has been opened and closed
+16. Trigger the scroll-to-bottom floating button
+17. Expected: the native floating button appears at the GPUI wrapper bounds and pressing it runs the Rust callback
+18. Trigger dictation preview events if the call site is available
+19. Expected: Android displays the preview overlay and dismiss callback, without attempting iOS-specific dictation stream interpretation
 
 ## 0c-Android-Renderer. GPUI Surface Lifecycle
 
@@ -102,6 +138,21 @@
 14. Confirm outlined buttons, cards, and input borders are visible even when their background is transparent
 15. In the terminal, render `✔ ✘ ⚠ ⏺ ⏹ ⏸` and a real emoji such as `😀`
 16. Expected: terminal/UI symbols render as monochrome symbol glyphs, while the real emoji renders through Android color emoji fallback before and after attempting rotation
+
+## 0c-Android-Selection. Native Text Selection
+
+1. Open the Home install guide and long press selectable command or comment text
+2. Expected: Android-native selection highlights, handles, and floating `Copy` toolbar appear without opening the software keyboard
+3. Drag both handles across multiple lines
+4. Expected: highlights and handles follow the selected GPUI text without scrolling the content underneath the dragged handle
+5. Tap `Copy`
+6. Expected: the exact selected text is written to the Android clipboard and the native selection UI dismisses
+7. Open a terminal with visible output and tap normally
+8. Expected: existing terminal focus and keyboard behavior remains unchanged
+9. Long press terminal output, then drag both handles across rows
+10. Expected: native selection starts only after long press and terminal output selection follows the handles
+11. Tap outside an active selection, scroll selected content, then switch views
+12. Expected: selection dismisses or refreshes cleanly without stale highlights, handles, or toolbar
 
 ## 0c-Android-AppIds. Debug And Release Application IDs
 
@@ -132,6 +183,142 @@
 5. Expected: the action sheet dismisses without running another action
 6. Open `Native Selection` again, then tap outside the sheet
 7. Expected: the sheet dismisses without crashing
+
+## 0f. Delta Agent Hooks
+
+1. Sign in the host with Delta and confirm `zedra stack list` lists at least one push-enabled mobile node
+2. Run `zedra setup claude`, `zedra setup codex`, `zedra setup opencode`, and `zedra setup pi`
+3. Start a new Claude, Codex, opencode, and pi session
+4. Submit a prompt, trigger a tool approval, use Add to Chat from a Zedra editor selection when an agent terminal is active, and let the task finish
+5. Expected: each agent event produces a Delta notification only on the previous signed-in mobile client, without notifying other devices in the stack or exposing prompt, tool output, diff, file path, or terminal contents
+6. Expected for pi: the working indicator turns on when a prompt is submitted and a `Pi completed` notification fires on turn end; pi has no approval event, so no waiting/approval notification is expected
+7. If an iOS Live Activity token is registered for the same `activity_id`, expected: the Live Activity changes to working, waiting, selection, and done/end states as the hooks fire
+8. Run each setup command again
+9. Expected: hook installation remains idempotent and does not duplicate hook entries (for pi, `~/.pi/agent/extensions/zedra-agent-hooks.ts` is rewritten in place)
+
+### Pi hook smoke test (no live model)
+
+1. Run `zedra setup pi`, then start any pi session inside a Zedra terminal
+2. From another shell on the host, run `zedra agent hook test --agent pi --event UserPromptSubmit --terminal-id <id>` then `... --event Stop --terminal-id <id>`
+3. Expected: the agent state transitions Running → Completed, and a `Pi completed` Delta notification fires when the app is backgrounded
+
+## 0f-1. Agent Hook Notification Deeplink — App In Background
+
+Requires Delta sign-in, a registered push-enabled device, and hook setup
+(`zedra setup claude` or equivalent).
+
+**Connected workspace, app in background:**
+1. Connect to a workspace and open a Claude terminal with a running session
+2. Background the app (home button / swipe up, do not force-quit)
+3. From the Claude session, submit a prompt or trigger a tool approval so a hook fires
+4. Expected: a push notification arrives with a title such as `Claude requires approval` or `Claude turn finished`
+5. Tap the notification
+6. Expected: the app foregrounds and navigates directly to the terminal that generated the hook event, without requiring any manual workspace selection or terminal tap
+7. Expected: no duplicate or blank terminal view appears
+
+**Saved (disconnected) workspace, app in foreground or background:**
+1. Disconnect the workspace or force-quit and relaunch the app (workspace card visible on Home but not connected)
+2. From the host, trigger a hook event in a previously-known terminal
+3. Tap the push notification
+4. Expected: the app begins reconnecting to the workspace; the connecting view appears
+5. Expected: after sync completes, the app navigates automatically to the terminal from the deeplink without user interaction
+6. Expected: if the terminal from the deeplink no longer exists on the host after sync (stale terminal), the app falls back to the first available terminal or creates a new one
+
+**Validation guards (must not notify):**
+1. On the host, run `claude` in a plain shell that was **not** started from Zedra (no `ZEDRA_TERMINAL_ID` set); trigger a hook event
+2. Expected: no push notification is sent — hooks from terminals not registered in the daemon's session registry are silently dropped
+3. Confirm in daemon logs that the hook was received and discarded without an error
+
+## 0f-2. Delta Integration — Anonymous Host Registration
+
+Tests the path where the host has **not** run `zedra auth login` but the mobile
+app is signed in. On connect the app registers the host's public key with Delta
+and reports the result back to the daemon via `SetClientDeltaInfo`, enabling
+agent-hook notifications without host credentials.
+
+### Setup
+
+- Host daemon running with no `~/.config/zedra/delta.json` (or remove it with
+  `zedra auth logout` if previously signed in).
+- Mobile app signed in to Delta (`Settings → Delta → Sign In`).
+- At least one push-enabled mobile node registered (`zedra stack list` shows it
+  on the *mobile* app — host CLI doesn't need to be authed for this check).
+
+### 1. Dedicated Delta host key registered on connect
+
+1. Start the daemon: `zedra start --workdir .`
+2. Confirm `~/.config/zedra/delta.key` exists and is distinct from the
+   workspace `identity.key`.
+3. Scan QR from the mobile app and let the connection reach `Connected`.
+4. Expected: host daemon log contains a line matching
+   `Delta host node registered  created=true host_node_id=…` (or `created=false`
+   if the same key was registered before).
+5. Expected: host daemon log contains `Delta client updated from connected mobile client`
+   with `stack_id`, `client_node_id`, and `host_node_id`.
+6. Check that the host node appears in the Delta stack from the mobile app's
+   `Settings → Delta → Stack Nodes`.
+7. Expected: the host node is listed with kind `host` and matches the machine
+   hostname.
+
+### 2. Agent-hook notification without host sign-in
+
+1. With the daemon running and the signed-in mobile app connected, background
+   the app and trigger an agent completion hook.
+2. Expected: the daemon sends a notification to that mobile client's
+   `client_node_id`, not every device in the stack.
+3. Expected: the push notification arrives on that mobile device.
+4. Stop and restart the daemon:
+   ```sh
+   zedra stop --workdir .
+   zedra start --workdir .
+   ```
+5. Reconnect the signed-in mobile app, background it, and trigger another agent
+   completion hook.
+6. Expected: the app restores the daemon's in-memory client Delta info and the
+   notification arrives on that mobile device.
+
+### 3. Re-registration is idempotent (`created` flag)
+
+1. While the daemon is running and the app is connected, force a reconnect
+   (background and foreground the app, or run `zedra client --workdir . --count 1`
+   to verify the session is live).
+2. Expected: daemon log shows `created=false` on the second sync-complete after
+   the same mobile client reconnects — the existing host node is returned, not
+   duplicated.
+3. Pair a **new** device (different mobile) and let it connect.
+4. Expected: daemon log shows `created=false` because both mobile clients
+   register the same host `delta.key` public key. No duplicate host node is
+   created.
+
+### 4. Signed-in host CLI config
+
+1. Sign in the host: `zedra auth login`
+2. Run `zedra send` and `zedra send --live-activity`.
+3. Expected: both commands use the signed-in host config, confirmed by
+   `zedra auth status` showing the active config.
+
+### 5. Error message without host sign-in
+
+1. Remove `delta.json` with `zedra auth logout`.
+2. Run `zedra send any --workdir . --title test`.
+3. Expected: command exits non-zero with the message:
+   `Delta not configured. Sign in with \`zedra auth login\`.`
+
+## 0g. Android Delta Push + In-App Banner
+
+Requires `android/google-services.json` from the Firebase project. Without it the
+app still builds, but push registration reports an error instead of a token.
+
+1. Drop `google-services.json` into `android/`, then build and install: `./scripts/build-android.sh && cd android && ./gradlew installDebug`
+2. Open Settings → Delta and tap the push token row
+3. On Android 13+, expected: the system prompts for the notification permission; grant it
+4. Expected: registration succeeds, the row shows provider `fcm`, and `zedra stack list` lists the device (labeled with its `Build.MODEL`) as push-enabled
+5. From the host, trigger a Delta notification while the app is backgrounded
+6. Expected: a system notification appears in the `Delta notifications` channel; tapping it opens the app (and follows the `deeplink` data field when present)
+7. Trigger a notification (or tap a Developer in-app notification action) while the app is foregrounded
+8. Expected: an in-app banner slides up from the bottom, tinted by kind, auto-closing for transient banners; tapping it fires the action and suppresses the dismiss callback
+9. Build without `google-services.json` and repeat step 2
+10. Expected: the push row reports a configuration error and does not crash
 
 ## 1. Normal QR Scan → Connect
 
@@ -189,7 +376,11 @@
 9. Expected: only the file row for the active main workspace view is highlighted, and the highlight spans the full file explorer width
 10. Open a git diff or terminal as the main workspace view, then reopen the file explorer
 11. Expected: the file row highlight clears because the active main workspace view is no longer that file
-12. Expected: before syntax highlighting appears, code text uses a subtly dim foreground; when highlighting applies, text rows do not jump, reorder, or visibly reload
+12. Open the floating file search and type part of a file or folder name that is not currently loaded in the expanded File Explorer tree
+13. Expected: the host searches recursively and the floating results show fuzzy matching files and folders case-insensitively, without expanding or collapsing the underlying tree
+14. Clear the floating search with its clear control or `Esc`
+15. Expected: the previous browsing context returns with the same expanded directories, loaded rows, and active file highlight
+16. Expected: before syntax highlighting appears, code text uses a subtly dim foreground; when highlighting applies, text rows do not jump, reorder, or visibly reload
 
 ## 1c. Docs Tree Display Mode
 
@@ -326,6 +517,15 @@ or beyond.
 5. Repeat with a non-alt AI CLI session such as `claude`, `codex`, or a `/zedra-start` resumed session
 6. Expected: resumed output uses the current device width without stale wrapping or dumped resize artifacts
 
+## 3b-1. Agent Icon Survives Reconnect
+
+1. Connect, open a terminal, and start an agent that uses shell integration for inner commands (`codex` or `pi`)
+2. While the agent is mid-task (running a tool command), background the app or toggle network to force a reconnect
+3. Expected: after reattach, the terminal card keeps the agent icon and the agent state dot
+4. Repeat while the agent is idle between turns (waiting at its prompt) and reconnect again
+5. Expected: the agent icon is still shown; it only clears after the agent process actually exits
+6. Repeat with `claude` as a control — icon persists in both cases
+
 ## 3c. Terminal Smooth Scroll Edge Rendering
 
 1. Connect via QR and open a terminal with enough output to fill the scrollback
@@ -369,9 +569,10 @@ or beyond.
 2. Disable the host network interface or disconnect the client from the network without closing the app
 3. Expected within about 4 seconds: session badge changes to "Idle Ns" while the session is still present; workspace status dots turn yellow and blink
 4. Keep waiting
-5. Expected later: normal reconnect flow still takes over (`Idle` -> `Reconnecting` -> `Disconnected` or `Connected`, depending on recovery)
-6. Restore network before reconnect exhausts
-7. Expected: badge returns from `Idle` to `Connected` before or during reconnect recovery
+5. Background the app, then bring it back to the foreground while the badge is still `Idle`
+6. Expected: reconnect starts immediately on resume (`Idle` -> `Reconnecting` -> `Connected` or `Disconnected`), without waiting for the idle loop to time out
+7. Restore network before reconnect exhausts
+8. Expected: badge returns from `Idle` to `Connected` before or during reconnect recovery
 
 ## 5b. Path Changes Do Not False Idle
 
@@ -545,11 +746,15 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 11. Expected: the corresponding arrow input repeats continuously while held and stops immediately on release
 12. Dismiss the keyboard or background the app while holding an accessory arrow
 13. Expected: repeat stops and does not resume when the keyboard or app returns
-14. Tap the already-focused terminal while the keyboard is visible
-15. Expected: the software keyboard dismisses and the next terminal tap reopens it
-16. Switch Android to a non-English QWERTY layout, such as Vietnamese, Spanish, or French
-17. Type a short terminal command, accept any active composition, then press enter
-18. Expected: composing text appears while typing, the accepted text reaches the PTY once, and
+14. Open floating file search or the git commit message input while a terminal is visible behind it
+15. Expected: the software keyboard appears without the terminal accessory bar, typing goes to the focused input, and the visible terminal does not resize or shift for that keyboard
+16. Tap the already-focused terminal while the keyboard is visible
+17. Expected: the software keyboard dismisses and the next terminal tap reopens it
+18. With terminal output filling the screen, tap the terminal so the keyboard appears
+19. Expected: the bottom terminal content lifts above the keyboard and accessory bar instead of staying hidden behind them
+20. Switch Android to a non-English QWERTY layout, such as Vietnamese, Spanish, or French
+21. Type a short terminal command, accept any active composition, then press enter
+22. Expected: composing text appears while typing, the accepted text reaches the PTY once, and
     candidate suggestions do not leave the terminal blank
 
 ## 11a. Terminal Scroll To Bottom Native Button On iOS
@@ -639,6 +844,8 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 5. Expected: the corresponding arrow input repeats continuously while held and stops immediately on release
 6. Start holding an arrow button, then dismiss the keyboard or background the app
 7. Expected: repeat stops and does not resume when the keyboard or app returns
+8. Open floating file search or the git commit message input while a terminal is visible behind it
+9. Expected: the software keyboard appears without the terminal accessory bar, and the visible terminal does not resize or shift for that keyboard
 
 ## 11f. Terminal Keyboard Accessory After Reconnect On iOS
 
@@ -819,6 +1026,18 @@ printf '/tmp/zedra-markdown-links.md:1\n'
 7. Tap slightly outside the visible `Zed` link text
 8. Expected: the link still opens, without starting text selection
 
+## 15e. Markdown Frontmatter In Preview
+
+1. Connect to a session and open the terminal view
+2. Create a Markdown file with YAML (`---`) frontmatter followed by a heading and body
+3. Open the file from a terminal file link and from the workspace docs tree
+4. Expected: the preview renders the frontmatter as a metadata block above the heading, with a narrow key column
+5. Use `examples/frontmatter.md` (nested `owner`, `status`, list values)
+6. Expected: nested objects/lists render their key on its own line with the value indented below; leaf `key: value` pairs render inline without a reserved column
+7. Expected: plain text values (including the folded `description`) wrap within the available width; only unbreakable content (URLs) overflows and scrolls the metadata block horizontally like a Markdown table
+8. Select body text and tap `Add to Chat`
+9. Expected: the attached source line range points to the original lines after the frontmatter
+
 ## 16. iOS Native Selection In Markdown Preview
 
 1. Connect to a session on iPhone or iOS simulator and open the terminal view
@@ -909,6 +1128,9 @@ printf '\033]8;;file:///tmp/zedra-code-selection.rs:1:1\033\\/tmp/zedra-code-sel
 13. Tap `Add to Chat`, pick an agent terminal, and verify the selected source lines are pasted into that terminal
 14. Exit all supported AI-agent CLIs, select editor text, and tap `Add to Chat`
 15. Expected: the native selection sheet shows `No AI agent detected` and no text is inserted
+16. Restart an agent CLI, open the agent detail view, and tap a config/memory file to open it in the native file-preview sheet
+17. Select text in the preview sheet and tap `Add to Chat`, then pick an agent terminal
+18. Expected: the agent-target picker appears and the selected range is pasted into the chosen terminal, the same as an editor selection — the agent-detail preview routes through the foreground workspace, not just terminal-link previews
 
 ## 16c. Workspace Markdown File Rendering
 
@@ -1001,9 +1223,10 @@ Expected:
    agent icon once OSC metadata arrives.
 9. Tap `View sessions`.
 10. Expected: the drawer closes and the main view shows a unified session list
-    grouped by day across Claude, Codex, and OpenCode for the current
+    grouped by day across Claude, Codex, OpenCode, Pi, and Hermes for the current
     workspace. Each row shows agent icon, title, datetime, branch/worktree,
-    transcript size, and model when available.
+    transcript size, and model when available. Hermes is a global agent, so its
+    sessions appear in every workspace (not filtered by `cwd`).
 11. Tap a resumable session row.
 12. Expected: Zedra immediately resumes the session in a new terminal and opens
     it as the active main view.
@@ -1024,6 +1247,23 @@ Expected:
     - Codex: logged in, plan, plan until, account name from `auth.json`, model/
       personality from `config.toml`
     - OpenCode: config dir presence
+    - Pi: logged in (sessions dir presence). Install with `npm install -g
+      @earendil-works/pi-coding-agent`; sessions live at
+      `~/.pi/agent/sessions/--<workdir>--/<timestamp>_<uuid>.jsonl`. Resume
+      should run `pi --session <id>` in a new terminal.
+    - Hermes: per-provider auth + active provider (`$HERMES_HOME/auth.json`,
+      default `~/.hermes`), Default model / Default provider (`config.yaml`),
+      Skills count, Total spend + Platforms (`state.db` rollups). Sessions are
+      global, read from `$HERMES_HOME/state.db` (curated titles, platform
+      `source`, tool counts, per-session cost; falls back to `sessions/*.json`
+      when the db is absent); resume should run `hermes --resume <session_id>`.
+      Manage detail shows a **read-only "Config & memory"** section listing
+      `SOUL.md`, `USER.md`, `MEMORY.md`, `config.yaml`, `.env`, `cron/jobs.json`.
+      Tapping a present file opens its content in the **same native preview
+      sheet as terminal file links** (`FilePreviewView`): `.md` files render as
+      formatted markdown, others as a syntax-highlighted code editor. Absent
+      files show "not created yet" and are not tappable; oversized files show
+      "truncated" in the subtitle. The client cannot edit these.
 16. Tap `Resume` on a session from manage detail.
 17. Expected: same immediate resume behavior as the unified sessions view.
 18. Re-open `View sessions` or `Manage agents` without tapping Refresh.
@@ -1068,6 +1308,32 @@ Expected:
 5. Expected: the base `UISupportedInterfaceOrientations` key contains `UIInterfaceOrientationPortrait`
 6. Expected: the iPad-specific `UISupportedInterfaceOrientations~ipad` key contains portrait, portrait upside down, landscape left, and landscape right
 
+## 21. Task Live Activity (local MVP)
+
+Requires a physical device on iOS 16.2+ (Dynamic Island needs iPhone 14 Pro or
+later). Confirm `Settings > Zedra > Live Activities` is on. Trigger with deeplinks
+typed in Safari or via `xcrun devicectl device open` / a notes link.
+
+Deeplinks are `zedra://la-test/<action>/<taskId>`, where `<action>` is
+`start|needs|done|end` and `<taskId>` binds the action to a specific task (a terminal
+id in production). The trailing shows the aggregate `done/total` rollup.
+
+1. Open `zedra://la-test/start/term-1`, then `zedra://la-test/start/term-2`
+2. Expected: a Live Activity appears; Dynamic Island leading shows the Zedra glyph,
+   trailing shows `0/2`; lock screen headline reads "0/2 tasks done"
+3. Open `zedra://la-test/done/term-1`
+4. Expected: trailing updates to `1/2`
+5. Open `zedra://la-test/needs/term-2`
+6. Expected: trailing changes to an orange `!` (needs-attention outranks the count);
+   headline reads "Waiting for you"
+7. Open `zedra://la-test/done/term-2`
+8. Expected: all tasks done — trailing changes to a green checkmark; headline reads
+   "All done · 2/2"
+9. Open `zedra://la-test/end/term-1`, then `zedra://la-test/end/term-2`
+10. Expected: the activity stays while one task remains, then is removed when the last
+    task is ended (equivalently, `zedra://la-test/end` with no id clears it at once)
+11. Toggle `Settings > Zedra > Live Activities` off, then open `zedra://la-test/start/x`
+12. Expected: no activity appears; device log shows `[LA] disabled in Settings`
 ## 21. iOS Release logging
 
 1. Install a **Release** build on device (not Xcode Run with debugger attached)
@@ -1106,3 +1372,64 @@ Expected:
 4. Expected: UIKit presentation chrome uses light backgrounds and dark text/icons, matching the app theme.
 5. Toggle Appearance back to **Dark** and repeat the same presentations.
 6. Expected: UIKit presentation chrome returns to dark backgrounds and light text/icons without restarting the app.
+
+## 23. Agent Hook Notification Sound + Haptic (iOS and Android)
+
+1. Connect to a workspace and start an agent (for example Claude) in a terminal, keeping the app in the foreground.
+2. Send a prompt and wait for the agent to finish its turn (a `Stop` hook event).
+3. Expected: the device plays a notification sound and fires a short haptic at the same time.
+4. Background the app and trigger another hook event.
+5. Expected: no in-app sound or haptic fires while backgrounded.
+
+## Floating File Search (cmd+P)
+
+1. Connect to a workspace and open the drawer on the **Files** tab.
+2. Tap the search (magnifier) icon in the top-right control cluster, above the
+   Explorer / Docs toggle.
+3. Verify a floating panel appears near the top over a dimmed full-screen
+   backdrop, the keyboard opens, and the input is focused.
+4. Type a query: results stream in below the input (name + relative path rows).
+   Confirm "Searching…" shows briefly, then matches; clear the query to return
+   to the "Type to search files" prompt. Matched characters in the relative path
+   are emphasized exactly where the host scored them.
+5. Tap a file result: the panel closes and the file opens in the editor.
+6. Reopen the popup and tap the dim backdrop (or use system back / swipe back):
+   the popup closes without opening anything.
+7. Immediately tap the search icon again (without touching the drawer): the popup
+   reopens. Repeat the dismiss/reopen cycle a few times to confirm it never gets
+   stuck closed.
+8. Confirm the old inline search bar no longer appears at the top of the file
+   explorer list.
+
+## Delta Sign-In and Notification Channel (iOS and Android)
+
+### Google sign-in (Android)
+1. On a fresh install, open the Delta sign-in sheet and choose **Continue with Google**.
+2. Pick a Google account in the system credential dialog.
+3. Expected: sign-in completes (the ID token reaches `nativeDeltaGoogleSignInResult`);
+   no "Unexpected credential type" error. Previously every attempt fell through to the
+   error branch because the credential is a `CustomCredential`.
+
+### Apple sign-in (iOS)
+1. Open the Delta sign-in sheet and choose **Continue with Apple**.
+2. Cancel the system sheet, then immediately start Apple sign-in again and complete it.
+3. Expected: the second flow completes and delivers its callback; cancelling the first
+   does not orphan or cross-wire the second (coordinators are now keyed per `callbackID`).
+
+### Push-token request overlap (iOS)
+1. Trigger push-token registration twice in quick succession (e.g. rapid re-entry of the
+   notifications prompt).
+2. Expected: the second request fails fast with "Push token request already in progress"
+   rather than silently orphaning the first callback.
+
+### FCM notification before first launch (Android)
+1. Force-stop the app so `MainActivity.onCreate` has not run since install/clear-data.
+2. Send a Delta push (or use the backend test hook) while the app is not running.
+3. Expected: the notification appears. In logcat, confirm `ZedraMessagingService` creates the
+   `zedra_delta` channel before `notify(...)`. Without this, the first notification was dropped
+   on Android O+ because the channel did not exist yet.
+
+### Google action icon inset (iOS)
+1. Present a native selection/list picker whose Google action image is passed as `"Google.svg"`
+   or a path-prefixed name.
+2. Expected: the Google glyph keeps its 2pt inset (the inset lookup now uses the normalized name).

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tracing::*;
 
-use zedra_rpc::proto::HostEvent;
+use zedra_rpc::proto::{FsEntry, HostEvent};
 use zedra_session::{Session, SessionHandle, SessionState};
 
 use crate::theme;
@@ -69,6 +69,9 @@ pub struct FileExplorer {
     entries: Vec<FileEntry>,
     focus_handle: FocusHandle,
     scroll_handle: UniformListScrollHandle,
+    focused_path: Option<String>,
+    /// Bumped on every focus change; stale async reveals skip writing focus.
+    focus_epoch: u64,
     /// Whether entries were loaded from the remote host
     remote_loaded: bool,
     /// Total root entries on the server (may exceed `entries.len()` when paginated)
@@ -130,6 +133,8 @@ impl FileExplorer {
             entries: Vec::new(),
             focus_handle: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
+            focused_path: None,
+            focus_epoch: 0,
             remote_loaded: false,
             root_total: 0,
             workdir,
@@ -152,6 +157,154 @@ impl FileExplorer {
         self.rebind_watches(cx);
         let show_loading = !self.remote_loaded && self.entries.is_empty();
         self.request_root_listing(show_loading, cx)
+    }
+
+    /// Focus the explorer and reveal a file or directory path, loading missing
+    /// ancestor directories and paginated entries as needed.
+    pub fn reveal_path(
+        &mut self,
+        path: impl Into<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target_path = normalize_reveal_path(&path.into(), &self.workdir);
+        if target_path.is_empty() {
+            return;
+        }
+
+        self.focus_handle.focus(window, cx);
+        self.focus_epoch = self.focus_epoch.wrapping_add(1);
+        let focus_epoch = self.focus_epoch;
+        self.focused_path = Some(target_path.clone());
+
+        if target_path == "." || target_path == self.workdir {
+            self.scroll_handle
+                .scroll_to_item_strict(0, ScrollStrategy::Top);
+            cx.notify();
+            return;
+        }
+
+        if let Some(index_path) = self.find_index_path_by_path(&target_path) {
+            self.expand_ancestors(&index_path, cx);
+            self.scroll_to_entry_path(&target_path);
+            cx.notify();
+            return;
+        }
+
+        let Some(path_chain) = reveal_path_chain(&target_path, &self.workdir) else {
+            warn!(
+                target_path = %target_path,
+                workdir = %self.workdir,
+                "file explorer reveal target is outside workspace"
+            );
+            cx.notify();
+            return;
+        };
+
+        let handle = self.session_handle.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let mut parent_path = ".".to_string();
+            for child_path in path_chain {
+                let loaded =
+                    match load_entries_until_child(&handle, &parent_path, &child_path).await {
+                        Ok(loaded) => loaded,
+                        Err(e) => {
+                            warn!(
+                                parent_path = %parent_path,
+                                child_path = %child_path,
+                                "file explorer reveal failed to load path: {e}"
+                            );
+                            return;
+                        }
+                    };
+
+                let found_child = loaded
+                    .entries
+                    .iter()
+                    .find(|entry| entry.path == child_path)
+                    .cloned();
+                let is_target = child_path == target_path;
+
+                let should_continue = this
+                    .update(cx, |this, cx| {
+                        this.apply_loaded_children(&parent_path, loaded.entries, loaded.total, cx);
+                        if let Some(index_path) = this.find_index_path_by_path(&child_path) {
+                            this.expand_ancestors(&index_path, cx);
+                            if found_child.as_ref().is_some_and(|entry| entry.is_dir) && !is_target
+                            {
+                                if let Some(entry) = this.entry_at_path_mut(&index_path) {
+                                    entry.expanded = true;
+                                }
+                            }
+                        }
+                        if is_target && this.focus_epoch == focus_epoch {
+                            this.focused_path = Some(target_path.clone());
+                            this.scroll_to_entry_path(&target_path);
+                        }
+                        cx.notify();
+                        found_child
+                            .as_ref()
+                            .is_some_and(|entry| entry.is_dir && !is_target)
+                    })
+                    .unwrap_or(false);
+
+                if !should_continue {
+                    if is_target && found_child.as_ref().is_some_and(|entry| entry.is_dir) {
+                        parent_path = child_path;
+                        continue;
+                    }
+                    return;
+                }
+                parent_path = child_path;
+            }
+
+            if parent_path == target_path {
+                match load_entries_until_child(&handle, &target_path, "").await {
+                    Ok(loaded) => {
+                        let _ = this.update(cx, |this, cx| {
+                            this.apply_loaded_children(
+                                &target_path,
+                                loaded.entries,
+                                loaded.total,
+                                cx,
+                            );
+                            if let Some(index_path) = this.find_index_path_by_path(&target_path) {
+                                if let Some(entry) = this.entry_at_path_mut(&index_path) {
+                                    entry.expanded = true;
+                                }
+                                this.expand_ancestors(&index_path, cx);
+                            }
+                            if this.focus_epoch == focus_epoch {
+                                this.focused_path = Some(target_path.clone());
+                                this.scroll_to_entry_path(&target_path);
+                            }
+                            cx.notify();
+                        });
+                    }
+                    Err(e) => warn!(
+                        target_path = %target_path,
+                        "file explorer reveal failed to load target directory: {e}"
+                    ),
+                }
+            }
+
+            let _ = this.update(cx, |this, cx| {
+                if let Some(index_path) = this.find_index_path_by_path(&target_path) {
+                    if let Some(entry) = this.entry_at_path_mut(&index_path) {
+                        if entry.is_dir {
+                            entry.expanded = true;
+                        }
+                    }
+                    this.expand_ancestors(&index_path, cx);
+                }
+                if this.focus_epoch == focus_epoch {
+                    this.focused_path = Some(target_path.clone());
+                    this.scroll_to_entry_path(&target_path);
+                }
+                cx.notify();
+            });
+        });
+        self.tasks.push(task);
     }
 
     /// Request root listing. When `show_loading` is false we preserve the
@@ -497,6 +650,79 @@ impl FileExplorer {
         find_index_path_by_path(&self.entries, path)
     }
 
+    fn expand_ancestors(&mut self, index_path: &[usize], cx: &mut Context<Self>) {
+        if index_path.len() <= 1 {
+            return;
+        }
+        for depth in 1..index_path.len() {
+            let ancestor_path = &index_path[..depth];
+            let path = {
+                let Some(entry) = self.entry_at_path_mut(ancestor_path) else {
+                    continue;
+                };
+                if !entry.is_dir {
+                    continue;
+                }
+                entry.expanded = true;
+                entry.path.clone()
+            };
+            if !path.is_empty() {
+                self.flat_dirty = true;
+                self.fs_watch_path(path, cx);
+            }
+        }
+    }
+
+    fn apply_loaded_children(
+        &mut self,
+        dir_path: &str,
+        entries: Vec<FileEntry>,
+        total: u32,
+        cx: &mut Context<Self>,
+    ) {
+        let cache = self.entry_cache();
+        let mut entries = entries;
+        let mut watched = Vec::new();
+        for entry in &mut entries {
+            Self::restore_entry_state(entry, &cache, &mut watched);
+        }
+
+        if dir_path == "." {
+            self.entries = entries;
+            self.root_total = total;
+            self.remote_loaded = true;
+            self.fs_watch_path(".".to_string(), cx);
+        } else if let Some(index_path) = self.find_index_path_by_path(dir_path) {
+            if let Some(entry) = self.entry_at_path_mut(&index_path) {
+                entry.children = entries;
+                entry.children_total = total;
+                entry.expanded = true;
+                entry.loading = false;
+            }
+            self.fs_watch_path(dir_path.to_string(), cx);
+        }
+        for path in watched {
+            self.fs_watch_path(path, cx);
+        }
+        self.note_refreshed(dir_path);
+        self.flat_dirty = true;
+    }
+
+    fn scroll_to_entry_path(&mut self, path: &str) {
+        if self.flat_dirty {
+            self.flat_entries = self.flatten();
+            self.flat_dirty = false;
+        }
+        if let Some(index) = self
+            .flat_entries
+            .iter()
+            .position(|entry| !entry.is_load_more && entry.path == path)
+        {
+            self.scroll_handle
+                .scroll_to_item_strict(index, ScrollStrategy::Center);
+        }
+    }
+
     fn invalidate_dir(&mut self, path: &str, cx: &mut Context<Self>) {
         if self.refresh_throttled(path) {
             return;
@@ -641,6 +867,71 @@ fn event_path_to_entry_path(path: &str, workdir: &str) -> String {
         .to_string()
 }
 
+fn normalize_reveal_path(path: &str, workdir: &str) -> String {
+    if path == "." {
+        return ".".to_string();
+    }
+    let path = Path::new(path);
+    if path.is_absolute() {
+        return path.to_string_lossy().to_string();
+    }
+    if workdir.is_empty() {
+        return path.to_string_lossy().to_string();
+    }
+    PathBuf::from(workdir)
+        .join(path)
+        .to_string_lossy()
+        .to_string()
+}
+
+fn reveal_path_chain(target_path: &str, workdir: &str) -> Option<Vec<String>> {
+    if target_path == "." || target_path == workdir {
+        return Some(Vec::new());
+    }
+    let target = Path::new(target_path);
+    let workdir = Path::new(workdir);
+    let relative = target.strip_prefix(workdir).ok()?;
+    let mut current = PathBuf::from(workdir);
+    let mut chain = Vec::new();
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        chain.push(current.to_string_lossy().to_string());
+    }
+    Some(chain)
+}
+
+struct RevealLoadedEntries {
+    entries: Vec<FileEntry>,
+    total: u32,
+}
+
+async fn load_entries_until_child(
+    handle: &SessionHandle,
+    parent_path: &str,
+    child_path: &str,
+) -> anyhow::Result<RevealLoadedEntries> {
+    let mut entries = Vec::<FsEntry>::new();
+    let mut offset = 0;
+
+    let total = loop {
+        let (page, page_total, has_more) = handle
+            .fs_list_page(parent_path, offset, zedra_rpc::proto::FS_LIST_DEFAULT_LIMIT)
+            .await?;
+        let found = page.iter().any(|entry| entry.path == child_path);
+        offset = offset.saturating_add(page.len() as u32);
+        entries.extend(page);
+
+        if found || !has_more || offset >= page_total {
+            break page_total;
+        }
+    };
+
+    Ok(RevealLoadedEntries {
+        entries: FileExplorer::to_file_entries(entries),
+        total,
+    })
+}
+
 fn drain_watched_paths_for_unwatch(
     paths: Vec<String>,
     workdir: &str,
@@ -687,7 +978,24 @@ impl Render for FileExplorer {
             self.flat_dirty = false;
         }
 
-        let flat_len = self.flat_entries.len();
+        let list = uniform_list(
+            "file-list",
+            self.flat_entries.len(),
+            cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
+                range
+                    .filter_map(|flat_idx| {
+                        this.flat_entries
+                            .get(flat_idx)
+                            .cloned()
+                            .map(|entry| this.render_flat_entry(flat_idx, entry, window, cx))
+                    })
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .track_scroll(&self.scroll_handle)
+        .size_full()
+        .flex_grow();
+
         div()
             .track_focus(&self.focus_handle)
             .id("file-list-container")
@@ -697,24 +1005,7 @@ impl Render for FileExplorer {
             .min_h_0()
             .overflow_hidden()
             .relative()
-            .child(
-                uniform_list(
-                    "file-list",
-                    flat_len,
-                    cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
-                        range
-                            .filter_map(|flat_idx| {
-                                this.flat_entries.get(flat_idx).cloned().map(|entry| {
-                                    this.render_flat_entry(flat_idx, entry, window, cx)
-                                })
-                            })
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                .track_scroll(&self.scroll_handle)
-                .size_full()
-                .flex_grow(),
-            )
+            .child(list)
     }
 }
 
@@ -792,15 +1083,16 @@ impl FileExplorer {
                 .into_any_element()
         };
 
-        let is_selected = !is_dir
-            && !row_path.is_empty()
+        // Single focus highlight at a time: both press-to-open and search reveal
+        // set `focused_path`, so the row highlight is driven solely by it.
+        let is_focused_path = !row_path.is_empty()
             && self
-                .workspace_state
-                .read(cx)
-                .active_main_view
-                .is_file_path(&row_path);
+                .focused_path
+                .as_ref()
+                .is_some_and(|focused_path| focused_path == &row_path);
 
         let index_path_for_toggle = index_path.clone();
+        let focus_path = row_path.clone();
         let mut row = div()
             .id(flat_idx)
             .w_full()
@@ -816,6 +1108,9 @@ impl FileExplorer {
                 if is_dir {
                     this.toggle_dir(&index_path_for_toggle, cx);
                 } else if !row_path.is_empty() {
+                    // Bump epoch so an in-flight reveal can't overwrite this focus.
+                    this.focus_epoch = this.focus_epoch.wrapping_add(1);
+                    this.focused_path = Some(focus_path.clone());
                     window.dispatch_action(
                         workspace_action::OpenFile {
                             path: row_path.clone(),
@@ -835,7 +1130,7 @@ impl FileExplorer {
                     .text_size(px(theme::FONT_BODY))
                     .child(name),
             );
-        if is_selected {
+        if is_focused_path {
             row = row.bg(theme::row_pressed_bg(cx));
         }
         row.into_any_element()
@@ -902,7 +1197,8 @@ mod tests {
 
     use super::{
         FileEntry, FileExplorer, FlatEntry, drain_watched_paths_for_unwatch,
-        event_path_to_entry_path, find_index_path_by_path, flatten_entries, normalize_watch_path,
+        event_path_to_entry_path, find_index_path_by_path, flatten_entries, normalize_reveal_path,
+        normalize_watch_path, reveal_path_chain,
     };
 
     fn expanded(mut entry: FileEntry) -> FileEntry {
@@ -1127,6 +1423,33 @@ mod tests {
             "/repo/src/lib.rs"
         );
         assert_eq!(event_path_to_entry_path("src/lib.rs", ""), "src/lib.rs");
+    }
+
+    #[test]
+    fn normalize_reveal_path_resolves_relative_paths_against_workdir() {
+        assert_eq!(
+            normalize_reveal_path("src/main.rs", "/repo"),
+            "/repo/src/main.rs"
+        );
+        assert_eq!(
+            normalize_reveal_path("/repo/src/main.rs", "/repo"),
+            "/repo/src/main.rs"
+        );
+        assert_eq!(normalize_reveal_path(".", "/repo"), ".");
+    }
+
+    #[test]
+    fn reveal_path_chain_builds_workspace_ancestor_sequence() {
+        assert_eq!(
+            reveal_path_chain("/repo/src/nested/mod.rs", "/repo"),
+            Some(vec![
+                "/repo/src".to_string(),
+                "/repo/src/nested".to_string(),
+                "/repo/src/nested/mod.rs".to_string(),
+            ])
+        );
+        assert_eq!(reveal_path_chain("/repo", "/repo"), Some(Vec::new()));
+        assert_eq!(reveal_path_chain("/other/src/lib.rs", "/repo"), None);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 /// Active terminal input routing.
 ///
-/// Native keyboard accessory bars send key input via platform FFI callbacks
-/// without any GPUI context. This module
+/// The iOS keyboard accessory bar sends key input via a C FFI callback
+/// (`zedra_ios_send_key_input`) without any GPUI context. This module
 /// holds a single process-scoped sender for the active terminal. Terminal
 /// activation and reconnect attach both refresh this slot, so native input
 /// reads the current channel instead of a callback that captured an older one.
@@ -37,10 +37,19 @@ pub fn set_active_input(terminal_id: String, sender: mpsc::Sender<Vec<u8>>) {
     }
 }
 
-/// Clear the active input channel (e.g. when all terminals are closed).
-pub fn clear_active_input() {
+/// Clear the active input channel, but only if `terminal_id` still owns the slot.
+///
+/// A stale close (e.g. an old terminal tearing down after a newer one became
+/// active) must not drop the current terminal's channel, so this compares the
+/// stored id before clearing.
+pub fn clear_active_input(terminal_id: &str) {
     if let Ok(mut slot) = slot().lock() {
-        *slot = None;
+        if slot
+            .as_ref()
+            .is_some_and(|active| active.terminal_id == terminal_id)
+        {
+            *slot = None;
+        }
     }
 }
 
@@ -65,36 +74,23 @@ pub fn send_to_active(data: Vec<u8>) -> bool {
     }
 }
 
-/// Map a native accessory key name and send it to the active terminal.
-pub fn send_named_key(key_name: &str) -> bool {
-    let bytes: &[u8] = match key_name {
-        "escape" => b"\x1b",
-        "tab" => b"\x09",
-        "left" => b"\x1b[D",
-        "down" => b"\x1b[B",
-        "up" => b"\x1b[A",
-        "right" => b"\x1b[C",
-        "enter" => b"\r",
-        "shift_enter" => b"\n",
-        _ => return false,
-    };
-    send_to_active(bytes.to_vec())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tokio::sync::mpsc::error::TryRecvError;
 
+    // Single test: the module holds one process-global slot, so parallel tests
+    // would race on it.
     #[test]
-    fn send_to_active_reads_latest_registered_channel() {
-        clear_active_input();
+    fn active_input_routing_and_ownership() {
+        clear_active_input("second");
 
         let (first_tx, mut first_rx) = mpsc::channel(1);
         let (second_tx, mut second_rx) = mpsc::channel(1);
         set_active_input("first".to_string(), first_tx);
         set_active_input("second".to_string(), second_tx);
 
+        // send_to_active reads the latest registered channel.
         assert!(send_to_active(b"\t".to_vec()));
         assert!(matches!(
             first_rx.try_recv(),
@@ -102,6 +98,13 @@ mod tests {
         ));
         assert_eq!(second_rx.try_recv(), Ok(b"\t".to_vec()));
 
-        clear_active_input();
+        // A stale close for a different terminal must not drop the active slot.
+        clear_active_input("first");
+        assert!(send_to_active(b"\t".to_vec()));
+        assert_eq!(second_rx.try_recv(), Ok(b"\t".to_vec()));
+
+        // The owning terminal clears it.
+        clear_active_input("second");
+        assert!(!send_to_active(b"\t".to_vec()));
     }
 }

@@ -1,6 +1,5 @@
 use crate::agent_utils::*;
 use crate::sqlite_readonly;
-use crate::utils;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::Value;
@@ -44,28 +43,6 @@ pub struct SessionCounts {
 
 pub fn cli_available() -> bool {
     command_on_path("codex") || state_db_path().is_some()
-}
-
-pub fn normalize_event(event_name: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
-    Some(match event_name {
-        "SessionStart" => (
-            AgentEventKind::SessionStarted,
-            AgentLifecycleStatus::Starting,
-        ),
-        "PermissionRequest" => (
-            AgentEventKind::PermissionRequested,
-            AgentLifecycleStatus::WaitingForPermission,
-        ),
-        "PostToolUse" => (AgentEventKind::ToolCompleted, AgentLifecycleStatus::Running),
-        "Stop" => (
-            AgentEventKind::TurnCompleted,
-            AgentLifecycleStatus::Completed,
-        ),
-        name if name.contains("Failure") || name.contains("Failed") => {
-            (AgentEventKind::TurnFailed, AgentLifecycleStatus::Failed)
-        }
-        _ => return None,
-    })
 }
 
 pub fn session_counts(workdir: &Path) -> Result<SessionCounts, String> {
@@ -167,6 +144,16 @@ pub fn threads_for_workdir(workdir: &Path) -> Result<Vec<CodexThreadRow>, String
     fetch_threads_from_db(workdir)
 }
 
+/// Look up the session title for a Codex thread id within a workdir.
+/// Returns `None` if the thread is not found or has no title yet.
+pub fn title_for_session(workdir: &Path, session_id: &str) -> Option<String> {
+    threads_for_workdir(workdir)
+        .ok()?
+        .into_iter()
+        .find(|t| t.id == session_id)
+        .and_then(|t| title_from_thread(&t))
+}
+
 fn workdir_keys(workdir: &Path) -> Vec<String> {
     let canonical = normalize_path(workdir).to_string_lossy().into_owned();
     let raw = workdir.to_string_lossy().trim_end_matches('/').to_string();
@@ -234,8 +221,9 @@ fn finalize_title(line: &str) -> Option<String> {
     if line.is_empty() {
         return None;
     }
+    // Collapse whitespace; length is clamped centrally in `session_title`.
     let collapsed = line.split_whitespace().collect::<Vec<_>>().join(" ");
-    Some(utils::truncate_chars(&collapsed, 80))
+    Some(collapsed)
 }
 
 fn title_from_path(path: &str) -> Option<&str> {
@@ -254,17 +242,16 @@ fn title_from_agent_identity(nickname: Option<&str>, role: Option<&str>) -> Opti
         Some(role) => format!("{nickname} ({role})"),
         None => nickname.to_string(),
     };
-    Some(utils::truncate_chars(&title, 80))
+    Some(title)
 }
 
 fn session_summary_from_thread(
     thread: &CodexThreadRow,
-    cli: &AgentCliSummary,
+    _cli: &AgentCliSummary,
 ) -> AgentSessionSummary {
-    let rollout_path = PathBuf::from(&thread.rollout_path);
-    let cli_version = (!thread.cli_version.is_empty()).then_some(thread.cli_version.clone());
+    let rollout_path = std::path::PathBuf::from(&thread.rollout_path);
     AgentSessionSummary {
-        kind: ManagedAgentKind::Codex,
+        kind: AgentKind::Codex,
         session_id: thread.id.clone(),
         title: session_title(title_from_thread(thread)),
         cwd: Some(thread.cwd.clone()),
@@ -272,19 +259,7 @@ fn session_summary_from_thread(
             .created_at_ms
             .and_then(DateTime::<Utc>::from_timestamp_millis),
         last_activity_at: thread_updated_at(thread),
-        resume: resume_summary(ManagedAgentKind::Codex, &thread.id),
-        live: empty_session_live(),
-        provider: AgentProviderSessionInfo {
-            model: thread.model.clone(),
-            permission_mode: (!thread.approval_mode.is_empty())
-                .then_some(thread.approval_mode.clone()),
-            cli_version: cli_version.or_else(|| cli.version.clone()),
-            origin: None,
-            source: Some(thread.source.clone()),
-            entrypoint: None,
-            native_project_id: None,
-            model_provider: Some(thread.model_provider.clone()),
-        },
+        resume: resume_summary(AgentKind::Codex, &thread.id),
         git: Some(AgentGitSummary {
             branch: thread.git_branch.clone(),
             worktree: None,
@@ -295,25 +270,6 @@ fn session_summary_from_thread(
             pr_repository: None,
         }),
         usage: None,
-        counters: AgentSessionCounters {
-            record_count: 0,
-            message_count: 0,
-            turn_count: 0,
-            tool_count: 0,
-            tool_failure_count: 0,
-            hook_success_count: 0,
-            hook_failure_count: 0,
-            malformed_record_count: 0,
-        },
-        flags: AgentSessionFlags {
-            is_sidechain: false,
-            is_subagent: false,
-            is_archived: false,
-            historical_only: true,
-            live_bound: false,
-        },
-        data_sources: vec![AgentDataSource::HistoricalScan],
-        warnings: Vec::new(),
         transcript_size_bytes: file_size_bytes(&rollout_path),
     }
 }
@@ -615,7 +571,6 @@ mod tests {
         let summary = session_summary_from_thread(&threads[0], &cli("0.130.0"));
         assert_eq!(summary.session_id, "019e251d-03ed-76a1-87f6-eecda6eb88a8");
         assert_eq!(summary.title.as_deref(), Some("Research live activity ios"));
-        assert_eq!(summary.provider.source.as_deref(), Some("vscode"));
     }
 
     #[test]

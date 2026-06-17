@@ -1,20 +1,23 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use tracing::error;
-use zedra_rpc::proto::{AgentSummary, HostEvent, ManagedAgentKind};
-use zedra_session::{AGENT_MGMT_UNSUPPORTED_MSG, Session, SessionHandle};
+use zedra_rpc::proto::{AgentFile, AgentKind, AgentSummary, HostEvent};
+use zedra_session::{Session, SessionHandle};
 
 use crate::agent_ui::{
     AgentSessionListProps, cli_version_display, group_sessions_by_day, managed_agent_name,
     render_agent_session_list, render_agent_usage_row, setup_label,
 };
+use crate::file_preview_view::FilePreviewView;
 use crate::fonts;
-use crate::platform_bridge::{self, HapticFeedback};
+use crate::platform_bridge::{self, CustomSheetDetent, CustomSheetOptions, HapticFeedback};
+use crate::telemetry::view_telemetry;
 use crate::theme;
 use crate::ui::{
     chevron_back_button, subscreen_padded_body, subscreen_page, subscreen_refresh_button,
 };
 use crate::workspace_action;
+use crate::workspace_state::WorkspaceState;
 
 #[derive(Clone, Debug, PartialEq)]
 enum LoadState {
@@ -25,9 +28,13 @@ enum LoadState {
 
 pub struct AgentDetail {
     session_handle: SessionHandle,
-    kind: ManagedAgentKind,
+    kind: AgentKind,
     agent: Option<AgentSummary>,
     sessions: Vec<zedra_rpc::proto::AgentSessionSummary>,
+    /// Read-only config/memory files (Hermes). Empty for agents without a set.
+    files: Vec<AgentFile>,
+    /// Persistent preview for the native file sheet; its content swaps per tap.
+    file_preview: Entity<FilePreviewView>,
     agent_state: LoadState,
     session_state: LoadState,
     loading_epoch: u64,
@@ -38,14 +45,19 @@ impl AgentDetail {
     pub fn new(
         session_handle: SessionHandle,
         session: Session,
-        kind: ManagedAgentKind,
+        kind: AgentKind,
+        workspace_state: Entity<WorkspaceState>,
         cx: &mut Context<Self>,
     ) -> Self {
+        let file_preview =
+            cx.new(|cx| FilePreviewView::new(session_handle.clone(), workspace_state, cx));
         let mut view = Self {
             session_handle,
             kind,
             agent: None,
             sessions: Vec::new(),
+            files: Vec::new(),
+            file_preview,
             agent_state: LoadState::Loading,
             session_state: LoadState::Loading,
             loading_epoch: 0,
@@ -93,12 +105,6 @@ impl AgentDetail {
     fn reload(&mut self, refresh: bool, cx: &mut Context<Self>) {
         self.loading_epoch = self.loading_epoch.wrapping_add(1);
         let epoch = self.loading_epoch;
-        if !self.session_handle.supports_agent_mgmt() {
-            self.agent_state = LoadState::Error(AGENT_MGMT_UNSUPPORTED_MSG.into());
-            self.session_state = LoadState::Error(AGENT_MGMT_UNSUPPORTED_MSG.into());
-            cx.notify();
-            return;
-        }
         self.agent_state = LoadState::Loading;
         self.session_state = LoadState::Loading;
         cx.notify();
@@ -106,13 +112,21 @@ impl AgentDetail {
         let handle = self.session_handle.clone();
         let kind = self.kind;
         let task = cx.spawn(async move |this, cx| {
-            let (agents, sessions) = tokio::join!(
+            let (agents, sessions, files) = tokio::join!(
                 handle.agent_list(refresh),
                 handle.agent_sessions(kind, refresh, 0),
+                handle.agent_files(kind),
             );
             let _ = this.update(cx, |this, cx| {
                 if this.loading_epoch != epoch {
                     return;
+                }
+                // Files are a best-effort extra; on RPC/protocol failure keep
+                // the prior list rather than blanking the section (absent files
+                // already come back as explicit `missing` rows, so an error is
+                // distinct from "no files").
+                if let Ok(files) = files {
+                    this.files = files;
                 }
                 match agents {
                     Ok(agents) => {
@@ -161,6 +175,105 @@ impl AgentDetail {
             _ => String::new(),
         }
     }
+
+    /// Read-only config/memory file list. Each present file is a tappable row
+    /// that opens its content in a native sheet (content is not rendered inline).
+    fn render_files_section(
+        &self,
+        files: &[AgentFile],
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let mut section = div()
+            .id("agent-detail-files")
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(theme::SPACING_XS))
+            .child(
+                div()
+                    .text_size(px(theme::FONT_DETAIL))
+                    .text_color(rgb(theme::text_muted(cx)))
+                    .child("Config & memory (read-only)"),
+            );
+        for (index, file) in files.iter().enumerate() {
+            section = section.child(self.file_row(index, file, cx));
+        }
+        section
+    }
+
+    fn file_row(&self, index: usize, file: &AgentFile, cx: &mut Context<Self>) -> Stateful<Div> {
+        let subtitle = if file.missing {
+            "not created yet".to_string()
+        } else if file.truncated {
+            format!("{} · truncated", file.path)
+        } else {
+            file.path.clone()
+        };
+        let mut row = div()
+            .id(SharedString::from(format!("agent-file-row-{}", file.label)))
+            .min_w_0()
+            .flex()
+            .flex_row()
+            .items_baseline()
+            .gap(px(theme::SPACING_SM))
+            .py(px(theme::AGENT_METADATA_ROW_PY))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(theme::FONT_DETAIL))
+                    .font_family(fonts::MONO_FONT_FAMILY)
+                    .text_color(rgb(theme::text_secondary(cx)))
+                    .child(file.label.clone()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(theme::FONT_DETAIL))
+                    .text_color(rgb(theme::text_muted(cx)))
+                    .child(subtitle),
+            );
+        // Only present files open a sheet; missing ones are inert. Clone the
+        // (potentially large) file content only on tap, not every render.
+        if !file.missing {
+            row = row
+                .cursor_pointer()
+                .on_press(cx.listener(move |this, _event, _window, cx| {
+                    platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+                    if let Some(file) = this.files.get(index).cloned() {
+                        this.open_file_preview(file, cx);
+                    }
+                }));
+        }
+        row
+    }
+
+    fn open_file_preview(&self, file: AgentFile, cx: &mut Context<Self>) {
+        let subtitle = if file.truncated {
+            format!("{} · truncated", file.path)
+        } else {
+            file.path.clone()
+        };
+        view_telemetry::record(view_telemetry::custom_sheet_file(&file.path));
+        self.file_preview.update(cx, |preview, cx| {
+            preview.open_content(file.label.clone(), subtitle, &file.path, file.content, cx);
+        });
+        platform_bridge::show_custom_sheet(
+            CustomSheetOptions {
+                detents: vec![CustomSheetDetent::Large],
+                initial_detent: CustomSheetDetent::Large,
+                shows_grabber: true,
+                expands_on_scroll_edge: true,
+                edge_attached_in_compact_height: false,
+                width_follows_preferred_content_size_when_edge_attached: false,
+                corner_radius: None,
+                modal_in_presentation: false,
+            },
+            self.file_preview.clone(),
+        );
+    }
 }
 
 impl Render for AgentDetail {
@@ -195,6 +308,9 @@ impl Render for AgentDetail {
                         .child(render_detail_metadata(agent, cx))
                         .when_some(agent.usage.as_ref(), |col, usage| {
                             col.child(render_agent_usage_row(agent.kind, usage, cx))
+                        })
+                        .when(!self.files.is_empty(), |col| {
+                            col.child(self.render_files_section(&self.files, cx))
                         })
                         .child(render_agent_session_list(
                             AgentSessionListProps {
@@ -361,6 +477,12 @@ fn metadata_line(label: SharedString, value: String, cx: &App, show_divider: boo
         )
 }
 
+/// Read-only viewer for an agent's config/memory files (Hermes:
+/// SOUL.md/USER.md/MEMORY.md/config.yaml/.env). Content is host-capped; long
+/// files scroll within a bounded box.
+/// Body of the native file sheet: a mono, horizontally- and vertically-
+/// scrollable view of one file's content (GPUI text runs don't break on `\n`,
+/// so each line is its own element).
 fn empty_text(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
         .w_full()

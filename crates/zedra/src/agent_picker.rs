@@ -1,7 +1,7 @@
 use gpui::*;
 use tracing::error;
 use zedra_rpc::proto::InstalledAgentEntry;
-use zedra_session::{AGENT_MGMT_UNSUPPORTED_MSG, SessionHandle};
+use zedra_session::SessionHandle;
 
 use crate::pending::SharedPendingSlot;
 use crate::platform_bridge::{self, ListPickerItem};
@@ -36,10 +36,6 @@ impl AgentPicker {
     /// Called when the user taps "Create Agent". Shows the native picker
     /// immediately with cached items if available, otherwise fetches first.
     pub fn trigger(&mut self, cx: &mut Context<Self>) {
-        if !self.session_handle.supports_agent_mgmt() {
-            self.present_placeholder(AGENT_MGMT_UNSUPPORTED_MSG);
-            return;
-        }
         match &self.state {
             State::Ready(agents) => {
                 self.present(agents.clone());

@@ -4,6 +4,7 @@
 //! `gpui_android`.
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui::*;
 use ndk::native_window::NativeWindow;
@@ -15,6 +16,10 @@ thread_local! {
     static SHEET_WINDOW: RefCell<Option<WindowHandle<SheetHostView>>> =
         const { RefCell::new(None) };
 }
+
+// Unique, non-zero selection-routing handles for embedded sheet windows (0 is
+// the root window). Monotonic so a future second sheet never collides.
+static NEXT_SHEET_WINDOW_HANDLE: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn handle_surface_created(native_window: NativeWindow, width: u32, height: u32) {
     let Some(app_cell) = entry::app_cell() else {
@@ -57,7 +62,11 @@ pub(crate) fn handle_surface_created(native_window: NativeWindow, width: u32, he
             ..Default::default()
         };
 
-        gpui_android::with_platform(|platform| platform.prepare_embedded_window());
+        let window_handle = NEXT_SHEET_WINDOW_HANDLE.fetch_add(1, Ordering::Relaxed);
+        gpui_android::with_platform(|platform| {
+            platform.prepare_embedded_window();
+            platform.prepare_window(window_handle);
+        });
 
         match app.open_window(window_options, |_window, cx| {
             cx.new(|cx| SheetHostView::new(sheet_view.clone(), cx))

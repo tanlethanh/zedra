@@ -35,7 +35,7 @@ The protocol layer includes:
 
 - Network transport: iroh QUIC.
 - RPC framing: `irpc` over iroh streams.
-- ALPN: `zedra/rpc/2` (see `ZEDRA_ALPN` in `crates/zedra-rpc/src/proto.rs`).
+- ALPN: `zedra/rpc/3` (see `ZEDRA_ALPN` in `crates/zedra-rpc/src/proto.rs`). Bump the trailing integer on any change that alters how existing bytes decode (see §2.4).
 
 ### 2.2 Serialization
 
@@ -51,6 +51,63 @@ The protocol layer includes:
   - Server stream: mpsc sender from host to client
   - Bidirectional stream: client rx + host tx
 - `ZedraProto` variant order is append-only. Never insert/reorder existing variants.
+
+### 2.4 Schema Evolution and Decode Compatibility
+
+postcard is schema-positional and non-self-describing. There is no field tag,
+no enum-variant length prefix, and no way to skip an unknown value. The decoder
+reads bytes by position against the type it was compiled with. Two consequences
+drive every wire-schema decision:
+
+- An enum is encoded as a bare varint discriminant. A peer that receives a
+  discriminant it does not know **cannot skip it** — `postcard::from_bytes`
+  fails the **entire message**, not just that field. One unknown enum value in a
+  `Vec<T>` response fails the whole vec; one undecodable item in a server stream
+  kills the whole stream.
+- A struct is a fixed, untagged sequence of fields. Appending a field breaks the
+  peer with fewer fields (it runs out of bytes or misreads). `#[serde(default)]`
+  and `#[serde(other)]` do **not** rescue postcard — they only work for
+  self-describing formats.
+
+A decoder fix cannot reach an already-shipped binary, so compatibility is a
+property of the wire schema, not of any per-client negotiation (the host does
+not tailor responses per client). Two strategies are available; Zedra currently
+relies on the first.
+
+**Current mechanism — ALPN version gate.** `ZEDRA_ALPN` (`zedra/rpc/N`) is the
+single compatibility boundary. A host and client connect only when their ALPN
+strings match exactly, so within one protocol version the wire schema — every
+struct's field set and every enum's variant set — is fixed and known to both
+ends. Forward skew (a host emitting a discriminant the client lacks) cannot
+happen across an ALPN boundary: the mismatched peer never connects, it does not
+connect and then fail to decode. Therefore:
+
+- **Append-only within a version.** Never reorder, remove, retype, or renumber
+  an existing variant, field, or enum code. Appending a new enum variant or a
+  new struct field changes how existing bytes decode for a peer that lacks it,
+  so it is **not** additive under postcard.
+- **Bump `ZEDRA_ALPN` on any wire change.** Adding an agent kind, an event kind,
+  a struct field, or a request/response shape all alter decoding for an older
+  peer. Bump the trailing integer; the older peer then declines to connect
+  rather than corrupting a response.
+
+**Target mechanism — forward-compatible encodings (not yet applied; issue
+`#140`).** To let the schema grow *without* an ALPN bump, the undecodable-unknown
+problem has to be removed at the encoding layer. Candidate techniques:
+
+- **Open enums.** Serialize a growable enum through a self-delimiting primitive
+  with an `Unknown` fallback (`#[serde(into = "u32", from = "u32")]` +
+  `Unknown(u32)`) so an unrecognized code decodes to `Unknown` instead of
+  failing the whole response; consumers filter `Unknown` out of display and
+  dispatch. Known codes stay wire-identical to the derived discriminant.
+- **Key/value record data.** Carry optional data as `Vec<{label,value}>` entries
+  (the `account.fields` pattern) so a struct's field count never changes.
+- **Versioned variants.** Add `FooReqV2` / `FooResultV2` rather than mutating a
+  shipped struct (the `TermCreateReq` → `TermCreateReqV2` pattern).
+
+These are documented as the intended direction; `AgentKind` and the other
+growable enums currently use the plain derived discriminant and are gated by the
+ALPN bump above. Migrating them is tracked in issue #140.
 
 ---
 
@@ -156,6 +213,7 @@ challenge is carried by `ConnectResult::Challenge`.
 ## 5.4 Filesystem
 
 - `FsList(FsListReq) -> FsListResult`
+- `FsSearch(FsSearchReq) -> FsSearchResult`
 - `FsRead(FsReadReq) -> FsReadResult`
 - `FsWrite(FsWriteReq) -> FsWriteResult`
 - `FsStat(FsStatReq) -> FsStatResult`
@@ -172,7 +230,7 @@ Most result structs carry `error: Option<String>`. When set, the operation faile
 - Never silently ignore a set `error` — propagate as `Err` or show in UI.
 
 Result types that carry `error: Option<String>`:
-`FsListResult`, `FsReadResult`, `FsStatResult`, `SessionSwitchResult`, `TermCreateResult`,
+`FsListResult`, `FsSearchResult`, `FsReadResult`, `FsStatResult`, `SessionSwitchResult`, `TermCreateResult`,
 `GitStatusResult`, `GitDiffResult`, `GitLogResult`, `GitCommitResult`, `GitStageResult`,
 `GitUnstageResult`, `GitBranchesResult`, `AgentListResult`, `AgentSessionsResult`,
 `AgentResumeResult`, `LspDiagnosticsResult`.
@@ -191,6 +249,15 @@ Types that use non-string status fields or enum variants instead:
 - `offset` is zero-based index into stable listing order returned by host.
 - `limit` is clamped by host to `FS_LIST_DEFAULT_LIMIT` when necessary.
 - `has_more` indicates additional entries exist after this page.
+
+### FsSearch conventions
+
+- `path` is the workspace-relative directory to search from; clients usually send `"."`.
+- `query` fuzzy-matches file and directory paths case-insensitively. File contents are never read.
+- The host walks recursively with gitignore/global ignore support, does not follow symlink directories, and skips common generated directories such as `.git`, `node_modules`, `target`, `dist`, and `build`.
+- Each `FsSearchEntry` carries `rel_path` (search-root-relative) and `match_indices`: the host matcher's matched character positions into `rel_path`, sorted and deduplicated. Clients highlight using these indices rather than re-running a separate matcher.
+- `limit` is clamped to `FS_SEARCH_MAX_LIMIT`; `0` means `FS_SEARCH_DEFAULT_LIMIT`.
+- `truncated = true` means the result cap or visited-entry cap was hit before the host could prove there were no more matches.
 
 ### FsDocsTree conventions
 
@@ -237,11 +304,13 @@ Types that use non-string status fields or enum variants instead:
 - Host may replay missed output before live stream.
 - Host may send a synthetic metadata preamble as `TermOutput { seq: 0, ... }` before backlog replay. Clients must process the bytes as normal PTY output but must not use `seq=0` for backlog sequence tracking.
 - The synthetic preamble replays cached OSC metadata that may have fallen out of the backlog, including title, icon name, cwd, shell command line, command start/idle state, and last exit code.
+- While a foreground command is still latched (command start seen without a matching command end — e.g. an agent emitting prompt-ready between turns), an idle preamble replays the latched command line (`633;E`), command start (`633;C`), and prompt-ready (`633;A`) instead of the stale command end (`633;D`), so a freshly attached client re-derives the agent identity and keeps it across reattach.
 - Output `seq` is monotonic per session backlog stream and used for gap detection.
 - `SyncSessionResult.terminals` and `TermListResult.terminals` are ordered by host-owned terminal order. Creation order is the default until a client submits an explicit order.
 - `TerminalSyncEntry.position` and `TermListEntry.position` are zero-based positions in that host-owned order.
 - `TerminalSyncEntry.last_seq` is the host's latest backlog sequence observed for that terminal at sync time.
-- `TerminalSyncEntry.title`, `TerminalSyncEntry.cwd`, and `TerminalSyncEntry.icon_name` are the host's latest cached terminal metadata at sync time. `TermAttach` still replays the same metadata as PTY bytes so normal terminal-event consumers are seeded through one path.
+- `TerminalSyncEntry` carries the host's full cached terminal metadata at sync time: `title`, `cwd`, `icon_name`, `agent_command`, `shell_state`, `last_exit_code`, and `agent_state`. Clients seed their terminal metadata from this snapshot on every sync; the host is the source of truth across reconnects. `TermAttach` still replays the same metadata as PTY bytes so normal terminal-event consumers are seeded through one path.
+- `TerminalSyncEntry.agent_command` is the foreground command latched at command start (or from the spawn launch command). It survives prompt-ready between agent turns and clears only on command end, so clients derive the agent identity (kind/icon) from it after reconnect.
 - Clients should keep local terminal tabs keyed by terminal id and use `last_seq` to seed reconnect `TermAttach` calls.
 
 ### SyncSession conventions
@@ -249,6 +318,10 @@ Types that use non-string status fields or enum variants instead:
 - `SyncSession` is a mid-session state refresh; connect-time bootstrap is piggybacked on `ConnectResult::Ok` and `AuthProveResult::Ok`.
 - Host rotates and returns a fresh `session_token` on every successful `SyncSession`, token-accepted `Connect`, and `AuthProve` attach.
 - `session_id` in `SyncSessionResult` is authoritative and must replace any stale client-side session id.
+- `SyncSessionResult.delta_pubkey` is the dedicated host Delta node authorization public key. Mobile uses it when registering the host with Delta; it is not a Zedra transport or telemetry identity.
+- Zedra persists the host Delta pubkey and resolved host node id per workspace, then reuses that binding on later reconnects or after app launch. If Delta sign-in appears later, the client can replay the same workspace-scoped binding without inventing a new host identity.
+- A signed-in mobile client reads its current `stack_id` and `client_node_id` from app-owned Delta state, then sends `SetClientDeltaInfo { delta_url, stack_id, client_node_id, host_node_id }` after registering the host node or after reloading a persisted workspace binding. The host holds these Delta IDs in daemon memory so agent-hook notifications target the previous known mobile client without persisting transport identity or broadcasting to the stack.
+- When the client signs out of Delta, it clears the host-side in-memory Delta binding so later agent-hook notifications do not target stale client IDs until the client signs back in and replays the workspace binding.
 - `SyncSessionResult.terminals` is the authoritative server-side terminal set at bootstrap time. During reconnect, clients preserve the existing local order for terminals still present in that set and append any newly discovered host terminals unless the client has submitted an explicit host order.
 - `TermReorderReq.ordered_ids` must be an exact permutation of the current active terminal ids. The host rejects partial, duplicate, or unknown-id orders.
 - `ConnectReq.session_token` and `SyncSessionResult.session_token` are opaque, host-issued, session-bound, and client-bound.
@@ -292,12 +365,13 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
 - `AgentSessions(AgentSessionsReq) -> AgentSessionsResult`
 - `AgentResume(AgentResumeReq) -> AgentResumeResult`
 - `AgentInstalledList(AgentInstalledListReq) -> AgentInstalledListResult`
+- `AgentFiles(AgentFilesReq) -> AgentFilesResult`
 - `LspDiagnostics(LspDiagnosticsReq) -> LspDiagnosticsResult`
 - `LspHover(LspHoverReq) -> LspHoverResult`
 
 ### Managed agent conventions
 
-**Terminology:** A *managed agent* is one of `ManagedAgentKind`: Claude Code (`Claude`), Codex (`Codex`), and OpenCode (`OpenCode`). This is narrower than `AgentInstalledList`, which lists every terminal agent CLI the host can launch (Amp, Cline, Cursor, etc.).
+**Terminology:** A *managed agent* is one of `AgentKind`: Claude Code (`Claude`), Codex (`Codex`), OpenCode (`OpenCode`), Pi (`Pi`), and Hermes (`Hermes`). This is narrower than `AgentInstalledList`, which lists every terminal agent CLI the host can launch (Amp, Cline, Cursor, etc.). Most agents scope sessions per workspace; `Hermes` is a global personal agent whose sessions are workspace-independent.
 
 - `AgentListResult.agents` returns one `AgentSummary` for every managed agent, even when the CLI is missing or no sessions exist.
 - `AgentListReq.refresh` and `AgentInstalledListReq.refresh` default to `false`. When `false`, the host serves its startup cache; when `true`, the host rescans synchronous fields before responding.
@@ -316,6 +390,9 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
   - **Claude**: Logged in, Plan (from `~/.claude/.credentials.json` `subscriptionType` / `rateLimitTier`, refreshed from `api.anthropic.com/api/oauth/profile` when OAuth is available, or CLI PTY when the token lives in Keychain); Organization (OAuth profile only); Model, Effort, Permission mode (from `~/.claude/settings.json`); Total cost (USD), Today msgs (from `~/.claude/stats-cache.json` `dailyActivity`). Live rate limits and extra spend come from `AgentUsageSnapshot` on the summary (OAuth API or CLI PTY), not account fields.
   - **Codex**: Logged in, Account (name from JWT), Plan, Plan until (from `~/.codex/auth.json` `id_token` payload, re-read on async refresh); Model, Personality, Reasoning effort (from `~/.codex/config.toml`); Week threads, Total threads (from `~/.codex/state_5.sqlite`).
   - **OpenCode**: Config dir presence (from `~/.config/opencode`).
+  - **Pi**: Logged in (presence of `~/.pi/agent/sessions/`). Sessions are scanned from `~/.pi/agent/sessions/--<workdir>--/<timestamp>_<uuid>.jsonl`; resume uses `pi --session <id>`. No lifecycle hooks; live binding falls back to terminal command detection (`pi` as first token).
+  - **Hermes**: per-provider auth + active provider (from `$HERMES_HOME/auth.json`, default `~/.hermes`), Default model / Default provider (from `config.yaml` `model:` block), Skills count (`$HERMES_HOME/skills/**/SKILL.md`), and `state.db` rollups (Total spend, Platforms = `DISTINCT source`). Sessions are **global** (not workspace-scoped): read from `$HERMES_HOME/state.db` (`sessions` table — curated title, `source` platform, `tool_call_count`, per-session cost, model; falls back to `sessions/session_*.json` only when the db is absent), so `AgentSessionsReq.kind == Hermes` ignores the workdir and returns all sessions incl. gateway/ACP; resume uses `hermes --resume <session_id>`. Shell hooks map `on_session_start` and `post_approval_response` to Running, `pre_approval_request` to WaitingApproval, and `post_llm_call`/`on_session_end` to Completed. `AgentFiles` exposes `SOUL.md`/`USER.md`/`MEMORY.md`/`config.yaml`/`.env`/`cron/jobs.json` read-only.
+- `AgentFiles(AgentFilesReq{kind}) -> AgentFilesResult{files}` returns an agent's host-side config/memory files **read-only** for detail views. Each `AgentFile` carries `label`, absolute `path`, `content` (host-capped at 256 KiB; `truncated` flags clipping), and `missing` (file absent). Only `Hermes` exposes a set today (`SOUL.md`, `USER.md`, `MEMORY.md`, `config.yaml`, `.env`, `cron/jobs.json`); other kinds return an empty list. The client never writes these files. `.env` and other credential-bearing files are returned verbatim — acceptable because the RPC transport is end-to-end encrypted and a client only views its own host's config; treat the contents as sensitive at rest.
 - `AgentSessionSummary.title` uses provider-stored titles when available, otherwise `"Unknown"`.
 - `AgentSessionSummary.transcript_size_bytes` reports transcript file size when the host scan has a local file path.
 - `AgentGitSummary.worktree` is populated for Claude when the encoded project path includes `--claude-worktrees-<name>`.
@@ -463,6 +540,27 @@ Any protocol-layer change must include all applicable steps:
 ---
 
 ## 11) Protocol Changelog
+
+### 2026-06-11
+
+- Extended `TerminalSyncEntry` with the host's full cached terminal metadata: `agent_command`, `shell_state` (new `TermShellState` enum), and `last_exit_code`. Clients seed terminal metadata from the sync snapshot on reconnect instead of re-deriving it from replayed PTY bytes.
+- `agent_command` latches the foreground command at command start (or spawn launch command), survives prompt-ready between agent turns, and clears on command end — used to restore the agent icon after reconnect.
+- An idle `TermAttach` preamble with a latched foreground command replays command line + start + prompt-ready instead of a stale command end, so it never clears a client's latched agent identity.
+
+### 2026-05-29
+
+- Added §2.4 Schema Evolution and Decode Compatibility: documents the postcard
+  undecodable-unknown problem, the current ALPN version-gate discipline
+  (append-only within a version, bump on any wire change), and the target
+  forward-compatible encodings (open enums, key/value records, versioned
+  variants) tracked in issue #140.
+- Added `Hermes` managed agent kind and `AgentFiles(AgentFilesReq) ->
+  AgentFilesResult`.
+- Added `FsSearch(FsSearchReq) -> FsSearchResult` with
+  `FS_SEARCH_DEFAULT_LIMIT` / `FS_SEARCH_MAX_LIMIT`; `limit = 0` uses the
+  default, oversized limits are clamped, `truncated` reports capped results, and
+  `match_indices` identify host-scored character positions in `rel_path`.
+- ALPN bumped to `zedra/rpc/3`.
 
 ### 2026-04-29
 

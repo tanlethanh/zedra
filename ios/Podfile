@@ -6,6 +6,7 @@ use_frameworks! :linkage => :static
 target 'Zedra' do
   pod 'FirebaseAnalytics'
   pod 'FirebaseCrashlytics'
+  pod 'GoogleSignIn'
 end
 
 post_install do |installer|

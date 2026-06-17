@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use zedra_rpc::proto::{
-    AgentSessionSummary, AgentSetupState, AgentSummary, AgentUsageSnapshot, ManagedAgentKind,
+    AgentKind, AgentSessionSummary, AgentSetupState, AgentSummary, AgentUsageSnapshot,
 };
 
 use crate::fonts;
@@ -40,27 +40,33 @@ pub fn setup_label(state: AgentSetupState) -> &'static str {
     }
 }
 
-pub fn managed_agent_icon(kind: ManagedAgentKind) -> &'static str {
+pub fn managed_agent_icon(kind: AgentKind) -> &'static str {
     match kind {
-        ManagedAgentKind::Claude => "icons/claude.svg",
-        ManagedAgentKind::Codex => "icons/openai.svg",
-        ManagedAgentKind::OpenCode => "icons/opencode.svg",
+        AgentKind::Claude => "icons/claude.svg",
+        AgentKind::Codex => "icons/openai.svg",
+        AgentKind::OpenCode => "icons/opencode.svg",
+        AgentKind::Pi => "icons/pi.svg",
+        AgentKind::Hermes => "icons/hermesagent.svg",
     }
 }
 
-pub fn kind_slug(kind: ManagedAgentKind) -> &'static str {
+pub fn kind_slug(kind: AgentKind) -> &'static str {
     match kind {
-        ManagedAgentKind::Claude => "claude",
-        ManagedAgentKind::Codex => "codex",
-        ManagedAgentKind::OpenCode => "opencode",
+        AgentKind::Claude => "claude",
+        AgentKind::Codex => "codex",
+        AgentKind::OpenCode => "opencode",
+        AgentKind::Pi => "pi",
+        AgentKind::Hermes => "hermes",
     }
 }
 
-pub fn managed_agent_name(kind: ManagedAgentKind) -> &'static str {
+pub fn managed_agent_name(kind: AgentKind) -> &'static str {
     match kind {
-        ManagedAgentKind::Claude => "Claude",
-        ManagedAgentKind::Codex => "Codex",
-        ManagedAgentKind::OpenCode => "OpenCode",
+        AgentKind::Claude => "Claude",
+        AgentKind::Codex => "Codex",
+        AgentKind::OpenCode => "OpenCode",
+        AgentKind::Pi => "Pi",
+        AgentKind::Hermes => "Hermes",
     }
 }
 
@@ -83,12 +89,22 @@ pub fn render_agent_card(cx: &App, props: AgentCardProps<'_>) -> Stateful<Div> {
     let version = cli_version_display(agent);
     let session_count = agent.sessions.resumable.max(agent.sessions.total);
     let sessions_label = format!("{session_count} sessions");
-    let plan = agent
-        .account
-        .fields
-        .iter()
-        .find(|f| f.label == "Plan")
-        .map(|f| f.value.clone());
+    let field_value = |label: &str| {
+        agent
+            .account
+            .fields
+            .iter()
+            .find(|f| f.label == label)
+            .map(|f| f.value.clone())
+    };
+    let plan = field_value("Plan");
+    let model_provider = match (
+        field_value("Default model"),
+        field_value("Default provider"),
+    ) {
+        (Some(model), Some(provider)) => Some(format!("{model} · {provider}")),
+        (model, provider) => model.or(provider),
+    };
     let usage = agent.usage.clone();
 
     div()
@@ -186,6 +202,18 @@ pub fn render_agent_card(cx: &App, props: AgentCardProps<'_>) -> Stateful<Div> {
                                 .child(sessions_label),
                         ),
                 )
+                .when_some(model_provider, |el, text| {
+                    el.child(
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(px(theme::FONT_DETAIL))
+                            .text_color(rgb(theme::text_muted(cx)))
+                            .child(text),
+                    )
+                })
                 .when_some(usage, |el, snap| {
                     el.child(render_usage_row(kind, &snap, cx))
                 }),
@@ -195,18 +223,14 @@ pub fn render_agent_card(cx: &App, props: AgentCardProps<'_>) -> Stateful<Div> {
 /// Compact usage row when live usage data is available (agent card, agent detail).
 /// Renders rate-limit gauges (5h / 7d), reset times, and optional credit spend.
 pub fn render_agent_usage_row(
-    kind: ManagedAgentKind,
+    kind: AgentKind,
     snap: &AgentUsageSnapshot,
     cx: &App,
 ) -> impl IntoElement {
     render_usage_row(kind, snap, cx)
 }
 
-fn render_usage_row(
-    kind: ManagedAgentKind,
-    snap: &AgentUsageSnapshot,
-    cx: &App,
-) -> impl IntoElement {
+fn render_usage_row(kind: AgentKind, snap: &AgentUsageSnapshot, cx: &App) -> impl IntoElement {
     let five_reset = snap
         .rate_limit_five_hour_resets_at
         .and_then(format_reset_duration_hm);
@@ -241,7 +265,8 @@ fn render_usage_row(
             )
         })
         .when(
-            snap.lines_added.is_some() || snap.lines_removed.is_some(),
+            kind != AgentKind::OpenCode
+                && (snap.lines_added.is_some() || snap.lines_removed.is_some()),
             |el| {
                 let added = snap.lines_added.unwrap_or(0);
                 let removed = snap.lines_removed.unwrap_or(0);
@@ -513,8 +538,9 @@ fn session_title_row(session: &AgentSessionSummary, cx: &App) -> Div {
             div()
                 .flex_1()
                 .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
+                // Trim long titles to the row width at render time (host only
+                // applies a generous anti-abuse cap).
+                .truncate()
                 .text_size(px(theme::FONT_BODY))
                 .text_color(rgb(theme::text_primary(cx)))
                 .child(session_title(session)),
@@ -597,10 +623,6 @@ fn session_meta_tail(session: &AgentSessionSummary) -> String {
         .unwrap_or_default()
 }
 
-fn format_session_time(at: DateTime<Utc>) -> String {
-    at.format("%H:%M").to_string()
-}
-
 fn format_size(bytes: u64) -> String {
     if bytes >= 1024 * 1024 {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
@@ -609,6 +631,10 @@ fn format_size(bytes: u64) -> String {
     } else {
         format!("{bytes} B")
     }
+}
+
+fn format_session_time(at: DateTime<Utc>) -> String {
+    at.format("%H:%M").to_string()
 }
 
 // ---------------------------------------------------------------------------

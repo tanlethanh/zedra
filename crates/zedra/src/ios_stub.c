@@ -37,9 +37,14 @@ __attribute__((weak)) void ios_present_native_notification(
     int kind,
     float duration_secs,
     _Bool auto_close) {}
+__attribute__((weak)) void ios_start_delta_google_sign_in(unsigned int callback_id) {}
+__attribute__((weak)) void ios_start_delta_apple_sign_in(unsigned int callback_id) {}
+__attribute__((weak)) void ios_request_delta_push_token(unsigned int callback_id) {}
 __attribute__((weak)) const char *ios_get_documents_directory(void) { return 0; }
 __attribute__((weak)) const char *ios_get_app_version(void) { return 0; }
 __attribute__((weak)) const char *ios_get_app_build_number(void) { return 0; }
+__attribute__((weak)) const char *ios_get_os_version(void) { return 0; }
+__attribute__((weak)) const char *ios_get_delta_device_name(void) { return 0; }
 __attribute__((weak)) void ios_present_alert(
     unsigned int callback_id,
     const char *title,
@@ -81,7 +86,9 @@ __attribute__((weak)) void ios_present_custom_sheet(
     _Bool has_corner_radius,
     float corner_radius,
     _Bool modal_in_presentation) {}
+__attribute__((weak)) void ios_dismiss_custom_sheet(void) {}
 __attribute__((weak)) void ios_trigger_haptic(int kind) {}
+__attribute__((weak)) void ios_play_sound(int kind) {}
 __attribute__((weak)) void ios_present_text_input(
     unsigned int callback_id,
     const char *title,

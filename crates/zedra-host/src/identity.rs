@@ -102,6 +102,11 @@ pub fn workspace_config_dir(workdir: &Path) -> Result<PathBuf> {
     Ok(zedra_config_dir()?.join("workspaces").join(hash))
 }
 
+/// Returns the host-level Zedra config root.
+pub fn host_config_dir() -> Result<PathBuf> {
+    zedra_config_dir()
+}
+
 /// Returns Zedra's host config root.
 ///
 /// Unix: `$HOME/.config/zedra`

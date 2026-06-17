@@ -6,7 +6,7 @@ use crate::deeplink;
 use crate::platform_bridge::{
     self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback, ListPickerItem,
     NativeDictationPreviewOptions, NativeEditMenuItem, NativeFloatingButtonOptions,
-    NativeNotificationOptions, PlatformBridge, SystemTheme,
+    NativeNotificationOptions, PlatformBridge, SoundEffect, SystemTheme,
 };
 
 /// Screen scale factor (e.g. 3.0 for @3x), stored as f32 bits.
@@ -68,6 +68,10 @@ unsafe extern "C" {
     fn ios_get_app_version() -> *const std::ffi::c_char;
     /// Returns the app's build number string from Info.plist metadata.
     fn ios_get_app_build_number() -> *const std::ffi::c_char;
+    /// Returns the native operating system version.
+    fn ios_get_os_version() -> *const std::ffi::c_char;
+    /// Returns the native device name for Delta node labels.
+    fn ios_get_delta_device_name() -> *const std::ffi::c_char;
     /// Present a native UIAlertController with dynamic buttons.
     /// `labels` and `styles` are parallel arrays of length `button_count`.
     /// Style values: 0 = default, 1 = cancel, 2 = destructive.
@@ -121,11 +125,15 @@ unsafe extern "C" {
         corner_radius: f32,
         modal_in_presentation: bool,
     );
+    fn ios_dismiss_custom_sheet();
     /// Open a URL in the system browser via UIApplication.
     fn ios_open_url(url: *const std::ffi::c_char);
     /// Trigger a UIKit haptic feedback generator.
     /// kind encoding matches HapticFeedback::to_i32().
     fn ios_trigger_haptic(kind: i32);
+    /// Play a UI sound effect via AudioToolbox.
+    /// kind encoding matches SoundEffect::to_i32().
+    fn ios_play_sound(kind: i32);
     /// Position or update a native floating icon button.
     fn ios_update_native_floating_button_with_icon(
         callback_id: u32,
@@ -158,6 +166,12 @@ unsafe extern "C" {
         duration_secs: f32,
         auto_close: bool,
     );
+    /// Start native Google Sign-In for Delta account auth.
+    fn ios_start_delta_google_sign_in(callback_id: u32);
+    /// Start native Apple Sign-In for Delta account auth.
+    fn ios_start_delta_apple_sign_in(callback_id: u32);
+    /// Request push authorization and return the APNs token.
+    fn ios_request_delta_push_token(callback_id: u32);
     /// Present a native text-input dialog (UIAlertController with UITextField).
     /// Result delivered via `zedra_ios_text_input_result` or `zedra_ios_text_input_dismiss`.
     fn ios_present_text_input(
@@ -227,6 +241,30 @@ impl PlatformBridge for IosBridge {
         }
     }
 
+    fn os_version(&self) -> Option<String> {
+        unsafe {
+            let ptr = ios_get_os_version();
+            if ptr.is_null() {
+                return None;
+            }
+            let cstr = std::ffi::CStr::from_ptr(ptr);
+            let s = cstr.to_str().ok()?.trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        }
+    }
+
+    fn device_name(&self) -> Option<String> {
+        unsafe {
+            let ptr = ios_get_delta_device_name();
+            if ptr.is_null() {
+                return None;
+            }
+            let cstr = std::ffi::CStr::from_ptr(ptr);
+            let s = cstr.to_str().ok()?.trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        }
+    }
+
     fn data_directory(&self) -> Option<String> {
         unsafe {
             let ptr = ios_get_documents_directory();
@@ -248,6 +286,10 @@ impl PlatformBridge for IosBridge {
 
     fn trigger_haptic(&self, feedback: HapticFeedback) {
         unsafe { ios_trigger_haptic(feedback.to_i32()) };
+    }
+
+    fn play_sound(&self, sound: SoundEffect) {
+        unsafe { ios_play_sound(sound.to_i32()) };
     }
 
     fn present_alert(&self, id: u32, title: &str, message: &str, buttons: &[AlertButton]) {
@@ -426,6 +468,12 @@ impl PlatformBridge for IosBridge {
         }
     }
 
+    fn dismiss_custom_sheet(&self) {
+        unsafe {
+            ios_dismiss_custom_sheet();
+        }
+    }
+
     fn update_native_floating_button(&self, id: u32, options: &NativeFloatingButtonOptions) {
         use std::ffi::CString;
 
@@ -487,6 +535,18 @@ impl PlatformBridge for IosBridge {
                 options.auto_close,
             );
         }
+    }
+
+    fn start_delta_google_sign_in(&self, id: u32) {
+        unsafe { ios_start_delta_google_sign_in(id) };
+    }
+
+    fn start_delta_apple_sign_in(&self, id: u32) {
+        unsafe { ios_start_delta_apple_sign_in(id) };
+    }
+
+    fn request_delta_push_token(&self, id: u32) {
+        unsafe { ios_request_delta_push_token(id) };
     }
 
     fn present_text_input(&self, id: u32, title: &str, placeholder: &str, initial_value: &str) {
@@ -580,7 +640,13 @@ pub extern "C" fn zedra_ios_text_input_dismiss(callback_id: u32) {
 /// Wire this to the iOS app delegate's `applicationDidEnterBackground`.
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_app_did_enter_background() {
+    platform_bridge::set_app_in_foreground(false);
     platform_bridge::clear_pending_alerts();
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_app_will_enter_foreground() {
+    platform_bridge::set_app_in_foreground(true);
 }
 
 #[unsafe(no_mangle)]
@@ -591,6 +657,114 @@ pub extern "C" fn zedra_ios_native_notification_action(callback_id: u32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_native_notification_dismiss(callback_id: u32) {
     platform_bridge::dispatch_native_notification_dismiss(callback_id);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_delta_apple_sign_in_result(
+    callback_id: u32,
+    id_token: *const std::ffi::c_char,
+    email: *const std::ffi::c_char,
+) {
+    let id_token = match c_string(id_token) {
+        Some(value) if !value.is_empty() => value,
+        _ => {
+            platform_bridge::dispatch_delta_apple_sign_in_error(
+                callback_id,
+                "Apple sign-in did not return an ID token".to_string(),
+            );
+            return;
+        }
+    };
+    platform_bridge::dispatch_delta_apple_sign_in_result(callback_id, id_token, c_string(email));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_delta_apple_sign_in_error(
+    callback_id: u32,
+    message: *const std::ffi::c_char,
+) {
+    platform_bridge::dispatch_delta_apple_sign_in_error(
+        callback_id,
+        c_string(message).unwrap_or_else(|| "Apple sign-in failed".to_string()),
+    );
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_delta_google_sign_in_result(
+    callback_id: u32,
+    id_token: *const std::ffi::c_char,
+    email: *const std::ffi::c_char,
+) {
+    let id_token = match c_string(id_token) {
+        Some(value) if !value.is_empty() => value,
+        _ => {
+            platform_bridge::dispatch_delta_google_sign_in_error(
+                callback_id,
+                "Google sign-in did not return an ID token".to_string(),
+            );
+            return;
+        }
+    };
+    platform_bridge::dispatch_delta_google_sign_in_result(callback_id, id_token, c_string(email));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_delta_google_sign_in_error(
+    callback_id: u32,
+    message: *const std::ffi::c_char,
+) {
+    platform_bridge::dispatch_delta_google_sign_in_error(
+        callback_id,
+        c_string(message).unwrap_or_else(|| "Google sign-in failed".to_string()),
+    );
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_delta_push_token_result(
+    callback_id: u32,
+    provider: *const std::ffi::c_char,
+    token: *const std::ffi::c_char,
+    environment: *const std::ffi::c_char,
+) {
+    let provider = c_string(provider).unwrap_or_else(|| "apns".to_string());
+    let token = match c_string(token) {
+        Some(value) if !value.is_empty() => value,
+        _ => {
+            platform_bridge::dispatch_delta_push_token_error(
+                callback_id,
+                "Push registration did not return a token".to_string(),
+            );
+            return;
+        }
+    };
+    platform_bridge::dispatch_delta_push_token_result(
+        callback_id,
+        provider,
+        token,
+        c_string(environment),
+    );
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_delta_push_token_error(
+    callback_id: u32,
+    message: *const std::ffi::c_char,
+) {
+    platform_bridge::dispatch_delta_push_token_error(
+        callback_id,
+        c_string(message).unwrap_or_else(|| "Push registration failed".to_string()),
+    );
+}
+
+fn c_string(value: *const std::ffi::c_char) -> Option<String> {
+    if value.is_null() {
+        return None;
+    }
+    unsafe { std::ffi::CStr::from_ptr(value) }
+        .to_str()
+        .ok()
+        .map(|value| value.to_string())
+        .filter(|value| !value.is_empty())
 }
 
 /// Called from the native keyboard accessory bar when a shortcut key button is tapped.
@@ -618,7 +792,18 @@ pub extern "C" fn zedra_ios_send_key_input(key: *const std::ffi::c_char) {
         return;
     }
 
-    active_terminal::send_named_key(key_name);
+    let bytes: &[u8] = match key_name {
+        "escape" => b"\x1b",
+        "tab" => b"\x09",
+        "left" => b"\x1b[D",
+        "down" => b"\x1b[B",
+        "up" => b"\x1b[A",
+        "right" => b"\x1b[C",
+        "enter" => b"\r",
+        "shift_enter" => b"\n",
+        _ => return,
+    };
+    active_terminal::send_to_active(bytes.to_vec());
 }
 
 /// Called from the native terminal composer to send finalized text to the active terminal.
@@ -654,7 +839,7 @@ pub extern "C" fn zedra_deeplink_received(url: *const std::ffi::c_char) {
             Ok(action) => deeplink::enqueue(action),
             Err(e) => error!("Invalid deeplink URL: {}", e),
         },
-        Err(e) => error!("Deeplink: invalid UTF-8: {}", e),
+        Err(e) => error!("Invalid deeplink UTF-8: {}", e),
     }
 }
 

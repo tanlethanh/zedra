@@ -1,7 +1,7 @@
 use gpui::*;
 use tracing::error;
-use zedra_rpc::proto::ManagedAgentKind;
-use zedra_session::{AGENT_MGMT_UNSUPPORTED_MSG, SessionHandle};
+use zedra_rpc::proto::AgentKind;
+use zedra_session::SessionHandle;
 
 use crate::agent_ui::{
     AgentSessionListProps, AgentSessionSection, group_sessions_by_day, render_agent_session_list,
@@ -44,27 +44,26 @@ impl AgentSessions {
         self.loading_epoch = self.loading_epoch.wrapping_add(1);
         let epoch = self.loading_epoch;
         self.sections.clear();
-        if !self.session_handle.supports_agent_mgmt() {
-            self.load_state = LoadState::Error(AGENT_MGMT_UNSUPPORTED_MSG.into());
-            cx.notify();
-            return;
-        }
         self.load_state = LoadState::Loading;
         cx.notify();
 
         let handle = self.session_handle.clone();
         let task = cx.spawn(async move |this, cx| {
-            let (claude, codex, opencode) = tokio::join!(
-                handle.agent_sessions(ManagedAgentKind::Claude, refresh, 0),
-                handle.agent_sessions(ManagedAgentKind::Codex, refresh, 0),
-                handle.agent_sessions(ManagedAgentKind::OpenCode, refresh, 0),
+            let (claude, codex, opencode, pi, hermes) = tokio::join!(
+                handle.agent_sessions(AgentKind::Claude, refresh, 0),
+                handle.agent_sessions(AgentKind::Codex, refresh, 0),
+                handle.agent_sessions(AgentKind::OpenCode, refresh, 0),
+                handle.agent_sessions(AgentKind::Pi, refresh, 0),
+                handle.agent_sessions(AgentKind::Hermes, refresh, 0),
             );
             let mut sessions = Vec::new();
             let mut errors = Vec::new();
             for (kind, result) in [
-                (ManagedAgentKind::Claude, claude),
-                (ManagedAgentKind::Codex, codex),
-                (ManagedAgentKind::OpenCode, opencode),
+                (AgentKind::Claude, claude),
+                (AgentKind::Codex, codex),
+                (AgentKind::OpenCode, opencode),
+                (AgentKind::Pi, pi),
+                (AgentKind::Hermes, hermes),
             ] {
                 match result {
                     Ok(mut rows) => sessions.append(&mut rows),

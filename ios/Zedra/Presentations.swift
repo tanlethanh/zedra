@@ -423,9 +423,22 @@ enum NativePresentationBridge {
         }
     }
 
+    private static let actionIconPointSize: CGFloat = 22
+    private static let iconInsets: [String: CGFloat] = [
+        "Google": 2,
+    ]
+
     static func actionImage(named imageName: String) -> UIImage? {
-        let image = UIImage(named: imageName) ?? UIImage(systemName: imageName)
-        return image?.withRenderingMode(.alwaysTemplate)
+        var name = (imageName as NSString).lastPathComponent
+        if name.hasSuffix(".svg") { name = String(name.dropLast(4)) }
+        guard let raw = UIImage(named: name) else { return nil }
+        let inset = iconInsets[name] ?? 0
+        let canvas = CGSize(width: actionIconPointSize, height: actionIconPointSize)
+        let renderer = UIGraphicsImageRenderer(size: canvas)
+        let rendered = renderer.image { _ in
+            raw.draw(in: CGRect(x: inset, y: inset, width: canvas.width - inset * 2, height: canvas.height - inset * 2))
+        }
+        return rendered.withRenderingMode(.alwaysTemplate)
     }
 
     private static let actionListIconPointSize: CGFloat = 22
@@ -1538,6 +1551,7 @@ private final class NativeEditMenuPresenter: NSObject, UIEditMenuInteractionDele
 private enum PresentationCoordinator {
     private static let dismissAssociationKey = "zedra_presentation_dismiss_delegate"
     private static let alertOutsideTapAssociationKey = "zedra_alert_outside_tap_handler"
+    private static weak var activeCustomSheet: CustomSheetViewController?
     @available(iOS 16.0, *)
     private static var nativeEditMenuPresenters: [UInt32: NativeEditMenuPresenter] = [:]
 
@@ -1777,9 +1791,31 @@ private enum PresentationCoordinator {
         configuration: CustomSheetConfiguration
     ) {
         DispatchQueue.main.async {
-            guard let presenter = NativePresentationBridge.topViewController() else { return }
-            let sheet = CustomSheetViewController(configuration: configuration)
-            presenter.present(sheet, animated: true)
+            // Resign the terminal keyboard or it re-shows each frame over the sheet.
+            GPUIRuntimeController.dismissMainWindowKeyboard()
+            // Replacing a live sheet: present from its presenter, not the dismissing sheet.
+            let presenter = activeCustomSheet?.presentingViewController
+                ?? NativePresentationBridge.topViewController()
+            guard let presenter else { return }
+            let present = {
+                let sheet = CustomSheetViewController(configuration: configuration)
+                activeCustomSheet = sheet
+                presenter.present(sheet, animated: true)
+            }
+            // Present only after the old sheet's dismissal completes, or UIKit's
+            // in-flight transition state can fail the new presentation.
+            if let existing = activeCustomSheet {
+                existing.dismiss(animated: false, completion: present)
+            } else {
+                present()
+            }
+        }
+    }
+
+    static func dismissCustomSheet() {
+        DispatchQueue.main.async {
+            activeCustomSheet?.dismiss(animated: true)
+            activeCustomSheet = nil
         }
     }
 
@@ -2198,6 +2234,11 @@ func ios_present_custom_sheet(
             isModalInPresentation: modalInPresentation
         )
     )
+}
+
+@_cdecl("ios_dismiss_custom_sheet")
+func ios_dismiss_custom_sheet() {
+    PresentationCoordinator.dismissCustomSheet()
 }
 
 @_cdecl("ios_update_native_floating_button")

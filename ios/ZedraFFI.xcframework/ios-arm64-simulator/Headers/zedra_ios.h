@@ -89,6 +89,16 @@ extern const char *ios_get_app_version(void);
 extern const char *ios_get_app_build_number(void);
 
 /**
+ * Returns the native operating system version.
+ */
+extern const char *ios_get_os_version(void);
+
+/**
+ * Returns the native device name for Delta node labels.
+ */
+extern const char *ios_get_delta_device_name(void);
+
+/**
  * Present a native UIAlertController with dynamic buttons.
  * `labels` and `styles` are parallel arrays of length `button_count`.
  * Style values: 0 = default, 1 = cancel, 2 = destructive.
@@ -144,6 +154,8 @@ extern void ios_present_custom_sheet(int32_t detent_count,
                                      float corner_radius,
                                      bool modal_in_presentation);
 
+extern void ios_dismiss_custom_sheet(void);
+
 /**
  * Open a URL in the system browser via UIApplication.
  */
@@ -195,6 +207,16 @@ extern void ios_present_native_notification(uint32_t callback_id,
                                             int32_t kind,
                                             float duration_secs,
                                             bool auto_close);
+
+/**
+ * Start native Google Sign-In for Delta account auth.
+ */
+extern void ios_start_delta_google_sign_in(uint32_t callback_id);
+
+/**
+ * Request push authorization and return the APNs token.
+ */
+extern void ios_request_delta_push_token(uint32_t callback_id);
 
 /**
  * Present a native text-input dialog (UIAlertController with UITextField).
@@ -262,18 +284,18 @@ void zedra_ios_native_notification_action(uint32_t callback_id);
 
 void zedra_ios_native_notification_dismiss(uint32_t callback_id);
 
-/**
- * Called from the native keyboard accessory bar when a shortcut key button is tapped.
- *
- * `key` is one of: "escape", "tab", "left", "down", "up", "right", "enter", "shift_enter".
- * Maps the name to the corresponding terminal escape sequence and sends it via the active session.
- */
-void zedra_ios_send_key_input(const char *key);
+void zedra_ios_delta_google_sign_in_result(uint32_t callback_id,
+                                           const char *id_token,
+                                           const char *email);
 
-/**
- * Called from the native terminal composer to send finalized text to the active terminal.
- */
-void zedra_ios_send_terminal_text(const char *text);
+void zedra_ios_delta_google_sign_in_error(uint32_t callback_id, const char *message);
+
+void zedra_ios_delta_push_token_result(uint32_t callback_id,
+                                       const char *provider,
+                                       const char *token,
+                                       const char *environment);
+
+void zedra_ios_delta_push_token_error(uint32_t callback_id, const char *message);
 
 /**
  * Called from the native app delegate when the app is opened via a `zedra://` URL.

@@ -10,6 +10,13 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
+    <!-- Delta push notifications (Android 13+ runtime permission) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Haptics via Vibrator: performHapticFeedback is gated by the system
+         touch-feedback setting, which some OEMs (MIUI) disable by default -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -52,5 +59,28 @@
             android:exported="false"
             android:screenOrientation="portrait"
             android:theme="@style/AppTheme" />
+
+        <!-- Delta push delivery via Firebase Cloud Messaging -->
+        <service
+            android:name=".ZedraMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="zedra_delta" />
+        <!-- Used when the Firebase SDK builds the notification itself (app backgrounded and
+             the FCM message carries a `notification` block). Without this it falls back to
+             the launcher icon, which is opaque and renders as a white square in the status
+             bar. Must be the white-on-transparent silhouette, same as our in-app builder. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_notification" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_color"
+            android:resource="@color/app_accent" />
     </application>
 </manifest>
