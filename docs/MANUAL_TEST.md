@@ -113,10 +113,10 @@
 14a. Drag a selection handle up and down across the sheet (and continue the same long-press gesture into a drag-to-extend)
 14b. Expected: only the selection endpoint moves — the bottom sheet does not drag, change detent, or dismiss during the handle/extend drag, and sheet dragging works normally again after the selection is dismissed
 15. Expected: dismissing or closing the sheet leaves no stale selection overlay, and root-window text selection still works after the sheet has been opened and closed
-13. Trigger the scroll-to-bottom floating button
-14. Expected: the native floating button appears at the GPUI wrapper bounds and pressing it runs the Rust callback
-15. Trigger dictation preview events if the call site is available
-16. Expected: Android displays the preview overlay and dismiss callback, without attempting iOS-specific dictation stream interpretation
+16. Trigger the scroll-to-bottom floating button
+17. Expected: the native floating button appears at the GPUI wrapper bounds and pressing it runs the Rust callback
+18. Trigger dictation preview events if the call site is available
+19. Expected: Android displays the preview overlay and dismiss callback, without attempting iOS-specific dictation stream interpretation
 
 ## 0c-Android-Renderer. GPUI Surface Lifecycle
 

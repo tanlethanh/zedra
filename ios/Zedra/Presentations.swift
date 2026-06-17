@@ -1797,10 +1797,18 @@ private enum PresentationCoordinator {
             let presenter = activeCustomSheet?.presentingViewController
                 ?? NativePresentationBridge.topViewController()
             guard let presenter else { return }
-            activeCustomSheet?.dismiss(animated: false)
-            let sheet = CustomSheetViewController(configuration: configuration)
-            activeCustomSheet = sheet
-            presenter.present(sheet, animated: true)
+            let present = {
+                let sheet = CustomSheetViewController(configuration: configuration)
+                activeCustomSheet = sheet
+                presenter.present(sheet, animated: true)
+            }
+            // Present only after the old sheet's dismissal completes, or UIKit's
+            // in-flight transition state can fail the new presentation.
+            if let existing = activeCustomSheet {
+                existing.dismiss(animated: false, completion: present)
+            } else {
+                present()
+            }
         }
     }
 

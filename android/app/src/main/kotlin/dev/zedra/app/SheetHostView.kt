@@ -101,9 +101,14 @@ class SheetHostView(context: Context) : SurfaceView(context), SurfaceHolder.Call
         // before the gesture is treated as sheet content scrolling.
         if (selectionController?.onSurfaceTouch(event) == true) {
             // Selection owns this gesture (long press + drag-to-extend); release
-            // the sheet-drag protection taken at ACTION_DOWN once it ends.
+            // the sheet-drag protection and recycle the tracker obtained at
+            // ACTION_DOWN once it ends, since finishGesture is bypassed here.
             when (event.actionMasked) {
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> releaseSheetGesture()
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    velocityTracker?.recycle()
+                    velocityTracker = null
+                    releaseSheetGesture()
+                }
             }
             return true
         }
