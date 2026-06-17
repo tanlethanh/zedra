@@ -131,8 +131,8 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
-        MARKETING_VERSION: "1.3"
-        CURRENT_PROJECT_VERSION: "11"
+        MARKETING_VERSION: "1.4"
+        CURRENT_PROJECT_VERSION: "12"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: GHV27CNR5U
         CODE_SIGN_ENTITLEMENTS: Zedra/Zedra.entitlements
