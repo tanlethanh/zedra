@@ -692,9 +692,11 @@ class MainActivity : AppCompatActivity() {
                     Log.w(TAG, "playBundledAudio: missing raw resource $name")
                     return
                 }
+                // USAGE_MEDIA so the sound follows media volume, not notification volume.
+                // Notification volume can be muted independently while media is audible.
                 val attrs =
                     AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                         .build()
                 val audioManager =
