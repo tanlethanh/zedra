@@ -564,6 +564,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         @JvmStatic
+        fun dismissCustomSheet() {
+            NativePresentations.dismissCustomSheet()
+        }
+
+        @JvmStatic
         fun updateNativeFloatingButton(
             id: Int,
             imageName: String,

@@ -584,6 +584,12 @@ object NativePresentations {
     }
 
     @JvmStatic
+    fun dismissCustomSheet() = onUi {
+        sheetDialog?.dismiss()
+        sheetDialog = null
+    }
+
+    @JvmStatic
     fun updateNativeFloatingButton(
         id: Int,
         imageName: String?,

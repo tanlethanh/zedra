@@ -414,6 +414,10 @@ where
     bridge().present_custom_sheet(&options);
 }
 
+pub fn dismiss_custom_sheet() {
+    bridge().dismiss_custom_sheet();
+}
+
 pub fn take_pending_custom_sheet_view() -> Option<AnyView> {
     PENDING_CUSTOM_SHEET_VIEW.with(|pending| pending.borrow_mut().take())
 }
@@ -922,6 +926,8 @@ pub trait PlatformBridge: Send + Sync + 'static {
     }
     /// Display a configurable native custom sheet that hosts GPUI content.
     fn present_custom_sheet(&self, _options: &CustomSheetOptions) {}
+    /// Dismiss the active native custom sheet, if any.
+    fn dismiss_custom_sheet(&self) {}
     /// Open a URL in the system browser.
     fn open_url(&self, _url: &str) {}
     /// Trigger a haptic feedback pattern. No-op on platforms without haptic hardware.

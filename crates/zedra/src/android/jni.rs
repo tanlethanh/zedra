@@ -1407,6 +1407,16 @@ pub fn present_custom_sheet(options: &CustomSheetOptions) {
     });
 }
 
+pub fn dismiss_custom_sheet() {
+    jni_call("dismiss_custom_sheet", move || {
+        with_main_activity_class("dismiss_custom_sheet", |env, class| {
+            if let Err(error) = env.call_static_method(class, "dismissCustomSheet", "()V", &[]) {
+                tracing::error!(?error, "jni: dismissCustomSheet failed");
+            }
+        });
+    });
+}
+
 pub fn update_native_floating_button(id: u32, options: &NativeFloatingButtonOptions) {
     let image_name = options.system_image_name.clone();
     let accessibility_label = options.accessibility_label.clone();

@@ -125,6 +125,7 @@ unsafe extern "C" {
         corner_radius: f32,
         modal_in_presentation: bool,
     );
+    fn ios_dismiss_custom_sheet();
     /// Open a URL in the system browser via UIApplication.
     fn ios_open_url(url: *const std::ffi::c_char);
     /// Trigger a UIKit haptic feedback generator.
@@ -464,6 +465,12 @@ impl PlatformBridge for IosBridge {
                 options.corner_radius.unwrap_or_default(),
                 options.modal_in_presentation,
             );
+        }
+    }
+
+    fn dismiss_custom_sheet(&self) {
+        unsafe {
+            ios_dismiss_custom_sheet();
         }
     }
 

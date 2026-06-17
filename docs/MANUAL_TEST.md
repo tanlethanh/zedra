@@ -1124,6 +1124,9 @@ printf '\033]8;;file:///tmp/zedra-code-selection.rs:1:1\033\\/tmp/zedra-code-sel
 13. Tap `Add to Chat`, pick an agent terminal, and verify the selected source lines are pasted into that terminal
 14. Exit all supported AI-agent CLIs, select editor text, and tap `Add to Chat`
 15. Expected: the native selection sheet shows `No AI agent detected` and no text is inserted
+16. Restart an agent CLI, open the agent detail view, and tap a config/memory file to open it in the native file-preview sheet
+17. Select text in the preview sheet and tap `Add to Chat`, then pick an agent terminal
+18. Expected: the agent-target picker appears and the selected range is pasted into the chosen terminal, the same as an editor selection — the agent-detail preview routes through the foreground workspace, not just terminal-link previews
 
 ## 16c. Workspace Markdown File Rendering
 

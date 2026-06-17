@@ -125,10 +125,18 @@ impl Workspaces {
     pub fn switch_to(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.entries.len() {
             self.active_index = Some(index);
+            self.sync_active_workspace(cx);
             cx.notify();
         } else {
             warn!("Index {index} out of range. Cannot switch to workspace.");
         }
+    }
+
+    /// Mirror the active entry into the [`crate::workspace::ActiveWorkspace`]
+    /// global so detached surfaces (e.g. the file-preview sheet) can route back
+    /// to it. Call after every `active_index` change.
+    fn sync_active_workspace(&self, cx: &mut App) {
+        crate::workspace::ActiveWorkspace::set(self.active().map(Entity::downgrade), cx);
     }
 
     pub fn open_connecting_for_entry(
@@ -454,6 +462,7 @@ impl Workspaces {
         self.entries.push(workspace);
         let ws_idx = self.entries.len() - 1;
         self.active_index = Some(ws_idx);
+        self.sync_active_workspace(cx);
 
         // TODO: this is not connected yet, it's just a signal to navigate to the workspace.
         cx.emit(WorkspacesEvent::Connected { index: ws_idx });
@@ -584,6 +593,7 @@ impl Workspaces {
                 other => other,
             }
         };
+        self.sync_active_workspace(cx);
 
         info!("Workspace disconnected; {} remaining", self.entries.len());
         cx.emit(WorkspacesEvent::Disconnected { index });

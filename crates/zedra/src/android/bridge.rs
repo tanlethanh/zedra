@@ -105,6 +105,10 @@ impl PlatformBridge for AndroidBridge {
         jni::present_custom_sheet(options);
     }
 
+    fn dismiss_custom_sheet(&self) {
+        jni::dismiss_custom_sheet();
+    }
+
     fn trigger_haptic(&self, feedback: HapticFeedback) {
         jni::trigger_haptic(feedback);
     }

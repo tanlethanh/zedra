@@ -86,6 +86,7 @@ __attribute__((weak)) void ios_present_custom_sheet(
     _Bool has_corner_radius,
     float corner_radius,
     _Bool modal_in_presentation) {}
+__attribute__((weak)) void ios_dismiss_custom_sheet(void) {}
 __attribute__((weak)) void ios_trigger_haptic(int kind) {}
 __attribute__((weak)) void ios_play_sound(int kind) {}
 __attribute__((weak)) void ios_present_text_input(

@@ -1551,6 +1551,7 @@ private final class NativeEditMenuPresenter: NSObject, UIEditMenuInteractionDele
 private enum PresentationCoordinator {
     private static let dismissAssociationKey = "zedra_presentation_dismiss_delegate"
     private static let alertOutsideTapAssociationKey = "zedra_alert_outside_tap_handler"
+    private static weak var activeCustomSheet: CustomSheetViewController?
     @available(iOS 16.0, *)
     private static var nativeEditMenuPresenters: [UInt32: NativeEditMenuPresenter] = [:]
 
@@ -1790,11 +1791,23 @@ private enum PresentationCoordinator {
         configuration: CustomSheetConfiguration
     ) {
         DispatchQueue.main.async {
-            guard let presenter = NativePresentationBridge.topViewController() else { return }
             // Resign the terminal keyboard or it re-shows each frame over the sheet.
             GPUIRuntimeController.dismissMainWindowKeyboard()
+            // Replacing a live sheet: present from its presenter, not the dismissing sheet.
+            let presenter = activeCustomSheet?.presentingViewController
+                ?? NativePresentationBridge.topViewController()
+            guard let presenter else { return }
+            activeCustomSheet?.dismiss(animated: false)
             let sheet = CustomSheetViewController(configuration: configuration)
+            activeCustomSheet = sheet
             presenter.present(sheet, animated: true)
+        }
+    }
+
+    static func dismissCustomSheet() {
+        DispatchQueue.main.async {
+            activeCustomSheet?.dismiss(animated: true)
+            activeCustomSheet = nil
         }
     }
 
@@ -2213,6 +2226,11 @@ func ios_present_custom_sheet(
             isModalInPresentation: modalInPresentation
         )
     )
+}
+
+@_cdecl("ios_dismiss_custom_sheet")
+func ios_dismiss_custom_sheet() {
+    PresentationCoordinator.dismissCustomSheet()
 }
 
 @_cdecl("ios_update_native_floating_button")
