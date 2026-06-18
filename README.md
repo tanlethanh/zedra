@@ -15,36 +15,34 @@ Note: Zedra uses direct P2P connections when possible, but may fallback to relay
 
 **MacOS/Linux**
 ```shell
-# Install Zedra CLI
 curl -fsSL zedra.dev/install.sh | sh
-# Start Zedra in working directory
-zedra start
-# Or start in background 
+# Install agent hooks for notification
+zedra setup
+# Start daemon in working directory
 zedra start --detach
 ```
 
 **Windows**
 
 ```powershell
-powershell -c "irm https://zedra.dev/install.ps1 | iex"
+powershell -c "irm zedra.dev/install.ps1 | iex"
 zedra start --detach
 ```
 
 **Claude Code**
 ```shell
-# Config Zedra skills for Claude
+# Config Zedra skills, hooks for Claude
 zedra setup claude
-# In Claude, reload plugins and start Zedra
-/reload-plugins
+# In Claude Code, reload plugins and start Zedra
 /zedra-start
 ```
 
 **Codex**
 
 ```shell
-# Config Zedra skills for Codex
+# Config Zedra skills, hooks for Codex
 zedra setup codex
-# In Codex, reload skills and start Zedra
+# In Codex, reload plugins and start Zedra
 $zedra-start
 ```
 
