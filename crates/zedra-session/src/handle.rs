@@ -495,6 +495,10 @@ impl SessionHandle {
         }
     }
 
+    pub async fn web_fetch(&self, req: WebFetchReq) -> Result<WebFetchResult> {
+        Ok(self.call(req).await?)
+    }
+
     fn downgrade_observer_rpc(&self, err: &str) -> bool {
         let msg = err.to_lowercase();
         let incompatible = msg.contains("unknown variant")

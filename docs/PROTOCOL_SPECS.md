@@ -35,7 +35,7 @@ The protocol layer includes:
 
 - Network transport: iroh QUIC.
 - RPC framing: `irpc` over iroh streams.
-- ALPN: `zedra/rpc/3` (see `ZEDRA_ALPN` in `crates/zedra-rpc/src/proto.rs`). Bump the trailing integer on any change that alters how existing bytes decode (see §2.4).
+- ALPN: `zedra/rpc/4` (see `ZEDRA_ALPN` in `crates/zedra-rpc/src/proto.rs`). Bump the trailing integer on any change that alters how existing bytes decode (see §2.4).
 
 ### 2.2 Serialization
 
@@ -233,7 +233,7 @@ Result types that carry `error: Option<String>`:
 `FsListResult`, `FsSearchResult`, `FsReadResult`, `FsStatResult`, `SessionSwitchResult`, `TermCreateResult`,
 `GitStatusResult`, `GitDiffResult`, `GitLogResult`, `GitCommitResult`, `GitStageResult`,
 `GitUnstageResult`, `GitBranchesResult`, `AgentListResult`, `AgentSessionsResult`,
-`AgentResumeResult`, `LspDiagnosticsResult`.
+`AgentResumeResult`, `LspDiagnosticsResult`, `WebFetchResult`.
 
 Types that use non-string status fields or enum variants instead:
 `FsWriteResult` (`ok: bool`), `GitCheckoutResult` (`ok: bool`), `FsWatchResult`/`FsUnwatchResult` (enum),
@@ -284,7 +284,20 @@ Types that use non-string status fields or enum variants instead:
   - `NotWatched`
   - `Unsupported` (client-local fallback when host does not support observer RPCs)
 
-## 5.5 Terminals
+## 5.5 Web Tunnel
+
+- `WebFetch(WebFetchReq) -> WebFetchResult`
+
+### WebFetch conventions
+
+- `WebFetch` is used by the app-local webview proxy to fetch one host-side HTTP resource over the authenticated RPC connection.
+- The host only accepts `http://localhost`, `http://127.0.0.1`, and other loopback-address URLs. It rejects non-loopback hosts and non-HTTP schemes.
+- The host disables system proxy use for tunnel fetches so localhost requests are not leaked to proxy settings.
+- Redirects are returned to the app webview instead of followed host-side.
+- Request bodies are capped at `WEB_TUNNEL_MAX_REQUEST_BODY_BYTES`; response bodies are capped at `WEB_TUNNEL_MAX_RESPONSE_BODY_BYTES`.
+- Hop-by-hop headers such as `Connection`, `Transfer-Encoding`, `Host`, and `Content-Length` are not forwarded across the tunnel.
+
+## 5.6 Terminals
 
 - `TermCreate(TermCreateReq) -> TermCreateResult`
 - `TermAttach(TermAttachReq) <-> TermInput/TermOutput` (bidirectional)
@@ -335,7 +348,7 @@ replace the session bound to the authenticated dispatch loop. Clients must not
 use it to switch the active workspace; connect to the target session through the
 normal `Connect`/`AuthProve` flow instead.
 
-## 5.6 Git
+## 5.7 Git
 
 - `GitStatus(GitStatusReq) -> GitStatusResult`
 - `GitDiff(GitDiffReq) -> GitDiffResult`
@@ -358,7 +371,7 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
 - `GitStage` stages the provided paths with `git add -- <paths>`.
 - `GitUnstage` removes the provided paths from the index while preserving working tree contents.
 
-## 5.7 AI, Managed Agents, and LSP
+## 5.8 AI, Managed Agents, and LSP
 
 - `AiPrompt(AiPromptReq) -> AiPromptResult`
 - `AgentList(AgentListReq) -> AgentListResult`
@@ -604,6 +617,11 @@ Any protocol-layer change must include all applicable steps:
   path serves both. `v2` clients get empty agent `live` fields and have
   `Pi`/`Hermes` + the `v3`-only `HostEvent` variants filtered out. Response-only
   delta; stopgap pending issue #140.
+
+### 2026-06-19
+
+- Added `WebFetch(WebFetchReq) -> WebFetchResult` for the app web tunnel. The host fetches only HTTP loopback URLs, disables proxy use, and returns redirects instead of following them.
+- ALPN bumped to `zedra/rpc/4`.
 
 ### 2026-06-11
 

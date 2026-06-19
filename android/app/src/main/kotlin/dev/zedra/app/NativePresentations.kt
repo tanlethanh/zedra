@@ -11,6 +11,8 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.EditText
@@ -40,6 +42,8 @@ object NativePresentations {
     private val notifications = mutableMapOf<Int, View>()
     private var sheetDialog: BottomSheetDialog? = null
     private var editMenuPopup: PopupWindow? = null
+    private var webViewOverlay: View? = null
+    private var activeWebView: WebView? = null
     private var nativeTheme = NativeTheme.dark()
 
     private data class NativeTheme(
@@ -95,6 +99,7 @@ object NativePresentations {
         sheetDialog = null
         editMenuPopup?.dismiss()
         editMenuPopup = null
+        closeWebViewNow()
         floatingButtons.values.forEach { rootView?.removeView(it) }
         floatingButtons.clear()
         dictationPreviews.values.forEach { rootView?.removeView(it) }
@@ -590,6 +595,98 @@ object NativePresentations {
     }
 
     @JvmStatic
+    fun openWebView(url: String?, title: String?) = onUi {
+        if (url.isNullOrBlank()) return@onUi
+        closeWebViewNow()
+
+        val activity = requireActivity()
+        val root = requireRoot()
+        val container = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(nativeTheme.background)
+            elevation = dp(18f).toFloat()
+        }
+        val webView = WebView(activity).apply {
+            setBackgroundColor(nativeTheme.background)
+            webViewClient = WebViewClient()
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.databaseEnabled = true
+        }
+        val header = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(nativeTheme.overlay)
+            setPadding(dp(12f), dp(8f), dp(8f), dp(8f))
+            addView(TextView(activity).apply {
+                text = "Done"
+                textSize = 15f
+                setTextColor(nativeTheme.textPrimary)
+                setPadding(dp(10f), dp(8f), dp(12f), dp(8f))
+                isClickable = true
+                setSelectableItemBackground(this)
+                setOnClickListener { closeWebViewNow() }
+            })
+            addView(TextView(activity).apply {
+                text = title?.takeIf { it.isNotBlank() } ?: url
+                textSize = 14f
+                setTextColor(nativeTheme.textPrimary)
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(TextView(activity).apply {
+                text = "Reload"
+                textSize = 15f
+                setTextColor(nativeTheme.textPrimary)
+                setPadding(dp(12f), dp(8f), dp(10f), dp(8f))
+                isClickable = true
+                setSelectableItemBackground(this)
+                setOnClickListener { webView.reload() }
+            })
+        }
+        container.addView(header, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        ))
+        container.addView(View(activity).apply {
+            setBackgroundColor(nativeTheme.border)
+        }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            max(1, dp(0.5f)),
+        ))
+        container.addView(webView, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            0,
+            1f,
+        ))
+
+        activeWebView = webView
+        webViewOverlay = container
+        root.addView(container, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+        ))
+        container.bringToFront()
+        webView.loadUrl(url)
+    }
+
+    @JvmStatic
+    fun closeWebView() = onUi {
+        closeWebViewNow()
+    }
+
+    @JvmStatic
+    fun handleBackPressed(): Boolean {
+        val webView = activeWebView ?: return false
+        if (webView.canGoBack()) {
+            webView.goBack()
+        } else {
+            closeWebViewNow()
+        }
+        return true
+    }
+
+    @JvmStatic
     fun updateNativeFloatingButton(
         id: Int,
         imageName: String?,
@@ -772,6 +869,18 @@ object NativePresentations {
     private fun requireActivity(): MainActivity = activity ?: error("NativePresentations not registered")
 
     private fun requireRoot(): FrameLayout = rootView ?: error("NativePresentations root not registered")
+
+    private fun closeWebViewNow() {
+        val root = rootView
+        val overlay = webViewOverlay
+        val webView = activeWebView
+        webViewOverlay = null
+        activeWebView = null
+        if (overlay != null && root != null) {
+            root.removeView(overlay)
+        }
+        webView?.destroy()
+    }
 
     private fun dp(value: Float): Int {
         val density = activity?.resources?.displayMetrics?.density ?: 1f

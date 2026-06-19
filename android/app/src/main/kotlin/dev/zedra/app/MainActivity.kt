@@ -224,6 +224,9 @@ class MainActivity : AppCompatActivity() {
     // gesture-nav implementation which sends KEYCODE_BACK as a key event (source=SOURCE_KEYBOARD).
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
+            if (NativePresentations.handleBackPressed()) {
+                return true
+            }
             if (nativeSystemBackPressed()) {
                 return true
             }
@@ -453,6 +456,11 @@ class MainActivity : AppCompatActivity() {
             activity.runOnUiThread {
                 activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
             }
+        }
+
+        @JvmStatic
+        fun openWebView(url: String, title: String) {
+            NativePresentations.openWebView(url, title)
         }
 
         /** Returns 1 for dark, 0 for light, -1 when unavailable. */

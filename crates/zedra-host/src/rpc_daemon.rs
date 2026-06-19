@@ -34,6 +34,7 @@ use nucleo_matcher::{Config, Matcher, Utf32Str};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
+use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -905,6 +906,129 @@ fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> 
         truncated,
         error: None,
     })
+}
+
+fn web_fetch_error(message: impl Into<String>) -> WebFetchResult {
+    WebFetchResult {
+        status: 502,
+        headers: vec![],
+        body: vec![],
+        error: Some(message.into()),
+    }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .map(|addr| addr.is_loopback())
+            .unwrap_or(false)
+}
+
+fn is_hop_by_hop_header(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+            | "host"
+            | "content-length"
+    )
+}
+
+async fn fetch_web_tunnel(req: WebFetchReq) -> WebFetchResult {
+    if req.body.len() > WEB_TUNNEL_MAX_REQUEST_BODY_BYTES {
+        return web_fetch_error("web tunnel request body is too large");
+    }
+
+    let method = match reqwest::Method::from_bytes(req.method.as_bytes()) {
+        Ok(method) => method,
+        Err(error) => return web_fetch_error(format!("invalid HTTP method: {error}")),
+    };
+    let url = match reqwest::Url::parse(&req.url) {
+        Ok(url) => url,
+        Err(error) => return web_fetch_error(format!("invalid URL: {error}")),
+    };
+    if url.scheme() != "http" {
+        return web_fetch_error("web tunnel only supports http localhost URLs");
+    }
+    let Some(host) = url.host_str() else {
+        return web_fetch_error("web tunnel URL is missing a host");
+    };
+    if !is_loopback_host(host) {
+        return web_fetch_error("web tunnel only forwards localhost URLs");
+    }
+
+    let client = match reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            return web_fetch_error(format!("failed to build web tunnel client: {error}"))
+        }
+    };
+
+    let mut request = client.request(method, url).body(req.body);
+    for header in req.headers {
+        if is_hop_by_hop_header(&header.name) {
+            continue;
+        }
+        let name = match reqwest::header::HeaderName::from_bytes(header.name.as_bytes()) {
+            Ok(name) => name,
+            Err(_) => continue,
+        };
+        let value = match reqwest::header::HeaderValue::from_str(&header.value) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        request = request.header(name, value);
+    }
+
+    let mut response = match request.send().await {
+        Ok(response) => response,
+        Err(error) => return web_fetch_error(format!("host localhost fetch failed: {error}")),
+    };
+    let status = response.status().as_u16();
+    let headers = response
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| {
+            if is_hop_by_hop_header(name.as_str()) {
+                return None;
+            }
+            Some(WebHeader {
+                name: name.as_str().to_string(),
+                value: value.to_str().ok()?.to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut body = Vec::new();
+    loop {
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(error) => return web_fetch_error(format!("host localhost read failed: {error}")),
+        };
+        if body.len().saturating_add(chunk.len()) > WEB_TUNNEL_MAX_RESPONSE_BODY_BYTES {
+            return web_fetch_error("web tunnel response body is too large");
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    WebFetchResult {
+        status,
+        headers,
+        body,
+        error: None,
+    }
 }
 
 async fn run_observer(session: Arc<ServerSession>, workdir: PathBuf, my_gen: u64) {
@@ -2264,6 +2388,20 @@ async fn dispatch(
             }
             *state.delta.write().await = None;
             let _ = msg.tx.send(ClearClientDeltaInfoResult {}).await;
+        }
+
+        ZedraMessage::WebFetch(msg) => {
+            let result = fetch_web_tunnel(WebFetchReq {
+                method: msg.method.clone(),
+                url: msg.url.clone(),
+                headers: msg.headers.clone(),
+                body: msg.body.clone(),
+            })
+            .await;
+            if let Some(error) = &result.error {
+                tracing::warn!(url = %msg.url, error = %error, "WebFetch failed");
+            }
+            let _ = msg.tx.send(result).await;
         }
 
         ZedraMessage::FsRead(msg) => {

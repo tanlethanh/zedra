@@ -61,6 +61,7 @@ pub mod delta;
 pub mod native_presentation;
 pub mod platform_bridge;
 pub mod telemetry;
+pub mod web_tunnel;
 
 // Embedded assets (SVG icons) — shared across platforms
 use rust_embed::RustEmbed;

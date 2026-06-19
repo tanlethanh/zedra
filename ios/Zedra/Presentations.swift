@@ -1,6 +1,7 @@
 import Foundation
 import ObjectiveC.runtime
 import UIKit
+import WebKit
 import ZedraFFI
 
 @_silgen_name("gpui_ios_request_frame_forced")
@@ -2104,6 +2105,133 @@ final class CustomSheetViewController: UIViewController, UIGestureRecognizerDele
         sheet.preferredCornerRadius = configuration.preferredCornerRadius
     }
 
+}
+
+private final class NativeWebViewController: UIViewController, WKNavigationDelegate {
+    private let initialURL: URL
+    private let initialTitle: String
+    private let webView: WKWebView
+    private let progressView = UIProgressView(progressViewStyle: .bar)
+    var onDismiss: (() -> Void)?
+
+    init(url: URL, title: String) {
+        initialURL = url
+        initialTitle = title
+        let configuration = WKWebViewConfiguration()
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        webView = WKWebView(frame: .zero, configuration: configuration)
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        overrideUserInterfaceStyle = NativePresentationTheme.interfaceStyle
+        view.backgroundColor = NativePresentationTheme.backgroundColor
+
+        navigationItem.title = initialTitle.isEmpty ? initialURL.host : initialTitle
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .done,
+            target: self,
+            action: #selector(closeTapped)
+        )
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .refresh,
+            target: self,
+            action: #selector(reloadTapped)
+        )
+        navigationController?.navigationBar.tintColor = NativePresentationTheme.primaryTextColor
+
+        webView.navigationDelegate = self
+        webView.allowsBackForwardNavigationGestures = true
+        webView.backgroundColor = NativePresentationTheme.backgroundColor
+        webView.scrollView.backgroundColor = NativePresentationTheme.backgroundColor
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        progressView.translatesAutoresizingMaskIntoConstraints = false
+        progressView.progressTintColor = NativePresentationTheme.accentGreen
+        progressView.trackTintColor = NativePresentationTheme.borderColor
+
+        view.addSubview(webView)
+        view.addSubview(progressView)
+        NSLayoutConstraint.activate([
+            progressView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            progressView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            progressView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            webView.topAnchor.constraint(equalTo: progressView.bottomAnchor),
+            webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+
+        webView.addObserver(self, forKeyPath: #keyPath(WKWebView.estimatedProgress), options: [.new], context: nil)
+        webView.load(URLRequest(url: initialURL))
+    }
+
+    deinit {
+        webView.removeObserver(self, forKeyPath: #keyPath(WKWebView.estimatedProgress))
+    }
+
+    override func observeValue(
+        forKeyPath keyPath: String?,
+        of object: Any?,
+        change: [NSKeyValueChangeKey: Any]?,
+        context: UnsafeMutableRawPointer?
+    ) {
+        guard keyPath == #keyPath(WKWebView.estimatedProgress) else { return }
+        progressView.progress = Float(webView.estimatedProgress)
+        progressView.isHidden = webView.estimatedProgress >= 1.0
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if initialTitle.isEmpty, let title = webView.title, !title.isEmpty {
+            navigationItem.title = title
+        }
+    }
+
+    @objc private func closeTapped() {
+        dismiss(animated: true) { [onDismiss] in
+            onDismiss?()
+        }
+    }
+
+    @objc private func reloadTapped() {
+        webView.reload()
+    }
+}
+
+private enum NativeWebViewPresenter {
+    private static var presentedController: UINavigationController?
+
+    static func open(urlString: String?, title: String?) {
+        guard let urlString, let url = URL(string: urlString) else { return }
+        DispatchQueue.main.async {
+            presentedController?.dismiss(animated: false)
+
+            let controller = NativeWebViewController(url: url, title: title ?? "")
+            let nav = UINavigationController(rootViewController: controller)
+            nav.modalPresentationStyle = .fullScreen
+            nav.overrideUserInterfaceStyle = NativePresentationTheme.interfaceStyle
+            controller.onDismiss = {
+                if presentedController === nav {
+                    presentedController = nil
+                }
+            }
+            presentedController = nav
+            NativePresentationBridge.topViewController()?.present(nav, animated: true)
+        }
+    }
+}
+
+@_cdecl("ios_open_webview")
+func ios_open_webview(_ url: UnsafePointer<CChar>?, _ title: UnsafePointer<CChar>?) {
+    NativeWebViewPresenter.open(
+        urlString: NativePresentationBridge.string(url),
+        title: NativePresentationBridge.string(title)
+    )
 }
 
 @_cdecl("ios_present_alert")

@@ -709,6 +709,25 @@ printf '\033]8;;https://zedra.dev\033\\zedra.dev\033]8;;\033\\\n'
 9. Tap the plain `src/main.rs:12:3`, `git:(refactor-app-session-architecture)`, `hello`, `README`, `v0.112.0`, `gpt-5.4`, and `/model`
 10. Expected: none of those tokens are treated as hyperlinks and no preview sheet opens
 
+## 9a. Terminal Localhost Web Tunnel
+
+1. On the host, start a simple local web server:
+
+```sh
+tmpdir=$(mktemp -d)
+printf '<!doctype html><title>Zedra tunnel</title><h1>Zedra tunnel OK</h1>' > "$tmpdir/index.html"
+python3 -m http.server 5173 --directory "$tmpdir"
+```
+
+2. Connect to the same workspace from iOS or Android and open a terminal.
+3. In the Zedra terminal, run `printf 'http://localhost:5173\n'`.
+4. Tap the underlined localhost URL.
+5. Expected: an in-app native webview opens and displays `Zedra tunnel OK`.
+6. Tap Reload.
+7. Expected: the page reloads through the host tunnel without opening the system browser.
+8. Close the webview with Done on iOS or Done/system back on Android.
+9. Expected: the app returns to the terminal and terminal input still works.
+
 ## 9b. Terminal Preview Sheet Gesture Ownership
 
 1. Connect to a session on iPhone or iOS simulator and open the terminal view

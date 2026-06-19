@@ -162,10 +162,21 @@ extern void ios_dismiss_custom_sheet(void);
 extern void ios_open_url(const char *url);
 
 /**
+ * Open a URL in a native in-app WKWebView.
+ */
+extern void ios_open_webview(const char *url, const char *title);
+
+/**
  * Trigger a UIKit haptic feedback generator.
  * kind encoding matches HapticFeedback::to_i32().
  */
 extern void ios_trigger_haptic(int32_t kind);
+
+/**
+ * Play a UI sound effect via AudioToolbox.
+ * kind encoding matches SoundEffect::to_i32().
+ */
+extern void ios_play_sound(int32_t kind);
 
 /**
  * Position or update a native floating icon button.
@@ -212,6 +223,11 @@ extern void ios_present_native_notification(uint32_t callback_id,
  * Start native Google Sign-In for Delta account auth.
  */
 extern void ios_start_delta_google_sign_in(uint32_t callback_id);
+
+/**
+ * Start native Apple Sign-In for Delta account auth.
+ */
+extern void ios_start_delta_apple_sign_in(uint32_t callback_id);
 
 /**
  * Request push authorization and return the APNs token.
@@ -280,9 +296,17 @@ void zedra_ios_text_input_dismiss(uint32_t callback_id);
  */
 void zedra_ios_app_did_enter_background(void);
 
+void zedra_ios_app_will_enter_foreground(void);
+
 void zedra_ios_native_notification_action(uint32_t callback_id);
 
 void zedra_ios_native_notification_dismiss(uint32_t callback_id);
+
+void zedra_ios_delta_apple_sign_in_result(uint32_t callback_id,
+                                          const char *id_token,
+                                          const char *email);
+
+void zedra_ios_delta_apple_sign_in_error(uint32_t callback_id, const char *message);
 
 void zedra_ios_delta_google_sign_in_result(uint32_t callback_id,
                                            const char *id_token,
@@ -296,6 +320,19 @@ void zedra_ios_delta_push_token_result(uint32_t callback_id,
                                        const char *environment);
 
 void zedra_ios_delta_push_token_error(uint32_t callback_id, const char *message);
+
+/**
+ * Called from the native keyboard accessory bar when a shortcut key button is tapped.
+ *
+ * `key` is one of: "escape", "tab", "left", "down", "up", "right", "enter", "shift_enter".
+ * Maps the name to the corresponding terminal escape sequence and sends it via the active session.
+ */
+void zedra_ios_send_key_input(const char *key);
+
+/**
+ * Called from the native terminal composer to send finalized text to the active terminal.
+ */
+void zedra_ios_send_terminal_text(const char *text);
 
 /**
  * Called from the native app delegate when the app is opened via a `zedra://` URL.

@@ -681,6 +681,37 @@ pub fn open_url(url: &str) {
     });
 }
 
+pub fn open_webview(url: &str, title: &str) {
+    let url_owned = url.to_string();
+    let title_owned = title.to_string();
+    jni_call("open_webview", move || {
+        with_main_activity_class("open_webview", |env, class| {
+            let j_url = match env.new_string(&url_owned) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("jni: new_string webview url failed: {:?}", e);
+                    return;
+                }
+            };
+            let j_title = match env.new_string(&title_owned) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("jni: new_string webview title failed: {:?}", e);
+                    return;
+                }
+            };
+            if let Err(e) = env.call_static_method(
+                class,
+                "openWebView",
+                "(Ljava/lang/String;Ljava/lang/String;)V",
+                &[(&j_url).into(), (&j_title).into()],
+            ) {
+                tracing::error!("jni: openWebView failed: {:?}", e);
+            }
+        });
+    });
+}
+
 pub fn show_alert(id: u32, title: &str, message: &str, buttons: &[AlertButton]) {
     let title = title.to_string();
     let message = message.to_string();

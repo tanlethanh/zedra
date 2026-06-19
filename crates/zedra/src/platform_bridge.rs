@@ -930,6 +930,10 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn dismiss_custom_sheet(&self) {}
     /// Open a URL in the system browser.
     fn open_url(&self, _url: &str) {}
+    /// Open a URL inside a native in-app webview.
+    fn open_webview(&self, url: &str, _title: &str) {
+        self.open_url(url);
+    }
     /// Trigger a haptic feedback pattern. No-op on platforms without haptic hardware.
     fn trigger_haptic(&self, _feedback: HapticFeedback) {}
     /// Play a short UI sound effect. No-op on platforms without audio or when silent.
