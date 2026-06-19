@@ -681,9 +681,10 @@ pub fn open_url(url: &str) {
     });
 }
 
-pub fn open_webview(url: &str, title: &str) {
+pub fn open_webview(url: &str, title: &str, proxy_url: Option<&str>) {
     let url_owned = url.to_string();
     let title_owned = title.to_string();
+    let proxy_url_owned = proxy_url.map(|url| url.to_string());
     jni_call("open_webview", move || {
         with_main_activity_class("open_webview", |env, class| {
             let j_url = match env.new_string(&url_owned) {
@@ -700,13 +701,39 @@ pub fn open_webview(url: &str, title: &str) {
                     return;
                 }
             };
-            if let Err(e) = env.call_static_method(
-                class,
-                "openWebView",
-                "(Ljava/lang/String;Ljava/lang/String;)V",
-                &[(&j_url).into(), (&j_title).into()],
-            ) {
-                tracing::error!("jni: openWebView failed: {:?}", e);
+            let j_proxy_url = match proxy_url_owned.as_deref() {
+                Some(proxy_url) => match env.new_string(proxy_url) {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        tracing::error!("jni: new_string webview proxy url failed: {:?}", e);
+                        return;
+                    }
+                },
+                None => None,
+            };
+            if let Some(j_proxy_url) = j_proxy_url {
+                if let Err(e) = env.call_static_method(
+                    class,
+                    "openWebView",
+                    "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+                    &[(&j_url).into(), (&j_title).into(), (&j_proxy_url).into()],
+                ) {
+                    tracing::error!("jni: openWebView failed: {:?}", e);
+                }
+            } else {
+                let null_proxy = JObject::null();
+                if let Err(e) = env.call_static_method(
+                    class,
+                    "openWebView",
+                    "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+                    &[
+                        (&j_url).into(),
+                        (&j_title).into(),
+                        JValue::Object(&null_proxy),
+                    ],
+                ) {
+                    tracing::error!("jni: openWebView failed: {:?}", e);
+                }
             }
         });
     });

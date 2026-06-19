@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import ObjectiveC.runtime
 import UIKit
 import WebKit
@@ -2114,10 +2115,15 @@ private final class NativeWebViewController: UIViewController, WKNavigationDeleg
     private let progressView = UIProgressView(progressViewStyle: .bar)
     var onDismiss: (() -> Void)?
 
-    init(url: URL, title: String) {
+    init(url: URL, title: String, proxyURL: URL?) {
         initialURL = url
         initialTitle = title
         let configuration = WKWebViewConfiguration()
+        let dataStore = WKWebsiteDataStore.nonPersistent()
+        if let proxyConfiguration = Self.proxyConfiguration(from: proxyURL) {
+            dataStore.proxyConfigurations = [proxyConfiguration]
+        }
+        configuration.websiteDataStore = dataStore
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init(nibName: nil, bundle: nil)
@@ -2201,17 +2207,36 @@ private final class NativeWebViewController: UIViewController, WKNavigationDeleg
     @objc private func reloadTapped() {
         webView.reload()
     }
+
+    private static func proxyConfiguration(from proxyURL: URL?) -> Network.ProxyConfiguration? {
+        guard let proxyURL,
+              let scheme = proxyURL.scheme?.lowercased(),
+              scheme == "socks" || scheme == "socks5",
+              let host = proxyURL.host,
+              let portValue = proxyURL.port,
+              portValue > 0 && portValue <= Int(UInt16.max),
+              let port = NWEndpoint.Port(rawValue: UInt16(portValue))
+        else {
+            return nil
+        }
+
+        return Network.ProxyConfiguration(socksv5Proxy: .hostPort(
+            host: NWEndpoint.Host(host),
+            port: port
+        ))
+    }
 }
 
 private enum NativeWebViewPresenter {
     private static var presentedController: UINavigationController?
 
-    static func open(urlString: String?, title: String?) {
+    static func open(urlString: String?, title: String?, proxyURLString: String?) {
         guard let urlString, let url = URL(string: urlString) else { return }
+        let proxyURL = proxyURLString.flatMap { URL(string: $0) }
         DispatchQueue.main.async {
             presentedController?.dismiss(animated: false)
 
-            let controller = NativeWebViewController(url: url, title: title ?? "")
+            let controller = NativeWebViewController(url: url, title: title ?? "", proxyURL: proxyURL)
             let nav = UINavigationController(rootViewController: controller)
             nav.modalPresentationStyle = .fullScreen
             nav.overrideUserInterfaceStyle = NativePresentationTheme.interfaceStyle
@@ -2227,10 +2252,15 @@ private enum NativeWebViewPresenter {
 }
 
 @_cdecl("ios_open_webview")
-func ios_open_webview(_ url: UnsafePointer<CChar>?, _ title: UnsafePointer<CChar>?) {
+func ios_open_webview(
+    _ url: UnsafePointer<CChar>?,
+    _ title: UnsafePointer<CChar>?,
+    _ proxyURL: UnsafePointer<CChar>?
+) {
     NativeWebViewPresenter.open(
         urlString: NativePresentationBridge.string(url),
-        title: NativePresentationBridge.string(title)
+        title: NativePresentationBridge.string(title),
+        proxyURLString: NativePresentationBridge.string(proxyURL)
     )
 }
 

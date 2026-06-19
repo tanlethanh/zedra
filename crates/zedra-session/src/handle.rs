@@ -9,7 +9,7 @@ use std::{
 use anyhow::Result;
 use irpc::{
     Channels, RpcMessage, Service, WithChannels,
-    channel::{none::NoReceiver, oneshot},
+    channel::{mpsc, none::NoReceiver, oneshot},
 };
 use zedra_rpc::proto::*;
 
@@ -497,6 +497,19 @@ impl SessionHandle {
 
     pub async fn web_fetch(&self, req: WebFetchReq) -> Result<WebFetchResult> {
         Ok(self.call(req).await?)
+    }
+
+    pub async fn web_connect(
+        &self,
+        req: WebConnectReq,
+    ) -> Result<(
+        mpsc::Sender<WebTunnelInput>,
+        mpsc::Receiver<WebTunnelOutput>,
+    )> {
+        self.client()?
+            .bidi_streaming::<WebConnectReq, WebTunnelInput, WebTunnelOutput>(req, 64, 64)
+            .await
+            .map_err(map_rpc_error)
     }
 
     fn downgrade_observer_rpc(&self, err: &str) -> bool {

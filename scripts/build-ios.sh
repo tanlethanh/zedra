@@ -74,8 +74,8 @@ fi
 [ "$RELEASE" = true ] && echo "Release mode enabled"
 
 # Use the deployment target passed in from run-ios.sh (which detects the
-# connected device's OS version), or fall back to 16.0 when called standalone.
-export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-16.0}"
+# connected device's OS version), or fall back to 17.0 when called standalone.
+export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-17.0}"
 echo "==> Deployment target: iOS $IPHONEOS_DEPLOYMENT_TARGET"
 
 # Build the static library explicitly and fail hard on cargo errors.

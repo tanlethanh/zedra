@@ -14,13 +14,18 @@ Use Zedra's authenticated iroh/irpc session as the tunnel transport.
 
 ```text
 Mobile WebView
-  -> app-local loopback listener
+  -> app-local SOCKS5 proxy on 127.0.0.1:<ephemeral>
   -> WebConnect bidi RPC over existing Zedra session
   -> host TcpStream to 127.0.0.1:<port>
   -> host web server
 ```
 
-For each accepted app-local TCP connection:
+The native WebView loads the exact URL from the terminal, for example
+`http://localhost:5173`. Native platform proxy configuration points WebView
+networking at the app-local SOCKS5 proxy. The URL is not rewritten to an
+app-local port.
+
+For each accepted SOCKS `CONNECT` request:
 
 1. The app validates the requested destination as host loopback only.
 2. The app opens `WebConnect` as a bidirectional streaming RPC.
@@ -34,10 +39,11 @@ This matches the existing `TermAttach` model: a local IO stream is bridged throu
 Supported:
 
 - `http://localhost:<port>` and loopback IP equivalents.
+- `https://localhost:<port>` when the host server already has certificates the WebView accepts.
 - Normal HTTP requests and responses.
 - WebSocket upgrades and WebSocket frames.
 - Streaming responses such as SSE.
-- Dev-server HMR and API calls on the tunneled origin.
+- Dev-server HMR and API calls to other host-side localhost ports.
 
 Not supported initially:
 
@@ -48,32 +54,55 @@ Not supported initially:
 
 ## WebView Routing
 
-The first milestone can keep the current app-local URL rewrite: the tapped host URL opens as an app-local loopback URL, and all traffic to that origin goes through the TCP stream tunnel.
+Use native WebView proxy APIs:
 
-To support pages that call another host-side localhost port, add app-local HTTP proxy support:
+- iOS: Zedra targets iOS 17+, so the WebView uses a nonpersistent `WKWebsiteDataStore` with `proxyConfigurations` set before page load. The proxy is a Network framework `ProxyConfiguration(socksv5Proxy:)`.
+- Android: AndroidX WebKit `ProxyController.setProxyOverride` routes WebView requests through `socks://127.0.0.1:<port>`. Call `removeImplicitRules()` so localhost is not silently bypassed. When `PROXY_OVERRIDE_REVERSE_BYPASS` is available, configure reverse bypass rules so only localhost-style hosts use the proxy; otherwise the Rust SOCKS proxy rejects non-loopback destinations.
 
-- Android: `ProxyController.setProxyOverride` can route WebView network requests through an app proxy, but it applies to all WebViews in the app while enabled.
-- iOS: `WKWebsiteDataStore.proxyConfigurations` exists on iOS 17+, but Zedra's deployment target includes iOS 16, so keep a fallback path.
-- Fallback: rewrite or inject only when the target app needs it, and keep the first milestone focused on same-origin web apps.
+This avoids HTTP absolute-form request rewriting and keeps the browser's origin
+model intact. The SOCKS handshake gives the app the destination host and port,
+which is enough to validate the tunnel and open a raw host TCP stream.
 
 ## Security
 
 Keep the tunnel narrow:
 
 - Only allow host loopback destinations: `localhost`, `127.0.0.0/8`, and `::1`.
-- Do not follow redirects to non-loopback destinations.
+- Reject SOCKS requests for non-loopback destinations.
 - Bind app listeners to loopback only.
 - Treat tunnel capability as part of the authenticated Zedra session, not as a public service.
-- Log destination host and port, byte counts, and failures; do not log request bodies or headers.
+- Log destination host and port and failures; do not log tunneled bytes.
+
+## Caveats
+
+Network layer:
+
+- The tunnel forwards TCP only. It does not support UDP, WebRTC media paths, multicast discovery, mDNS, or a device-level VPN/TUN interface.
+- `localhost` means host loopback after SOCKS validation, not mobile loopback. The mobile app binds only its SOCKS proxy on mobile loopback.
+- Non-loopback resources requested by the page may be blocked by the tunnel policy unless the platform proxy configuration bypasses them directly.
+- HTTPS works only when the WebView trusts the host server certificate. The tunnel does not terminate TLS or mint certificates.
+
+Transport layer:
+
+- Each browser connection maps to one `WebConnect` stream over the existing authenticated Zedra transport. QUIC stream backpressure and relay latency directly affect page load and HMR responsiveness.
+- Keep byte chunks bounded. Large downloads should stream through chunks instead of accumulating whole bodies.
+- A stream close/error should tear down only that browser connection, not the whole Zedra session.
+
+Session layer:
+
+- Web tunnels are tied to the current `SessionHandle`. Reconnect, workspace switch, app backgrounding, or host restart can drop open browser connections; the WebView should recover via reload.
+- Android's WebView proxy override is process-global while enabled, so it must be cleared when the native WebView closes.
+- iOS proxy configuration is attached to the WebView's `WKWebsiteDataStore`; set it before page load. Zedra uses iOS 17+ and a nonpersistent data store for tunneled WebViews.
 
 ## Implementation Notes
 
 - Add `WebConnect` to `zedra-rpc` as a bidirectional streaming RPC.
-- Use byte frame structs such as `WebTunnelInput` and `WebTunnelOutput`, plus an explicit close/error signal if irpc channel close is not enough for clean shutdown.
-- On the app, bridge `TcpStream` to the irpc channels with separate read and write tasks.
+- Keep `WebFetch` out of the browser path. It can remain a diagnostic helper, but it cannot support WebSocket/HMR/SSE semantics.
+- Use byte frame structs such as `WebTunnelInput` and `WebTunnelOutput`, plus explicit connected/close/error signals so the app can send the correct SOCKS reply.
+- On the app, bridge the accepted SOCKS stream to the irpc channels with separate read and write tasks.
 - On the host, bridge the irpc channels to `tokio::net::TcpStream`.
 - Prefer bounded channels and chunk limits to avoid unbounded buffering.
-- Keep one-shot HTTP fetch helpers out of the browser path unless they are used only for diagnostics.
+- Do not parse HTTP after the SOCKS handshake. Preserving the browser's bytes is what keeps WebSockets, streaming, upgrades, and keep-alive behavior intact.
 
 ## Manual Test
 
@@ -93,6 +122,9 @@ Keep the tunnel narrow:
 - rathole Rust reverse proxy: `https://github.com/rathole-org/rathole`
 - yamux stream multiplexing: `https://docs.rs/yamux/latest/yamux/`
 - Android WebView proxy override: `https://developer.android.com/reference/androidx/webkit/ProxyController`
+- Android WebView proxy builder: `https://developer.android.com/reference/androidx/webkit/ProxyConfig.Builder`
 - Android WebView resource interception limits: `https://developer.android.com/reference/android/webkit/WebViewClient#shouldInterceptRequest(android.webkit.WebView,android.webkit.WebResourceRequest)`
 - WebKit data store proxy configurations: `https://developer.apple.com/documentation/webkit/wkwebsitedatastore/proxyconfigurations`
+- Network framework SOCKSv5 proxy configuration: `nw_proxy_config_create_socksv5` in the iOS 17 SDK `Network.framework/Headers/proxy_config.h`
+- SOCKS Protocol Version 5: `https://www.rfc-editor.org/rfc/rfc1928`
 - WebSocket protocol: `https://www.rfc-editor.org/rfc/rfc6455`

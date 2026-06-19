@@ -1,43 +1,34 @@
-use std::collections::HashMap;
-use std::convert::Infallible;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use bytes::Bytes;
-use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
-use hyper::body::Incoming;
-use hyper::header::{HeaderName, HeaderValue};
-use hyper::server::conn::http1;
-use hyper::service::service_fn;
-use hyper::{Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
 use reqwest::Url;
-use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream, tcp::OwnedWriteHalf};
 use tokio::sync::RwLock;
-use zedra_rpc::proto::{WEB_TUNNEL_MAX_REQUEST_BODY_BYTES, WebFetchReq, WebHeader};
+use zedra_rpc::proto::{
+    WEB_TUNNEL_MAX_CHUNK_BYTES, WebConnectReq, WebTunnelInput, WebTunnelOutput,
+};
 use zedra_session::SessionHandle;
 
 use crate::platform_bridge::{self, NativeNotificationKind, NativeNotificationOptions};
 
-static WEB_TUNNELS: OnceLock<Mutex<HashMap<u16, Arc<ProxyEntry>>>> = OnceLock::new();
+static WEB_PROXY: OnceLock<Mutex<Option<Arc<SocksProxy>>>> = OnceLock::new();
 
 #[derive(Clone)]
 struct TargetOrigin {
-    scheme: String,
     host: String,
     port: u16,
 }
 
-#[derive(Clone)]
-struct ProxyTarget {
-    session_handle: SessionHandle,
-    origin: TargetOrigin,
+struct SocksProxy {
+    proxy_url: String,
+    session_handle: Arc<RwLock<SessionHandle>>,
 }
 
-struct ProxyEntry {
-    local_host: String,
-    local_port: u16,
-    target: Arc<RwLock<ProxyTarget>>,
+#[derive(Clone)]
+struct SocksDestination {
+    host: String,
+    port: u16,
 }
 
 pub fn is_host_local_http_url(url: &str) -> bool {
@@ -49,9 +40,9 @@ pub fn open_host_local_url(session_handle: SessionHandle, url: String) -> Result
     let title = format!("{}:{}", target.host, target.port);
 
     zedra_session::session_runtime().spawn(async move {
-        match ensure_proxy(session_handle, target, &url).await {
-            Ok(local_url) => {
-                platform_bridge::bridge().open_webview(&local_url, &title);
+        match ensure_proxy(session_handle).await {
+            Ok(proxy_url) => {
+                platform_bridge::bridge().open_webview(&url, &title, Some(&proxy_url));
             }
             Err(error) => {
                 platform_bridge::show_native_notification(
@@ -66,14 +57,14 @@ pub fn open_host_local_url(session_handle: SessionHandle, url: String) -> Result
     Ok(())
 }
 
-fn tunnels() -> &'static Mutex<HashMap<u16, Arc<ProxyEntry>>> {
-    WEB_TUNNELS.get_or_init(|| Mutex::new(HashMap::new()))
+fn proxy_slot() -> &'static Mutex<Option<Arc<SocksProxy>>> {
+    WEB_PROXY.get_or_init(|| Mutex::new(None))
 }
 
 fn parse_target_origin(url: &str) -> Result<TargetOrigin, String> {
     let url = Url::parse(url).map_err(|error| format!("Invalid URL: {error}"))?;
-    if url.scheme() != "http" {
-        return Err("Only http localhost URLs can use the web tunnel".to_string());
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("Only http and https localhost URLs can use the web tunnel".to_string());
     }
     let host = url
         .host_str()
@@ -85,11 +76,7 @@ fn parse_target_origin(url: &str) -> Result<TargetOrigin, String> {
     let port = url
         .port_or_known_default()
         .ok_or_else(|| "URL is missing a port".to_string())?;
-    Ok(TargetOrigin {
-        scheme: url.scheme().to_string(),
-        host,
-        port,
-    })
+    Ok(TargetOrigin { host, port })
 }
 
 fn is_loopback_host(host: &str) -> bool {
@@ -100,241 +87,322 @@ fn is_loopback_host(host: &str) -> bool {
             .unwrap_or(false)
 }
 
-async fn ensure_proxy(
-    session_handle: SessionHandle,
-    target: TargetOrigin,
-    initial_url: &str,
-) -> Result<String, String> {
-    let key = target.port;
-    if let Some(entry) = tunnels()
+async fn ensure_proxy(session_handle: SessionHandle) -> Result<String, String> {
+    if let Some(proxy) = proxy_slot()
         .lock()
         .ok()
-        .and_then(|entries| entries.get(&key).cloned())
+        .and_then(|entry| entry.as_ref().cloned())
     {
-        *entry.target.write().await = ProxyTarget {
-            session_handle,
-            origin: target,
-        };
-        return local_url_for(initial_url, &entry.local_host, entry.local_port);
+        *proxy.session_handle.write().await = session_handle;
+        return Ok(proxy.proxy_url.clone());
     }
 
-    let (listener, local_host, local_port) = bind_primary_listener(key).await?;
-    let proxy_target = Arc::new(RwLock::new(ProxyTarget {
-        session_handle,
-        origin: target,
-    }));
-    spawn_accept_loop(listener, proxy_target.clone());
-
-    // If the preferred port was available, also listen on IPv6 loopback. Some
-    // webviews resolve `localhost` to `::1` before `127.0.0.1`.
-    if local_port == key {
-        if let Ok(v6_listener) = TcpListener::bind((Ipv6Addr::LOCALHOST, local_port)).await {
-            spawn_accept_loop(v6_listener, proxy_target.clone());
-        }
-    }
-
-    let entry = Arc::new(ProxyEntry {
-        local_host: local_host.clone(),
-        local_port,
-        target: proxy_target,
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .map_err(|error| format!("Failed to bind local web proxy: {error}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| format!("Failed to read local web proxy port: {error}"))?
+        .port();
+    let session_handle = Arc::new(RwLock::new(session_handle));
+    let proxy = Arc::new(SocksProxy {
+        proxy_url: format!("socks://127.0.0.1:{port}"),
+        session_handle: session_handle.clone(),
     });
-    if let Ok(mut entries) = tunnels().lock() {
-        entries.insert(key, entry);
+
+    spawn_accept_loop(listener, session_handle);
+
+    if let Ok(mut entry) = proxy_slot().lock() {
+        *entry = Some(proxy.clone());
     }
 
-    local_url_for(initial_url, &local_host, local_port)
+    Ok(proxy.proxy_url.clone())
 }
 
-async fn bind_primary_listener(preferred_port: u16) -> Result<(TcpListener, String, u16), String> {
-    match TcpListener::bind((Ipv4Addr::LOCALHOST, preferred_port)).await {
-        Ok(listener) => Ok((listener, "127.0.0.1".to_string(), preferred_port)),
-        Err(preferred_error) => {
-            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-                .await
-                .map_err(|fallback_error| {
-                    format!(
-                        "Failed to bind localhost:{preferred_port}: {preferred_error}; fallback failed: {fallback_error}"
-                    )
-                })?;
-            let port = listener
-                .local_addr()
-                .map_err(|error| format!("Failed to read local proxy port: {error}"))?
-                .port();
-            Ok((listener, "127.0.0.1".to_string(), port))
-        }
-    }
-}
-
-fn local_url_for(initial_url: &str, local_host: &str, local_port: u16) -> Result<String, String> {
-    let mut url = Url::parse(initial_url).map_err(|error| format!("Invalid URL: {error}"))?;
-    url.set_host(Some(local_host))
-        .map_err(|_| "Failed to build local webview URL".to_string())?;
-    url.set_port(Some(local_port))
-        .map_err(|_| "Failed to set local webview port".to_string())?;
-    Ok(url.to_string())
-}
-
-fn spawn_accept_loop(listener: TcpListener, target: Arc<RwLock<ProxyTarget>>) {
+fn spawn_accept_loop(listener: TcpListener, session_handle: Arc<RwLock<SessionHandle>>) {
     zedra_session::session_runtime().spawn(async move {
         loop {
             let (stream, _) = match listener.accept().await {
                 Ok(accepted) => accepted,
                 Err(error) => {
-                    tracing::warn!("web tunnel: accept failed: {error}");
+                    tracing::warn!("web tunnel: SOCKS accept failed: {error}");
                     break;
                 }
             };
-            let target = target.clone();
+            let session_handle = session_handle.clone();
             zedra_session::session_runtime().spawn(async move {
-                let io = TokioIo::new(stream);
-                let service = service_fn(move |request| proxy_request(request, target.clone()));
-                if let Err(error) = http1::Builder::new().serve_connection(io, service).await {
-                    tracing::debug!("web tunnel: connection failed: {error}");
+                if let Err(error) = handle_socks_connection(stream, session_handle).await {
+                    tracing::debug!("web tunnel: SOCKS connection closed: {error}");
                 }
             });
         }
     });
 }
 
-async fn proxy_request(
-    request: Request<Incoming>,
-    target: Arc<RwLock<ProxyTarget>>,
-) -> Result<Response<Full<Bytes>>, Infallible> {
-    let response = match proxy_request_inner(request, target).await {
-        Ok(response) => response,
-        Err(error) => error_response(StatusCode::BAD_GATEWAY, error),
-    };
-    Ok(response)
-}
-
-async fn proxy_request_inner(
-    request: Request<Incoming>,
-    target: Arc<RwLock<ProxyTarget>>,
-) -> Result<Response<Full<Bytes>>, String> {
-    let (parts, body) = request.into_parts();
-    if parts
-        .headers
-        .get(hyper::header::CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<usize>().ok())
-        .is_some_and(|len| len > WEB_TUNNEL_MAX_REQUEST_BODY_BYTES)
-    {
-        return Ok(error_response(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "Web tunnel request body is too large",
+async fn handle_socks_connection(
+    mut stream: TcpStream,
+    session_handle: Arc<RwLock<SessionHandle>>,
+) -> Result<(), String> {
+    negotiate_socks_auth(&mut stream).await?;
+    let destination = read_socks_destination(&mut stream).await?;
+    if !is_loopback_host(&destination.host) {
+        send_socks_reply(&mut stream, SOCKS_REPLY_CONNECTION_NOT_ALLOWED).await?;
+        return Err(format!(
+            "rejected non-loopback destination {}:{}",
+            destination.host, destination.port
         ));
     }
 
-    let body = match Limited::new(body, WEB_TUNNEL_MAX_REQUEST_BODY_BYTES)
-        .collect()
-        .await
-    {
-        Ok(body) => body.to_bytes(),
-        Err(error) => {
-            if error.downcast_ref::<LengthLimitError>().is_some() {
-                return Ok(error_response(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "Web tunnel request body is too large",
-                ));
-            }
-            return Err(format!("Failed to read webview request body: {error}"));
-        }
-    };
-    if body.len() > WEB_TUNNEL_MAX_REQUEST_BODY_BYTES {
-        return Ok(error_response(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "Web tunnel request body is too large",
-        ));
-    }
-
-    let target = target.read().await.clone();
-    let target_url = target_url_for(
-        &target.origin,
-        parts.uri.path_and_query().map(|v| v.as_str()),
-    );
-    let result = target
-        .session_handle
-        .web_fetch(WebFetchReq {
-            method: parts.method.as_str().to_string(),
-            url: target_url,
-            headers: web_headers(&parts.headers),
-            body: body.to_vec(),
+    let session_handle = session_handle.read().await.clone();
+    let (tx, mut rx) = session_handle
+        .web_connect(WebConnectReq {
+            host: destination.host.clone(),
+            port: destination.port,
         })
         .await
         .map_err(|error| format!("Web tunnel RPC failed: {error}"))?;
 
-    if let Some(error) = result.error {
-        return Ok(error_response(StatusCode::BAD_GATEWAY, error));
-    }
-
-    let status = StatusCode::from_u16(result.status).unwrap_or(StatusCode::BAD_GATEWAY);
-    let mut builder = Response::builder().status(status);
-    for header in result.headers {
-        if is_hop_by_hop_header(&header.name) {
-            continue;
+    let initial = match rx.recv().await {
+        Ok(Some(output)) if output.connected && output.error.is_none() => Some(output),
+        Ok(Some(output)) => {
+            send_socks_reply(&mut stream, SOCKS_REPLY_HOST_UNREACHABLE).await?;
+            return Err(output
+                .error
+                .unwrap_or_else(|| "host rejected web tunnel connection".to_string()));
         }
-        let Ok(name) = HeaderName::from_bytes(header.name.as_bytes()) else {
-            continue;
-        };
-        let Ok(value) = HeaderValue::from_str(&header.value) else {
-            continue;
-        };
-        builder = builder.header(name, value);
-    }
-    builder
-        .body(Full::new(Bytes::from(result.body)))
-        .map_err(|error| format!("Failed to build web tunnel response: {error}"))
-}
-
-fn target_url_for(origin: &TargetOrigin, path_and_query: Option<&str>) -> String {
-    let authority_host = if origin.host.contains(':') && !origin.host.starts_with('[') {
-        format!("[{}]", origin.host)
-    } else {
-        origin.host.clone()
+        Ok(None) => {
+            send_socks_reply(&mut stream, SOCKS_REPLY_HOST_UNREACHABLE).await?;
+            return Err("host closed web tunnel before connection completed".to_string());
+        }
+        Err(error) => {
+            send_socks_reply(&mut stream, SOCKS_REPLY_HOST_UNREACHABLE).await?;
+            return Err(format!("web tunnel connection handshake failed: {error:?}"));
+        }
     };
-    let path_and_query = path_and_query.unwrap_or("/");
-    format!(
-        "{}://{}:{}{}",
-        origin.scheme, authority_host, origin.port, path_and_query
-    )
+
+    send_socks_reply(&mut stream, SOCKS_REPLY_SUCCEEDED).await?;
+    tracing::debug!(
+        host = %destination.host,
+        port = destination.port,
+        "web tunnel SOCKS stream connected"
+    );
+
+    bridge_stream(stream, tx, rx, initial).await
 }
 
-fn web_headers(headers: &hyper::HeaderMap) -> Vec<WebHeader> {
-    headers
-        .iter()
-        .filter_map(|(name, value)| {
-            if is_hop_by_hop_header(name.as_str()) {
-                return None;
+const SOCKS_VERSION: u8 = 0x05;
+const SOCKS_AUTH_NONE: u8 = 0x00;
+const SOCKS_AUTH_NO_ACCEPTABLE: u8 = 0xff;
+const SOCKS_CMD_CONNECT: u8 = 0x01;
+const SOCKS_ATYP_IPV4: u8 = 0x01;
+const SOCKS_ATYP_DOMAIN: u8 = 0x03;
+const SOCKS_ATYP_IPV6: u8 = 0x04;
+const SOCKS_REPLY_SUCCEEDED: u8 = 0x00;
+const SOCKS_REPLY_GENERAL_FAILURE: u8 = 0x01;
+const SOCKS_REPLY_CONNECTION_NOT_ALLOWED: u8 = 0x02;
+const SOCKS_REPLY_COMMAND_NOT_SUPPORTED: u8 = 0x07;
+const SOCKS_REPLY_ADDRESS_TYPE_NOT_SUPPORTED: u8 = 0x08;
+const SOCKS_REPLY_HOST_UNREACHABLE: u8 = 0x04;
+
+async fn negotiate_socks_auth(stream: &mut TcpStream) -> Result<(), String> {
+    let mut header = [0; 2];
+    stream
+        .read_exact(&mut header)
+        .await
+        .map_err(|error| format!("failed to read SOCKS greeting: {error}"))?;
+    if header[0] != SOCKS_VERSION {
+        return Err("unsupported SOCKS version".to_string());
+    }
+
+    let mut methods = vec![0; header[1] as usize];
+    stream
+        .read_exact(&mut methods)
+        .await
+        .map_err(|error| format!("failed to read SOCKS auth methods: {error}"))?;
+    if !methods.contains(&SOCKS_AUTH_NONE) {
+        let _ = stream
+            .write_all(&[SOCKS_VERSION, SOCKS_AUTH_NO_ACCEPTABLE])
+            .await;
+        return Err("SOCKS client did not offer no-auth mode".to_string());
+    }
+
+    stream
+        .write_all(&[SOCKS_VERSION, SOCKS_AUTH_NONE])
+        .await
+        .map_err(|error| format!("failed to send SOCKS auth selection: {error}"))
+}
+
+async fn read_socks_destination(stream: &mut TcpStream) -> Result<SocksDestination, String> {
+    let mut header = [0; 4];
+    stream
+        .read_exact(&mut header)
+        .await
+        .map_err(|error| format!("failed to read SOCKS request: {error}"))?;
+    if header[0] != SOCKS_VERSION {
+        send_socks_reply(stream, SOCKS_REPLY_GENERAL_FAILURE).await?;
+        return Err("unsupported SOCKS request version".to_string());
+    }
+    if header[1] != SOCKS_CMD_CONNECT {
+        send_socks_reply(stream, SOCKS_REPLY_COMMAND_NOT_SUPPORTED).await?;
+        return Err("only SOCKS CONNECT requests are supported".to_string());
+    }
+
+    let host = match header[3] {
+        SOCKS_ATYP_IPV4 => {
+            let mut bytes = [0; 4];
+            stream
+                .read_exact(&mut bytes)
+                .await
+                .map_err(|error| format!("failed to read SOCKS IPv4 address: {error}"))?;
+            IpAddr::from(bytes).to_string()
+        }
+        SOCKS_ATYP_IPV6 => {
+            let mut bytes = [0; 16];
+            stream
+                .read_exact(&mut bytes)
+                .await
+                .map_err(|error| format!("failed to read SOCKS IPv6 address: {error}"))?;
+            IpAddr::from(bytes).to_string()
+        }
+        SOCKS_ATYP_DOMAIN => {
+            let mut len = [0; 1];
+            stream
+                .read_exact(&mut len)
+                .await
+                .map_err(|error| format!("failed to read SOCKS domain length: {error}"))?;
+            let mut bytes = vec![0; len[0] as usize];
+            stream
+                .read_exact(&mut bytes)
+                .await
+                .map_err(|error| format!("failed to read SOCKS domain: {error}"))?;
+            String::from_utf8(bytes).map_err(|error| format!("invalid SOCKS domain: {error}"))?
+        }
+        _ => {
+            send_socks_reply(stream, SOCKS_REPLY_ADDRESS_TYPE_NOT_SUPPORTED).await?;
+            return Err("unsupported SOCKS address type".to_string());
+        }
+    };
+
+    let mut port = [0; 2];
+    stream
+        .read_exact(&mut port)
+        .await
+        .map_err(|error| format!("failed to read SOCKS port: {error}"))?;
+    let port = u16::from_be_bytes(port);
+    if port == 0 {
+        send_socks_reply(stream, SOCKS_REPLY_GENERAL_FAILURE).await?;
+        return Err("SOCKS destination port is invalid".to_string());
+    }
+
+    Ok(SocksDestination { host, port })
+}
+
+async fn send_socks_reply(stream: &mut TcpStream, reply: u8) -> Result<(), String> {
+    stream
+        .write_all(&[
+            SOCKS_VERSION,
+            reply,
+            0x00,
+            SOCKS_ATYP_IPV4,
+            127,
+            0,
+            0,
+            1,
+            0,
+            0,
+        ])
+        .await
+        .map_err(|error| format!("failed to send SOCKS reply: {error}"))
+}
+
+async fn bridge_stream(
+    stream: TcpStream,
+    tx: irpc::channel::mpsc::Sender<WebTunnelInput>,
+    rx: irpc::channel::mpsc::Receiver<WebTunnelOutput>,
+    initial: Option<WebTunnelOutput>,
+) -> Result<(), String> {
+    let (mut local_reader, local_writer) = stream.into_split();
+    let app_to_host = tokio::spawn(async move {
+        let mut buffer = vec![0; WEB_TUNNEL_MAX_CHUNK_BYTES];
+        loop {
+            match local_reader.read(&mut buffer).await {
+                Ok(0) => {
+                    let _ = tx
+                        .send(WebTunnelInput {
+                            data: vec![],
+                            close: true,
+                        })
+                        .await;
+                    break;
+                }
+                Ok(n) => {
+                    if tx
+                        .send(WebTunnelInput {
+                            data: buffer[..n].to_vec(),
+                            close: false,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    tracing::debug!(error = %error, "web tunnel local read failed");
+                    let _ = tx
+                        .send(WebTunnelInput {
+                            data: vec![],
+                            close: true,
+                        })
+                        .await;
+                    break;
+                }
             }
-            Some(WebHeader {
-                name: name.as_str().to_string(),
-                value: value.to_str().ok()?.to_string(),
-            })
-        })
-        .collect()
+        }
+    });
+
+    let host_to_app = tokio::spawn(async move {
+        write_host_outputs(local_writer, rx, initial).await;
+    });
+
+    let _ = tokio::join!(app_to_host, host_to_app);
+    Ok(())
 }
 
-fn is_hop_by_hop_header(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "connection"
-            | "keep-alive"
-            | "proxy-authenticate"
-            | "proxy-authorization"
-            | "te"
-            | "trailer"
-            | "transfer-encoding"
-            | "upgrade"
-            | "host"
-            | "content-length"
-    )
+async fn write_host_outputs(
+    mut local_writer: OwnedWriteHalf,
+    mut rx: irpc::channel::mpsc::Receiver<WebTunnelOutput>,
+    initial: Option<WebTunnelOutput>,
+) {
+    if let Some(output) = initial {
+        if !write_host_output(&mut local_writer, output).await {
+            return;
+        }
+    }
+    loop {
+        match rx.recv().await {
+            Ok(Some(output)) => {
+                if !write_host_output(&mut local_writer, output).await {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(error) => {
+                tracing::debug!(error = ?error, "web tunnel host output closed");
+                break;
+            }
+        }
+    }
+    let _ = local_writer.shutdown().await;
 }
 
-fn error_response(status: StatusCode, message: impl Into<String>) -> Response<Full<Bytes>> {
-    let message = message.into();
-    Response::builder()
-        .status(status)
-        .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
-        .body(Full::new(Bytes::from(message)))
-        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
+async fn write_host_output(local_writer: &mut OwnedWriteHalf, output: WebTunnelOutput) -> bool {
+    if let Some(error) = output.error {
+        tracing::debug!(error = %error, "web tunnel host output error");
+        return false;
+    }
+    if !output.data.is_empty() && local_writer.write_all(&output.data).await.is_err() {
+        return false;
+    }
+    !output.close
 }

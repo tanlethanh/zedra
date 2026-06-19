@@ -157,7 +157,7 @@ main.m → UIApplicationMain → ZedraAppDelegate
 
 ### Deployment Target
 
-Must match in `scripts/build-ios.sh` (`IPHONEOS_DEPLOYMENT_TARGET`), `ios/project.yml` (`deploymentTarget.iOS`), and Xcode. Current: `16.0`.
+Must match in `scripts/build-ios.sh` (`IPHONEOS_DEPLOYMENT_TARGET`), `ios/project.yml` (`deploymentTarget.iOS`), and Xcode. Current: `17.0`.
 
 ### Xcode Rust Build Target
 

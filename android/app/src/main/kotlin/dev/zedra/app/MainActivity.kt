@@ -459,8 +459,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         @JvmStatic
-        fun openWebView(url: String, title: String) {
-            NativePresentations.openWebView(url, title)
+        fun openWebView(url: String, title: String, proxyUrl: String?) {
+            NativePresentations.openWebView(url, title, proxyUrl)
         }
 
         /** Returns 1 for dark, 0 for light, -1 when unavailable. */

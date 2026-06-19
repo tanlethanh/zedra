@@ -711,22 +711,68 @@ printf '\033]8;;https://zedra.dev\033\\zedra.dev\033]8;;\033\\\n'
 
 ## 9a. Terminal Localhost Web Tunnel
 
-1. On the host, start a simple local web server:
+1. On the host, start a local page server on `5173` and a backend on `5174`:
 
 ```sh
-tmpdir=$(mktemp -d)
-printf '<!doctype html><title>Zedra tunnel</title><h1>Zedra tunnel OK</h1>' > "$tmpdir/index.html"
-python3 -m http.server 5173 --directory "$tmpdir"
+python3 - <<'PY'
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
+import time
+
+class Frontend(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("content-type", "text/html")
+        self.end_headers()
+        self.wfile.write(b"""<!doctype html>
+<title>Zedra tunnel</title>
+<h1>Zedra tunnel OK</h1>
+<pre id="status">loading</pre>
+<script>
+fetch('http://localhost:5174/api')
+  .then(r => r.text())
+  .then(t => status.textContent = t);
+const events = new EventSource('http://localhost:5174/events');
+events.onmessage = e => status.textContent += '\\n' + e.data;
+</script>""")
+
+class Backend(BaseHTTPRequestHandler):
+    def cors(self):
+        self.send_header("access-control-allow-origin", "*")
+    def do_GET(self):
+        if self.path == "/api":
+            self.send_response(200)
+            self.cors()
+            self.end_headers()
+            self.wfile.write(b"backend OK")
+        elif self.path == "/events":
+            self.send_response(200)
+            self.cors()
+            self.send_header("content-type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(b"data: stream OK\\n\\n")
+            self.wfile.flush()
+            time.sleep(5)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+for port, handler in [(5173, Frontend), (5174, Backend)]:
+    Thread(target=ThreadingHTTPServer(("127.0.0.1", port), handler).serve_forever, daemon=True).start()
+print("open http://localhost:5173")
+time.sleep(3600)
+PY
 ```
 
 2. Connect to the same workspace from iOS or Android and open a terminal.
 3. In the Zedra terminal, run `printf 'http://localhost:5173\n'`.
 4. Tap the underlined localhost URL.
-5. Expected: an in-app native webview opens and displays `Zedra tunnel OK`.
+5. Expected: an in-app native webview opens with the exact URL `http://localhost:5173` and displays `Zedra tunnel OK`.
 6. Tap Reload.
 7. Expected: the page reloads through the host tunnel without opening the system browser.
-8. Close the webview with Done on iOS or Done/system back on Android.
-9. Expected: the app returns to the terminal and terminal input still works.
+8. Expected: the page displays `backend OK` and then `stream OK`, proving the WebView reached a second host localhost port through the tunnel.
+9. Close the webview with Done on iOS or Done/system back on Android.
+10. Expected: the app returns to the terminal and terminal input still works.
 
 ## 9b. Terminal Preview Sheet Gesture Ownership
 

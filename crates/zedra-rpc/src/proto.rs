@@ -224,13 +224,18 @@ pub enum ZedraProto {
     /// Kept at enum tail because protocol variants are append-only.
     #[rpc(tx = oneshot::Sender<WebFetchResult>)]
     WebFetch(WebFetchReq),
+
+    /// Connect one app-local web proxy stream to a host-side loopback TCP port.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(rx = mpsc::Receiver<WebTunnelInput>, tx = mpsc::Sender<WebTunnelOutput>)]
+    WebConnect(WebConnectReq),
 }
 
 // ---------------------------------------------------------------------------
 // ALPN protocol identifier
 // ---------------------------------------------------------------------------
 
-pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/4";
+pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/5";
 
 /// Default page size for `FsList` requests (host uses this when `limit == 0`).
 pub const FS_LIST_DEFAULT_LIMIT: u32 = 50;
@@ -252,6 +257,8 @@ pub const FS_DOCS_TREE_MAX_VISITED_ENTRIES: u32 = 10_000;
 pub const WEB_TUNNEL_MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum response body forwarded through one web tunnel fetch.
 pub const WEB_TUNNEL_MAX_RESPONSE_BODY_BYTES: usize = 32 * 1024 * 1024;
+/// Maximum byte chunk forwarded through one web tunnel stream frame.
+pub const WEB_TUNNEL_MAX_CHUNK_BYTES: usize = 32 * 1024;
 
 // ---------------------------------------------------------------------------
 // Serde helper for [u8; 64] (serde supports arrays only up to size 32 by default)
@@ -659,6 +666,28 @@ pub struct WebFetchResult {
     pub headers: Vec<WebHeader>,
     #[serde(with = "serde_bytes")]
     pub body: Vec<u8>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebConnectReq {
+    pub host: String,
+    pub port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebTunnelInput {
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+    pub close: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebTunnelOutput {
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+    pub connected: bool,
+    pub close: bool,
     pub error: Option<String>,
 }
 

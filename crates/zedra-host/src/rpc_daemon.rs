@@ -39,6 +39,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use zedra_rpc::proto::*;
 use zedra_rpc::proto_v2::{ZedraProtoV2, ZEDRA_ALPN_V2};
 use zedra_telemetry::Event;
@@ -1029,6 +1030,145 @@ async fn fetch_web_tunnel(req: WebFetchReq) -> WebFetchResult {
         body,
         error: None,
     }
+}
+
+fn web_tunnel_output(
+    data: Vec<u8>,
+    connected: bool,
+    close: bool,
+    error: Option<String>,
+) -> WebTunnelOutput {
+    WebTunnelOutput {
+        data,
+        connected,
+        close,
+        error,
+    }
+}
+
+async fn send_web_connect_error(
+    tx: irpc::channel::mpsc::Sender<WebTunnelOutput>,
+    message: impl Into<String>,
+) {
+    let _ = tx
+        .send(web_tunnel_output(vec![], false, true, Some(message.into())))
+        .await;
+}
+
+async fn run_web_connect(
+    req: WebConnectReq,
+    mut rx: irpc::channel::mpsc::Receiver<WebTunnelInput>,
+    tx: irpc::channel::mpsc::Sender<WebTunnelOutput>,
+) {
+    if req.port == 0 {
+        send_web_connect_error(tx, "web tunnel destination port is invalid").await;
+        return;
+    }
+    if !is_loopback_host(&req.host) {
+        send_web_connect_error(tx, "web tunnel only forwards localhost destinations").await;
+        return;
+    }
+
+    let stream = match tokio::net::TcpStream::connect((req.host.as_str(), req.port)).await {
+        Ok(stream) => stream,
+        Err(error) => {
+            send_web_connect_error(
+                tx,
+                format!(
+                    "failed to connect host localhost destination {}:{}: {error}",
+                    req.host, req.port
+                ),
+            )
+            .await;
+            return;
+        }
+    };
+
+    if tx
+        .send(web_tunnel_output(vec![], true, false, None))
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    tracing::debug!(host = %req.host, port = req.port, "web tunnel connected");
+
+    let (mut host_reader, mut host_writer) = stream.into_split();
+    let host = req.host.clone();
+    let port = req.port;
+
+    let host_to_app = tokio::spawn(async move {
+        let mut buffer = vec![0; WEB_TUNNEL_MAX_CHUNK_BYTES];
+        loop {
+            match host_reader.read(&mut buffer).await {
+                Ok(0) => {
+                    let _ = tx.send(web_tunnel_output(vec![], false, true, None)).await;
+                    break;
+                }
+                Ok(n) => {
+                    if tx
+                        .send(web_tunnel_output(buffer[..n].to_vec(), false, false, None))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = tx
+                        .send(web_tunnel_output(
+                            vec![],
+                            false,
+                            true,
+                            Some(format!("host web tunnel read failed: {error}")),
+                        ))
+                        .await;
+                    break;
+                }
+            }
+        }
+    });
+
+    let app_to_host = tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(Some(input)) => {
+                    if !input.data.is_empty() {
+                        if let Err(error) = host_writer.write_all(&input.data).await {
+                            tracing::debug!(
+                                host = %host,
+                                port,
+                                error = %error,
+                                "web tunnel write to host failed"
+                            );
+                            break;
+                        }
+                    }
+                    if input.close {
+                        let _ = host_writer.shutdown().await;
+                        break;
+                    }
+                }
+                Ok(None) => {
+                    let _ = host_writer.shutdown().await;
+                    break;
+                }
+                Err(error) => {
+                    tracing::debug!(
+                        host = %host,
+                        port,
+                        error = ?error,
+                        "web tunnel app input closed"
+                    );
+                    let _ = host_writer.shutdown().await;
+                    break;
+                }
+            }
+        }
+    });
+
+    let _ = tokio::join!(host_to_app, app_to_host);
 }
 
 async fn run_observer(session: Arc<ServerSession>, workdir: PathBuf, my_gen: u64) {
@@ -2402,6 +2542,19 @@ async fn dispatch(
                 tracing::warn!(url = %msg.url, error = %error, "WebFetch failed");
             }
             let _ = msg.tx.send(result).await;
+        }
+
+        ZedraMessage::WebConnect(msg) => {
+            session.touch().await;
+            run_web_connect(
+                WebConnectReq {
+                    host: msg.host.clone(),
+                    port: msg.port,
+                },
+                msg.rx,
+                msg.tx,
+            )
+            .await;
         }
 
         ZedraMessage::FsRead(msg) => {

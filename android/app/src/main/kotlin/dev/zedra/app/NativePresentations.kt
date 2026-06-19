@@ -24,11 +24,15 @@ import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.res.ResourcesCompat
 import androidx.core.widget.NestedScrollView
+import androidx.webkit.ProxyConfig
+import androidx.webkit.ProxyController
+import androidx.webkit.WebViewFeature
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.divider.MaterialDivider
 import dev.zed.gpui.SelectionController
+import java.util.concurrent.Executor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -44,6 +48,7 @@ object NativePresentations {
     private var editMenuPopup: PopupWindow? = null
     private var webViewOverlay: View? = null
     private var activeWebView: WebView? = null
+    private var webViewProxyEnabled = false
     private var nativeTheme = NativeTheme.dark()
 
     private data class NativeTheme(
@@ -595,7 +600,7 @@ object NativePresentations {
     }
 
     @JvmStatic
-    fun openWebView(url: String?, title: String?) = onUi {
+    fun openWebView(url: String?, title: String?, proxyUrl: String?) = onUi {
         if (url.isNullOrBlank()) return@onUi
         closeWebViewNow()
 
@@ -667,7 +672,7 @@ object NativePresentations {
             ViewGroup.LayoutParams.MATCH_PARENT,
         ))
         container.bringToFront()
-        webView.loadUrl(url)
+        loadWebView(webView, url, proxyUrl)
     }
 
     @JvmStatic
@@ -880,6 +885,65 @@ object NativePresentations {
             root.removeView(overlay)
         }
         webView?.destroy()
+        clearWebViewProxyIfNeeded()
+    }
+
+    private fun loadWebView(webView: WebView, url: String, proxyUrl: String?) {
+        val load = {
+            if (activeWebView === webView) {
+                webView.loadUrl(url)
+            }
+        }
+        if (proxyUrl.isNullOrBlank() ||
+            !WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)
+        ) {
+            load()
+            return
+        }
+
+        val builder = ProxyConfig.Builder()
+            .addProxyRule(proxyUrl)
+            .removeImplicitRules()
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE_REVERSE_BYPASS)) {
+            builder
+                .addBypassRule("localhost")
+                .addBypassRule("*.localhost")
+                .addBypassRule("127.0.0.1")
+                .addBypassRule("127.*")
+                .addBypassRule("[::1]")
+                .setReverseBypassEnabled(true)
+        }
+
+        try {
+            webViewProxyEnabled = true
+            ProxyController.getInstance().setProxyOverride(
+                builder.build(),
+                webViewProxyExecutor(),
+            ) {
+                load()
+            }
+        } catch (_: Throwable) {
+            webViewProxyEnabled = false
+            load()
+        }
+    }
+
+    private fun clearWebViewProxyIfNeeded() {
+        if (!webViewProxyEnabled ||
+            !WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)
+        ) {
+            webViewProxyEnabled = false
+            return
+        }
+        webViewProxyEnabled = false
+        try {
+            ProxyController.getInstance().clearProxyOverride(webViewProxyExecutor()) {}
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun webViewProxyExecutor(): Executor = Executor { command ->
+        mainHandler.post(command)
     }
 
     private fun dp(value: Float): Int {

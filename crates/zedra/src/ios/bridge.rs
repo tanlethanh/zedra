@@ -129,7 +129,11 @@ unsafe extern "C" {
     /// Open a URL in the system browser via UIApplication.
     fn ios_open_url(url: *const std::ffi::c_char);
     /// Open a URL in a native in-app WKWebView.
-    fn ios_open_webview(url: *const std::ffi::c_char, title: *const std::ffi::c_char);
+    fn ios_open_webview(
+        url: *const std::ffi::c_char,
+        title: *const std::ffi::c_char,
+        proxy_url: *const std::ffi::c_char,
+    );
     /// Trigger a UIKit haptic feedback generator.
     /// kind encoding matches HapticFeedback::to_i32().
     fn ios_trigger_haptic(kind: i32);
@@ -286,13 +290,18 @@ impl PlatformBridge for IosBridge {
         }
     }
 
-    fn open_webview(&self, url: &str, title: &str) {
+    fn open_webview(&self, url: &str, title: &str, proxy_url: Option<&str>) {
         use std::ffi::CString;
         let Ok(c_url) = CString::new(url) else {
             return;
         };
         let c_title = CString::new(title).unwrap_or_else(|_| CString::new("").unwrap());
-        unsafe { ios_open_webview(c_url.as_ptr(), c_title.as_ptr()) };
+        let c_proxy_url = proxy_url.and_then(|url| CString::new(url).ok());
+        let proxy_ptr = c_proxy_url
+            .as_ref()
+            .map(|value| value.as_ptr())
+            .unwrap_or(std::ptr::null());
+        unsafe { ios_open_webview(c_url.as_ptr(), c_title.as_ptr(), proxy_ptr) };
     }
 
     fn trigger_haptic(&self, feedback: HapticFeedback) {

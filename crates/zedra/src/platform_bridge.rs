@@ -931,7 +931,7 @@ pub trait PlatformBridge: Send + Sync + 'static {
     /// Open a URL in the system browser.
     fn open_url(&self, _url: &str) {}
     /// Open a URL inside a native in-app webview.
-    fn open_webview(&self, url: &str, _title: &str) {
+    fn open_webview(&self, url: &str, _title: &str, _proxy_url: Option<&str>) {
         self.open_url(url);
     }
     /// Trigger a haptic feedback pattern. No-op on platforms without haptic hardware.

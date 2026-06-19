@@ -5,7 +5,7 @@ options:
   xcodeVersion: "26.4"
   bundleIdPrefix: dev.zedra
   deploymentTarget:
-    iOS: "16.0"
+    iOS: "17.0"
   generateEmptyDirectories: true
 
 settings:
@@ -186,7 +186,7 @@ targets:
   ZedraTaskWidget:
     type: app-extension
     platform: iOS
-    deploymentTarget: "16.1"
+    deploymentTarget: "17.0"
     sources:
       - path: ZedraTaskWidget
       - path: Shared

@@ -1,4 +1,4 @@
-ios_deployment_target = '16.0'
+ios_deployment_target = '17.0'
 
 platform :ios, ios_deployment_target
 use_frameworks! :linkage => :static
