@@ -154,6 +154,7 @@ pub(crate) enum PendingWorkspaceAction {
 }
 
 const ADD_TO_CHAT_SEND_DELAY: Duration = Duration::from_millis(250);
+const FOREGROUND_LIVENESS_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
 struct ConnectionRequest {
@@ -308,6 +309,32 @@ fn reconnect_reason_label(reason: &ReconnectReason) -> &'static str {
     match reason {
         ReconnectReason::ConnectionLost => "connection_lost",
         ReconnectReason::AppForegrounded => "app_foregrounded",
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForegroundResumeAction {
+    ProbeLiveness,
+    RestartConnection,
+    Ignore,
+}
+
+fn foreground_resume_action(phase: &ConnectPhase) -> ForegroundResumeAction {
+    match phase {
+        ConnectPhase::Connected | ConnectPhase::Idle { .. } => {
+            ForegroundResumeAction::ProbeLiveness
+        }
+        ConnectPhase::Disconnected | ConnectPhase::Failed(_) => {
+            ForegroundResumeAction::RestartConnection
+        }
+        ConnectPhase::Init
+        | ConnectPhase::BindingEndpoint
+        | ConnectPhase::HolePunching
+        | ConnectPhase::Registering
+        | ConnectPhase::Authenticating
+        | ConnectPhase::Proving
+        | ConnectPhase::Sync
+        | ConnectPhase::Reconnecting { .. } => ForegroundResumeAction::Ignore,
     }
 }
 
@@ -848,10 +875,9 @@ impl Workspace {
             }
         });
 
-        // Notify host when app foreground state changes so it can switch
-        // between RPC-only delivery and Delta push notifications.
-        // Run on Tokio, not GPUI: the GPUI executor pauses when the app backgrounds,
-        // which is exactly when we need this listener to fire and call notify_app_state.
+        // Foreground resume needs an application-level proof of liveness. QUIC
+        // close/idle signals can lag after app suspension while the UI still
+        // shows the last connected phase.
         let mut foreground_resume_rx = platform_bridge::subscribe_foreground_state();
         let foreground_resume_listener = cx.spawn_in(window, async move |ws, cx| {
             loop {
@@ -861,19 +887,63 @@ impl Workspace {
                             continue;
                         }
 
-                        let phase = match ws.update(cx, |ws, cx| ws.session_state.read(cx).phase())
-                        {
+                        let (phase, handle, connection_id) = match ws.update(cx, |ws, cx| {
+                            let handle = ws.session_handle().clone();
+                            (
+                                ws.session_state.read(cx).phase(),
+                                handle.clone(),
+                                handle.active_connection_id(),
+                            )
+                        }) {
                             Ok(value) => value,
                             Err(_) => break,
                         };
 
-                        // Trigger reconnect from foregrounding but not connected
-                        if !phase.is_connected() {
-                            ws.update(cx, |ws, _cx| {
-                                ws.session
-                                    .request_reconnect(ReconnectReason::AppForegrounded);
-                            })
-                            .ok();
+                        match foreground_resume_action(&phase) {
+                            ForegroundResumeAction::ProbeLiveness => {
+                                match handle.probe_liveness(FOREGROUND_LIVENESS_TIMEOUT).await {
+                                    Ok(rtt) => {
+                                        info!(
+                                            rtt_ms = rtt.as_millis() as u64,
+                                            "foreground liveness probe succeeded"
+                                        );
+                                    }
+                                    Err(error) => {
+                                        warn!(
+                                            error = %error,
+                                            "foreground liveness probe failed; forcing reconnect"
+                                        );
+                                        ws.update(cx, |ws, cx| {
+                                            let current_phase = ws.session_state.read(cx).phase();
+                                            if !matches!(
+                                                foreground_resume_action(&current_phase),
+                                                ForegroundResumeAction::ProbeLiveness
+                                            ) {
+                                                return;
+                                            }
+
+                                            if ws.session_handle().active_connection_id()
+                                                != connection_id
+                                            {
+                                                return;
+                                            }
+
+                                            if connection_id.is_some() {
+                                                ws.session.request_reconnect(
+                                                    ReconnectReason::AppForegrounded,
+                                                );
+                                            } else {
+                                                ws.restart_connection(cx);
+                                            }
+                                        })
+                                        .ok();
+                                    }
+                                }
+                            }
+                            ForegroundResumeAction::RestartConnection => {
+                                ws.update(cx, |ws, cx| ws.restart_connection(cx)).ok();
+                            }
+                            ForegroundResumeAction::Ignore => {}
                         }
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
@@ -2989,6 +3059,42 @@ mod tests {
         let mode = sync_refresh_mode_for_event(&sync_complete_event(), &mut seen_reconnect);
 
         assert_eq!(mode, Some(SyncRefreshMode::Reconnect));
+    }
+
+    #[::core::prelude::v1::test]
+    fn foreground_resume_probes_only_established_connections() {
+        assert_eq!(
+            foreground_resume_action(&ConnectPhase::Connected),
+            ForegroundResumeAction::ProbeLiveness
+        );
+        assert_eq!(
+            foreground_resume_action(&ConnectPhase::Idle {
+                idle_since: Instant::now()
+            }),
+            ForegroundResumeAction::ProbeLiveness
+        );
+        assert_eq!(
+            foreground_resume_action(&ConnectPhase::Disconnected),
+            ForegroundResumeAction::RestartConnection
+        );
+        assert_eq!(
+            foreground_resume_action(&ConnectPhase::Failed(
+                zedra_session::ConnectError::ConnectionClosed
+            )),
+            ForegroundResumeAction::RestartConnection
+        );
+        assert_eq!(
+            foreground_resume_action(&ConnectPhase::Reconnecting {
+                attempt: 1,
+                reason: ReconnectReason::ConnectionLost,
+                next_retry_secs: 0,
+            }),
+            ForegroundResumeAction::Ignore
+        );
+        assert_eq!(
+            foreground_resume_action(&ConnectPhase::Sync),
+            ForegroundResumeAction::Ignore
+        );
     }
 
     #[::core::prelude::v1::test]

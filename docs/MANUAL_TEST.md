@@ -571,8 +571,10 @@ or beyond.
 4. Keep waiting
 5. Background the app, then bring it back to the foreground while the badge is still `Idle`
 6. Expected: reconnect starts immediately on resume (`Idle` -> `Reconnecting` -> `Connected` or `Disconnected`), without waiting for the idle loop to time out
-7. Restore network before reconnect exhausts
-8. Expected: badge returns from `Idle` to `Connected` before or during reconnect recovery
+7. Repeat with a shorter background interval where the badge still shows `Connected`
+8. Expected: foreground resume probes liveness; if the host is unreachable, reconnect starts instead of leaving the active indicator stuck
+9. Restore network before reconnect exhausts
+10. Expected: badge returns from `Idle` or `Connected` to `Connected` during reconnect recovery
 
 ## 5b. Path Changes Do Not False Idle
 

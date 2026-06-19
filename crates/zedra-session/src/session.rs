@@ -117,6 +117,7 @@ impl Session {
         handle.set_signer(signer.clone());
         handle.set_endpoint_addr(addr.clone());
         handle.set_user_disconnect(false);
+        handle.take_pending_reconnect_reason();
         if let Some(ref t) = ticket {
             handle.set_pending_ticket(t.clone());
         }
@@ -301,7 +302,11 @@ impl Session {
                             break;
                         }
 
-                        reconnect_reason = Some(crate::ReconnectReason::ConnectionLost);
+                        reconnect_reason = Some(
+                            handle
+                                .take_pending_reconnect_reason()
+                                .unwrap_or(crate::ReconnectReason::ConnectionLost),
+                        );
                     }
                     Err(e) => {
                         connector.abort();
@@ -339,7 +344,11 @@ impl Session {
     /// reconnect reason for telemetry/UI.
     pub fn request_reconnect(&self, reason: ReconnectReason) {
         info!(?reason, "requesting reconnect");
-        self.handle.close_active_connection(b"client reconnect");
+        self.handle.set_pending_reconnect_reason(reason.clone());
+        if !self.handle.close_active_connection(b"client reconnect") {
+            self.handle.take_pending_reconnect_reason();
+            warn!(?reason, "reconnect requested without an active connection");
+        }
     }
 
     fn reset_abort_signal(&self) -> CancellationToken {
@@ -420,6 +429,15 @@ impl Default for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_reconnect_without_active_connection_does_not_leave_pending_reason() {
+        let session = Session::new();
+
+        session.request_reconnect(ReconnectReason::AppForegrounded);
+
+        assert_eq!(session.handle().take_pending_reconnect_reason(), None);
+    }
 
     #[tokio::test]
     async fn subscribe_host_events_fans_out_to_multiple_receivers() {
