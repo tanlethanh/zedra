@@ -45,14 +45,14 @@ use zedra_telemetry::Event;
 /// Log a decode failure with the leading discriminant varint (the RPC's index in
 /// `ZedraProto`/`ZedraProtoV2`) and a payload preview.
 fn log_decode_failure(alpn: &[u8], buf: &[u8], err: &postcard::Error) {
+    // Metadata only — never log payload bytes; client frames can carry paths,
+    // file contents, or tokens.
     let variant_index = postcard::take_from_bytes::<u32>(buf).map(|(v, _)| v).ok();
-    let preview_len = buf.len().min(32);
     tracing::warn!(
         "ignoring undecodable request: variant_index={variant_index:?} alpn={} \
-         payload_len={} payload_prefix={:02x?} error={err}",
+         payload_len={} error={err}",
         String::from_utf8_lossy(alpn),
         buf.len(),
-        &buf[..preview_len],
     );
 }
 
