@@ -765,6 +765,10 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 17. Expected: the software keyboard dismisses and the next terminal tap reopens it
 18. With terminal output filling the screen, tap the terminal so the keyboard appears
 19. Expected: the bottom terminal content lifts above the keyboard and accessory bar instead of staying hidden behind them
+20. Switch Android to a non-English QWERTY layout, such as Vietnamese, Spanish, or French
+21. Type a short terminal command, accept any active composition, then press enter
+22. Expected: composing text appears while typing, the accepted text reaches the PTY once, and
+    candidate suggestions do not leave the terminal blank
 
 ## 11a. Terminal Scroll To Bottom Native Button On iOS
 
