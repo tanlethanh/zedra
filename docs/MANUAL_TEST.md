@@ -6,6 +6,19 @@
 - Prefer concrete reproduction steps and expected results over vague test descriptions.
 - When debugging, add targeted log instructions if the test depends on developer-run device validation.
 
+## 0-Compat. Legacy ALPN (`zedra/rpc/2`) Client
+
+Verifies a `zedra/rpc/3` host still serves a pre-bump app.
+
+1. Run the host from this branch; connect a `zedra/rpc/2` app (a `v0.2.5` build or
+   a client pinned to `ZEDRA_ALPN_V2`).
+2. Expected: host log shows `alpn=zedra/rpc/2`, auth succeeds (no `InvalidData`),
+   and terminals (open/type/resize/reconnect) and the agent list all work.
+   Claude/Codex/OpenCode render; agent live badges may be blank and `Pi`/`Hermes`
+   are absent (expected).
+3. Connect a current `zedra/rpc/3` app in parallel — both work concurrently, and
+   the `v3` client still shows full terminal/agent metadata.
+
 ## 0. Mobile Hover Styling
 
 1. Open the app on iOS or Android

@@ -5,6 +5,7 @@
 
 pub mod pairing;
 pub mod proto;
+pub mod proto_v2;
 
 pub use pairing::{
     ZedraPairingTicket, compute_registration_hmac, decode_endpoint_addr, encode_endpoint_addr,
